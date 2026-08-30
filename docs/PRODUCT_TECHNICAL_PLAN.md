@@ -89,6 +89,14 @@ codlet m0-probe --launch-codex
 codlet m0-runtime --launch-codex
 ```
 
+M0 的仓库级 Windows 外部验收统一使用以下入口；`-CodletPath` 必须由操作者明确指向已经构建好的 `codlet.exe`，脚本不发现、安装或修改工具链：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0Acceptance.ps1 -CodletPath "C:\absolute\path\to\codlet.exe"
+```
+
+该脚本只有在用户主动执行时运行。它先只读快照精确命名的 `ChatGPT.exe`/`Codex.exe` 进程，发现任一冲突即明确失败，且不调用 Codlet；无冲突时仅执行一次 `codlet.exe m0-runtime --launch-codex` 并实时回显输出。当 Codlet 输出精确的 Runtime active 协议行时，脚本立即取一次运行中快照；命令返回后再取结束快照。它不终止进程、不重试、不启动官方入口、不持续监视，也不修改 Codex 或用户配置。
+
 以下正式控制命令属于后续里程碑，当前尚未实现：
 
 ```text
@@ -449,6 +457,17 @@ packages/codlet-sdk/
 - 第一方 `codlet` 插件的按钮挂载、面板开关、自我禁用和 CLI 重新启用。
 
 ### 14.3 实机门禁
+
+正常会话链路的统一留证入口是 `scripts/Invoke-M0Acceptance.ps1`。每次运行在被 git 忽略的 `.codlet-artifacts/m0-acceptance/` 下写入一个 `codlet.m0-acceptance/v1` JSON 报告，固定结构为：
+
+- `executionMode`、`startedAtUtc`、`endedAtUtc`；
+- `codlet`：可执行文件路径、固定参数、是否调用、退出码、本次启动 PID、active/stopped 协议观测、`allowlisted-m0-stdout-v1` 规则允许的逐行 stdout，以及未持久化的输出行数；所有输出仍实时显示，但 stderr 和不符合固定 M0 报告语法的 stdout 不写入报告；
+- `preflight`：是否冲突及冲突进程；
+- `snapshots.before` / `snapshots.active` / `snapshots.after`：分别在启动前、Runtime 明确进入 active 后和命令返回后采集时间、相关进程以及由这些进程持有的 TCP listening 端口；采集失败时数据为 `null` 并记录 `captureError`，不得伪造空快照；
+- `manualChecks`：`runtime_visible_and_usable`、`user_closed_codex_normally`、`official_entry_zero_behavior`、`runtime_crash_contract` 四项始终为 `pending_manual_confirmation`；
+- `result`：脚本执行状态与退出码，`m0Decision` 固定为 `not_determined`。
+
+报告不采集进程命令行、页面内容、CDP pipe handle 或秘密。脚本只在本次启动 PID 出现于 active 快照、Codlet 输出 worker-reaped 结束协议、且 after 快照没有新增相关进程时把这次脚本执行记为成功；证据不匹配时只报错并留证，不终止任何残留进程。active 快照为端口门禁提供运行中证据，但脚本不自动判定某个端口是否属于 CDP。它不代替官方入口零行为、Runtime 崩溃契约、连续重复和人工可用性判断，也不因此宣布 M0 完成。
 
 - 连续冷启动至少 100 次，无孤儿 Runtime Host/plugin-host 进程；
 - 同一 Codex build 注入成功率至少 99%；

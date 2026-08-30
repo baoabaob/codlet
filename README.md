@@ -12,7 +12,11 @@ Run the automated checks on Windows:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
 ```
+
+The PowerShell test uses an explicitly marked data fixture. It validates path handling, conflict refusal, and the report schema without discovering, launching, or controlling a real Codex process.
 
 Inspect the installed package and report any running process from the Codex package without launching anything:
 
@@ -20,13 +24,17 @@ Inspect the installed package and report any running process from the Codex pack
 cargo run --locked --bin codlet -- doctor
 ```
 
-The foreground M0 runtime path is deliberately explicit. Run it only after manually closing every Codex window:
+The reproducible external M0 acceptance entry takes an existing `codlet.exe` by explicit path. Run this one command from the repository root only after manually closing every ChatGPT/Codex window:
 
 ```powershell
-cargo run --locked --bin codlet -- m0-runtime --launch-codex
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0Acceptance.ps1 -CodletPath "C:\absolute\path\to\codlet.exe"
 ```
 
-The runtime first checks the package identity of every running `ChatGPT.exe` candidate. If any process belongs to the Codex package, it reports an instance conflict and exits without modifying that process. Otherwise it launches the installed package executable with the two inherited CDP handles, discovers the exact `app://-/index.html` renderer, inserts and removes a temporary marker, then keeps the runtime and pipes alive. Use Codex normally and close Codex yourself; the foreground runtime then observes that child exit, joins its CDP workers, and returns. It never kills Codex.
+The script first takes a read-only snapshot of exact `ChatGPT.exe` and `Codex.exe` processes. If either exists, it fails explicitly without invoking Codlet or modifying any process. Otherwise it invokes `codlet.exe m0-runtime --launch-codex` exactly once and shows its output live. When Codlet emits the exact active-runtime protocol line, the script takes one active snapshot while the inherited pipes are held; after Codlet returns, it takes the final snapshot. It never terminates a process, retries, starts the official entry, changes Codex configuration, or monitors later launches.
+
+Each attempt writes one machine-readable `codlet.m0-acceptance/v1` JSON report under `.codlet-artifacts/m0-acceptance/`. The report records UTC start/end times; the Codlet path, fixed arguments, invocation state and exit code; the launched PID plus active/stopped protocol observations; allowlisted M0 stdout plus an omitted-line count; preflight conflicts; `before` / `active` / `after` related-process snapshots; TCP listening endpoints owned by those snapshot processes; and the script result. The active snapshot must contain the exact launched Codex PID. All Codlet output is still shown live, but stderr and stdout outside the fixed M0 report grammar are not persisted. The report does not collect process command lines, page content, CDP pipe handles, or secrets. A failed capture is represented by `captureError` and `null` snapshot data rather than invented evidence.
+
+The report always leaves `runtime_visible_and_usable`, `user_closed_codex_normally`, `official_entry_zero_behavior`, and `runtime_crash_contract` at `pending_manual_confirmation`, with `m0Decision: not_determined`. Script exit `0` therefore means only that this one Codlet command returned `0`, emitted its launched/active/stopped protocol, produced all three phase snapshots, bound the active snapshot to the launched PID, and left no new related process in the after snapshot; it does not mean M0 passed. Evidence mismatches are reported without terminating the remaining process. Exit `2` is a preflight conflict, `64` is argument validation, `70` is snapshot/report/evidence infrastructure failure, and any other nonzero command result preserves Codlet's exit code when possible.
 
 The one-shot transport smoke probe remains available:
 
@@ -47,7 +55,7 @@ try {
 }
 ```
 
-Do not run that command merely to exercise CI. The real foreground lifecycle (Codex remains visible and usable while the runtime is alive, then the runtime exits cleanly after the user closes Codex), zero behavior from the official entry, repeated launches, orphan checks, and port-scan checks remain external M0 gates.
+Do not run that command merely to exercise CI. Use the acceptance script above for the normal foreground external run. Codex visibility/usability while the runtime is alive, normal user close, zero behavior from the official entry, repeated launches, orphan checks, interpretation of the active TCP-listener snapshot, and the forced Runtime Host crash contract remain external M0 gates and require explicit human evidence.
 
 ## Scope
 
