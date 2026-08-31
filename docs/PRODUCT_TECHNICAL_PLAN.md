@@ -97,6 +97,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0Acceptanc
 
 该脚本只有在用户主动执行时运行。它先只读快照精确命名的 `ChatGPT.exe`/`Codex.exe` 进程，发现任一冲突即明确失败，且不调用 Codlet；无冲突时仅执行一次 `codlet.exe m0-runtime --launch-codex` 并实时回显输出。当 Codlet 输出精确的 Runtime active 协议行时，脚本立即取一次运行中快照；命令返回后再取结束快照。它不终止进程、不重试、不启动官方入口、不持续监视，也不修改 Codex 或用户配置。
 
+Runtime Host 强制崩溃契约使用独立且显式授权的入口，不扩张正常验收脚本的非干预边界：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0CrashAcceptance.ps1 -CodletPath "C:\absolute\path\to\codlet.exe" -ConfirmRuntimeCrash
+```
+
+该 harness 启动前拒绝任何已有的精确 `ChatGPT.exe`、`Codex.exe` 或 `codlet.exe`。进入 active 后，它以 PID、父 PID、启动时间和规范化可执行路径同时锁定本次 Runtime Host 与 Codex child，并持有两者的 process handle；执行动作前再次核验同一身份和存活状态。它只对自己创建并持有 handle 的 Runtime Host 调用一次 `System.Diagnostics.Process.Kill()`，绝不对 Codex 调用终止 API；随后等待同一个 Codex process handle 因 pipe-disconnect 退出，并在共享 deadline 内再次确认没有相关进程残留。Runtime Host 必须晚于 crash request 退出，Codex 必须不早于 Runtime Host 退出；否则不能建立 pipe-disconnect 的因果证据。身份无法建立或发生变化时按基础设施错误拒绝，不按裸 PID 猜测。
+
 以下正式控制命令属于后续里程碑，当前尚未实现：
 
 ```text
@@ -469,6 +477,8 @@ packages/codlet-sdk/
 
 报告不采集进程命令行、页面内容、CDP pipe handle 或秘密。脚本只在本次启动 PID 出现于 active 快照、Codlet 输出 worker-reaped 结束协议、且 after 快照没有新增相关进程时把这次脚本执行记为成功；证据不匹配时只报错并留证，不终止任何残留进程。active 快照为端口门禁提供运行中证据，但脚本不自动判定某个端口是否属于 CDP。它不代替官方入口零行为、Runtime 崩溃契约、连续重复和人工可用性判断，也不因此宣布 M0 完成。
 
+异常退出契约由 `scripts/Invoke-M0CrashAcceptance.ps1` 单独留证，在 `.codlet-artifacts/m0-crash-acceptance/` 写入 `codlet.m0-crash-acceptance/v1` 报告。报告记录 Runtime Host/Codex child 的完整进程身份、active 协议、动作时存活状态、强制终止动作及时间、两者退出时间与退出观测、前/中/后进程快照、固定 allowlist 输出和未持久化行数。只有本次 Runtime Host 确实被强制终止、没有出现正常 stopped 协议、Runtime/Codex 退出顺序符合 pipe-disconnect 因果关系、同一个 Codex process handle 与残留扫描在共享的 15 秒 deadline 内完成且 after 快照无相关进程时，`crashContractDecision` 才为 `passed`。脚本不终止残留 Codex；失败时留给操作者人工检查和关闭。该报告仍固定 `m0Decision: not_determined`，不以单次异常退出替代连续重复门禁。
+
 - 连续冷启动至少 100 次，无孤儿 Runtime Host/plugin-host 进程；
 - 同一 Codex build 注入成功率至少 99%；
 - 从官方入口启动 Codex 时，无 Codlet 进程、日志、提示或界面变化；
@@ -502,7 +512,7 @@ M0 验收矩阵：
 | inherited pipe、路由、target、marker | fake child 全量测试；ignored + env opt-in 的一次性 real smoke | 当前安装 build 能完成真实 attach 与 marker；smoke 结束后 Electron 随 pipe disconnect 退出是预期结果 |
 | 会话级 Runtime Host 生命周期 | fake child 验证持 pipe 存活、EOF 退出、child exit 后 worker 回收 | `m0-runtime --launch-codex` 运行期间 Codex 可见可用；用户关闭 Codex 后 Runtime Host 正常返回 |
 | 官方入口与实例冲突边界 | 包实例冲突自动化测试 | 官方入口零 Codlet 行为；既有官方实例不被注入、不被关闭或重启 |
-| 稳定性与外部副作用 | 静态检查和 fake child 回归 | 连续重复、孤儿进程、端口扫描与异常退出契约全部通过 |
+| 稳定性与外部副作用 | 静态检查、fake child 回归、crash harness 的数据夹具与身份拒绝测试 | 专用 crash harness 验证异常退出契约；连续重复、孤儿进程与端口扫描全部通过 |
 
 决策：全部通过才进入 M1。若 inherited pipe 不成立，停止插件内核建设，单独评审 transport，不并行维护未经验证的备用实现。
 
