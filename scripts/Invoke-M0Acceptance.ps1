@@ -3,13 +3,17 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $CodletPath,
 
-    [string] $ArtifactsDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) '.codlet-artifacts\m0-acceptance'),
+    [string] $ArtifactsDirectory,
 
     [string] $InternalTestFixturePath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if (-not $PSBoundParameters.ContainsKey('ArtifactsDirectory')) {
+    $ArtifactsDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) '.codlet-artifacts\m0-acceptance'
+}
 
 $validationExitCode = 64
 $infrastructureExitCode = 70

@@ -112,6 +112,15 @@ try {
     $fakeCodletPath = Join-Path $tempRoot 'codlet.exe'
     [IO.File]::WriteAllText($fakeCodletPath, 'test seam placeholder; never executed')
 
+    $defaultArtifactsResult = Invoke-ChildPowerShell -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $acceptanceScript,
+        '-CodletPath', (Join-Path $tempRoot 'missing-default\codlet.exe')
+    )
+    Assert-True -Condition ($defaultArtifactsResult.exitCode -eq 64) -Message 'omitting ArtifactsDirectory must reach normal validation under Windows PowerShell'
+    Assert-True -Condition (($defaultArtifactsResult.output -join "`n") -match 'does not exist') -Message 'the default artifacts path must initialize before validation'
+
     $missingResult = Invoke-ChildPowerShell -Arguments @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
