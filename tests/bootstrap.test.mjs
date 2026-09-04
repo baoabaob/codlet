@@ -164,6 +164,86 @@ test('bootstrap entry point and lifecycle methods are immutable', () => {
     );
 });
 
+test('activation can await a renderer RPC without publishing active state early', async () => {
+    const context = vm.createContext({});
+    vm.runInContext(bootstrapSource, context);
+    const envelopes = [];
+    context.codlet_rpc_activating = (payload) => envelopes.push(JSON.parse(payload));
+    let readyValue = null;
+
+    const activation = context.__codletRendererV1.activate(metadata(1, {
+        binding: 'codlet_rpc_activating',
+        requires: [capability]
+    }), {
+        async activate(pluginContext) {
+            readyValue = await pluginContext.rpc.request(capability, 'ready', null);
+        },
+        deactivate() {}
+    });
+    await Promise.resolve();
+
+    assert.equal(context.__codletRendererV1.status().length, 0);
+    assert.equal(envelopes.length, 1);
+    assert.equal(envelopes[0].method, 'ready');
+    const received = context.__codletRendererV1.__rpcReceive('codlet_rpc_activating', {
+        v: 1,
+        type: 'response',
+        id: envelopes[0].id,
+        ok: true,
+        result: { accepted: true }
+    });
+    assert.equal(received.ok, true);
+
+    const activated = await activation;
+    assert.equal(activated.ok, true);
+    assert.deepEqual(readyValue, { accepted: true });
+    const status = context.__codletRendererV1.status();
+    assert.equal(status.length, 1);
+    assert.equal(status[0].id, 'dev.example');
+    assert.equal(status[0].generation, 1);
+});
+
+test('activation RPC rejection cleans the candidate and releases its operation gate', async () => {
+    const context = vm.createContext({});
+    vm.runInContext(bootstrapSource, context);
+    const envelopes = [];
+    context.codlet_rpc_activating_error = (payload) => envelopes.push(JSON.parse(payload));
+    let cleanups = 0;
+
+    const activation = context.__codletRendererV1.activate(metadata(1, {
+        binding: 'codlet_rpc_activating_error',
+        requires: [capability]
+    }), {
+        async activate(pluginContext) {
+            await pluginContext.rpc.request(capability, 'ready', null);
+        },
+        deactivate() {
+            cleanups += 1;
+        }
+    });
+    await Promise.resolve();
+    context.__codletRendererV1.__rpcReceive('codlet_rpc_activating_error', {
+        v: 1,
+        type: 'response',
+        id: envelopes[0].id,
+        ok: false,
+        error: { code: 'not_ready', message: 'host rejected readiness' }
+    });
+
+    const failed = await activation;
+    assert.equal(failed.ok, false);
+    assert.equal(failed.error, 'host rejected readiness');
+    assert.equal(cleanups, 1);
+    assert.equal(context.__codletRendererV1.status().length, 0);
+
+    const retried = await context.__codletRendererV1.activate(metadata(1), {
+        activate() {},
+        deactivate() {}
+    });
+    assert.equal(retried.ok, true);
+    assert.equal(retried.reused, false);
+});
+
 test('renderer request uses the fixed binding envelope and resolves a host response', async () => {
     const context = vm.createContext({});
     const installed = vm.runInContext(bootstrapSource, context);

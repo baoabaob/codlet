@@ -317,7 +317,7 @@ module.exports = (() => {
     return {
         activate(context) {
             stopped = false;
-            void start(context);
+            return start(context);
         },
         deactivate() {
             stopped = true;

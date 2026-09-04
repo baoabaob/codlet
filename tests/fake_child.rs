@@ -15,7 +15,7 @@ use codlet::cdp::{
 };
 use codlet::plugins::PluginRegistry;
 use codlet::probe::{MarkerFailure, ProbeError, hold_cdp_until_child_exit, probe_marker};
-use codlet::renderer::RendererRuntime;
+use codlet::renderer::{RendererError, RendererRuntime};
 use codlet::windows::process::{ChildProcess, launch_with_cdp_pipes};
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
@@ -386,6 +386,70 @@ fn renderer_runtime_installs_and_deactivates_the_bundled_codlet() {
     assert_eq!(runtime.session_count(), 1);
     runtime.deactivate_target("main").unwrap();
     assert_eq!(runtime.session_count(), 0);
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_activation_pumps_host_and_provider_rpc_until_ready() {
+    let (child, client, events) = launch("renderer-ready-handshake", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let (_registry_directory, mut runtime) = bundled_runtime();
+
+    let report = runtime.attach(&sessions[0]).unwrap();
+    assert_eq!(report.target_id, "main");
+    assert_eq!(report.plugin_count, 2);
+    assert!(runtime.take_diagnostics().is_empty());
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn activating_plugin_cannot_commit_runtime_management_actions() {
+    let (child, client, events) = launch("renderer-ready-rejection", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let registry_directory = tempdir().unwrap();
+    let registry_path = registry_directory.path().join("config.json");
+    let registry = PluginRegistry::load(&registry_path).unwrap();
+    let mut runtime = RendererRuntime::bundled(registry).unwrap();
+
+    let error = runtime.attach(&sessions[0]).unwrap_err();
+    assert!(matches!(
+        error,
+        RendererError::PluginRejected { plugin_id, message }
+            if plugin_id == "codlet" && message == "activation self-disable rejected"
+    ));
+    assert_eq!(runtime.session_count(), 0);
+    assert!(!registry_path.exists());
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
+    let (child, client, events) = launch("renderer-ready-timeout", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(250));
+    let (_registry_directory, mut runtime) = bundled_runtime();
+
+    let started = Instant::now();
+    let error = runtime.attach(&sessions[0]).unwrap_err();
+    assert!(matches!(
+        error,
+        RendererError::PluginRejected { plugin_id, message }
+            if plugin_id == "codlet"
+                && message.contains("Runtime.evaluate")
+                && message.contains("exceeded its deadline")
+    ));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(runtime.session_count(), 0);
+
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
     client.request("Fake.finish", None, None, DEADLINE).unwrap();
     assert_child_success(&child);
 }

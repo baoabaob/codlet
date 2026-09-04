@@ -2,6 +2,7 @@ mod client;
 mod framing;
 mod target;
 
+pub(crate) use client::CdpRequest;
 pub use client::{
     CancelIoFailure, CdpClient, CdpEvent, CdpEventStream, CdpResponse, ClientError,
     ClientSpawnError, ConnectionError, EventStreamError, RemoteError, ShutdownError,

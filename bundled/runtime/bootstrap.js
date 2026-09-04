@@ -8,6 +8,7 @@
     }
 
     const plugins = new Map();
+    const activating = new Map();
     const operations = new Map();
     let nextRequestId = 1;
 
@@ -233,9 +234,11 @@
                     generation: metadata.generation,
                     rpc: createRpc(record)
                 });
+                activating.set(metadata.id, record);
                 try {
                     await definition.activate(context);
                 } catch (error) {
+                    activating.delete(metadata.id);
                     let cleanupError = null;
                     try {
                         await definition.deactivate();
@@ -249,6 +252,7 @@
                         cleanupError
                     };
                 }
+                activating.delete(metadata.id);
                 plugins.set(metadata.id, record);
 
                 let cleanupError = null;
@@ -292,7 +296,8 @@
             return invokeProvider(current, request);
         },
         __rpcReceive(binding, response) {
-            const current = Array.from(plugins.values()).find((record) => record.binding === binding);
+            const current = Array.from(plugins.values()).find((record) => record.binding === binding)
+                ?? Array.from(activating.values()).find((record) => record.binding === binding);
             if (!current || !response || response.v !== 1 || response.type !== 'response') {
                 return { ok: false, error: 'renderer binding response is not recognized' };
             }

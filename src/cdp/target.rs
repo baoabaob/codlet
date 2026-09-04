@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use super::{CdpClient, CdpEvent, CdpEventStream, ClientError, EventStreamError};
+use super::{CdpClient, CdpEvent, CdpEventStream, CdpRequest, ClientError, EventStreamError};
 
 pub const MAIN_RENDERER_URL: &str = "app://-/index.html";
 const TARGET_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -155,6 +155,19 @@ impl TargetSession {
         expression: &str,
         context_id: Option<u64>,
     ) -> Result<Value, TargetError> {
+        let response = self
+            .start_evaluate_in_context(expression, context_id)?
+            .wait()?;
+        Ok(response
+            .result
+            .expect("successful CDP response must contain result"))
+    }
+
+    pub(crate) fn start_evaluate_in_context(
+        &self,
+        expression: &str,
+        context_id: Option<u64>,
+    ) -> Result<CdpRequest, TargetError> {
         let mut params = json!({
             "expression": expression,
             "returnByValue": true,
@@ -163,7 +176,12 @@ impl TargetSession {
         if let Some(context_id) = context_id {
             params["contextId"] = json!(context_id);
         }
-        self.request("Runtime.evaluate", Some(params))
+        Ok(self.client.start_request(
+            "Runtime.evaluate",
+            Some(params),
+            Some(&self.session_id),
+            self.deadline,
+        )?)
     }
 
     pub(crate) fn request(

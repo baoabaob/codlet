@@ -158,11 +158,13 @@ struct State {
     last_issued_id: u64,
     events: Vec<EventSink>,
     next_event_registration_id: u64,
+    activity_epoch: u64,
 }
 
 struct Shared {
     state: Mutex<State>,
     closed: Condvar,
+    activity: Condvar,
 }
 
 enum WriterCommand {
@@ -356,6 +358,15 @@ pub struct CdpClient {
     inner: Arc<ClientInner>,
 }
 
+pub(crate) struct CdpRequest {
+    client: CdpClient,
+    id: u64,
+    method: String,
+    expires_at: Instant,
+    receiver: mpsc::Receiver<Result<CdpResponse, Arc<ConnectionError>>>,
+    completed: bool,
+}
+
 pub struct CdpEventStream {
     receiver: mpsc::Receiver<EventItem>,
     session_id: Option<String>,
@@ -419,8 +430,10 @@ impl CdpClient {
                     sender: event_sender,
                 }],
                 next_event_registration_id: 2,
+                activity_epoch: 0,
             }),
             closed: Condvar::new(),
+            activity: Condvar::new(),
         });
         let (writer_sender, writer_receiver) = mpsc::channel();
         let cancellation = Arc::new(WorkerCancellation::default());
@@ -491,6 +504,17 @@ impl CdpClient {
         session_id: Option<&str>,
         deadline: Duration,
     ) -> Result<CdpResponse, ClientError> {
+        self.start_request(method, params, session_id, deadline)?
+            .wait()
+    }
+
+    pub(crate) fn start_request(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        deadline: Duration,
+    ) -> Result<CdpRequest, ClientError> {
         let expires_at = Instant::now()
             .checked_add(deadline)
             .ok_or(ClientError::DeadlineOutOfRange)?;
@@ -590,37 +614,14 @@ impl CdpClient {
                 return Err(ClientError::Connection(self.terminal_reason()));
             }
         }
-
-        let response = match response_receiver.recv_timeout(remaining(expires_at)) {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => return Err(ClientError::Connection(error)),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                match self.expire_request(id, &response_receiver) {
-                    Ok(Some(response)) => response,
-                    Ok(None) => {
-                        return Err(ClientError::RequestTimedOut {
-                            id,
-                            method: method.to_owned(),
-                        });
-                    }
-                    Err(error) => return Err(ClientError::Connection(error)),
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(ClientError::Connection(self.terminal_reason()));
-            }
-        };
-
-        if let Some(error) = response.error {
-            return Err(ClientError::Remote {
-                method: method.to_owned(),
-                error_code: error.code,
-                message: error.message,
-                data: error.data,
-            });
-        }
-
-        Ok(response)
+        Ok(CdpRequest {
+            client: self.clone(),
+            id,
+            method: method.to_owned(),
+            expires_at,
+            receiver: response_receiver,
+            completed: false,
+        })
     }
 
     pub fn subscribe_events(&self, session_id: Option<&str>) -> CdpEventStream {
@@ -723,6 +724,108 @@ impl CdpClient {
                 unreachable!("response sender removed the pending request before sending")
             }
         }
+    }
+}
+
+impl CdpRequest {
+    pub(crate) fn activity_epoch(&self) -> u64 {
+        self.client
+            .inner
+            .runtime
+            .shared
+            .state
+            .lock()
+            .expect("CDP state poisoned")
+            .activity_epoch
+    }
+
+    pub(crate) fn wait_for_activity(&self, observed_epoch: u64) {
+        let shared = &self.client.inner.runtime.shared;
+        let state = shared.state.lock().expect("CDP state poisoned");
+        let _ = shared
+            .activity
+            .wait_timeout_while(state, remaining(self.expires_at), |state| {
+                state.terminal.is_none() && state.activity_epoch == observed_epoch
+            })
+            .expect("CDP state poisoned while waiting for activity");
+    }
+
+    pub(crate) fn try_response(&mut self) -> Result<Option<CdpResponse>, ClientError> {
+        match self.receiver.try_recv() {
+            Ok(Ok(response)) => self.complete_response(response).map(Some),
+            Ok(Err(error)) => {
+                self.completed = true;
+                Err(ClientError::Connection(error))
+            }
+            Err(mpsc::TryRecvError::Empty) if Instant::now() < self.expires_at => Ok(None),
+            Err(mpsc::TryRecvError::Empty) => self.expire().map(Some),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.completed = true;
+                Err(ClientError::Connection(self.client.terminal_reason()))
+            }
+        }
+    }
+
+    pub(crate) fn wait(mut self) -> Result<CdpResponse, ClientError> {
+        match self.receiver.recv_timeout(remaining(self.expires_at)) {
+            Ok(Ok(response)) => self.complete_response(response),
+            Ok(Err(error)) => {
+                self.completed = true;
+                Err(ClientError::Connection(error))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => self.expire(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.completed = true;
+                Err(ClientError::Connection(self.client.terminal_reason()))
+            }
+        }
+    }
+
+    fn expire(&mut self) -> Result<CdpResponse, ClientError> {
+        match self.client.expire_request(self.id, &self.receiver) {
+            Ok(Some(response)) => self.complete_response(response),
+            Ok(None) => {
+                self.completed = true;
+                Err(ClientError::RequestTimedOut {
+                    id: self.id,
+                    method: self.method.clone(),
+                })
+            }
+            Err(error) => {
+                self.completed = true;
+                Err(ClientError::Connection(error))
+            }
+        }
+    }
+
+    fn complete_response(&mut self, response: CdpResponse) -> Result<CdpResponse, ClientError> {
+        self.completed = true;
+        if let Some(error) = response.error {
+            return Err(ClientError::Remote {
+                method: self.method.clone(),
+                error_code: error.code,
+                message: error.message,
+                data: error.data,
+            });
+        }
+        Ok(response)
+    }
+}
+
+impl Drop for CdpRequest {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.client
+            .inner
+            .runtime
+            .shared
+            .state
+            .lock()
+            .expect("CDP state poisoned")
+            .pending
+            .remove(&self.id);
     }
 }
 
@@ -968,6 +1071,12 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
     state.events.retain(|sink| {
         sink.session_id != event.session_id || sink.sender.send(Ok(event.clone())).is_ok()
     });
+    state.activity_epoch = state
+        .activity_epoch
+        .checked_add(1)
+        .expect("CDP activity epoch overflowed");
+    drop(state);
+    shared.activity.notify_all();
     Ok(())
 }
 
@@ -1009,6 +1118,12 @@ fn route_response(
         .remove(&id)
         .expect("pending CDP request disappeared while routing its response");
     let _ = pending.sender.send(Ok(response));
+    state.activity_epoch = state
+        .activity_epoch
+        .checked_add(1)
+        .expect("CDP activity epoch overflowed");
+    drop(state);
+    shared.activity.notify_all();
     Ok(())
 }
 
@@ -1076,6 +1191,10 @@ fn terminate(shared: &Arc<Shared>, error: Arc<ConnectionError>) {
             return;
         }
         state.terminal = Some(Arc::clone(&error));
+        state.activity_epoch = state
+            .activity_epoch
+            .checked_add(1)
+            .expect("CDP activity epoch overflowed");
         (
             std::mem::take(&mut state.pending),
             std::mem::take(&mut state.events),
@@ -1089,6 +1208,7 @@ fn terminate(shared: &Arc<Shared>, error: Arc<ConnectionError>) {
         let _ = sink.sender.send(Err(Arc::clone(&error)));
     }
     shared.closed.notify_all();
+    shared.activity.notify_all();
 }
 
 fn remaining(deadline: Instant) -> Duration {
@@ -1309,8 +1429,10 @@ mod tests {
                     last_issued_id: id,
                     events: Vec::new(),
                     next_event_registration_id: 1,
+                    activity_epoch: 0,
                 }),
                 closed: Condvar::new(),
+                activity: Condvar::new(),
             }),
             response_receiver,
         )
@@ -1401,8 +1523,10 @@ mod tests {
                     },
                 ],
                 next_event_registration_id: 4,
+                activity_epoch: 0,
             }),
             closed: Condvar::new(),
+            activity: Condvar::new(),
         });
 
         route_message(
@@ -1449,8 +1573,10 @@ mod tests {
                     sender: event_sender,
                 }],
                 next_event_registration_id: 2,
+                activity_epoch: 0,
             }),
             closed: Condvar::new(),
+            activity: Condvar::new(),
         });
 
         terminate(&shared, Arc::new(ConnectionError::Eof));
@@ -1614,8 +1740,10 @@ mod tests {
                 last_issued_id: 0,
                 events: Vec::new(),
                 next_event_registration_id: 1,
+                activity_epoch: 0,
             }),
             closed: Condvar::new(),
+            activity: Condvar::new(),
         });
         let (writer_sender, _writer_receiver) = mpsc::channel();
         let cancellation = Arc::new(WorkerCancellation::default());

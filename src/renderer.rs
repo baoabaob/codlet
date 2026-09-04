@@ -100,7 +100,15 @@ struct ActivePlugin {
     leases: BTreeMap<CapabilityDescriptor, CapabilityLease>,
     last_request_id: Cell<u64>,
     bootstrap_identifier: String,
-    script_identifier: String,
+    script_identifier: Option<String>,
+    state: RendererPluginState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RendererPluginState {
+    Activating,
+    Ready,
+    Active,
 }
 
 type TargetAuthorization = (
@@ -228,20 +236,173 @@ impl RendererRuntime {
                 return Err(error.into());
             }
         };
-        let installed =
-            match RendererSession::install(session.clone(), &self.plugins, authorizations) {
-                Ok(installed) => installed,
-                Err(error) => {
-                    self.capabilities.deactivate_scope(&scope);
-                    return Err(error);
-                }
-            };
+        let renderer_session = RendererSession {
+            session: session.clone(),
+            plugins: Vec::with_capacity(self.plugins.len()),
+            events: session.subscribe_events(),
+        };
+        self.sessions.insert(target_id.clone(), renderer_session);
+        if let Err(error) = self.install_target_plugins(&target_id, authorizations) {
+            self.sessions
+                .get(&target_id)
+                .expect("installing renderer session must still exist")
+                .rollback_install();
+            self.sessions.remove(&target_id);
+            self.capabilities.deactivate_scope(&scope);
+            return Err(error);
+        }
+        let plugin_count = self
+            .sessions
+            .get(&target_id)
+            .expect("installed renderer session must exist")
+            .plugins
+            .iter()
+            .filter(|plugin| plugin.state == RendererPluginState::Active)
+            .count();
         let report = RendererBootstrapReport {
             target_id: target_id.clone(),
-            plugin_count: installed.plugins.len(),
+            plugin_count,
         };
-        self.sessions.insert(target_id, installed);
         Ok(report)
+    }
+
+    fn install_target_plugins(
+        &mut self,
+        target_id: &str,
+        mut authorizations: TargetAuthorizations,
+    ) -> Result<(), RendererError> {
+        if let Some(plugin) = self
+            .plugins
+            .iter()
+            .find(|plugin| plugin.manifest.renderer.world != RendererWorld::Isolated)
+        {
+            return Err(RendererError::UnsupportedWorld(plugin.manifest.id.clone()));
+        }
+        let catalog = self.plugins.clone();
+        let session = self
+            .sessions
+            .get(target_id)
+            .expect("installing renderer session must exist")
+            .session
+            .clone();
+
+        for plugin in catalog {
+            let world_name = renderer_world_name(&plugin);
+            let context_id = current_isolated_context(&session, &world_name)?;
+            let binding_name =
+                renderer_binding_name(session.target_id(), session.session_id(), &plugin);
+            add_renderer_binding(&session, &binding_name, &world_name)?;
+            let bootstrap_identifier =
+                match add_new_document_script(&session, BOOTSTRAP_SOURCE, &world_name) {
+                    Ok(identifier) => identifier,
+                    Err(error) => {
+                        let _ = remove_renderer_binding(&session, &binding_name);
+                        return Err(error);
+                    }
+                };
+            if let Err(message) = evaluate_lifecycle(&session, BOOTSTRAP_SOURCE, context_id) {
+                let _ = remove_new_document_script(&session, &bootstrap_identifier);
+                let _ = remove_renderer_binding(&session, &binding_name);
+                return Err(RendererError::BootstrapRejected {
+                    plugin_id: plugin.manifest.id.clone(),
+                    message,
+                });
+            }
+
+            let (principal, leases) = authorizations
+                .remove(&plugin.manifest.id)
+                .expect("every ordered plugin must have host authorization");
+            self.sessions
+                .get_mut(target_id)
+                .expect("installing renderer session must exist")
+                .plugins
+                .push(ActivePlugin {
+                    id: plugin.manifest.id.clone(),
+                    generation: plugin.generation,
+                    world_name: world_name.clone(),
+                    context_id: Some(context_id),
+                    binding_name: binding_name.clone(),
+                    principal,
+                    leases,
+                    last_request_id: Cell::new(0),
+                    bootstrap_identifier,
+                    script_identifier: None,
+                    state: RendererPluginState::Activating,
+                });
+
+            let expression = activation_expression(&plugin, &binding_name);
+            if let Err(message) =
+                self.evaluate_lifecycle_with_binding_pump(target_id, &expression, context_id)
+            {
+                return Err(RendererError::PluginRejected {
+                    plugin_id: plugin.manifest.id.clone(),
+                    message,
+                });
+            }
+            let candidate = self
+                .sessions
+                .get_mut(target_id)
+                .expect("installing renderer session must exist")
+                .plugins
+                .iter_mut()
+                .find(|candidate| {
+                    candidate.id == plugin.manifest.id && candidate.generation == plugin.generation
+                })
+                .expect("ready renderer candidate must remain registered");
+            candidate.state = RendererPluginState::Ready;
+
+            let script_identifier = add_new_document_script(&session, &expression, &world_name)?;
+            candidate.script_identifier = Some(script_identifier);
+            candidate.state = RendererPluginState::Active;
+        }
+        assert!(
+            authorizations.is_empty(),
+            "every target authorization must be consumed exactly once"
+        );
+        Ok(())
+    }
+
+    fn evaluate_lifecycle_with_binding_pump(
+        &mut self,
+        target_id: &str,
+        expression: &str,
+        context_id: u64,
+    ) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get(target_id)
+            .expect("installing renderer session must exist")
+            .session
+            .clone();
+        let mut request = session
+            .start_evaluate_in_context(expression, Some(context_id))
+            .map_err(|error| error.to_string())?;
+        loop {
+            let observed_activity = request.activity_epoch();
+            if let Some(response) = request.try_response().map_err(|error| error.to_string())? {
+                return parse_lifecycle_result(
+                    response
+                        .result
+                        .expect("successful CDP response must contain result"),
+                );
+            }
+            let event = self
+                .sessions
+                .get(target_id)
+                .expect("installing renderer session must exist")
+                .events
+                .recv_timeout(Duration::ZERO);
+            match event {
+                Ok(event) => {
+                    self.handle_renderer_event(target_id, event)
+                        .map_err(|error| error.to_string())?;
+                }
+                Err(EventStreamError::Timeout) => {
+                    request.wait_for_activity(observed_activity);
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
     }
 
     pub fn apply_target_change(
@@ -622,6 +783,7 @@ impl RendererRuntime {
                         &self.plugins,
                         &consumer.id,
                         consumer.principal.has_grant(RUNTIME_MANAGE_GRANT),
+                        consumer.state == RendererPluginState::Active,
                         &descriptor,
                         &request,
                     ) {
@@ -635,7 +797,9 @@ impl RendererRuntime {
                     let provider = session
                         .plugins
                         .iter()
-                        .find(|plugin| plugin.id == provider_id)
+                        .find(|plugin| {
+                            plugin.id == provider_id && plugin.state == RendererPluginState::Active
+                        })
                         .expect("a current capability lease must name an active renderer provider");
                     match provider.context_id {
                         Some(provider_context_id) => match invoke_renderer_provider(
@@ -720,100 +884,18 @@ impl RendererRuntime {
 }
 
 impl RendererSession {
-    fn install(
-        session: TargetSession,
-        plugins: &[LoadedPlugin],
-        mut authorizations: TargetAuthorizations,
-    ) -> Result<Self, RendererError> {
-        if let Some(plugin) = plugins
-            .iter()
-            .find(|plugin| plugin.manifest.renderer.world != RendererWorld::Isolated)
-        {
-            return Err(RendererError::UnsupportedWorld(plugin.manifest.id.clone()));
-        }
-        let events = session.subscribe_events();
-        let mut active = Vec::with_capacity(plugins.len());
-        for plugin in plugins {
-            let world_name = renderer_world_name(plugin);
-            let context_id = match current_isolated_context(&session, &world_name) {
-                Ok(context_id) => context_id,
-                Err(error) => {
-                    cleanup_installed(&session, &active);
-                    return Err(error);
+    fn rollback_install(&self) {
+        for plugin in self.plugins.iter().rev() {
+            if plugin.state == RendererPluginState::Activating {
+                if let Some(identifier) = &plugin.script_identifier {
+                    let _ = remove_new_document_script(&self.session, identifier);
                 }
-            };
-            let binding_name =
-                renderer_binding_name(session.target_id(), session.session_id(), plugin);
-            if let Err(error) = add_renderer_binding(&session, &binding_name, &world_name) {
-                cleanup_installed(&session, &active);
-                return Err(error);
+                let _ = remove_new_document_script(&self.session, &plugin.bootstrap_identifier);
+                let _ = remove_renderer_binding(&self.session, &plugin.binding_name);
+            } else {
+                let _ = deactivate_active_plugin(&self.session, plugin);
             }
-            let bootstrap_identifier =
-                match add_new_document_script(&session, BOOTSTRAP_SOURCE, &world_name) {
-                    Ok(identifier) => identifier,
-                    Err(error) => {
-                        let _ = remove_renderer_binding(&session, &binding_name);
-                        cleanup_installed(&session, &active);
-                        return Err(error);
-                    }
-                };
-            if let Err(message) = evaluate_lifecycle(&session, BOOTSTRAP_SOURCE, context_id) {
-                let _ = remove_new_document_script(&session, &bootstrap_identifier);
-                let _ = remove_renderer_binding(&session, &binding_name);
-                cleanup_installed(&session, &active);
-                return Err(RendererError::BootstrapRejected {
-                    plugin_id: plugin.manifest.id.clone(),
-                    message,
-                });
-            }
-
-            let expression = activation_expression(plugin, &binding_name);
-            if let Err(message) = evaluate_lifecycle(&session, &expression, context_id) {
-                let _ = remove_new_document_script(&session, &bootstrap_identifier);
-                let _ = remove_renderer_binding(&session, &binding_name);
-                cleanup_installed(&session, &active);
-                return Err(RendererError::PluginRejected {
-                    plugin_id: plugin.manifest.id.clone(),
-                    message,
-                });
-            }
-            let script_identifier =
-                match add_new_document_script(&session, &expression, &world_name) {
-                    Ok(identifier) => identifier,
-                    Err(error) => {
-                        let _ = evaluate_lifecycle(
-                            &session,
-                            &deactivation_expression(&plugin.manifest.id, plugin.generation),
-                            context_id,
-                        );
-                        let _ = remove_new_document_script(&session, &bootstrap_identifier);
-                        let _ = remove_renderer_binding(&session, &binding_name);
-                        cleanup_installed(&session, &active);
-                        return Err(error);
-                    }
-                };
-            let (principal, leases) = authorizations
-                .remove(&plugin.manifest.id)
-                .expect("every ordered plugin must have host authorization");
-            active.push(ActivePlugin {
-                id: plugin.manifest.id.clone(),
-                generation: plugin.generation,
-                world_name,
-                context_id: Some(context_id),
-                binding_name,
-                principal,
-                leases,
-                last_request_id: Cell::new(0),
-                bootstrap_identifier,
-                script_identifier,
-            });
         }
-
-        Ok(Self {
-            session,
-            plugins: active,
-            events,
-        })
     }
 
     fn deactivate(&self) -> Result<(), RendererError> {
@@ -839,7 +921,8 @@ impl RendererSession {
     fn remove_persisted_resources(&self) -> Result<(), RendererError> {
         let mut first_error = None;
         for plugin in self.plugins.iter().rev() {
-            if let Err(error) = remove_new_document_script(&self.session, &plugin.script_identifier)
+            if let Some(identifier) = &plugin.script_identifier
+                && let Err(error) = remove_new_document_script(&self.session, identifier)
             {
                 first_error.get_or_insert(error);
             }
@@ -878,7 +961,9 @@ fn deactivate_active_plugin(
             first_error.get_or_insert(error);
         }
     }
-    if let Err(error) = remove_new_document_script(session, &plugin.script_identifier) {
+    if let Some(identifier) = &plugin.script_identifier
+        && let Err(error) = remove_new_document_script(session, identifier)
+    {
         first_error.get_or_insert(error);
     }
     if let Err(error) = remove_new_document_script(session, &plugin.bootstrap_identifier) {
@@ -977,6 +1062,10 @@ fn evaluate_lifecycle(
     let result = session
         .evaluate_in_context(expression, Some(context_id))
         .map_err(|error| error.to_string())?;
+    parse_lifecycle_result(result)
+}
+
+fn parse_lifecycle_result(result: Value) -> Result<(), String> {
     if result.get("exceptionDetails").is_some() {
         return Err("Runtime.evaluate reported exceptionDetails".to_owned());
     }
@@ -1219,6 +1308,7 @@ fn invoke_builtin_host_endpoint(
     plugins: &[LoadedPlugin],
     caller_id: &str,
     has_runtime_manage_grant: bool,
+    caller_active: bool,
     descriptor: &CapabilityDescriptor,
     request: &BindingMessage,
 ) -> Result<HostEndpointOutcome, HostEndpointFailure> {
@@ -1284,6 +1374,12 @@ fn invoke_builtin_host_endpoint(
                     })
                 }
                 "disableSelf" => {
+                    if !caller_active {
+                        return Err(host_failure(
+                            "plugin_not_active",
+                            "runtime manage disableSelf requires an active calling plugin",
+                        ));
+                    }
                     if request.id.is_none() {
                         return Err(host_failure(
                             "request_required",
@@ -1454,21 +1550,6 @@ fn builtin_manage_capability() -> CapabilityDescriptor {
     .expect("the built-in runtime manage capability descriptor is valid")
 }
 
-fn cleanup_installed(session: &TargetSession, plugins: &[ActivePlugin]) {
-    for plugin in plugins.iter().rev() {
-        if let Some(context_id) = plugin.context_id {
-            let _ = evaluate_lifecycle(
-                session,
-                &deactivation_expression(&plugin.id, plugin.generation),
-                context_id,
-            );
-        }
-        let _ = remove_new_document_script(session, &plugin.script_identifier);
-        let _ = remove_new_document_script(session, &plugin.bootstrap_identifier);
-        let _ = remove_renderer_binding(session, &plugin.binding_name);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1633,6 +1714,7 @@ mod tests {
             &[],
             "dev.consumer",
             false,
+            true,
             &descriptor,
             &request,
         )
@@ -1648,6 +1730,7 @@ mod tests {
                 &[],
                 "dev.consumer",
                 false,
+                true,
                 &descriptor,
                 &unknown_method,
             )
@@ -1679,6 +1762,7 @@ mod tests {
             &plugins,
             "codlet",
             false,
+            true,
             &descriptor,
             &request,
         )
@@ -1690,6 +1774,7 @@ mod tests {
             &mut registry,
             &plugins,
             "codlet",
+            true,
             true,
             &descriptor,
             &request,
