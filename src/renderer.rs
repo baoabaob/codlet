@@ -14,7 +14,7 @@ use crate::capabilities::{
 use crate::cdp::{
     CdpEvent, CdpEventStream, EventStreamError, TargetChange, TargetError, TargetSession,
 };
-use crate::plugins::{LoadedPlugin, ManifestError, RendererWorld, bundled_plugins};
+use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
 
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -24,6 +24,9 @@ const MAX_RENDERER_RPC_PLUGIN_ID_BYTES: usize = 128;
 const BUILTIN_HOST_PROVIDER_ID: &str = "codlet.core.host";
 const BUILTIN_HOST_CAPABILITY_NAME: &str = "codlet.runtime.ping";
 const BUILTIN_HOST_CAPABILITY_API: u32 = 1;
+const BUILTIN_MANAGE_CAPABILITY_NAME: &str = "codlet.runtime.manage";
+const BUILTIN_MANAGE_CAPABILITY_API: u32 = 1;
+const RUNTIME_MANAGE_GRANT: &str = "runtime.manage";
 
 #[derive(Debug, Error)]
 pub enum RendererError {
@@ -66,10 +69,19 @@ pub struct RendererBootstrapReport {
     pub plugin_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererDiagnostic {
+    pub target_id: String,
+    pub plugin_id: String,
+    pub message: String,
+}
+
 pub struct RendererRuntime {
     plugins: Vec<LoadedPlugin>,
+    plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
+    diagnostics: Vec<RendererDiagnostic>,
 }
 
 struct RendererSession {
@@ -154,12 +166,32 @@ struct BindingCall {
     payload: String,
 }
 
+#[derive(Debug)]
+struct HostEndpointOutcome {
+    value: Value,
+    after_response: Option<HostAction>,
+}
+
+#[derive(Debug)]
+struct HostEndpointFailure {
+    code: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HostAction {
+    DisablePlugin { plugin_id: String },
+}
+
 impl RendererRuntime {
-    pub fn bundled() -> Result<Self, RendererError> {
-        Self::new(bundled_plugins()?)
+    pub fn bundled(plugin_registry: PluginRegistry) -> Result<Self, RendererError> {
+        Self::new(bundled_plugins()?, plugin_registry)
     }
 
-    pub fn new(plugins: Vec<LoadedPlugin>) -> Result<Self, RendererError> {
+    pub fn new(
+        plugins: Vec<LoadedPlugin>,
+        plugin_registry: PluginRegistry,
+    ) -> Result<Self, RendererError> {
         if let Some(plugin) = plugins
             .iter()
             .find(|plugin| plugin.generation > MAX_JAVASCRIPT_SAFE_INTEGER)
@@ -172,8 +204,10 @@ impl RendererRuntime {
         let (plugins, capabilities) = order_plugins(plugins)?;
         Ok(Self {
             plugins,
+            plugin_registry,
             capabilities,
             sessions: HashMap::new(),
+            diagnostics: Vec::new(),
         })
     }
 
@@ -241,6 +275,14 @@ impl RendererRuntime {
 
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    pub fn plugin_count(&self) -> usize {
+        self.plugins.len()
+    }
+
+    pub fn take_diagnostics(&mut self) -> Vec<RendererDiagnostic> {
+        std::mem::take(&mut self.diagnostics)
     }
 
     pub fn pump_bindings(&mut self) -> Result<usize, RendererError> {
@@ -431,7 +473,11 @@ impl RendererRuntime {
         }
     }
 
-    fn route_binding_call(&self, target_id: &str, event: &CdpEvent) -> Result<bool, RendererError> {
+    fn route_binding_call(
+        &mut self,
+        target_id: &str,
+        event: &CdpEvent,
+    ) -> Result<bool, RendererError> {
         let call = parse_binding_call(event)?;
         let session = self
             .sessions
@@ -567,11 +613,24 @@ impl RendererRuntime {
             lease,
             |provider_id, descriptor| (provider_id.to_owned(), descriptor.clone()),
         );
+        let mut after_response = None;
         let outcome = match authorization {
             Ok((provider_id, descriptor)) => {
                 if provider_id == BUILTIN_HOST_PROVIDER_ID {
-                    invoke_builtin_host_endpoint(&descriptor, &request)
-                        .map_err(|message| ("host_error", message))
+                    match invoke_builtin_host_endpoint(
+                        &mut self.plugin_registry,
+                        &self.plugins,
+                        &consumer.id,
+                        consumer.principal.has_grant(RUNTIME_MANAGE_GRANT),
+                        &descriptor,
+                        &request,
+                    ) {
+                        Ok(host) => {
+                            after_response = host.after_response;
+                            Ok(host.value)
+                        }
+                        Err(error) => Err((error.code, error.message)),
+                    }
                 } else {
                     let provider = session
                         .plugins
@@ -597,14 +656,66 @@ impl RendererRuntime {
             }
             Err(error) => Err(("capability_denied", error.to_string())),
         };
-        if let Some(id) = request.id {
+        let response_delivery_error = if let Some(id) = request.id {
             let response = match outcome {
                 Ok(value) => binding_success(id, value),
                 Err((code, message)) => binding_error(id, code, &message),
             };
-            deliver_binding_response(&session.session, consumer, consumer_context_id, &response)?;
+            match deliver_binding_response(
+                &session.session,
+                consumer,
+                consumer_context_id,
+                &response,
+            ) {
+                Ok(()) => None,
+                Err(error) if after_response.is_some() => Some(error),
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        if let Some(error) = response_delivery_error {
+            self.diagnostics.push(RendererDiagnostic {
+                target_id: target_id.to_owned(),
+                plugin_id: consumer.id.clone(),
+                message: format!("persisted host action response delivery failed: {error}"),
+            });
+        }
+        if let Some(action) = after_response {
+            self.apply_host_action(action);
         }
         Ok(true)
+    }
+
+    fn apply_host_action(&mut self, action: HostAction) {
+        match action {
+            HostAction::DisablePlugin { plugin_id } => {
+                let removed = self
+                    .capabilities
+                    .unregister_provider(&plugin_id)
+                    .expect("an active plugin id is a valid capability provider id");
+                assert!(removed, "an active plugin must be registered");
+                self.plugins
+                    .retain(|plugin| plugin.manifest.id != plugin_id);
+
+                let mut target_ids: Vec<_> = self.sessions.keys().cloned().collect();
+                target_ids.sort();
+                for target_id in target_ids {
+                    let result = self
+                        .sessions
+                        .get_mut(&target_id)
+                        .expect("a renderer target cannot disappear during a host action")
+                        .deactivate_plugin(&plugin_id);
+                    if let Some(Err(error)) = result {
+                        self.diagnostics.push(RendererDiagnostic {
+                            target_id,
+                            plugin_id: plugin_id.clone(),
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -708,37 +819,21 @@ impl RendererSession {
     fn deactivate(&self) -> Result<(), RendererError> {
         let mut first_error = None;
         for plugin in self.plugins.iter().rev() {
-            match current_isolated_context(&self.session, &plugin.world_name) {
-                Ok(context_id) => {
-                    if let Err(message) = evaluate_lifecycle(
-                        &self.session,
-                        &deactivation_expression(&plugin.id, plugin.generation),
-                        context_id,
-                    ) {
-                        first_error.get_or_insert_with(|| RendererError::PluginRejected {
-                            plugin_id: plugin.id.clone(),
-                            message,
-                        });
-                    }
-                }
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-            if let Err(error) = remove_new_document_script(&self.session, &plugin.script_identifier)
-            {
-                first_error.get_or_insert(error);
-            }
-            if let Err(error) =
-                remove_new_document_script(&self.session, &plugin.bootstrap_identifier)
-            {
-                first_error.get_or_insert(error);
-            }
-            if let Err(error) = remove_renderer_binding(&self.session, &plugin.binding_name) {
+            if let Err(error) = deactivate_active_plugin(&self.session, plugin) {
                 first_error.get_or_insert(error);
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn deactivate_plugin(&mut self, plugin_id: &str) -> Option<Result<(), RendererError>> {
+        let index = self
+            .plugins
+            .iter()
+            .position(|plugin| plugin.id == plugin_id)?;
+        let result = deactivate_active_plugin(&self.session, &self.plugins[index]);
+        self.plugins.remove(index);
+        Some(result)
     }
 
     fn remove_persisted_resources(&self) -> Result<(), RendererError> {
@@ -759,6 +854,40 @@ impl RendererSession {
         }
         first_error.map_or(Ok(()), Err)
     }
+}
+
+fn deactivate_active_plugin(
+    session: &TargetSession,
+    plugin: &ActivePlugin,
+) -> Result<(), RendererError> {
+    let mut first_error = None;
+    match current_isolated_context(session, &plugin.world_name) {
+        Ok(context_id) => {
+            if let Err(message) = evaluate_lifecycle(
+                session,
+                &deactivation_expression(&plugin.id, plugin.generation),
+                context_id,
+            ) {
+                first_error.get_or_insert_with(|| RendererError::PluginRejected {
+                    plugin_id: plugin.id.clone(),
+                    message,
+                });
+            }
+        }
+        Err(error) => {
+            first_error.get_or_insert(error);
+        }
+    }
+    if let Err(error) = remove_new_document_script(session, &plugin.script_identifier) {
+        first_error.get_or_insert(error);
+    }
+    if let Err(error) = remove_new_document_script(session, &plugin.bootstrap_identifier) {
+        first_error.get_or_insert(error);
+    }
+    if let Err(error) = remove_renderer_binding(session, &plugin.binding_name) {
+        first_error.get_or_insert(error);
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn current_isolated_context(
@@ -1086,22 +1215,146 @@ fn invoke_renderer_provider(
 }
 
 fn invoke_builtin_host_endpoint(
+    plugin_registry: &mut PluginRegistry,
+    plugins: &[LoadedPlugin],
+    caller_id: &str,
+    has_runtime_manage_grant: bool,
     descriptor: &CapabilityDescriptor,
     request: &BindingMessage,
-) -> Result<Value, String> {
-    if descriptor.name.as_str() != BUILTIN_HOST_CAPABILITY_NAME
-        || descriptor.api.get() != BUILTIN_HOST_CAPABILITY_API
-        || descriptor.scope != crate::capabilities::CapabilityScope::Target
-    {
-        return Err("host capability descriptor is not recognized".to_owned());
+) -> Result<HostEndpointOutcome, HostEndpointFailure> {
+    match descriptor.name.as_str() {
+        BUILTIN_HOST_CAPABILITY_NAME
+            if descriptor.api.get() == BUILTIN_HOST_CAPABILITY_API
+                && descriptor.scope == crate::capabilities::CapabilityScope::Target =>
+        {
+            if request.method != "ping" {
+                return Err(host_failure(
+                    "method_not_found",
+                    "host capability method is not registered",
+                ));
+            }
+            if !request.params.is_null() {
+                return Err(host_failure(
+                    "invalid_params",
+                    "host ping expects null params",
+                ));
+            }
+            Ok(HostEndpointOutcome {
+                value: json!({"pong": true, "abi": 1}),
+                after_response: None,
+            })
+        }
+        BUILTIN_MANAGE_CAPABILITY_NAME
+            if descriptor.api.get() == BUILTIN_MANAGE_CAPABILITY_API
+                && descriptor.scope == crate::capabilities::CapabilityScope::Target =>
+        {
+            if !has_runtime_manage_grant {
+                return Err(host_failure(
+                    "permission_denied",
+                    "runtime.manage permission was not granted to this plugin generation",
+                ));
+            }
+            match request.method.as_str() {
+                "list" => {
+                    if !request.params.is_null() {
+                        return Err(host_failure(
+                            "invalid_params",
+                            "runtime manage list expects null params",
+                        ));
+                    }
+                    let catalog = bundled_plugins()
+                        .expect("bundled plugin manifests were validated when the runtime started");
+                    let plugins = catalog
+                        .into_iter()
+                        .map(|plugin| {
+                            let id = plugin.manifest.id;
+                            let enabled = plugin_registry.is_enabled(&id);
+                            let active = plugins.iter().any(|active| active.manifest.id == id);
+                            json!({
+                                "id": id,
+                                "version": plugin.manifest.version,
+                                "enabled": enabled,
+                                "active": active
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    Ok(HostEndpointOutcome {
+                        value: json!({"plugins": plugins}),
+                        after_response: None,
+                    })
+                }
+                "disableSelf" => {
+                    if request.id.is_none() {
+                        return Err(host_failure(
+                            "request_required",
+                            "runtime manage disableSelf requires a request response",
+                        ));
+                    }
+                    if !request.params.is_null() {
+                        return Err(host_failure(
+                            "invalid_params",
+                            "runtime manage disableSelf expects null params",
+                        ));
+                    }
+                    let caller = plugins
+                        .iter()
+                        .find(|plugin| plugin.manifest.id == caller_id)
+                        .ok_or_else(|| {
+                            host_failure(
+                                "plugin_not_active",
+                                "the calling plugin is not active in the runtime catalog",
+                            )
+                        })?;
+                    if let Some(dependent) =
+                        plugins.iter().find(|plugin| {
+                            plugin.manifest.id != caller_id
+                                && plugin.manifest.requires.iter().any(|requirement| {
+                                    caller.manifest.provides.contains(requirement)
+                                })
+                        })
+                    {
+                        return Err(host_failure(
+                            "dependency_conflict",
+                            format!(
+                                "plugin {} still depends on a capability provided by {caller_id}",
+                                dependent.manifest.id
+                            ),
+                        ));
+                    }
+
+                    let mut candidate = plugin_registry.clone();
+                    candidate
+                        .set_enabled(caller_id, false)
+                        .map_err(|error| host_failure("registry_error", error.to_string()))?;
+                    candidate
+                        .save()
+                        .map_err(|error| host_failure("registry_error", error.to_string()))?;
+                    *plugin_registry = candidate;
+                    Ok(HostEndpointOutcome {
+                        value: json!({"pluginId": caller_id, "enabled": false}),
+                        after_response: Some(HostAction::DisablePlugin {
+                            plugin_id: caller_id.to_owned(),
+                        }),
+                    })
+                }
+                _ => Err(host_failure(
+                    "method_not_found",
+                    "runtime manage capability method is not registered",
+                )),
+            }
+        }
+        _ => Err(host_failure(
+            "host_error",
+            "host capability descriptor is not recognized",
+        )),
     }
-    if request.method != "ping" {
-        return Err("host capability method is not registered".to_owned());
+}
+
+fn host_failure(code: &'static str, message: impl Into<String>) -> HostEndpointFailure {
+    HostEndpointFailure {
+        code,
+        message: message.into(),
     }
-    if !request.params.is_null() {
-        return Err("host ping expects null params".to_owned());
-    }
-    Ok(json!({"pong": true, "abi": 1}))
 }
 
 fn deliver_binding_response(
@@ -1144,11 +1397,11 @@ fn order_plugins(
     plugins: Vec<LoadedPlugin>,
 ) -> Result<(Vec<LoadedPlugin>, CapabilityRegistry), CapabilityRegistryError> {
     let mut registry = CapabilityRegistry::new();
-    let builtin_host_capability = builtin_host_capability();
+    let builtin_host_capabilities = builtin_host_capabilities();
     registry.register_provider(
         BUILTIN_HOST_PROVIDER_ID,
         1,
-        std::slice::from_ref(&builtin_host_capability),
+        &builtin_host_capabilities,
         &[],
         &[],
     )?;
@@ -1188,6 +1441,19 @@ fn builtin_host_capability() -> CapabilityDescriptor {
     .expect("the built-in host capability descriptor is valid")
 }
 
+fn builtin_host_capabilities() -> [CapabilityDescriptor; 2] {
+    [builtin_host_capability(), builtin_manage_capability()]
+}
+
+fn builtin_manage_capability() -> CapabilityDescriptor {
+    CapabilityDescriptor::new(
+        BUILTIN_MANAGE_CAPABILITY_NAME,
+        BUILTIN_MANAGE_CAPABILITY_API,
+        crate::capabilities::CapabilityScope::Target,
+    )
+    .expect("the built-in runtime manage capability descriptor is valid")
+}
+
 fn cleanup_installed(session: &TargetSession, plugins: &[ActivePlugin]) {
     for plugin in plugins.iter().rev() {
         if let Some(context_id) = plugin.context_id {
@@ -1210,6 +1476,13 @@ mod tests {
     use crate::plugins::{
         PluginManifest, bundled_codex_ui_adapter, bundled_codlet, bundled_plugins,
     };
+    use tempfile::{TempDir, tempdir};
+
+    fn test_registry() -> (TempDir, PluginRegistry) {
+        let directory = tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        (directory, registry)
+    }
 
     #[test]
     fn generated_plugin_script_carries_generation_and_main_frame_guard() {
@@ -1316,9 +1589,10 @@ mod tests {
             source: "module.exports = {};".to_owned(),
             generation: 1,
         };
+        let (_registry_directory, registry) = test_registry();
 
         assert!(matches!(
-            RendererRuntime::new(vec![plugin]),
+            RendererRuntime::new(vec![plugin], registry),
             Err(RendererError::Capability(
                 CapabilityRegistryError::MissingRequirement { requirement, .. }
             )) if requirement.scope == CapabilityScope::Runtime
@@ -1329,9 +1603,10 @@ mod tests {
     fn renderer_runtime_rejects_generation_above_javascript_safe_integer() {
         let mut plugin = bundled_codex_ui_adapter().unwrap();
         plugin.generation = 9_007_199_254_740_992;
+        let (_registry_directory, registry) = test_registry();
 
         assert!(matches!(
-            RendererRuntime::new(vec![plugin]),
+            RendererRuntime::new(vec![plugin], registry),
             Err(RendererError::InvalidGeneration {
                 plugin_id,
                 generation: 9_007_199_254_740_992,
@@ -1341,6 +1616,7 @@ mod tests {
 
     #[test]
     fn built_in_host_ping_is_strict_and_side_effect_free() {
+        let (_registry_directory, mut registry) = test_registry();
         let descriptor = builtin_host_capability();
         let request = BindingMessage {
             v: 1,
@@ -1352,17 +1628,85 @@ mod tests {
             method: "ping".to_owned(),
             params: Value::Null,
         };
-        assert_eq!(
-            invoke_builtin_host_endpoint(&descriptor, &request).unwrap(),
-            json!({"pong": true, "abi": 1})
-        );
+        let result = invoke_builtin_host_endpoint(
+            &mut registry,
+            &[],
+            "dev.consumer",
+            false,
+            &descriptor,
+            &request,
+        )
+        .unwrap();
+        assert_eq!(result.value, json!({"pong": true, "abi": 1}));
+        assert!(result.after_response.is_none());
 
         let mut unknown_method = request;
         unknown_method.method = "anything-else".to_owned();
         assert_eq!(
-            invoke_builtin_host_endpoint(&descriptor, &unknown_method),
-            Err("host capability method is not registered".to_owned())
+            invoke_builtin_host_endpoint(
+                &mut registry,
+                &[],
+                "dev.consumer",
+                false,
+                &descriptor,
+                &unknown_method,
+            )
+            .unwrap_err()
+            .code,
+            "method_not_found"
         );
+    }
+
+    #[test]
+    fn runtime_manage_persists_before_scheduling_self_disable() {
+        let (registry_directory, mut registry) = test_registry();
+        let path = registry.path().to_owned();
+        let plugins = bundled_plugins().unwrap();
+        let descriptor = builtin_manage_capability();
+        let request = BindingMessage {
+            v: 1,
+            message_type: "request".to_owned(),
+            plugin_id: "codlet".to_owned(),
+            generation: 1,
+            id: Some(1),
+            capability: descriptor.clone(),
+            method: "disableSelf".to_owned(),
+            params: Value::Null,
+        };
+
+        let denied = invoke_builtin_host_endpoint(
+            &mut registry,
+            &plugins,
+            "codlet",
+            false,
+            &descriptor,
+            &request,
+        )
+        .unwrap_err();
+        assert_eq!(denied.code, "permission_denied");
+        assert!(!path.exists());
+
+        let result = invoke_builtin_host_endpoint(
+            &mut registry,
+            &plugins,
+            "codlet",
+            true,
+            &descriptor,
+            &request,
+        )
+        .unwrap();
+        assert_eq!(
+            result.value,
+            json!({"pluginId": "codlet", "enabled": false})
+        );
+        assert_eq!(
+            result.after_response,
+            Some(HostAction::DisablePlugin {
+                plugin_id: "codlet".to_owned()
+            })
+        );
+        assert!(!PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        drop(registry_directory);
     }
 
     #[test]

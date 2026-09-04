@@ -268,7 +268,8 @@ fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
 
 fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
     let registry = PluginRegistry::load_default()?;
-    let mut renderer = RendererRuntime::new(enabled_bundled_plugins(&registry)?)?;
+    let plugins = enabled_bundled_plugins(&registry)?;
+    let mut renderer = RendererRuntime::new(plugins, registry)?;
     let attached = start_attached_codex()?;
     let initial_outcomes = attached
         .sessions
@@ -405,6 +406,12 @@ impl CodletRuntime {
                 }
             }
             let _ = self.renderer.pump_bindings()?;
+            for diagnostic in self.renderer.take_diagnostics() {
+                eprintln!(
+                    "renderer-plugin: target-id={}; plugin-id={}; state=cleanup-failed; error={}",
+                    diagnostic.target_id, diagnostic.plugin_id, diagnostic.message
+                );
+            }
             if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
                 break exit_code;
             }

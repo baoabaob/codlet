@@ -13,10 +13,12 @@ use codlet::cdp::{
     CdpClient, ClientError, ConnectionError, EventStreamError, FramingError, MAX_CDP_FRAME_BYTES,
     TargetChange, TargetController, TargetError, TargetObservation, TargetSession,
 };
+use codlet::plugins::PluginRegistry;
 use codlet::probe::{MarkerFailure, ProbeError, hold_cdp_until_child_exit, probe_marker};
 use codlet::renderer::RendererRuntime;
 use codlet::windows::process::{ChildProcess, launch_with_cdp_pipes};
 use serde_json::json;
+use tempfile::{TempDir, tempdir};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Pipes::CreatePipe;
@@ -33,6 +35,13 @@ fn launch(
     let (child, pipes) = launch_with_cdp_pipes(&executable, &arguments, true).unwrap();
     let (client, events) = CdpClient::spawn(pipes).unwrap();
     (child, client, events)
+}
+
+fn bundled_runtime() -> (TempDir, RendererRuntime) {
+    let directory = tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let runtime = RendererRuntime::bundled(registry).unwrap();
+    (directory, runtime)
 }
 
 fn assert_child_success(child: &ChildProcess) {
@@ -369,7 +378,7 @@ fn target_controller_bootstraps_existing_and_new_browser_windows_once() {
 fn renderer_runtime_installs_and_deactivates_the_bundled_codlet() {
     let (child, client, events) = launch("renderer-runtime", &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
-    let mut runtime = RendererRuntime::bundled().unwrap();
+    let (_registry_directory, mut runtime) = bundled_runtime();
 
     let report = runtime.attach(&sessions[0]).unwrap();
     assert_eq!(report.target_id, "main");
@@ -385,7 +394,7 @@ fn renderer_runtime_installs_and_deactivates_the_bundled_codlet() {
 fn renderer_binding_round_trip_rejects_stale_unknown_and_revoked_calls() {
     let (child, client, events) = launch("renderer-rpc", &[]);
     let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
-    let mut runtime = RendererRuntime::bundled().unwrap();
+    let (_registry_directory, mut runtime) = bundled_runtime();
     runtime.attach(&sessions[0]).unwrap();
     assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
 
@@ -423,10 +432,95 @@ fn renderer_binding_round_trip_rejects_stale_unknown_and_revoked_calls() {
 }
 
 #[test]
+fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets() {
+    let (child, client, events) = launch("renderer-manage", &[]);
+    let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].target_id(), "main");
+    assert_eq!(sessions[1].target_id(), "cleanup-failure");
+    let registry_directory = tempdir().unwrap();
+    let registry_path = registry_directory.path().join("config.json");
+    let registry = PluginRegistry::load(&registry_path).unwrap();
+    let mut runtime = RendererRuntime::bundled(registry).unwrap();
+    for session in &sessions {
+        assert_eq!(runtime.attach(session).unwrap().plugin_count, 2);
+    }
+
+    client
+        .request("Fake.emitDisableSelf", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+    assert_eq!(runtime.plugin_count(), 1);
+    let diagnostics = runtime.take_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].target_id, "cleanup-failure");
+    assert_eq!(diagnostics[0].plugin_id, "codlet");
+    assert!(
+        diagnostics[0]
+            .message
+            .contains("simulated codlet cleanup failure")
+    );
+    assert!(
+        !PluginRegistry::load(&registry_path)
+            .unwrap()
+            .is_enabled("codlet")
+    );
+
+    client
+        .request("Fake.createTargetAfterDisable", None, None, DEADLINE)
+        .unwrap();
+    let created = pump_until_new_target(&mut targets);
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].target_id(), "after-disable");
+    let report = runtime.attach(&created[0]).unwrap();
+    assert_eq!(report.plugin_count, 1);
+
+    runtime.deactivate_target("after-disable").unwrap();
+    runtime.deactivate_target("main").unwrap();
+    runtime.deactivate_target("cleanup-failure").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn persisted_runtime_action_survives_renderer_response_delivery_failure() {
+    let (child, client, events) = launch("renderer-manage-response-failure", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let registry_directory = tempdir().unwrap();
+    let registry_path = registry_directory.path().join("config.json");
+    let registry = PluginRegistry::load(&registry_path).unwrap();
+    let mut runtime = RendererRuntime::bundled(registry).unwrap();
+    runtime.attach(&sessions[0]).unwrap();
+
+    client
+        .request("Fake.emitDisableSelf", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+    assert_eq!(runtime.plugin_count(), 1);
+    assert!(
+        !PluginRegistry::load(&registry_path)
+            .unwrap()
+            .is_enabled("codlet")
+    );
+    let diagnostics = runtime.take_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].target_id, "main");
+    assert_eq!(diagnostics[0].plugin_id, "codlet");
+    assert!(diagnostics[0].message.contains("response delivery failed"));
+
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
 fn renderer_target_replacement_does_not_touch_the_dead_session() {
     let (child, client, events) = launch("renderer-target-replacement", &[]);
     let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
-    let mut runtime = RendererRuntime::bundled().unwrap();
+    let (_registry_directory, mut runtime) = bundled_runtime();
     runtime.attach(&sessions[0]).unwrap();
     client
         .request("Fake.replaceTarget", None, None, DEADLINE)
@@ -475,7 +569,7 @@ fn renderer_target_replacement_does_not_touch_the_dead_session() {
 fn renderer_navigation_cleans_live_session_and_detaches_exactly_once() {
     let (child, client, events) = launch("renderer-navigation", &[]);
     let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
-    let mut runtime = RendererRuntime::bundled().unwrap();
+    let (_registry_directory, mut runtime) = bundled_runtime();
     runtime.attach(&sessions[0]).unwrap();
 
     client

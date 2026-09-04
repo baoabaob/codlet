@@ -50,6 +50,10 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "target-lifecycle" => scenario_target_lifecycle(&mut input, &mut output),
         "renderer-runtime" => scenario_renderer_runtime(&mut input, &mut output),
         "renderer-rpc" => scenario_renderer_rpc(&mut input, &mut output),
+        "renderer-manage" => scenario_renderer_manage(&mut input, &mut output),
+        "renderer-manage-response-failure" => {
+            scenario_renderer_manage_response_failure(&mut input, &mut output)
+        }
         "renderer-target-replacement" => {
             scenario_renderer_target_replacement(&mut input, &mut output)
         }
@@ -647,6 +651,250 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
+fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {
+                "targetInfos": [
+                    {"targetId": "main", "type": "page", "url": "app://-/index.html"},
+                    {"targetId": "cleanup-failure", "type": "page", "url": "app://-/index.html"}
+                ]
+            }
+        }),
+    )?;
+    let session_id = establish_named_target_session(&mut reader, output, "main")?;
+    let failure_session = establish_named_target_session(&mut reader, output, "cleanup-failure")?;
+    let bindings =
+        complete_bundled_renderer_install(&mut reader, output, &session_id, "manage", 101, 102)?;
+    complete_bundled_renderer_install(
+        &mut reader,
+        output,
+        &failure_session,
+        "manage-failure",
+        103,
+        104,
+    )?;
+
+    expect_root_command(&mut reader, output, "Fake.emitDisableSelf")?;
+    emit_disable_self_binding(output, &session_id, &bindings)?;
+    expect_consumer_management_success_response(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+    )?;
+
+    complete_isolated_world(
+        &mut reader,
+        output,
+        &failure_session,
+        "codlet.plugin.codlet.g1",
+        105,
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &failure_session,
+        105,
+        ".deactivate(\"codlet\", 1)",
+        json!({"ok": false, "error": "simulated codlet cleanup failure"}),
+    )?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &failure_session,
+        "script-codlet-manage-failure",
+    )?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &failure_session,
+        "script-bootstrap-codlet-manage-failure",
+    )?;
+    expect_remove_renderer_binding(&mut reader, output, &failure_session)?;
+
+    complete_isolated_world(
+        &mut reader,
+        output,
+        &session_id,
+        "codlet.plugin.codlet.g1",
+        106,
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &session_id,
+        106,
+        ".deactivate(\"codlet\", 1)",
+        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+    )?;
+    expect_remove_renderer_script(&mut reader, output, &session_id, "script-codlet-manage")?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &session_id,
+        "script-bootstrap-codlet-manage",
+    )?;
+    expect_remove_renderer_binding(&mut reader, output, &session_id)?;
+
+    expect_root_command(&mut reader, output, "Fake.createTargetAfterDisable")?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.targetCreated",
+            "params": {
+                "targetInfo": {
+                    "targetId": "after-disable",
+                    "type": "page",
+                    "url": "app://-/index.html"
+                }
+            }
+        }),
+    )?;
+    let after_disable_session =
+        establish_named_target_session(&mut reader, output, "after-disable")?;
+    complete_adapter_renderer_install(
+        &mut reader,
+        output,
+        &after_disable_session,
+        "after-disable",
+        107,
+    )?;
+
+    complete_adapter_renderer_deactivation(
+        &mut reader,
+        output,
+        &after_disable_session,
+        "after-disable",
+        108,
+    )?;
+    complete_adapter_renderer_deactivation(&mut reader, output, &session_id, "manage", 109)?;
+    complete_adapter_renderer_deactivation(
+        &mut reader,
+        output,
+        &failure_session,
+        "manage-failure",
+        110,
+    )?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn scenario_renderer_manage_response_failure(
+    input: &mut File,
+    output: &mut File,
+) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {
+                "targetInfos": [
+                    {"targetId": "main", "type": "page", "url": "app://-/index.html"}
+                ]
+            }
+        }),
+    )?;
+    let session_id = establish_named_target_session(&mut reader, output, "main")?;
+    let bindings = complete_bundled_renderer_install(
+        &mut reader,
+        output,
+        &session_id,
+        "manage-response-failure",
+        111,
+        112,
+    )?;
+
+    expect_root_command(&mut reader, output, "Fake.emitDisableSelf")?;
+    emit_disable_self_binding(output, &session_id, &bindings)?;
+    expect_consumer_management_rejected_response(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+    )?;
+
+    complete_isolated_world(
+        &mut reader,
+        output,
+        &session_id,
+        "codlet.plugin.codlet.g1",
+        113,
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &session_id,
+        113,
+        ".deactivate(\"codlet\", 1)",
+        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+    )?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &session_id,
+        "script-codlet-manage-response-failure",
+    )?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &session_id,
+        "script-bootstrap-codlet-manage-response-failure",
+    )?;
+    expect_remove_renderer_binding(&mut reader, output, &session_id)?;
+
+    expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
+    complete_adapter_renderer_deactivation(
+        &mut reader,
+        output,
+        &session_id,
+        "manage-response-failure",
+        114,
+    )?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn emit_disable_self_binding(
+    output: &mut File,
+    session_id: &str,
+    bindings: &RendererBindingInfo,
+) -> Result<(), FakeChildError> {
+    let request = json!({
+        "v": 1,
+        "type": "request",
+        "pluginId": "codlet",
+        "generation": 1,
+        "id": 1,
+        "capability": {
+            "name": "codlet.runtime.manage",
+            "api": 1,
+            "scope": "target"
+        },
+        "method": "disableSelf",
+        "params": null
+    });
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    Ok(())
+}
+
 fn complete_provider_invocation(
     reader: &mut RequestReader<'_>,
     output: &mut File,
@@ -731,6 +979,61 @@ fn expect_consumer_host_success_response(
         ));
     }
     write_evaluation_value(output, id, json!({"ok": true}), session_id)
+}
+
+fn expect_consumer_management_success_response(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    context_id: u64,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
+    if request.pointer("/params/contextId") != Some(&json!(context_id))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|expression| {
+                !expression.contains("__rpcReceive")
+                    || (!expression.contains("\"enabled\":false")
+                        && !expression.contains("\\\"enabled\\\":false"))
+            })
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "consumer response did not confirm persisted self-disable".to_owned(),
+        ));
+    }
+    write_evaluation_value(output, id, json!({"ok": true}), session_id)
+}
+
+fn expect_consumer_management_rejected_response(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    context_id: u64,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
+    if request.pointer("/params/contextId") != Some(&json!(context_id))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|expression| {
+                !expression.contains("__rpcReceive")
+                    || (!expression.contains("\"enabled\":false")
+                        && !expression.contains("\\\"enabled\\\":false"))
+            })
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "rejected consumer response did not confirm persisted self-disable".to_owned(),
+        ));
+    }
+    write_evaluation_exception(
+        output,
+        id,
+        "simulated management response delivery failure",
+        session_id,
+    )
 }
 
 fn expect_consumer_error_response(
@@ -898,12 +1201,69 @@ fn complete_bundled_renderer_install(
     adapter_context: u64,
     codlet_context: u64,
 ) -> Result<RendererBindingInfo, FakeChildError> {
-    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let codlet_world = "codlet.plugin.codlet.g1";
-    let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    let adapter = renderer_identifier("script-adapter", identifier_suffix);
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
     let codlet = renderer_identifier("script-codlet", identifier_suffix);
+    let adapter_binding = complete_adapter_renderer_install(
+        reader,
+        output,
+        session_id,
+        identifier_suffix,
+        adapter_context,
+    )?;
+
+    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
+    let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        codlet_world,
+        "__codletRendererV1",
+        &bootstrap_codlet,
+    )?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        codlet_context,
+        "__codletRendererV1",
+        json!({"ok": true, "reused": false}),
+    )?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        codlet_context,
+        "runtime.activate",
+        json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
+    )?;
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        codlet_world,
+        "runtime.activate",
+        &codlet,
+    )?;
+    Ok(RendererBindingInfo {
+        adapter_binding,
+        codlet_binding,
+        adapter_context,
+        codlet_context,
+    })
+}
+
+fn complete_adapter_renderer_install(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    identifier_suffix: &str,
+    adapter_context: u64,
+) -> Result<String, FakeChildError> {
+    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
+    let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
+    let adapter = renderer_identifier("script-adapter", identifier_suffix);
     complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
     let adapter_binding = expect_renderer_binding(reader, output, session_id, adapter_world)?;
     let bootstrap_script = expect_renderer_script(
@@ -951,47 +1311,7 @@ fn complete_bundled_renderer_install(
         "codex.ui.adapter",
         &adapter,
     )?;
-
-    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
-    let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
-    expect_renderer_script(
-        reader,
-        output,
-        session_id,
-        codlet_world,
-        "__codletRendererV1",
-        &bootstrap_codlet,
-    )?;
-    complete_renderer_evaluation(
-        reader,
-        output,
-        session_id,
-        codlet_context,
-        "__codletRendererV1",
-        json!({"ok": true, "reused": false}),
-    )?;
-    complete_renderer_evaluation(
-        reader,
-        output,
-        session_id,
-        codlet_context,
-        "runtime.activate",
-        json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
-    )?;
-    expect_renderer_script(
-        reader,
-        output,
-        session_id,
-        codlet_world,
-        "runtime.activate",
-        &codlet,
-    )?;
-    Ok(RendererBindingInfo {
-        adapter_binding,
-        codlet_binding,
-        adapter_context,
-        codlet_context,
-    })
+    Ok(adapter_binding)
 }
 
 fn complete_bundled_renderer_deactivation(
@@ -1002,10 +1322,7 @@ fn complete_bundled_renderer_deactivation(
     codlet_context: u64,
     adapter_context: u64,
 ) -> Result<(), FakeChildError> {
-    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let codlet_world = "codlet.plugin.codlet.g1";
-    let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    let adapter = renderer_identifier("script-adapter", identifier_suffix);
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
     let codlet = renderer_identifier("script-codlet", identifier_suffix);
     complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
@@ -1021,6 +1338,25 @@ fn complete_bundled_renderer_deactivation(
     expect_remove_renderer_script(reader, output, session_id, &bootstrap_codlet)?;
     expect_remove_renderer_binding(reader, output, session_id)?;
 
+    complete_adapter_renderer_deactivation(
+        reader,
+        output,
+        session_id,
+        identifier_suffix,
+        adapter_context,
+    )
+}
+
+fn complete_adapter_renderer_deactivation(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    identifier_suffix: &str,
+    adapter_context: u64,
+) -> Result<(), FakeChildError> {
+    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
+    let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
+    let adapter = renderer_identifier("script-adapter", identifier_suffix);
     complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
     complete_renderer_evaluation(
         reader,

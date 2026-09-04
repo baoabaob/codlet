@@ -14,6 +14,11 @@ module.exports = (() => {
         api: 1,
         scope: 'target'
     });
+    const RUNTIME_MANAGE_CAPABILITY = Object.freeze({
+        name: 'codlet.runtime.manage',
+        api: 1,
+        scope: 'target'
+    });
 
     let style = null;
     let button = null;
@@ -140,11 +145,66 @@ module.exports = (() => {
             }
             .codlet-plugin-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; }
             .codlet-plugin-state { color: #087f5b; font-size: 12px; }
+            .codlet-plugin-copy { min-width: 0; }
+            .codlet-plugin-version {
+                margin-top: 2px;
+                color: color-mix(in srgb, CanvasText 54%, transparent);
+                font-size: 11px;
+            }
+            .codlet-toggle {
+                width: 32px;
+                height: 18px;
+                margin: 0;
+                accent-color: #10a37f;
+                cursor: pointer;
+            }
+            .codlet-toggle:disabled { cursor: default; opacity: 0.55; }
         `;
         document.documentElement.appendChild(style);
     }
 
-    function createPanel() {
+    function createPluginRow(context, plugin) {
+        const row = document.createElement('div');
+        row.className = 'codlet-plugin-row';
+        const copy = document.createElement('div');
+        copy.className = 'codlet-plugin-copy';
+        addText(copy, 'div', 'codlet-plugin-name', plugin.id === 'codlet' ? 'Codlet' : plugin.id);
+        addText(copy, 'div', 'codlet-plugin-version', plugin.version);
+        row.appendChild(copy);
+
+        if (plugin.id === context.pluginId && plugin.active === true) {
+            const toggle = document.createElement('input');
+            toggle.className = 'codlet-toggle';
+            toggle.type = 'checkbox';
+            toggle.checked = plugin.enabled === true;
+            toggle.setAttribute('role', 'switch');
+            toggle.setAttribute('aria-label', 'Enable Codlet GUI');
+            toggle.addEventListener('change', async () => {
+                if (toggle.checked) return;
+                const confirmed = globalThis.confirm(
+                    'Disable the Codlet GUI? Re-enable it with `codlet plugin enable codlet`.'
+                );
+                if (!confirmed) {
+                    toggle.checked = true;
+                    return;
+                }
+                toggle.disabled = true;
+                try {
+                    await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'disableSelf', null);
+                } catch (error) {
+                    toggle.checked = true;
+                    toggle.disabled = false;
+                    toggle.title = error instanceof Error ? error.message : String(error);
+                }
+            });
+            row.appendChild(toggle);
+        } else {
+            addText(row, 'div', 'codlet-plugin-state', plugin.active === true ? 'Active' : 'Disabled');
+        }
+        return row;
+    }
+
+    function createPanel(context, plugins) {
         panel = document.createElement('aside');
         panel.setAttribute(PANEL_ATTRIBUTE, 'codlet');
         panel.setAttribute('role', 'dialog');
@@ -174,11 +234,7 @@ module.exports = (() => {
         addText(runtime, 'span', '', 'Runtime connected');
         body.appendChild(runtime);
         addText(body, 'h2', 'codlet-section-title', 'Codlets');
-        const row = document.createElement('div');
-        row.className = 'codlet-plugin-row';
-        addText(row, 'div', 'codlet-plugin-name', 'Codlet');
-        addText(row, 'div', 'codlet-plugin-state', 'Active');
-        body.appendChild(row);
+        for (const plugin of plugins) body.appendChild(createPluginRow(context, plugin));
         panel.appendChild(body);
         document.body.appendChild(panel);
     }
@@ -220,12 +276,20 @@ module.exports = (() => {
     async function start(context) {
         await waitForDocument();
         if (stopped) return;
+        let runtime;
         try {
-            const runtime = await context.rpc.request(RUNTIME_PING_CAPABILITY, 'ping', null);
-            if (stopped || runtime?.pong !== true || runtime?.abi !== 1) return;
+            runtime = await context.rpc.request(RUNTIME_PING_CAPABILITY, 'ping', null);
         } catch (_) {
             return;
         }
+        if (stopped || runtime?.pong !== true || runtime?.abi !== 1) return;
+        let management;
+        try {
+            management = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'list', null);
+        } catch (_) {
+            return;
+        }
+        if (!Array.isArray(management?.plugins)) return;
         let capability;
         try {
             capability = await context.rpc.request(MOUNT_CAPABILITY, 'getMount', null);
@@ -235,7 +299,7 @@ module.exports = (() => {
         if (stopped || capability?.available !== true || !validMountToken(capability.token)) return;
         mountToken = capability.token;
         installStyle();
-        createPanel();
+        createPanel(context, management.plugins);
         mountButton();
         observer = new MutationObserver(() => {
             if (!button?.isConnected) mountButton();

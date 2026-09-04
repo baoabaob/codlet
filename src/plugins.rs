@@ -378,8 +378,11 @@ mod tests {
         let plugin = bundled_codlet().unwrap();
         assert_eq!(plugin.manifest.id, "codlet");
         assert_eq!(plugin.manifest.renderer.world, RendererWorld::Isolated);
-        assert_eq!(plugin.manifest.permissions, [Permission::UiDom]);
-        assert_eq!(plugin.manifest.requires.len(), 2);
+        assert_eq!(
+            plugin.manifest.permissions,
+            [Permission::UiDom, Permission::RuntimeManage]
+        );
+        assert_eq!(plugin.manifest.requires.len(), 3);
         assert_eq!(
             plugin.manifest.requires[0],
             CapabilityDescriptor::new("codex.ui.titlebar.afterMenu", 1, CapabilityScope::Target)
@@ -389,11 +392,16 @@ mod tests {
             plugin.manifest.requires[1],
             CapabilityDescriptor::new("codlet.runtime.ping", 1, CapabilityScope::Target).unwrap()
         );
+        assert_eq!(
+            plugin.manifest.requires[2],
+            CapabilityDescriptor::new("codlet.runtime.manage", 1, CapabilityScope::Target).unwrap()
+        );
         assert!(plugin.source.contains("module.exports"));
         assert!(plugin.source.contains("codex.ui.titlebar.afterMenu@1"));
         assert!(plugin.source.contains("context.rpc.request"));
         assert!(plugin.source.contains("capability?.available"));
         assert!(plugin.source.contains("codlet.runtime.ping"));
+        assert!(plugin.source.contains("disableSelf"));
         assert!(!plugin.source.contains("data-app-shell-header-layout"));
         assert!(
             !plugin

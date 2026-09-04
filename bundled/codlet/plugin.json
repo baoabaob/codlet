@@ -6,7 +6,7 @@
     "entry": "dist/renderer.js",
     "world": "isolated"
   },
-  "permissions": ["ui.dom"],
+  "permissions": ["ui.dom", "runtime.manage"],
   "requires": [
     {
       "name": "codex.ui.titlebar.afterMenu",
@@ -15,6 +15,11 @@
     },
     {
       "name": "codlet.runtime.ping",
+      "api": 1,
+      "scope": "target"
+    },
+    {
+      "name": "codlet.runtime.manage",
       "api": 1,
       "scope": "target"
     }
