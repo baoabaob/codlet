@@ -1,6 +1,6 @@
 # Codlet
 
-Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. The current code contains the M0 inherited-CDP transport, an M1b capability-kernel candidate, and the first M1c renderer authorization slice described in `docs/PRODUCT_TECHNICAL_PLAN.md`. On 2026-09-01, the installed Codex build `26.825.6671.0` passed the real inherited-pipe and continuous multi-window target gates. This records build coverage for those runs, not a permanent compatibility guarantee; the complete repetition gates and the current-build M1 GUI gate have not passed yet.
+Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. The current code contains the M0 inherited-CDP transport, an M1b capability-kernel candidate, the first M1c renderer authorization slice, and a persistent bundled-plugin enablement registry described in `docs/PRODUCT_TECHNICAL_PLAN.md`. On 2026-09-01, the installed Codex build `26.825.6671.0` passed the real inherited-pipe and continuous multi-window target gates. This records build coverage for those runs, not a permanent compatibility guarantee; the complete repetition gates and the current-build M1 GUI gate have not passed yet.
 
 It does not modify the Codex package, official shortcuts, protocols, configuration, or user data. It never terminates or restarts an existing Codex process. Normal Codex launches do not run Codlet.
 
@@ -12,7 +12,17 @@ Launch the current renderer-runtime candidate with the bundled first-party `codl
 codlet launch
 ```
 
-Each matching Codex renderer receives one isolated world per plugin and generation, named `codlet.plugin.<id>.g<generation>`. The bundled plugin mounts a compact `Codlet` button at the start of the app-shell header surface and opens an unframed management panel. New BrowserWindows and renderer navigations receive the same generation automatically. This candidate does not yet include the persistent plugin registry, external plugin directories, hot reload, or GUI self-disable.
+Each matching Codex renderer receives one isolated world per enabled plugin and generation, named `codlet.plugin.<id>.g<generation>`. The bundled plugin mounts a compact `Codlet` button at the start of the app-shell header surface and opens an unframed management panel. New BrowserWindows and renderer navigations receive the same generation automatically. This candidate does not yet include external plugin directories, hot reload, live Runtime Host control IPC, or GUI self-disable.
+
+Inspect or change the persistent enablement state for bundled plugins without launching or attaching to Codex:
+
+```powershell
+codlet plugin list
+codlet plugin disable codlet
+codlet plugin enable codlet
+```
+
+The registry is stored at `%LOCALAPPDATA%\Codlet\config.json` with atomic replacement. `list` does not create the file. Until Runtime Host control IPC is implemented, enable and disable changes apply to the next `codlet launch`; the command reports that limitation explicitly.
 
 Run the automated checks on Windows:
 
@@ -81,4 +91,4 @@ Do not run that command merely to exercise CI. Use the normal acceptance script 
 
 ## Scope
 
-The current candidate covers NUL framing, blocking request/event routing, EOF teardown, exact Windows handle inheritance, current-user package discovery, conflict detection, continuous multi-target discovery for every matching BrowserWindow in one Electron root, per-plugin isolated renderer worlds, structured capability manifests, deterministic provider/consumer ordering, opaque generation- and scope-bound capability principals, target-destruction revocation before same-ID reattachment, generation-aware activate/deactivate, navigation persistence, the bundled first-party `codlet` GUI, and the renderer binding/RPC bridge. Principal and lease validation is the Core authorization gate: provider identity and registration/scope epochs are not exposed, and stale consumer/provider generations, revoked target scopes, wrong sessions, duplicate or out-of-order request IDs, and unknown bindings are rejected before a renderer endpoint action runs. The bridge uses versioned request/response/notification envelopes over per-plugin target/session/generation bindings and includes one fixed, side-effect-free `codlet.runtime.ping@1` host endpoint; the fake-CDP regression covers host ping, provider-to-consumer dispatch, request-ID replay, and stale/revoked calls. This is a transport proof, not the full L3 broker: file, process, network, and system capabilities are not implemented. A detached runtime process and launcher/runtime IPC are deferred. Persistent registry, external plugin loading, file watching, hot reload, host processes, permissions UI, SDK, and marketplace remain outside the current slice.
+The current candidate covers NUL framing, blocking request/event routing, EOF teardown, exact Windows handle inheritance, current-user package discovery, conflict detection, continuous multi-target discovery for every matching BrowserWindow in one Electron root, per-plugin isolated renderer worlds, structured capability manifests, deterministic provider/consumer ordering, opaque generation- and scope-bound capability principals, target-destruction revocation before same-ID reattachment, generation-aware activate/deactivate, navigation persistence, the bundled first-party `codlet` GUI, the renderer binding/RPC bridge, and a strict persistent enablement registry for bundled plugins. Principal and lease validation is the Core authorization gate: provider identity and registration/scope epochs are not exposed, and stale consumer/provider generations, revoked target scopes, wrong sessions, duplicate or out-of-order request IDs, and unknown bindings are rejected before a renderer endpoint action runs. The bridge uses versioned request/response/notification envelopes over per-plugin target/session/generation bindings and includes one fixed, side-effect-free `codlet.runtime.ping@1` host endpoint; the fake-CDP regression covers host ping, provider-to-consumer dispatch, request-ID replay, and stale/revoked calls. This is a transport proof, not the full L3 broker: file, process, network, and system capabilities are not implemented. A detached runtime process and launcher/runtime IPC are deferred. External plugin loading, file watching, hot reload, live enable/disable, GUI self-disable, host processes, permissions UI, SDK, and marketplace remain outside the current slice.

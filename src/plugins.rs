@@ -1,13 +1,20 @@
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::capabilities::CapabilityDescriptor;
 
 const MANIFEST_SCHEMA: u32 = 1;
+const REGISTRY_SCHEMA: u32 = 1;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
 const MAX_VERSION_BYTES: usize = 64;
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +78,26 @@ pub struct LoadedPlugin {
     pub generation: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct PluginRegistry {
+    path: PathBuf,
+    document: RegistryDocument,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct RegistryDocument {
+    schema: u32,
+    #[serde(default)]
+    plugins: BTreeMap<String, PluginPreference>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PluginPreference {
+    enabled: bool,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ManifestError {
     #[error("plugin manifest is not valid JSON: {0}")]
@@ -85,6 +112,27 @@ pub enum ManifestError {
     RendererEntry(String),
     #[error("permission ui.mainWorld is required when renderer.world is main")]
     MainWorldPermissionRequired,
+}
+
+#[derive(Debug, Error)]
+pub enum PluginRegistryError {
+    #[error("LOCALAPPDATA is unavailable; the Codlet plugin registry path cannot be resolved")]
+    LocalAppDataUnavailable,
+    #[error("plugin registry path has no parent directory: {0}")]
+    MissingParent(PathBuf),
+    #[error("failed to {operation} plugin registry path {path}: {source}")]
+    Io {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("plugin registry {path} is not valid JSON: {message}")]
+    Json { path: PathBuf, message: String },
+    #[error("plugin registry schema must be {REGISTRY_SCHEMA}, got {0}")]
+    Schema(u32),
+    #[error("plugin registry contains an invalid plugin id: {0}")]
+    PluginId(String),
 }
 
 impl PluginManifest {
@@ -121,6 +169,145 @@ impl PluginManifest {
     }
 }
 
+impl PluginRegistry {
+    pub fn load_default() -> Result<Self, PluginRegistryError> {
+        Self::load(default_registry_path()?)
+    }
+
+    pub fn load(path: impl Into<PathBuf>) -> Result<Self, PluginRegistryError> {
+        let path = path.into();
+        let document = match fs::read_to_string(&path) {
+            Ok(json) => serde_json::from_str(&json).map_err(|error| PluginRegistryError::Json {
+                path: path.clone(),
+                message: error.to_string(),
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => RegistryDocument::default(),
+            Err(source) => {
+                return Err(PluginRegistryError::Io {
+                    operation: "read",
+                    path,
+                    source,
+                });
+            }
+        };
+        document.validate()?;
+        Ok(Self { path, document })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn is_enabled(&self, plugin_id: &str) -> bool {
+        self.document
+            .plugins
+            .get(plugin_id)
+            .map(|preference| preference.enabled)
+            .unwrap_or(true)
+    }
+
+    pub fn set_enabled(
+        &mut self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<(), PluginRegistryError> {
+        if !valid_plugin_id(plugin_id) {
+            return Err(PluginRegistryError::PluginId(plugin_id.to_owned()));
+        }
+        self.document
+            .plugins
+            .insert(plugin_id.to_owned(), PluginPreference { enabled });
+        Ok(())
+    }
+
+    pub fn save(&self) -> Result<(), PluginRegistryError> {
+        let parent = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .ok_or_else(|| PluginRegistryError::MissingParent(self.path.clone()))?;
+        fs::create_dir_all(parent).map_err(|source| PluginRegistryError::Io {
+            operation: "create parent directory for",
+            path: parent.to_owned(),
+            source,
+        })?;
+
+        let file_name = self
+            .path
+            .file_name()
+            .expect("a registry path with a parent has a file name")
+            .to_string_lossy();
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{file_name}.{}.{}.tmp",
+            std::process::id(),
+            sequence
+        ));
+        let mut bytes = serde_json::to_vec_pretty(&self.document)
+            .expect("the typed plugin registry is always serializable");
+        bytes.push(b'\n');
+
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|source| PluginRegistryError::Io {
+                    operation: "create temporary",
+                    path: temporary.clone(),
+                    source,
+                })?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|source| PluginRegistryError::Io {
+                    operation: "write temporary",
+                    path: temporary.clone(),
+                    source,
+                })?;
+            drop(file);
+            fs::rename(&temporary, &self.path).map_err(|source| PluginRegistryError::Io {
+                operation: "replace",
+                path: self.path.clone(),
+                source,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+}
+
+impl Default for RegistryDocument {
+    fn default() -> Self {
+        Self {
+            schema: REGISTRY_SCHEMA,
+            plugins: BTreeMap::new(),
+        }
+    }
+}
+
+impl RegistryDocument {
+    fn validate(&self) -> Result<(), PluginRegistryError> {
+        if self.schema != REGISTRY_SCHEMA {
+            return Err(PluginRegistryError::Schema(self.schema));
+        }
+        if let Some(plugin_id) = self.plugins.keys().find(|id| !valid_plugin_id(id)) {
+            return Err(PluginRegistryError::PluginId(plugin_id.clone()));
+        }
+        Ok(())
+    }
+}
+
+pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
+    let local_app_data = env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .ok_or(PluginRegistryError::LocalAppDataUnavailable)?;
+    Ok(PathBuf::from(local_app_data)
+        .join("Codlet")
+        .join("config.json"))
+}
+
 pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         manifest: PluginManifest::parse(include_str!("../bundled/codlet/plugin.json"))?,
@@ -139,6 +326,15 @@ pub fn bundled_codex_ui_adapter() -> Result<LoadedPlugin, ManifestError> {
 
 pub fn bundled_plugins() -> Result<Vec<LoadedPlugin>, ManifestError> {
     Ok(vec![bundled_codex_ui_adapter()?, bundled_codlet()?])
+}
+
+pub fn enabled_bundled_plugins(
+    registry: &PluginRegistry,
+) -> Result<Vec<LoadedPlugin>, ManifestError> {
+    Ok(bundled_plugins()?
+        .into_iter()
+        .filter(|plugin| registry.is_enabled(&plugin.manifest.id))
+        .collect())
 }
 
 fn valid_plugin_id(id: &str) -> bool {
@@ -175,6 +371,7 @@ fn valid_relative_entry(entry: &str) -> bool {
 mod tests {
     use super::*;
     use crate::capabilities::CapabilityScope;
+    use tempfile::tempdir;
 
     #[test]
     fn bundled_codlet_uses_the_public_manifest_contract() {
@@ -309,5 +506,60 @@ mod tests {
             PluginManifest::parse(json),
             Err(ManifestError::MainWorldPermissionRequired)
         );
+    }
+
+    #[test]
+    fn missing_registry_uses_defaults_without_creating_a_file() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let registry = PluginRegistry::load(&path).unwrap();
+
+        assert!(registry.is_enabled("codlet"));
+        assert!(registry.is_enabled("codex.ui.adapter"));
+        assert_eq!(registry.path(), path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn registry_round_trip_atomically_replaces_the_previous_state() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state").join("config.json");
+        let mut registry = PluginRegistry::load(&path).unwrap();
+
+        registry.set_enabled("codlet", false).unwrap();
+        registry.save().unwrap();
+        assert!(!PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+
+        registry.set_enabled("codlet", true).unwrap();
+        registry.save().unwrap();
+        assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        assert_eq!(directory.path().read_dir().unwrap().count(), 1);
+        assert_eq!(path.parent().unwrap().read_dir().unwrap().count(), 1);
+    }
+
+    #[test]
+    fn registry_rejects_invalid_schema_unknown_fields_and_plugin_ids() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+
+        for json in [
+            r#"{"schema":2,"plugins":{}}"#,
+            r#"{"schema":1,"plugins":{},"extra":true}"#,
+            r#"{"schema":1,"plugins":{"Bad Id":{"enabled":true}}}"#,
+        ] {
+            fs::write(&path, json).unwrap();
+            assert!(PluginRegistry::load(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn disabled_bundled_plugins_are_excluded_from_the_launch_catalog() {
+        let directory = tempdir().unwrap();
+        let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        registry.set_enabled("codlet", false).unwrap();
+
+        let plugins = enabled_bundled_plugins(&registry).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].manifest.id, "codex.ui.adapter");
     }
 }

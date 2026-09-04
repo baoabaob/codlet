@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.10；日期：2026-09-04；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.11；日期：2026-09-04；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -116,7 +116,7 @@ M1a 新增首个正式启动入口：
 codlet launch
 ```
 
-该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个插件创建独立的 isolated world，加载第一方 `codlet` manifest，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：持久插件 registry、外部插件目录、文件热重载、运行中 CLI 控制和 GUI 自我禁用进入 M1b。
+该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，加载第一方 manifest，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：内置插件启用状态已由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；外部插件目录、文件热重载、运行中 CLI 控制和 GUI 自我禁用仍待完成。
 
 M0 的仓库级 Windows 外部验收统一使用以下入口；`-CodletPath` 必须由操作者明确指向已经构建好的 `codlet.exe`，脚本不发现、安装或修改工具链：
 
@@ -136,14 +136,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0CrashAcce
 
 该 harness 启动前拒绝任何已有的精确 `ChatGPT.exe`、`Codex.exe` 或 `codlet.exe`。进入 active 后，它以 PID、父 PID、启动时间和规范化可执行路径同时锁定本次 Runtime Host 与 Codex child，并持有两者的 process handle；执行动作前再次核验同一身份和存活状态。它只对自己创建并持有 handle 的 Runtime Host 调用一次 `System.Diagnostics.Process.Kill()`，绝不对 Codex 调用终止 API；随后观察而不假定同一个 Codex process handle 是否会因 pipe-disconnect 退出，并在共享 deadline 内扫描相关进程残留。身份无法建立或发生变化时按基础设施错误拒绝，不按裸 PID 猜测。当前 harness 仍把“Codex 未在 deadline 内退出”记录为 crash contract 失败，用于持续暴露 `DEFECT-002`，而不是把残留改写为成功。
 
-以下正式控制命令属于后续里程碑，当前尚未实现：
+以下只读和下一次启动控制命令已经实现；它们不发现、启动、附着、关闭或重启 Codex：
+
+```text
+codlet plugin list
+codlet plugin enable <id>
+codlet plugin disable <id>
+```
+
+`list` 在状态文件不存在时只显示内置默认值，不创建文件。`enable` / `disable` 采用同目录临时文件、flush + `sync_all` 和原子 rename 替换状态；当前没有 Launcher/Runtime Host 控制 IPC，因此命令明确报告只对下一次 `codlet launch` 生效。运行中立即启停、自我禁用和热重载不能借此宣称已实现。
+
+以下命令仍属于后续里程碑：
 
 ```text
 codlet status
 codlet plugin add <path>
-codlet plugin list
-codlet plugin enable <id>
-codlet plugin disable <id>
 codlet plugin reload <id>
 ```
 
@@ -736,7 +743,7 @@ Capability Kernel 是 2-4 的共同前置。Renderer Isolation 与 adapter sourc
 
 target controller 现在按顺序向 Runtime Host 暴露 `Attached`、`NavigatedAway` 和带 `targetId`/`sessionId` 的 `SessionEnded` 变化，并在遇到第一个有效变化时立即返回；因此即使 `targetDestroyed` 与同一 `targetId` 的 recreate 已连续到达，renderer 也会先撤销旧 target scope、移除旧 session 并按 consumer 到 provider 的顺序尝试清理，再 attach 新 CDP session。重建 target 获得新的 scope epoch，旧 target principal 在销毁后和重建后都保持失效；导航离开规范 URL 只移除持久脚本并精确 detach 当前旧 session，不向已死亡 session 发插件命令。fake-CDP 夹具使用不同的旧/新 CDP session id 验证了这些时序。
 
-该状态仍是实现候选，不是完整 M1c 完成声明：renderer binding 与 host RPC 的第一条纵切已经接入。每个插件在目标/session/generation 命名空间中拥有独立 `Runtime.addBinding`，bootstrap 在其上实现版本化 request/response/notification；host 在转发到 provider context 或固定的 `codlet.runtime.ping@1` endpoint 前重新核验 consumer principal、lease、provider registration/generation、target scope 和单调 request ID，旧 generation、撤销 scope、错误 session、重复/乱序 ID、超限/畸形请求与未知 binding 均在 endpoint 动作前拒绝。bundled adapter/codlet 已通过 `codex.ui.titlebar.afterMenu@1` 完成 provider/consumer 闭环，codlet 同时用 `codlet.runtime.ping@1` 验证真正的 renderer-to-host 路径；fake-CDP 回归覆盖 host ping、成功 provider 调用、request ID 重放、stale generation、unknown binding、wrong session、停用撤销和新 session 重建。该 host endpoint 只返回固定无副作用的 ABI ping，不代表 L3 文件、进程、网络或系统 broker 已完成。持久插件 registry、文件热重载、CLI 启停/重载、GUI 自我禁用和完整 `doctor` 诊断也仍未实现。真实 Codex gate 保持 ignored，未在自动化中启动客户端；当前安装 build `26.901.2854.0` 的实机 M1 GUI 门禁仍必须补齐后才能关闭 M1。
+该状态仍是实现候选，不是完整 M1c 完成声明：renderer binding 与 host RPC 的第一条纵切已经接入。每个插件在目标/session/generation 命名空间中拥有独立 `Runtime.addBinding`，bootstrap 在其上实现版本化 request/response/notification；host 在转发到 provider context 或固定的 `codlet.runtime.ping@1` endpoint 前重新核验 consumer principal、lease、provider registration/generation、target scope 和单调 request ID，旧 generation、撤销 scope、错误 session、重复/乱序 ID、超限/畸形请求与未知 binding 均在 endpoint 动作前拒绝。bundled adapter/codlet 已通过 `codex.ui.titlebar.afterMenu@1` 完成 provider/consumer 闭环，codlet 同时用 `codlet.runtime.ping@1` 验证真正的 renderer-to-host 路径；fake-CDP 回归覆盖 host ping、成功 provider 调用、request ID 重放、stale generation、unknown binding、wrong session、停用撤销和新 session 重建。内置插件启用状态现已使用严格 schema 的本地 registry，缺省只读、写入原子替换；`plugin list/enable/disable` 的命令级测试证明它们不启动 Codex，`launch` 会在任何外部启动副作用发生前验证 registry 并按状态构造插件图。该 host endpoint 仍只返回固定无副作用的 ABI ping，不代表 `runtime.manage` 或 L3 文件、进程、网络、系统 broker 已完成。外部插件目录、文件热重载、运行中 CLI 启停/重载、GUI 自我禁用和完整 `doctor` 诊断也仍未实现。真实 Codex gate 保持 ignored，未在自动化中启动客户端；当前安装 build `26.901.2854.0` 的实机 M1 GUI 门禁仍必须补齐后才能关闭 M1。
 
 ## 17. 主要风险
 

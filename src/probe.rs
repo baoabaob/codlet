@@ -9,6 +9,9 @@ use crate::cdp::{
     CdpClient, ClientSpawnError, ShutdownError, TargetChange, TargetController, TargetError,
     TargetSession,
 };
+use crate::plugins::{
+    ManifestError, PluginRegistry, PluginRegistryError, bundled_plugins, enabled_bundled_plugins,
+};
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
 use crate::windows::packages::{
@@ -50,15 +53,21 @@ pub enum ProbeError {
     Marker(#[from] MarkerFailure),
     #[error(transparent)]
     Renderer(#[from] RendererError),
+    #[error(transparent)]
+    Manifest(#[from] ManifestError),
+    #[error(transparent)]
+    PluginRegistry(#[from] PluginRegistryError),
     #[error("marker cleanup also failed after {primary}: {cleanup}")]
     MarkerCleanupAfterFailure {
         primary: Box<MarkerFailure>,
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch`, `codlet doctor`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch`, `codlet doctor`, `codlet plugin list`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
+    #[error("unknown bundled plugin {0}; use `codlet plugin list` to inspect available plugins")]
+    UnknownPlugin(String),
     #[error("Codex exited with nonzero status {exit_code} after CDP workers were reaped")]
     CodexExit { exit_code: u32 },
 }
@@ -151,7 +160,21 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                 println!("instance-conflict: {process_ids:?}");
             }
             println!("transport: inherited CDP pipe (real probe not run)");
+            let registry = PluginRegistry::load_default()?;
+            print_plugin_registry(&registry)?;
             Ok(())
+        }
+        [command, action] if command == OsStr::new("plugin") && action == OsStr::new("list") => {
+            let registry = PluginRegistry::load_default()?;
+            print_plugin_registry(&registry)
+        }
+        [command, action, plugin_id]
+            if command == OsStr::new("plugin")
+                && (action == OsStr::new("enable") || action == OsStr::new("disable")) =>
+        {
+            let enabled = action == OsStr::new("enable");
+            let plugin_id = plugin_id.to_str().ok_or(ProbeError::Usage)?;
+            set_bundled_plugin_enabled(plugin_id, enabled)
         }
         [command, confirmation]
             if command == OsStr::new("m0-probe")
@@ -244,8 +267,9 @@ fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
 }
 
 fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
+    let registry = PluginRegistry::load_default()?;
+    let mut renderer = RendererRuntime::new(enabled_bundled_plugins(&registry)?)?;
     let attached = start_attached_codex()?;
-    let mut renderer = RendererRuntime::bundled()?;
     let initial_outcomes = attached
         .sessions
         .iter()
@@ -263,6 +287,34 @@ fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
         renderer,
         initial_outcomes,
     })
+}
+
+fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
+    println!("plugin-registry: {}", registry.path().display());
+    for plugin in bundled_plugins()? {
+        println!(
+            "plugin: id={}; version={}; source=bundled; enabled={}",
+            plugin.manifest.id,
+            plugin.manifest.version,
+            registry.is_enabled(&plugin.manifest.id)
+        );
+    }
+    Ok(())
+}
+
+fn set_bundled_plugin_enabled(plugin_id: &str, enabled: bool) -> Result<(), ProbeError> {
+    if !bundled_plugins()?
+        .iter()
+        .any(|plugin| plugin.manifest.id == plugin_id)
+    {
+        return Err(ProbeError::UnknownPlugin(plugin_id.to_owned()));
+    }
+
+    let mut registry = PluginRegistry::load_default()?;
+    registry.set_enabled(plugin_id, enabled)?;
+    registry.save()?;
+    println!("plugin-state: id={plugin_id}; enabled={enabled}; applies=next-codlet-launch");
+    Ok(())
 }
 
 impl ProbedCodex {
