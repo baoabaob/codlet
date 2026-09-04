@@ -342,7 +342,7 @@ impl Drop for ClientInner {
                     | ShutdownError::ConcurrentShutdownTimedOut { .. }
             ) {
                 eprintln!(
-                    "fatal: Codlet CDP shutdown did not complete ({error}); aborting Codlet so no detached worker thread survives; Electron exits when the inherited CDP pipe disconnects"
+                    "fatal: Codlet CDP shutdown did not complete ({error}); aborting Codlet so no detached worker thread survives; inherited CDP pipe disconnect only requests cooperative Electron shutdown, so Codex may remain alive"
                 );
                 std::process::abort();
             }
@@ -858,7 +858,7 @@ fn startup_cleanup_error_or_abort(outcome: StartupCleanupOutcome) -> ClientSpawn
             cleanup,
         } => {
             eprintln!(
-                "fatal: Codlet CDP startup failed ({primary}) and worker cleanup did not complete ({cleanup}); aborting Codlet so no detached worker thread survives; no Codex termination API is called, and Electron exits when the inherited CDP pipe disconnects"
+                "fatal: Codlet CDP startup failed ({primary}) and worker cleanup did not complete ({cleanup}); aborting Codlet so no detached worker thread survives; no Codex termination API is called, and inherited CDP pipe disconnect only requests cooperative Electron shutdown"
             );
             let _owned_until_abort = workers;
             std::process::abort();
@@ -1678,7 +1678,7 @@ mod tests {
     #[test]
     fn stalled_startup_cleanup_fail_fast_boundary_does_not_return() {
         const CHILD_ENV: &str = "CODLET_TEST_STARTUP_CLEANUP_ABORT";
-        const FAIL_FAST_STDERR: &str = "aborting Codlet so no detached worker thread survives; no Codex termination API is called, and Electron exits when the inherited CDP pipe disconnects";
+        const FAIL_FAST_STDERR: &str = "aborting Codlet so no detached worker thread survives; no Codex termination API is called, and inherited CDP pipe disconnect only requests cooperative Electron shutdown";
         const RETURNED_SENTINEL: &str = "CODLET_TEST_STARTUP_CLEANUP_RETURNED";
         const RETURNED_EXIT_CODE: i32 = 86;
         if std::env::var_os(CHILD_ENV).is_some() {

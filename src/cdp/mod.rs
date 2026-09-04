@@ -7,4 +7,7 @@ pub use client::{
     ClientSpawnError, ConnectionError, EventStreamError, RemoteError, ShutdownError,
 };
 pub use framing::{FramingError, MAX_CDP_FRAME_BYTES, NulJsonDecoder, write_json_frame};
-pub use target::{MAIN_RENDERER_URL, TargetError, TargetObservation, TargetSession};
+pub use target::{
+    MAIN_RENDERER_URL, TargetChange, TargetController, TargetError, TargetObservation,
+    TargetSession,
+};

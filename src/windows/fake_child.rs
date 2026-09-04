@@ -47,6 +47,13 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "first-issued-id" => scenario_first_issued_id(&mut input, &mut output),
         "target-delayed" => scenario_target_delayed(&mut input, &mut output),
         "target-never" => scenario_target_never_matches(&mut input, &mut output),
+        "target-lifecycle" => scenario_target_lifecycle(&mut input, &mut output),
+        "renderer-runtime" => scenario_renderer_runtime(&mut input, &mut output),
+        "renderer-rpc" => scenario_renderer_rpc(&mut input, &mut output),
+        "renderer-target-replacement" => {
+            scenario_renderer_target_replacement(&mut input, &mut output)
+        }
+        "renderer-navigation" => scenario_renderer_navigation(&mut input, &mut output),
         "pipe-lifetime" => scenario_pipe_lifetime(&mut input, &mut output),
         "probe" => scenario_probe(&mut input, &mut output, ProbeScenario::Success),
         "probe-runtime" => scenario_probe(&mut input, &mut output, ProbeScenario::RuntimeExit(0)),
@@ -207,6 +214,7 @@ fn scenario_late_retired(input: &mut File, output: &mut File) -> Result<(), Fake
     }
 
     let first = first.expect("REQUEST_COUNT is nonzero");
+    std::thread::sleep(std::time::Duration::from_millis(2_250));
     write_json_frame(output, &json!({"id": first.0, "result": {"late": first.1}}))?;
 
     let next = request_identity(reader.next()?)?;
@@ -273,6 +281,7 @@ fn scenario_target_never_matches(
     output: &mut File,
 ) -> Result<(), FakeChildError> {
     let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
     let mut query_count = 0_u64;
     while let Some(request) = reader.next_or_eof()? {
         query_count += 1;
@@ -289,6 +298,919 @@ fn scenario_target_never_matches(
             }),
         )?;
     }
+    Ok(())
+}
+
+fn scenario_target_lifecycle(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {
+                "targetInfos": [
+                    {"targetId": "initial-a", "type": "page", "url": "app://-/index.html"},
+                    {"targetId": "initial-b", "type": "page", "url": "app://-/index.html"},
+                    {"targetId": "blank", "type": "page", "url": "about:blank"},
+                    {"targetId": "worker", "type": "worker", "url": "app://-/index.html"}
+                ]
+            }
+        }),
+    )?;
+
+    let mut initial_sessions = Vec::new();
+    for target_id in ["initial-a", "initial-b"] {
+        initial_sessions.push(establish_named_target_session(
+            &mut reader,
+            output,
+            target_id,
+        )?);
+    }
+    for session_id in initial_sessions {
+        complete_marker_cycle(&mut reader, output, &session_id)?;
+    }
+
+    expect_root_command(&mut reader, output, "Fake.emitCreated")?;
+    for target_info in [
+        json!({"targetId": "initial-a", "type": "page", "url": "app://-/index.html"}),
+        json!({"targetId": "devtools", "type": "page", "url": "devtools://devtools"}),
+        json!({"targetId": "created", "type": "page", "url": "app://-/index.html?initialRoute=%2Flocal%2Fthread-created"}),
+        json!({"targetId": "created", "type": "page", "url": "app://-/index.html?initialRoute=%2Flocal%2Fthread-created"}),
+    ] {
+        write_json_frame(
+            output,
+            &json!({"method": "Target.targetCreated", "params": {"targetInfo": target_info}}),
+        )?;
+    }
+    let created_session = establish_named_target_session(&mut reader, output, "created")?;
+    complete_marker_cycle(&mut reader, output, &created_session)?;
+
+    expect_root_command(&mut reader, output, "Fake.emitInfoChanged")?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.targetCreated",
+            "params": {"targetInfo": {"targetId": "later", "type": "page", "url": "about:blank"}}
+        }),
+    )?;
+    for _ in 0..2 {
+        write_json_frame(
+            output,
+            &json!({
+                "method": "Target.targetInfoChanged",
+                "params": {"targetInfo": {"targetId": "later", "type": "page", "url": "app://-/index.html?initialRoute=%2Flocal%2Fthread-later"}}
+            }),
+        )?;
+    }
+    let later_session = establish_named_target_session(&mut reader, output, "later")?;
+    complete_marker_cycle(&mut reader, output, &later_session)?;
+
+    expect_root_command(&mut reader, output, "Fake.emitDestroyed")?;
+    write_json_frame(
+        output,
+        &json!({"method": "Target.targetDestroyed", "params": {"targetId": "created"}}),
+    )?;
+
+    expect_root_command(&mut reader, output, "Fake.emitRecreated")?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.targetCreated",
+            "params": {"targetInfo": {"targetId": "created", "type": "page", "url": "app://-/index.html"}}
+        }),
+    )?;
+    let recreated_session = establish_named_target_session(&mut reader, output, "created")?;
+    complete_marker_cycle(&mut reader, output, &recreated_session)?;
+
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn scenario_renderer_runtime(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {
+                "targetInfos": [
+                    {"targetId": "main", "type": "page", "url": "app://-/index.html"}
+                ]
+            }
+        }),
+    )?;
+    let session_id = establish_named_target_session(&mut reader, output, "main")?;
+    complete_bundled_renderer_install(&mut reader, output, &session_id, "", 41, 42)?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", 43, 44)?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {
+                "targetInfos": [
+                    {"targetId": "main", "type": "page", "url": "app://-/index.html"}
+                ]
+            }
+        }),
+    )?;
+    let session_id = establish_named_target_session(&mut reader, output, "main")?;
+    let bindings =
+        complete_bundled_renderer_install(&mut reader, output, &session_id, "rpc", 91, 92)?;
+
+    let capability = json!({
+        "name": "codex.ui.titlebar.afterMenu",
+        "api": 1,
+        "scope": "target"
+    });
+    let host_request = json!({
+        "v": 1,
+        "type": "request",
+        "pluginId": "codlet",
+        "generation": 1,
+        "id": 1,
+        "capability": {
+            "name": "codlet.runtime.ping",
+            "api": 1,
+            "scope": "target"
+        },
+        "method": "ping",
+        "params": null
+    });
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&host_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    expect_consumer_host_success_response(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+    )?;
+    let renderer_request_command = expect_method(reader.next()?, "Fake.emitRendererRequest", None)?;
+    write_json_frame(
+        output,
+        &json!({"id": renderer_request_command, "result": {}}),
+    )?;
+    let first_request = json!({
+        "v": 1,
+        "type": "request",
+        "pluginId": "codlet",
+        "generation": 1,
+        "id": 2,
+        "capability": capability.clone(),
+        "method": "getMount",
+        "params": null
+    });
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&first_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    complete_provider_invocation(&mut reader, output, &session_id, &bindings, false)?;
+    let duplicate_command = expect_method(reader.next()?, "Fake.emitDuplicateRequest", None)?;
+    write_json_frame(output, &json!({"id": duplicate_command, "result": {}}))?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&first_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    expect_consumer_error_response(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+        "duplicate_request_id",
+    )?;
+
+    let stale_command = expect_method(reader.next()?, "Fake.emitStale", None)?;
+    write_json_frame(output, &json!({"id": stale_command, "result": {}}))?;
+    let stale_request = json!({
+        "v": 1,
+        "type": "request",
+        "pluginId": "codlet",
+        "generation": 0,
+        "id": 3,
+        "capability": capability.clone(),
+        "method": "getMount",
+        "params": null
+    });
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&stale_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    expect_consumer_error_response(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+        "stale_generation",
+    )?;
+
+    let unknown_command = expect_method(reader.next()?, "Fake.emitUnknownBinding", None)?;
+    write_json_frame(output, &json!({"id": unknown_command, "result": {}}))?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": "codlet_rpc_v1_unknown",
+                "payload": serde_json::to_string(&first_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    expect_consumer_error_response(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+        "unknown_binding",
+    )?;
+
+    let wrong_session_command =
+        expect_method(reader.next()?, "Fake.emitWrongBindingSession", None)?;
+    write_json_frame(output, &json!({"id": wrong_session_command, "result": {}}))?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&first_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": "dead-session"
+        }),
+    )?;
+
+    complete_isolated_world(
+        &mut reader,
+        output,
+        &session_id,
+        "codlet.plugin.codlet.g1",
+        bindings.codlet_context,
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.codlet_context,
+        ".deactivate(\"codlet\", 1)",
+        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+    )?;
+    expect_remove_renderer_script(&mut reader, output, &session_id, "script-codlet-rpc")?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &session_id,
+        "script-bootstrap-codlet-rpc",
+    )?;
+    expect_remove_renderer_binding(&mut reader, output, &session_id)?;
+
+    complete_isolated_world(
+        &mut reader,
+        output,
+        &session_id,
+        "codlet.plugin.codex.ui.adapter.g1",
+        bindings.adapter_context,
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &session_id,
+        bindings.adapter_context,
+        ".deactivate(\"codex.ui.adapter\", 1)",
+        json!({"ok": true, "id": "codex.ui.adapter", "generation": 1, "inactive": true}),
+    )?;
+    expect_remove_renderer_script(&mut reader, output, &session_id, "script-adapter-rpc")?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &session_id,
+        "script-bootstrap-adapter-rpc",
+    )?;
+    expect_remove_renderer_binding(&mut reader, output, &session_id)?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": bindings.codlet_binding,
+                "payload": serde_json::to_string(&first_request).expect("request serializes"),
+                "executionContextId": bindings.codlet_context
+            },
+            "sessionId": session_id
+        }),
+    )?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn complete_provider_invocation(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    bindings: &RendererBindingInfo,
+    _expect_error: bool,
+) -> Result<(), FakeChildError> {
+    let provider_request = reader.next()?;
+    let provider_id = expect_method(
+        provider_request.clone(),
+        "Runtime.evaluate",
+        Some(session_id),
+    )?;
+    let expression = provider_request
+        .pointer("/params/expression")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            FakeChildError::InvalidRequest("provider expression is not a string".to_owned())
+        })?;
+    if provider_request.pointer("/params/contextId") != Some(&json!(bindings.adapter_context))
+        || !expression.contains("__rpcInvoke")
+        || !expression.contains(&bindings.adapter_binding)
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "provider endpoint action did not use the adapter binding".to_owned(),
+        ));
+    }
+    write_evaluation_value(
+        output,
+        provider_id,
+        json!({"ok": true, "value": {"available": true, "token": "fake-mount"}}),
+        session_id,
+    )?;
+    expect_consumer_success_response(reader, output, session_id, bindings.codlet_context)
+}
+
+fn expect_consumer_success_response(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    context_id: u64,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
+    if request.pointer("/params/contextId") != Some(&json!(context_id))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|expression| {
+                !expression.contains("__rpcReceive")
+                    || (!expression.contains("\"ok\":true")
+                        && !expression.contains("\\\"ok\\\":true"))
+            })
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "consumer response did not carry a successful RPC result".to_owned(),
+        ));
+    }
+    write_evaluation_value(output, id, json!({"ok": true}), session_id)
+}
+
+fn expect_consumer_host_success_response(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    context_id: u64,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
+    if request.pointer("/params/contextId") != Some(&json!(context_id))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|expression| {
+                !expression.contains("__rpcReceive")
+                    || (!expression.contains("\"pong\":true")
+                        && !expression.contains("\\\"pong\\\":true"))
+            })
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "consumer response did not carry the host ping result".to_owned(),
+        ));
+    }
+    write_evaluation_value(output, id, json!({"ok": true}), session_id)
+}
+
+fn expect_consumer_error_response(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    context_id: u64,
+    code: &str,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
+    if request.pointer("/params/contextId") != Some(&json!(context_id))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|expression| {
+                !expression.contains("__rpcReceive") || !expression.contains(code)
+            })
+    {
+        return Err(FakeChildError::InvalidRequest(format!(
+            "consumer response did not carry {code} rejection"
+        )));
+    }
+    write_evaluation_value(output, id, json!({"ok": true}), session_id)
+}
+
+fn scenario_renderer_target_replacement(
+    input: &mut File,
+    output: &mut File,
+) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {
+                "targetInfos": [
+                    {"targetId": "main", "type": "page", "url": "app://-/index.html"}
+                ]
+            }
+        }),
+    )?;
+    let first_session =
+        establish_target_session_with_id(&mut reader, output, "main", "session-main-1")?;
+    let first_bindings =
+        complete_bundled_renderer_install(&mut reader, output, &first_session, "first", 51, 52)?;
+
+    expect_root_command(&mut reader, output, "Fake.replaceTarget")?;
+    write_json_frame(
+        output,
+        &json!({"method": "Target.targetDestroyed", "params": {"targetId": "main"}}),
+    )?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled",
+            "params": {
+                "name": first_bindings.codlet_binding,
+                "payload": "{}",
+                "executionContextId": first_bindings.codlet_context
+            },
+            "sessionId": first_session
+        }),
+    )?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.targetCreated",
+            "params": {"targetInfo": {"targetId": "main", "type": "page", "url": "app://-/index.html"}}
+        }),
+    )?;
+    let second_session =
+        establish_target_session_with_id(&mut reader, output, "main", "session-main-2")?;
+    complete_bundled_renderer_install(&mut reader, output, &second_session, "second", 61, 62)?;
+    expect_root_command(&mut reader, output, "Fake.emitLateDetach")?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.detachedFromTarget",
+            "params": {"sessionId": "session-main-1", "targetId": "main"}
+        }),
+    )?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &second_session, "second", 63, 64)?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn scenario_renderer_navigation(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_targets,
+            "result": {"targetInfos": [{"targetId": "main", "type": "page", "url": "app://-/index.html"}]}
+        }),
+    )?;
+    let first_session =
+        establish_target_session_with_id(&mut reader, output, "main", "session-main-nav-1")?;
+    complete_bundled_renderer_install(&mut reader, output, &first_session, "nav-1", 71, 72)?;
+
+    expect_root_command(&mut reader, output, "Fake.navigateAway")?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.targetInfoChanged",
+            "params": {"targetInfo": {"targetId": "main", "type": "page", "url": "about:blank"}}
+        }),
+    )?;
+    for identifiers in [
+        ["script-codlet-nav-1", "script-bootstrap-codlet-nav-1"],
+        ["script-adapter-nav-1", "script-bootstrap-adapter-nav-1"],
+    ] {
+        for identifier in identifiers {
+            expect_remove_renderer_script(&mut reader, output, "session-main-nav-1", identifier)?;
+        }
+        expect_remove_renderer_binding(&mut reader, output, "session-main-nav-1")?;
+    }
+    let detach_request = reader.next()?;
+    let detach = expect_method(detach_request.clone(), "Target.detachFromTarget", None)?;
+    if detach_request.pointer("/params/sessionId") != Some(&json!("session-main-nav-1")) {
+        return Err(FakeChildError::InvalidRequest(
+            "navigation detach used the wrong session id".to_owned(),
+        ));
+    }
+    write_json_frame(output, &json!({"id": detach, "result": {}}))?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.detachedFromTarget",
+            "params": {"sessionId": "session-main-nav-1", "targetId": "main"}
+        }),
+    )?;
+
+    expect_root_command(&mut reader, output, "Fake.recreateAfterNavigation")?;
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Target.targetCreated",
+            "params": {"targetInfo": {"targetId": "main", "type": "page", "url": "app://-/index.html"}}
+        }),
+    )?;
+    let second_session =
+        establish_target_session_with_id(&mut reader, output, "main", "session-main-nav-2")?;
+    complete_bundled_renderer_install(&mut reader, output, &second_session, "nav-2", 81, 82)?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &second_session, "nav-2", 83, 84)?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+#[derive(Debug, Clone)]
+struct RendererBindingInfo {
+    adapter_binding: String,
+    codlet_binding: String,
+    adapter_context: u64,
+    codlet_context: u64,
+}
+
+fn complete_bundled_renderer_install(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    identifier_suffix: &str,
+    adapter_context: u64,
+    codlet_context: u64,
+) -> Result<RendererBindingInfo, FakeChildError> {
+    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
+    let codlet_world = "codlet.plugin.codlet.g1";
+    let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
+    let adapter = renderer_identifier("script-adapter", identifier_suffix);
+    let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
+    let codlet = renderer_identifier("script-codlet", identifier_suffix);
+    complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
+    let adapter_binding = expect_renderer_binding(reader, output, session_id, adapter_world)?;
+    let bootstrap_script = expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        adapter_world,
+        "__codletRendererV1",
+        &bootstrap_adapter,
+    )?;
+    if bootstrap_script
+        .pointer("/params/source")
+        .and_then(Value::as_str)
+        .is_none_or(|source| {
+            !source.contains("globalThis.top !== globalThis")
+                || !source.contains("url.protocol !== 'app:'")
+                || !source.contains("url.pathname !== '/index.html'")
+        })
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "bootstrap new-document script did not guard the main frame".to_owned(),
+        ));
+    }
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        adapter_context,
+        "__codletRendererV1",
+        json!({"ok": true, "reused": false}),
+    )?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        adapter_context,
+        "codex.ui.adapter",
+        json!({"ok": true, "id": "codex.ui.adapter", "generation": 1, "reused": false}),
+    )?;
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        adapter_world,
+        "codex.ui.adapter",
+        &adapter,
+    )?;
+
+    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
+    let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        codlet_world,
+        "__codletRendererV1",
+        &bootstrap_codlet,
+    )?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        codlet_context,
+        "__codletRendererV1",
+        json!({"ok": true, "reused": false}),
+    )?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        codlet_context,
+        "runtime.activate",
+        json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
+    )?;
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        codlet_world,
+        "runtime.activate",
+        &codlet,
+    )?;
+    Ok(RendererBindingInfo {
+        adapter_binding,
+        codlet_binding,
+        adapter_context,
+        codlet_context,
+    })
+}
+
+fn complete_bundled_renderer_deactivation(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    identifier_suffix: &str,
+    codlet_context: u64,
+    adapter_context: u64,
+) -> Result<(), FakeChildError> {
+    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
+    let codlet_world = "codlet.plugin.codlet.g1";
+    let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
+    let adapter = renderer_identifier("script-adapter", identifier_suffix);
+    let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
+    let codlet = renderer_identifier("script-codlet", identifier_suffix);
+    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        codlet_context,
+        ".deactivate(\"codlet\", 1)",
+        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+    )?;
+    expect_remove_renderer_script(reader, output, session_id, &codlet)?;
+    expect_remove_renderer_script(reader, output, session_id, &bootstrap_codlet)?;
+    expect_remove_renderer_binding(reader, output, session_id)?;
+
+    complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        adapter_context,
+        ".deactivate(\"codex.ui.adapter\", 1)",
+        json!({"ok": true, "id": "codex.ui.adapter", "generation": 1, "inactive": true}),
+    )?;
+    expect_remove_renderer_script(reader, output, session_id, &adapter)?;
+    expect_remove_renderer_script(reader, output, session_id, &bootstrap_adapter)?;
+    expect_remove_renderer_binding(reader, output, session_id)?;
+    Ok(())
+}
+
+fn renderer_identifier(base: &str, suffix: &str) -> String {
+    if suffix.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{base}-{suffix}")
+    }
+}
+
+fn complete_isolated_world(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    world_name: &str,
+    context_id: u64,
+) -> Result<(), FakeChildError> {
+    let get_frame_tree = expect_method(reader.next()?, "Page.getFrameTree", Some(session_id))?;
+    write_json_frame(
+        output,
+        &json!({
+            "id": get_frame_tree,
+            "result": {"frameTree": {"frame": {"id": "frame-main"}}},
+            "sessionId": session_id
+        }),
+    )?;
+
+    let create_request = reader.next()?;
+    let create_world = expect_method(
+        create_request.clone(),
+        "Page.createIsolatedWorld",
+        Some(session_id),
+    )?;
+    if create_request.pointer("/params/frameId") != Some(&json!("frame-main"))
+        || create_request.pointer("/params/worldName") != Some(&json!(world_name))
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "isolated world request used the wrong frame or world name".to_owned(),
+        ));
+    }
+    write_json_frame(
+        output,
+        &json!({
+            "id": create_world,
+            "result": {"executionContextId": context_id},
+            "sessionId": session_id
+        }),
+    )?;
+    Ok(())
+}
+
+fn expect_renderer_script(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    world_name: &str,
+    source_fragment: &str,
+    identifier: &str,
+) -> Result<Value, FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(
+        request.clone(),
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(session_id),
+    )?;
+    if request.pointer("/params/worldName") != Some(&json!(world_name))
+        || request
+            .pointer("/params/source")
+            .and_then(Value::as_str)
+            .is_none_or(|source| !source.contains(source_fragment))
+    {
+        return Err(FakeChildError::InvalidRequest(format!(
+            "new-document script did not target the Codlet world or contain {source_fragment}"
+        )));
+    }
+    write_json_frame(
+        output,
+        &json!({"id": id, "result": {"identifier": identifier}, "sessionId": session_id}),
+    )?;
+    Ok(request)
+}
+
+fn expect_renderer_binding(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    world_name: &str,
+) -> Result<String, FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.addBinding", Some(session_id))?;
+    let name = request
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            FakeChildError::InvalidRequest("Runtime.addBinding name is not a string".to_owned())
+        })?;
+    if !name.starts_with("codlet_rpc_v1_")
+        || request.pointer("/params/executionContextName") != Some(&json!(world_name))
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "Runtime.addBinding did not use the expected Codlet namespace".to_owned(),
+        ));
+    }
+    write_json_frame(
+        output,
+        &json!({"id": id, "result": {}, "sessionId": session_id}),
+    )?;
+    Ok(name.to_owned())
+}
+
+fn expect_remove_renderer_binding(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.removeBinding", Some(session_id))?;
+    if request
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .is_none_or(|name| !name.starts_with("codlet_rpc_v1_"))
+    {
+        return Err(FakeChildError::InvalidRequest(
+            "Runtime.removeBinding did not use the Codlet namespace".to_owned(),
+        ));
+    }
+    write_json_frame(
+        output,
+        &json!({"id": id, "result": {}, "sessionId": session_id}),
+    )?;
+    Ok(())
+}
+
+fn complete_renderer_evaluation(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    context_id: u64,
+    expression_fragment: &str,
+    value: Value,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
+    if request.pointer("/params/contextId") != Some(&json!(context_id))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|expression| !expression.contains(expression_fragment))
+    {
+        return Err(FakeChildError::InvalidRequest(format!(
+            "renderer evaluation did not target context {context_id} or contain {expression_fragment}"
+        )));
+    }
+    write_evaluation_value(output, id, value, session_id)
+}
+
+fn expect_remove_renderer_script(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    identifier: &str,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(
+        request.clone(),
+        "Page.removeScriptToEvaluateOnNewDocument",
+        Some(session_id),
+    )?;
+    if request.pointer("/params/identifier") != Some(&json!(identifier)) {
+        return Err(FakeChildError::InvalidRequest(format!(
+            "removed script identifier did not equal {identifier}"
+        )));
+    }
+    write_json_frame(
+        output,
+        &json!({"id": id, "result": {}, "sessionId": session_id}),
+    )?;
     Ok(())
 }
 
@@ -340,7 +1262,7 @@ fn scenario_probe(
     }
     let inserted = apply_marker_action(&mut marker, insert_action)?;
     if !matches!(scenario, ProbeScenario::InsertResponseLost) {
-        write_evaluation_boolean(output, insert_id, inserted)?;
+        write_evaluation_boolean(output, insert_id, inserted, "session-main")?;
     }
 
     let remove_request = reader.next()?;
@@ -356,11 +1278,16 @@ fn scenario_probe(
         ));
     }
     if matches!(scenario, ProbeScenario::RemoveError) {
-        write_evaluation_exception(output, remove_id, "simulated marker remove failure")?;
+        write_evaluation_exception(
+            output,
+            remove_id,
+            "simulated marker remove failure",
+            "session-main",
+        )?;
         return Ok(());
     }
     let removed = apply_marker_action(&mut marker, remove_action)?;
-    write_evaluation_boolean(output, remove_id, removed)?;
+    write_evaluation_boolean(output, remove_id, removed, "session-main")?;
     if marker.is_some() {
         return Err(FakeChildError::InvalidRequest(
             "marker remained after the remove transition".to_owned(),
@@ -403,6 +1330,7 @@ fn establish_target_session_with_rounds(
     output: &mut File,
     target_rounds: impl IntoIterator<Item = Value>,
 ) -> Result<(), FakeChildError> {
+    enable_target_discovery(reader, output)?;
     for target_infos in target_rounds {
         let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
         write_json_frame(
@@ -414,27 +1342,70 @@ fn establish_target_session_with_rounds(
         )?;
     }
 
+    establish_named_target_session(reader, output, "main")?;
+    Ok(())
+}
+
+fn enable_target_discovery(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+) -> Result<(), FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Target.setDiscoverTargets", None)?;
+    if request.pointer("/params/discover") != Some(&json!(true)) {
+        return Err(FakeChildError::InvalidRequest(
+            "Target.setDiscoverTargets did not enable discovery".to_owned(),
+        ));
+    }
+    write_json_frame(output, &json!({"id": id, "result": {}}))?;
+    Ok(())
+}
+
+fn establish_named_target_session(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    target_id: &str,
+) -> Result<String, FakeChildError> {
+    establish_target_session_with_id(reader, output, target_id, &format!("session-{target_id}"))
+}
+
+fn establish_target_session_with_id(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    target_id: &str,
+    session_id: &str,
+) -> Result<String, FakeChildError> {
     let attach_request = reader.next()?;
     let attach = expect_method(attach_request.clone(), "Target.attachToTarget", None)?;
-    if attach_request.pointer("/params/targetId") != Some(&json!("main"))
+    if attach_request.pointer("/params/targetId") != Some(&json!(target_id))
         || attach_request.pointer("/params/flatten") != Some(&json!(true))
     {
-        return Err(FakeChildError::InvalidRequest(
-            "attach request did not select main with flatten=true".to_owned(),
-        ));
+        return Err(FakeChildError::InvalidRequest(format!(
+            "attach request did not select {target_id} with flatten=true"
+        )));
     }
     write_json_frame(
         output,
-        &json!({"id": attach, "result": {"sessionId": "session-main"}}),
+        &json!({"id": attach, "result": {"sessionId": session_id}}),
     )?;
 
     for method in ["Runtime.enable", "Page.enable"] {
-        let id = expect_method(reader.next()?, method, Some("session-main"))?;
+        let id = expect_method(reader.next()?, method, Some(session_id))?;
         write_json_frame(
             output,
-            &json!({"id": id, "result": {}, "sessionId": "session-main"}),
+            &json!({"id": id, "result": {}, "sessionId": session_id}),
         )?;
     }
+    Ok(session_id.to_owned())
+}
+
+fn expect_root_command(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    method: &str,
+) -> Result<(), FakeChildError> {
+    let id = expect_method(reader.next()?, method, None)?;
+    write_json_frame(output, &json!({"id": id, "result": {}}))?;
     Ok(())
 }
 
@@ -451,11 +1422,17 @@ fn scenario_probe_reject_arbitrary(
             "arbitrary-expression scenario received a valid marker expression".to_owned(),
         ));
     }
-    write_evaluation_exception(output, id, "expression is not a Codlet marker transition")
+    write_evaluation_exception(
+        output,
+        id,
+        "expression is not a Codlet marker transition",
+        "session-main",
+    )
 }
 
 fn scenario_wrong_session(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
     let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
     let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
     write_json_frame(
         output,
@@ -479,6 +1456,29 @@ fn scenario_wrong_session(input: &mut File, output: &mut File) -> Result<(), Fak
         output,
         &json!({"id": enable, "result": {}, "sessionId": "session-other"}),
     )?;
+    Ok(())
+}
+
+fn complete_marker_cycle(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+) -> Result<(), FakeChildError> {
+    let mut marker = None;
+    let insert_request = reader.next()?;
+    let insert_id = expect_method(insert_request.clone(), "Runtime.evaluate", Some(session_id))?;
+    let inserted = apply_marker_action(&mut marker, marker_action(&insert_request)?)?;
+    write_evaluation_boolean(output, insert_id, inserted, session_id)?;
+
+    let remove_request = reader.next()?;
+    let remove_id = expect_method(remove_request.clone(), "Runtime.evaluate", Some(session_id))?;
+    let removed = apply_marker_action(&mut marker, marker_action(&remove_request)?)?;
+    write_evaluation_boolean(output, remove_id, removed, session_id)?;
+    if marker.is_some() {
+        return Err(FakeChildError::InvalidRequest(
+            "marker remained after the remove transition".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -553,13 +1553,35 @@ fn apply_marker_action(
     }
 }
 
-fn write_evaluation_boolean(output: &mut File, id: u64, value: bool) -> Result<(), FakeChildError> {
+fn write_evaluation_boolean(
+    output: &mut File,
+    id: u64,
+    value: bool,
+    session_id: &str,
+) -> Result<(), FakeChildError> {
     write_json_frame(
         output,
         &json!({
             "id": id,
             "result": {"result": {"type": "boolean", "value": value}},
-            "sessionId": "session-main"
+            "sessionId": session_id
+        }),
+    )?;
+    Ok(())
+}
+
+fn write_evaluation_value(
+    output: &mut File,
+    id: u64,
+    value: Value,
+    session_id: &str,
+) -> Result<(), FakeChildError> {
+    write_json_frame(
+        output,
+        &json!({
+            "id": id,
+            "result": {"result": {"type": "object", "value": value}},
+            "sessionId": session_id
         }),
     )?;
     Ok(())
@@ -569,6 +1591,7 @@ fn write_evaluation_exception(
     output: &mut File,
     id: u64,
     message: &str,
+    session_id: &str,
 ) -> Result<(), FakeChildError> {
     write_json_frame(
         output,
@@ -578,7 +1601,7 @@ fn write_evaluation_exception(
                 "result": {"type": "undefined"},
                 "exceptionDetails": {"text": message}
             },
-            "sessionId": "session-main"
+            "sessionId": session_id
         }),
     )?;
     Ok(())

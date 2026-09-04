@@ -11,9 +11,10 @@ use std::time::{Duration, Instant};
 
 use codlet::cdp::{
     CdpClient, ClientError, ConnectionError, EventStreamError, FramingError, MAX_CDP_FRAME_BYTES,
-    TargetError, TargetObservation, TargetSession,
+    TargetChange, TargetController, TargetError, TargetObservation, TargetSession,
 };
 use codlet::probe::{MarkerFailure, ProbeError, hold_cdp_until_child_exit, probe_marker};
+use codlet::renderer::RendererRuntime;
 use codlet::windows::process::{ChildProcess, launch_with_cdp_pipes};
 use serde_json::json;
 use windows_sys::Win32::Foundation::HANDLE;
@@ -36,6 +37,33 @@ fn launch(
 
 fn assert_child_success(child: &ChildProcess) {
     assert_eq!(child.wait(DEADLINE).unwrap(), Some(0));
+}
+
+fn discover_targets(
+    client: CdpClient,
+    events: codlet::cdp::CdpEventStream,
+    deadline: Duration,
+) -> (TargetController, Vec<TargetSession>) {
+    TargetController::discover(client, events, deadline).unwrap()
+}
+
+fn pump_until_new_target(targets: &mut TargetController) -> Vec<TargetSession> {
+    let expires_at = Instant::now() + DEADLINE;
+    loop {
+        let sessions: Vec<_> = targets
+            .pump(expires_at.saturating_duration_since(Instant::now()))
+            .unwrap()
+            .into_iter()
+            .filter_map(|change| match change {
+                TargetChange::Attached(session) => Some(session),
+                TargetChange::NavigatedAway(_) | TargetChange::SessionEnded { .. } => None,
+            })
+            .collect();
+        if !sessions.is_empty() {
+            return sessions;
+        }
+        assert!(Instant::now() < expires_at, "new target was not attached");
+    }
 }
 
 #[test]
@@ -136,15 +164,29 @@ fn late_response_beyond_previous_tombstone_capacity_keeps_connection_usable() {
     const RETIRED_REQUEST_COUNT: usize = 300;
 
     let (child, client, _events) = launch("late-retired", &[]);
-    for index in 0..RETIRED_REQUEST_COUNT {
-        let error = client
-            .request(
-                &format!("Fake.retire{index}"),
-                None,
-                None,
-                Duration::from_millis(5),
-            )
-            .unwrap_err();
+    let errors = std::thread::scope(|scope| {
+        let requests = (0..RETIRED_REQUEST_COUNT)
+            .map(|index| {
+                let client = client.clone();
+                scope.spawn(move || {
+                    client
+                        .request(
+                            &format!("Fake.retire{index}"),
+                            None,
+                            None,
+                            Duration::from_secs(2),
+                        )
+                        .unwrap_err()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        requests
+            .into_iter()
+            .map(|request| request.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for error in errors {
         assert!(matches!(error, ClientError::RequestTimedOut { .. }));
     }
 
@@ -196,11 +238,12 @@ fn rejected_outbound_frame_does_not_consume_a_request_id() {
 
 #[test]
 fn target_discovery_and_stateful_marker_probe_are_automatic() {
-    let (child, client, _events) = launch("probe", &[]);
-    let session = TargetSession::discover(client, DEADLINE).unwrap();
+    let (child, client, events) = launch("probe", &[]);
+    let (_targets, sessions) = discover_targets(client, events, DEADLINE);
+    let session = &sessions[0];
     assert_eq!(session.target_id(), "main");
     assert_eq!(session.session_id(), "session-main");
-    let report = probe_marker(&session, "codlet-fake-stateful-marker").unwrap();
+    let report = probe_marker(session, "codlet-fake-stateful-marker").unwrap();
     assert!(report.inserted);
     assert!(report.removed);
     assert_child_success(&child);
@@ -208,9 +251,10 @@ fn target_discovery_and_stateful_marker_probe_are_automatic() {
 
 #[test]
 fn foreground_runtime_holds_after_marker_then_reaps_after_child_exit() {
-    let (child, client, _events) = launch("probe-runtime", &[]);
-    let session = TargetSession::discover(client.clone(), DEADLINE).unwrap();
-    let marker = probe_marker(&session, "codlet-fake-runtime-marker").unwrap();
+    let (child, client, events) = launch("probe-runtime", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let session = &sessions[0];
+    let marker = probe_marker(session, "codlet-fake-runtime-marker").unwrap();
     assert!(marker.inserted);
     assert!(marker.removed);
     assert_eq!(child.wait(Duration::from_millis(150)).unwrap(), None);
@@ -228,9 +272,10 @@ fn foreground_runtime_holds_after_marker_then_reaps_after_child_exit() {
 
 #[test]
 fn foreground_runtime_reports_nonzero_child_exit_after_reaping_workers() {
-    let (child, client, _events) = launch("probe-runtime-nonzero", &[]);
-    let session = TargetSession::discover(client.clone(), DEADLINE).unwrap();
-    let marker = probe_marker(&session, "codlet-fake-runtime-nonzero-marker").unwrap();
+    let (child, client, events) = launch("probe-runtime-nonzero", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let session = &sessions[0];
+    let marker = probe_marker(session, "codlet-fake-runtime-nonzero-marker").unwrap();
     assert!(marker.inserted);
     assert!(marker.removed);
     assert_eq!(child.wait(Duration::from_millis(150)).unwrap(), None);
@@ -251,8 +296,9 @@ fn foreground_runtime_reports_nonzero_child_exit_after_reaping_workers() {
 
 #[test]
 fn target_discovery_retries_one_non_match_then_uses_the_exact_second_round() {
-    let (child, client, _events) = launch("target-delayed", &[]);
-    let session = TargetSession::discover(client, Duration::from_secs(1)).unwrap();
+    let (child, client, events) = launch("target-delayed", &[]);
+    let (_targets, sessions) = discover_targets(client, events, Duration::from_secs(1));
+    let session = &sessions[0];
 
     assert_eq!(session.target_id(), "main");
     assert_eq!(session.session_id(), "session-main");
@@ -260,10 +306,219 @@ fn target_discovery_retries_one_non_match_then_uses_the_exact_second_round() {
 }
 
 #[test]
+fn target_controller_bootstraps_existing_and_new_browser_windows_once() {
+    let (child, client, events) = launch("target-lifecycle", &[]);
+    let (mut targets, initial) = discover_targets(client.clone(), events, DEADLINE);
+    assert_eq!(
+        initial
+            .iter()
+            .map(TargetSession::target_id)
+            .collect::<Vec<_>>(),
+        ["initial-a", "initial-b"]
+    );
+    for session in &initial {
+        let marker = probe_marker(session, "codlet-target-lifecycle").unwrap();
+        assert!(marker.inserted && marker.removed);
+    }
+    assert_eq!(targets.session_count(), 2);
+
+    client
+        .request("Fake.emitCreated", None, None, DEADLINE)
+        .unwrap();
+    let created = pump_until_new_target(&mut targets);
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].target_id(), "created");
+    probe_marker(&created[0], "codlet-target-lifecycle").unwrap();
+    assert_eq!(targets.session_count(), 3);
+
+    client
+        .request("Fake.emitInfoChanged", None, None, DEADLINE)
+        .unwrap();
+    let navigated = pump_until_new_target(&mut targets);
+    assert_eq!(navigated.len(), 1);
+    assert_eq!(navigated[0].target_id(), "later");
+    probe_marker(&navigated[0], "codlet-target-lifecycle").unwrap();
+    assert_eq!(targets.session_count(), 4);
+
+    client
+        .request("Fake.emitDestroyed", None, None, DEADLINE)
+        .unwrap();
+    let changes = targets.pump(DEADLINE).unwrap();
+    assert!(matches!(
+        changes.as_slice(),
+        [TargetChange::SessionEnded { target_id, session_id }]
+            if target_id == "created" && session_id == "session-created"
+    ));
+    assert!(!targets.contains_target("created"));
+    assert_eq!(targets.session_count(), 3);
+
+    client
+        .request("Fake.emitRecreated", None, None, DEADLINE)
+        .unwrap();
+    let recreated = pump_until_new_target(&mut targets);
+    assert_eq!(recreated.len(), 1);
+    assert_eq!(recreated[0].target_id(), "created");
+    probe_marker(&recreated[0], "codlet-target-lifecycle").unwrap();
+    assert_eq!(targets.session_count(), 4);
+
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_runtime_installs_and_deactivates_the_bundled_codlet() {
+    let (child, client, events) = launch("renderer-runtime", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let mut runtime = RendererRuntime::bundled().unwrap();
+
+    let report = runtime.attach(&sessions[0]).unwrap();
+    assert_eq!(report.target_id, "main");
+    assert_eq!(report.plugin_count, 2);
+    assert_eq!(runtime.session_count(), 1);
+    runtime.deactivate_target("main").unwrap();
+    assert_eq!(runtime.session_count(), 0);
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_binding_round_trip_rejects_stale_unknown_and_revoked_calls() {
+    let (child, client, events) = launch("renderer-rpc", &[]);
+    let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let mut runtime = RendererRuntime::bundled().unwrap();
+    runtime.attach(&sessions[0]).unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+
+    client
+        .request("Fake.emitRendererRequest", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+
+    client
+        .request("Fake.emitDuplicateRequest", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+
+    client
+        .request("Fake.emitStale", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+
+    client
+        .request("Fake.emitUnknownBinding", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
+
+    client
+        .request("Fake.emitWrongBindingSession", None, None, DEADLINE)
+        .unwrap();
+    assert_eq!(runtime.pump_bindings().unwrap(), 0);
+
+    let destroyed = targets.pump(Duration::ZERO).unwrap();
+    assert!(destroyed.is_empty());
+    runtime.deactivate_target("main").unwrap();
+    assert_eq!(runtime.pump_bindings().unwrap(), 0);
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_target_replacement_does_not_touch_the_dead_session() {
+    let (child, client, events) = launch("renderer-target-replacement", &[]);
+    let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let mut runtime = RendererRuntime::bundled().unwrap();
+    runtime.attach(&sessions[0]).unwrap();
+    client
+        .request("Fake.replaceTarget", None, None, DEADLINE)
+        .unwrap();
+    let destroyed = targets.pump(DEADLINE).unwrap();
+    let [
+        TargetChange::SessionEnded {
+            target_id,
+            session_id,
+        },
+    ] = destroyed.as_slice()
+    else {
+        panic!("target destruction did not surface before replacement attach");
+    };
+    assert_eq!(target_id, "main");
+    assert_eq!(session_id, "session-main-1");
+    runtime
+        .apply_target_change(destroyed.into_iter().next().unwrap())
+        .unwrap();
+    assert_eq!(runtime.pump_bindings().unwrap(), 0);
+
+    let recreated = targets.pump(DEADLINE).unwrap();
+    let [TargetChange::Attached(session)] = recreated.as_slice() else {
+        panic!("same target id was not attached as a new session");
+    };
+    assert_eq!(session.target_id(), "main");
+    assert_eq!(session.session_id(), "session-main-2");
+    let report = runtime
+        .apply_target_change(recreated.into_iter().next().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.target_id, "main");
+
+    client
+        .request("Fake.emitLateDetach", None, None, DEADLINE)
+        .unwrap();
+    assert!(targets.pump(DEADLINE).unwrap().is_empty());
+    assert!(targets.contains_target("main"));
+
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_navigation_cleans_live_session_and_detaches_exactly_once() {
+    let (child, client, events) = launch("renderer-navigation", &[]);
+    let (mut targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let mut runtime = RendererRuntime::bundled().unwrap();
+    runtime.attach(&sessions[0]).unwrap();
+
+    client
+        .request("Fake.navigateAway", None, None, DEADLINE)
+        .unwrap();
+    let changes = targets.pump(DEADLINE).unwrap();
+    let [TargetChange::NavigatedAway(session)] = changes.as_slice() else {
+        panic!("navigation away did not surface as a live-session transition");
+    };
+    assert_eq!(session.target_id(), "main");
+    assert_eq!(session.session_id(), "session-main-nav-1");
+    runtime
+        .apply_target_change(changes.into_iter().next().unwrap())
+        .unwrap();
+    assert_eq!(runtime.session_count(), 0);
+
+    // The browser-level detach notification for the old session must be a no-op.
+    assert!(targets.pump(DEADLINE).unwrap().is_empty());
+
+    client
+        .request("Fake.recreateAfterNavigation", None, None, DEADLINE)
+        .unwrap();
+    let changes = targets.pump(DEADLINE).unwrap();
+    let [TargetChange::Attached(session)] = changes.as_slice() else {
+        panic!("navigation recreation did not attach a fresh session");
+    };
+    assert_eq!(session.session_id(), "session-main-nav-2");
+    runtime
+        .apply_target_change(changes.into_iter().next().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.session_count(), 1);
+
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
 fn target_discovery_deadline_is_bounded_and_reports_only_last_observations() {
-    let (child, client, _events) = launch("target-never", &[]);
+    let (child, client, events) = launch("target-never", &[]);
     let started = Instant::now();
-    let error = match TargetSession::discover(client, Duration::from_millis(250)) {
+    let error = match TargetController::discover(client, events, Duration::from_millis(250)) {
         Ok(_) => panic!("non-matching targets unexpectedly produced a session"),
         Err(error) => error,
     };
@@ -309,8 +564,9 @@ fn target_discovery_deadline_is_bounded_and_reports_only_last_observations() {
 
 #[test]
 fn fake_probe_rejects_arbitrary_runtime_evaluate() {
-    let (child, client, _events) = launch("probe-reject-arbitrary", &[]);
-    let session = TargetSession::discover(client, DEADLINE).unwrap();
+    let (child, client, events) = launch("probe-reject-arbitrary", &[]);
+    let (_targets, sessions) = discover_targets(client, events, DEADLINE);
+    let session = &sessions[0];
     let result = session.evaluate("true").unwrap();
     assert!(result.get("exceptionDetails").is_some());
     assert_ne!(
@@ -324,9 +580,9 @@ fn fake_probe_rejects_arbitrary_runtime_evaluate() {
 
 #[test]
 fn marker_cleanup_runs_after_insert_response_is_lost() {
-    let (child, client, _events) = launch("probe-insert-response-lost", &[]);
-    let session = TargetSession::discover(client, Duration::from_millis(750)).unwrap();
-    let error = probe_marker(&session, "codlet-lost-response-marker").unwrap_err();
+    let (child, client, events) = launch("probe-insert-response-lost", &[]);
+    let (_targets, sessions) = discover_targets(client, events, Duration::from_millis(750));
+    let error = probe_marker(&sessions[0], "codlet-lost-response-marker").unwrap_err();
     assert!(matches!(
         error,
         ProbeError::Marker(MarkerFailure::Request {
@@ -339,9 +595,9 @@ fn marker_cleanup_runs_after_insert_response_is_lost() {
 
 #[test]
 fn marker_probe_reports_remove_exception_after_cleanup_attempt() {
-    let (child, client, _events) = launch("probe-remove-error", &[]);
-    let session = TargetSession::discover(client, DEADLINE).unwrap();
-    let error = probe_marker(&session, "codlet-remove-error-marker").unwrap_err();
+    let (child, client, events) = launch("probe-remove-error", &[]);
+    let (_targets, sessions) = discover_targets(client, events, DEADLINE);
+    let error = probe_marker(&sessions[0], "codlet-remove-error-marker").unwrap_err();
     assert!(matches!(
         error,
         ProbeError::Marker(MarkerFailure::Invalid { phase: "remove" })
@@ -351,8 +607,8 @@ fn marker_probe_reports_remove_exception_after_cleanup_attempt() {
 
 #[test]
 fn target_session_rejects_wrong_response_session_id() {
-    let (child, client, _events) = launch("wrong-session", &[]);
-    let error = match TargetSession::discover(client, DEADLINE) {
+    let (child, client, events) = launch("wrong-session", &[]);
+    let error = match TargetController::discover(client, events, DEADLINE) {
         Ok(_) => panic!("wrong-session response unexpectedly succeeded"),
         Err(error) => error,
     };

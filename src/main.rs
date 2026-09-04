@@ -8,6 +8,6 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("codlet M0 is Windows-only");
+    eprintln!("codlet is Windows-only");
     std::process::exit(1);
 }

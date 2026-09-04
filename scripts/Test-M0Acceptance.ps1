@@ -255,6 +255,10 @@ try {
                     text   = 'runtime-state: stopped; CDP workers reaped'
                 },
                 [ordered]@{
+                    stream = 'stdout'
+                    text   = 'renderer-bootstrap: target-id=new-window; marker-inserted=true; marker-removed=true'
+                },
+                [ordered]@{
                     stream = 'stderr'
                     text   = 'untrusted page content must not persist'
                 }
@@ -276,7 +280,8 @@ try {
     Assert-True -Condition ($report.codlet.exitCode -eq 0) -Message 'report must preserve the Codlet exit code'
     Assert-True -Condition (@($report.codlet.output).Count -eq 3) -Message 'report must preserve allowlisted command output'
     Assert-True -Condition ($report.codlet.outputPolicy -eq 'allowlisted-m0-stdout-v1') -Message 'report must identify its output allowlist policy'
-    Assert-True -Condition ($report.codlet.omittedOutputLineCount -eq 1) -Message 'unrecognized fixture output must be omitted and counted'
+    Assert-True -Condition ($report.codlet.omittedOutputLineCount -eq 2) -Message 'unrecognized fixture output must be omitted and counted'
+    Assert-True -Condition (($report | ConvertTo-Json -Depth 10 -Compress) -notmatch 'renderer-bootstrap') -Message 'renderer bootstrap diagnostics must not be persisted in the report'
     Assert-True -Condition (($report | ConvertTo-Json -Depth 10 -Compress) -notmatch 'untrusted page content') -Message 'unrecognized output must not be persisted anywhere in the report'
     Assert-True -Condition ($null -ne $report.snapshots.before.processes) -Message 'report must include the before process snapshot'
     Assert-True -Condition ($null -ne $report.snapshots.before.tcpListeners) -Message 'report must include the before TCP listener snapshot'

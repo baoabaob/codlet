@@ -5,7 +5,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::cdp::{CdpClient, ClientSpawnError, ShutdownError, TargetError, TargetSession};
+use crate::cdp::{
+    CdpClient, ClientSpawnError, ShutdownError, TargetChange, TargetController, TargetError,
+    TargetSession,
+};
+use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
 use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage, PackageError,
@@ -19,7 +23,7 @@ use crate::windows::process::{
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 const LAUNCH_MUTEX_DEADLINE: Duration = Duration::from_secs(30);
 const REAL_PROBE_CONFIRMATION: &str = "--launch-codex";
-const RUNTIME_WAIT_SLICE: Duration = Duration::from_millis(250);
+const RUNTIME_WAIT_SLICE: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Error)]
 pub enum ProbeError {
@@ -44,13 +48,15 @@ pub enum ProbeError {
     },
     #[error(transparent)]
     Marker(#[from] MarkerFailure),
+    #[error(transparent)]
+    Renderer(#[from] RendererError),
     #[error("marker cleanup also failed after {primary}: {cleanup}")]
     MarkerCleanupAfterFailure {
         primary: Box<MarkerFailure>,
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet doctor`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch`, `codlet doctor`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error("Codex exited with nonzero status {exit_code} after CDP workers were reaped")]
@@ -89,11 +95,49 @@ struct ProbedCodex {
     report: ProbeReport,
     process: ChildProcess,
     client: CdpClient,
+    targets: TargetController,
+    marker_id: String,
+}
+
+struct AttachedCodex {
+    package: InstalledPackage,
+    executable: PathBuf,
+    process: ChildProcess,
+    client: CdpClient,
+    targets: TargetController,
+    sessions: Vec<TargetSession>,
+}
+
+struct RendererOutcome {
+    target_id: String,
+    result: Result<RendererBootstrapReport, RendererError>,
+}
+
+struct CodletRuntime {
+    package: InstalledPackage,
+    executable: PathBuf,
+    process: ChildProcess,
+    client: CdpClient,
+    targets: TargetController,
+    renderer: RendererRuntime,
+    initial_outcomes: Vec<RendererOutcome>,
 }
 
 pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeError> {
     let arguments: Vec<_> = arguments.collect();
     match arguments.as_slice() {
+        [command] if command == OsStr::new("launch") => {
+            let runtime = start_codlet_runtime()?;
+            runtime.print_identity_and_initial_state();
+            println!("runtime-state: active; Codlet renderer runtime attached");
+            println!(
+                "action: use Codex normally, then close Codex to stop this foreground runtime"
+            );
+            let exit_code = runtime.wait()?;
+            println!("codex-exit-code: {exit_code}");
+            println!("runtime-state: stopped; CDP workers reaped");
+            Ok(())
+        }
         [command] if command == OsStr::new("doctor") => {
             let (package, executable, running) = inspect_environment()?;
             println!("package: {}", package.full_name);
@@ -116,7 +160,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             let report = run_real_probe()?;
             print_probe_report(&report);
             println!(
-                "lifecycle: probe completion closes the remote-debugging pipe; Electron exits when that pipe disconnects"
+                "lifecycle: probe completion closes the remote-debugging pipe; Electron receives a cooperative quit request, but Codex may remain running"
             );
             println!(
                 "result: inherited-pipe transport smoke succeeded; this is not the production launcher and M0 remains externally gated"
@@ -149,6 +193,34 @@ pub fn run_real_probe() -> Result<ProbeReport, ProbeError> {
 }
 
 fn start_probed_codex() -> Result<ProbedCodex, ProbeError> {
+    let attached = start_attached_codex()?;
+    let marker_id = marker_id();
+    let markers = bootstrap_probe_sessions(&attached.sessions, &marker_id)?;
+    let session = attached
+        .sessions
+        .first()
+        .expect("successful target discovery must return at least one session");
+    let marker = markers
+        .first()
+        .expect("every discovered target must receive the probe bootstrap");
+
+    Ok(ProbedCodex {
+        report: ProbeReport {
+            package: attached.package,
+            executable: attached.executable,
+            process_id: attached.process.process_id(),
+            target_id: session.target_id().to_owned(),
+            marker_inserted: marker.inserted,
+            marker_removed: marker.removed,
+        },
+        process: attached.process,
+        client: attached.client,
+        targets: attached.targets,
+        marker_id,
+    })
+}
+
+fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
     let (process, pipes) = checked_launch(
@@ -158,30 +230,152 @@ fn start_probed_codex() -> Result<ProbedCodex, ProbeError> {
         || launch_with_cdp_pipes(&executable, &[], false),
     )?;
     drop(launch_guard);
-    let process_id = process.process_id();
     let (client, events) = CdpClient::spawn(pipes)?;
-    drop(events);
-    let session = TargetSession::discover(client.clone(), REQUEST_DEADLINE)?;
-    let marker_id = marker_id();
-    let marker = probe_marker(&session, &marker_id)?;
+    let (targets, sessions) = TargetController::discover(client.clone(), events, REQUEST_DEADLINE)?;
 
-    Ok(ProbedCodex {
-        report: ProbeReport {
-            package,
-            executable,
-            process_id,
-            target_id: session.target_id().to_owned(),
-            marker_inserted: marker.inserted,
-            marker_removed: marker.removed,
-        },
+    Ok(AttachedCodex {
+        package,
+        executable,
         process,
         client,
+        targets,
+        sessions,
+    })
+}
+
+fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
+    let attached = start_attached_codex()?;
+    let mut renderer = RendererRuntime::bundled()?;
+    let initial_outcomes = attached
+        .sessions
+        .iter()
+        .map(|session| RendererOutcome {
+            target_id: session.target_id().to_owned(),
+            result: renderer.attach(session),
+        })
+        .collect();
+    Ok(CodletRuntime {
+        package: attached.package,
+        executable: attached.executable,
+        process: attached.process,
+        client: attached.client,
+        targets: attached.targets,
+        renderer,
+        initial_outcomes,
     })
 }
 
 impl ProbedCodex {
-    fn wait(self) -> Result<u32, ProbeError> {
-        hold_cdp_until_child_exit(&self.process, &self.client)
+    fn wait(mut self) -> Result<u32, ProbeError> {
+        let exit_code = loop {
+            if let Some(exit_code) = self.process.wait(Duration::ZERO)? {
+                break exit_code;
+            }
+
+            let changes = match self.targets.pump(Duration::ZERO) {
+                Ok(changes) => changes,
+                Err(error) => {
+                    if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
+                        break exit_code;
+                    }
+                    return Err(error.into());
+                }
+            };
+            let mut sessions = Vec::new();
+            for change in changes {
+                match change {
+                    TargetChange::Attached(session) => sessions.push(session),
+                    TargetChange::NavigatedAway(session) => session.detach()?,
+                    TargetChange::SessionEnded { .. } => {}
+                }
+            }
+            let markers = bootstrap_probe_sessions(&sessions, &self.marker_id)?;
+            for (session, marker) in sessions.iter().zip(markers) {
+                println!(
+                    "renderer-bootstrap: target-id={}; marker-inserted={}; marker-removed={}",
+                    session.target_id(),
+                    marker.inserted,
+                    marker.removed
+                );
+            }
+
+            if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
+                break exit_code;
+            }
+        };
+        self.client.shutdown()?;
+        if exit_code == 0 {
+            Ok(exit_code)
+        } else {
+            Err(ProbeError::CodexExit { exit_code })
+        }
+    }
+}
+
+impl CodletRuntime {
+    fn print_identity_and_initial_state(&self) {
+        println!("package: {}", self.package.full_name);
+        println!("version: {}", self.package.version);
+        println!("executable: {}", self.executable.display());
+        println!("launched-process-id: {}", self.process.process_id());
+        for outcome in &self.initial_outcomes {
+            print_renderer_outcome(outcome);
+        }
+    }
+
+    fn wait(mut self) -> Result<u32, ProbeError> {
+        let exit_code = loop {
+            if let Some(exit_code) = self.process.wait(Duration::ZERO)? {
+                break exit_code;
+            }
+
+            let changes = match self.targets.pump(Duration::ZERO) {
+                Ok(changes) => changes,
+                Err(error) => {
+                    if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
+                        break exit_code;
+                    }
+                    return Err(error.into());
+                }
+            };
+            for change in changes {
+                let target_id = change.target_id().to_owned();
+                match self.renderer.apply_target_change(change) {
+                    Ok(Some(report)) => print_renderer_outcome(&RendererOutcome {
+                        target_id,
+                        result: Ok(report),
+                    }),
+                    Ok(None) => {}
+                    Err(error) => print_renderer_outcome(&RendererOutcome {
+                        target_id,
+                        result: Err(error),
+                    }),
+                }
+            }
+            let _ = self.renderer.pump_bindings()?;
+            if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
+                break exit_code;
+            }
+        };
+        self.client.shutdown()?;
+        if exit_code == 0 {
+            Ok(exit_code)
+        } else {
+            Err(ProbeError::CodexExit { exit_code })
+        }
+    }
+}
+
+fn print_renderer_outcome(outcome: &RendererOutcome) {
+    match &outcome.result {
+        Ok(report) => println!(
+            "renderer-bootstrap: target-id={}; state=active; plugins={}",
+            report.target_id, report.plugin_count
+        ),
+        Err(error) => eprintln!(
+            "renderer-bootstrap: target-id={}; state=failed; error={error}",
+            outcome.target_id
+        ),
     }
 }
 
@@ -230,6 +424,16 @@ pub fn probe_marker(session: &TargetSession, marker_id: &str) -> Result<MarkerRe
             cleanup: Box::new(cleanup),
         }),
     }
+}
+
+fn bootstrap_probe_sessions(
+    sessions: &[TargetSession],
+    marker_id: &str,
+) -> Result<Vec<MarkerReport>, ProbeError> {
+    sessions
+        .iter()
+        .map(|session| probe_marker(session, marker_id))
+        .collect()
 }
 
 fn marker_expressions(marker_id: &str) -> (String, String) {

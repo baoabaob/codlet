@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "codlet",
+  "version": "0.1.0",
+  "renderer": {
+    "entry": "dist/renderer.js",
+    "world": "isolated"
+  },
+  "permissions": ["ui.dom"],
+  "requires": [
+    {
+      "name": "codex.ui.titlebar.afterMenu",
+      "api": 1,
+      "scope": "target"
+    },
+    {
+      "name": "codlet.runtime.ping",
+      "api": 1,
+      "scope": "target"
+    }
+  ]
+}
