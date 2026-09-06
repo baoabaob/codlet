@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,6 +16,9 @@ const MANIFEST_SCHEMA: u32 = 1;
 const REGISTRY_SCHEMA: u32 = 1;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
 const MAX_VERSION_BYTES: usize = 64;
+const REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const REGISTRY_LOCK_POLL: Duration = Duration::from_millis(10);
+const TEMP_FILE_ATTEMPTS: usize = 128;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -82,13 +87,14 @@ pub struct LoadedPlugin {
 pub struct PluginRegistry {
     path: PathBuf,
     document: RegistryDocument,
+    pending: BTreeMap<String, PluginPreference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct RegistryDocument {
     schema: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_preferences")]
     plugins: BTreeMap<String, PluginPreference>,
 }
 
@@ -133,6 +139,15 @@ pub enum PluginRegistryError {
     Schema(u32),
     #[error("plugin registry contains an invalid plugin id: {0}")]
     PluginId(String),
+    #[error("plugin registry is busy after waiting {timeout:?} for lock {path}; retry the save")]
+    Busy { path: PathBuf, timeout: Duration },
+    #[error("{primary}; also failed to remove temporary registry {path}: {source}")]
+    TemporaryCleanup {
+        primary: Box<PluginRegistryError>,
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 impl PluginManifest {
@@ -176,36 +191,28 @@ impl PluginRegistry {
 
     pub fn load(path: impl Into<PathBuf>) -> Result<Self, PluginRegistryError> {
         let path = path.into();
-        let document = match fs::read_to_string(&path) {
-            Ok(json) => serde_json::from_str(&json).map_err(|error| PluginRegistryError::Json {
-                path: path.clone(),
-                message: error.to_string(),
-            })?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => RegistryDocument::default(),
-            Err(source) => {
-                return Err(PluginRegistryError::Io {
-                    operation: "read",
-                    path,
-                    source,
-                });
-            }
-        };
-        document.validate()?;
-        Ok(Self { path, document })
+        let document = RegistryDocument::read(&path)?;
+        Ok(Self {
+            path,
+            document,
+            pending: BTreeMap::new(),
+        })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Includes staged edits; persistence is confirmed only by a successful `save`.
     pub fn is_enabled(&self, plugin_id: &str) -> bool {
-        self.document
-            .plugins
+        self.pending
             .get(plugin_id)
+            .or_else(|| self.document.plugins.get(plugin_id))
             .map(|preference| preference.enabled)
             .unwrap_or(true)
     }
 
+    /// Stage an explicit assignment, even when it matches the loaded value.
     pub fn set_enabled(
         &mut self,
         plugin_id: &str,
@@ -214,13 +221,16 @@ impl PluginRegistry {
         if !valid_plugin_id(plugin_id) {
             return Err(PluginRegistryError::PluginId(plugin_id.to_owned()));
         }
-        self.document
-            .plugins
+        self.pending
             .insert(plugin_id.to_owned(), PluginPreference { enabled });
         Ok(())
     }
 
-    pub fn save(&self) -> Result<(), PluginRegistryError> {
+    /// Merge only staged assignments into the latest strictly validated document.
+    /// Writers serialize on a persistent sidecar lock; the last committed assignment
+    /// to the same ID wins. Success refreshes this snapshot and clears staged edits.
+    /// Failure leaves this snapshot and its staged edits intact for an explicit retry.
+    pub fn save(&mut self) -> Result<(), PluginRegistryError> {
         let parent = self
             .path
             .parent()
@@ -232,50 +242,196 @@ impl PluginRegistry {
             source,
         })?;
 
-        let file_name = self
-            .path
-            .file_name()
-            .expect("a registry path with a parent has a file name")
-            .to_string_lossy();
-        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(
-            ".{file_name}.{}.{}.tmp",
-            std::process::id(),
-            sequence
-        ));
-        let mut bytes = serde_json::to_vec_pretty(&self.document)
-            .expect("the typed plugin registry is always serializable");
-        bytes.push(b'\n');
+        let _lock = lock_registry(&self.path, REGISTRY_LOCK_TIMEOUT)?;
+        let mut latest = RegistryDocument::read(&self.path)?;
+        if !self.pending.is_empty() {
+            latest.plugins.extend(self.pending.clone());
+            let mut bytes = serde_json::to_vec_pretty(&latest)
+                .expect("the typed plugin registry is always serializable");
+            bytes.push(b'\n');
+            TemporaryRegistry::create(&self.path)?.replace(&self.path, &bytes)?;
+        }
+        self.document = latest;
+        self.pending.clear();
+        Ok(())
+    }
+}
 
-        let result = (|| {
-            let mut file = OpenOptions::new()
+fn lock_registry(path: &Path, timeout: Duration) -> Result<File, PluginRegistryError> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ | FILE_SHARE_WRITE: keep the lock identity from being deleted.
+        options.share_mode(0x1 | 0x2);
+    }
+    let lock = options
+        .open(&lock_path)
+        .map_err(|source| PluginRegistryError::Io {
+            operation: "open lock for",
+            path: lock_path.clone(),
+            source,
+        })?;
+    let started = Instant::now();
+    loop {
+        match lock.try_lock() {
+            // Never unlink the sidecar: waiters must keep locking the same file.
+            // Closing the handle, including on process exit, releases the OS lock.
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) => {
+                let remaining = timeout.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    return Err(PluginRegistryError::Busy {
+                        path: lock_path,
+                        timeout,
+                    });
+                }
+                thread::sleep(REGISTRY_LOCK_POLL.min(remaining));
+            }
+            Err(TryLockError::Error(source)) => {
+                return Err(PluginRegistryError::Io {
+                    operation: "lock",
+                    path: lock_path,
+                    source,
+                });
+            }
+        }
+    }
+}
+
+struct TemporaryRegistry {
+    path: PathBuf,
+    file: Option<File>,
+    remove_on_drop: bool,
+}
+
+impl TemporaryRegistry {
+    fn create(path: &Path) -> Result<Self, PluginRegistryError> {
+        for _ in 0..TEMP_FILE_ATTEMPTS {
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let mut name = path.as_os_str().to_owned();
+            name.push(format!(".{}.{}.tmp", std::process::id(), sequence));
+            let temporary = PathBuf::from(name);
+            match OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temporary)
-                .map_err(|source| PluginRegistryError::Io {
-                    operation: "create temporary",
-                    path: temporary.clone(),
-                    source,
-                })?;
-            file.write_all(&bytes)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        path: temporary,
+                        file: Some(file),
+                        remove_on_drop: true,
+                    });
+                }
+                // A previous process with a reused PID may have left this name behind.
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(source) => {
+                    return Err(PluginRegistryError::Io {
+                        operation: "create temporary for",
+                        path: temporary,
+                        source,
+                    });
+                }
+            }
+        }
+        Err(PluginRegistryError::Io {
+            operation: "create temporary for",
+            path: path.to_owned(),
+            source: io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "temporary name attempts exhausted",
+            ),
+        })
+    }
+
+    fn replace(mut self, path: &Path, bytes: &[u8]) -> Result<(), PluginRegistryError> {
+        let result = (|| {
+            let file = self
+                .file
+                .as_mut()
+                .expect("temporary file is open until replacement");
+            file.write_all(bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|source| PluginRegistryError::Io {
                     operation: "write temporary",
-                    path: temporary.clone(),
+                    path: self.path.clone(),
                     source,
                 })?;
-            drop(file);
-            fs::rename(&temporary, &self.path).map_err(|source| PluginRegistryError::Io {
+            self.file.take();
+            fs::rename(&self.path, path).map_err(|source| PluginRegistryError::Io {
                 operation: "replace",
-                path: self.path.clone(),
+                path: path.to_owned(),
                 source,
             })
         })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        self.file.take();
+        if let Err(primary) = result {
+            match fs::remove_file(&self.path) {
+                Ok(()) => self.remove_on_drop = false,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.remove_on_drop = false
+                }
+                Err(source) => {
+                    return Err(PluginRegistryError::TemporaryCleanup {
+                        primary: Box::new(primary),
+                        path: self.path.clone(),
+                        source,
+                    });
+                }
+            }
+            return Err(primary);
         }
-        result
+        self.remove_on_drop = false;
+        Ok(())
     }
+}
+
+impl Drop for TemporaryRegistry {
+    fn drop(&mut self) {
+        self.file.take();
+        if self.remove_on_drop {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn deserialize_preferences<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, PluginPreference>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct PreferencesVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for PreferencesVisitor {
+        type Value = BTreeMap<String, PluginPreference>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an object with unique plugin IDs")
+        }
+
+        fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+        where
+            M: serde::de::MapAccess<'de>,
+        {
+            let mut preferences = BTreeMap::new();
+            while let Some((id, preference)) = map.next_entry::<String, PluginPreference>()? {
+                if preferences.insert(id.clone(), preference).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate plugin id: {id}"
+                    )));
+                }
+            }
+            Ok(preferences)
+        }
+    }
+
+    deserializer.deserialize_map(PreferencesVisitor)
 }
 
 impl Default for RegistryDocument {
@@ -288,6 +444,25 @@ impl Default for RegistryDocument {
 }
 
 impl RegistryDocument {
+    fn read(path: &Path) -> Result<Self, PluginRegistryError> {
+        let document = match fs::read_to_string(path) {
+            Ok(json) => serde_json::from_str(&json).map_err(|error| PluginRegistryError::Json {
+                path: path.to_owned(),
+                message: error.to_string(),
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
+            Err(source) => {
+                return Err(PluginRegistryError::Io {
+                    operation: "read",
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+        document.validate()?;
+        Ok(document)
+    }
+
     fn validate(&self) -> Result<(), PluginRegistryError> {
         if self.schema != REGISTRY_SCHEMA {
             return Err(PluginRegistryError::Schema(self.schema));
@@ -542,7 +717,177 @@ mod tests {
         registry.save().unwrap();
         assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
         assert_eq!(directory.path().read_dir().unwrap().count(), 1);
-        assert_eq!(path.parent().unwrap().read_dir().unwrap().count(), 1);
+        assert_eq!(path.parent().unwrap().read_dir().unwrap().count(), 2);
+        assert!(path.with_extension("json.lock").exists());
+    }
+
+    #[test]
+    fn stale_registries_preserve_independent_updates() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut first = PluginRegistry::load(&path).unwrap();
+        let mut second = PluginRegistry::load(&path).unwrap();
+
+        first.set_enabled("codlet", false).unwrap();
+        second.set_enabled("codex.ui.adapter", false).unwrap();
+        first.save().unwrap();
+        second.save().unwrap();
+
+        let committed = PluginRegistry::load(&path).unwrap();
+        assert!(!committed.is_enabled("codlet"));
+        assert!(!committed.is_enabled("codex.ui.adapter"));
+        assert_eq!(second.document, committed.document);
+        assert!(second.pending.is_empty());
+    }
+
+    #[test]
+    fn stale_clone_preserves_unknown_ids_and_does_not_replay_committed_edits() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut first = PluginRegistry::load(&path).unwrap();
+        first.set_enabled("future.plugin", false).unwrap();
+        first.save().unwrap();
+        let mut stale = first.clone();
+
+        first.set_enabled("future.plugin", true).unwrap();
+        first.set_enabled("another.future-plugin", false).unwrap();
+        first.save().unwrap();
+        stale.set_enabled("codlet", false).unwrap();
+        stale.save().unwrap();
+
+        assert!(stale.is_enabled("future.plugin"));
+        assert!(!stale.is_enabled("another.future-plugin"));
+        assert!(!stale.is_enabled("codlet"));
+        assert_eq!(
+            stale.document,
+            PluginRegistry::load(&path).unwrap().document
+        );
+
+        first.save().unwrap();
+        assert_eq!(first.document, stale.document);
+    }
+
+    #[test]
+    fn same_id_uses_commit_order_even_when_assignment_matches_the_stale_value() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut first = PluginRegistry::load(&path).unwrap();
+        let mut second = first.clone();
+        second.set_enabled("codlet", true).unwrap();
+        first.set_enabled("codlet", false).unwrap();
+        first.save().unwrap();
+        second.save().unwrap();
+        assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+
+        // Saving again without an assignment refreshes, never replays the old disable.
+        first.save().unwrap();
+        assert!(first.is_enabled("codlet"));
+        assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+    }
+
+    #[test]
+    fn save_revalidates_latest_bytes_and_retains_staged_edits_on_failure() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut registry = PluginRegistry::load(&path).unwrap();
+        registry.set_enabled("codlet", false).unwrap();
+        let previous = registry.clone();
+
+        for bytes in [
+            b"{truncated".as_slice(),
+            b"\xff",
+            br#"{"schema":2,"plugins":{}}"#,
+            br#"{"schema":1,"plugins":{},"extra":true}"#,
+            br#"{"schema":1,"plugins":{"Bad Id":{"enabled":true}}}"#,
+            br#"{"schema":1,"plugins":{"future.plugin":{"enabled":false,"extra":0}}}"#,
+            br#"{"schema":1,"plugins":{"future.plugin":{"enabled":"false"}}}"#,
+            br#"{"schema":1,"plugins":{"future.plugin":{"enabled":false,"enabled":true}}}"#,
+            br#"{"schema":1,"schema":1,"plugins":{}}"#,
+            br#"{"schema":1,"plugins":{"future.plugin":{"enabled":false},"future.plugin":{"enabled":true}}}"#,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert!(PluginRegistry::load(&path).is_err());
+            assert!(registry.save().is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(registry.document, previous.document);
+            assert_eq!(registry.pending, previous.pending);
+            assert_eq!(directory.path().read_dir().unwrap().count(), 2);
+        }
+
+        fs::write(
+            &path,
+            br#"{"schema":1,"plugins":{"future.plugin":{"enabled":false}}}"#,
+        )
+        .unwrap();
+        registry.save().unwrap();
+        assert!(!registry.is_enabled("codlet"));
+        assert!(!registry.is_enabled("future.plugin"));
+        assert!(registry.pending.is_empty());
+    }
+
+    #[test]
+    fn temporary_write_failure_removes_only_its_owned_file() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        fs::write(&path, b"original bytes").unwrap();
+        let mut temporary = TemporaryRegistry::create(&path).unwrap();
+        let temporary_path = temporary.path.clone();
+        temporary.file.take();
+        temporary.file = Some(File::open(&temporary_path).unwrap());
+
+        assert!(matches!(
+            temporary.replace(&path, b"replacement bytes"),
+            Err(PluginRegistryError::Io {
+                operation: "write temporary",
+                ..
+            })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), b"original bytes");
+        assert!(!temporary_path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_failure_keeps_disk_and_snapshot_then_retry_merges_latest() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut registry = PluginRegistry::load(&path).unwrap();
+        registry.set_enabled("future.plugin", false).unwrap();
+        registry.save().unwrap();
+        let original = fs::read(&path).unwrap();
+        registry.set_enabled("codlet", false).unwrap();
+        let previous = registry.clone();
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .open(&path)
+            .unwrap();
+
+        assert!(matches!(
+            registry.save(),
+            Err(PluginRegistryError::Io {
+                operation: "replace",
+                ..
+            })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(registry.document, previous.document);
+        assert_eq!(registry.pending, previous.pending);
+        assert_eq!(directory.path().read_dir().unwrap().count(), 2);
+        drop(blocker);
+
+        let mut another = PluginRegistry::load(&path).unwrap();
+        another.set_enabled("future.plugin", true).unwrap();
+        another.save().unwrap();
+        registry.save().unwrap();
+        assert!(!registry.is_enabled("codlet"));
+        assert!(registry.is_enabled("future.plugin"));
+        assert_eq!(
+            registry.document,
+            PluginRegistry::load(&path).unwrap().document
+        );
     }
 
     #[test]
