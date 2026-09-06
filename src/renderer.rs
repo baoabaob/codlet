@@ -21,7 +21,7 @@ const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_RENDERER_RPC_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_RENDERER_RPC_METHOD_BYTES: usize = 256;
 const MAX_RENDERER_RPC_PLUGIN_ID_BYTES: usize = 128;
-const BUILTIN_HOST_PROVIDER_ID: &str = "codlet.core.host";
+pub(crate) const BUILTIN_HOST_PROVIDER_ID: &str = "codlet.core.host";
 const BUILTIN_HOST_CAPABILITY_NAME: &str = "codlet.runtime.ping";
 const BUILTIN_HOST_CAPABILITY_API: u32 = 1;
 const BUILTIN_MANAGE_CAPABILITY_NAME: &str = "codlet.runtime.manage";
@@ -1717,7 +1717,7 @@ fn builtin_host_capability() -> CapabilityDescriptor {
     .expect("the built-in host capability descriptor is valid")
 }
 
-fn builtin_host_capabilities() -> [CapabilityDescriptor; 2] {
+pub(crate) fn builtin_host_capabilities() -> [CapabilityDescriptor; 2] {
     [builtin_host_capability(), builtin_manage_capability()]
 }
 

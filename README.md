@@ -4,6 +4,10 @@ Codlet is a Windows-first launcher and lightweight extension runtime for Codex D
 
 It does not modify the Codex package, official shortcuts, protocols, configuration, or user data. It never terminates or restarts an existing Codex process. Normal Codex launches do not run Codlet.
 
+## Development status
+
+The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
+
 ## M0 commands
 
 Launch the current renderer-runtime candidate with the bundled first-party `codlet` GUI plugin:
@@ -24,12 +28,15 @@ codlet plugin enable codlet
 
 The registry is stored at `%LOCALAPPDATA%\Codlet\config.json` with atomic replacement. `list` does not create the file. Until Runtime Host control IPC is implemented, CLI enable and disable changes apply to the next `codlet launch`; the command reports that limitation explicitly. The in-Codex GUI uses the authenticated `codlet.runtime.manage@1` endpoint, so its own disable switch takes effect immediately. Re-enable it with the CLI and launch Codlet again.
 
+Writers serialize on `config.json.lock`, re-read the latest valid document, and merge only their explicit edits. Different plugin updates are preserved; the last committed assignment to the same plugin wins. A busy lock returns an error after two seconds. The sidecar remains on disk, while its OS lock is released when the writer closes the handle or exits. Successful saves refresh the in-memory snapshot; failed saves preserve pending edits for an explicit retry.
+
 Run the automated checks on Windows:
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
+node --test tests/bootstrap.test.mjs
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0CrashAcceptance.ps1
@@ -42,7 +49,10 @@ Inspect the installed package and report any running process from the Codex pack
 
 ```powershell
 cargo run --locked --bin codlet -- doctor
+cargo run --locked --bin codlet -- doctor --json
 ```
+
+`doctor --json` emits one `codlet.doctor/v1` report. Package, executable, process snapshot, registry, catalog, and dependency checks retain their own results, so a package failure does not hide a configuration error. Plugin `desiredEnabled` and capability declarations describe the next launch; runtime targets, generations, provider readiness, and compatibility remain explicitly unprobed. Check failures return exit code `1`. An existing Codex instance blocks a later launch but does not itself fail read-only doctor. Neither output mode creates registry state or attaches to Codex.
 
 The reproducible external M0 acceptance entry takes an existing `codlet.exe` by explicit path. Run this one command from the repository root only after manually closing every ChatGPT/Codex window:
 
@@ -91,4 +101,4 @@ Do not run that command merely to exercise CI. Use the normal acceptance script 
 
 ## Scope
 
-The current candidate covers NUL framing, blocking request/event routing, EOF teardown, exact Windows handle inheritance, current-user package discovery, conflict detection, continuous multi-target discovery for every matching BrowserWindow in one Electron root, per-plugin isolated renderer worlds, structured capability manifests, deterministic provider/consumer ordering, opaque generation- and scope-bound capability principals, target-destruction revocation before same-ID reattachment, generation-aware activate/deactivate, navigation persistence, the bundled first-party `codlet` GUI, the renderer binding/RPC bridge, and a strict persistent enablement registry for bundled plugins. Principal and lease validation is the Core authorization gate: provider identity and registration/scope epochs are not exposed, and stale consumer/provider generations, revoked target scopes, wrong sessions, duplicate or out-of-order request IDs, and unknown bindings are rejected before a renderer endpoint action runs. Activation uses one CDP request deadline while response and binding activity share a wake path; an activating candidate can receive its own authenticated RPC responses, but is not visible through status, provider dispatch, or management actions before ready. A candidate that never becomes ready expires on that original request deadline, rolls back, and leaves the Host usable. The bridge includes a fixed, side-effect-free `codlet.runtime.ping@1` endpoint and the first authenticated management transaction, `codlet.runtime.manage@1` list/disableSelf. The latter requires the `runtime.manage` grant, persists before acknowledging, and only then revokes and unloads the caller across active targets; fake-CDP verifies the normal ordering plus cleanup and response-delivery fault isolation. This is not the full L3 broker: file, process, network, and system capabilities are not implemented. A detached runtime process and launcher/runtime IPC are deferred. External plugin loading, file watching, hot reload, separate-process live CLI control, host processes, permission consent UI, SDK, and marketplace remain outside the current slice. RPC-using deactivation and nested RPC from an awaited renderer-provider handler still require a general reentrant lifecycle pump.
+The current candidate covers NUL framing, blocking request/event routing, EOF teardown, exact Windows handle inheritance, current-user package discovery, conflict detection, continuous multi-target discovery for every matching BrowserWindow in one Electron root, per-plugin isolated renderer worlds, structured capability manifests, deterministic provider/consumer ordering, opaque generation- and scope-bound capability principals, target-destruction revocation before same-ID reattachment, generation-aware activate/deactivate, navigation persistence, the bundled first-party `codlet` GUI, the renderer binding/RPC bridge, and a strict persistent enablement registry for bundled plugins. Principal and lease validation is the Core authorization gate: provider identity and registration/scope epochs are not exposed, and stale consumer/provider generations, revoked target scopes, wrong sessions, duplicate or out-of-order request IDs, and unknown bindings are rejected before a renderer endpoint action runs. Activation uses one CDP request deadline while response and binding activity share a wake path; an activating candidate can receive its own authenticated RPC responses, but is not visible through status, provider dispatch, or management actions before ready. A candidate that never becomes ready expires on that original request deadline, rolls back, and leaves the Host usable. The bridge includes a fixed, side-effect-free `codlet.runtime.ping@1` endpoint and the first authenticated management transaction, `codlet.runtime.manage@1` list/disableSelf. The latter requires the `runtime.manage` grant, persists before acknowledging, and only then revokes and unloads the caller across active targets; fake-CDP verifies the normal ordering plus cleanup and response-delivery fault isolation. This is not the full L3 broker: file, process, network, and system capabilities are not implemented. A detached runtime process and launcher/runtime IPC are deferred. External plugin loading, file watching, hot reload, separate-process live CLI control, host processes, permission consent UI, SDK, and marketplace remain outside the current slice. Activation, deactivation, and awaited renderer-provider handlers now share a reentrant binding pump with one inherited absolute deadline and a maximum of eight nested waits. Stopping plugins remain addressable for cleanup replies while hidden from provider dispatch; actual target destruction invalidates session clones before further dispatch. Ordinary response-delivery failures remain diagnostic. Host deadlines do not forcibly stop already-running plugin JavaScript or guarantee reversal of its side effects.

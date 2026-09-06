@@ -6,10 +6,9 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::capabilities::{
-    CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryError, CapabilityScope,
-};
+use crate::capabilities::{CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryError};
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, PluginRegistryError};
+use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
 
 pub const DOCTOR_SCHEMA: &str = "codlet.doctor/v1";
 const RUNTIME_UNAVAILABLE: &str =
@@ -477,14 +476,8 @@ fn registry_issue(error: &PluginRegistryError) -> DiagnosticIssue {
 fn declared_host_providers() -> Vec<HostProviderDeclaration> {
     // These describe RendererRuntime's built-in endpoints, not running providers.
     vec![HostProviderDeclaration {
-        id: "codlet.core.host",
-        provides: ["codlet.runtime.ping", "codlet.runtime.manage"]
-            .into_iter()
-            .map(|name| {
-                CapabilityDescriptor::new(name, 1, CapabilityScope::Target)
-                    .expect("built-in descriptor is valid")
-            })
-            .collect(),
+        id: BUILTIN_HOST_PROVIDER_ID,
+        provides: builtin_host_capabilities().to_vec(),
     }]
 }
 

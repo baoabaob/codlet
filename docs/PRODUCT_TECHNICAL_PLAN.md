@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.13；日期：2026-09-04；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.14；日期：2026-09-07；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -116,7 +116,7 @@ M1a 新增首个正式启动入口：
 codlet launch
 ```
 
-该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，加载第一方 manifest，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：内置插件启用状态已由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；外部插件目录、文件热重载、运行中 CLI 控制和 GUI 自我禁用仍待完成。
+该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，加载第一方 manifest，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：内置插件启用状态已由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；GUI 自我禁用已通过鉴权事务实现；外部插件目录、文件热重载和运行中 CLI 控制仍待完成。
 
 M0 的仓库级 Windows 外部验收统一使用以下入口；`-CodletPath` 必须由操作者明确指向已经构建好的 `codlet.exe`，脚本不发现、安装或修改工具链：
 
@@ -144,7 +144,7 @@ codlet plugin enable <id>
 codlet plugin disable <id>
 ```
 
-`list` 在状态文件不存在时只显示内置默认值，不创建文件。`enable` / `disable` 采用同目录临时文件、flush + `sync_all` 和原子 rename 替换状态；当前没有 Launcher/Runtime Host 控制 IPC，因此命令明确报告只对下一次 `codlet launch` 生效。运行中立即启停、自我禁用和热重载不能借此宣称已实现。
+`list` 在状态文件不存在时只显示内置默认值，不创建文件。`enable` / `disable` 采用同目录临时文件、flush + `sync_all` 和原子 rename 替换状态；当前没有 Launcher/Runtime Host 控制 IPC，因此命令明确报告只对下一次 `codlet launch` 生效。这些离线 CLI 命令不提供运行中立即启停或热重载；GUI 自我禁用另由已实现的鉴权管理事务完成。
 
 以下命令仍属于后续里程碑：
 
@@ -727,15 +727,15 @@ M1c 验收条件：
 
 ## 16. 当前开发工作包
 
-下一纵切按下列依赖关系推进：
+2026-09-07 的审查与任务拆分见 [REVIEW_AND_EXECUTION_2026-09-07.md](REVIEW_AND_EXECUTION_2026-09-07.md)。保留既有 capability kernel 与 adapter 边界，按以下依赖关系继续推进：
 
-1. **Capability Kernel**：结构化 manifest、provider registry、dependency graph、scope、generation 和纯 Rust 测试；
-2. **Renderer Isolation**：每插件独立 world/binding、按 graph 激活和反向停用；
-3. **Codex UI Adapter**：把 selector 与 mount 生命周期移出 GUI codlet，以 titlebar capability 完成真实 provider/consumer 闭环；
-4. **Verification**：扩展 fake child 覆盖双 world、双插件、导航、销毁、多窗口，并在当前安装 build `26.901.2854.0` 重新执行实机门禁；
-5. **Backend Research Gate**：只读固定上游源码与本机 `app.asar`，冻结 app-host envelope 探针和 L4 go/no-go 测试，不提前向第三方暴露私有 API。
+1. **内核可靠性与诊断**：集成可重入 lifecycle/provider RPC、跨进程 registry 合并事务和只读 `doctor --json`，通过统一自动化门禁。
+2. **本地插件目录**：显式加载用户授信目录，严格校验 manifest、entry 路径和 grant，复用内置插件的 registry 与依赖图。
+3. **运行中控制**：实现会话级 Runtime Host IPC，将 CLI enable/disable/reload/status 接入与 GUI 共用的管理事务，先验证手动 reload 的换代、反向停用和失败回滚。
+4. **文件热重载**：在手动 reload 契约稳定后接入 watcher，验证连续保存、失败诊断与 generation 撤销。
+5. **当前 build 实机门禁**：在专门启动的 Codlet 会话中验证 GUI、导航、DOM 重建、多窗口和正常退出。2026-09-07 只读检测到 `26.901.6511.0`，该结果不构成兼容性通过证据。
 
-Capability Kernel 是 2-4 的共同前置。Renderer Isolation 与 adapter source 可在文件边界明确时并行，但只有 UI Adapter 的真实 provider/consumer 测试通过后，manifest 中的 capability 才能被称为已实现。L4 研究不阻塞 M1/M2，也不允许以第二 App Server 路径提前伪造完成。
+第 1 项是后续加载与控制工作的前置；第 2-4 项涉及相同生命周期文件，应串行集成。真实门禁全部满足前，M0/M1 仍保持未关闭。L4 只读研究不阻塞 M1/M2，也不允许以第二 App Server 路径提前伪造完成。
 
 ### 16.1 当前实现状态
 
@@ -743,7 +743,17 @@ Capability Kernel 是 2-4 的共同前置。Renderer Isolation 与 adapter sourc
 
 target controller 现在按顺序向 Runtime Host 暴露 `Attached`、`NavigatedAway` 和带 `targetId`/`sessionId` 的 `SessionEnded` 变化，并在遇到第一个有效变化时立即返回；因此即使 `targetDestroyed` 与同一 `targetId` 的 recreate 已连续到达，renderer 也会先撤销旧 target scope、移除旧 session 并按 consumer 到 provider 的顺序尝试清理，再 attach 新 CDP session。重建 target 获得新的 scope epoch，旧 target principal 在销毁后和重建后都保持失效；导航离开规范 URL 只移除持久脚本并精确 detach 当前旧 session，不向已死亡 session 发插件命令。fake-CDP 夹具使用不同的旧/新 CDP session id 验证了这些时序。
 
-该状态仍是实现候选，不是完整 M1c 完成声明：renderer binding 与 host RPC 的第一条纵切已经接入。每个插件在目标/session/generation 命名空间中拥有独立 `Runtime.addBinding`，bootstrap 在其上实现版本化 request/response/notification；host 在转发到 provider context、固定的 `codlet.runtime.ping@1` endpoint 或 `codlet.runtime.manage@1` endpoint 前重新核验 consumer principal、lease、provider registration/generation、target scope、grant 和单调 request ID，旧 generation、撤销 scope、错误 session、重复/乱序 ID、超限/畸形请求与未知 binding 均在 endpoint 动作前拒绝。activation ready handshake 已接入：CDP pending request 的 response 与 event 共用 activity epoch/condition variable 和原始 deadline；Host 等待 activation `Runtime.evaluate` 时持续处理同 session binding；bootstrap 的 activating candidate 只可接收自身回包，不进入 `status` 或 provider dispatch；ready 成功且持久脚本安装后 Host 才标记 active。fake-CDP 在扣住 activation response 的条件下依次完成 ping、manage list 和跨 world adapter provider 请求，并验证 activation 内管理动作在落盘前以 `plugin_not_active` 拒绝及反向回滚；另一个无回包场景验证 candidate 在原 request deadline 到期后确定失败、反向回滚且 Host 继续接受命令。bundled adapter/codlet 已通过 `codex.ui.titlebar.afterMenu@1` 完成 provider/consumer 闭环，codlet 用 manage 的 `list` / `disableSelf` 完成首个持久化管理事务。内置插件启用状态使用严格 schema 的本地 registry，缺省只读、写入原子替换；`plugin list/enable/disable` 的命令级测试证明它们不启动 Codex，`launch` 会在任何外部启动副作用发生前验证 registry 并按状态构造插件图。自动化回归证明 self-disable 在 grant 拒绝时不落盘，成功时先持久化、再尝试向 caller 回包、最后从当前 target 清理并撤销；清理错误和已持久化后的回包错误只进入可读取诊断，Host 仍接受后续 target/命令。完整 `runtime.manage`、外部插件目录、文件热重载、运行中 CLI IPC、任意插件启停/重载和完整 `doctor` 诊断仍未实现；deactivate 内主动 RPC 以及 awaited renderer-provider handler 的嵌套 RPC 还需要通用可重入 lifecycle pump。真实 Codex gate 保持 ignored，未在自动化中启动客户端；当前安装 build `26.901.2854.0` 的实机 M1 GUI 门禁仍必须补齐后才能关闭 M1。
+该状态仍是实现候选，不是完整 M1c 完成声明：renderer binding 与 host RPC 的第一条纵切已经接入。每个插件在目标/session/generation 命名空间中拥有独立 `Runtime.addBinding`，bootstrap 在其上实现版本化 request/response/notification；host 在转发到 provider context、固定的 `codlet.runtime.ping@1` endpoint 或 `codlet.runtime.manage@1` endpoint 前重新核验 consumer principal、lease、provider registration/generation、target scope、grant 和单调 request ID，旧 generation、撤销 scope、错误 session、重复/乱序 ID、超限/畸形请求与未知 binding 均在 endpoint 动作前拒绝。activation ready handshake 已接入：CDP pending request 的 response 与 event 共用 activity epoch/condition variable 和原始 deadline；Host 等待 activation `Runtime.evaluate` 时持续处理同 session binding；bootstrap 的 activating candidate 只可接收自身回包，不进入 `status` 或 provider dispatch；ready 成功且持久脚本安装后 Host 才标记 active。fake-CDP 在扣住 activation response 的条件下依次完成 ping、manage list 和跨 world adapter provider 请求，并验证 activation 内管理动作在落盘前以 `plugin_not_active` 拒绝及反向回滚；另一个无回包场景验证 candidate 在原 request deadline 到期后确定失败、反向回滚且 Host 继续接受命令。bundled adapter/codlet 已通过 `codex.ui.titlebar.afterMenu@1` 完成 provider/consumer 闭环，codlet 用 manage 的 `list` / `disableSelf` 完成首个持久化管理事务。内置插件启用状态使用严格 schema 的本地 registry，缺省只读、写入原子替换；`plugin list/enable/disable` 的命令级测试证明它们不启动 Codex，`launch` 会在任何外部启动副作用发生前验证 registry 并按状态构造插件图。自动化回归证明 self-disable 在 grant 拒绝时不落盘，成功时先持久化、再尝试向 caller 回包、最后从当前 target 清理并撤销；清理错误和已持久化后的回包错误只进入可读取诊断，Host 仍接受后续 target/命令。完整 `runtime.manage`、外部插件目录、文件热重载、运行中 CLI IPC、任意插件启停/重载和完整 `doctor` 诊断仍未实现；2026-09-07 已补齐 deactivate 内主动 RPC 与 awaited renderer-provider handler 的通用可重入等待：嵌套调用继承同一个绝对 deadline，并限制为最多八层；主动停用保留清理回包路由，真实 target 销毁则先撤销 session liveness，普通回包失败只进入诊断。该 deadline 限制 Host 等待，不承诺硬中断已经执行的插件 JavaScript 或回滚不可逆副作用。真实 Codex gate 保持 ignored，未在自动化中启动客户端；当前安装 build `26.901.2854.0` 的实机 M1 GUI 门禁仍必须补齐后才能关闭 M1。
+
+### 16.2 2026-09-07 审查推进
+
+三个独立 Astra xhigh 执行任务分别完成了生命周期、配置事务与只读诊断；前两项在独立 worktree 开发，主任务负责审查、整合和组合验证。
+
+- lifecycle、provider handler 和 deactivate 共用有界的 binding pump；清理中插件可收回包，但不能作为 active provider 被新调用。真实 target 销毁会使原 session clone 失效，旧请求不可向重建 target 派发。合法的 provider `null` 返回值与缺失 `value` 字段分别处理。
+- registry 使用持久 sidecar 文件上的 OS 锁，在锁内重读、严格校验并只合并明确修改项。不同插件的并发修改不会丢失，同一插件以最后成功提交的值为准；争锁最多等待两秒，进程退出会释放锁。成功刷新内存快照，失败保留待提交项供显式重试。
+- `codlet doctor` 与 `codlet doctor --json` 汇总包、路径、进程快照、registry、内置 catalog 和静态依赖结果。JSON schema 为 `codlet.doctor/v1`，检查失败返回退出码 1；已运行 Codex 仅阻塞未来 launch，不导致只读 doctor 失败。没有 Runtime Host IPC 时，target、generation、provider-ready 和兼容性均明确标为未探测。
+
+这些是 M1 候选实现的推进，不替代外部实机门禁，也不关闭 `DEFECT-001` 或 `DEFECT-002`。全部验证结果及后续状态由本轮 review 文档记录。
 
 ## 17. 主要风险
 
