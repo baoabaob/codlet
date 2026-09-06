@@ -9,8 +9,12 @@ use crate::cdp::{
     CdpClient, ClientSpawnError, ShutdownError, TargetChange, TargetController, TargetError,
     TargetSession,
 };
+use crate::diagnostics::{
+    Check, DiagnosticIssue, DoctorInputs, DoctorReport, PackageInfo, ProcessInfo, ProcessSnapshot,
+};
 use crate::plugins::{
-    ManifestError, PluginRegistry, PluginRegistryError, bundled_plugins, enabled_bundled_plugins,
+    ManifestError, PluginRegistry, PluginRegistryError, bundled_plugins, default_registry_path,
+    enabled_bundled_plugins,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
@@ -63,13 +67,17 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch`, `codlet doctor`, `codlet plugin list`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error("unknown bundled plugin {0}; use `codlet plugin list` to inspect available plugins")]
     UnknownPlugin(String),
     #[error("Codex exited with nonzero status {exit_code} after CDP workers were reaped")]
     CodexExit { exit_code: u32 },
+    #[error(
+        "doctor found {failed_checks} failed check(s); see the report for repair actions (exit code 1)"
+    )]
+    DoctorFailed { failed_checks: usize },
 }
 
 #[derive(Debug)]
@@ -147,22 +155,9 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             println!("runtime-state: stopped; CDP workers reaped");
             Ok(())
         }
-        [command] if command == OsStr::new("doctor") => {
-            let (package, executable, running) = inspect_environment()?;
-            println!("package: {}", package.full_name);
-            println!("version: {}", package.version);
-            println!("executable: {}", executable.display());
-            if running.is_empty() {
-                println!("instance-conflict: none");
-            } else {
-                let process_ids: Vec<_> =
-                    running.iter().map(|process| process.process_id).collect();
-                println!("instance-conflict: {process_ids:?}");
-            }
-            println!("transport: inherited CDP pipe (real probe not run)");
-            let registry = PluginRegistry::load_default()?;
-            print_plugin_registry(&registry)?;
-            Ok(())
+        [command] if command == OsStr::new("doctor") => run_doctor(false),
+        [command, format] if command == OsStr::new("doctor") && format == OsStr::new("--json") => {
+            run_doctor(true)
         }
         [command, action] if command == OsStr::new("plugin") && action == OsStr::new("list") => {
             let registry = PluginRegistry::load_default()?;
@@ -209,6 +204,121 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
         }
         _ => Err(ProbeError::Usage),
     }
+}
+
+fn run_doctor(json: bool) -> Result<(), ProbeError> {
+    let report = collect_doctor_report();
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.to_human_readable());
+    }
+    if report.result.exit_code == 0 {
+        Ok(())
+    } else {
+        Err(ProbeError::DoctorFailed {
+            failed_checks: report.result.failed_checks.len(),
+        })
+    }
+}
+
+/// Collect independent read-only checks even when another check fails. Exact
+/// process matching needs a resolved package executable; it never falls back to
+/// broad process-name guesses when discovery fails.
+pub fn collect_doctor_report() -> DoctorReport {
+    let discovered = find_unique_current_user_package(CODEX_PACKAGE_FAMILY);
+    let executable = match &discovered {
+        Ok(package) => {
+            match resolve_package_executable(package, Path::new(CODEX_EXECUTABLE_RELATIVE_PATH)) {
+                Ok(path) => Check::ok(path),
+                Err(error) => Check::Failed {
+                    error: package_issue(&error),
+                },
+            }
+        }
+        Err(_) => Check::Unavailable {
+            reason: "Package discovery failed; no executable path was guessed.",
+        },
+    };
+    let processes = match &executable {
+        Check::Ok { data } => match running_processes_for_package(CODEX_PACKAGE_FAMILY, data) {
+            Ok(processes) => Check::ok(ProcessSnapshot::new(
+                processes
+                    .into_iter()
+                    .map(|process| ProcessInfo {
+                        process_id: process.process_id,
+                        executable: process.executable.to_string_lossy().into_owned(),
+                    })
+                    .collect(),
+            )),
+            Err(error) => Check::Failed {
+                error: DiagnosticIssue::new(
+                    "process_snapshot_failed",
+                    error.to_string(),
+                    "Check current-user access to the named candidate process and rerun doctor. Launch is blocked until an exact process snapshot succeeds; existing processes were not changed.",
+                ),
+            },
+        },
+        _ => Check::Unavailable {
+            reason: "Exact package process matching requires a resolved executable; no process snapshot was taken.",
+        },
+    };
+    let package = match discovered {
+        Ok(package) => Check::ok(PackageInfo {
+            family_name: package.family_name,
+            full_name: package.full_name,
+            version: package.version.to_string(),
+            install_location: package.install_location.to_string_lossy().into_owned(),
+        }),
+        Err(error) => Check::Failed {
+            error: package_issue(&error),
+        },
+    };
+    let (registry_path, registry) = match default_registry_path() {
+        Ok(path) => (Some(path.clone()), PluginRegistry::load(path)),
+        Err(error) => (None, Err(error)),
+    };
+    let executable = match executable {
+        Check::Ok { data } => Check::ok(data.to_string_lossy().into_owned()),
+        Check::Failed { error } => Check::Failed { error },
+        Check::Unavailable { reason } => Check::Unavailable { reason },
+    };
+    DoctorReport::from_inputs(DoctorInputs {
+        package,
+        executable,
+        processes,
+        registry_path,
+        registry,
+        plugins: bundled_plugins(),
+    })
+}
+
+fn package_issue(error: &PackageError) -> DiagnosticIssue {
+    let (code, remediation) = match error {
+        PackageError::NotFound(_) => (
+            "package_not_installed",
+            "Install the official Codex Desktop package for the current Windows user, then rerun doctor.",
+        ),
+        PackageError::Ambiguous { .. } => (
+            "package_ambiguous",
+            "Resolve the multiple Codex package registrations for the current user using Windows app management, then rerun doctor; Codlet will not guess a package.",
+        ),
+        PackageError::ExecutableNotFound(_)
+        | PackageError::InvalidInstallLocation(_)
+        | PackageError::Canonicalize { .. } => (
+            "package_path_unavailable",
+            "Check access to the reported package path and use Windows app management to repair the official Codex installation if files are missing; rerun doctor.",
+        ),
+        PackageError::ExecutableOutsidePackage(_) | PackageError::InvalidRelativeExecutable(_) => (
+            "package_path_invalid",
+            "Restore the official Codex installation and update Codlet if its expected executable layout has changed; rerun doctor.",
+        ),
+        _ => (
+            "package_discovery_failed",
+            "Check current-user Windows package registration and access, then rerun doctor; retain this error when reporting a Codlet discovery issue.",
+        ),
+    };
+    DiagnosticIssue::new(code, error.to_string(), remediation)
 }
 
 pub fn run_real_probe() -> Result<ProbeReport, ProbeError> {

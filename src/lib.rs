@@ -1,5 +1,6 @@
 pub mod capabilities;
 pub mod cdp;
+pub mod diagnostics;
 pub mod plugins;
 pub mod renderer;
 
