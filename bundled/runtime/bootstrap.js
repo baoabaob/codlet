@@ -9,6 +9,7 @@
 
     const plugins = new Map();
     const activating = new Map();
+    const stopping = new Set();
     const operations = new Map();
     let nextRequestId = 1;
 
@@ -66,6 +67,7 @@
     }
 
     function callBinding(record, envelope) {
+        if (record.closed) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
         const binding = globalThis[record.binding];
         if (typeof binding !== 'function') {
             throw rpcError('binding_unavailable', `renderer binding ${record.binding} is unavailable`);
@@ -165,6 +167,26 @@
         record.pending.clear();
     }
 
+    function closeRecord(record, error) {
+        record.closed = true;
+        rejectPending(record, error);
+        record.endpoints.clear();
+        record.notifications.clear();
+        if (plugins.get(record.id) === record) plugins.delete(record.id);
+        if (activating.get(record.id) === record) activating.delete(record.id);
+        stopping.delete(record);
+    }
+
+    async function cleanupRecord(record) {
+        if (plugins.get(record.id) === record) plugins.delete(record.id);
+        stopping.add(record);
+        try {
+            await record.definition.deactivate();
+        } finally {
+            closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was deactivated'));
+        }
+    }
+
     async function invokeProvider(record, request) {
         if (!request || request.v !== 1 ||
             (request.type !== 'request' && request.type !== 'notification') ||
@@ -226,6 +248,7 @@
                     pending: new Map(),
                     endpoints: new Map(),
                     notifications: new Set(),
+                    closed: false,
                     definition
                 };
                 const context = Object.freeze({
@@ -237,11 +260,12 @@
                 activating.set(metadata.id, record);
                 try {
                     await definition.activate(context);
+                    if (record.closed) throw rpcError('activation_cancelled', 'renderer activation was cancelled');
                 } catch (error) {
                     activating.delete(metadata.id);
                     let cleanupError = null;
                     try {
-                        await definition.deactivate();
+                        await cleanupRecord(record);
                     } catch (cleanup) {
                         cleanupError = message(cleanup);
                     }
@@ -258,7 +282,7 @@
                 let cleanupError = null;
                 if (current) {
                     try {
-                        await current.definition.deactivate();
+                        await cleanupRecord(current);
                     } catch (error) {
                         cleanupError = message(error);
                     }
@@ -280,10 +304,9 @@
                 if (current.generation !== generation) {
                     return { ok: false, error: 'plugin generation mismatch' };
                 }
+                plugins.delete(id);
                 try {
-                    await current.definition.deactivate();
-                    rejectPending(current, rpcError('plugin_deactivated', 'renderer plugin was deactivated'));
-                    plugins.delete(id);
+                    await cleanupRecord(current);
                     return { ok: true, id, generation, inactive: true };
                 } catch (error) {
                     return { ok: false, error: message(error) };
@@ -297,7 +320,8 @@
         },
         __rpcReceive(binding, response) {
             const current = Array.from(plugins.values()).find((record) => record.binding === binding)
-                ?? Array.from(activating.values()).find((record) => record.binding === binding);
+                ?? Array.from(activating.values()).find((record) => record.binding === binding)
+                ?? Array.from(stopping).find((record) => record.binding === binding);
             if (!current || !response || response.v !== 1 || response.type !== 'response') {
                 return { ok: false, error: 'renderer binding response is not recognized' };
             }
@@ -315,6 +339,12 @@
                     typeof detail.message === 'string' ? detail.message : String(detail.message),
                     detail.data ?? null
                 ));
+            }
+            return { ok: true };
+        },
+        __rpcClose(binding) {
+            for (const record of [...plugins.values(), ...activating.values(), ...stopping]) {
+                if (record.binding === binding) closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was retired by the host'));
             }
             return { ok: true };
         },

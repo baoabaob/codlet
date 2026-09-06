@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,6 +66,8 @@ pub struct TargetSession {
     target_id: String,
     session_id: String,
     deadline: Duration,
+    expires_at: Option<Instant>,
+    live: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -104,6 +110,9 @@ impl TargetSession {
         expires_at: Instant,
         deadline: Duration,
     ) -> Result<Self, TargetError> {
+        // Capture teardown that races the attach response, before the returned
+        // session ID can be registered with the reader's liveness guard.
+        let attachment_events = client.subscribe_events(None);
         let attach = client.request(
             "Target.attachToTarget",
             Some(json!({"targetId": target_id, "flatten": true})),
@@ -117,6 +126,32 @@ impl TargetSession {
         )
         .map_err(|error| TargetError::InvalidAttach(error.to_string()))?;
 
+        let live = client.track_session(&target_id, &attach.session_id);
+        while let Ok(event) = attachment_events.recv_timeout(Duration::ZERO) {
+            let ended = match event.method.as_str() {
+                "Target.targetDestroyed" => {
+                    event
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("targetId"))
+                        .and_then(Value::as_str)
+                        == Some(&target_id)
+                }
+                "Target.detachedFromTarget" => {
+                    event
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("sessionId"))
+                        .and_then(Value::as_str)
+                        == Some(&attach.session_id)
+                }
+                _ => false,
+            };
+            if ended {
+                live.store(false, Ordering::Release);
+            }
+        }
+        drop(attachment_events);
         client.request(
             "Runtime.enable",
             None,
@@ -135,6 +170,8 @@ impl TargetSession {
             target_id,
             session_id: attach.session_id,
             deadline,
+            expires_at: None,
+            live,
         })
     }
 
@@ -144,6 +181,27 @@ impl TargetSession {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn request_deadline(&self) -> Result<Instant, TargetError> {
+        self.expires_at.map(Ok).unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(self.deadline)
+                .ok_or_else(|| ClientError::DeadlineOutOfRange.into())
+        })
+    }
+
+    pub(crate) fn until(&self, expires_at: Instant) -> Self {
+        let mut session = self.clone();
+        session.expires_at = Some(
+            self.expires_at
+                .map_or(expires_at, |existing| existing.min(expires_at)),
+        );
+        session
     }
 
     pub fn evaluate(&self, expression: &str) -> Result<Value, TargetError> {
@@ -176,11 +234,11 @@ impl TargetSession {
         if let Some(context_id) = context_id {
             params["contextId"] = json!(context_id);
         }
-        Ok(self.client.start_request(
+        Ok(self.client.start_request_until(
             "Runtime.evaluate",
             Some(params),
             Some(&self.session_id),
-            self.deadline,
+            self.request_deadline()?,
         )?)
     }
 
@@ -189,9 +247,15 @@ impl TargetSession {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, TargetError> {
-        let response =
-            self.client
-                .request(method, params, Some(&self.session_id), self.deadline)?;
+        let response = self
+            .client
+            .start_request_until(
+                method,
+                params,
+                Some(&self.session_id),
+                self.request_deadline()?,
+            )?
+            .wait()?;
         Ok(response
             .result
             .expect("successful CDP response must contain result"))

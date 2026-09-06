@@ -405,6 +405,117 @@ fn renderer_activation_pumps_host_and_provider_rpc_until_ready() {
     assert_child_success(&child);
 }
 
+fn reentrant_runtime() -> (TempDir, RendererRuntime) {
+    let directory = tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let mut plugins = codlet::plugins::bundled_plugins().unwrap();
+    plugins[0].manifest.requires.push(
+        codlet::capabilities::CapabilityDescriptor::new(
+            "codlet.runtime.ping",
+            1,
+            codlet::capabilities::CapabilityScope::Target,
+        )
+        .unwrap(),
+    );
+    (directory, RendererRuntime::new(plugins, registry).unwrap())
+}
+
+#[test]
+fn renderer_reentrant_activation_provider_and_deactivate_complete_only_after_nested_rpc() {
+    run_reentrant_scenario("renderer-reentrant", false);
+}
+
+#[test]
+fn renderer_reentrant_wait_depth_is_bounded_and_host_remains_usable() {
+    run_reentrant_scenario("renderer-reentrant-depth", false);
+}
+
+#[test]
+fn renderer_reentrant_plain_response_failure_is_diagnostic_and_does_not_end_host() {
+    run_reentrant_scenario("renderer-reentrant-response-failure", true);
+}
+
+fn run_reentrant_scenario(mode: &str, response_failure: bool) {
+    let (child, client, events) = launch(mode, &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let (directory, mut runtime) = reentrant_runtime();
+    assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 2);
+    client
+        .request("Fake.beginNested", None, None, DEADLINE)
+        .unwrap();
+    runtime.pump_bindings_with_timeout(DEADLINE).unwrap();
+    let diagnostics = runtime.take_diagnostics();
+    assert_eq!(diagnostics.len(), usize::from(response_failure));
+    if response_failure {
+        assert!(diagnostics[0].message.contains("response delivery failed"));
+    }
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    runtime.deactivate_target("main").unwrap();
+    assert_eq!(runtime.session_count(), 0);
+    assert!(!directory.path().join("config.json").exists());
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_reentrant_nested_wait_uses_original_absolute_deadline() {
+    let (child, client, events) = launch("renderer-reentrant-deadline", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(500));
+    let (_directory, mut runtime) = reentrant_runtime();
+    let start = Instant::now();
+    assert!(
+        runtime
+            .attach(&sessions[0])
+            .unwrap_err()
+            .to_string()
+            .contains("deadline")
+    );
+    assert!(start.elapsed() < Duration::from_millis(750));
+    assert_eq!(runtime.session_count(), 0);
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn renderer_reentrant_destruction_revokes_during_activation_provider_and_deactivate() {
+    for phase in ["activation", "provider", "deactivate"] {
+        let (child, client, events) = launch(&format!("renderer-reentrant-destroy-{phase}"), &[]);
+        let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+        let (directory, mut runtime) = reentrant_runtime();
+        if phase == "activation" {
+            assert!(runtime.attach(&sessions[0]).is_err());
+        } else {
+            runtime.attach(&sessions[0]).unwrap();
+            client
+                .request("Fake.beginNested", None, None, DEADLINE)
+                .unwrap();
+            runtime.pump_bindings_with_timeout(DEADLINE).unwrap();
+            if phase == "deactivate" {
+                client
+                    .request("Fake.hostStillAlive", None, None, DEADLINE)
+                    .unwrap();
+                assert!(runtime.deactivate_target("main").is_err());
+            }
+        }
+        assert_eq!(runtime.session_count(), 0);
+        assert!(!directory.path().join("config.json").exists());
+        assert!(matches!(
+            sessions[0].evaluate("1"),
+            Err(TargetError::Client(ClientError::SessionEnded(_)))
+        ));
+        client
+            .request("Fake.hostStillAlive", None, None, DEADLINE)
+            .unwrap();
+        client.request("Fake.finish", None, None, DEADLINE).unwrap();
+        assert_child_success(&child);
+    }
+}
+
 #[test]
 fn activating_plugin_cannot_commit_runtime_management_actions() {
     let (child, client, events) = launch("renderer-ready-rejection", &[]);

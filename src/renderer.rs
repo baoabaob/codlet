@@ -27,6 +27,7 @@ const BUILTIN_HOST_CAPABILITY_API: u32 = 1;
 const BUILTIN_MANAGE_CAPABILITY_NAME: &str = "codlet.runtime.manage";
 const BUILTIN_MANAGE_CAPABILITY_API: u32 = 1;
 const RUNTIME_MANAGE_GRANT: &str = "runtime.manage";
+const MAX_RENDERER_WAIT_DEPTH: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum RendererError {
@@ -82,6 +83,9 @@ pub struct RendererRuntime {
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
     diagnostics: Vec<RendererDiagnostic>,
+    drive_deadline: Option<Instant>,
+    drive_depth: usize,
+    pending_actions: Vec<HostAction>,
 }
 
 struct RendererSession {
@@ -90,6 +94,7 @@ struct RendererSession {
     events: CdpEventStream,
 }
 
+#[derive(Clone)]
 struct ActivePlugin {
     id: String,
     generation: u64,
@@ -109,6 +114,7 @@ enum RendererPluginState {
     Activating,
     Ready,
     Active,
+    Stopping,
 }
 
 type TargetAuthorization = (
@@ -144,7 +150,7 @@ struct BindingMessage {
 struct ProviderResult {
     ok: bool,
     #[serde(default)]
-    value: Option<Value>,
+    value: Value,
     #[serde(default)]
     error: Option<String>,
 }
@@ -216,6 +222,9 @@ impl RendererRuntime {
             capabilities,
             sessions: HashMap::new(),
             diagnostics: Vec::new(),
+            drive_deadline: None,
+            drive_depth: 0,
+            pending_actions: Vec::new(),
         })
     }
 
@@ -243,12 +252,8 @@ impl RendererRuntime {
         };
         self.sessions.insert(target_id.clone(), renderer_session);
         if let Err(error) = self.install_target_plugins(&target_id, authorizations) {
-            self.sessions
-                .get(&target_id)
-                .expect("installing renderer session must still exist")
-                .rollback_install();
-            self.sessions.remove(&target_id);
-            self.capabilities.deactivate_scope(&scope);
+            let _ = self.deactivate_target(&target_id);
+            self.flush_host_actions();
             return Err(error);
         }
         let plugin_count = self
@@ -263,6 +268,7 @@ impl RendererRuntime {
             target_id: target_id.clone(),
             plugin_count,
         };
+        self.flush_host_actions();
         Ok(report)
     }
 
@@ -331,14 +337,21 @@ impl RendererRuntime {
                 });
 
             let expression = activation_expression(&plugin, &binding_name);
-            if let Err(message) =
-                self.evaluate_lifecycle_with_binding_pump(target_id, &expression, context_id)
+            if let Err(message) = self
+                .evaluate_with_binding_pump(target_id, &expression, context_id)
+                .and_then(parse_lifecycle_result)
             {
                 return Err(RendererError::PluginRejected {
                     plugin_id: plugin.manifest.id.clone(),
                     message,
                 });
             }
+            self.ensure_live_target(target_id).map_err(|message| {
+                RendererError::PluginRejected {
+                    plugin_id: plugin.manifest.id.clone(),
+                    message,
+                }
+            })?;
             let candidate = self
                 .sessions
                 .get_mut(target_id)
@@ -352,6 +365,20 @@ impl RendererRuntime {
             candidate.state = RendererPluginState::Ready;
 
             let script_identifier = add_new_document_script(&session, &expression, &world_name)?;
+            self.ensure_live_target(target_id).map_err(|message| {
+                RendererError::PluginRejected {
+                    plugin_id: plugin.manifest.id.clone(),
+                    message,
+                }
+            })?;
+            let candidate = self
+                .sessions
+                .get_mut(target_id)
+                .expect("live session exists")
+                .plugins
+                .iter_mut()
+                .find(|candidate| candidate.id == plugin.manifest.id)
+                .expect("ready candidate exists");
             candidate.script_identifier = Some(script_identifier);
             candidate.state = RendererPluginState::Active;
         }
@@ -362,29 +389,77 @@ impl RendererRuntime {
         Ok(())
     }
 
-    fn evaluate_lifecycle_with_binding_pump(
+    fn ensure_live_target(&mut self, target_id: &str) -> Result<(), String> {
+        if self
+            .sessions
+            .get(target_id)
+            .is_some_and(|s| s.session.is_live())
+        {
+            return Ok(());
+        }
+        self.capabilities
+            .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
+        self.sessions.remove(target_id);
+        Err("renderer target session has ended".to_owned())
+    }
+
+    fn evaluate_with_binding_pump(
         &mut self,
         target_id: &str,
         expression: &str,
         context_id: u64,
-    ) -> Result<(), String> {
+    ) -> Result<Value, String> {
+        self.ensure_live_target(target_id)?;
+        if self.drive_depth >= MAX_RENDERER_WAIT_DEPTH {
+            return Err(format!(
+                "renderer RPC nested wait depth exceeds {MAX_RENDERER_WAIT_DEPTH}"
+            ));
+        }
         let session = self
             .sessions
             .get(target_id)
-            .expect("installing renderer session must exist")
+            .expect("live renderer session must exist")
             .session
             .clone();
+        let previous_deadline = self.drive_deadline;
+        let expires_at =
+            previous_deadline.unwrap_or(session.request_deadline().map_err(|e| e.to_string())?);
+        self.drive_deadline = Some(expires_at);
+        self.drive_depth += 1;
+        let result = self.drive_evaluation(
+            target_id,
+            &session.until(expires_at),
+            expression,
+            context_id,
+        );
+        self.drive_depth -= 1;
+        self.drive_deadline = previous_deadline;
+        result
+    }
+
+    fn drive_evaluation(
+        &mut self,
+        target_id: &str,
+        session: &TargetSession,
+        expression: &str,
+        context_id: u64,
+    ) -> Result<Value, String> {
         let mut request = session
             .start_evaluate_in_context(expression, Some(context_id))
             .map_err(|error| error.to_string())?;
         loop {
             let observed_activity = request.activity_epoch();
-            if let Some(response) = request.try_response().map_err(|error| error.to_string())? {
-                return parse_lifecycle_result(
-                    response
-                        .result
-                        .expect("successful CDP response must contain result"),
+            self.ensure_live_target(target_id)?;
+            if Instant::now() >= self.drive_deadline.expect("driven request has a deadline") {
+                return Err(
+                    "Runtime.evaluate exceeded its deadline (absolute renderer RPC budget)"
+                        .to_owned(),
                 );
+            }
+            if let Some(response) = request.try_response().map_err(|error| error.to_string())? {
+                return Ok(response
+                    .result
+                    .expect("successful CDP response must contain result"));
             }
             let event = self
                 .sessions
@@ -427,11 +502,27 @@ impl RendererRuntime {
 
     pub fn deactivate_target(&mut self, target_id: &str) -> Result<(), RendererError> {
         let scope = CapabilityScopeInstance::Target(target_id.to_owned());
+        let plugins = self
+            .sessions
+            .get(target_id)
+            .map(|s| {
+                s.plugins
+                    .iter()
+                    .rev()
+                    .map(|p| p.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut first_error = None;
+        for plugin_id in plugins {
+            if let Err(error) = self.deactivate_plugin(target_id, &plugin_id) {
+                first_error.get_or_insert(error);
+            }
+        }
         self.capabilities.deactivate_scope(&scope);
-        let Some(session) = self.sessions.remove(target_id) else {
-            return Ok(());
-        };
-        session.deactivate()
+        self.sessions.remove(target_id);
+        self.flush_host_actions();
+        first_error.map_or(Ok(()), Err)
     }
 
     pub fn session_count(&self) -> usize {
@@ -468,18 +559,22 @@ impl RendererRuntime {
                 } else {
                     Duration::ZERO
                 };
-                let event = self
-                    .sessions
-                    .get(&target_id)
-                    .expect("renderer target disappeared while pumping bindings")
-                    .events
-                    .recv_timeout(wait);
+                let event = self.sessions.get(&target_id);
+                let Some(session) = event else {
+                    break;
+                };
+                if !session.session.is_live() {
+                    let _ = self.ensure_live_target(&target_id);
+                    break;
+                }
+                let event = session.events.recv_timeout(wait);
                 match event {
                     Ok(event) => {
                         waiting_for_first_event = false;
                         if self.handle_renderer_event(&target_id, event)? {
                             handled += 1;
                         }
+                        self.flush_host_actions();
                     }
                     Err(EventStreamError::Timeout) => break,
                     Err(error) => return Err(error.into()),
@@ -562,6 +657,9 @@ impl RendererRuntime {
         target_id: &str,
         event: CdpEvent,
     ) -> Result<bool, RendererError> {
+        if self.ensure_live_target(target_id).is_err() {
+            return Ok(false);
+        }
         match event.method.as_str() {
             "Runtime.executionContextCreated" => {
                 let context = event
@@ -591,7 +689,9 @@ impl RendererRuntime {
                     .expect("renderer target disappeared while handling its event")
                     .plugins
                     .iter_mut()
-                    .find(|plugin| plugin.world_name == name)
+                    .find(|plugin| {
+                        plugin.world_name == name && plugin.state != RendererPluginState::Stopping
+                    })
                 {
                     plugin.context_id = Some(context_id);
                 }
@@ -639,11 +739,38 @@ impl RendererRuntime {
         target_id: &str,
         event: &CdpEvent,
     ) -> Result<bool, RendererError> {
+        let previous_deadline = self.drive_deadline;
+        if previous_deadline.is_none() {
+            self.drive_deadline = Some(self.sessions[target_id].session.request_deadline()?);
+        }
+        let result = self.route_binding_call_inner(target_id, event);
+        self.drive_deadline = previous_deadline;
+        match result {
+            Ok(handled) => Ok(handled),
+            Err(error) => {
+                self.diagnostics.push(RendererDiagnostic {
+                    target_id: target_id.to_owned(),
+                    plugin_id: "renderer-rpc".to_owned(),
+                    message: error.to_string(),
+                });
+                Ok(true)
+            }
+        }
+    }
+
+    fn route_binding_call_inner(
+        &mut self,
+        target_id: &str,
+        event: &CdpEvent,
+    ) -> Result<bool, RendererError> {
         let call = parse_binding_call(event)?;
         let session = self
             .sessions
             .get(target_id)
             .expect("renderer target disappeared while routing its binding");
+        let target_session = session
+            .session
+            .until(self.drive_deadline.expect("binding route has a deadline"));
         if event.session_id.as_deref() != Some(session.session.session_id()) {
             // CdpClient normally filters session events before they reach this
             // router. Keep the identity check here as a second, local guard.
@@ -672,7 +799,7 @@ impl RendererRuntime {
                     "renderer RPC binding is not active for this target session",
                 );
                 deliver_raw_binding_response(
-                    &session.session,
+                    &target_session,
                     &call.binding_name,
                     context_id,
                     &response,
@@ -694,7 +821,7 @@ impl RendererRuntime {
                     "renderer RPC binding was called from the wrong execution context",
                 );
                 deliver_binding_response(
-                    &session.session,
+                    &target_session,
                     consumer,
                     consumer_context_id,
                     &response,
@@ -709,7 +836,7 @@ impl RendererRuntime {
                 if let Some(id) = binding_request_id(&call.payload) {
                     let response = binding_error(id, "invalid_request", &message);
                     deliver_binding_response(
-                        &session.session,
+                        &target_session,
                         consumer,
                         consumer_context_id,
                         &response,
@@ -727,7 +854,7 @@ impl RendererRuntime {
                     "renderer RPC principal generation is stale",
                 );
                 deliver_binding_response(
-                    &session.session,
+                    &target_session,
                     consumer,
                     consumer_context_id,
                     &response,
@@ -744,7 +871,7 @@ impl RendererRuntime {
                     "renderer RPC request id is duplicate or out of order for this plugin generation",
                 );
                 deliver_binding_response(
-                    &session.session,
+                    &target_session,
                     consumer,
                     consumer_context_id,
                     &response,
@@ -761,7 +888,7 @@ impl RendererRuntime {
                     "capability was not resolved for this plugin generation and target",
                 );
                 deliver_binding_response(
-                    &session.session,
+                    &target_session,
                     consumer,
                     consumer_context_id,
                     &response,
@@ -774,6 +901,7 @@ impl RendererRuntime {
             lease,
             |provider_id, descriptor| (provider_id.to_owned(), descriptor.clone()),
         );
+        let consumer = consumer.clone();
         let mut after_response = None;
         let outcome = match authorization {
             Ok((provider_id, descriptor)) => {
@@ -794,20 +922,27 @@ impl RendererRuntime {
                         Err(error) => Err((error.code, error.message)),
                     }
                 } else {
-                    let provider = session
-                        .plugins
-                        .iter()
-                        .find(|plugin| {
-                            plugin.id == provider_id && plugin.state == RendererPluginState::Active
-                        })
-                        .expect("a current capability lease must name an active renderer provider");
-                    match provider.context_id {
-                        Some(provider_context_id) => match invoke_renderer_provider(
-                            &session.session,
-                            provider,
-                            provider_context_id,
-                            &request,
-                        ) {
+                    let provider = self.sessions.get(target_id).and_then(|session| {
+                        session
+                            .plugins
+                            .iter()
+                            .find(|plugin| {
+                                plugin.id == provider_id
+                                    && plugin.state == RendererPluginState::Active
+                            })
+                            .cloned()
+                    });
+                    match provider.and_then(|provider| {
+                        provider.context_id.map(|context_id| (provider, context_id))
+                    }) {
+                        Some((provider, provider_context_id)) => match self
+                            .evaluate_with_binding_pump(
+                                target_id,
+                                &provider_invocation_expression(&provider.binding_name, &request),
+                                provider_context_id,
+                            )
+                            .and_then(parse_provider_result)
+                        {
                             Ok(value) => Ok(value),
                             Err(message) => Err(("provider_error", message)),
                         },
@@ -820,21 +955,28 @@ impl RendererRuntime {
             }
             Err(error) => Err(("capability_denied", error.to_string())),
         };
+        // Nested calls may destroy the target or remove a consumer. Never answer
+        // through a snapshot unless its original binding/context still exists.
+        if self.ensure_live_target(target_id).is_err()
+            || !self.sessions.get(target_id).is_some_and(|s| {
+                s.plugins.iter().any(|p| {
+                    p.binding_name == consumer.binding_name
+                        && p.context_id == Some(consumer_context_id)
+                })
+            })
+        {
+            if let Some(action) = after_response {
+                self.queue_host_action(action);
+            }
+            return Ok(true);
+        }
         let response_delivery_error = if let Some(id) = request.id {
             let response = match outcome {
                 Ok(value) => binding_success(id, value),
                 Err((code, message)) => binding_error(id, code, &message),
             };
-            match deliver_binding_response(
-                &session.session,
-                consumer,
-                consumer_context_id,
-                &response,
-            ) {
-                Ok(()) => None,
-                Err(error) if after_response.is_some() => Some(error),
-                Err(error) => return Err(error),
-            }
+            deliver_binding_response(&target_session, &consumer, consumer_context_id, &response)
+                .err()
         } else {
             None
         };
@@ -842,35 +984,45 @@ impl RendererRuntime {
             self.diagnostics.push(RendererDiagnostic {
                 target_id: target_id.to_owned(),
                 plugin_id: consumer.id.clone(),
-                message: format!("persisted host action response delivery failed: {error}"),
+                message: format!("renderer RPC response delivery failed: {error}"),
             });
         }
         if let Some(action) = after_response {
-            self.apply_host_action(action);
+            self.queue_host_action(action);
         }
         Ok(true)
+    }
+
+    fn queue_host_action(&mut self, action: HostAction) {
+        let HostAction::DisablePlugin { plugin_id } = &action;
+        for session in self.sessions.values_mut() {
+            for plugin in &mut session.plugins {
+                if plugin.id == *plugin_id {
+                    plugin.state = RendererPluginState::Stopping;
+                }
+            }
+        }
+        if !self.pending_actions.contains(&action) {
+            self.pending_actions.push(action);
+        }
+    }
+
+    fn flush_host_actions(&mut self) {
+        if self.drive_depth > 0 || self.drive_deadline.is_some() {
+            return;
+        }
+        for action in std::mem::take(&mut self.pending_actions) {
+            self.apply_host_action(action);
+        }
     }
 
     fn apply_host_action(&mut self, action: HostAction) {
         match action {
             HostAction::DisablePlugin { plugin_id } => {
-                let removed = self
-                    .capabilities
-                    .unregister_provider(&plugin_id)
-                    .expect("an active plugin id is a valid capability provider id");
-                assert!(removed, "an active plugin must be registered");
-                self.plugins
-                    .retain(|plugin| plugin.manifest.id != plugin_id);
-
                 let mut target_ids: Vec<_> = self.sessions.keys().cloned().collect();
                 target_ids.sort();
                 for target_id in target_ids {
-                    let result = self
-                        .sessions
-                        .get_mut(&target_id)
-                        .expect("a renderer target cannot disappear during a host action")
-                        .deactivate_plugin(&plugin_id);
-                    if let Some(Err(error)) = result {
+                    if let Err(error) = self.deactivate_plugin(&target_id, &plugin_id) {
                         self.diagnostics.push(RendererDiagnostic {
                             target_id,
                             plugin_id: plugin_id.clone(),
@@ -878,46 +1030,110 @@ impl RendererRuntime {
                         });
                     }
                 }
+                let _ = self.capabilities.unregister_provider(&plugin_id);
+                self.plugins
+                    .retain(|plugin| plugin.manifest.id != plugin_id);
             }
         }
     }
 }
 
-impl RendererSession {
-    fn rollback_install(&self) {
-        for plugin in self.plugins.iter().rev() {
-            if plugin.state == RendererPluginState::Activating {
-                if let Some(identifier) = &plugin.script_identifier {
-                    let _ = remove_new_document_script(&self.session, identifier);
+impl RendererRuntime {
+    fn deactivate_plugin(&mut self, target_id: &str, plugin_id: &str) -> Result<(), RendererError> {
+        if self.ensure_live_target(target_id).is_err() {
+            return Ok(());
+        }
+        let session = &mut self
+            .sessions
+            .get_mut(target_id)
+            .expect("live session exists");
+        let Some(plugin) = session
+            .plugins
+            .iter_mut()
+            .find(|plugin| plugin.id == plugin_id)
+        else {
+            return Ok(());
+        };
+        let was_activating = plugin.state == RendererPluginState::Activating;
+        plugin.state = RendererPluginState::Stopping;
+        let mut plugin = plugin.clone();
+        let target_session = session.session.clone();
+        let previous_deadline = self.drive_deadline;
+        self.drive_deadline = Some(previous_deadline.unwrap_or(target_session.request_deadline()?));
+        let lifecycle_session = target_session.until(
+            self.drive_deadline
+                .expect("cleanup lifecycle has a deadline"),
+        );
+        let mut first_error = None;
+        if !was_activating {
+            match current_isolated_context(&lifecycle_session, &plugin.world_name) {
+                Ok(context_id) => {
+                    plugin.context_id = Some(context_id);
+                    if let Some(current) = self
+                        .sessions
+                        .get_mut(target_id)
+                        .and_then(|s| s.plugins.iter_mut().find(|p| p.id == plugin_id))
+                    {
+                        current.context_id = Some(context_id);
+                    }
+                    if let Err(message) = self
+                        .evaluate_with_binding_pump(
+                            target_id,
+                            &deactivation_expression(&plugin.id, plugin.generation),
+                            context_id,
+                        )
+                        .and_then(parse_lifecycle_result)
+                    {
+                        first_error = Some(RendererError::PluginRejected {
+                            plugin_id: plugin.id.clone(),
+                            message,
+                        });
+                    }
                 }
-                let _ = remove_new_document_script(&self.session, &plugin.bootstrap_identifier);
-                let _ = remove_renderer_binding(&self.session, &plugin.binding_name);
-            } else {
-                let _ = deactivate_active_plugin(&self.session, plugin);
+                Err(error) => {
+                    first_error = Some(error);
+                }
             }
         }
-    }
-
-    fn deactivate(&self) -> Result<(), RendererError> {
-        let mut first_error = None;
-        for plugin in self.plugins.iter().rev() {
-            if let Err(error) = deactivate_active_plugin(&self.session, plugin) {
+        self.drive_deadline = previous_deadline;
+        // Retirement is a separate, bounded cleanup phase. It never pumps plugin
+        // code and cannot renew the deadline of an abandoned nested evaluation.
+        let cleanup_session = target_session.until(target_session.request_deadline()?);
+        if (was_activating || first_error.is_some())
+            && target_session.is_live()
+            && let Some(context_id) = plugin.context_id
+        {
+            let binding = serde_json::to_string(&plugin.binding_name).expect("binding is UTF-8");
+            let _ = cleanup_session.evaluate_in_context(
+                &format!("globalThis.__codletRendererV1.__rpcClose({binding})"),
+                Some(context_id),
+            );
+        }
+        if target_session.is_live() {
+            if let Some(identifier) = &plugin.script_identifier
+                && let Err(error) = remove_new_document_script(&cleanup_session, identifier)
+            {
+                first_error.get_or_insert(error);
+            }
+            if let Err(error) =
+                remove_new_document_script(&cleanup_session, &plugin.bootstrap_identifier)
+            {
+                first_error.get_or_insert(error);
+            }
+            if let Err(error) = remove_renderer_binding(&cleanup_session, &plugin.binding_name) {
                 first_error.get_or_insert(error);
             }
         }
+        if let Some(session) = self.sessions.get_mut(target_id) {
+            session
+                .plugins
+                .retain(|p| p.binding_name != plugin.binding_name);
+        }
         first_error.map_or(Ok(()), Err)
     }
+}
 
-    fn deactivate_plugin(&mut self, plugin_id: &str) -> Option<Result<(), RendererError>> {
-        let index = self
-            .plugins
-            .iter()
-            .position(|plugin| plugin.id == plugin_id)?;
-        let result = deactivate_active_plugin(&self.session, &self.plugins[index]);
-        self.plugins.remove(index);
-        Some(result)
-    }
-
+impl RendererSession {
     fn remove_persisted_resources(&self) -> Result<(), RendererError> {
         let mut first_error = None;
         for plugin in self.plugins.iter().rev() {
@@ -937,42 +1153,6 @@ impl RendererSession {
         }
         first_error.map_or(Ok(()), Err)
     }
-}
-
-fn deactivate_active_plugin(
-    session: &TargetSession,
-    plugin: &ActivePlugin,
-) -> Result<(), RendererError> {
-    let mut first_error = None;
-    match current_isolated_context(session, &plugin.world_name) {
-        Ok(context_id) => {
-            if let Err(message) = evaluate_lifecycle(
-                session,
-                &deactivation_expression(&plugin.id, plugin.generation),
-                context_id,
-            ) {
-                first_error.get_or_insert_with(|| RendererError::PluginRejected {
-                    plugin_id: plugin.id.clone(),
-                    message,
-                });
-            }
-        }
-        Err(error) => {
-            first_error.get_or_insert(error);
-        }
-    }
-    if let Some(identifier) = &plugin.script_identifier
-        && let Err(error) = remove_new_document_script(session, identifier)
-    {
-        first_error.get_or_insert(error);
-    }
-    if let Err(error) = remove_new_document_script(session, &plugin.bootstrap_identifier) {
-        first_error.get_or_insert(error);
-    }
-    if let Err(error) = remove_renderer_binding(session, &plugin.binding_name) {
-        first_error.get_or_insert(error);
-    }
-    first_error.map_or(Ok(()), Err)
 }
 
 fn current_isolated_context(
@@ -1273,16 +1453,7 @@ fn provider_invocation_expression(binding_name: &str, request: &BindingMessage) 
     format!("globalThis.__codletRendererV1.__rpcInvoke({binding}, {request})")
 }
 
-fn invoke_renderer_provider(
-    session: &TargetSession,
-    provider: &ActivePlugin,
-    context_id: u64,
-    request: &BindingMessage,
-) -> Result<Value, String> {
-    let expression = provider_invocation_expression(&provider.binding_name, request);
-    let value = session
-        .evaluate_in_context(&expression, Some(context_id))
-        .map_err(|error| error.to_string())?;
+fn parse_provider_result(value: Value) -> Result<Value, String> {
     if value.get("exceptionDetails").is_some() {
         return Err("provider Runtime.evaluate reported exceptionDetails".to_owned());
     }
@@ -1290,12 +1461,15 @@ fn invoke_renderer_provider(
         .pointer("/result/value")
         .cloned()
         .ok_or_else(|| "provider Runtime.evaluate did not return a value".to_owned())?;
+    let has_value = returned.get("value").is_some();
     let result: ProviderResult = serde_json::from_value(returned)
         .map_err(|error| format!("provider endpoint returned invalid data: {error}"))?;
     if result.ok {
-        result
-            .value
-            .ok_or_else(|| "provider endpoint returned ok=true without a value".to_owned())
+        if has_value {
+            Ok(result.value)
+        } else {
+            Err("provider endpoint returned ok=true without a value".to_owned())
+        }
     } else {
         Err(result
             .error
@@ -1484,6 +1658,12 @@ fn deliver_raw_binding_response(
         return Err(RendererError::BindingResponseRejected {
             plugin_id: binding_name.to_owned(),
             message: "consumer Runtime.evaluate reported exceptionDetails".to_owned(),
+        });
+    }
+    if result.pointer("/result/value/ok") != Some(&Value::Bool(true)) {
+        return Err(RendererError::BindingResponseRejected {
+            plugin_id: binding_name.to_owned(),
+            message: "consumer did not accept the RPC response".to_owned(),
         });
     }
     Ok(())

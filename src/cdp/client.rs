@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -65,6 +63,8 @@ pub enum ConnectionError {
 
 #[derive(Debug, Error)]
 pub enum ClientError {
+    #[error("CDP target session {0} has ended")]
+    SessionEnded(String),
     #[error("CDP connection closed: {0}")]
     Connection(Arc<ConnectionError>),
     #[error("CDP request {id} ({method}) exceeded its deadline")]
@@ -159,6 +159,7 @@ struct State {
     events: Vec<EventSink>,
     next_event_registration_id: u64,
     activity_epoch: u64,
+    sessions: HashMap<String, (String, Weak<AtomicBool>)>,
 }
 
 struct Shared {
@@ -431,6 +432,7 @@ impl CdpClient {
                 }],
                 next_event_registration_id: 2,
                 activity_epoch: 0,
+                sessions: HashMap::new(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
@@ -518,6 +520,16 @@ impl CdpClient {
         let expires_at = Instant::now()
             .checked_add(deadline)
             .ok_or(ClientError::DeadlineOutOfRange)?;
+        self.start_request_until(method, params, session_id, expires_at)
+    }
+
+    pub(crate) fn start_request_until(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        expires_at: Instant,
+    ) -> Result<CdpRequest, ClientError> {
         let mut next_id = self
             .inner
             .next_id
@@ -558,6 +570,23 @@ impl CdpClient {
                 .expect("CDP state poisoned");
             if let Some(error) = &state.terminal {
                 return Err(ClientError::Connection(Arc::clone(error)));
+            }
+            if let Some(session_id) = session_id
+                && state
+                    .sessions
+                    .get(session_id)
+                    .and_then(|(_, live)| live.upgrade())
+                    .is_some_and(|live| !live.load(Ordering::Acquire))
+            {
+                return Err(ClientError::SessionEnded(session_id.to_owned()));
+            }
+            // An exhausted nested budget must not enqueue a zero-budget write:
+            // the transport treats a write timeout as a connection failure.
+            if Instant::now() >= expires_at {
+                return Err(ClientError::RequestTimedOut {
+                    id,
+                    method: method.to_owned(),
+                });
             }
             if self
                 .inner
@@ -657,6 +686,25 @@ impl CdpClient {
             shared: Arc::downgrade(&self.inner.runtime.shared),
             registration_id,
         }
+    }
+
+    pub(crate) fn track_session(&self, target_id: &str, session_id: &str) -> Arc<AtomicBool> {
+        let live = Arc::new(AtomicBool::new(true));
+        let mut state = self
+            .inner
+            .runtime
+            .shared
+            .state
+            .lock()
+            .expect("CDP state poisoned");
+        state
+            .sessions
+            .retain(|_, (_, live)| live.strong_count() > 0);
+        state.sessions.insert(
+            session_id.to_owned(),
+            (target_id.to_owned(), Arc::downgrade(&live)),
+        );
+        live
     }
 
     pub fn shutdown(&self) -> Result<(), ShutdownError> {
@@ -1068,8 +1116,47 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
         session_id: optional_string(object, "sessionId")?,
     };
     let mut state = shared.state.lock().expect("CDP state poisoned");
+    let ended: Vec<_> = state
+        .sessions
+        .iter()
+        .filter_map(|(session_id, (target_id, live))| {
+            let matches = event.session_id.is_none()
+                && match event.method.as_str() {
+                    "Target.targetDestroyed" => {
+                        event
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("targetId"))
+                            .and_then(Value::as_str)
+                            == Some(target_id)
+                    }
+                    "Target.detachedFromTarget" => {
+                        event
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("sessionId"))
+                            .and_then(Value::as_str)
+                            == Some(session_id)
+                    }
+                    _ => false,
+                };
+            if matches {
+                if let Some(live) = live.upgrade() {
+                    live.store(false, Ordering::Release);
+                }
+                Some(session_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
     state.events.retain(|sink| {
-        sink.session_id != event.session_id || sink.sender.send(Ok(event.clone())).is_ok()
+        (sink.session_id != event.session_id
+            && !sink
+                .session_id
+                .as_ref()
+                .is_some_and(|id| ended.contains(id)))
+            || sink.sender.send(Ok(event.clone())).is_ok()
     });
     state.activity_epoch = state
         .activity_epoch
@@ -1430,6 +1517,7 @@ mod tests {
                     events: Vec::new(),
                     next_event_registration_id: 1,
                     activity_epoch: 0,
+                    sessions: HashMap::new(),
                 }),
                 closed: Condvar::new(),
                 activity: Condvar::new(),
@@ -1524,6 +1612,7 @@ mod tests {
                 ],
                 next_event_registration_id: 4,
                 activity_epoch: 0,
+                sessions: HashMap::new(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
@@ -1574,6 +1663,7 @@ mod tests {
                 }],
                 next_event_registration_id: 2,
                 activity_epoch: 0,
+                sessions: HashMap::new(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
@@ -1606,6 +1696,66 @@ mod tests {
         }
         assert_eq!(ACTIVE_READERS.load(Ordering::SeqCst), 0);
         assert_eq!(ACTIVE_WRITERS.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn expired_nested_budget_retires_locally_without_issuing_or_closing_transport() {
+        let _serial = SPAWN_TEST_LOCK.lock().unwrap();
+        let (reader, _remote_writer) = blocking_pipe_reader();
+        let (client, _events) =
+            CdpClient::spawn_io(reader, std::io::sink(), SpawnConfig::default()).unwrap();
+        let error = client
+            .start_request_until("Runtime.evaluate", None, Some("session-a"), Instant::now())
+            .err()
+            .unwrap();
+        assert!(matches!(error, ClientError::RequestTimedOut { .. }));
+        assert!(client.closed_reason().is_none());
+        let state = client.inner.runtime.shared.state.lock().unwrap();
+        assert_eq!(state.last_issued_id, 0);
+        assert!(state.pending.is_empty());
+        drop(state);
+        client.shutdown().unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn destruction_and_exact_detach_invalidate_session_clones_before_dispatch() {
+        let _serial = SPAWN_TEST_LOCK.lock().unwrap();
+        let (reader, _remote_writer) = blocking_pipe_reader();
+        let (client, _events) =
+            CdpClient::spawn_io(reader, std::io::sink(), SpawnConfig::default()).unwrap();
+        let old = client.track_session("target", "old");
+        let events = client.subscribe_events(Some("old"));
+        route_message(
+            &client.inner.runtime.shared,
+            json!({"method":"Target.targetDestroyed","params":{"targetId":"target"}}),
+        )
+        .unwrap();
+        assert!(!old.load(Ordering::Acquire));
+        assert_eq!(
+            events.recv_timeout(Duration::ZERO).unwrap().method,
+            "Target.targetDestroyed"
+        );
+        let replacement = client.track_session("target", "new");
+        route_message(
+            &client.inner.runtime.shared,
+            json!({"method":"Target.detachedFromTarget","params":{"sessionId":"old"}}),
+        )
+        .unwrap();
+        assert!(replacement.load(Ordering::Acquire));
+        assert!(!old.load(Ordering::Acquire));
+        assert!(matches!(
+            client.start_request(
+                "Runtime.evaluate",
+                None,
+                Some("old"),
+                Duration::from_secs(1)
+            ),
+            Err(ClientError::SessionEnded(_))
+        ));
+        assert!(client.closed_reason().is_none());
+        client.shutdown().unwrap();
     }
 
     #[cfg(windows)]
@@ -1741,6 +1891,7 @@ mod tests {
                 events: Vec::new(),
                 next_event_registration_id: 1,
                 activity_epoch: 0,
+                sessions: HashMap::new(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),

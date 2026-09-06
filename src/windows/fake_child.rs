@@ -61,6 +61,15 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
             scenario_renderer_target_replacement(&mut input, &mut output)
         }
         "renderer-navigation" => scenario_renderer_navigation(&mut input, &mut output),
+        mode @ ("renderer-reentrant"
+        | "renderer-reentrant-depth"
+        | "renderer-reentrant-deadline"
+        | "renderer-reentrant-destroy-activation"
+        | "renderer-reentrant-destroy-provider"
+        | "renderer-reentrant-destroy-deactivate"
+        | "renderer-reentrant-response-failure") => {
+            scenario_renderer_reentrant(&mut input, &mut output, mode)
+        }
         "pipe-lifetime" => scenario_pipe_lifetime(&mut input, &mut output),
         "probe" => scenario_probe(&mut input, &mut output, ProbeScenario::Success),
         "probe-runtime" => scenario_probe(&mut input, &mut output, ProbeScenario::RuntimeExit(0)),
@@ -416,6 +425,274 @@ fn scenario_renderer_runtime(input: &mut File, output: &mut File) -> Result<(), 
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
+fn expect_held_evaluation(
+    reader: &mut RequestReader<'_>,
+    session: &str,
+    context: u64,
+    fragment: &str,
+) -> Result<u64, FakeChildError> {
+    let request = reader.next()?;
+    let id = expect_method(request.clone(), "Runtime.evaluate", Some(session))?;
+    if request.pointer("/params/contextId") != Some(&json!(context))
+        || request
+            .pointer("/params/expression")
+            .and_then(Value::as_str)
+            .is_none_or(|s| !s.contains(fragment))
+    {
+        return Err(FakeChildError::InvalidRequest(format!(
+            "expected held {fragment} in context {context}, got {request}"
+        )));
+    }
+    Ok(id)
+}
+
+fn emit_adapter_ping(
+    output: &mut File,
+    session: &str,
+    bindings: &RendererBindingInfo,
+    id: u64,
+) -> Result<(), FakeChildError> {
+    write_json_frame(
+        output,
+        &json!({
+            "method": "Runtime.bindingCalled", "sessionId": session,
+            "params": {"name": bindings.adapter_binding, "executionContextId": bindings.adapter_context,
+                "payload": json!({"v":1,"type":"request","pluginId":"codex.ui.adapter","generation":1,"id":id,
+                    "capability":{"name":"codlet.runtime.ping","api":1,"scope":"target"},"method":"ping","params":null}).to_string()}
+        }),
+    )?;
+    Ok(())
+}
+
+fn destroy_during_wait(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session: &str,
+    bindings: &RendererBindingInfo,
+) -> Result<(), FakeChildError> {
+    write_json_frame(
+        output,
+        &json!({"method":"Target.targetDestroyed","params":{"targetId":"main"}}),
+    )?;
+    emit_renderer_request(
+        output,
+        session,
+        bindings,
+        900,
+        "codlet.runtime.manage",
+        "disableSelf",
+    )?;
+    // The next command must be root-level: no response, cleanup, or provider
+    // dispatch is permitted on the destroyed session, even before controller.pump.
+    expect_root_command(reader, output, "Fake.hostStillAlive")?;
+    expect_root_command(reader, output, "Fake.finish")
+}
+
+fn scenario_renderer_reentrant(
+    input: &mut File,
+    output: &mut File,
+    mode: &str,
+) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let id = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({"id":id,"result":{"targetInfos":[{"targetId":"main","type":"page","url":"app://-/index.html"}]}}),
+    )?;
+    let session = establish_named_target_session(&mut reader, output, "main")?;
+    let (bindings, activation) =
+        begin_bundled_renderer_activation(&mut reader, output, &session, "nested", 201, 202)?;
+    if mode == "renderer-reentrant-destroy-activation" {
+        return destroy_during_wait(&mut reader, output, &session, &bindings);
+    }
+    if mode == "renderer-reentrant-deadline" {
+        let started = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        emit_renderer_request(
+            output,
+            &session,
+            &bindings,
+            1,
+            "codex.ui.titlebar.afterMenu",
+            "getMount",
+        )?;
+        let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
+        // Both outer activation and nested provider remain withheld until the
+        // host expires the original 500ms budget and starts retirement.
+        complete_renderer_evaluation(
+            &mut reader,
+            output,
+            &session,
+            202,
+            "__rpcClose",
+            json!({"ok":true}),
+        )?;
+        if started.elapsed() >= std::time::Duration::from_millis(700) {
+            return Err(FakeChildError::InvalidRequest(
+                "nested wait renewed the activation deadline".to_owned(),
+            ));
+        }
+        write_evaluation_value(output, provider, json!({"ok":true,"value":null}), &session)?;
+        write_evaluation_value(output, activation, json!({"ok":true}), &session)?;
+        expect_remove_renderer_script(
+            &mut reader,
+            output,
+            &session,
+            "script-bootstrap-codlet-nested",
+        )?;
+        expect_remove_renderer_binding(&mut reader, output, &session)?;
+        complete_adapter_renderer_deactivation(&mut reader, output, &session, "nested", 201)?;
+        expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
+        return expect_root_command(&mut reader, output, "Fake.finish");
+    }
+    // Complete a three-level dependency before releasing the activation response.
+    emit_renderer_request(
+        output,
+        &session,
+        &bindings,
+        1,
+        "codex.ui.titlebar.afterMenu",
+        "getMount",
+    )?;
+    let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
+    emit_adapter_ping(output, &session, &bindings, 1)?;
+    expect_consumer_host_success_response(&mut reader, output, &session, 201)?;
+    write_evaluation_value(output, provider, json!({"ok":true,"value":null}), &session)?;
+    expect_consumer_success_response(&mut reader, output, &session, 202)?;
+    write_evaluation_value(output, activation, json!({"ok":true}), &session)?;
+    expect_renderer_script(
+        &mut reader,
+        output,
+        &session,
+        "codlet.plugin.codlet.g1",
+        "runtime.activate",
+        "script-codlet-nested",
+    )?;
+
+    expect_root_command(&mut reader, output, "Fake.beginNested")?;
+    emit_renderer_request(
+        output,
+        &session,
+        &bindings,
+        2,
+        "codex.ui.titlebar.afterMenu",
+        "getMount",
+    )?;
+    let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
+    if mode == "renderer-reentrant-destroy-provider" {
+        return destroy_during_wait(&mut reader, output, &session, &bindings);
+    }
+    if mode == "renderer-reentrant-depth" {
+        let mut held = vec![provider];
+        for id in 3..=9 {
+            emit_renderer_request(
+                output,
+                &session,
+                &bindings,
+                id,
+                "codex.ui.titlebar.afterMenu",
+                "getMount",
+            )?;
+            held.push(expect_held_evaluation(
+                &mut reader,
+                &session,
+                201,
+                "__rpcInvoke",
+            )?);
+        }
+        emit_renderer_request(
+            output,
+            &session,
+            &bindings,
+            10,
+            "codex.ui.titlebar.afterMenu",
+            "getMount",
+        )?;
+        expect_consumer_error_response(
+            &mut reader,
+            output,
+            &session,
+            202,
+            "nested wait depth exceeds 8",
+        )?;
+        for id in held.into_iter().rev() {
+            write_evaluation_value(output, id, json!({"ok":true,"value":null}), &session)?;
+            expect_consumer_success_response(&mut reader, output, &session, 202)?;
+        }
+    } else {
+        emit_adapter_ping(output, &session, &bindings, 2)?;
+        if mode == "renderer-reentrant-response-failure" {
+            let reply = expect_held_evaluation(&mut reader, &session, 201, "__rpcReceive")?;
+            write_evaluation_value(
+                output,
+                reply,
+                json!({"ok":false,"error":"simulated RPC receive rejection"}),
+                &session,
+            )?;
+            emit_adapter_ping(output, &session, &bindings, 3)?;
+        }
+        expect_consumer_host_success_response(&mut reader, output, &session, 201)?;
+        write_evaluation_value(output, provider, json!({"ok":true,"value":null}), &session)?;
+        expect_consumer_success_response(&mut reader, output, &session, 202)?;
+    }
+    expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
+    complete_isolated_world(
+        &mut reader,
+        output,
+        &session,
+        "codlet.plugin.codlet.g1",
+        202,
+    )?;
+    let deactivate =
+        expect_held_evaluation(&mut reader, &session, 202, ".deactivate(\"codlet\", 1)")?;
+    if mode == "renderer-reentrant-destroy-deactivate" {
+        return destroy_during_wait(&mut reader, output, &session, &bindings);
+    }
+    emit_renderer_request(
+        output,
+        &session,
+        &bindings,
+        20,
+        "codlet.runtime.manage",
+        "disableSelf",
+    )?;
+    expect_consumer_error_response(&mut reader, output, &session, 202, "plugin_not_active")?;
+    emit_renderer_request(
+        output,
+        &session,
+        &bindings,
+        21,
+        "codex.ui.titlebar.afterMenu",
+        "getMount",
+    )?;
+    let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
+    emit_adapter_ping(output, &session, &bindings, 20)?;
+    expect_consumer_host_success_response(&mut reader, output, &session, 201)?;
+    write_evaluation_value(output, provider, json!({"ok":true,"value":null}), &session)?;
+    expect_consumer_success_response(&mut reader, output, &session, 202)?;
+    emit_renderer_request(
+        output,
+        &session,
+        &bindings,
+        22,
+        "codlet.runtime.ping",
+        "ping",
+    )?;
+    expect_consumer_host_success_response(&mut reader, output, &session, 202)?;
+    write_evaluation_value(output, deactivate, json!({"ok":true}), &session)?;
+    expect_remove_renderer_script(&mut reader, output, &session, "script-codlet-nested")?;
+    expect_remove_renderer_script(
+        &mut reader,
+        output,
+        &session,
+        "script-bootstrap-codlet-nested",
+    )?;
+    expect_remove_renderer_binding(&mut reader, output, &session)?;
+    complete_adapter_renderer_deactivation(&mut reader, output, &session, "nested", 201)?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
 fn scenario_renderer_ready_handshake(
     input: &mut File,
     output: &mut File,
@@ -497,6 +774,15 @@ fn scenario_renderer_ready_rejection(
         &session_id,
     )?;
 
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &session_id,
+        126,
+        "__rpcClose",
+        json!({"ok": true}),
+    )?;
+
     expect_remove_renderer_script(
         &mut reader,
         output,
@@ -541,6 +827,15 @@ fn scenario_renderer_ready_timeout(
         "ready-timeout",
         127,
         128,
+    )?;
+
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &session_id,
+        128,
+        "__rpcClose",
+        json!({"ok": true}),
     )?;
 
     expect_remove_renderer_script(
@@ -845,6 +1140,14 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         105,
         ".deactivate(\"codlet\", 1)",
         json!({"ok": false, "error": "simulated codlet cleanup failure"}),
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        &failure_session,
+        105,
+        "__rpcClose",
+        json!({"ok": true}),
     )?;
     expect_remove_renderer_script(
         &mut reader,

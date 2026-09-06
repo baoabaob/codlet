@@ -29,6 +29,141 @@ const capability = Object.freeze({
     scope: 'target'
 });
 
+function rpcFixture() {
+    const context = vm.createContext({});
+    vm.runInContext(bootstrapSource, context);
+    const requests = [];
+    context.test_binding = (payload) => requests.push(JSON.parse(payload));
+    return {
+        runtime: context.__codletRendererV1,
+        requests,
+        reply(request, result = null) {
+            return context.__codletRendererV1.__rpcReceive('test_binding', {
+                v: 1, type: 'response', id: request.id, ok: true, result
+            });
+        },
+        metadata: metadata(1, { binding: 'test_binding', requires: [capability], provides: [capability] })
+    };
+}
+
+test('deactivate awaits RPC while hidden from status and provider dispatch', async () => {
+    const fixture = rpcFixture();
+    let ctx;
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(value) {
+            ctx = value;
+            ctx.rpc.provide(capability, 'call', () => 'active');
+        },
+        async deactivate() { await ctx.rpc.request(capability, 'cleanup'); }
+    });
+    const stopped = fixture.runtime.deactivate('dev.example', 1);
+    assert.equal(fixture.runtime.status().length, 0);
+    assert.equal((await fixture.runtime.__rpcInvoke('test_binding', {})).ok, false);
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.reply(fixture.requests[0]).ok, true);
+    assert.equal((await stopped).ok, true);
+    await assert.rejects(ctx.rpc.request(capability, 'late'), { code: 'plugin_deactivated' });
+    assert.throws(() => ctx.rpc.notify(capability, 'late'), { code: 'plugin_deactivated' });
+    assert.equal(fixture.requests.length, 1);
+});
+
+test('provider handler can await its own nested RPC response', async () => {
+    const fixture = rpcFixture();
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(ctx) {
+            ctx.rpc.provide(capability, 'call', async () => await ctx.rpc.request(capability, 'nested'));
+        },
+        deactivate() {}
+    });
+    let finished = false;
+    const result = fixture.runtime.__rpcInvoke('test_binding', {
+        v: 1, type: 'request', pluginId: 'consumer', generation: 1, id: 9,
+        capability, method: 'call', params: null
+    }).then((value) => { finished = true; return value; });
+    await Promise.resolve();
+    assert.equal(finished, false);
+    assert.equal(fixture.requests[0].method, 'nested');
+    fixture.reply(fixture.requests[0], 42);
+    assert.equal((await result).value, 42);
+});
+
+test('activation failure cleanup can await RPC without becoming active', async () => {
+    const fixture = rpcFixture();
+    let ctx;
+    const result = fixture.runtime.activate(fixture.metadata, {
+        activate(value) { ctx = value; throw new Error('failed'); },
+        async deactivate() { await ctx.rpc.request(capability, 'cleanup'); }
+    });
+    await Promise.resolve();
+    assert.equal(fixture.runtime.status().length, 0);
+    assert.equal(fixture.requests[0].method, 'cleanup');
+    assert.equal(fixture.reply(fixture.requests[0]).ok, true);
+    assert.equal((await result).error, 'failed');
+});
+
+test('deactivation failure retires endpoints, pending calls and the operation gate', async () => {
+    const fixture = rpcFixture();
+    let ctx;
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(value) { ctx = value; },
+        deactivate() { throw new Error('cleanup failed'); }
+    });
+    const pending = ctx.rpc.request(capability, 'pending');
+    const rejected = assert.rejects(pending, { code: 'plugin_deactivated' });
+    assert.equal((await fixture.runtime.deactivate('dev.example', 1)).ok, false);
+    await rejected;
+    assert.equal(fixture.runtime.status().length, 0);
+    assert.equal(fixture.reply(fixture.requests[0]).ok, false);
+    assert.equal((await fixture.runtime.deactivate('dev.example', 1)).ok, true);
+});
+
+test('host cancellation prevents late activation from republishing a retired record', async () => {
+    const fixture = rpcFixture();
+    let release;
+    let ctx;
+    const ready = new Promise((resolve) => { release = resolve; });
+    const result = fixture.runtime.activate(fixture.metadata, {
+        async activate(value) { ctx = value; await ready; },
+        deactivate() {}
+    });
+    assert.equal(fixture.runtime.__rpcClose('test_binding').ok, true);
+    release();
+    assert.equal((await result).ok, false);
+    assert.equal(fixture.runtime.status().length, 0);
+    await assert.rejects(ctx.rpc.request(capability, 'late'), { code: 'plugin_deactivated' });
+});
+
+test('replacement hides the old provider while its deferred cleanup receives RPC', async () => {
+    const fixture = rpcFixture();
+    let old;
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(ctx) {
+            old = ctx;
+            ctx.rpc.provide(capability, 'call', () => 'old');
+        },
+        async deactivate() { await old.rpc.request(capability, 'cleanup'); }
+    });
+    let finished = false;
+    const replacement = fixture.runtime.activate(metadata(2, {
+        binding: 'replacement_binding', provides: [capability]
+    }), {
+        activate(ctx) { ctx.rpc.provide(capability, 'call', () => 'new'); },
+        deactivate() {}
+    }).then((result) => { finished = true; return result; });
+    await Promise.resolve();
+    assert.equal(finished, false);
+    assert.equal(fixture.runtime.status().length, 1);
+    assert.equal(fixture.runtime.status()[0].generation, 2);
+    const request = { v: 1, type: 'request', pluginId: 'consumer', generation: 1,
+        id: 9, capability, method: 'call', params: null };
+    assert.equal((await fixture.runtime.__rpcInvoke('test_binding', request)).ok, false);
+    assert.equal((await fixture.runtime.__rpcInvoke('replacement_binding', request)).value, 'new');
+    assert.equal(fixture.reply(fixture.requests[0]).ok, true);
+    assert.equal((await replacement).ok, true);
+    assert.equal(fixture.runtime.status()[0].generation, 2);
+    await assert.rejects(old.rpc.request(capability, 'late'), { code: 'plugin_deactivated' });
+});
+
 test('failed activation leaves no generation and releases its operation gate', async () => {
     const runtime = createRuntime();
     let cleanups = 0;
