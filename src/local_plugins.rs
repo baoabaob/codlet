@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+};
+
 use crate::plugins::{LoadedPlugin, Permission, PluginManifest, RendererWorld};
 
 const MANIFEST_NAME: &str = "plugin.json";
@@ -324,7 +329,7 @@ fn require_file_type(
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        linked |= metadata.file_attributes() & 0x400 != 0; // FILE_ATTRIBUTE_REPARSE_POINT
+        linked |= metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
     }
     #[cfg(unix)]
     {
@@ -364,10 +369,10 @@ fn read_text(
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        // FILE_SHARE_READ and FILE_FLAG_OPEN_REPARSE_POINT; no impersonation.
+        // Hold the inspected file stable while reading and avoid impersonation.
         options
-            .share_mode(0x1)
-            .custom_flags(0x0020_0000)
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .security_qos_flags(0);
     }
     let file = options
@@ -477,41 +482,16 @@ mod windows_file {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
 
-    use windows_sys::Win32::Foundation::{FILETIME, HANDLE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle, GetFinalPathNameByHandleW,
+    };
 
     use super::*;
 
-    // Stable std exposes neither link counts nor final paths from a Windows
-    // handle. Keep these two fileapi.h bindings local without new Cargo features.
-    #[repr(C)]
-    struct FileInformation {
-        attributes: u32,
-        creation: FILETIME,
-        last_access: FILETIME,
-        last_write: FILETIME,
-        volume_serial: u32,
-        size_high: u32,
-        size_low: u32,
-        links: u32,
-        index_high: u32,
-        index_low: u32,
-    }
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GetFileInformationByHandle(file: HANDLE, information: *mut FileInformation) -> i32;
-        fn GetFinalPathNameByHandleW(
-            file: HANDLE,
-            path: *mut u16,
-            capacity: u32,
-            flags: u32,
-        ) -> u32;
-    }
-
     pub(super) fn details(file: &File) -> io::Result<(PathBuf, u32)> {
-        let mut information = MaybeUninit::<FileInformation>::uninit();
+        let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
         // SAFETY: the handle is borrowed from a live File and the output has the
-        // documented BY_HANDLE_FILE_INFORMATION layout and sufficient storage.
+        // Windows API's declared structure type and sufficient storage.
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
             == 0
         {
@@ -541,6 +521,6 @@ mod windows_file {
             ));
         }
         let path = PathBuf::from(OsString::from_wide(&buffer[..length as usize]));
-        Ok((path, information.links))
+        Ok((path, information.nNumberOfLinks))
     }
 }

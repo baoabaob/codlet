@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.14；日期：2026-09-07；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.15；日期：2026-09-07；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -116,7 +116,7 @@ M1a 新增首个正式启动入口：
 codlet launch
 ```
 
-该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，加载第一方 manifest，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：内置插件启用状态已由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；GUI 自我禁用已通过鉴权事务实现；外部插件目录、文件热重载和运行中 CLI 控制仍待完成。
+该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，按统一 catalog 加载内置与授信本地插件，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：插件启用状态与本地授权记录由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；GUI 自我禁用已通过鉴权事务实现；文件热重载和运行中 CLI 控制仍待完成。
 
 M0 的仓库级 Windows 外部验收统一使用以下入口；`-CodletPath` 必须由操作者明确指向已经构建好的 `codlet.exe`，脚本不发现、安装或修改工具链：
 
@@ -142,15 +142,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0CrashAcce
 codlet plugin list
 codlet plugin enable <id>
 codlet plugin disable <id>
+codlet plugin add <path>
+codlet plugin add <path> --trust [--grant <permission>]...
+codlet plugin remove <id>
 ```
 
 `list` 在状态文件不存在时只显示内置默认值，不创建文件。`enable` / `disable` 采用同目录临时文件、flush + `sync_all` 和原子 rename 替换状态；当前没有 Launcher/Runtime Host 控制 IPC，因此命令明确报告只对下一次 `codlet launch` 生效。这些离线 CLI 命令不提供运行中立即启停或热重载；GUI 自我禁用另由已实现的鉴权管理事务完成。
+
+`add` 缺少 `--trust` 时仅检查目录、显示权限并非零退出，不写配置。明确授信并显式授予所有请求权限后，保存 canonical 本地路径、固定插件 id 与 grants。`remove` 只忘记外部注册，保留源文件与启用偏好；无法移除内置插件。完整格式、边界与示例见 [LOCAL_PLUGINS.md](LOCAL_PLUGINS.md)。
 
 以下命令仍属于后续里程碑：
 
 ```text
 codlet status
-codlet plugin add <path>
 codlet plugin reload <id>
 ```
 
@@ -730,14 +734,14 @@ M1c 验收条件：
 2026-09-07 的审查与任务拆分见 [REVIEW_AND_EXECUTION_2026-09-07.md](REVIEW_AND_EXECUTION_2026-09-07.md)。保留既有 capability kernel 与 adapter 边界，按以下依赖关系继续推进：
 
 1. **内核可靠性与诊断**：集成可重入 lifecycle/provider RPC、跨进程 registry 合并事务和只读 `doctor --json`，通过统一自动化门禁。
-2. **本地插件目录**：显式加载用户授信目录，严格校验 manifest、entry 路径和 grant，复用内置插件的 registry 与依赖图。
+2. **本地插件目录（候选已实现）**：显式加载用户授信目录，严格校验 manifest、entry 路径和 grant，复用内置插件的 registry、catalog 与依赖图。新增权限需显式授权，目录损坏时仍能禁用或忘记注册。
 3. **运行中控制**：实现会话级 Runtime Host IPC，将 CLI enable/disable/reload/status 接入与 GUI 共用的管理事务，先验证手动 reload 的换代、反向停用和失败回滚。
 4. **文件热重载**：在手动 reload 契约稳定后接入 watcher，验证连续保存、失败诊断与 generation 撤销。
 5. **当前 build 实机门禁**：在专门启动的 Codlet 会话中验证 GUI、导航、DOM 重建、多窗口和正常退出。2026-09-07 只读检测到 `26.901.6511.0`，该结果不构成兼容性通过证据。
 
 第 1 项是后续加载与控制工作的前置；第 2-4 项涉及相同生命周期文件，应串行集成。真实门禁全部满足前，M0/M1 仍保持未关闭。L4 只读研究不阻塞 M1/M2，也不允许以第二 App Server 路径提前伪造完成。
 
-### 16.1 当前实现状态
+### 16.1 第一轮审查前的实现基线
 
 截至 2026-09-04，工作树已包含 M1b capability kernel 候选，以及 M1c 的第一条 renderer 鉴权纵切：structured manifest、精确 API/scope、确定性依赖排序、每插件独立 isolated world、第一方 `codex.ui.adapter` mount token 和仅消费 token 的 `codlet` GUI。capability resolve 现在签发 opaque `CapabilityPrincipal`；provider id、consumer/provider registration epoch 和 scope epoch 只保存在 Core 内部，不通过 principal API 或错误暴露。Renderer Host 将 target/plugin/generation 对应的可信 principal 与注入 JS 的 plugin context 分开保存；每次 invoke 都在执行授权动作前重新核验 consumer/provider generation、registration 和 scope。插件换代、provider 注销或 scope 撤销后，旧 principal 均明确失败且不会执行动作，同一名称和 generation 的重新注册也不能复活旧 principal。
 
@@ -754,6 +758,19 @@ target controller 现在按顺序向 Runtime Host 暴露 `Attached`、`Navigated
 - `codlet doctor` 与 `codlet doctor --json` 汇总包、路径、进程快照、registry、内置 catalog 和静态依赖结果。JSON schema 为 `codlet.doctor/v1`，检查失败返回退出码 1；已运行 Codex 仅阻塞未来 launch，不导致只读 doctor 失败。没有 Runtime Host IPC 时，target、generation、provider-ready 和兼容性均明确标为未探测。
 
 这些是 M1 候选实现的推进，不替代外部实机门禁，也不关闭 `DEFECT-001` 或 `DEFECT-002`。全部验证结果及后续状态由本轮 review 文档记录。
+
+### 16.3 本地插件目录纵切
+
+本轮在两个独立 Astra xhigh worktree 实现本地注册持久化与目录加载器，并复用诊断任务整合 catalog、运行时和管理 GUI；主任务完成 CLI、示例、系统 API 绑定整合与组合验收。
+
+- Registry schema 2 新增 `localPlugins`；schema 1 保持只读兼容，只有显式成功保存才原子迁移。启用偏好按字段合并，注册/权限修改在锁内对完整原记录做比较，冲突不部分提交，也不因无关启停重放旧授权。
+- `plugin add` 采用显式 `--trust` 与逐项 `--grant`，当前仅支持 isolated renderer 的 `ui.dom` / `runtime.manage`。正常启用还核验被验证的授权记录在提交时未被改变；禁用与移除不依赖插件文件可读取。
+- 目录加载器复用 manifest/capability 解析，限制 manifest 128 KiB、source 1 MiB。规范化显式本地 root，拒绝 UNC/设备根、目录内链接、junction、硬链接、路径别名、越界和非 UTF-8 文本。通过打开的文件句柄校验最终路径与 link count，使用已有 `windows-sys` FileSystem 绑定；不执行或分析 JavaScript，不宣称 OS 沙箱或跨文件原子快照。
+- 启动前构造统一 catalog 并验证启用项；已禁用坏目录只保留逐项诊断。通用 capability kernel 仍识别四种 scope，但目前 renderer RPC 只路由 target-scoped requirements；外部插件不可路由的依赖在启动前失败。
+- `doctor` / GUI 可识别本地来源、路径、grants、请求权限与验证结果。运行中管理列表使用启动快照，`active` 来自调用 target 的真实 Active 状态；面板打开时重新查询，避免 activation 期间的快照永久隐藏自禁用开关。
+- `examples/local-echo` 保持既有 `module.exports` ABI，通过 awaited Host ping 后提供 `example.echo@1`；Node 测试使用真实 bootstrap 验证准备、调用和卸载。
+
+本轮没有启动、附着或结束真实 Codex，也没有修改真实用户插件配置。运行中 CLI IPC、文件 watcher、手动 reload 与当前 build 的实机门禁仍是后续工作。
 
 ## 17. 主要风险
 

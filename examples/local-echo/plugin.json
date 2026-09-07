@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "dev.example.local-echo",
+  "version": "0.1.0",
+  "renderer": {
+    "entry": "renderer.js",
+    "world": "isolated"
+  },
+  "permissions": [],
+  "provides": [
+    { "name": "example.echo", "api": 1, "scope": "target" }
+  ],
+  "requires": [
+    { "name": "codlet.runtime.ping", "api": 1, "scope": "target" }
+  ]
+}

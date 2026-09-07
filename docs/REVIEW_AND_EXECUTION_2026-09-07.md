@@ -84,9 +84,8 @@ $env:Path = "$codletTools/rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/lib/rus
 
 ## Next development sequence
 
-1. Add explicitly trusted local plugin directory loading with strict manifest and
-   entry-path validation. Reuse the same registry and capability graph as bundled
-   plugins; keep permission grants explicit.
+1. Completed in the subsequent delivery below: explicitly trusted local plugin
+   directories, entry-path validation, shared catalog/graph, and explicit grants.
 2. Add session-scoped Runtime Host control IPC, then connect CLI enable, disable,
    reload, and status to the same authenticated management transactions as the GUI.
 3. Add file-watch reload after manual reload has a tested generation replacement,
@@ -94,9 +93,66 @@ $env:Path = "$codletTools/rustup/toolchains/1.97.1-x86_64-pc-windows-gnu/lib/rus
 4. Re-run the current-build GUI, navigation, DOM rebuild, multi-window, and normal
    exit gates in a deliberately started Codlet session before closing M1.
 
-External plugin loading and IPC depend on the first batch and should not be started
-concurrently in the same lifecycle files. L2/L3/L4 expansion remains behind the
+Runtime Host IPC and subsequent reload work build on these foundations and should
+be integrated serially in the shared lifecycle files. L2/L3/L4 expansion remains behind the
 existing product gates; backend research does not justify a second App Server.
+
+## Local plugin delivery
+
+The follow-up batch starts from `b0006a8`. Two new independent Astra xhigh worktrees
+implemented registration and loading; the existing diagnostic task handled catalog,
+renderer, and GUI integration. The coordinator implemented CLI commands, the
+launch-preparation boundary, examples, shared Windows bindings, and final checks.
+
+| Executor | Scope | Reviewed result |
+| --- | --- | --- |
+| `01a079c8-ae94-7510-b514-494fbe6ce108` | Schema 2 local registrations, explicit grants, read-only v1 compatibility, registration CAS under the existing lock | Integrated as `887a393` from `1236f556` |
+| `01a079c9-7e35-7c51-b7ff-295c06c3d149` | Bounded UTF-8 directory loading, path/link/identity/grant checks, unchanged CommonJS source | Integrated as `d52b6be` from `a8f12843` |
+| `01a077bf-acc0-7c32-b502-76a8fe66c9c9` | Shared catalog/graph, per-entry diagnostics, runtime management snapshots, GUI refresh and asynchronous cleanup | Integrated as `9279eac` |
+
+`plugin add` previews by default. `--trust` plus each requested `--grant` records
+authorization; `remove` forgets registration without deleting source. The launch
+path validates the catalog before package discovery or process creation. Tests use
+that preparation function directly instead of risking a real CLI launch when
+testing invalid source. Enabling pins the validated registration through the
+commit; disabling broken directories remains available for recovery.
+
+Integration review also addressed two cross-module issues:
+
+- Real target state makes the GUI's initial activation-time `list` correctly say
+  its own plugin is not yet active. The panel now refreshes through the authenticated
+  endpoint when opened, restoring the self-disable control after readiness without
+  publishing a false active state. Late responses cannot mutate an unloaded panel.
+- A graph can be structurally valid while a local renderer's requirement uses a
+  scope the current transport cannot route. Catalog validation rejects non-target
+  local requirements before launch and reports the same failure in doctor, while
+  the generic manifest parser and capability kernel keep all four scopes.
+
+The file-handle checks use the repository's existing `windows-sys` dependency with
+its FileSystem feature, replacing duplicate hand-written Win32 structs/bindings.
+The example and guide are in `examples/local-echo` and [LOCAL_PLUGINS.md](LOCAL_PLUGINS.md).
+
+Combined verification after integration:
+
+| Check | Result |
+| --- | --- |
+| Rust format and all-target/all-feature Clippy with warnings denied | Passed |
+| All-target/all-feature Rust tests | 210 passed, 1 real Codex gate ignored |
+| Bootstrap, management GUI, and local example Node tests | 24 passed |
+| Normal and crash acceptance data fixtures, Windows PowerShell and PowerShell 7 | All four combinations passed |
+| Production release build (`--locked --release --bin codlet`) | Passed; release binary is 3,110,400 bytes |
+| Release `doctor --json` | Exit 0; registry, plugin validation, and graph `ok`; build `26.901.6511.0`; runtime `not_probed` |
+| Release inspection of `examples/local-echo` without `--trust` | Correct candidate and permissions, expected exit 1, no registration |
+
+The Rust total includes 94 unit, 18 doctor, 34 fake-child, 7 local CLI, 16 local
+registry, 30 local loader, 5 existing plugin CLI, and 6 registry-process tests.
+Windows symbolic-link and junction cases executed successfully on this machine.
+Source is not executed by inspection, listing, or doctor. No real Codex process
+was launched, attached, or terminated, and no real plugin registration was written.
+
+The local release artifact is `.codlet-artifacts/local-plugins-2026-09-07/codlet.exe`,
+outside Git. SHA-256:
+`7c23478d915bda21dad3344f1e1ab909836a1c7ab9787c7d29e0a801623717c2`.
 
 ## Open product gates
 

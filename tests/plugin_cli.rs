@@ -65,7 +65,7 @@ fn plugin_cli_rejects_unknown_plugins_without_creating_registry_state() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("unknown bundled plugin unknown.plugin")
+            .contains("unknown plugin unknown.plugin")
     );
     assert!(!local_app_data.path().join("Codlet").exists());
 }

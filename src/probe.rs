@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::catalog::{PluginCatalog, PluginSource};
 use crate::cdp::{
     CdpClient, ClientSpawnError, ShutdownError, TargetChange, TargetController, TargetError,
     TargetSession,
@@ -12,9 +13,10 @@ use crate::cdp::{
 use crate::diagnostics::{
     Check, DiagnosticIssue, DoctorInputs, DoctorReport, PackageInfo, ProcessInfo, ProcessSnapshot,
 };
+use crate::local_plugins::{LocalPluginError, inspect_local_plugin, load_local_plugin};
 use crate::plugins::{
-    ManifestError, PluginRegistry, PluginRegistryError, bundled_plugins, default_registry_path,
-    enabled_bundled_plugins,
+    LocalPluginRegistration, ManifestError, Permission, PluginRegistry, PluginRegistryError,
+    bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
@@ -61,17 +63,27 @@ pub enum ProbeError {
     Manifest(#[from] ManifestError),
     #[error(transparent)]
     PluginRegistry(#[from] PluginRegistryError),
+    #[error(transparent)]
+    LocalPlugin(#[from] LocalPluginError),
     #[error("marker cleanup also failed after {primary}: {cleanup}")]
     MarkerCleanupAfterFailure {
         primary: Box<MarkerFailure>,
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
-    #[error("unknown bundled plugin {0}; use `codlet plugin list` to inspect available plugins")]
+    #[error("unknown plugin {0}; use `codlet plugin list` to inspect available plugins")]
     UnknownPlugin(String),
+    #[error(
+        "local plugin {0} was inspected but not registered; review its directory and requested permissions, then explicitly supply --trust and --grant for each requested permission"
+    )]
+    PluginTrustRequired(String),
+    #[error("unrecognized plugin permission {0}")]
+    UnknownPermission(String),
+    #[error("bundled plugin {0} cannot be removed; use `codlet plugin disable <id>`")]
+    CannotRemoveBundledPlugin(String),
     #[error("Codex exited with nonzero status {exit_code} after CDP workers were reaped")]
     CodexExit { exit_code: u32 },
     #[error(
@@ -169,7 +181,18 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
         {
             let enabled = action == OsStr::new("enable");
             let plugin_id = plugin_id.to_str().ok_or(ProbeError::Usage)?;
-            set_bundled_plugin_enabled(plugin_id, enabled)
+            set_plugin_enabled(plugin_id, enabled)
+        }
+        [command, action, directory, options @ ..]
+            if command == OsStr::new("plugin") && action == OsStr::new("add") =>
+        {
+            let options = parse_plugin_trust_options(options)?;
+            add_local_plugin(Path::new(directory), options)
+        }
+        [command, action, plugin_id]
+            if command == OsStr::new("plugin") && action == OsStr::new("remove") =>
+        {
+            remove_local_plugin(plugin_id.to_str().ok_or(ProbeError::Usage)?)
         }
         [command, confirmation]
             if command == OsStr::new("m0-probe")
@@ -283,13 +306,17 @@ pub fn collect_doctor_report() -> DoctorReport {
         Check::Failed { error } => Check::Failed { error },
         Check::Unavailable { reason } => Check::Unavailable { reason },
     };
+    let catalog = match &registry {
+        Ok(registry) => PluginCatalog::load(registry),
+        Err(_) => bundled_plugins().map(PluginCatalog::from_bundled),
+    };
     DoctorReport::from_inputs(DoctorInputs {
         package,
         executable,
         processes,
         registry_path,
         registry,
-        plugins: bundled_plugins(),
+        catalog,
     })
 }
 
@@ -378,8 +405,7 @@ fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
 
 fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
     let registry = PluginRegistry::load_default()?;
-    let plugins = enabled_bundled_plugins(&registry)?;
-    let mut renderer = RendererRuntime::new(plugins, registry)?;
+    let mut renderer = prepare_renderer_runtime(registry)?;
     let attached = start_attached_codex()?;
     let initial_outcomes = attached
         .sessions
@@ -400,31 +426,153 @@ fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
     })
 }
 
+/// Validate configured plugins and build the renderer manager before any Codex
+/// discovery or launch. This only reads plugin files and never executes their source.
+pub fn prepare_renderer_runtime(registry: PluginRegistry) -> Result<RendererRuntime, ProbeError> {
+    let catalog = PluginCatalog::load(&registry)?;
+    Ok(RendererRuntime::from_catalog(catalog, registry)?)
+}
+
 fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
     println!("plugin-registry: {}", registry.path().display());
-    for plugin in bundled_plugins()? {
+    let catalog = PluginCatalog::load(registry)?;
+    for entry in catalog.entries() {
+        let source = match entry.source {
+            PluginSource::Bundled => "bundled",
+            PluginSource::Local { .. } => "local",
+        };
+        let version = entry
+            .plugin
+            .as_ref()
+            .map(|plugin| plugin.manifest.version.as_str())
+            .unwrap_or("unavailable");
         println!(
-            "plugin: id={}; version={}; source=bundled; enabled={}",
-            plugin.manifest.id,
-            plugin.manifest.version,
-            registry.is_enabled(&plugin.manifest.id)
+            "plugin: id={}; version={version}; source={source}; enabled={}",
+            entry.id,
+            registry.is_enabled(&entry.id)
         );
+        if let PluginSource::Local { path, grants } = &entry.source {
+            println!("plugin-directory: {}", path.display());
+            println!("granted-permissions: {}", permission_list(grants));
+        }
+        if let Err(error) = &entry.plugin {
+            println!(
+                "plugin-validation: id={}; state=failed; error={error}",
+                entry.id
+            );
+        }
     }
     Ok(())
 }
 
-fn set_bundled_plugin_enabled(plugin_id: &str, enabled: bool) -> Result<(), ProbeError> {
-    if !bundled_plugins()?
-        .iter()
-        .any(|plugin| plugin.manifest.id == plugin_id)
-    {
-        return Err(ProbeError::UnknownPlugin(plugin_id.to_owned()));
-    }
-
+fn set_plugin_enabled(plugin_id: &str, enabled: bool) -> Result<(), ProbeError> {
     let mut registry = PluginRegistry::load_default()?;
+    let is_bundled = bundled_plugins()?
+        .iter()
+        .any(|plugin| plugin.manifest.id == plugin_id);
+    if !is_bundled {
+        let registration = registry
+            .local_plugins()
+            .get(plugin_id)
+            .cloned()
+            .ok_or_else(|| ProbeError::UnknownPlugin(plugin_id.to_owned()))?;
+        if enabled {
+            load_local_plugin(plugin_id, &registration.path, &registration.grants, 1)?;
+            // The authorization that passed validation must still exist at commit.
+            registry.register_local(plugin_id, registration)?;
+        }
+    }
     registry.set_enabled(plugin_id, enabled)?;
     registry.save()?;
     println!("plugin-state: id={plugin_id}; enabled={enabled}; applies=next-codlet-launch");
+    Ok(())
+}
+
+#[derive(Default)]
+struct PluginTrustOptions {
+    trusted: bool,
+    grants: Vec<Permission>,
+}
+
+fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptions, ProbeError> {
+    let mut options = PluginTrustOptions::default();
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        if argument == OsStr::new("--trust") && !options.trusted {
+            options.trusted = true;
+        } else if argument == OsStr::new("--grant") {
+            let permission = arguments
+                .next()
+                .and_then(|permission| permission.to_str())
+                .ok_or(ProbeError::Usage)?;
+            let grant: Permission = serde_json::from_value(Value::String(permission.to_owned()))
+                .map_err(|_| ProbeError::UnknownPermission(permission.to_owned()))?;
+            if options.grants.contains(&grant) {
+                return Err(ProbeError::Usage);
+            }
+            options.grants.push(grant);
+        } else {
+            return Err(ProbeError::Usage);
+        }
+    }
+    Ok(options)
+}
+
+fn permission_list(permissions: &[Permission]) -> String {
+    if permissions.is_empty() {
+        "none".to_owned()
+    } else {
+        permissions
+            .iter()
+            .map(|permission| permission.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(), ProbeError> {
+    let candidate = inspect_local_plugin(directory)?;
+    let plugin_id = &candidate.manifest.id;
+    if !options.trusted {
+        println!(
+            "plugin-candidate: id={plugin_id}; version={}; source=local",
+            candidate.manifest.version
+        );
+        println!("plugin-directory: {}", candidate.root.display());
+        println!(
+            "requested-permissions: {}",
+            permission_list(&candidate.manifest.permissions)
+        );
+        return Err(ProbeError::PluginTrustRequired(plugin_id.clone()));
+    }
+    candidate.validate_grants(&options.grants)?;
+    let mut registry = PluginRegistry::load_default()?;
+    registry.register_local(
+        plugin_id,
+        LocalPluginRegistration {
+            path: candidate.root,
+            grants: options.grants,
+        },
+    )?;
+    registry.save()?;
+    println!(
+        "plugin-added: id={plugin_id}; enabled={}; applies=next-codlet-launch",
+        registry.is_enabled(plugin_id)
+    );
+    Ok(())
+}
+
+fn remove_local_plugin(plugin_id: &str) -> Result<(), ProbeError> {
+    if bundled_plugins()?
+        .iter()
+        .any(|plugin| plugin.manifest.id == plugin_id)
+    {
+        return Err(ProbeError::CannotRemoveBundledPlugin(plugin_id.to_owned()));
+    }
+    let mut registry = PluginRegistry::load_default()?;
+    registry.remove_local(plugin_id)?;
+    registry.save()?;
+    println!("plugin-removed: id={plugin_id}; applies=next-codlet-launch; directory=preserved");
     Ok(())
 }
 
