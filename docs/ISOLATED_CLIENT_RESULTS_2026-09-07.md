@@ -6,6 +6,10 @@ activation. **The experiment did not pass isolation acceptance or the live GUI
 gate:** shell-environment hydration timed out, and graceful close left the
 client process resident. No login or model turn was performed.
 
+The [2026-09-08 follow-up](ISOLATED_CLIENT_REPAIR_2026-09-08.md) subsequently fixed
+both startup and application-exit failures and verified two fresh runs. This
+document preserves the original failed run; GUI and production gates remain open.
+
 ## Build and scope
 
 - Official MSIX: `OpenAI.Codex_26.901.6511.0_x64__2p2nqsd0c76g0`;

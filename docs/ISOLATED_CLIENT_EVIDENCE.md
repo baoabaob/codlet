@@ -4,6 +4,14 @@ Captured: 2026-09-07. Audit baseline: `master 42725d6`. This document records a 
 
 The coordinator subsequently performed one real launch. Its [separate results](ISOLATED_CLIENT_RESULTS_2026-09-07.md) record successful inherited-CDP/renderer activation, a failed shell-environment gate, and a client that remained alive after `Browser.close`. Those observations do not turn this source audit into an isolation or production acceptance result.
 
+The [2026-09-08 repair and runtime evidence](ISOLATED_CLIENT_REPAIR_2026-09-08.md)
+adds source anchors for synchronous bundled-runtime materialization and the
+trusted `quit-app` handler. Preparing that runtime in the fresh lab cache and
+using the application quit bridge passed two new startup/exit checks. The
+[current harness recipe](ISOLATED_CLIENT_TESTING.md) now enforces the startup log
+gate before plugin activation; the remaining GUI and production boundaries below
+still apply.
+
 ## Decision
 
 **Do not start a second ordinary Windows Codex instance beside the existing one using only a different `CODEX_HOME` and Electron `userData`.** The inspected build opens a fixed machine-level desktop IPC pipe before login. That router carries conversation operations, not just harmless presence notifications.

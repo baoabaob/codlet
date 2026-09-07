@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.16；日期：2026-09-07；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.17；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -94,7 +94,9 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 
 2026-09-07 用户另外授权一次隔离客户端实验：复用官方程序，通过独立测试入口与全新数据目录验证并行实例，不复制生产配置、凭据或会话。该实验不改变普通 `codlet launch` 的冲突拒绝，不作为已支持的生产多 profile 功能，也不凭一次启动结果关闭 `DEFECT-001`。实际测试前核对当前包的启动、存储和 IPC 边界；测试控制只面向本次创建并持有身份的子进程。测试方案及结果单独记录，需要用户登录或工具拒绝界面操作时明确报告。
 
-本次[实测结果](ISOLATED_CLIENT_RESULTS_2026-09-07.md)：官方 build `26.901.6511.0` 的独立 Dev/WebSocket 实例到达登录页，继承式 CDP 与两个内置 renderer 插件激活成功。Shell 环境加载超时导致隔离验收失败；GUI 挂载和交互尚未验收。`Browser.close` 仅关闭窗口，根进程继续驻留，协调者在核对本次进程身份后清理测试进程。原客户端与原后台的身份、Chrome native-host 注册前后相同，未登录，也未发送模型任务。该结果不关闭 M0/M1 或 `DEFECT-001`，亦不构成 `DEFECT-002` 的复测通过。
+首次[实测结果](ISOLATED_CLIENT_RESULTS_2026-09-07.md)记录了官方 build `26.901.6511.0` 独立 Dev/WebSocket 实例的 Shell 超时和关窗后进程驻留。用户授权继续后的[修复复测](ISOLATED_CLIENT_REPAIR_2026-09-08.md)定位到启动时同步复制包内 Node 运行时阻塞主线程；实验入口现在先将这些静态文件准备到全新测试缓存，自动核验本次 PID 的启动日志后才加载插件，并通过本次客户端的原生 `quit-app` 入口退出。两个全新目录的 Shell 就绪分别为 942／950 ms，完整启动检查为 1875／1909 ms，正常退出为 1011／1112 ms。两个内置插件均确认激活，本轮全部测试进程和端口已清理，未使用强制终止；原客户端与原后台身份、Chrome native-host 注册前后相同。
+
+本轮未登录、未发送模型任务，也未再使用 Computer Use 输入。GUI 挂载、交互、主题和窄窗布局仍未验收。上述结果只覆盖固定 Dev/WebSocket 实验条件，不关闭 M0/M1、`DEFECT-001` 或 Runtime Host 崩溃契约 `DEFECT-002`。
 
 同一 Browser Process 内的 BrowserWindow 不属于 `DEFECT-001`。Draft 0.6 起，Runtime Host 使用 `Target.setDiscoverTargets`、启动快照和 `Target.targetCreated` / `Target.targetInfoChanged` / `Target.targetDestroyed` 事件，持续管理规范文档为 `app://-/index.html` 的全部 page target。目标可以携带 Codex 为窗口路由添加的 query 或 fragment，但其他 origin、path 与非 page 类型仍被拒绝。初始窗口与“在新窗口打开”产生的 renderer 走同一 attach、enable 与 bootstrap 入口，同一 `targetId` 不重复注入，销毁后清理状态。
 

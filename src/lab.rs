@@ -1,11 +1,10 @@
 //! Explicit experimental launcher. Normal `codlet launch` never calls this module.
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::process::CommandExt;
 use std::path::{Component, Path, PathBuf, Prefix};
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -15,7 +14,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
 };
 
-use crate::cdp::{CdpClient, TargetController};
+use crate::cdp::{CdpClient, TargetChange, TargetController, TargetSession};
 use crate::plugins::PluginRegistry;
 use crate::renderer::RendererRuntime;
 use crate::windows::environment::{ChildEnvironment, EnvironmentError};
@@ -26,11 +25,16 @@ use crate::windows::packages::{
 use crate::windows::process::{ChildProcess, launch_with_cdp_pipes_in_environment};
 
 mod input;
+mod runtime_seed;
+mod shell;
+mod shutdown;
+mod startup;
 use input::{ControlInput, InputEvent};
+use shutdown::QuitState;
+use startup::StartupCheck;
 
 const DISCOVERY_BUDGET: Duration = Duration::from_secs(15);
 const WAIT_SLICE: Duration = Duration::from_millis(50);
-const CLOSE_BUDGET: Duration = Duration::from_secs(3);
 const EXPERIMENT_FLAG: &str = "--experimental-isolated-client";
 const LAB_SHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const AUDITED_PACKAGE_VERSION: &str = "26.901.6511.0";
@@ -40,7 +44,7 @@ const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}
 #[derive(Debug, Error)]
 pub enum LabError {
     #[error(
-        "use `codlet-lab --experimental-isolated-client --root <empty-or-new-absolute-directory> --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:<port>`; then stdin start or quit"
+        "use `codlet-lab --experimental-isolated-client --root <empty-or-new-absolute-directory> --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:<port> [--startup-trace]`; then stdin start or quit"
     )]
     Usage,
     #[error("preflightBlocked: {0}")]
@@ -58,6 +62,7 @@ struct LabOptions {
     root: PathBuf,
     expected_version: String,
     app_server_url: Option<String>,
+    startup_trace: bool,
 }
 
 impl LabOptions {
@@ -83,6 +88,24 @@ impl LabOptions {
             return Err(LabError::Usage);
         }
         validate_root_path(Path::new(root))?;
+        let (extra, startup_trace) = if extra
+            .last()
+            .is_some_and(|argument| argument == OsStr::new("--startup-trace"))
+        {
+            (&extra[..extra.len() - 1], true)
+        } else {
+            (extra, false)
+        };
+        if startup_trace
+            && root.to_str().is_none_or(|root| {
+                !root.is_ascii()
+                    || root
+                        .chars()
+                        .any(|character| character.is_ascii_whitespace() || character == '\'')
+            })
+        {
+            return Err(LabError::Preflight("startup profiling requires an ASCII root without whitespace or quotes for V8's flag parser".into()));
+        }
         let app_server_url = match extra {
             [] => None,
             [flag, url] if flag == OsStr::new("--app-server-url") => {
@@ -103,6 +126,7 @@ impl LabOptions {
             root: PathBuf::from(root),
             expected_version: version.to_owned(),
             app_server_url,
+            startup_trace,
         })
     }
 }
@@ -119,6 +143,14 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             .map_err(|error| LabError::Preflight(error.to_string()))?;
     let root = LabRoot::claim(&options.root)?;
     let mut reporter = Reporter::new(&root)?;
+    let runtime_seed = runtime_seed::RuntimeSeed::prepare(
+        &package.install_location.join("app/resources"),
+        &root.path.join("home/AppData/Local"),
+    )?;
+    reporter.emit(
+        "runtime_assets_prepared",
+        json!({"runtime": runtime_seed, "child_created": false}),
+    );
     let registry = PluginRegistry::load(root.path.join("codlet/config.json"))
         .map_err(|error| LabError::Preflight(error.to_string()))?;
     let renderer = RendererRuntime::bundled(registry)
@@ -130,7 +162,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             .as_deref()
             .expect("audited WS policy"),
     )?;
-    let shell_profiles = checked_shell_profiles(&environment)?;
+    let shell_check = shell::check(&environment, &root.path.join("project"))?;
     let environment_manifest = root.write_environment_manifest(&environment)?;
     reporter.write(
         "prepared",
@@ -139,15 +171,18 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             "executable": executable, "root": root.path,
             "experimental": true, "isolation_is_not_a_security_boundary": true,
             "gui_mount_verified": false,
-            "control": "start after coordinator verifies the dedicated backend; quit cancels before start or requests Browser.close afterward; EOF keeps Host alive",
-            "shell": LAB_SHELL, "shell_profiles_checked_absent": shell_profiles,
+            "control": "start after coordinator verifies the dedicated backend; quit cancels before start or requests the owned application's quit bridge afterward; EOF keeps Host alive",
+            "shell": LAB_SHELL, "shell_profiles_checked_absent": shell_check.profiles_checked_absent,
+            "shell_environment_probe": shell_check,
             "requested_app_server_url": options.app_server_url,
             "environment_manifest": environment_manifest,
             "codex_home": root.path.join("codex-home"),
             "sqlite_home": root.path.join("sqlite"),
             "project": root.path.join("project"),
             "user_data": root.path.join("user-data"),
-            "backend_lifecycle_owner": "coordinator"
+            "backend_lifecycle_owner": "coordinator",
+            "startup_trace": options.startup_trace,
+            "startup_trace_path": options.startup_trace.then(|| root.path.join("logs/startup-trace.json"))
         }),
     )?;
     let mut input = ControlInput::new();
@@ -168,12 +203,18 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         ));
     }
     let config_guards = root.verify_configuration()?;
-    checked_shell_profiles(&environment)?;
+    runtime_seed.verify()?;
+    let shell_check = shell::check(&environment, &root.path.join("project"))?;
+    reporter.emit(
+        "shell_preflight_verified",
+        json!({"check": shell_check, "child_created": false}),
+    );
     // This deliberately bypasses production process-conflict checks only in this
     // explicit lab binary. No existing process is opened, attached or changed.
+    let child_arguments = startup_trace_arguments(&root.path, options.startup_trace);
     let (child, pipes) = launch_with_cdp_pipes_in_environment(
         &executable,
-        &[],
+        &child_arguments,
         false,
         Some(&environment),
         Some(&root.path.join("project")),
@@ -213,7 +254,19 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             None
         }
     };
-    hold_lab_child(child, client, renderer, input, &mut reporter)
+    let startup = StartupCheck::new(
+        root.path.join("home/AppData/Local/Codex/Logs"),
+        child.process_id(),
+    );
+    hold_lab_child(
+        child,
+        client,
+        renderer,
+        input,
+        startup,
+        options.startup_trace,
+        &mut reporter,
+    )
 }
 
 fn wait_for_start(input: &mut ControlInput, reporter: &mut Reporter) -> bool {
@@ -272,28 +325,6 @@ fn validate_loopback_url(value: &OsStr) -> Result<String, LabError> {
     Ok(url.to_owned())
 }
 
-fn checked_shell_profiles(environment: &ChildEnvironment) -> Result<Vec<PathBuf>, LabError> {
-    // Static, read-only command: no profile is sourced and no caller text is evaluated.
-    let output = Command::new(LAB_SHELL)
-        .env_clear()
-        .envs(environment.entries_os())
-        .env("PSModulePath", r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
-        .args(["-NoProfile", "-NonInteractive", "-Command",
-            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @($PROFILE.AllUsersAllHosts, $PROFILE.AllUsersCurrentHost, $PROFILE.CurrentUserAllHosts, $PROFILE.CurrentUserCurrentHost) | ConvertTo-Json -Compress"])
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .output()?;
-    if !output.status.success() || output.stdout.len() > 32 * 1024 {
-        return Err(LabError::Preflight(
-            "could not inspect the fixed WindowsPowerShell profile paths".into(),
-        ));
-    }
-    let profiles: Vec<PathBuf> = serde_json::from_slice(&output.stdout).map_err(|error| {
-        LabError::Preflight(format!("invalid shell profile-path report: {error}"))
-    })?;
-    require_absent_profiles(&profiles)?;
-    Ok(profiles)
-}
-
 fn require_absent_profiles(profiles: &[PathBuf]) -> Result<(), LabError> {
     if profiles.len() != 4 || profiles.iter().any(|path| !path.is_absolute()) {
         return Err(LabError::Preflight(
@@ -313,6 +344,30 @@ fn require_absent_profiles(profiles: &[PathBuf]) -> Result<(), LabError> {
         }
     }
     Ok(())
+}
+
+fn startup_trace_arguments(root: &Path, enabled: bool) -> Vec<OsString> {
+    if !enabled {
+        return Vec::new();
+    }
+    // Chromium's per-browser controller writes only this fresh root's diagnostic file.
+    // No network tracing, upload destination, external inspector or caller-supplied flags.
+    vec![
+        "--trace-startup=-*,toplevel,v8,disabled-by-default-v8.cpu_profiler".into(),
+        "--trace-startup-duration=6".into(),
+        "--trace-startup-format=json".into(),
+        "--trace-startup-owner=controller".into(),
+        format!(
+            "--js-flags=--prof --no-log-source-code --logfile={}",
+            root.join("logs/v8.log").display()
+        )
+        .into(),
+        format!(
+            "--trace-startup-file={}",
+            root.join("logs/startup-trace.json").display()
+        )
+        .into(),
+    ]
 }
 
 fn check_package_version(package: &InstalledPackage, expected: &str) -> Result<(), LabError> {
@@ -344,20 +399,20 @@ fn hold_lab_child(
     connection: Option<(CdpClient, crate::cdp::CdpEventStream)>,
     mut renderer: RendererRuntime,
     mut input: ControlInput,
+    mut startup: StartupCheck,
+    startup_trace: bool,
     reporter: &mut Reporter,
 ) -> Result<(), LabError> {
+    let mut sessions = BTreeMap::new();
     let (client, mut targets) = if let Some((client, events)) = connection {
         let targets = match TargetController::discover(client.clone(), events, DISCOVERY_BUDGET) {
-            Ok((targets, sessions)) => {
+            Ok((targets, initial_sessions)) => {
                 reporter.emit(
                     "cdp_connected",
-                    json!({"initial_target_count": sessions.len()}),
+                    json!({"initial_target_count": initial_sessions.len()}),
                 );
-                for session in sessions {
-                    match renderer.attach(&session) {
-                        Ok(report) => reporter.emit("renderer_attached", json!({"target_id": report.target_id, "plugin_count": report.plugin_count, "gui_mount_verified": false})),
-                        Err(error) => reporter.emit("renderer_attach_failed", json!({"target_id": session.target_id(), "error": error.to_string(), "child_retained": true})),
-                    }
+                for session in initial_sessions {
+                    sessions.insert(session.target_id().to_owned(), session);
                 }
                 Some(targets)
             }
@@ -374,7 +429,9 @@ fn hold_lab_child(
         "host_waiting",
         json!({"quit_available": client.is_some() && input.is_open(), "gui_mount_verified": false}),
     );
-    let mut close_requested = false;
+    let mut quit = QuitState::new();
+    let mut startup_verified = false;
+    let mut failure: Option<String> = None;
     let mut cdp_closed_reported = false;
     let mut renderer_pump_failed = false;
     let mut previous_renderer = None;
@@ -397,7 +454,9 @@ fn hold_lab_child(
                     Err(error) => return Err(LabError::Runtime(error.to_string())),
                 }
             }
-            return if exit_code == 0 {
+            return if let Some(failure) = failure {
+                Err(LabError::Runtime(failure))
+            } else if exit_code == 0 {
                 Ok(())
             } else {
                 Err(LabError::Runtime(format!(
@@ -410,18 +469,8 @@ fn hold_lab_child(
                 InputEvent::Start => {
                     reporter.emit("already_started", json!({"no_second_child": true}))
                 }
-                InputEvent::Quit if !close_requested => {
-                    close_requested = true;
-                    reporter.emit(
-                        "quit_requested",
-                        json!({"method": "Browser.close", "child_pid": child.process_id()}),
-                    );
-                    let result = client.as_ref().map(request_own_child_close);
-                    match result {
-                        Some(Ok(())) => reporter.emit("quit_sent", json!({"waiting_for_own_child_exit": true})),
-                        Some(Err(error)) => reporter.emit("quit_response_unavailable", json!({"error": error, "waiting_for_own_child_exit": true, "no_retry": true})),
-                        None => reporter.emit("quit_unavailable", json!({"error": "no inherited CDP connection; close the lab window manually", "residual_child_possible": true})),
-                    }
+                InputEvent::Quit if !quit.requested() => {
+                    request_own_child_quit(&mut quit, &sessions, "stdin", reporter);
                 }
                 InputEvent::Quit => {
                     reporter.emit("quit_already_requested", json!({"no_retry": true}))
@@ -445,13 +494,16 @@ fn hold_lab_child(
                     );
                     cdp_closed_reported = true;
                 }
-            } else if !close_requested {
+            } else if !quit.requested() {
                 if let Some(controller) = targets.as_mut() {
                     match controller.pump(Duration::ZERO) {
                         Ok(changes) => {
                             for change in changes {
                                 let target_id = change.target_id().to_owned();
-                                if let Err(error) = renderer.apply_target_change(change) {
+                                update_sessions(&mut sessions, &change);
+                                if startup_verified
+                                    && let Err(error) = renderer.apply_target_change(change)
+                                {
                                     reporter.emit(
                                         "target_change_failed",
                                         json!({"target_id": target_id, "error": error.to_string()}),
@@ -468,7 +520,10 @@ fn hold_lab_child(
                         }
                     }
                 }
-                if !renderer_pump_failed && let Err(error) = renderer.pump_bindings() {
+                if startup_verified
+                    && !renderer_pump_failed
+                    && let Err(error) = renderer.pump_bindings()
+                {
                     renderer_pump_failed = true;
                     reporter.emit(
                         "renderer_pump_failed",
@@ -476,6 +531,35 @@ fn hold_lab_child(
                     );
                 }
             }
+        }
+        if !quit.requested() && !startup_verified {
+            match startup.poll() {
+                Ok(true) => {
+                    startup_verified = true;
+                    reporter.emit("startup_verified", json!({"evidence": startup.evidence, "elapsed_ms": startup.elapsed_ms(), "gui_mount_verified": false}));
+                    for session in sessions.values().filter(|session| session.is_live()) {
+                        match renderer.attach(session) {
+                            Ok(report) => reporter.emit("renderer_attached", json!({"target_id": report.target_id, "plugin_count": report.plugin_count, "gui_mount_verified": false})),
+                            Err(error) => reporter.emit("renderer_attach_failed", json!({"target_id": session.target_id(), "error": error.to_string(), "child_retained": true})),
+                        }
+                    }
+                }
+                Ok(false) => {}
+                Err(reason) => {
+                    failure = Some(format!("startup verification failed: {reason}"));
+                    reporter.emit("startup_failed", json!({"reason": reason, "elapsed_ms": startup.elapsed_ms(), "renderer_plugins_loaded": false}));
+                    request_own_child_quit(&mut quit, &sessions, "startup_failed", reporter);
+                }
+            }
+        }
+        if startup_trace && !quit.requested() && startup.elapsed_ms() >= 12000 {
+            request_own_child_quit(&mut quit, &sessions, "startup_trace_complete", reporter);
+        }
+        if quit.take_timeout() {
+            failure.get_or_insert_with(|| {
+                "own client did not exit within the 15-second quit budget".into()
+            });
+            reporter.emit("quit_timed_out", json!({"budget_ms": 15000, "residual_child_possible": true, "child_retained": true, "no_retry": true}));
         }
         let snapshot = renderer.status_snapshot();
         if previous_renderer.as_ref() != Some(&snapshot) {
@@ -493,11 +577,55 @@ fn hold_lab_child(
     }
 }
 
-fn request_own_child_close(client: &CdpClient) -> Result<(), String> {
-    client
-        .request("Browser.close", None, None, CLOSE_BUDGET)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+fn update_sessions(sessions: &mut BTreeMap<String, TargetSession>, change: &TargetChange) {
+    match change {
+        TargetChange::Attached(session) => {
+            sessions.insert(session.target_id().to_owned(), session.clone());
+        }
+        TargetChange::NavigatedAway(session) => {
+            sessions.remove(session.target_id());
+        }
+        TargetChange::SessionEnded {
+            target_id,
+            session_id,
+        } => {
+            if sessions
+                .get(target_id)
+                .is_some_and(|session| session.session_id() == session_id)
+            {
+                sessions.remove(target_id);
+            }
+        }
+    }
+}
+
+fn request_own_child_quit(
+    quit: &mut QuitState,
+    sessions: &BTreeMap<String, TargetSession>,
+    reason: &str,
+    reporter: &mut Reporter,
+) {
+    if !quit.begin() {
+        return;
+    }
+    reporter.emit(
+        "quit_requested",
+        json!({"method": "electronBridge.quit-app", "reason": reason}),
+    );
+    let Some(session) = sessions.values().find(|session| session.is_live()) else {
+        reporter.emit("quit_unavailable", json!({"reason": "no_live_audited_main_document", "child_retained": true, "no_retry": true}));
+        return;
+    };
+    match shutdown::request(session) {
+        Ok(()) => reporter.emit(
+            "quit_sent",
+            json!({"method": "electronBridge.quit-app", "waiting_for_own_child_exit": true}),
+        ),
+        Err(error) => reporter.emit(
+            "quit_response_unavailable",
+            json!({"error": error, "waiting_for_own_child_exit": true, "no_retry": true}),
+        ),
+    }
 }
 
 struct LabRoot {
@@ -554,6 +682,8 @@ impl LabRoot {
             "home/AppData",
             "home/AppData/Roaming",
             "home/AppData/Local",
+            "home/AppData/Local/Codex",
+            "home/AppData/Local/Codex/Logs",
             "temp",
         ] {
             let directory = root.path.join(directory);
@@ -744,6 +874,10 @@ fn lab_environment(root: &LabRoot, app_server_url: &str) -> Result<ChildEnvironm
         environment.set(OsStr::new(name), root.path.join(relative).as_os_str())?;
     }
     environment.set(OsStr::new("SHELL"), OsStr::new(LAB_SHELL))?;
+    environment.set(
+        OsStr::new("PSModulePath"),
+        OsStr::new(shell::SYSTEM_MODULES),
+    )?;
     environment.set(
         OsStr::new("CODEX_APP_SERVER_WS_URL"),
         OsStr::new(app_server_url),
@@ -966,6 +1100,46 @@ mod tests {
         require_absent_profiles(&profiles).unwrap();
         fs::write(&profiles[2], "# fixture").unwrap();
         assert!(require_absent_profiles(&profiles).is_err());
+    }
+
+    #[test]
+    fn startup_profiling_is_opt_in_and_cannot_choose_an_external_output_or_flags() {
+        let base = [
+            "--experimental-isolated-client",
+            "--root",
+            "C:/lab-trace",
+            "--expected-package-version",
+            "26.901.6511.0",
+            "--app-server-url",
+            "ws://127.0.0.1:49233",
+        ];
+        let parse = |extra: &[&str]| {
+            LabOptions::parse(
+                base.into_iter()
+                    .chain(extra.iter().copied())
+                    .map(OsString::from),
+            )
+        };
+        assert!(!parse(&[]).unwrap().startup_trace);
+        assert!(parse(&["--startup-trace"]).unwrap().startup_trace);
+        for extra in [
+            vec!["--startup-trace", "--startup-trace"],
+            vec!["--trace-startup-file=C:/outside.json"],
+            vec!["--js-flags=--expose-gc"],
+        ] {
+            assert!(parse(&extra).is_err());
+        }
+        assert!(startup_trace_arguments(Path::new("C:/lab-trace"), false).is_empty());
+        let args = startup_trace_arguments(Path::new("C:/lab-trace"), true);
+        assert!(
+            args.iter()
+                .any(|argument| argument.to_string_lossy().contains("--no-log-source-code"))
+        );
+        assert!(
+            args.iter()
+                .filter(|argument| argument.to_string_lossy().contains("file="))
+                .all(|argument| argument.to_string_lossy().contains("C:/lab-trace"))
+        );
     }
 
     #[test]

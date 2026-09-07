@@ -8,7 +8,7 @@ It does not modify the Codex package, official shortcuts, protocols, configurati
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
-An explicitly authorized [isolated-client experiment](docs/ISOLATED_CLIENT_RESULTS_2026-09-07.md) on that build reached sign-in and activated both bundled renderer plugins beside the original client. It failed the shell-environment gate, did not verify the GUI, and needed coordinator cleanup after `Browser.close` left the client resident. The [experimental lab harness](docs/ISOLATED_CLIENT_TESTING.md) has its own fresh directories and WebSocket backend; ordinary `codlet launch` keeps its conflict refusal.
+The authorized [isolated-client follow-up](docs/ISOLATED_CLIENT_REPAIR_2026-09-08.md) fixed the initial Shell timeout and resident-client shutdown failures. Two fresh Dev/WebSocket runs passed automatic startup checks in about 1.9 seconds, activated both bundled renderer plugins, and exited normally in about one second. The [experimental lab harness](docs/ISOLATED_CLIENT_TESTING.md) prepares the official package's Node runtime files in its own fresh cache and checks startup before loading plugins. Login, live GUI interactions and production M0/M1 gates remain unverified; ordinary `codlet launch` keeps its conflict refusal.
 
 Trusted local renderer directories now use the same launch catalog, capability graph, management list, and diagnostics as bundled plugins. See [local plugin registration and authoring](docs/LOCAL_PLUGINS.md) for the trust, permissions, path, and recovery contracts.
 
@@ -60,7 +60,7 @@ Run the automated checks on Windows:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
-node --test tests/bootstrap.test.mjs tests/codlet_gui.test.mjs tests/codex_ui_adapter.test.mjs tests/local-example.test.mjs
+node --test tests/bootstrap.test.mjs tests/codlet_gui.test.mjs tests/codex_ui_adapter.test.mjs tests/local-example.test.mjs tests/lab_quit.test.mjs
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0CrashAcceptance.ps1
