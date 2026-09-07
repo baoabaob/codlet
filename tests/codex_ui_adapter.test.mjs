@@ -405,15 +405,25 @@ test('theme contract is scoped to owned mounts and opted-in portals with native 
     f.flush();
     const css = f.style().textContent;
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
-    assert.equal(rules.length, 2);
+    assert.equal(rules.length, 3);
     assert.equal(rules[0][1].trim(), `${mountSelector}, [data-codlet-ui-theme="${token}"]`);
     const variables = [...rules[0][2].matchAll(/--codlet-ui-([\w-]+):\s*([^;]+);/g)];
     assert.deepEqual(variables.map(([, name]) => name).sort(),
-        ['bg', 'fg', 'muted', 'border', 'hover', 'active', 'focus', 'font', 'font-size', 'menu-height', 'radius'].sort());
-    for (const [, , value] of variables) assert.match(value, /^var\(--[\w-]+, .+\)$/);
+        ['bg', 'fg', 'muted', 'border', 'hover', 'active', 'focus', 'font', 'font-size', 'menu-height', 'radius',
+            'surface', 'surface-raised', 'surface-group', 'secondary', 'accent', 'on-accent',
+            'font-small', 'font-caption', 'font-heading', 'dialog-radius', 'group-radius', 'dialog-shadow',
+            'backdrop', 'danger-bg', 'danger-hover', 'danger-fg'].sort());
+    for (const [, name, value] of variables) {
+        if (name === 'backdrop') assert.equal(value, '#00000022');
+        else if (name === 'danger-bg' || name === 'danger-hover') {
+            assert.match(value, /^color-mix\(in oklab, var\(--color-chart-red, CanvasText\) (10|20)%, transparent\)$/);
+        } else assert.match(value, /^var\(--[\w-]+, .+\)$/);
+    }
     assert.equal(rules[1][1].trim(), mountSelector);
     assert.match(rules[1][2], /-webkit-app-region:\s*no-drag/);
     assert.match(rules[1][2], /pointer-events:\s*auto/);
+    assert.equal(rules[2][1].trim(), `[data-codlet-ui-theme="${token}"]::backdrop`);
+    assert.equal(rules[2][2].trim(), '--codlet-ui-backdrop: #00000022;');
     assert.deepEqual(f.document.documentElement.style, { userSetting: 'untouched' });
     assert.deepEqual(f.document.body.style, { userSetting: 'untouched' });
     f.plugin.deactivate();

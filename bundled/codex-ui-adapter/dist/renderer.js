@@ -73,6 +73,22 @@ module.exports = (() => {
                     --codlet-ui-font-size: var(--text-base, 14px);
                     --codlet-ui-menu-height: var(--height-toolbar-sm, 36px);
                     --codlet-ui-radius: var(--radius-md, 6px);
+                    --codlet-ui-surface: var(--color-surface, Canvas);
+                    --codlet-ui-surface-raised: var(--color-surface-elevated-secondary, Canvas);
+                    --codlet-ui-surface-group: var(--color-background-panel, var(--color-background-primary-soft-alpha, Canvas));
+                    --codlet-ui-secondary: var(--color-text-secondary, GrayText);
+                    --codlet-ui-accent: var(--color-chart-blue, Highlight);
+                    --codlet-ui-on-accent: var(--gray-0, HighlightText);
+                    --codlet-ui-font-small: var(--text-sm, 13px);
+                    --codlet-ui-font-caption: var(--text-xs, 12px);
+                    --codlet-ui-font-heading: var(--text-heading-md, 20px);
+                    --codlet-ui-dialog-radius: var(--radius-3xl, 20px);
+                    --codlet-ui-group-radius: var(--radius-2xl, 16px);
+                    --codlet-ui-dialog-shadow: var(--shadow-lg, 0px 4px 8px -2px rgb(0 0 0 / 10%));
+                    --codlet-ui-backdrop: #00000022;
+                    --codlet-ui-danger-bg: color-mix(in oklab, var(--color-chart-red, CanvasText) 10%, transparent);
+                    --codlet-ui-danger-hover: color-mix(in oklab, var(--color-chart-red, CanvasText) 20%, transparent);
+                    --codlet-ui-danger-fg: var(--color-chart-red, CanvasText);
                 }
                 ${MOUNT_SELECTOR} {
                     display: inline-flex;
@@ -82,6 +98,9 @@ module.exports = (() => {
                     height: var(--codlet-ui-menu-height);
                     pointer-events: auto;
                     -webkit-app-region: no-drag;
+                }
+                [data-codlet-ui-theme="${CAPABILITY_TOKEN}"]::backdrop {
+                    --codlet-ui-backdrop: #00000022;
                 }
             `;
         }
