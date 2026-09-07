@@ -19,6 +19,8 @@ use crate::plugins::{
     bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
+use crate::runtime_status::{CodexStatus, StatusCode, StatusPublisher};
+use crate::windows::status_pipe::{StatusPipeError, StatusServer, query_current_user};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
 use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage, PackageError,
@@ -65,13 +67,17 @@ pub enum ProbeError {
     PluginRegistry(#[from] PluginRegistryError),
     #[error(transparent)]
     LocalPlugin(#[from] LocalPluginError),
+    #[error(transparent)]
+    StatusPipe(#[from] StatusPipeError),
+    #[error("Host status query failed: {status:?}; see the status report")]
+    StatusFailed { status: StatusCode },
     #[error("marker cleanup also failed after {primary}: {cleanup}")]
     MarkerCleanupAfterFailure {
         primary: Box<MarkerFailure>,
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error("unknown plugin {0}; use `codlet plugin list` to inspect available plugins")]
@@ -143,6 +149,8 @@ struct RendererOutcome {
 }
 
 struct CodletRuntime {
+    _status_server: StatusServer,
+    status: StatusPublisher,
     package: InstalledPackage,
     executable: PathBuf,
     process: ChildProcess,
@@ -168,6 +176,10 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             Ok(())
         }
         [command] if command == OsStr::new("doctor") => run_doctor(false),
+        [command] if command == OsStr::new("status") => run_status(false),
+        [command, format] if command == OsStr::new("status") && format == OsStr::new("--json") => {
+            run_status(true)
+        }
         [command, format] if command == OsStr::new("doctor") && format == OsStr::new("--json") => {
             run_doctor(true)
         }
@@ -226,6 +238,20 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             Ok(())
         }
         _ => Err(ProbeError::Usage),
+    }
+}
+
+fn run_status(json: bool) -> Result<(), ProbeError> {
+    let report = query_current_user();
+    if json {
+        println!("{}", serde_json::to_string(&report).expect("status is serializable"));
+    } else {
+        print!("{}", report.to_human_readable());
+    }
+    if report.is_success() {
+        Ok(())
+    } else {
+        Err(ProbeError::StatusFailed { status: report.status })
     }
 }
 
@@ -381,32 +407,55 @@ fn start_probed_codex() -> Result<ProbedCodex, ProbeError> {
 }
 
 fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
+    start_attached_codex_with_status(None).map(|(attached, _)| attached)
+}
+
+fn start_attached_codex_with_status(
+    status: Option<StatusPublisher>,
+) -> Result<(AttachedCodex, Option<StatusServer>), ProbeError> {
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
-    let (process, pipes) = checked_launch(
+    let ((process, pipes), server) = checked_launch_prepared(
         &executable,
         running,
         || running_processes_for_package(CODEX_PACKAGE_FAMILY, &executable),
-        || launch_with_cdp_pipes(&executable, &[], false),
+        || status.as_ref()
+            .map(|status| StatusServer::bind_current_user(status.clone()))
+            .transpose()
+            .map_err(ProbeError::from),
+        |server| Ok((launch_with_cdp_pipes(&executable, &[], false)?, server)),
     )?;
+    if let Some(status) = status {
+        status.set_codex(CodexStatus {
+            pid: process.process_id(),
+            package_full_name: package.full_name.clone(),
+            package_version: package.version.to_string(),
+            executable: executable.to_string_lossy().into_owned(),
+        });
+    }
     drop(launch_guard);
     let (client, events) = CdpClient::spawn(pipes)?;
     let (targets, sessions) = TargetController::discover(client.clone(), events, REQUEST_DEADLINE)?;
 
-    Ok(AttachedCodex {
-        package,
-        executable,
-        process,
-        client,
-        targets,
-        sessions,
-    })
+    Ok((
+        AttachedCodex {
+            package,
+            executable,
+            process,
+            client,
+            targets,
+            sessions,
+        },
+        server,
+    ))
 }
 
 fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
     let registry = PluginRegistry::load_default()?;
     let mut renderer = prepare_renderer_runtime(registry)?;
-    let attached = start_attached_codex()?;
+    let status = StatusPublisher::new();
+    renderer.set_status_publisher(status.clone());
+    let (attached, server) = start_attached_codex_with_status(Some(status.clone()))?;
     let initial_outcomes = attached
         .sessions
         .iter()
@@ -415,7 +464,10 @@ fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
             result: renderer.attach(session),
         })
         .collect();
+    status.set_ready();
     Ok(CodletRuntime {
+        _status_server: server.expect("runtime launch prepared the status server"),
+        status,
         package: attached.package,
         executable: attached.executable,
         process: attached.process,
@@ -635,6 +687,14 @@ impl CodletRuntime {
     }
 
     fn wait(mut self) -> Result<u32, ProbeError> {
+        let result = self.wait_inner();
+        if let Err(error) = &result {
+            self.status.terminate(format!("runtime_error: {error}"));
+        }
+        result
+    }
+
+    fn wait_inner(&mut self) -> Result<u32, ProbeError> {
         let exit_code = loop {
             if let Some(exit_code) = self.process.wait(Duration::ZERO)? {
                 break exit_code;
@@ -664,6 +724,7 @@ impl CodletRuntime {
                 }
             }
             let _ = self.renderer.pump_bindings()?;
+            self.renderer.publish_status();
             for diagnostic in self.renderer.take_diagnostics() {
                 eprintln!(
                     "renderer-plugin: target-id={}; plugin-id={}; state=cleanup-failed; error={}",
@@ -674,12 +735,19 @@ impl CodletRuntime {
                 break exit_code;
             }
         };
+        self.status.terminate(format!("child_exited: {exit_code}"));
         self.client.shutdown()?;
         if exit_code == 0 {
             Ok(exit_code)
         } else {
             Err(ProbeError::CodexExit { exit_code })
         }
+    }
+}
+
+impl Drop for CodletRuntime {
+    fn drop(&mut self) {
+        self.status.terminate("host_dropped");
     }
 }
 
@@ -799,19 +867,37 @@ fn evaluate_marker_phase(
     }
 }
 
+#[cfg(test)]
 fn checked_launch<T, Scan, Launch>(
     executable: &Path,
     initial_scan: Vec<RunningProcess>,
-    mut second_scan: Scan,
+    second_scan: Scan,
     launch: Launch,
 ) -> Result<T, ProbeError>
 where
     Scan: FnMut() -> Result<Vec<RunningProcess>, ProcessError>,
     Launch: FnOnce() -> Result<T, ProcessError>,
 {
+    checked_launch_prepared(
+        executable, initial_scan, second_scan, || Ok(()), |()| Ok(launch()?),
+    )
+}
+
+fn checked_launch_prepared<T, P, Scan, Prepare, Launch>(
+    executable: &Path,
+    initial_scan: Vec<RunningProcess>,
+    mut second_scan: Scan,
+    prepare: Prepare,
+    launch: Launch,
+) -> Result<T, ProbeError>
+where
+    Scan: FnMut() -> Result<Vec<RunningProcess>, ProcessError>,
+    Prepare: FnOnce() -> Result<P, ProbeError>,
+    Launch: FnOnce(P) -> Result<T, ProbeError>,
+{
     reject_instance_conflict(executable, initial_scan)?;
     reject_instance_conflict(executable, second_scan()?)?;
-    Ok(launch()?)
+    launch(prepare()?)
 }
 
 fn reject_instance_conflict(
@@ -939,6 +1025,30 @@ mod tests {
             Err(ProbeError::InstanceConflict { process_ids, .. }) if process_ids == vec![4300]
         ));
         assert_eq!(launch_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn conflicts_precede_ipc_and_ipc_failure_precedes_child_creation() {
+        let executable = PathBuf::from(r"C:\fixture\child.exe");
+        for conflict_scan in [0, 1, 2] {
+            let prepared = AtomicUsize::new(0);
+            let launched = AtomicUsize::new(0);
+            let running = || vec![RunningProcess { process_id: 42, executable: executable.clone() }];
+            let result = checked_launch_prepared(
+                &executable,
+                if conflict_scan == 1 { running() } else { Vec::new() },
+                || Ok(if conflict_scan == 2 { running() } else { Vec::new() }),
+                || {
+                    prepared.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(ProbeError::StatusPipe(StatusPipeError::Invalid("fixture IPC allocation failure".into())))
+                },
+                |()| { launched.fetch_add(1, Ordering::SeqCst); Ok(()) },
+            );
+            assert_eq!(launched.load(Ordering::SeqCst), 0);
+            assert_eq!(prepared.load(Ordering::SeqCst), usize::from(conflict_scan == 0));
+            if conflict_scan == 0 { assert!(matches!(result, Err(ProbeError::StatusPipe(_)))); }
+            else { assert!(matches!(result, Err(ProbeError::InstanceConflict { .. }))); }
+        }
     }
 
     #[test]

@@ -16,6 +16,10 @@ use crate::cdp::{
     CdpEvent, CdpEventStream, EventStreamError, TargetChange, TargetError, TargetSession,
 };
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
+use crate::runtime_status::{
+    MAX_STATUS_PLUGINS_PER_TARGET, MAX_STATUS_TARGETS, PluginLifecycle as RendererPluginState,
+    PluginStatus, RendererStatus, StatusEvent, StatusPublisher, TargetStatus,
+};
 
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -90,6 +94,8 @@ pub struct RendererRuntime {
     drive_deadline: Option<Instant>,
     drive_depth: usize,
     pending_actions: Vec<HostAction>,
+    status_publisher: Option<StatusPublisher>,
+    status_events: Vec<StatusEvent>,
 }
 
 struct RendererSession {
@@ -101,9 +107,11 @@ struct RendererSession {
 #[derive(Clone)]
 struct ActivePlugin {
     id: String,
+    version: String,
     generation: u64,
     world_name: String,
     context_id: Option<u64>,
+    activation_confirmed: bool,
     binding_name: String,
     principal: CapabilityPrincipal,
     leases: BTreeMap<CapabilityDescriptor, CapabilityLease>,
@@ -111,14 +119,6 @@ struct ActivePlugin {
     bootstrap_identifier: String,
     script_identifier: Option<String>,
     state: RendererPluginState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RendererPluginState {
-    Activating,
-    Ready,
-    Active,
-    Stopping,
 }
 
 type TargetAuthorization = (
@@ -254,10 +254,24 @@ impl RendererRuntime {
             drive_deadline: None,
             drive_depth: 0,
             pending_actions: Vec::new(),
+            status_publisher: None,
+            status_events: Vec::new(),
         })
     }
 
     pub fn attach(
+        &mut self,
+        session: &TargetSession,
+    ) -> Result<RendererBootstrapReport, RendererError> {
+        let result = self.attach_inner(session);
+        if let Err(error) = &result {
+            self.record_status_event(session.target_id(), "attach_failed", &error.to_string());
+        }
+        self.publish_status();
+        result
+    }
+
+    fn attach_inner(
         &mut self,
         session: &TargetSession,
     ) -> Result<RendererBootstrapReport, RendererError> {
@@ -280,6 +294,7 @@ impl RendererRuntime {
             events: session.subscribe_events(),
         };
         self.sessions.insert(target_id.clone(), renderer_session);
+        self.publish_status();
         if let Err(error) = self.install_target_plugins(&target_id, authorizations) {
             let _ = self.deactivate_target(&target_id);
             self.flush_host_actions();
@@ -353,9 +368,11 @@ impl RendererRuntime {
                 .plugins
                 .push(ActivePlugin {
                     id: plugin.manifest.id.clone(),
+                    version: plugin.manifest.version.clone(),
                     generation: plugin.generation,
                     world_name: world_name.clone(),
                     context_id: Some(context_id),
+                    activation_confirmed: false,
                     binding_name: binding_name.clone(),
                     principal,
                     leases,
@@ -364,6 +381,7 @@ impl RendererRuntime {
                     script_identifier: None,
                     state: RendererPluginState::Activating,
                 });
+            self.publish_status();
 
             let expression = activation_expression(&plugin, &binding_name);
             if let Err(message) = self
@@ -392,6 +410,8 @@ impl RendererRuntime {
                 })
                 .expect("ready renderer candidate must remain registered");
             candidate.state = RendererPluginState::Ready;
+            candidate.activation_confirmed = candidate.context_id == Some(context_id);
+            self.publish_status();
 
             let script_identifier = add_new_document_script(&session, &expression, &world_name)?;
             self.ensure_live_target(target_id).map_err(|message| {
@@ -410,6 +430,7 @@ impl RendererRuntime {
                 .expect("ready candidate exists");
             candidate.script_identifier = Some(script_identifier);
             candidate.state = RendererPluginState::Active;
+            self.publish_status();
         }
         assert!(
             authorizations.is_empty(),
@@ -429,6 +450,8 @@ impl RendererRuntime {
         self.capabilities
             .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
         self.sessions.remove(target_id);
+        self.record_status_event(target_id, "session_ended", "renderer target session has ended");
+        self.publish_status();
         Err("renderer target session has ended".to_owned())
     }
 
@@ -551,11 +574,79 @@ impl RendererRuntime {
         self.capabilities.deactivate_scope(&scope);
         self.sessions.remove(target_id);
         self.flush_host_actions();
+        self.publish_status();
         first_error.map_or(Ok(()), Err)
     }
 
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    pub fn set_status_publisher(&mut self, publisher: StatusPublisher) {
+        self.status_publisher = Some(publisher);
+        self.publish_status();
+    }
+
+    /// Samples owner records only. It issues no CDP requests and reads no config.
+    pub fn status_snapshot(&self) -> RendererStatus {
+        let mut target_ids: Vec<_> = self.sessions.keys().collect();
+        target_ids.sort();
+        let mut truncated = target_ids.len() > MAX_STATUS_TARGETS;
+        let targets = target_ids
+            .into_iter()
+            .take(MAX_STATUS_TARGETS)
+            .map(|target_id| {
+                let session = &self.sessions[target_id];
+                let session_live = session.session.is_live();
+                truncated |= session.plugins.len() > MAX_STATUS_PLUGINS_PER_TARGET;
+                truncated |= target_id.len() > 1024 || session.session.session_id().len() > 1024;
+                truncated |= session.plugins.iter().any(|plugin| {
+                    plugin.id.len() > 1024 || plugin.version.len() > 1024
+                });
+                let plugins = session.plugins.iter().take(MAX_STATUS_PLUGINS_PER_TARGET)
+                    .map(|plugin| PluginStatus {
+                        id: status_text(&plugin.id),
+                        version: status_text(&plugin.version),
+                        generation: plugin.generation,
+                        lifecycle: plugin.state,
+                        context_present: plugin.context_id.is_some(),
+                        activation_confirmed: plugin.activation_confirmed,
+                        active: session_live
+                            && plugin.context_id.is_some()
+                            && plugin.activation_confirmed
+                            && plugin.state == RendererPluginState::Active,
+                    })
+                    .collect();
+                TargetStatus {
+                    target_id: status_text(target_id),
+                    session_id: status_text(session.session.session_id()),
+                    session_live,
+                    plugins,
+                }
+            })
+            .collect();
+        RendererStatus {
+            targets,
+            recent_events: self.status_events.clone(),
+            truncated,
+        }
+    }
+
+    pub fn publish_status(&self) {
+        if let Some(publisher) = &self.status_publisher {
+            publisher.publish_renderer(self.status_snapshot());
+        }
+    }
+
+    fn record_status_event(&mut self, target_id: &str, code: &str, message: &str) {
+        if self.status_events.len() == 32 {
+            self.status_events.remove(0);
+        }
+        self.status_events.push(StatusEvent {
+            target_id: status_text(target_id),
+            code: code.to_owned(),
+            message: status_text(message),
+        });
     }
 
     pub fn plugin_count(&self) -> usize {
@@ -666,6 +757,8 @@ impl RendererRuntime {
         if let Err(error) = departed.detach() {
             first_error.get_or_insert(error.into());
         }
+        self.record_status_event(target_id, "navigated_away", "renderer target left the supported page");
+        self.publish_status();
         first_error.map_or(Ok(()), Err)
     }
 
@@ -678,6 +771,8 @@ impl RendererRuntime {
             self.capabilities
                 .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
             self.sessions.remove(target_id);
+            self.record_status_event(target_id, "session_ended", "renderer target session has ended");
+            self.publish_status();
         }
     }
 
@@ -689,7 +784,7 @@ impl RendererRuntime {
         if self.ensure_live_target(target_id).is_err() {
             return Ok(false);
         }
-        match event.method.as_str() {
+        let result = match event.method.as_str() {
             "Runtime.executionContextCreated" => {
                 let context = event
                     .params
@@ -722,6 +817,9 @@ impl RendererRuntime {
                         plugin.world_name == name && plugin.state != RendererPluginState::Stopping
                     })
                 {
+                    if plugin.context_id != Some(context_id) {
+                        plugin.activation_confirmed = false;
+                    }
                     plugin.context_id = Some(context_id);
                 }
                 Ok(false)
@@ -743,6 +841,7 @@ impl RendererRuntime {
                 {
                     if plugin.context_id == Some(context_id) {
                         plugin.context_id = None;
+                        plugin.activation_confirmed = false;
                     }
                 }
                 Ok(false)
@@ -755,12 +854,15 @@ impl RendererRuntime {
                     .plugins
                 {
                     plugin.context_id = None;
+                    plugin.activation_confirmed = false;
                 }
                 Ok(false)
             }
             "Runtime.bindingCalled" => self.route_binding_call(target_id, &event),
             _ => Ok(false),
-        }
+        };
+        self.publish_status();
+        result
     }
 
     fn route_binding_call(
@@ -1045,6 +1147,7 @@ impl RendererRuntime {
         if !self.pending_actions.contains(&action) {
             self.pending_actions.push(action);
         }
+        self.publish_status();
     }
 
     fn flush_host_actions(&mut self) {
@@ -1098,6 +1201,7 @@ impl RendererRuntime {
         plugin.state = RendererPluginState::Stopping;
         let mut plugin = plugin.clone();
         let target_session = session.session.clone();
+        self.publish_status();
         let previous_deadline = self.drive_deadline;
         self.drive_deadline = Some(previous_deadline.unwrap_or(target_session.request_deadline()?));
         let lifecycle_session = target_session.until(
@@ -1169,8 +1273,20 @@ impl RendererRuntime {
                 .plugins
                 .retain(|p| p.binding_name != plugin.binding_name);
         }
+        if let Some(error) = &first_error {
+            self.record_status_event(target_id, "cleanup_failed", &error.to_string());
+        }
+        self.publish_status();
         first_error.map_or(Ok(()), Err)
     }
+}
+
+fn status_text(text: &str) -> String {
+    let mut end = text.len().min(1024);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 impl RendererSession {

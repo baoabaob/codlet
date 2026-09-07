@@ -16,6 +16,7 @@ use codlet::cdp::{
 use codlet::plugins::PluginRegistry;
 use codlet::probe::{MarkerFailure, ProbeError, hold_cdp_until_child_exit, probe_marker};
 use codlet::renderer::{RendererError, RendererRuntime};
+use codlet::runtime_status::{PluginLifecycle, StatusPublisher};
 use codlet::windows::process::{ChildProcess, launch_with_cdp_pipes};
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
@@ -545,6 +546,27 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     let (child, client, events) = launch("renderer-ready-timeout", &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(250));
     let (_registry_directory, mut runtime) = bundled_runtime();
+    let publisher = StatusPublisher::new();
+    runtime.set_status_publisher(publisher.clone());
+    let reader = {
+        let publisher = publisher.clone();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                let snapshot = publisher.snapshot();
+                if let Some(plugin) = snapshot.renderer.targets.iter()
+                    .flat_map(|target| &target.plugins)
+                    .find(|plugin| plugin.id == "codlet" && plugin.lifecycle == PluginLifecycle::Activating)
+                {
+                    assert!(!plugin.active);
+                    assert!(snapshot.sampled_at_unix_ms > 0);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            panic!("activation wait did not publish an observable live snapshot");
+        })
+    };
 
     let started = Instant::now();
     let error = runtime.attach(&sessions[0]).unwrap_err();
@@ -557,6 +579,12 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     ));
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(runtime.session_count(), 0);
+
+    reader.join().unwrap();
+    let snapshot = publisher.snapshot();
+    assert!(snapshot.renderer.targets.is_empty());
+    assert!(snapshot.renderer.recent_events.iter()
+        .any(|event| event.code == "attach_failed"));
 
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
@@ -617,15 +645,29 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
     let registry_path = registry_directory.path().join("config.json");
     let registry = PluginRegistry::load(&registry_path).unwrap();
     let mut runtime = RendererRuntime::bundled(registry).unwrap();
+    let publisher = StatusPublisher::new();
+    runtime.set_status_publisher(publisher.clone());
+    assert!(publisher.snapshot().renderer.targets.is_empty());
     for session in &sessions {
         assert_eq!(runtime.attach(session).unwrap().plugin_count, 2);
     }
+    let snapshot = publisher.snapshot();
+    assert_eq!(snapshot.renderer.targets.len(), 2);
+    assert!(snapshot.renderer.targets.iter().all(|target| {
+        target.plugins.len() == 2 && target.plugins.iter().all(|plugin| {
+            plugin.active && plugin.activation_confirmed && plugin.lifecycle == PluginLifecycle::Active
+        })
+    }));
 
     client
         .request("Fake.emitDisableSelf", None, None, DEADLINE)
         .unwrap();
     assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
     assert_eq!(runtime.plugin_count(), 1);
+    assert!(publisher.snapshot().renderer.targets.iter()
+        .all(|target| target.plugins.len() == 1 && target.plugins[0].id == "codex.ui.adapter"));
+    assert!(publisher.snapshot().renderer.recent_events.iter()
+        .any(|event| event.code == "cleanup_failed"));
     let diagnostics = runtime.take_diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].target_id, "cleanup-failure");
@@ -649,10 +691,39 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
     assert_eq!(created[0].target_id(), "after-disable");
     let report = runtime.attach(&created[0]).unwrap();
     assert_eq!(report.plugin_count, 1);
+    assert_eq!(publisher.snapshot().renderer.targets.len(), 3);
 
     runtime.deactivate_target("after-disable").unwrap();
     runtime.deactivate_target("main").unwrap();
     runtime.deactivate_target("cleanup-failure").unwrap();
+    assert!(publisher.snapshot().renderer.targets.is_empty());
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn status_does_not_infer_activation_from_a_recreated_context() {
+    let (child, client, events) = launch("renderer-status-context", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let (_directory, mut runtime) = bundled_runtime();
+    let publisher = StatusPublisher::new();
+    runtime.set_status_publisher(publisher.clone());
+    runtime.attach(&sessions[0]).unwrap();
+    assert!(publisher.snapshot().renderer.targets[0].plugins.iter().all(|p| p.active));
+    client.request("Fake.clearContexts", None, None, DEADLINE).unwrap();
+    runtime.pump_bindings_with_timeout(DEADLINE).unwrap();
+    assert!(publisher.snapshot().renderer.targets[0].plugins.iter()
+        .all(|plugin| !plugin.context_present && !plugin.active && !plugin.activation_confirmed));
+    client.request("Fake.restoreContexts", None, None, DEADLINE).unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    while !publisher.snapshot().renderer.targets[0].plugins.iter().all(|p| p.context_present) {
+        runtime.pump_bindings_with_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        assert!(Instant::now() < deadline);
+    }
+    assert!(publisher.snapshot().renderer.targets[0].plugins.iter()
+        .all(|plugin| !plugin.active && !plugin.activation_confirmed));
+    runtime.deactivate_target("main").unwrap();
     client.request("Fake.finish", None, None, DEADLINE).unwrap();
     assert_child_success(&child);
 }

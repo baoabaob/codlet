@@ -48,7 +48,8 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "target-delayed" => scenario_target_delayed(&mut input, &mut output),
         "target-never" => scenario_target_never_matches(&mut input, &mut output),
         "target-lifecycle" => scenario_target_lifecycle(&mut input, &mut output),
-        "renderer-runtime" => scenario_renderer_runtime(&mut input, &mut output),
+        "renderer-runtime" => scenario_renderer_runtime(&mut input, &mut output, false),
+        "renderer-status-context" => scenario_renderer_runtime(&mut input, &mut output, true),
         "renderer-ready-handshake" => scenario_renderer_ready_handshake(&mut input, &mut output),
         "renderer-ready-rejection" => scenario_renderer_ready_rejection(&mut input, &mut output),
         "renderer-ready-timeout" => scenario_renderer_ready_timeout(&mut input, &mut output),
@@ -408,7 +409,11 @@ fn scenario_target_lifecycle(input: &mut File, output: &mut File) -> Result<(), 
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
-fn scenario_renderer_runtime(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+fn scenario_renderer_runtime(
+    input: &mut File,
+    output: &mut File,
+    status_context: bool,
+) -> Result<(), FakeChildError> {
     let mut reader = RequestReader::new(input);
     enable_target_discovery(&mut reader, output)?;
     let get_targets = expect_method(reader.next()?, "Target.getTargets", None)?;
@@ -425,6 +430,19 @@ fn scenario_renderer_runtime(input: &mut File, output: &mut File) -> Result<(), 
     )?;
     let session_id = establish_named_target_session(&mut reader, output, "main")?;
     complete_bundled_renderer_install(&mut reader, output, &session_id, "", 41, 42)?;
+    if status_context {
+        expect_root_command(&mut reader, output, "Fake.clearContexts")?;
+        write_json_frame(output, &json!({
+            "method": "Runtime.executionContextsCleared", "sessionId": session_id, "params": {}
+        }))?;
+        expect_root_command(&mut reader, output, "Fake.restoreContexts")?;
+        for (id, plugin) in [(141, "codex.ui.adapter"), (142, "codlet")] {
+            write_json_frame(output, &json!({
+                "method": "Runtime.executionContextCreated", "sessionId": session_id,
+                "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1")}}
+            }))?;
+        }
+    }
     complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", 43, 44)?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }

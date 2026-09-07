@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod local_plugins;
 pub mod plugins;
 pub mod renderer;
+pub mod runtime_status;
 
 #[cfg(windows)]
 pub mod probe;

@@ -99,10 +99,15 @@ fn current_user_mutex_name() -> Result<OsString, LaunchMutexError> {
     Ok(OsString::from(format!("{MUTEX_PREFIX}{suffix}")))
 }
 
-fn current_user_sid_bytes() -> Result<Vec<u8>, LaunchMutexError> {
+pub(crate) fn current_user_sid_bytes() -> Result<Vec<u8>, LaunchMutexError> {
+    // SAFETY: GetCurrentProcess returns the calling process pseudo-handle.
+    process_user_sid_bytes(unsafe { GetCurrentProcess() })
+}
+
+pub(crate) fn process_user_sid_bytes(process: HANDLE) -> Result<Vec<u8>, LaunchMutexError> {
     let mut token: HANDLE = std::ptr::null_mut();
     // SAFETY: GetCurrentProcess returns a process pseudo-handle; token points to writable storage.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
         return Err(last_error("OpenProcessToken"));
     }
     // SAFETY: OpenProcessToken returned a newly owned handle.
