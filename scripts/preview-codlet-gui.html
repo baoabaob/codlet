@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-codex-window-chrome="application-menu">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,7 +9,7 @@
             color-scheme: light dark;
             font: 14px/1.5 system-ui, sans-serif;
             color: CanvasText;
-            background: Canvas;
+            background: var(--color-surface);
             letter-spacing: 0;
             --preview-bg: light-dark(#fff, #1b1b1b);
             --preview-fg: light-dark(#0d0d0d, #ededed);
@@ -17,21 +17,46 @@
             --preview-border: light-dark(#e5e5e5, #363636);
             --preview-hover: light-dark(#f0f0f0, #303030);
             --preview-active: light-dark(#e8e8e8, #3b3b3b);
+            /* Simulated host theme values; the real adapter produces every Codlet alias. */
+            --color-background-application-menu: var(--preview-bg);
+            --color-text: var(--preview-fg);
+            --color-text-tertiary: light-dark(#8f8f8f, #afafaf);
+            --color-text-secondary: color-mix(in srgb, var(--color-text) 65%, transparent);
+            --color-border: var(--preview-border);
+            --color-background-button-tertiary-hover: var(--preview-hover);
+            --color-codex-application-menu-selection: var(--preview-active);
+            --color-border-focus: #3a83f7;
+            --font-sans: system-ui, sans-serif;
+            --text-base: 14px;
+            --text-sm: 13px;
+            --text-xs: 12px;
+            --text-heading-md: 20px;
+            --height-toolbar-sm: 36px;
+            --radius-md: 8px;
+            --radius-2xl: 16px;
+            --radius-3xl: 20px;
+            --shadow-lg: 0 4px 8px -2px #0000001a;
+            --color-surface: light-dark(#fcfcfc, #000000);
+            --color-surface-elevated-secondary: light-dark(#fff, #303030);
+            --color-background-panel: light-dark(#fcfcfc, #000000);
+            --color-chart-blue: #3a83f7;
+            --color-chart-red: #e02e2a;
+            --gray-0: #fff;
         }
         :root[data-theme="light"] { color-scheme: light; }
         :root[data-theme="dark"] { color-scheme: dark; }
         * { box-sizing: border-box; }
         body { margin: 0; }
-        button, select, input, textarea { font: inherit; color: inherit; }
-        button, select, input[type="number"] {
+        .preview-controls button, select, input, textarea { font: inherit; color: inherit; }
+        .preview-controls button, select, input[type="number"] {
             min-height: 30px;
             border: 1px solid var(--preview-border);
             border-radius: 4px;
             background: var(--preview-bg);
             padding: 4px 8px;
         }
-        button { cursor: default; }
-        button:hover { background: var(--preview-hover); }
+        .preview-controls button { cursor: default; }
+        .preview-controls button:hover, [role="menuitem"]:hover { background: var(--preview-hover); }
         :focus-visible { outline: 2px solid #3a83f7; outline-offset: 2px; }
         .preview-menu-line {
             height: 36px;
@@ -44,7 +69,7 @@
             border-bottom: 1px solid var(--preview-border);
         }
         .preview-mark { margin-right: 8px; width: 16px; text-align: center; font-weight: 600; }
-        [role="menubar"], [data-preview-mount] { display: flex; align-items: center; }
+        [role="menubar"] { display: flex; align-items: center; }
         [role="menuitem"] {
             min-height: 24px;
             height: 24px;
@@ -52,21 +77,38 @@
             border-radius: 8px;
             padding: 4px 7px;
             font-size: 14px;
+            font-family: inherit;
+            color: inherit;
             line-height: 1;
             background: transparent;
         }
         .preview-header {
-            min-height: 48px;
+            min-height: 46px;
             display: flex;
             align-items: center;
             padding: 8px 20px;
             border-bottom: 1px solid var(--preview-border);
             color: var(--preview-muted);
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 12px;
         }
-        main { padding: 24px; max-width: 640px; margin-right: 360px; }
-        h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
-        p { margin: 8px 0 18px; }
+        .preview-caption { margin-left: auto; }
+        .preview-tools {
+            position: fixed;
+            bottom: 16px;
+            left: 16px;
+            width: min(560px, calc(100vw - 32px));
+            max-height: calc(100dvh - 116px);
+            overflow: auto;
+            border: 1px solid var(--preview-border);
+            border-radius: 8px;
+            background: var(--preview-bg);
+        }
+        .preview-tools summary { padding: 10px 14px; cursor: default; font-size: 12px; }
+        .preview-tools p { margin: 8px 0 18px; }
         .preview-controls { display: grid; gap: 16px; }
+        .preview-tools > .preview-controls { padding: 4px 16px 16px; }
         fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
         legend { font-weight: 600; padding: 0; margin-bottom: 6px; }
         .preview-options { display: flex; gap: 8px 12px; flex-wrap: wrap; align-items: center; }
@@ -76,39 +118,23 @@
         textarea { width: 100%; height: 70px; resize: vertical; background: var(--preview-bg); border: 1px solid var(--preview-border); border-radius: 4px; padding: 8px; }
         .preview-status { color: var(--preview-muted); overflow-wrap: anywhere; }
         #preview-log { padding-left: 20px; max-height: 180px; overflow: auto; font: 12px/1.5 ui-monospace, monospace; }
-        [data-codlet-capability="codex.ui.titlebar.afterMenu@1"],
-        [data-codlet-ui-theme="codex.ui.titlebar.afterMenu@1"] {
-            --codlet-ui-bg: var(--preview-bg);
-            --codlet-ui-fg: var(--preview-fg);
-            --codlet-ui-muted: var(--preview-muted);
-            --codlet-ui-border: var(--preview-border);
-            --codlet-ui-hover: var(--preview-hover);
-            --codlet-ui-active: var(--preview-active);
-            --codlet-ui-focus: #3a83f7;
-            --codlet-ui-font: system-ui, sans-serif;
-            --codlet-ui-font-size: 14px;
-            --codlet-ui-menu-height: 36px;
-            --codlet-ui-radius: 8px;
-        }
-        @media (max-width: 800px) { main { margin-right: 0; max-width: 580px; padding: 20px; } }
     </style>
 </head>
 <body>
     <div class="preview-menu-line" aria-label="Simulated application menu line">
         <span class="preview-mark" aria-hidden="true">C</span>
         <div role="menubar" aria-label="Preview application menu">
-            <button type="button" role="menuitem">File</button>
-            <button type="button" role="menuitem">Edit</button>
-            <button type="button" role="menuitem">View</button>
-            <button type="button" role="menuitem">Help</button>
+            <button type="button" role="menuitem" id="application-menu-trigger-file-menu">File</button>
+            <button type="button" role="menuitem" id="application-menu-trigger-edit-menu">Edit</button>
+            <button type="button" role="menuitem" id="application-menu-trigger-view-menu">View</button>
+            <button type="button" role="menuitem" id="application-menu-trigger-help-menu">Help</button>
         </div>
-        <div data-preview-mount data-codlet-capability="codex.ui.titlebar.afterMenu@1"></div>
     </div>
-    <header class="preview-header">Simulated task header (separate from application menu)</header>
-    <main>
-        <h1>Codlet GUI test preview</h1>
-        <p>Test fixture only, not a real Codex client. The Codlet entry and panel load the repository's renderer.js. All RPC responses below are simulated.</p>
+    <header class="preview-header"><span>Codlet GUI preview</span><span class="preview-caption">Test fixture, not a real Codex client</span></header>
+    <details class="preview-tools">
+        <summary>Preview controls</summary>
         <div class="preview-controls">
+            <p>Both the adapter and GUI load from repository source. Host theme values and runtime responses are simulated. Close the dialog to adjust these controls.</p>
             <fieldset>
                 <legend>Theme</legend>
                 <div class="preview-options">
@@ -126,6 +152,7 @@
                         <option value="disable-error">Disable fails</option>
                         <option value="malformed">Malformed list</option>
                         <option value="empty">Empty list</option>
+                        <option value="validation">Plugin validation failure</option>
                     </select>
                     <label>Delay (ms) <input id="rpc-delay" type="number" min="0" max="5000" step="100" value="250"></label>
                     <label><input id="long-list" type="checkbox"> Long list</label>
@@ -143,27 +170,35 @@
             <fieldset>
                 <legend>Adapter mount</legend>
                 <div class="preview-options">
-                    <button type="button" id="remove-mount">Remove mount</button>
-                    <button type="button" id="restore-mount">Restore mount</button>
-                    <button type="button" id="replace-mount">Replace connected mount</button>
+                    <button type="button" id="remove-mount">Remove menu</button>
+                    <button type="button" id="restore-mount">Restore menu</button>
+                    <button type="button" id="replace-mount">Rebuild menu in 1s</button>
+                    <button type="button" id="reparent-menu">Move menu row in 1s</button>
                 </div>
             </fieldset>
             <label for="host-editor">Simulated host focus target</label>
-            <textarea id="host-editor">Host editor focus remains independent of the Codlet panel.</textarea>
+            <textarea id="host-editor">Host focus target for close and unload checks.</textarea>
             <output id="host-escape" class="preview-status">Host Escape events: 0</output>
             <output id="preview-state" class="preview-status" aria-live="polite">Not activated</output>
             <ol id="preview-log" aria-label="Simulated RPC log"></ol>
         </div>
-    </main>
+    </details>
     <script>window.module = { exports: {} };</script>
+    <script src="../bundled/codex-ui-adapter/dist/renderer.js"></script>
+    <script>
+        const adapter = window.module.exports;
+        window.module = { exports: {} };
+    </script>
     <script src="../bundled/codlet/dist/renderer.js"></script>
     <script>
         const gui = window.module.exports;
         delete window.module;
         const token = 'codex.ui.titlebar.afterMenu@1';
         const byId = id => document.getElementById(id);
-        const menu = document.querySelector('[role="menubar"]');
-        let mount = document.querySelector('[data-preview-mount]');
+        let menu = document.querySelector('[role="menubar"]');
+        const menuLine = document.querySelector('.preview-menu-line');
+        const lowerHeader = document.querySelector('.preview-header');
+        let mountProvider;
         let generation = 0;
         let active = false;
         let mountTimer;
@@ -185,14 +220,14 @@
         document.addEventListener('keydown', event => {
             if (event.key === 'Escape') byId('host-escape').textContent = `Host Escape events: ${++escapeCount}`;
         });
-        function snapshot(long) {
+        function snapshot(long, mode) {
             const plugins = [
                 { id: 'codlet', version: '0.1.0', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
                 { id: 'codex.ui.adapter', version: '0.1.0', source: 'bundled', enabled: true, active: true, validation: { status: 'ok' } },
-                { id: 'local.notes', version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } },
-                { id: 'local.broken', version: null, source: 'local', path: 'C:/preview/missing', enabled: true, active: false,
-                    validation: { status: 'failed', error: { message: 'Renderer entry is missing: C:/preview/missing/dist/renderer.js' } } }
+                { id: 'local.notes', version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } }
             ];
+            if (mode === 'validation') plugins.push({ id: 'local.broken', version: null, source: 'local', path: 'C:/preview/missing', enabled: true, active: false,
+                validation: { status: 'failed', error: { message: 'Renderer entry is missing: C:/preview/missing/dist/renderer.js' } } });
             if (long) for (let index = 1; index <= 28; index++) plugins.push({
                 id: `local.long-plugin-name-with-unbroken-suffix-${index}-${'x'.repeat(60)}`,
                 version: '0.1.0-preview', source: 'local', enabled: index % 2 === 0, active: false, validation: { status: 'ok' }
@@ -204,7 +239,13 @@
             gui.deactivate();
             state(`GUI unloaded (generation ${generation})`);
         }
-        async function activate() {
+        function openGUI() {
+            const entry = document.querySelector('[data-codlet-titlebar-button]');
+            if (!entry || document.querySelector('[data-codlet-panel]')?.open) return;
+            entry.focus();
+            entry.click();
+        }
+        async function activate(openAfter = false) {
             unload();
             const current = ++generation;
             const context = {
@@ -215,11 +256,11 @@
                     if (args !== null) throw new Error('Unexpected RPC arguments');
                     if (method === 'ping' && capability.name === 'codlet.runtime.ping') return { pong: true, abi: 1 };
                     if (method === 'getMount' && capability.name === 'codex.ui.titlebar.afterMenu') {
-                        return { available: !!mount?.isConnected, token };
+                        return mountProvider ? mountProvider() : { available: false, token };
                     }
                     if (capability.name !== 'codlet.runtime.manage') throw new Error('Unexpected capability');
                     const mode = byId('rpc-mode').value;
-                    const response = snapshot(byId('long-list').checked);
+                    const response = snapshot(byId('long-list').checked, mode);
                     await delay(Math.max(0, Math.min(5000, Number(byId('rpc-delay').value) || 0)));
                     if (method === 'list') {
                         log(`#${id} list returned: ${mode}`);
@@ -239,41 +280,55 @@
             await gui.activate(context);
             if (generation !== current) return;
             active = true;
-            state(`GUI active (generation ${current}); mount ${mount?.isConnected ? 'available' : 'pending'}`);
+            state(`GUI active (generation ${current}); mount ${mountProvider?.().available ? 'available' : 'pending'}`);
+            if (openAfter) openGUI();
         }
         function removeMount() {
             clearTimeout(mountTimer);
-            mount?.remove();
-            mount = null;
-            state('Adapter mount removed');
+            menu.remove();
+            state('Menu removed; adapter mount becomes unavailable');
         }
         function restoreMount() {
             clearTimeout(mountTimer);
-            if (mount?.isConnected) return;
-            mount = document.createElement('div');
-            mount.setAttribute('data-preview-mount', '');
-            mount.setAttribute('data-codlet-capability', token);
-            menu.after(mount);
-            state('Adapter mount available');
+            menuLine.appendChild(menu);
+            state('Menu restored; adapter reuses its mount');
         }
         byId('unload').addEventListener('click', unload);
-        byId('activate').addEventListener('click', activate);
+        byId('activate').addEventListener('click', () => activate(true));
         byId('delayed').addEventListener('click', () => {
             removeMount();
             activate();
-            mountTimer = setTimeout(restoreMount, 1500);
+            mountTimer = setTimeout(() => { restoreMount(); setTimeout(openGUI, 0); }, 1500);
         });
         byId('remove-mount').addEventListener('click', removeMount);
         byId('restore-mount').addEventListener('click', restoreMount);
         byId('replace-mount').addEventListener('click', () => {
-            const previous = mount;
-            previous?.removeAttribute('data-codlet-capability');
-            mount = null;
-            restoreMount();
-            state('Mount replaced; old unmarked container remains connected');
+            openGUI();
+            setTimeout(() => {
+                const previous = menu;
+                menu = previous.cloneNode(true);
+                previous.hidden = true;
+                previous.removeAttribute('role');
+                for (const trigger of previous.children) trigger.removeAttribute('id');
+                menuLine.appendChild(menu);
+                state('Menu rebuilt; old hidden container remains connected and the adapter reuses its mount');
+            }, 1000);
         });
-        byId('host-editor').focus();
-        activate().catch(error => state(error.message));
+        byId('reparent-menu').addEventListener('click', () => {
+            openGUI();
+            setTimeout(() => {
+                lowerHeader.appendChild(menu);
+                state('Menu moved into the lower row; open dialog follows the new toolbar bounds');
+            }, 1000);
+        });
+        document.querySelector('summary').focus();
+        adapter.activate({
+            generation: 1,
+            rpc: { provide(capability, method, handler) {
+                if (capability.name !== 'codex.ui.titlebar.afterMenu' || method !== 'getMount') throw new Error('Unexpected adapter endpoint');
+                mountProvider = handler;
+            } }
+        }).then(() => activate(true)).catch(error => state(error.message));
     </script>
 </body>
 </html>

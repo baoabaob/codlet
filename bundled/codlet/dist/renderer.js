@@ -47,6 +47,7 @@ module.exports = (() => {
     };
 
     let style, button, panel, pluginList, managementStatus, refreshButton, closeButton;
+    let panelTitle, settingsSection;
     let confirmation, confirmationStatus, confirmButton, cancelButton, actionOrigin;
     let observer, keydown, focusin, resize, cancelDocumentWait;
     let mountToken = null;
@@ -108,11 +109,12 @@ module.exports = (() => {
     function installStyle() {
         style = document.createElement('style');
         style.setAttribute(STYLE_ATTRIBUTE, 'codlet');
+        // Use the documented dialog/setting-row geometry; viewport clamping belongs to this GUI.
         style.textContent = `
             [${BUTTON_ATTRIBUTE}], [${PANEL_ATTRIBUTE}] {
                 color: var(--codlet-ui-fg, CanvasText);
                 font-family: var(--codlet-ui-font, system-ui, sans-serif);
-                font-size: var(--codlet-ui-font-size, 13px);
+                font-size: var(--codlet-ui-font-size, 14px);
                 letter-spacing: 0;
                 line-height: 1.45;
             }
@@ -144,126 +146,184 @@ module.exports = (() => {
             }
             [${PANEL_ATTRIBUTE}] {
                 position: fixed;
+                left: 0;
                 right: 0;
                 bottom: 0;
-                z-index: 2147483600;
                 display: flex;
                 flex-direction: column;
-                width: min(360px, 100vw);
-                max-width: 100%;
+                width: 600px;
+                max-width: 92vw;
+                max-height: calc(100dvh - var(--codlet-available-top, 36px) - 32px);
                 min-height: 0;
+                margin: auto;
+                padding: 0;
                 box-sizing: border-box;
                 border: 0;
-                border-left: 1px solid var(--codlet-ui-border, color-mix(in srgb, CanvasText 14%, transparent));
-                background: var(--codlet-ui-bg, Canvas);
+                border-radius: var(--codlet-ui-dialog-radius, 20px);
+                background: color-mix(in srgb, var(--codlet-ui-surface-raised, Canvas) 90%, transparent);
+                box-shadow: 0 0 0 0.5px var(--codlet-ui-border, ButtonBorder), var(--codlet-ui-dialog-shadow, 0 4px 8px -2px rgb(0 0 0 / 10%));
+                backdrop-filter: blur(24px);
                 overflow-wrap: anywhere;
+                overflow: hidden;
                 -webkit-app-region: no-drag;
             }
-            [${PANEL_ATTRIBUTE}] *, [${PANEL_ATTRIBUTE}] *::before { box-sizing: border-box; }
-            [${PANEL_ATTRIBUTE}][hidden], [${PANEL_ATTRIBUTE}] [hidden] { display: none; }
+            [${PANEL_ATTRIBUTE}]::backdrop { background: var(--codlet-ui-backdrop, #00000022); }
+            [${PANEL_ATTRIBUTE}][data-codlet-view="confirmation"] { width: 420px; }
+            [${PANEL_ATTRIBUTE}] *, [${PANEL_ATTRIBUTE}] *::before, [${PANEL_ATTRIBUTE}] *::after { box-sizing: border-box; }
+            [${PANEL_ATTRIBUTE}]:not([open]), [${PANEL_ATTRIBUTE}][hidden], [${PANEL_ATTRIBUTE}] [hidden] { display: none; }
             [${PANEL_ATTRIBUTE}] button {
                 appearance: none;
                 margin: 0;
                 border: 0;
-                border-radius: var(--codlet-ui-radius, 4px);
+                border-radius: 999px;
                 background: transparent;
                 color: inherit;
                 font: inherit;
                 letter-spacing: 0;
                 cursor: default;
             }
-            [${PANEL_ATTRIBUTE}] button:disabled { opacity: 0.5; }
+            [${PANEL_ATTRIBUTE}] button:disabled { opacity: 0.4; }
             [${PANEL_ATTRIBUTE}] .codlet-panel-header {
                 display: flex;
                 align-items: center;
-                gap: 4px;
+                gap: 16px;
                 flex: 0 0 auto;
-                min-height: 48px;
-                padding: 8px 12px 8px 16px;
-                border-bottom: 1px solid var(--codlet-ui-border, color-mix(in srgb, CanvasText 14%, transparent));
+                padding: 20px 56px 0 20px;
             }
             [${PANEL_ATTRIBUTE}] .codlet-panel-title {
                 flex: 1;
                 min-width: 0;
                 margin: 0;
-                font-size: inherit;
-                font-weight: 600;
+                font-size: var(--codlet-ui-font-heading, 20px);
+                line-height: 28px;
+                font-weight: 500;
             }
             [${PANEL_ATTRIBUTE}] .codlet-icon-button {
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                flex: 0 0 28px;
-                width: 28px;
-                height: 28px;
+                flex: 0 0 24px;
+                width: 24px;
+                height: 24px;
                 padding: 0;
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-dialog-close {
+                position: absolute;
+                top: 16px;
+                right: 16px;
+                border-radius: 4px;
+                color: color-mix(in srgb, var(--codlet-ui-fg, CanvasText) 80%, transparent);
             }
             [${PANEL_ATTRIBUTE}] .codlet-panel-body {
                 min-height: 0;
                 overflow: auto;
                 overscroll-behavior: contain;
-                padding: 16px;
+                padding: 12px 20px 20px;
+                scrollbar-gutter: stable;
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-section-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 16px;
+                min-height: 46px;
+                padding-bottom: 6px;
             }
             [${PANEL_ATTRIBUTE}] .codlet-section-title {
-                margin: 0 0 8px;
+                margin: 0;
                 font-size: inherit;
-                font-weight: 600;
+                font-weight: 500;
             }
             [${PANEL_ATTRIBUTE}] .codlet-status,
             [${PANEL_ATTRIBUTE}] .codlet-plugin-version,
             [${PANEL_ATTRIBUTE}] .codlet-plugin-state,
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy {
-                color: var(--codlet-ui-muted, color-mix(in srgb, CanvasText 65%, transparent));
+                color: var(--codlet-ui-secondary, GrayText);
             }
             [${PANEL_ATTRIBUTE}] .codlet-status { margin: 8px 0; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-list {
+                overflow: hidden;
+                border: 1px solid var(--codlet-ui-border, ButtonBorder);
+                border-radius: var(--codlet-ui-group-radius, 16px);
+                background: var(--codlet-ui-surface-group, var(--codlet-ui-surface, Canvas));
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-list:empty { display: none; }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-row {
+                position: relative;
                 display: grid;
                 grid-template-columns: minmax(0, 1fr) auto;
                 align-items: center;
-                column-gap: 16px;
-                min-height: 60px;
-                padding: 10px 0;
-                border-bottom: 1px solid var(--codlet-ui-border, color-mix(in srgb, CanvasText 14%, transparent));
+                column-gap: 24px;
+                padding: 12px 16px;
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-row:not(:last-child)::after {
+                content: '';
+                position: absolute;
+                pointer-events: none;
+                left: 16px;
+                right: 16px;
+                bottom: 0;
+                height: 0.5px;
+                background: var(--codlet-ui-border, ButtonBorder);
             }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-copy { min-width: 0; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-name { font-weight: 500; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-version { margin-top: 3px; font-size: 12px; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width: 76px; font-size: 12px; text-align: right; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-name { font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; font-weight: 500; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-version { margin-top: 2px; font-size: var(--codlet-ui-font-caption, 12px); line-height: 16px; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width: 88px; font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; text-align: right; }
             [${PANEL_ATTRIBUTE}] .codlet-toggle {
                 appearance: none;
                 position: relative;
-                width: 28px;
-                height: 16px;
+                width: 32px;
+                height: 20px;
                 padding: 0;
                 margin: 0;
-                border: 1px solid var(--codlet-ui-muted, GrayText);
-                border-radius: 8px;
-                background: var(--codlet-ui-bg, Canvas);
-                color: var(--codlet-ui-fg, CanvasText);
+                border: 0;
+                border-radius: 999px;
+                background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 10%, transparent);
+                color: var(--codlet-ui-on-accent, HighlightText);
+                transition: background-color 150ms;
             }
             [${PANEL_ATTRIBUTE}] .codlet-toggle::before {
                 content: '';
                 position: absolute;
                 top: 2px;
                 left: 2px;
-                width: 10px;
-                height: 10px;
+                width: 16px;
+                height: 16px;
                 border-radius: 50%;
                 background: currentColor;
+                transition: left 150ms;
             }
             [${PANEL_ATTRIBUTE}] .codlet-toggle:checked {
-                border-color: var(--codlet-ui-fg, CanvasText);
-                background: var(--codlet-ui-fg, CanvasText);
-                color: var(--codlet-ui-bg, Canvas);
+                background: var(--codlet-ui-accent, Highlight);
             }
             [${PANEL_ATTRIBUTE}] .codlet-toggle:checked::before { left: 14px; }
-            [${PANEL_ATTRIBUTE}] .codlet-toggle:disabled { opacity: 0.5; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation { padding-top: 16px; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy { margin: 8px 0 12px; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: end; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions button { min-height: 30px; padding: 5px 10px; }
+            [${PANEL_ATTRIBUTE}] .codlet-toggle:disabled { opacity: 0.4; }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy { margin: 0; color: var(--codlet-ui-muted, GrayText); line-height: 1.5; }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy code { font: inherit; color: var(--codlet-ui-fg, CanvasText); }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: end; padding-top: 12px; }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions button {
+                min-height: 36px;
+                padding: 6px 16px;
+                border: 1px solid transparent;
+                border-radius: 999px;
+                font-size: var(--codlet-ui-font-small, 13px);
+                line-height: 18px;
+                font-weight: 500;
+                background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 5%, transparent);
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions button:hover:not(:disabled) {
+                background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 10%, transparent);
+            }
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions .codlet-confirm {
-                background: var(--codlet-ui-active, color-mix(in srgb, CanvasText 12%, Canvas));
+                color: var(--codlet-ui-danger-fg, HighlightText);
+                background: var(--codlet-ui-danger-bg, Highlight);
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions .codlet-confirm:hover:not(:disabled) {
+                background: var(--codlet-ui-danger-hover, Highlight);
+            }
+            @media (prefers-reduced-motion: reduce) {
+                [${PANEL_ATTRIBUTE}] .codlet-toggle, [${PANEL_ATTRIBUTE}] .codlet-toggle::before { transition: none; }
             }
             @media (forced-colors: active) {
                 [${PANEL_ATTRIBUTE}] .codlet-toggle { appearance: auto; }
@@ -282,7 +342,13 @@ module.exports = (() => {
     }
 
     function renderAction() {
+        settingsSection.hidden = action !== 'idle';
         confirmation.hidden = action === 'idle';
+        panel.setAttribute('data-codlet-view', action === 'idle' ? 'settings' : 'confirmation');
+        panelTitle.textContent = action === 'idle' ? 'Codlet' : action === 'done' ? 'Codlet disabled' : 'Disable Codlet?';
+        panel.setAttribute('aria-label', panelTitle.textContent);
+        if (action === 'idle') panel.removeAttribute('aria-describedby');
+        else panel.setAttribute('aria-describedby', `${panel.id}-disable-consequence`);
         refreshButton.disabled = action !== 'idle';
         confirmButton.disabled = action === 'pending' || action === 'done';
         cancelButton.disabled = confirmButton.disabled;
@@ -358,7 +424,7 @@ module.exports = (() => {
             action = 'failed';
             actionError = error instanceof Error ? error.message : String(error);
         }
-        if (!panel.hidden) renderAction();
+        if (panel.open && !panel.hidden) renderAction();
     }
 
     async function refreshPlugins(context) {
@@ -373,7 +439,7 @@ module.exports = (() => {
         managementStatus.textContent = 'Loading plugins...';
         try {
             const management = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'list', null);
-            if (epoch !== lifecycle || panel !== currentPanel || request !== panelRequest) return;
+            if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
             if (!Array.isArray(management?.plugins) || management.plugins.some(plugin =>
                 !plugin || typeof plugin.id !== 'string' || !plugin.id.length)) throw new Error('Plugin list unavailable');
             pluginList.replaceChildren(...management.plugins.map(plugin => createPluginRow(context, plugin)));
@@ -381,43 +447,47 @@ module.exports = (() => {
             managementStatus.hidden = management.plugins.length > 0;
             managementStatus.textContent = management.plugins.length ? '' : 'No plugins';
         } catch (error) {
-            if (epoch !== lifecycle || panel !== currentPanel || request !== panelRequest) return;
+            if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
             managementStatus.textContent = error instanceof Error ? error.message : 'Plugin list unavailable';
         }
-        if (epoch === lifecycle && panel === currentPanel && request === panelRequest) {
+        if (epoch === lifecycle && panel === currentPanel && currentPanel.open && !currentPanel.hidden && request === panelRequest) {
             pluginList.setAttribute('aria-busy', 'false');
         }
     }
 
     function createPanel(context) {
-        panel = document.createElement('aside');
+        panel = document.createElement('dialog');
         panel.id = `codlet-panel-${context.generation}`;
         panel.setAttribute(PANEL_ATTRIBUTE, 'codlet');
         panel.setAttribute('data-codlet-ui-theme', CAPABILITY_TOKEN);
         panel.setAttribute('data-codlet-generation', String(context.generation));
         panel.setAttribute('role', 'dialog');
-        panel.setAttribute('aria-modal', 'false');
+        panel.setAttribute('aria-modal', 'true');
         panel.setAttribute('aria-label', 'Codlet');
         panel.hidden = true;
         const header = addText(panel, 'div', 'codlet-panel-header', '');
-        addText(header, 'h1', 'codlet-panel-title', 'Codlet');
-        refreshButton = iconButton(header, 'refresh', 'Refresh plugins');
-        refreshButton.addEventListener('click', () => refreshPlugins(context));
+        panelTitle = addText(header, 'h1', 'codlet-panel-title', 'Codlet');
         closeButton = iconButton(header, 'close', 'Close Codlet');
+        closeButton.className += ' codlet-dialog-close';
         closeButton.addEventListener('click', () => setPanelOpen(false));
         const body = addText(panel, 'div', 'codlet-panel-body', '');
-        addText(body, 'h2', 'codlet-section-title', 'Codlets');
-        managementStatus = addText(body, 'div', 'codlet-status', '');
+        settingsSection = addText(body, 'section', 'codlet-settings-section', '');
+        const sectionHeader = addText(settingsSection, 'div', 'codlet-section-header', '');
+        addText(sectionHeader, 'h2', 'codlet-section-title', 'Codlets');
+        refreshButton = iconButton(sectionHeader, 'refresh', 'Refresh plugins');
+        refreshButton.addEventListener('click', () => refreshPlugins(context));
+        managementStatus = addText(settingsSection, 'div', 'codlet-status', '');
         managementStatus.setAttribute('role', 'status');
         managementStatus.setAttribute('aria-live', 'polite');
-        pluginList = addText(body, 'div', 'codlet-plugin-list', '');
+        pluginList = addText(settingsSection, 'div', 'codlet-plugin-list', '');
         confirmation = addText(body, 'div', 'codlet-confirmation', '');
         confirmation.hidden = true;
         confirmation.setAttribute('role', 'group');
         confirmation.setAttribute('aria-label', 'Disable Codlet?');
-        addText(confirmation, 'h3', 'codlet-section-title', 'Disable Codlet?');
         const consequence = addText(confirmation, 'p', 'codlet-confirmation-copy',
-            'This removes the Codlet GUI from all open windows. To restore it, run codlet plugin enable codlet, then start Codlet again.');
+            'The Codlet GUI will close in all open windows. To restore it, run ');
+        addText(consequence, 'code', '', 'codlet plugin enable codlet');
+        consequence.appendChild(document.createTextNode(', then start Codlet again.'));
         consequence.id = `${panel.id}-disable-consequence`;
         confirmation.setAttribute('aria-describedby', consequence.id);
         confirmationStatus = addText(confirmation, 'div', 'codlet-status', '');
@@ -430,6 +500,28 @@ module.exports = (() => {
         confirmButton = addText(actions, 'button', 'codlet-confirm', 'Disable');
         confirmButton.type = 'button';
         confirmButton.addEventListener('click', () => disableSelf(context));
+        const currentPanel = panel;
+        panel.addEventListener('pointerdown', event => {
+            if (panel !== currentPanel || !panel.open || event.defaultPrevented) return;
+            event.stopPropagation();
+            if (event.target !== panel || event.button !== 0 || event.ctrlKey || event.isPrimary === false) return;
+            const bounds = panel.getBoundingClientRect();
+            if (event.clientX >= bounds.left && event.clientX <= bounds.right &&
+                event.clientY >= bounds.top && event.clientY <= bounds.bottom) return;
+            event.preventDefault();
+            if (action === 'confirm' || action === 'failed') cancelAction();
+            else setPanelOpen(false);
+        });
+        panel.addEventListener('cancel', event => {
+            if (event.defaultPrevented || panel !== currentPanel) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (action === 'confirm' || action === 'failed') cancelAction();
+            else setPanelOpen(false);
+        });
+        panel.addEventListener('close', () => {
+            if (panel === currentPanel && !panel.open && !panel.hidden) setPanelOpen(false);
+        });
         document.body.appendChild(panel);
     }
 
@@ -440,16 +532,30 @@ module.exports = (() => {
         panelAnchor = anchor;
         const top = Math.min(globalThis.innerHeight, Math.max(0, Math.round(anchor?.getBoundingClientRect().bottom ?? 40)));
         panel.style.top = `${top}px`;
+        panel.style.setProperty('--codlet-available-top', `${top}px`);
     }
 
     function setPanelOpen(open) {
-        if (!panel || panel.hidden === !open) return;
+        if (!panel || (open ? panel.open && !panel.hidden : !panel.open && panel.hidden)) return false;
         if (open) {
+            if (!panel.isConnected) return false;
             returnFocus = document.activeElement;
             panel.hidden = false;
-            button?.setAttribute('aria-expanded', 'true');
             renderAction();
             layoutPanel();
+            try {
+                panel.showModal();
+            } catch (error) {
+                panel.hidden = true;
+                if (panel.open) panel.close();
+                button?.setAttribute('aria-expanded', 'false');
+                if (button) button.title = error instanceof Error ? error.message : 'Could not open Codlet';
+                if (panel.contains(document.activeElement)) focus(returnFocus);
+                returnFocus = null;
+                return false;
+            }
+            button?.setAttribute('aria-expanded', 'true');
+            if (button) button.title = 'Codlet';
             focus(closeButton);
         } else {
             panelRequest += 1;
@@ -458,11 +564,13 @@ module.exports = (() => {
                 action = 'idle';
                 renderAction();
             }
+            if (panel.open) panel.close();
             panel.hidden = true;
             button?.setAttribute('aria-expanded', 'false');
             if (restore) focus(returnFocus?.isConnected ? returnFocus : button?.isConnected ? button : outsideFocus);
             returnFocus = null;
         }
+        return true;
     }
 
     function mountButton(context) {
@@ -483,8 +591,7 @@ module.exports = (() => {
             button.addEventListener('keydown', keydown);
             button.addEventListener('click', () => {
                 if (panel.hidden === false) return setPanelOpen(false);
-                setPanelOpen(true);
-                return refreshPlugins(context);
+                if (setPanelOpen(true)) return refreshPlugins(context);
             });
         }
         if (button.parentElement !== mount) mount.appendChild(button);
@@ -542,11 +649,14 @@ module.exports = (() => {
         button?.removeEventListener('keydown', keydown);
         document.removeEventListener('focusin', focusin);
         globalThis.removeEventListener('resize', resize);
+        if (panel?.open) panel.close();
+        if (panel) panel.hidden = true;
         button?.remove();
         panel?.remove();
         style?.remove();
         if (restore) focus(target);
         style = button = panel = pluginList = managementStatus = refreshButton = closeButton = null;
+        panelTitle = settingsSection = null;
         confirmation = confirmationStatus = confirmButton = cancelButton = actionOrigin = null;
         observer = keydown = focusin = resize = mountToken = returnFocus = outsideFocus = panelAnchor = null;
         action = 'idle';

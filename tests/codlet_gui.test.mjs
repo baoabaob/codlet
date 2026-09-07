@@ -15,6 +15,8 @@ function fixture({ mounted = true, ready = true } = {}) {
     let mutations = 0;
     let layoutReads = 0;
     const observers = new Set();
+    const modalDialogs = new Set();
+    const closeEvents = [];
     class Target {
         constructor() { this.listeners = new Map(); }
         addEventListener(name, listener, options) {
@@ -54,11 +56,13 @@ function fixture({ mounted = true, ready = true } = {}) {
             this.children = [];
             this.parentElement = null;
             this.attributes = new Map();
-            this.style = new Proxy({}, { set(target, property, value) { mutations++; target[property] = value; return true; } });
+            this.style = new Proxy({ setProperty(property, value) { this[property] = value; } }, {
+                set(target, property, value) { mutations++; target[property] = value; return true; }
+            });
             this.className = '';
             this.text = '';
             this.bottom = 36;
-            for (const property of ['hidden', 'checked', 'disabled']) {
+            for (const property of ['hidden', 'checked', 'disabled', 'open']) {
                 let value = false;
                 Object.defineProperty(this, property, {
                     get() { return value; },
@@ -97,12 +101,29 @@ function fixture({ mounted = true, ready = true } = {}) {
         removeAttribute(name) { mutations++; this.attributes.delete(name); }
         focus() {
             if (!this.isConnected || this.disabled) return;
+            const modal = [...modalDialogs].at(-1);
+            if (modal && !modal.contains(this)) return;
             let ancestor = this;
             while (ancestor) { if (ancestor.hidden) return; ancestor = ancestor.parentElement; }
             document.activeElement = this;
             this.emit('focusin');
         }
-        getBoundingClientRect() { layoutReads++; return { bottom: this.bottom }; }
+        showModal() {
+            if (!this.isConnected) throw new Error('Dialog is not connected');
+            if (this.showModalError) throw new Error(this.showModalError);
+            this.open = true;
+            modalDialogs.add(this);
+        }
+        close() {
+            if (!this.open) return;
+            this.open = false;
+            modalDialogs.delete(this);
+            closeEvents.push(() => this.emit('close'));
+        }
+        getBoundingClientRect() {
+            layoutReads++;
+            return this.tagName === 'dialog' ? { left: 100, right: 700, top: 100, bottom: 500 } : { bottom: this.bottom };
+        }
     }
     function descendants(root) { return root.children.flatMap(child => [child, ...descendants(child)]); }
     const document = new Target();
@@ -111,6 +132,7 @@ function fixture({ mounted = true, ready = true } = {}) {
     document.body = ready ? body : null;
     document.activeElement = body;
     document.createElement = tag => new Element(tag);
+    document.createTextNode = text => { const node = new Element('#text'); node.textContent = text; return node; };
     document.createElementNS = (_namespace, tag) => new Element(tag);
     document.querySelectorAll = selector => {
         assert.equal(selector, '[data-codlet-capability]');
@@ -181,6 +203,8 @@ function fixture({ mounted = true, ready = true } = {}) {
         mutations: () => mutations,
         layoutReads: () => layoutReads,
         observerCount: () => observers.size,
+        modalCount: () => modalDialogs.size,
+        async flushCloseEvents() { for (const notify of closeEvents.splice(0)) await notify(); },
         flushObserver() { for (const observer of observers) observer.callback(); },
         async ready() { document.body = body; await document.emit('DOMContentLoaded'); },
         async open() { this.button().focus(); await this.button().emit('click'); },
@@ -203,7 +227,10 @@ test('activation mounts before list; opening uses the current Host Active snapsh
     assert.doesNotMatch(f.panel().textContent, /undefined|null|Runtime connected/);
     assert.match(f.panel().textContent, /Missing renderer entry/);
     assert.equal(f.panel().getAttribute('role'), 'dialog');
-    assert.equal(f.panel().getAttribute('aria-modal'), 'false');
+    assert.equal(f.panel().tagName, 'dialog');
+    assert.equal(f.panel().getAttribute('aria-modal'), 'true');
+    assert.equal(f.panel().open, true);
+    assert.equal(f.modalCount(), 1);
     assert.equal(f.panel().getAttribute('data-codlet-ui-theme'), token);
     assert.equal(f.panel().getAttribute('data-codlet-generation'), '1');
     assert.equal(f.button().getAttribute('aria-controls'), f.panel().id);
@@ -251,7 +278,7 @@ test('empty and malformed lists report honest recoverable states', async () => {
     f.plugin.deactivate();
 });
 
-test('overlapping refreshes commit only the latest response and never steal host focus', async () => {
+test('overlapping refreshes commit only the latest response without moving focus', async () => {
     const f = fixture();
     await f.plugin.activate(f.context);
     const old = deferred();
@@ -259,14 +286,14 @@ test('overlapping refreshes commit only the latest response and never steal host
     const opening = f.open();
     f.override('list', () => ({ plugins: [{ id: 'latest', active: true }] }));
     await f.refresh().emit('click');
-    f.editor.focus();
+    f.refresh().focus();
     const mutations = f.mutations();
     old.resolve({ plugins: [{ id: 'obsolete' }] });
     await opening;
     assert.equal(f.mutations(), mutations);
     assert.match(f.panel().textContent, /latest/);
     assert.doesNotMatch(f.panel().textContent, /obsolete/);
-    assert.equal(f.document.activeElement, f.editor);
+    assert.equal(f.document.activeElement, f.refresh());
     f.plugin.deactivate();
 });
 
@@ -472,20 +499,28 @@ test('close restores a surviving opener; removal falls back to the entry', async
     f.plugin.deactivate();
 });
 
-test('closing or unloading does not steal focus that has moved outside the nonmodal panel', async () => {
+test('closing or unloading preserves a newer host modal and its focus', async () => {
     const f = fixture();
     await f.plugin.activate(f.context);
     await f.open();
-    f.editor.focus();
+    const hostModal = f.document.body.appendChild(f.document.createElement('dialog'));
+    const hostInput = hostModal.appendChild(f.document.createElement('input'));
+    hostModal.showModal();
+    hostInput.focus();
     await f.close().emit('click');
-    assert.equal(f.document.activeElement, f.editor);
+    assert.equal(f.document.activeElement, hostInput);
+    assert.equal(hostModal.open, true);
+    hostModal.close();
     await f.open();
-    f.editor.focus();
+    hostModal.showModal();
+    hostInput.focus();
     f.plugin.deactivate();
-    assert.equal(f.document.activeElement, f.editor);
+    assert.equal(f.document.activeElement, hostInput);
+    assert.equal(hostModal.open, true);
     assert.equal(f.observerCount(), 0);
     assert.equal(f.document.listenerCount(), 0);
     assert.equal(f.window.listenerCount(), 0);
+    hostModal.close();
 });
 
 test('inline disable confirmation preserves enabled state, and Escape first cancels only confirmation', async () => {
@@ -599,5 +634,160 @@ test('an unconfirmed disable response is not displayed as success', async () => 
     await f.confirm().emit('click');
     assert.match(f.byClass('codlet-confirmation').textContent, /Disable was not confirmed/);
     assert.equal(f.confirm().disabled, false);
+    f.plugin.deactivate();
+});
+
+test('native modal lifecycle releases its top layer on close and on pending-request unload', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    assert.equal(f.panel().open, false);
+    assert.equal(f.panel().hidden, true);
+    await f.open();
+    f.editor.focus();
+    assert.equal(f.document.activeElement, f.close(), 'the browser modal keeps the host inert');
+    await f.close().emit('click');
+    assert.equal(f.modalCount(), 0);
+    assert.equal(f.panel().open, false);
+    assert.equal(f.panel().hidden, true);
+    assert.equal(f.document.activeElement, f.button());
+    const pending = deferred();
+    f.override('list', () => pending.promise);
+    const opening = f.open();
+    const oldPanel = f.panel();
+    assert.equal(f.modalCount(), 1);
+    f.plugin.deactivate();
+    assert.equal(f.modalCount(), 0);
+    assert.equal(oldPanel.open, false);
+    assert.equal(oldPanel.hidden, true);
+    assert.equal(f.document.activeElement, f.editor);
+    const mutations = f.mutations();
+    pending.resolve({ plugins: [] });
+    await opening;
+    await f.flushCloseEvents();
+    assert.equal(f.mutations(), mutations);
+});
+
+test('showModal failure and a detached dialog do not publish expanded state or issue list requests', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    const panel = f.panel();
+    panel.showModalError = 'Modal opening failed';
+    await f.open();
+    assert.equal(f.modalCount(), 0);
+    assert.equal(panel.open, false);
+    assert.equal(panel.hidden, true);
+    assert.equal(f.button().getAttribute('aria-expanded'), 'false');
+    assert.match(f.button().title, /Modal opening failed/);
+    assert.equal(f.document.activeElement, f.button());
+    assert.equal(f.calls.includes('list'), false);
+    panel.showModalError = null;
+    panel.remove();
+    await f.open();
+    assert.equal(panel.open, false);
+    assert.equal(panel.hidden, true);
+    assert.equal(f.modalCount(), 0);
+    assert.equal(f.calls.includes('list'), false);
+    f.document.body.appendChild(panel);
+    await f.open();
+    assert.equal(panel.open, true);
+    assert.equal(panel.hidden, false);
+    assert.equal(f.button().title, 'Codlet');
+    assert.equal(f.calls.filter(method => method === 'list').length, 1);
+    f.plugin.deactivate();
+});
+
+test('late native close events cannot close a reopened dialog or write into a new generation', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    await f.open();
+    await f.close().emit('click');
+    await f.open();
+    const beforeReopenEvent = f.mutations();
+    await f.flushCloseEvents();
+    assert.equal(f.mutations(), beforeReopenEvent);
+    assert.equal(f.panel().open, true);
+    assert.equal(f.panel().hidden, false);
+    f.plugin.deactivate();
+    await f.plugin.activate({ ...f.context, generation: 2 });
+    await f.open();
+    const beforeOldEvent = f.mutations();
+    await f.flushCloseEvents();
+    assert.equal(f.mutations(), beforeOldEvent);
+    assert.equal(f.panel().getAttribute('data-codlet-generation'), '2');
+    assert.equal(f.modalCount(), 1);
+    f.plugin.deactivate();
+});
+
+test('native close before its close event rejects list responses and synchronizes the entry', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    const pending = deferred();
+    f.override('list', () => pending.promise);
+    const opening = f.open();
+    f.panel().close();
+    const mutations = f.mutations();
+    pending.resolve({ plugins: [{ id: 'too late' }] });
+    await opening;
+    assert.equal(f.mutations(), mutations);
+    await f.flushCloseEvents();
+    assert.equal(f.panel().hidden, true);
+    assert.equal(f.button().getAttribute('aria-expanded'), 'false');
+    assert.equal(f.modalCount(), 0);
+    f.plugin.deactivate();
+});
+
+test('native cancel returns confirmation to settings, then closes the settings modal', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    f.setActive(true);
+    await f.open();
+    await f.requestDisable();
+    assert.equal(f.byClass('codlet-settings-section').hidden, true);
+    assert.equal(f.panel().getAttribute('aria-label'), 'Disable Codlet?');
+    assert.ok(f.panel().getAttribute('aria-describedby'));
+    const cancelled = await f.panel().emit('cancel');
+    assert.equal(cancelled.defaultPrevented, true);
+    assert.equal(f.panel().open, true);
+    assert.equal(f.byClass('codlet-settings-section').hidden, false);
+    assert.equal(f.panel().getAttribute('aria-label'), 'Codlet');
+    assert.equal(f.panel().getAttribute('aria-describedby'), null);
+    assert.equal(f.document.activeElement, f.toggle());
+    await f.panel().emit('cancel');
+    assert.equal(f.panel().open, false);
+    assert.equal(f.panel().hidden, true);
+    assert.equal(f.calls.includes('disableSelf'), false);
+    f.plugin.deactivate();
+});
+
+test('outside primary pointer cancels confirmation or closes settings without leaking to the host', async () => {
+    const f = fixture();
+    let hostPointerDowns = 0;
+    f.document.addEventListener('pointerdown', () => hostPointerDowns++);
+    await f.plugin.activate(f.context);
+    f.setActive(true);
+    await f.open();
+    for (const options of [
+        { button: 0, clientX: 200, clientY: 200 },
+        { button: 2, clientX: 0, clientY: 0 },
+        { button: 0, ctrlKey: true, clientX: 0, clientY: 0 },
+        { button: 0, isPrimary: false, clientX: 0, clientY: 0 },
+        { button: 0, defaultPrevented: true, clientX: 0, clientY: 0 }
+    ]) {
+        await f.panel().emit('pointerdown', options);
+        assert.equal(f.panel().open, true);
+    }
+    hostPointerDowns = 0;
+    await f.requestDisable();
+    const outside = { button: 0, clientX: 0, clientY: 0 };
+    const event = await f.panel().emit('pointerdown', outside);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(f.panel().open, true);
+    assert.equal(f.byClass('codlet-confirmation').hidden, true);
+    assert.equal(f.document.activeElement, f.toggle());
+    await f.panel().emit('pointerdown', outside);
+    assert.equal(f.panel().open, false);
+    assert.equal(f.panel().hidden, true);
+    assert.equal(hostPointerDowns, 0);
+    assert.equal(f.calls.includes('disableSelf'), false);
     f.plugin.deactivate();
 });
