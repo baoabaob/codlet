@@ -1,4 +1,5 @@
 pub mod capabilities;
+pub mod catalog;
 pub mod cdp;
 pub mod diagnostics;
 pub mod local_plugins;

@@ -54,6 +54,10 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "renderer-ready-timeout" => scenario_renderer_ready_timeout(&mut input, &mut output),
         "renderer-rpc" => scenario_renderer_rpc(&mut input, &mut output),
         "renderer-manage" => scenario_renderer_manage(&mut input, &mut output),
+        "renderer-local-manage" => scenario_renderer_local_manage(&mut input, &mut output, true),
+        "renderer-local-manage-denied" => {
+            scenario_renderer_local_manage(&mut input, &mut output, false)
+        }
         "renderer-manage-response-failure" => {
             scenario_renderer_manage_response_failure(&mut input, &mut output)
         }
@@ -1229,6 +1233,142 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
+fn scenario_renderer_local_manage(
+    input: &mut File,
+    output: &mut File,
+    has_grant: bool,
+) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    establish_target_session(&mut reader, output)?;
+    let session = "session-main";
+    complete_bundled_renderer_install(&mut reader, output, session, "local", 301, 302)?;
+    let world = "codlet.plugin.dev.local.g1";
+    complete_isolated_world(&mut reader, output, session, world, 303)?;
+    let binding = expect_renderer_binding(&mut reader, output, session, world)?;
+    expect_renderer_script(
+        &mut reader,
+        output,
+        session,
+        world,
+        "__codletRendererV1",
+        "local-bootstrap",
+    )?;
+    complete_renderer_evaluation(
+        &mut reader,
+        output,
+        session,
+        303,
+        "__codletRendererV1",
+        json!({"ok":true}),
+    )?;
+    let activation = expect_held_evaluation(&mut reader, session, 303, "fixture-local-source")?;
+    emit_local_manage_request(output, session, &binding, 1, "list")?;
+    if has_grant {
+        expect_local_management_list(&mut reader, output, session, false, true)?;
+    } else {
+        expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
+    }
+    write_evaluation_value(output, activation, json!({"ok":true}), session)?;
+    expect_renderer_script(
+        &mut reader,
+        output,
+        session,
+        world,
+        "fixture-local-source",
+        "local-entry",
+    )?;
+
+    expect_root_command(&mut reader, output, "Fake.emitLocalList")?;
+    emit_local_manage_request(output, session, &binding, 2, "list")?;
+    if has_grant {
+        expect_local_management_list(&mut reader, output, session, true, true)?;
+    } else {
+        expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
+    }
+    expect_root_command(&mut reader, output, "Fake.emitLocalDisable")?;
+    emit_local_manage_request(output, session, &binding, 3, "disableSelf")?;
+    if has_grant {
+        expect_consumer_management_success_response(&mut reader, output, session, 303)?;
+    } else {
+        expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
+        expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
+    }
+
+    complete_isolated_world(&mut reader, output, session, world, 303)?;
+    let deactivate =
+        expect_held_evaluation(&mut reader, session, 303, ".deactivate(\"dev.local\", 1)")?;
+    emit_local_manage_request(output, session, &binding, 4, "list")?;
+    if has_grant {
+        expect_local_management_list(&mut reader, output, session, false, false)?;
+    } else {
+        expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
+    }
+    write_evaluation_value(output, deactivate, json!({"ok":true}), session)?;
+    expect_remove_renderer_script(&mut reader, output, session, "local-entry")?;
+    expect_remove_renderer_script(&mut reader, output, session, "local-bootstrap")?;
+    expect_remove_renderer_binding(&mut reader, output, session)?;
+    complete_bundled_renderer_deactivation(&mut reader, output, session, "local", 302, 301)?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn emit_local_manage_request(
+    output: &mut File,
+    session: &str,
+    binding: &str,
+    id: u64,
+    method: &str,
+) -> Result<(), FakeChildError> {
+    let payload = json!({"v":1,"type":"request","pluginId":"dev.local","generation":1,"id":id,
+        "capability":{"name":"codlet.runtime.manage","api":1,"scope":"target"},"method":method,"params":null});
+    write_json_frame(
+        output,
+        &json!({"method":"Runtime.bindingCalled","sessionId":session,
+        "params":{"name":binding,"executionContextId":303,"payload":payload.to_string()}}),
+    )?;
+    Ok(())
+}
+
+fn expect_local_management_list(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session: &str,
+    active: bool,
+    enabled: bool,
+) -> Result<(), FakeChildError> {
+    let (id, response) = read_management_list_response(reader, session, 303)?;
+    let plugins = response
+        .pointer("/result/plugins")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            FakeChildError::InvalidRequest(
+                "local management response has no plugin list".to_owned(),
+            )
+        })?;
+    let local = plugins.iter().find(|plugin| plugin["id"] == "dev.local");
+    let broken = plugins.iter().find(|plugin| plugin["id"] == "dev.broken");
+    if local.is_none_or(|plugin| {
+        plugin["active"] != active
+            || plugin["enabled"] != enabled
+            || plugin["source"] != "local"
+            || plugin["version"] != "1"
+            || plugin["grants"] != json!(["runtime.manage"])
+            || plugin["requestedPermissions"] != json!(["runtime.manage"])
+            || plugin["validation"]["status"] != "ok"
+            || !plugin["path"].is_string()
+    }) || broken.is_none_or(|plugin| {
+        plugin["active"] != false
+            || plugin["enabled"] != false
+            || plugin["validation"]["status"] != "failed"
+            || !plugin["version"].is_null()
+    }) || plugins.iter().any(|plugin| plugin["id"] == "dev.later")
+    {
+        return Err(FakeChildError::InvalidRequest(format!(
+            "incorrect local management snapshot: {response}"
+        )));
+    }
+    write_evaluation_value(output, id, json!({"ok":true}), session)
+}
+
 fn scenario_renderer_manage_response_failure(
     input: &mut File,
     output: &mut File,
@@ -1457,6 +1597,32 @@ fn expect_consumer_management_list_response(
     session_id: &str,
     context_id: u64,
 ) -> Result<(), FakeChildError> {
+    let (id, response) = read_management_list_response(reader, session_id, context_id)?;
+    let plugins = response
+        .pointer("/result/plugins")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            FakeChildError::InvalidRequest("management response has no plugin list".to_owned())
+        })?;
+    for (plugin_id, expected_active) in [("codex.ui.adapter", true), ("codlet", false)] {
+        if plugins
+            .iter()
+            .find(|plugin| plugin["id"] == plugin_id)
+            .is_none_or(|plugin| plugin["active"] != expected_active)
+        {
+            return Err(FakeChildError::InvalidRequest(format!(
+                "incorrect ready-handshake active state: {response}"
+            )));
+        }
+    }
+    write_evaluation_value(output, id, json!({"ok": true}), session_id)
+}
+
+fn read_management_list_response(
+    reader: &mut RequestReader<'_>,
+    session_id: &str,
+    context_id: u64,
+) -> Result<(u64, Value), FakeChildError> {
     let request = reader.next()?;
     let id = expect_method(request.clone(), "Runtime.evaluate", Some(session_id))?;
     if request.pointer("/params/contextId") != Some(&json!(context_id))
@@ -1471,7 +1637,19 @@ fn expect_consumer_management_list_response(
             "consumer response did not carry the runtime plugin list".to_owned(),
         ));
     }
-    write_evaluation_value(output, id, json!({"ok": true}), session_id)
+    let encoded = request
+        .pointer("/params/expression")
+        .and_then(Value::as_str)
+        .and_then(|expression| expression.rsplit_once(", JSON.parse("))
+        .and_then(|(_, suffix)| suffix.strip_suffix("))"))
+        .ok_or_else(|| {
+            FakeChildError::InvalidRequest("management response wrapper is invalid".to_owned())
+        })?;
+    let json: String = serde_json::from_str(encoded)
+        .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+    let response: Value = serde_json::from_str(&json)
+        .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+    Ok((id, response))
 }
 
 fn expect_consumer_management_rejected_response(

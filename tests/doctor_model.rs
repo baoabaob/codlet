@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use codlet::catalog::PluginCatalog;
 use codlet::diagnostics::{
     Check, DiagnosticIssue, DoctorInputs, DoctorReport, PackageInfo, ProcessInfo, ProcessSnapshot,
 };
@@ -19,7 +20,7 @@ fn fixture(registry_path: &Path) -> DoctorInputs {
         processes: Check::ok(ProcessSnapshot::new(Vec::new())),
         registry_path: Some(registry_path.to_owned()),
         registry: PluginRegistry::load(registry_path),
-        plugins: bundled_plugins(),
+        catalog: bundled_plugins().map(PluginCatalog::from_bundled),
     }
 }
 
@@ -293,7 +294,7 @@ fn diagnostic_graph_reuses_kernel_conflict_version_scope_and_cycle_rules() {
     let directory = tempdir().unwrap();
     for (code, plugins) in cases {
         let mut inputs = fixture(&directory.path().join("config.json"));
-        inputs.plugins = Ok(plugins);
+        inputs.catalog = Ok(PluginCatalog::from_bundled(plugins));
         let report = report_json(inputs);
         assert_eq!(report["result"]["exitCode"], 1, "{code}");
         assert_eq!(report["dependencyGraph"]["error"]["code"], code);
@@ -319,4 +320,299 @@ fn reported_host_declarations_satisfy_the_same_contract_as_renderer_construction
     assert_eq!(runtime.session_count(), 0);
     assert_eq!(runtime.plugin_count(), 1);
     assert!(!path.exists());
+}
+
+#[cfg(windows)]
+fn register_local_fixture(
+    registry: &mut PluginRegistry,
+    directory: &Path,
+    id: &str,
+    permissions: &[&str],
+    provides: Vec<Value>,
+    requires: Vec<Value>,
+    grants: Vec<codlet::plugins::Permission>,
+) -> std::path::PathBuf {
+    let root = directory.join(id);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("plugin.json"), json!({
+        "schema": 1, "id": id, "version": "1", "renderer": {"entry": "renderer.js", "world": "isolated"},
+        "permissions": permissions, "provides": provides, "requires": requires,
+    }).to_string()).unwrap();
+    std::fs::write(
+        root.join("renderer.js"),
+        "module.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    registry
+        .register_local(
+            id,
+            codlet::plugins::LocalPluginRegistration {
+                path: root.clone(),
+                grants,
+            },
+        )
+        .unwrap();
+    root
+}
+
+#[cfg(windows)]
+#[test]
+fn local_catalog_shares_dependency_validation_and_uses_only_collected_data() {
+    let directory = tempdir().unwrap();
+    let registry_path = directory.path().join("config.json");
+    let mut inputs = fixture(&registry_path);
+    let registry = inputs.registry.as_mut().unwrap();
+    let provided = descriptor("fixture.local", 1, "target");
+    let provider_path = register_local_fixture(
+        registry,
+        directory.path(),
+        "dev.provider",
+        &[],
+        vec![provided.clone()],
+        vec![],
+        vec![],
+    );
+    register_local_fixture(
+        registry,
+        directory.path(),
+        "dev.consumer",
+        &["ui.dom"],
+        vec![],
+        vec![provided],
+        vec![codlet::plugins::Permission::UiDom],
+    );
+    let catalog = PluginCatalog::load(registry).unwrap();
+    let runtime = codlet::renderer::RendererRuntime::from_catalog(
+        PluginCatalog::load(registry).unwrap(),
+        registry.clone(),
+    )
+    .unwrap();
+    assert_eq!(runtime.plugin_count(), 4);
+    assert_eq!(runtime.session_count(), 0);
+    std::fs::remove_file(provider_path.join("plugin.json")).unwrap();
+    inputs.catalog = Ok(catalog);
+    let report = report_json(inputs);
+    assert_eq!(report["result"]["exitCode"], 0);
+    let order = report["dependencyGraph"]["data"]["activationOrder"]
+        .as_array()
+        .unwrap();
+    assert!(
+        order.iter().position(|id| id == "dev.provider").unwrap()
+            < order.iter().position(|id| id == "dev.consumer").unwrap()
+    );
+    let consumer = plugin(&report, "dev.consumer");
+    assert_eq!(consumer["source"], "local");
+    assert_eq!(consumer["grants"], json!(["ui.dom"]));
+    assert_eq!(consumer["requestedPermissions"], json!(["ui.dom"]));
+    assert_eq!(consumer["validation"]["status"], "ok");
+    assert!(consumer["path"].as_str().unwrap().contains("dev.consumer"));
+    assert_runtime_unavailable(&report);
+    assert!(!registry_path.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn disabled_broken_local_is_visible_but_only_enabled_failure_blocks_launch() {
+    let directory = tempdir().unwrap();
+    let mut inputs = fixture(&directory.path().join("config.json"));
+    let registry = inputs.registry.as_mut().unwrap();
+    registry
+        .register_local(
+            "dev.missing",
+            codlet::plugins::LocalPluginRegistration {
+                path: directory.path().join("missing"),
+                grants: vec![],
+            },
+        )
+        .unwrap();
+    registry.set_enabled("dev.missing", false).unwrap();
+    let catalog = PluginCatalog::load(registry).unwrap();
+    assert_eq!(catalog.enabled_plugins(registry).unwrap().len(), 2);
+    inputs.catalog = Ok(catalog);
+    let report = report_json(inputs);
+    assert_eq!(report["result"]["exitCode"], 0);
+    assert_eq!(
+        report["result"]["launchPreflight"],
+        "not_blocked_by_snapshot"
+    );
+    let missing = plugin(&report, "dev.missing");
+    assert_eq!(missing["validation"]["status"], "failed");
+    assert_eq!(missing["desiredEnabled"], false);
+    assert!(missing["version"].is_null());
+    assert!(missing["requestedPermissions"].is_null());
+
+    let mut enabled = fixture(&directory.path().join("config.json"));
+    let registry = enabled.registry.as_mut().unwrap();
+    registry
+        .register_local(
+            "dev.missing",
+            codlet::plugins::LocalPluginRegistration {
+                path: directory.path().join("missing"),
+                grants: vec![],
+            },
+        )
+        .unwrap();
+    let catalog = PluginCatalog::load(registry).unwrap();
+    assert!(catalog.enabled_plugins(registry).is_err());
+    enabled.catalog = Ok(catalog);
+    let report = report_json(enabled);
+    assert_eq!(report["result"]["exitCode"], 1);
+    assert_eq!(
+        report["result"]["failedChecks"],
+        json!(["pluginValidation"])
+    );
+    assert_eq!(
+        report["pluginValidation"]["error"]["details"]["pluginId"],
+        "dev.missing"
+    );
+    assert_eq!(report["dependencyGraph"]["status"], "unavailable");
+    assert_eq!(
+        plugin(&report, "dev.missing")["validation"]["status"],
+        "failed"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn missing_local_grant_and_permission_upgrade_fail_before_runtime_construction() {
+    let directory = tempdir().unwrap();
+    let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let root = register_local_fixture(
+        &mut registry,
+        directory.path(),
+        "dev.trusted",
+        &["ui.dom"],
+        vec![],
+        vec![],
+        vec![],
+    );
+    assert!(
+        PluginCatalog::load(&registry)
+            .unwrap()
+            .enabled_plugins(&registry)
+            .is_err()
+    );
+    registry
+        .register_local(
+            "dev.trusted",
+            codlet::plugins::LocalPluginRegistration {
+                path: root.clone(),
+                grants: vec![codlet::plugins::Permission::UiDom],
+            },
+        )
+        .unwrap();
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    assert_eq!(catalog.enabled_plugins(&registry).unwrap().len(), 3);
+    let upgraded = json!({"schema":1,"id":"dev.trusted","version":"2","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom","runtime.manage"]});
+    std::fs::write(root.join("plugin.json"), upgraded.to_string()).unwrap();
+    let error = codlet::renderer::RendererRuntime::from_catalog(
+        PluginCatalog::load(&registry).unwrap(),
+        registry,
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(error, codlet::renderer::RendererError::Catalog(_)));
+    assert!(error.to_string().contains("runtime.manage"));
+}
+
+#[test]
+fn registration_operation_error_preserves_its_plugin_context() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.json");
+    let mut inputs = fixture(&path);
+    inputs.registry = Err(codlet::plugins::PluginRegistryError::Io {
+        operation: "apply local plugin edit to",
+        path,
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "local plugin dev.conflict: registration changed",
+        ),
+    });
+    let report = report_json(inputs);
+    assert_eq!(
+        report["registry"]["error"]["code"],
+        "registry_operation_failed"
+    );
+    assert!(
+        report["registry"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("local plugin dev.conflict")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn non_target_local_requirements_fail_preflight_even_when_the_generic_graph_resolves() {
+    use codlet::capabilities::CapabilityRegistry;
+    use codlet::local_plugins::inspect_local_plugin;
+    use codlet::renderer::{RendererError, RendererRuntime};
+
+    for scope in ["runtime", "backend-session", "thread"] {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut inputs = fixture(&path);
+        let registry = inputs.registry.as_mut().unwrap();
+        let capability = descriptor("fixture.cross-scope", 1, scope);
+        let provider = register_local_fixture(
+            registry,
+            directory.path(),
+            "dev.provider",
+            &[],
+            vec![capability.clone()],
+            vec![],
+            vec![],
+        );
+        let consumer = register_local_fixture(
+            registry,
+            directory.path(),
+            "dev.consumer",
+            &[],
+            vec![],
+            vec![capability],
+            vec![],
+        );
+        let provider = inspect_local_plugin(&provider).unwrap();
+        let consumer = inspect_local_plugin(&consumer).unwrap();
+        let mut graph = CapabilityRegistry::new();
+        graph
+            .register_provider("dev.provider", 1, &provider.manifest.provides, &[], &[])
+            .unwrap();
+        graph
+            .register_provider("dev.consumer", 1, &[], &consumer.manifest.requires, &[])
+            .unwrap();
+        assert!(
+            graph.resolve_activation_order().is_ok(),
+            "generic scope {scope} remains supported"
+        );
+
+        let catalog = PluginCatalog::load(registry).unwrap();
+        let error = catalog.enabled_plugins(registry).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("only supports target-scoped requirements")
+        );
+        assert!(matches!(
+            RendererRuntime::from_catalog(PluginCatalog::load(registry).unwrap(), registry.clone()),
+            Err(RendererError::Catalog(_))
+        ));
+        registry.set_enabled("dev.consumer", false).unwrap();
+        assert!(
+            catalog.enabled_plugins(registry).is_ok(),
+            "disabled unsupported requirements must not block launch"
+        );
+        registry.set_enabled("dev.consumer", true).unwrap();
+        inputs.catalog = Ok(catalog);
+        let report = report_json(inputs);
+        assert_eq!(report["result"]["exitCode"], 1);
+        assert_eq!(report["pluginValidation"]["status"], "failed");
+        assert!(
+            plugin(&report, "dev.consumer")["validation"]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("target-scoped")
+        );
+        assert!(!path.exists());
+    }
 }

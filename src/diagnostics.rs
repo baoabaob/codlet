@@ -6,8 +6,11 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::capabilities::{CapabilityDescriptor, CapabilityRegistry, CapabilityRegistryError};
-use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, PluginRegistryError};
+use crate::capabilities::{CapabilityDescriptor, CapabilityRegistryError};
+use crate::catalog::{CatalogError, PluginCatalog, PluginCatalogEntry, capability_graph};
+use crate::plugins::{
+    LoadedPlugin, ManifestError, Permission, PluginRegistry, PluginRegistryError,
+};
 use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
 
 pub const DOCTOR_SCHEMA: &str = "codlet.doctor/v1";
@@ -104,7 +107,7 @@ pub struct DoctorInputs {
     pub processes: Check<ProcessSnapshot>,
     pub registry_path: Option<PathBuf>,
     pub registry: Result<PluginRegistry, PluginRegistryError>,
-    pub plugins: Result<Vec<LoadedPlugin>, ManifestError>,
+    pub catalog: Result<PluginCatalog, ManifestError>,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,8 +122,12 @@ pub struct RegistryInfo {
 #[serde(rename_all = "camelCase")]
 pub struct PluginInfo {
     pub id: String,
-    pub version: String,
+    pub version: Option<String>,
     pub source: &'static str,
+    pub path: Option<String>,
+    pub grants: Vec<Permission>,
+    pub requested_permissions: Option<Vec<Permission>>,
+    pub validation: Check<()>,
     pub default_enabled: bool,
     pub desired_enabled: Option<bool>,
     pub provides: Vec<CapabilityDescriptor>,
@@ -173,6 +180,7 @@ pub struct DoctorReport {
     pub registry_path: Option<String>,
     pub registry: Check<RegistryInfo>,
     pub plugins: Check<Vec<PluginInfo>>,
+    pub plugin_validation: Check<()>,
     pub declared_host_providers: Vec<HostProviderDeclaration>,
     pub dependency_graph: Check<DependencyGraph>,
     pub runtime: RuntimeObservations,
@@ -197,25 +205,13 @@ impl DoctorReport {
             },
         };
         let declared_host_providers = declared_host_providers();
-        let plugins = match &inputs.plugins {
-            Ok(plugins) => {
-                let mut plugins: Vec<_> = plugins
+        let plugins = match &inputs.catalog {
+            Ok(catalog) => {
+                let plugins: Vec<_> = catalog
+                    .entries()
                     .iter()
-                    .map(|plugin| PluginInfo {
-                        id: plugin.manifest.id.clone(),
-                        version: plugin.manifest.version.clone(),
-                        source: "bundled",
-                        default_enabled: true,
-                        desired_enabled: inputs
-                            .registry
-                            .as_ref()
-                            .ok()
-                            .map(|registry| registry.is_enabled(&plugin.manifest.id)),
-                        provides: plugin.manifest.provides.clone(),
-                        requires: plugin.manifest.requires.clone(),
-                    })
+                    .map(|entry| plugin_info(entry, inputs.registry.as_ref().ok()))
                     .collect();
-                plugins.sort_by(|left, right| left.id.cmp(&right.id));
                 Check::ok(plugins)
             }
             Err(error) => Check::Failed {
@@ -226,18 +222,34 @@ impl DoctorReport {
                 ),
             },
         };
-        let dependency_graph = match (&inputs.plugins, &inputs.registry) {
-            (Ok(plugins), Ok(registry)) => {
-                match validate_dependencies(plugins, registry, &declared_host_providers) {
-                    Ok(graph) => Check::ok(graph),
-                    Err(error) => Check::Failed {
-                        error: dependency_issue(error, plugins, registry),
+        let (plugin_validation, dependency_graph) = match (&inputs.catalog, &inputs.registry) {
+            (Ok(catalog), Ok(registry)) => match catalog.enabled_plugins(registry) {
+                Ok(enabled) => (
+                    Check::ok(()),
+                    match validate_dependencies(&enabled) {
+                        Ok(graph) => Check::ok(graph),
+                        Err(error) => Check::Failed {
+                            error: dependency_issue(error, catalog, registry),
+                        },
                     },
-                }
-            }
-            _ => Check::Unavailable {
-                reason: "Valid bundled manifests and desired enablement are required to evaluate the dependency graph.",
+                ),
+                Err(error) => (
+                    Check::Failed {
+                        error: catalog_issue(error),
+                    },
+                    Check::Unavailable {
+                        reason: "An enabled plugin failed validation; repair or disable it before evaluating its dependency graph.",
+                    },
+                ),
             },
+            _ => (
+                Check::Unavailable {
+                    reason: "Valid registry and plugin catalog are required to validate enabled plugins.",
+                },
+                Check::Unavailable {
+                    reason: "Valid bundled manifests and desired enablement are required to evaluate the dependency graph.",
+                },
+            ),
         };
         let mut failed_checks = Vec::new();
         for (name, failed) in [
@@ -246,6 +258,7 @@ impl DoctorReport {
             ("processes", inputs.processes.is_failed()),
             ("registry", registry.is_failed()),
             ("plugins", plugins.is_failed()),
+            ("pluginValidation", plugin_validation.is_failed()),
             ("dependencyGraph", dependency_graph.is_failed()),
         ] {
             if failed {
@@ -268,6 +281,7 @@ impl DoctorReport {
             registry_path,
             registry,
             plugins,
+            plugin_validation,
             declared_host_providers,
             dependency_graph,
             runtime: RuntimeObservations {
@@ -365,8 +379,33 @@ impl DoctorReport {
                 let _ = writeln!(
                     output,
                     "plugin: id={}; version={}; source={}; desired-enabled={desired}",
-                    plugin.id, plugin.version, plugin.source
+                    plugin.id,
+                    plugin.version.as_deref().unwrap_or("unavailable"),
+                    plugin.source
                 );
+                if let Some(path) = &plugin.path {
+                    let _ = writeln!(output, "  path: {path}");
+                }
+                let grants: Vec<_> = plugin.grants.iter().map(|grant| grant.as_str()).collect();
+                let requested = plugin
+                    .requested_permissions
+                    .as_ref()
+                    .map(|permissions| {
+                        permissions
+                            .iter()
+                            .map(|permission| permission.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|| "unavailable".to_owned());
+                let _ = writeln!(
+                    output,
+                    "  grants: {}; requested-permissions: {requested}",
+                    grants.join(", ")
+                );
+                render_check(output, "  validation", &plugin.validation, |output, _| {
+                    output.push_str("  validation: ok\n")
+                });
                 for descriptor in &plugin.provides {
                     let _ = writeln!(output, "  declares-provider: {descriptor}");
                 }
@@ -375,6 +414,12 @@ impl DoctorReport {
                 }
             }
         });
+        render_check(
+            &mut output,
+            "plugin-validation",
+            &self.plugin_validation,
+            |output, _| output.push_str("plugin-validation: ok (enabled plugins)\n"),
+        );
         for provider in &self.declared_host_providers {
             for descriptor in &provider.provides {
                 let _ = writeln!(
@@ -414,6 +459,55 @@ impl DoctorReport {
     }
 }
 
+fn plugin_info(entry: &PluginCatalogEntry, registry: Option<&PluginRegistry>) -> PluginInfo {
+    let plugin = entry.plugin.as_ref().ok();
+    PluginInfo {
+        id: entry.id.clone(),
+        version: plugin.map(|plugin| plugin.manifest.version.clone()),
+        source: entry.source.kind(),
+        path: entry
+            .source
+            .path()
+            .map(|path| path.to_string_lossy().into_owned()),
+        grants: entry.grants().to_vec(),
+        requested_permissions: plugin.map(|plugin| plugin.manifest.permissions.clone()),
+        validation: match &entry.plugin {
+            Ok(_) => Check::ok(()),
+            Err(error) => Check::Failed {
+                error: DiagnosticIssue::new(
+                    "local_plugin_invalid",
+                    error.to_string(),
+                    format!(
+                        "Review this plugin's path and explicit grants. Repair or re-register the plugin with the required trust and grants, or run `codlet plugin disable {}`; rerun doctor.",
+                        entry.id
+                    ),
+                ),
+            },
+        },
+        default_enabled: true,
+        desired_enabled: registry.map(|registry| registry.is_enabled(&entry.id)),
+        provides: plugin
+            .map(|plugin| plugin.manifest.provides.clone())
+            .unwrap_or_default(),
+        requires: plugin
+            .map(|plugin| plugin.manifest.requires.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn catalog_issue(error: CatalogError) -> DiagnosticIssue {
+    let CatalogError::InvalidPlugin { id, message } = error;
+    let mut issue = DiagnosticIssue::new(
+        "enabled_plugin_invalid",
+        message,
+        format!(
+            "Repair the registered plugin and its explicit grants, or run `codlet plugin disable {id}`; rerun doctor before launching."
+        ),
+    );
+    issue.details = json!({"pluginId": id});
+    issue
+}
+
 fn render_check<T>(
     output: &mut String,
     name: &str,
@@ -443,19 +537,25 @@ fn registry_issue(error: &PluginRegistryError) -> DiagnosticIssue {
         ),
         PluginRegistryError::Json { .. } => (
             "registry_json_invalid",
-            "Back up the reported Codlet registry, then repair its JSON and allowed fields; schema must be 1 and plugins.<id>.enabled must be a boolean. Rerun doctor.",
+            "Back up the reported Codlet registry, then repair its JSON and allowed fields. Schema 1 contains enablement only; schema 2 also requires localPlugins with explicit path and grants. Rerun doctor.",
         ),
         PluginRegistryError::Schema(_) => (
             "registry_schema_unsupported",
-            "Use a Codlet version that supports this registry schema, or restore a known-good schema 1 backup after backing up the current file.",
+            "Use a Codlet version that supports this registry schema, or restore a known-good schema 1 or 2 backup after backing up the current file.",
         ),
         PluginRegistryError::PluginId(_) => (
             "registry_plugin_id_invalid",
             "Back up the Codlet registry and repair invalid plugin IDs using lowercase letters, digits, hyphens and dot-separated segments; rerun doctor.",
         ),
-        PluginRegistryError::Io { .. } => (
+        PluginRegistryError::Io {
+            operation: "read", ..
+        } => (
             "registry_read_failed",
             "Check the reported Codlet registry path is a readable file and its parent is a directory; repair access or restore a known-good backup, then rerun doctor.",
+        ),
+        PluginRegistryError::Io { .. } => (
+            "registry_operation_failed",
+            "Review the reported registry operation, plugin identity and source error. Resolve the registration or concurrent edit conflict, then retry the requested operation.",
         ),
         PluginRegistryError::MissingParent(_) => (
             "registry_path_invalid",
@@ -483,27 +583,8 @@ fn declared_host_providers() -> Vec<HostProviderDeclaration> {
 
 fn validate_dependencies(
     plugins: &[LoadedPlugin],
-    registry: &PluginRegistry,
-    host: &[HostProviderDeclaration],
 ) -> Result<DependencyGraph, CapabilityRegistryError> {
-    let mut graph = CapabilityRegistry::new();
-    for provider in host {
-        graph.register_provider(provider.id, 1, &provider.provides, &[], &[])?;
-    }
-    let mut enabled: Vec<_> = plugins
-        .iter()
-        .filter(|plugin| registry.is_enabled(&plugin.manifest.id))
-        .collect();
-    enabled.sort_by(|left, right| left.manifest.id.cmp(&right.manifest.id));
-    for plugin in enabled {
-        graph.register_provider(
-            &plugin.manifest.id,
-            plugin.generation,
-            &plugin.manifest.provides,
-            &plugin.manifest.requires,
-            &[],
-        )?;
-    }
+    let graph = capability_graph(plugins)?;
     Ok(DependencyGraph {
         basis: "static_desired_configuration",
         activation_order: graph.resolve_activation_order()?,
@@ -512,26 +593,30 @@ fn validate_dependencies(
 
 fn dependency_issue(
     error: CapabilityRegistryError,
-    plugins: &[LoadedPlugin],
+    catalog: &PluginCatalog,
     registry: &PluginRegistry,
 ) -> DiagnosticIssue {
     let mut issue = DiagnosticIssue::new(
         "dependency_invalid",
         error.to_string(),
-        "Restore or update the bundled Codlet manifests and rerun doctor.",
+        "Repair the plugin manifests and registrations so their capability declarations agree, then rerun doctor.",
     );
     match error {
         CapabilityRegistryError::MissingRequirement {
             consumer,
             requirement,
         } => {
-            let disabled: Vec<_> = plugins
+            let disabled: Vec<_> = catalog
+                .entries()
                 .iter()
-                .filter(|plugin| {
-                    !registry.is_enabled(&plugin.manifest.id)
-                        && plugin.manifest.provides.contains(&requirement)
+                .filter(|entry| {
+                    !registry.is_enabled(&entry.id)
+                        && entry
+                            .plugin
+                            .as_ref()
+                            .is_ok_and(|plugin| plugin.manifest.provides.contains(&requirement))
                 })
-                .map(|plugin| plugin.manifest.id.clone())
+                .map(|entry| entry.id.clone())
                 .collect();
             issue.code = if disabled.is_empty() {
                 "dependency_missing_provider"
@@ -540,7 +625,7 @@ fn dependency_issue(
             };
             issue.remediation = if disabled.is_empty() {
                 format!(
-                    "Restore a bundled provider for {requirement}, or run `codlet plugin disable {consumer}`; rerun doctor."
+                    "Restore an enabled provider for {requirement}, or run `codlet plugin disable {consumer}`; rerun doctor."
                 )
             } else {
                 format!(

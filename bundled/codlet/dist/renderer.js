@@ -23,6 +23,9 @@ module.exports = (() => {
     let style = null;
     let button = null;
     let panel = null;
+    let pluginList = null;
+    let managementStatus = null;
+    let panelRequest = 0;
     let observer = null;
     let keydown = null;
     let resize = null;
@@ -148,6 +151,7 @@ module.exports = (() => {
             .codlet-plugin-copy { min-width: 0; }
             .codlet-plugin-version {
                 margin-top: 2px;
+                overflow-wrap: anywhere;
                 color: color-mix(in srgb, CanvasText 54%, transparent);
                 font-size: 11px;
             }
@@ -169,7 +173,14 @@ module.exports = (() => {
         const copy = document.createElement('div');
         copy.className = 'codlet-plugin-copy';
         addText(copy, 'div', 'codlet-plugin-name', plugin.id === 'codlet' ? 'Codlet' : plugin.id);
-        addText(copy, 'div', 'codlet-plugin-version', plugin.version);
+        const metadata = [plugin.version, plugin.source === 'local' ? 'Local' : null]
+            .filter(value => typeof value === 'string' && value.length > 0);
+        if (metadata.length) addText(copy, 'div', 'codlet-plugin-version', metadata.join(' / '));
+        if (typeof plugin.path === 'string') copy.title = plugin.path;
+        if (plugin.validation?.status === 'failed') {
+            const message = plugin.validation.error?.message;
+            addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
+        }
         row.appendChild(copy);
 
         if (plugin.id === context.pluginId && plugin.active === true) {
@@ -192,6 +203,7 @@ module.exports = (() => {
                 try {
                     await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'disableSelf', null);
                 } catch (error) {
+                    if (stopped || !row.isConnected) return;
                     toggle.checked = true;
                     toggle.disabled = false;
                     toggle.title = error instanceof Error ? error.message : String(error);
@@ -199,7 +211,10 @@ module.exports = (() => {
             });
             row.appendChild(toggle);
         } else {
-            addText(row, 'div', 'codlet-plugin-state', plugin.active === true ? 'Active' : 'Disabled');
+            const state = plugin.active === true ? 'Active'
+                : plugin.validation?.status === 'failed' ? 'Unavailable'
+                : plugin.enabled === true ? 'Not active' : 'Disabled';
+            addText(row, 'div', 'codlet-plugin-state', state);
         }
         return row;
     }
@@ -234,7 +249,14 @@ module.exports = (() => {
         addText(runtime, 'span', '', 'Runtime connected');
         body.appendChild(runtime);
         addText(body, 'h2', 'codlet-section-title', 'Codlets');
-        for (const plugin of plugins) body.appendChild(createPluginRow(context, plugin));
+        managementStatus = document.createElement('div');
+        managementStatus.className = 'codlet-plugin-version';
+        managementStatus.hidden = true;
+        managementStatus.setAttribute('role', 'status');
+        body.appendChild(managementStatus);
+        pluginList = document.createElement('div');
+        for (const plugin of plugins) pluginList.appendChild(createPluginRow(context, plugin));
+        body.appendChild(pluginList);
         panel.appendChild(body);
         document.body.appendChild(panel);
     }
@@ -250,12 +272,13 @@ module.exports = (() => {
 
     function setPanelOpen(open) {
         if (!panel) return;
+        if (!open) panelRequest += 1;
         panel.hidden = !open;
         button?.setAttribute('aria-expanded', String(open));
         if (open) layoutPanel();
     }
 
-    function mountButton() {
+    function mountButton(context) {
         const mount = findMount();
         if (!mount) return false;
         if (!button) {
@@ -266,7 +289,29 @@ module.exports = (() => {
             button.setAttribute(BUTTON_ATTRIBUTE, 'codlet');
             button.setAttribute('aria-label', 'Open Codlet');
             button.setAttribute('aria-expanded', 'false');
-            button.addEventListener('click', () => setPanelOpen(panel?.hidden !== false));
+            button.addEventListener('click', async () => {
+                if (panel?.hidden === false) {
+                    setPanelOpen(false);
+                    return;
+                }
+                const currentPanel = panel;
+                const request = ++panelRequest;
+                setPanelOpen(true);
+                pluginList.hidden = true;
+                managementStatus.hidden = false;
+                managementStatus.textContent = 'Loading plugins...';
+                try {
+                    const management = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'list', null);
+                    if (stopped || panel !== currentPanel || request !== panelRequest) return;
+                    if (!Array.isArray(management?.plugins)) throw new Error('Plugin list unavailable');
+                    pluginList.replaceChildren(...management.plugins.map(plugin => createPluginRow(context, plugin)));
+                    pluginList.hidden = false;
+                    managementStatus.hidden = true;
+                } catch (error) {
+                    if (stopped || panel !== currentPanel || request !== panelRequest) return;
+                    managementStatus.textContent = error instanceof Error ? error.message : 'Plugin list unavailable';
+                }
+            });
         }
         if (!button.isConnected) mount.appendChild(button);
         layoutPanel();
@@ -300,9 +345,9 @@ module.exports = (() => {
         mountToken = capability.token;
         installStyle();
         createPanel(context, management.plugins);
-        mountButton();
+        mountButton(context);
         observer = new MutationObserver(() => {
-            if (!button?.isConnected) mountButton();
+            if (!button?.isConnected) mountButton(context);
         });
         observer.observe(document.documentElement, { childList: true, subtree: true });
         keydown = (event) => {
@@ -321,6 +366,7 @@ module.exports = (() => {
         },
         deactivate() {
             stopped = true;
+            panelRequest += 1;
             observer?.disconnect();
             document.removeEventListener('keydown', keydown);
             globalThis.removeEventListener('resize', resize);
@@ -332,6 +378,8 @@ module.exports = (() => {
             resize = null;
             button = null;
             panel = null;
+            pluginList = null;
+            managementStatus = null;
             style = null;
             mountToken = null;
         }

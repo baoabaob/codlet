@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as FmtWrite;
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,7 @@ use crate::capabilities::{
     CapabilityAccessError, CapabilityDescriptor, CapabilityLease, CapabilityPrincipal,
     CapabilityRegistry, CapabilityRegistryError, CapabilityScopeInstance,
 };
+use crate::catalog::{CatalogError, PluginCatalog, capability_graph};
 use crate::cdp::{
     CdpEvent, CdpEventStream, EventStreamError, TargetChange, TargetError, TargetSession,
 };
@@ -33,6 +34,8 @@ const MAX_RENDERER_WAIT_DEPTH: usize = 8;
 pub enum RendererError {
     #[error(transparent)]
     Manifest(#[from] ManifestError),
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
     #[error(transparent)]
     Capability(#[from] CapabilityRegistryError),
     #[error(transparent)]
@@ -78,6 +81,7 @@ pub struct RendererDiagnostic {
 }
 
 pub struct RendererRuntime {
+    catalog: PluginCatalog,
     plugins: Vec<LoadedPlugin>,
     plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
@@ -192,6 +196,13 @@ struct HostEndpointFailure {
     message: String,
 }
 
+struct HostEndpointContext<'a> {
+    registry: &'a mut PluginRegistry,
+    catalog: &'a PluginCatalog,
+    plugins: &'a [LoadedPlugin],
+    active_plugin_ids: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HostAction {
     DisablePlugin { plugin_id: String },
@@ -206,6 +217,23 @@ impl RendererRuntime {
         plugins: Vec<LoadedPlugin>,
         plugin_registry: PluginRegistry,
     ) -> Result<Self, RendererError> {
+        let catalog = PluginCatalog::from_bundled(plugins.clone());
+        Self::with_catalog(catalog, plugins, plugin_registry)
+    }
+
+    pub fn from_catalog(
+        catalog: PluginCatalog,
+        plugin_registry: PluginRegistry,
+    ) -> Result<Self, RendererError> {
+        let plugins = catalog.enabled_plugins(&plugin_registry)?;
+        Self::with_catalog(catalog, plugins, plugin_registry)
+    }
+
+    fn with_catalog(
+        catalog: PluginCatalog,
+        plugins: Vec<LoadedPlugin>,
+        plugin_registry: PluginRegistry,
+    ) -> Result<Self, RendererError> {
         if let Some(plugin) = plugins
             .iter()
             .find(|plugin| plugin.generation > MAX_JAVASCRIPT_SAFE_INTEGER)
@@ -217,6 +245,7 @@ impl RendererRuntime {
         }
         let (plugins, capabilities) = order_plugins(plugins)?;
         Ok(Self {
+            catalog,
             plugins,
             plugin_registry,
             capabilities,
@@ -906,12 +935,23 @@ impl RendererRuntime {
         let outcome = match authorization {
             Ok((provider_id, descriptor)) => {
                 if provider_id == BUILTIN_HOST_PROVIDER_ID {
+                    let active_plugin_ids = self
+                        .sessions
+                        .get(target_id)
+                        .into_iter()
+                        .flat_map(|session| &session.plugins)
+                        .filter(|plugin| plugin.state == RendererPluginState::Active)
+                        .map(|plugin| plugin.id.clone())
+                        .collect();
                     match invoke_builtin_host_endpoint(
-                        &mut self.plugin_registry,
-                        &self.plugins,
+                        HostEndpointContext {
+                            registry: &mut self.plugin_registry,
+                            catalog: &self.catalog,
+                            plugins: &self.plugins,
+                            active_plugin_ids,
+                        },
                         &consumer.id,
                         consumer.principal.has_grant(RUNTIME_MANAGE_GRANT),
-                        consumer.state == RendererPluginState::Active,
                         &descriptor,
                         &request,
                     ) {
@@ -1478,11 +1518,9 @@ fn parse_provider_result(value: Value) -> Result<Value, String> {
 }
 
 fn invoke_builtin_host_endpoint(
-    plugin_registry: &mut PluginRegistry,
-    plugins: &[LoadedPlugin],
+    context: HostEndpointContext<'_>,
     caller_id: &str,
     has_runtime_manage_grant: bool,
-    caller_active: bool,
     descriptor: &CapabilityDescriptor,
     request: &BindingMessage,
 ) -> Result<HostEndpointOutcome, HostEndpointFailure> {
@@ -1526,17 +1564,23 @@ fn invoke_builtin_host_endpoint(
                             "runtime manage list expects null params",
                         ));
                     }
-                    let catalog = bundled_plugins()
-                        .expect("bundled plugin manifests were validated when the runtime started");
-                    let plugins = catalog
-                        .into_iter()
-                        .map(|plugin| {
-                            let id = plugin.manifest.id;
-                            let enabled = plugin_registry.is_enabled(&id);
-                            let active = plugins.iter().any(|active| active.manifest.id == id);
+                    let plugins = context.catalog.entries()
+                        .iter()
+                        .map(|entry| {
+                            let plugin = entry.plugin.as_ref().ok();
+                            let enabled = context.registry.is_enabled(&entry.id);
+                            let active = plugin.is_some() && context.active_plugin_ids.contains(&entry.id);
                             json!({
-                                "id": id,
-                                "version": plugin.manifest.version,
+                                "id": entry.id,
+                                "version": plugin.map(|plugin| &plugin.manifest.version),
+                                "source": entry.source.kind(),
+                                "path": entry.source.path().map(|path| path.to_string_lossy()),
+                                "grants": entry.grants(),
+                                "requestedPermissions": plugin.map(|plugin| &plugin.manifest.permissions),
+                                "validation": match &entry.plugin {
+                                    Ok(_) => json!({"status": "ok"}),
+                                    Err(error) => json!({"status": "failed", "error": {"code": "local_plugin_invalid", "message": error.to_string()}}),
+                                },
                                 "enabled": enabled,
                                 "active": active
                             })
@@ -1548,7 +1592,7 @@ fn invoke_builtin_host_endpoint(
                     })
                 }
                 "disableSelf" => {
-                    if !caller_active {
+                    if !context.active_plugin_ids.contains(caller_id) {
                         return Err(host_failure(
                             "plugin_not_active",
                             "runtime manage disableSelf requires an active calling plugin",
@@ -1566,7 +1610,8 @@ fn invoke_builtin_host_endpoint(
                             "runtime manage disableSelf expects null params",
                         ));
                     }
-                    let caller = plugins
+                    let caller = context
+                        .plugins
                         .iter()
                         .find(|plugin| plugin.manifest.id == caller_id)
                         .ok_or_else(|| {
@@ -1576,7 +1621,7 @@ fn invoke_builtin_host_endpoint(
                             )
                         })?;
                     if let Some(dependent) =
-                        plugins.iter().find(|plugin| {
+                        context.plugins.iter().find(|plugin| {
                             plugin.manifest.id != caller_id
                                 && plugin.manifest.requires.iter().any(|requirement| {
                                     caller.manifest.provides.contains(requirement)
@@ -1592,14 +1637,14 @@ fn invoke_builtin_host_endpoint(
                         ));
                     }
 
-                    let mut candidate = plugin_registry.clone();
+                    let mut candidate = context.registry.clone();
                     candidate
                         .set_enabled(caller_id, false)
                         .map_err(|error| host_failure("registry_error", error.to_string()))?;
                     candidate
                         .save()
                         .map_err(|error| host_failure("registry_error", error.to_string()))?;
-                    *plugin_registry = candidate;
+                    *context.registry = candidate;
                     Ok(HostEndpointOutcome {
                         value: json!({"pluginId": caller_id, "enabled": false}),
                         after_response: Some(HostAction::DisablePlugin {
@@ -1672,30 +1717,7 @@ fn deliver_raw_binding_response(
 fn order_plugins(
     plugins: Vec<LoadedPlugin>,
 ) -> Result<(Vec<LoadedPlugin>, CapabilityRegistry), CapabilityRegistryError> {
-    let mut registry = CapabilityRegistry::new();
-    let builtin_host_capabilities = builtin_host_capabilities();
-    registry.register_provider(
-        BUILTIN_HOST_PROVIDER_ID,
-        1,
-        &builtin_host_capabilities,
-        &[],
-        &[],
-    )?;
-    for plugin in &plugins {
-        let grants: Vec<_> = plugin
-            .manifest
-            .permissions
-            .iter()
-            .map(|permission| permission.as_str().to_owned())
-            .collect();
-        registry.register_provider(
-            &plugin.manifest.id,
-            plugin.generation,
-            &plugin.manifest.provides,
-            &plugin.manifest.requires,
-            &grants,
-        )?;
-    }
+    let registry = capability_graph(&plugins)?;
     let order = registry.resolve_activation_order()?;
     let mut plugins_by_id: BTreeMap<_, _> = plugins
         .into_iter()
@@ -1878,6 +1900,7 @@ mod tests {
     #[test]
     fn built_in_host_ping_is_strict_and_side_effect_free() {
         let (_registry_directory, mut registry) = test_registry();
+        let catalog = PluginCatalog::from_bundled(Vec::new());
         let descriptor = builtin_host_capability();
         let request = BindingMessage {
             v: 1,
@@ -1890,11 +1913,14 @@ mod tests {
             params: Value::Null,
         };
         let result = invoke_builtin_host_endpoint(
-            &mut registry,
-            &[],
+            HostEndpointContext {
+                registry: &mut registry,
+                catalog: &catalog,
+                plugins: &[],
+                active_plugin_ids: BTreeSet::new(),
+            },
             "dev.consumer",
             false,
-            true,
             &descriptor,
             &request,
         )
@@ -1906,11 +1932,14 @@ mod tests {
         unknown_method.method = "anything-else".to_owned();
         assert_eq!(
             invoke_builtin_host_endpoint(
-                &mut registry,
-                &[],
+                HostEndpointContext {
+                    registry: &mut registry,
+                    catalog: &catalog,
+                    plugins: &[],
+                    active_plugin_ids: BTreeSet::new(),
+                },
                 "dev.consumer",
                 false,
-                true,
                 &descriptor,
                 &unknown_method,
             )
@@ -1926,6 +1955,7 @@ mod tests {
         let path = registry.path().to_owned();
         let plugins = bundled_plugins().unwrap();
         let descriptor = builtin_manage_capability();
+        let catalog = PluginCatalog::from_bundled(plugins.clone());
         let request = BindingMessage {
             v: 1,
             message_type: "request".to_owned(),
@@ -1938,11 +1968,14 @@ mod tests {
         };
 
         let denied = invoke_builtin_host_endpoint(
-            &mut registry,
-            &plugins,
+            HostEndpointContext {
+                registry: &mut registry,
+                catalog: &catalog,
+                plugins: &plugins,
+                active_plugin_ids: BTreeSet::from(["codlet".to_owned()]),
+            },
             "codlet",
             false,
-            true,
             &descriptor,
             &request,
         )
@@ -1951,10 +1984,13 @@ mod tests {
         assert!(!path.exists());
 
         let result = invoke_builtin_host_endpoint(
-            &mut registry,
-            &plugins,
+            HostEndpointContext {
+                registry: &mut registry,
+                catalog: &catalog,
+                plugins: &plugins,
+                active_plugin_ids: BTreeSet::from(["codlet".to_owned()]),
+            },
             "codlet",
-            true,
             true,
             &descriptor,
             &request,

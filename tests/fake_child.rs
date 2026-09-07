@@ -658,6 +658,128 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
 }
 
 #[test]
+fn local_runtime_management_uses_launch_snapshot_and_preserves_concurrent_registry_edits() {
+    local_runtime_management_case(true);
+}
+
+#[test]
+fn local_runtime_management_without_grant_cannot_list_or_persist() {
+    local_runtime_management_case(false);
+}
+
+fn local_runtime_management_case(has_grant: bool) {
+    use codlet::catalog::PluginCatalog;
+    use codlet::plugins::{LocalPluginRegistration, Permission};
+
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("local-plugin");
+    std::fs::create_dir(&root).unwrap();
+    let grants = if has_grant {
+        vec![Permission::RuntimeManage]
+    } else {
+        vec![]
+    };
+    let manifest = json!({"schema":1,"id":"dev.local","version":"1", "renderer":{"entry":"renderer.js","world":"isolated"},
+    "permissions":grants, "requires":[
+        {"name":"codex.ui.titlebar.afterMenu","api":1,"scope":"target"},
+        {"name":"codlet.runtime.manage","api":1,"scope":"target"}
+    ]});
+    std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+    std::fs::write(
+        root.join("renderer.js"),
+        "// fixture-local-source\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    let registry_path = directory.path().join("config.json");
+    let mut registry = PluginRegistry::load(&registry_path).unwrap();
+    let registration = LocalPluginRegistration {
+        path: root.clone(),
+        grants,
+    };
+    registry
+        .register_local("dev.local", registration.clone())
+        .unwrap();
+    registry
+        .register_local(
+            "dev.broken",
+            LocalPluginRegistration {
+                path: directory.path().join("missing"),
+                grants: vec![],
+            },
+        )
+        .unwrap();
+    registry.set_enabled("dev.broken", false).unwrap();
+    registry.save().unwrap();
+    let initial_registry = std::fs::read(&registry_path).unwrap();
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    let mut runtime = RendererRuntime::from_catalog(catalog, registry).unwrap();
+
+    let changed_source = "throw new Error('this disk revision must not be read');";
+    std::fs::write(root.join("renderer.js"), changed_source).unwrap();
+    std::fs::write(
+        root.join("plugin.json"),
+        "invalid manifest after launch snapshot",
+    )
+    .unwrap();
+    let scenario = if has_grant {
+        "renderer-local-manage"
+    } else {
+        "renderer-local-manage-denied"
+    };
+    let (child, client, events) = launch(scenario, &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 3);
+    client
+        .request("Fake.emitLocalList", None, None, DEADLINE)
+        .unwrap();
+    runtime.pump_bindings_with_timeout(DEADLINE).unwrap();
+
+    if has_grant {
+        let mut cli_registry = PluginRegistry::load(&registry_path).unwrap();
+        cli_registry.set_enabled("codlet", false).unwrap();
+        cli_registry
+            .register_local(
+                "dev.later",
+                LocalPluginRegistration {
+                    path: directory.path().join("registered-after-launch"),
+                    grants: vec![],
+                },
+            )
+            .unwrap();
+        cli_registry.save().unwrap();
+    }
+    client
+        .request("Fake.emitLocalDisable", None, None, DEADLINE)
+        .unwrap();
+    runtime.pump_bindings_with_timeout(DEADLINE).unwrap();
+    assert_eq!(runtime.plugin_count(), if has_grant { 2 } else { 3 });
+    assert!(runtime.take_diagnostics().is_empty());
+    let saved = PluginRegistry::load(&registry_path).unwrap();
+    assert_eq!(saved.is_enabled("dev.local"), !has_grant);
+    assert_eq!(saved.is_enabled("codlet"), !has_grant);
+    assert_eq!(saved.local_plugins()["dev.local"].path, registration.path);
+    assert_eq!(
+        saved.local_plugins()["dev.local"].grants,
+        registration.grants
+    );
+    assert!(saved.local_plugins().contains_key("dev.broken"));
+    assert_eq!(saved.local_plugins().contains_key("dev.later"), has_grant);
+    if !has_grant {
+        assert_eq!(std::fs::read(&registry_path).unwrap(), initial_registry);
+        client
+            .request("Fake.hostStillAlive", None, None, DEADLINE)
+            .unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(root.join("renderer.js")).unwrap(),
+        changed_source
+    );
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
 fn persisted_runtime_action_survives_renderer_response_delivery_failure() {
     let (child, client, events) = launch("renderer-manage-response-failure", &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
