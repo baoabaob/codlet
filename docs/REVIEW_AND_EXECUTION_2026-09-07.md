@@ -154,6 +154,92 @@ The local release artifact is `.codlet-artifacts/local-plugins-2026-09-07/codlet
 outside Git. SHA-256:
 `7c23478d915bda21dad3344f1e1ab909836a1c7ab9787c7d29e0a801623717c2`.
 
+## Native GUI and runtime status batch
+
+Baseline: `2ecb27e`. The user explicitly requested a first-party Codlet entry in
+the official top toolbar, with appearance and interaction consistent with Codex.
+The management surface may remain a panel; a separate window is optional.
+
+Three independent Astra xhigh worktrees are executing this batch:
+
+| Task | Ownership | Acceptance | Status |
+| --- | --- | --- | --- |
+| Native GUI (`01a07a4d-849c-74c1-845e-fe5957eaeb8b`) | Bundled GUI, behavioral tests, isolated preview | Native menu entry, settings dialog and confirmation, keyboard/focus cleanup, recoverable list failures and late mounts | Foundation `d9ac2d5` from `140965c`; native component correction `5e49797` from `669c3cf` |
+| Toolbar and theme adapter (`01a07a4e-0f29-7292-a6d0-612968b2ca2f`) | Adapter, dedicated tests, installed-build evidence | Verify native-menu versus renderer location; preserve capability boundary; repair mounts without duplicates; bridge native theme variables only within adapter-owned surfaces | Reviewed and integrated as `42bed1b` from `9562ee0` |
+| Read-only runtime status (`01a07a4e-f254-7af2-b2e9-8898fe0d0fa1`) | Windows IPC, host snapshots, CLI and dedicated tests | Versioned `status --json`, actual target/plugin lifecycle, no-host distinction, bounded transport and cleanup, current-user access | Reviewed and integrated as `7c0d6eb` from `92476b3`; coordinator applied repository formatting |
+
+The coordinator owns integration, browser verification, and project documentation.
+GUI tests and preview use real bundled source with simulated host/RPC inputs.
+Preview screenshots establish layout and interaction evidence, not a current-build
+injection gate. Installed-package research is read-only; proprietary source and
+assets are not copied into this repository.
+
+Integration review found that React may create the header after provider activation.
+A valid mount token with `available: false` must allow the GUI to observe a later
+mount, rather than permanently exiting. List errors must likewise remain retryable
+after the entry has mounted. These cases are included in the GUI task.
+
+Runtime status is the first control-channel increment. This batch does not promise
+detached launch, live arbitrary plugin enable/reload, or file watching.
+
+The static preview is [scripts/preview-codlet-gui.html](../scripts/preview-codlet-gui.html).
+It loads the actual bundled GUI and adapter with simulated host DOM, theme seeds
+and RPC inputs. The
+in-app browser URL safety policy rejected opening its local file URL; no alternate
+browser or server was used to bypass that denial. GUI screenshots, desktop/narrow
+layout, real tab order, and icon rendering remain unverified. The adapter executor
+had already completed a separate synthetic-DOM CSS/observer check before receiving
+this restriction; that result is not a substitute for the GUI screenshot gate.
+
+The user reviewed the initial preview and found that its panel/controls still did
+not match the native client. The first GUI commit establishes the interaction and
+lifecycle foundation, not completed native-style acceptance. The same GUI and
+adapter executors continued from `42bed1b`, tracing actual settings, button,
+switch and dialog components and correcting the implementation. Richer reusable
+adapter capabilities are proposed in [UI_ADAPTER_CAPABILITIES.md](UI_ADAPTER_CAPABILITIES.md);
+they are not a claim that a complete native component library exists today.
+
+The integrated status foundation passed all-target/all-feature Clippy and 228 Rust
+tests, with one real gate ignored. The final GUI/adapter integration passed 58
+Node tests (18 bootstrap, 11 adapter, 27 GUI, 2 example). All four PowerShell
+acceptance fixture combinations passed.
+
+The semantic appearance extension is integrated as `0017a34` from `7bd5044`.
+It adds only the 16 aliases consumed by the corrected GUI (27 total), including
+distinct setting/group/dialog surfaces, type hierarchy, accent and destructive
+states. Native component evidence now records the actual row consumers and dialog
+variants, rather than assuming every settings row uses the same height token.
+
+The final GUI uses the observed wide 600px dialog and compact 420px confirmation
+variant, native row/group spacing, 32x20px switches, native type hierarchy and
+dialog-action buttons. The browser's dialog primitive owns modal inertness and
+focus scope; plugin handlers own dismissal, state transitions and cleanup. Tests
+cover failed opens, native close before a response, queued close after reopening,
+unloading a pending request, and outside-click confirmation cancellation. The
+preview opens the settings surface first with test controls folded, and obtains
+all 27 aliases from the real adapter. Visual agreement remains a separate open
+gate, including actual Tab behavior and narrow-window rendering.
+
+Final integration verification:
+
+| Check | Result |
+| --- | --- |
+| Rust format and all-target/all-feature Clippy with warnings denied | Passed |
+| Full Rust suite after status integration | 228 passed, 1 real Codex gate ignored |
+| Doctor and fake-child regression after final GUI and diagnostic copy updates | All 53 passed |
+| Final combined JavaScript suite | All 58 passed |
+| Normal/crash acceptance data fixtures on Windows PowerShell and PowerShell 7 | All four combinations passed |
+| Release build | Passed; 3,401,216 bytes |
+| Release `status --json` | Exit 0; schema 1; `not_running` with no invented snapshot |
+| Release `doctor --json` | Exit 0; build `26.901.6511.0`; registry, plugin validation and graph `ok`; future launch blocked by existing Codex |
+
+Static doctor now directs runtime inquiries to `codlet status` instead of claiming
+the IPC does not exist. It still does not itself probe the Host or establish GUI
+compatibility. No official process or real plugin configuration was modified.
+
+Final binary: `.codlet-artifacts/native-ui-2026-09-07/codlet.exe` (outside Git).
+SHA-256: `60348e1059d23da4dced8761f29b6cc419e0d158c3f11b35e83899020ab16631`.
+
 ## Open product gates
 
 `DEFECT-001` (Electron's single root instance) and `DEFECT-002` (a Runtime Host crash

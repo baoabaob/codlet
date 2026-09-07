@@ -65,7 +65,8 @@ The GUI management list uses the launch catalog and the calling target's actual
 active state. A plugin with an explicitly granted `runtime.manage` permission may
 use the existing authenticated `disableSelf` transaction; this persists disablement
 before unloading it from every attached target. It does not remove its registration.
-Without live control IPC, runtime observations in `doctor` remain unprobed. The
+`doctor` keeps runtime observations unprobed; use `codlet status` for sampled Host
+state through the read-only IPC. Live CLI enable/disable/reload remain future work. The
 current renderer RPC transport supports target-scoped requirements; the generic
 kernel's other scope declarations do not imply a working renderer route.
 

@@ -14,8 +14,7 @@ use crate::plugins::{
 use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
 
 pub const DOCTOR_SCHEMA: &str = "codlet.doctor/v1";
-const RUNTIME_UNAVAILABLE: &str =
-    "Read-only doctor does not launch or attach to Codex; Runtime Host control IPC is unavailable.";
+const RUNTIME_UNAVAILABLE: &str = "Read-only doctor does not query the Runtime Host; use `codlet status` for sampled Host state. GUI compatibility requires the real Codex gate.";
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
