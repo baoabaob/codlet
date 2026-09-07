@@ -50,6 +50,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "target-lifecycle" => scenario_target_lifecycle(&mut input, &mut output),
         "renderer-runtime" => scenario_renderer_runtime(&mut input, &mut output, false),
         "renderer-status-context" => scenario_renderer_runtime(&mut input, &mut output, true),
+        "lab-environment" => scenario_lab_environment(&mut input, &mut output),
         "renderer-ready-handshake" => scenario_renderer_ready_handshake(&mut input, &mut output),
         "renderer-ready-rejection" => scenario_renderer_ready_rejection(&mut input, &mut output),
         "renderer-ready-timeout" => scenario_renderer_ready_timeout(&mut input, &mut output),
@@ -451,6 +452,24 @@ fn scenario_renderer_runtime(
     }
     complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", 43, 44)?;
     expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn scenario_lab_environment(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    let id = expect_method(reader.next()?, "Fake.environment", None)?;
+    let values: serde_json::Map<String, Value> = [
+        "SystemRoot", "CODLET_LAB_FIXTURE", "CODLET_LAB_REMOVE", "环境_变量", "EMPTY"
+    ].into_iter().map(|name| {
+        (name.to_owned(), std::env::var_os(name).map(|value| json!(value.to_string_lossy())).unwrap_or(Value::Null))
+    }).collect();
+    write_json_frame(output, &json!({"id":id,"result":{
+        "environment":values,
+        "cwd":std::env::current_dir()?.to_string_lossy(),
+        "pid":std::process::id()
+    }}))?;
+    let close = expect_method(reader.next()?, "Browser.close", None)?;
+    write_json_frame(output, &json!({"id":close,"result":{}}))?;
+    Ok(())
 }
 
 fn expect_held_evaluation(

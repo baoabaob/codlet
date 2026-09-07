@@ -1,4 +1,5 @@
 pub mod fake_child;
+pub mod environment;
 pub mod launch_mutex;
 pub mod packages;
 pub mod pipes;
