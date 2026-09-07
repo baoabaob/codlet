@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider。所有 Codex 私有知识由第一方 adapter codlet 提供；管理 GUI 本身也只是这些能力的普通消费者。产品的核心价值不是内置大量增强功能，而是提供稳定、可诊断、可热更新的插件运行时，让用户在明确授权下扩展 renderer、host 和 Codex backend。
 
-术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的第一个第一方 codlet 也显示为“Codlet”，负责在 Codex 内提供可关闭的管理 GUI。
+术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件在插件列表中显示为“Codlet GUI”，内部 id 保持 `codlet`；工具栏入口与管理窗口标题保持“Codlet”。
 
 一句话定义：
 

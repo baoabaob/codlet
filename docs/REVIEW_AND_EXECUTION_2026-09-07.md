@@ -238,7 +238,11 @@ the IPC does not exist. It still does not itself probe the Host or establish GUI
 compatibility. No official process or real plugin configuration was modified.
 
 Final binary: `.codlet-artifacts/native-ui-2026-09-07/codlet.exe` (outside Git).
-SHA-256: `60348e1059d23da4dced8761f29b6cc419e0d158c3f11b35e83899020ab16631`.
+SHA-256: `4c031de0d39b8d6e6a0120a6b448a07f0c4cea426555df3d84f900d1f9b3db8c`.
+
+The plugin-list naming follow-up labels the `codlet` entry `Codlet GUI`; its ID,
+toolbar entry and window title are unchanged. All 27 GUI tests and the refreshed
+release build passed after that display-name change.
 
 ## Open product gates
 

@@ -373,7 +373,7 @@ module.exports = (() => {
         row.className = 'codlet-plugin-row';
         const copy = document.createElement('div');
         copy.className = 'codlet-plugin-copy';
-        addText(copy, 'div', 'codlet-plugin-name', plugin.id === 'codlet' ? 'Codlet' : plugin.id);
+        addText(copy, 'div', 'codlet-plugin-name', plugin.id === 'codlet' ? 'Codlet GUI' : plugin.id);
         const metadata = [plugin.version, plugin.source === 'local' ? 'Local' : null]
             .filter(value => typeof value === 'string' && value.length > 0);
         if (metadata.length) addText(copy, 'div', 'codlet-plugin-version', metadata.join(' / '));
