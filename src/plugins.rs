@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::capabilities::CapabilityDescriptor;
 
 const MANIFEST_SCHEMA: u32 = 1;
-const REGISTRY_SCHEMA: u32 = 1;
+const REGISTRY_SCHEMA: u32 = 2;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
 const MAX_VERSION_BYTES: usize = 64;
 const REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -50,7 +50,7 @@ pub enum RendererWorld {
     Main,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Permission {
     #[serde(rename = "ui.dom")]
     UiDom,
@@ -76,6 +76,15 @@ impl Permission {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LocalPluginRegistration {
+    #[serde(deserialize_with = "deserialize_local_path")]
+    pub path: PathBuf,
+    #[serde(deserialize_with = "deserialize_grants")]
+    pub grants: Vec<Permission>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
@@ -88,14 +97,32 @@ pub struct PluginRegistry {
     path: PathBuf,
     document: RegistryDocument,
     pending: BTreeMap<String, PluginPreference>,
+    local_plugins: BTreeMap<String, LocalPluginRegistration>,
+    pending_local: BTreeMap<String, LocalPluginEdit>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 struct RegistryDocument {
     schema: u32,
-    #[serde(default, deserialize_with = "deserialize_preferences")]
     plugins: BTreeMap<String, PluginPreference>,
+    local_plugins: BTreeMap<String, LocalPluginRegistration>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RegistryInput {
+    schema: u32,
+    #[serde(default, deserialize_with = "deserialize_unique_ids")]
+    plugins: BTreeMap<String, PluginPreference>,
+    #[serde(default, deserialize_with = "deserialize_local_plugins")]
+    local_plugins: Option<BTreeMap<String, LocalPluginRegistration>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalPluginEdit {
+    expected: Option<LocalPluginRegistration>,
+    desired: Option<LocalPluginRegistration>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -135,7 +162,7 @@ pub enum PluginRegistryError {
     },
     #[error("plugin registry {path} is not valid JSON: {message}")]
     Json { path: PathBuf, message: String },
-    #[error("plugin registry schema must be {REGISTRY_SCHEMA}, got {0}")]
+    #[error("plugin registry schema must be 1 or {REGISTRY_SCHEMA}, got {0}")]
     Schema(u32),
     #[error("plugin registry contains an invalid plugin id: {0}")]
     PluginId(String),
@@ -194,8 +221,10 @@ impl PluginRegistry {
         let document = RegistryDocument::read(&path)?;
         Ok(Self {
             path,
+            local_plugins: document.local_plugins.clone(),
             document,
             pending: BTreeMap::new(),
+            pending_local: BTreeMap::new(),
         })
     }
 
@@ -210,6 +239,108 @@ impl PluginRegistry {
             .or_else(|| self.document.plugins.get(plugin_id))
             .map(|preference| preference.enabled)
             .unwrap_or(true)
+    }
+
+    /// Includes staged registrations, grants, and removals. Only `save` persists them.
+    pub fn local_plugins(&self) -> &BTreeMap<String, LocalPluginRegistration> {
+        &self.local_plugins
+    }
+
+    /// Stage an explicitly trusted registration without reading its directory.
+    /// An existing ID must use the same path; grants are an explicit replacement,
+    /// including when they equal the loaded grants. Paths must already be canonicalized
+    /// by the caller; the registry checks their storage contract without filesystem I/O.
+    /// Enablement preferences are independent and are never changed here.
+    pub fn register_local(
+        &mut self,
+        plugin_id: &str,
+        registration: LocalPluginRegistration,
+    ) -> Result<(), PluginRegistryError> {
+        self.validate_local_id(plugin_id)?;
+        validate_local_registration(&registration)
+            .map_err(|message| self.local_error(plugin_id, io::ErrorKind::InvalidInput, message))?;
+        if self
+            .local_plugins
+            .get(plugin_id)
+            .is_some_and(|previous| previous.path != registration.path)
+        {
+            return Err(self.local_error(
+                plugin_id,
+                io::ErrorKind::AlreadyExists,
+                "already registered at a different path; remove it explicitly first",
+            ));
+        }
+        if self
+            .local_plugins
+            .iter()
+            .any(|(id, existing)| id != plugin_id && existing.path == registration.path)
+        {
+            return Err(self.local_error(
+                plugin_id,
+                io::ErrorKind::AlreadyExists,
+                "path is already registered under another plugin id",
+            ));
+        }
+        self.stage_local(plugin_id, Some(registration));
+        Ok(())
+    }
+
+    /// Forget a registration without touching its files or enablement preference.
+    pub fn remove_local(&mut self, plugin_id: &str) -> Result<(), PluginRegistryError> {
+        self.validate_local_id(plugin_id)?;
+        if !self.local_plugins.contains_key(plugin_id) {
+            return Err(self.local_error(plugin_id, io::ErrorKind::NotFound, "is not registered"));
+        }
+        self.stage_local(plugin_id, None);
+        Ok(())
+    }
+
+    fn validate_local_id(&self, plugin_id: &str) -> Result<(), PluginRegistryError> {
+        if !valid_plugin_id(plugin_id) {
+            return Err(PluginRegistryError::PluginId(plugin_id.to_owned()));
+        }
+        if reserved_plugin_id(plugin_id) {
+            return Err(self.local_error(
+                plugin_id,
+                io::ErrorKind::InvalidInput,
+                "is reserved for a built-in plugin or provider",
+            ));
+        }
+        Ok(())
+    }
+
+    fn local_error(
+        &self,
+        plugin_id: &str,
+        kind: io::ErrorKind,
+        message: &str,
+    ) -> PluginRegistryError {
+        PluginRegistryError::Io {
+            operation: "apply local plugin edit to",
+            path: self.path.clone(),
+            source: io::Error::new(kind, format!("local plugin {plugin_id}: {message}")),
+        }
+    }
+
+    fn stage_local(&mut self, plugin_id: &str, desired: Option<LocalPluginRegistration>) {
+        let edit = self
+            .pending_local
+            .entry(plugin_id.to_owned())
+            .or_insert_with(|| LocalPluginEdit {
+                expected: self.document.local_plugins.get(plugin_id).cloned(),
+                desired: None,
+            });
+        edit.desired = desired.clone();
+        // Adding and then removing a new registration cancels only that local edit.
+        if edit.expected.is_none() && edit.desired.is_none() {
+            self.pending_local.remove(plugin_id);
+        }
+        if let Some(registration) = desired {
+            self.local_plugins
+                .insert(plugin_id.to_owned(), registration);
+        } else {
+            self.local_plugins.remove(plugin_id);
+        }
     }
 
     /// Stage an explicit assignment, even when it matches the loaded value.
@@ -228,7 +359,11 @@ impl PluginRegistry {
 
     /// Merge only staged assignments into the latest strictly validated document.
     /// Writers serialize on a persistent sidecar lock; the last committed assignment
-    /// to the same ID wins. Success refreshes this snapshot and clears staged edits.
+    /// to the same preference wins. Local edits compare the complete original record
+    /// with the latest record before applying any edit; concurrent changes conflict.
+    /// In particular, a stale grants update cannot recreate a removed registration.
+    /// Conflicts require reloading and explicitly restaging the intended local edit.
+    /// Success refreshes this snapshot and clears staged edits.
     /// Failure leaves this snapshot and its staged edits intact for an explicit retry.
     pub fn save(&mut self) -> Result<(), PluginRegistryError> {
         let parent = self
@@ -244,15 +379,49 @@ impl PluginRegistry {
 
         let _lock = lock_registry(&self.path, REGISTRY_LOCK_TIMEOUT)?;
         let mut latest = RegistryDocument::read(&self.path)?;
-        if !self.pending.is_empty() {
+        for (id, edit) in &self.pending_local {
+            let current = latest.local_plugins.get(id);
+            if current != edit.expected.as_ref() {
+                let (kind, reason) = match (current, edit.expected.as_ref()) {
+                    (None, _) => (io::ErrorKind::NotFound, "registration was removed"),
+                    (Some(_), None) => (
+                        io::ErrorKind::AlreadyExists,
+                        "id was registered by another writer",
+                    ),
+                    (Some(current), Some(expected)) if current.path != expected.path => {
+                        (io::ErrorKind::InvalidData, "registered path changed")
+                    }
+                    _ => (io::ErrorKind::InvalidData, "registered grants changed"),
+                };
+                return Err(self.local_error(
+                    id,
+                    kind,
+                    &format!("{reason} since loading; reload and explicitly restage the edit"),
+                ));
+            }
+        }
+        if !self.pending.is_empty() || !self.pending_local.is_empty() || latest.schema == 1 {
             latest.plugins.extend(self.pending.clone());
+            for (id, edit) in &self.pending_local {
+                if let Some(registration) = &edit.desired {
+                    latest
+                        .local_plugins
+                        .insert(id.clone(), registration.clone());
+                } else {
+                    latest.local_plugins.remove(id);
+                }
+            }
+            latest.schema = REGISTRY_SCHEMA;
+            latest.validate(&self.path)?;
             let mut bytes = serde_json::to_vec_pretty(&latest)
                 .expect("the typed plugin registry is always serializable");
             bytes.push(b'\n');
             TemporaryRegistry::create(&self.path)?.replace(&self.path, &bytes)?;
         }
+        self.local_plugins = latest.local_plugins.clone();
         self.document = latest;
         self.pending.clear();
+        self.pending_local.clear();
         Ok(())
     }
 }
@@ -400,16 +569,15 @@ impl Drop for TemporaryRegistry {
     }
 }
 
-fn deserialize_preferences<'de, D>(
-    deserializer: D,
-) -> Result<BTreeMap<String, PluginPreference>, D::Error>
+fn deserialize_unique_ids<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    struct PreferencesVisitor;
+    struct UniqueIdsVisitor<T>(std::marker::PhantomData<T>);
 
-    impl<'de> serde::de::Visitor<'de> for PreferencesVisitor {
-        type Value = BTreeMap<String, PluginPreference>;
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for UniqueIdsVisitor<T> {
+        type Value = BTreeMap<String, T>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter.write_str("an object with unique plugin IDs")
@@ -419,19 +587,86 @@ where
         where
             M: serde::de::MapAccess<'de>,
         {
-            let mut preferences = BTreeMap::new();
-            while let Some((id, preference)) = map.next_entry::<String, PluginPreference>()? {
-                if preferences.insert(id.clone(), preference).is_some() {
+            let mut entries = BTreeMap::new();
+            while let Some((id, entry)) = map.next_entry::<String, T>()? {
+                if entries.insert(id.clone(), entry).is_some() {
                     return Err(serde::de::Error::custom(format!(
                         "duplicate plugin id: {id}"
                     )));
                 }
             }
-            Ok(preferences)
+            Ok(entries)
         }
     }
 
-    deserializer.deserialize_map(PreferencesVisitor)
+    deserializer.deserialize_map(UniqueIdsVisitor(std::marker::PhantomData))
+}
+
+fn deserialize_local_plugins<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, LocalPluginRegistration>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // A present null must not masquerade as an absent schema-1 field.
+    deserialize_unique_ids(deserializer).map(Some)
+}
+
+fn deserialize_local_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let path = PathBuf::deserialize(deserializer)?;
+    validate_local_path(&path).map_err(serde::de::Error::custom)?;
+    Ok(path)
+}
+
+fn deserialize_grants<'de, D>(deserializer: D) -> Result<Vec<Permission>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let grants = Vec::<Permission>::deserialize(deserializer)?;
+    validate_grants(&grants).map_err(serde::de::Error::custom)?;
+    Ok(grants)
+}
+
+fn validate_local_path(path: &Path) -> Result<(), &'static str> {
+    let Some(text) = path.to_str() else {
+        return Err("path must be Unicode and representable as JSON");
+    };
+    if text.is_empty() || text.contains('\0') || !path.is_absolute() {
+        return Err("path must be a nonempty absolute local path without NUL characters");
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        if !matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        ) {
+            return Err("path must use a local drive, not a UNC or device namespace");
+        }
+    }
+    Ok(())
+}
+
+fn validate_grants(grants: &[Permission]) -> Result<(), &'static str> {
+    for (index, grant) in grants.iter().enumerate() {
+        if grants[..index].contains(grant) {
+            return Err("grants must contain unique permissions");
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_registration(registration: &LocalPluginRegistration) -> Result<(), &'static str> {
+    validate_local_path(&registration.path)?;
+    validate_grants(&registration.grants)
+}
+
+fn reserved_plugin_id(id: &str) -> bool {
+    matches!(id, "codlet" | "codex.ui.adapter" | "codlet.core.host")
 }
 
 impl Default for RegistryDocument {
@@ -439,6 +674,7 @@ impl Default for RegistryDocument {
         Self {
             schema: REGISTRY_SCHEMA,
             plugins: BTreeMap::new(),
+            local_plugins: BTreeMap::new(),
         }
     }
 }
@@ -446,10 +682,34 @@ impl Default for RegistryDocument {
 impl RegistryDocument {
     fn read(path: &Path) -> Result<Self, PluginRegistryError> {
         let document = match fs::read_to_string(path) {
-            Ok(json) => serde_json::from_str(&json).map_err(|error| PluginRegistryError::Json {
-                path: path.to_owned(),
-                message: error.to_string(),
-            })?,
+            Ok(json) => {
+                let input: RegistryInput =
+                    serde_json::from_str(&json).map_err(|error| PluginRegistryError::Json {
+                        path: path.to_owned(),
+                        message: error.to_string(),
+                    })?;
+                match input.schema {
+                    1 if input.local_plugins.is_some() => {
+                        return Err(PluginRegistryError::Json {
+                            path: path.to_owned(),
+                            message: "schema 1 does not allow localPlugins".to_owned(),
+                        });
+                    }
+                    REGISTRY_SCHEMA if input.local_plugins.is_none() => {
+                        return Err(PluginRegistryError::Json {
+                            path: path.to_owned(),
+                            message: "schema 2 requires localPlugins".to_owned(),
+                        });
+                    }
+                    1 | REGISTRY_SCHEMA => (),
+                    other => return Err(PluginRegistryError::Schema(other)),
+                }
+                Self {
+                    schema: input.schema,
+                    plugins: input.plugins,
+                    local_plugins: input.local_plugins.unwrap_or_default(),
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
             Err(source) => {
                 return Err(PluginRegistryError::Io {
@@ -459,16 +719,39 @@ impl RegistryDocument {
                 });
             }
         };
-        document.validate()?;
+        document.validate(path)?;
         Ok(document)
     }
 
-    fn validate(&self) -> Result<(), PluginRegistryError> {
-        if self.schema != REGISTRY_SCHEMA {
+    fn validate(&self, path: &Path) -> Result<(), PluginRegistryError> {
+        if !matches!(self.schema, 1 | REGISTRY_SCHEMA) {
             return Err(PluginRegistryError::Schema(self.schema));
         }
         if let Some(plugin_id) = self.plugins.keys().find(|id| !valid_plugin_id(id)) {
             return Err(PluginRegistryError::PluginId(plugin_id.clone()));
+        }
+        let mut paths = BTreeMap::new();
+        for (id, registration) in &self.local_plugins {
+            if !valid_plugin_id(id) {
+                return Err(PluginRegistryError::PluginId(id.clone()));
+            }
+            let invalid = if reserved_plugin_id(id) {
+                Some("id is reserved for a built-in plugin or provider")
+            } else {
+                validate_local_registration(registration).err()
+            };
+            if let Some(message) = invalid {
+                return Err(PluginRegistryError::Json {
+                    path: path.to_owned(),
+                    message: format!("local plugin {id}: {message}"),
+                });
+            }
+            if let Some(previous) = paths.insert(&registration.path, id) {
+                return Err(PluginRegistryError::Json {
+                    path: path.to_owned(),
+                    message: format!("local plugins {previous} and {id} have duplicate paths"),
+                });
+            }
         }
         Ok(())
     }
