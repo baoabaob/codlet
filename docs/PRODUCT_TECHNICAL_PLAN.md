@@ -92,6 +92,10 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 
 这是为保持当前内核简单而暂时接受的缺陷，不是 Codlet 的特性或长期产品语义。M0-M4 不为此增加多 profile、配置复制、已有实例附着或其他备用路径；进入 M5 前必须重新验收、修复或明确阻断发布。
 
+2026-09-07 用户另外授权一次隔离客户端实验：复用官方程序，通过独立测试入口与全新数据目录验证并行实例，不复制生产配置、凭据或会话。该实验不改变普通 `codlet launch` 的冲突拒绝，不作为已支持的生产多 profile 功能，也不凭一次启动结果关闭 `DEFECT-001`。实际测试前核对当前包的启动、存储和 IPC 边界；测试控制只面向本次创建并持有身份的子进程。测试方案及结果单独记录，需要用户登录或工具拒绝界面操作时明确报告。
+
+本次[实测结果](ISOLATED_CLIENT_RESULTS_2026-09-07.md)：官方 build `26.901.6511.0` 的独立 Dev/WebSocket 实例到达登录页，继承式 CDP 与两个内置 renderer 插件激活成功。Shell 环境加载超时导致隔离验收失败；GUI 挂载和交互尚未验收。`Browser.close` 仅关闭窗口，根进程继续驻留，协调者在核对本次进程身份后清理测试进程。原客户端与原后台的身份、Chrome native-host 注册前后相同，未登录，也未发送模型任务。该结果不关闭 M0/M1 或 `DEFECT-001`，亦不构成 `DEFECT-002` 的复测通过。
+
 同一 Browser Process 内的 BrowserWindow 不属于 `DEFECT-001`。Draft 0.6 起，Runtime Host 使用 `Target.setDiscoverTargets`、启动快照和 `Target.targetCreated` / `Target.targetInfoChanged` / `Target.targetDestroyed` 事件，持续管理规范文档为 `app://-/index.html` 的全部 page target。目标可以携带 Codex 为窗口路由添加的 query 或 fragment，但其他 origin、path 与非 page 类型仍被拒绝。初始窗口与“在新窗口打开”产生的 renderer 走同一 attach、enable 与 bootstrap 入口，同一 `targetId` 不重复注入，销毁后清理状态。
 
 #### 4.2.2 已知缺陷：`DEFECT-002` Runtime Host 异常退出后 Codex 可能残留

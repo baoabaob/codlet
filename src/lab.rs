@@ -548,6 +548,9 @@ impl LabRoot {
             "project",
             "logs",
             "home",
+            // Windows KnownFolder resolution otherwise yields an empty Documents
+            // path for a redirected, newly created profile, including $PROFILE.
+            "home/Documents",
             "home/AppData",
             "home/AppData/Roaming",
             "home/AppData/Local",

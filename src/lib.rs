@@ -8,8 +8,8 @@ pub mod renderer;
 pub mod runtime_status;
 
 #[cfg(windows)]
-pub mod probe;
-#[cfg(windows)]
 pub mod lab;
+#[cfg(windows)]
+pub mod probe;
 #[cfg(windows)]
 pub mod windows;

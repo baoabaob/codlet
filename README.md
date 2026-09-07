@@ -8,6 +8,8 @@ It does not modify the Codex package, official shortcuts, protocols, configurati
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
+An explicitly authorized [isolated-client experiment](docs/ISOLATED_CLIENT_RESULTS_2026-09-07.md) on that build reached sign-in and activated both bundled renderer plugins beside the original client. It failed the shell-environment gate, did not verify the GUI, and needed coordinator cleanup after `Browser.close` left the client resident. The [experimental lab harness](docs/ISOLATED_CLIENT_TESTING.md) has its own fresh directories and WebSocket backend; ordinary `codlet launch` keeps its conflict refusal.
+
 Trusted local renderer directories now use the same launch catalog, capability graph, management list, and diagnostics as bundled plugins. See [local plugin registration and authoring](docs/LOCAL_PLUGINS.md) for the trust, permissions, path, and recovery contracts.
 
 ## M0 commands

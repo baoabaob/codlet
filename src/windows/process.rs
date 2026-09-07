@@ -8,22 +8,23 @@ use std::time::Duration;
 use thiserror::Error;
 use windows_sys::Win32::Foundation::{
     APPMODEL_ERROR_NO_PACKAGE, CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES,
-    ERROR_SUCCESS, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_SUCCESS, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, GetProcessTimes, InitializeProcThreadAttributeList, OpenProcess,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    QueryFullProcessImageNameW, STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessTimes,
+    InitializeProcThreadAttributeList, OpenProcess, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
-use super::pipes::{CdpPipes, ParentCdpPipes};
 use super::environment::{ChildEnvironment, EnvironmentError};
+use super::pipes::{CdpPipes, ParentCdpPipes};
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
@@ -78,7 +79,8 @@ impl ChildProcess {
     pub fn creation_time_filetime(&self) -> Result<u64, ProcessError> {
         let mut times: [FILETIME; 4] = unsafe { std::mem::zeroed() };
         let [created, exited, kernel, user] = &mut times;
-        if unsafe { GetProcessTimes(raw_handle(&self.handle), created, exited, kernel, user) } == 0 {
+        if unsafe { GetProcessTimes(raw_handle(&self.handle), created, exited, kernel, user) } == 0
+        {
             return Err(last_error("GetProcessTimes(owned child)"));
         }
         Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
@@ -132,15 +134,17 @@ pub fn launch_with_cdp_pipes_in_environment(
         return Err(ProcessError::ExecutableNotFound(executable.to_owned()));
     }
     let mut environment_block = environment.map(ChildEnvironment::block).transpose()?;
-    let directory = current_directory.map(|directory| {
-        if !directory.is_absolute() || !directory.is_dir() {
-            return Err(ProcessError::InvalidOsData {
-                operation: "validate child current directory",
-                reason: "directory must be an existing absolute path".to_owned(),
-            });
-        }
-        wide_nul(directory.as_os_str(), "child current directory")
-    }).transpose()?;
+    let directory = current_directory
+        .map(|directory| {
+            if !directory.is_absolute() || !directory.is_dir() {
+                return Err(ProcessError::InvalidOsData {
+                    operation: "validate child current directory",
+                    reason: "directory must be an existing absolute path".to_owned(),
+                });
+            }
+            wide_nul(directory.as_os_str(), "child current directory")
+        })
+        .transpose()?;
 
     let pipes = CdpPipes::create()?;
     let child_handles = pipes.child_handles();
@@ -161,7 +165,9 @@ pub fn launch_with_cdp_pipes_in_environment(
     // SAFETY: PROCESS_INFORMATION is an output-only POD structure for CreateProcessW.
     let mut process_information: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let mut creation_flags = EXTENDED_STARTUPINFO_PRESENT;
-    if environment_block.is_some() { creation_flags |= CREATE_UNICODE_ENVIRONMENT; }
+    if environment_block.is_some() {
+        creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
     if no_window {
         creation_flags |= CREATE_NO_WINDOW;
     }
@@ -175,8 +181,12 @@ pub fn launch_with_cdp_pipes_in_environment(
             std::ptr::null(),
             1,
             creation_flags,
-            environment_block.as_mut().map_or(std::ptr::null(), |block| block.as_mut_ptr().cast()),
-            directory.as_ref().map_or(std::ptr::null(), |directory| directory.as_ptr()),
+            environment_block
+                .as_mut()
+                .map_or(std::ptr::null(), |block| block.as_mut_ptr().cast()),
+            directory
+                .as_ref()
+                .map_or(std::ptr::null(), |directory| directory.as_ptr()),
             &startup.StartupInfo,
             &mut process_information,
         )

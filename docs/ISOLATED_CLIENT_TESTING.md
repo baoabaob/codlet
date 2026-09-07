@@ -6,10 +6,13 @@ process-conflict refusal and production status endpoint. The lab has no shared
 Host IPC endpoint, no executable override, and no arbitrary CDP/JavaScript command.
 
 This implementation has been exercised with fake children and local directory/
-control fixtures. It has **not** launched an official Desktop or App Server. The
-coordinating task owns the real experiment, backend lifecycle and before/after
-checks. See [the source audit](ISOLATED_CLIENT_EVIDENCE.md) for the evidence and
-remaining limits of this exact recipe.
+control fixtures, and one official Desktop with its own App Server on 2026-09-07.
+The real run reached sign-in and confirmed both bundled renderer activations, but
+failed the shell-environment acceptance condition and did not verify the GUI.
+`Browser.close` closed its window without terminating the client. See the
+[real experiment results](ISOLATED_CLIENT_RESULTS_2026-09-07.md) and
+[source audit](ISOLATED_CLIENT_EVIDENCE.md). The coordinator owns the backend
+lifecycle and before/after checks; this recipe has not passed isolation acceptance.
 
 ## Preparation and start
 
@@ -47,10 +50,10 @@ The coordinator must now:
 2. Start the separately verified official CLI App Server with its own
    `--listen ws://127.0.0.1:<port>`, working directory `root/project`, and the fresh
    configuration. The harness does not start or own this second process.
-3. Verify that the listener belongs to that newly created backend, its effective
-   auth storage is `file`, its account result is unauthenticated, and its fresh
-   installed-plugin inventory has no Chrome plugin. Keep its exact PID/start time
-   and executable metadata. Do not attach an existing server or send a model turn.
+3. Verify the newly created backend's listener ownership, rejection of foreign
+   WebSocket Origins, effective `file` auth storage, unauthenticated account result,
+   and absence of installed Chrome plugins. Keep its exact PID/start time and
+   executable metadata. Do not attach an existing server or send a model turn.
 4. Send the complete stdin line `start`. This is the coordinator's attestation of
    those checks; the harness does not probe the endpoint or independently verify
    the listener's process identity. A bare loopback URL is not authentication.
@@ -62,6 +65,12 @@ not invalidate the root. It makes one `CreateProcessW` call with its explicit
 Unicode environment block and working directory. That child receives only the
 new inherited CDP pipe handles. Repeated `start` is reported as `already_started`;
 it cannot create another child. No discovery or startup failure retries launch.
+
+After `start`, inspect the new client's own startup log immediately, before any
+GUI interaction. Require a successful shell-environment load and the expected
+WebSocket transport and development flavor. The first real run reported
+`status=timed_out`; stop that run instead of treating inherited values as a pass.
+The harness does not yet monitor this log or enforce this post-start gate itself.
 
 Keep the helper running in a foreground task/PTY, or start the helper with a
 hidden window and a retained redirected stdin handle. Send stdin commands through
@@ -77,6 +86,7 @@ start after stdin EOF cannot be started through another transport.
 | `CODEX_HOME` | `root/codex-home` |
 | `CODEX_SQLITE_HOME` | `root/sqlite`; prevents legacy SQLite reconciliation in the audited build |
 | `USERPROFILE`, `HOME` | `root/home` |
+| Windows Documents known folder | Empty `root/home/Documents`; required before querying the redirected PowerShell profile paths |
 | `APPDATA`, `LOCALAPPDATA` | `root/home/AppData/Roaming`, `root/home/AppData/Local` |
 | `TEMP`, `TMP` | `root/temp` |
 | Working directory | `root/project` |
@@ -112,6 +122,11 @@ the actual four `$PROFILE` paths as JSON and refuses any existing file/link or
 unreadable path. It never loads or reads a profile's content. This is an observed
 pre-start condition; it does not lock those shared profile directories against
 later changes.
+
+On the first real preparation attempt, an empty redirected home without Documents
+made Windows return an empty MyDocuments path and two empty PowerShell profile
+paths. Preparation correctly stopped before creating a Desktop child. The harness
+now creates the empty Documents directory first; no user document/profile is copied.
 
 Root claiming rejects UNC/device/drive-relative paths, traversal/alias names,
 nonempty roots and reparse-point directories in the complete ancestry. Directory
@@ -154,6 +169,14 @@ the harness reports the remaining child and keeps waiting. No force-kill, proces
 name matching, production attach/detach, reconnection, fallback URL or stdio
 recovery exists. Shut down the coordinator-owned backend separately after the
 Desktop exits, using its own recorded process identity.
+
+The real run established that a successful `Browser.close` response can leave a
+windowless Desktop process alive. Do not equate `quit_sent`, a destroyed target,
+or an absent window with `child_exited`. In that run the coordinator stopped the
+owned backend, then separately terminated the empty test client's process tree
+after verifying its retained handle, PID, creation FILETIME, parent and executable.
+That cleanup is recorded as a failed graceful-exit gate and is not a new automatic
+termination path in this harness or ordinary Codlet.
 
 The stop point for the real experiment is sign-in. Login, model turns, browser/
 Chrome operations, official plugin installation and production gates are outside

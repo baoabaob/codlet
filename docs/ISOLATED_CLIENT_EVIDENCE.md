@@ -2,6 +2,8 @@
 
 Captured: 2026-09-07. Audit baseline: `master 42725d6`. This document records a read-only source audit and a constrained experiment recipe. It does not record a successful client launch, login, injection, or isolation acceptance test.
 
+The coordinator subsequently performed one real launch. Its [separate results](ISOLATED_CLIENT_RESULTS_2026-09-07.md) record successful inherited-CDP/renderer activation, a failed shell-environment gate, and a client that remained alive after `Browser.close`. Those observations do not turn this source audit into an isolation or production acceptance result.
+
 ## Decision
 
 **Do not start a second ordinary Windows Codex instance beside the existing one using only a different `CODEX_HOME` and Electron `userData`.** The inspected build opens a fixed machine-level desktop IPC pipe before login. That router carries conversation operations, not just harmless presence notifications.

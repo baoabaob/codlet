@@ -458,15 +458,30 @@ fn scenario_lab_environment(input: &mut File, output: &mut File) -> Result<(), F
     let mut reader = RequestReader::new(input);
     let id = expect_method(reader.next()?, "Fake.environment", None)?;
     let values: serde_json::Map<String, Value> = [
-        "SystemRoot", "CODLET_LAB_FIXTURE", "CODLET_LAB_REMOVE", "环境_变量", "EMPTY"
-    ].into_iter().map(|name| {
-        (name.to_owned(), std::env::var_os(name).map(|value| json!(value.to_string_lossy())).unwrap_or(Value::Null))
-    }).collect();
-    write_json_frame(output, &json!({"id":id,"result":{
-        "environment":values,
-        "cwd":std::env::current_dir()?.to_string_lossy(),
-        "pid":std::process::id()
-    }}))?;
+        "SystemRoot",
+        "CODLET_LAB_FIXTURE",
+        "CODLET_LAB_REMOVE",
+        "环境_变量",
+        "EMPTY",
+    ]
+    .into_iter()
+    .map(|name| {
+        (
+            name.to_owned(),
+            std::env::var_os(name)
+                .map(|value| json!(value.to_string_lossy()))
+                .unwrap_or(Value::Null),
+        )
+    })
+    .collect();
+    write_json_frame(
+        output,
+        &json!({"id":id,"result":{
+            "environment":values,
+            "cwd":std::env::current_dir()?.to_string_lossy(),
+            "pid":std::process::id()
+        }}),
+    )?;
     let close = expect_method(reader.next()?, "Browser.close", None)?;
     write_json_frame(output, &json!({"id":close,"result":{}}))?;
     Ok(())
