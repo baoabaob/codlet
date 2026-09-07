@@ -554,9 +554,14 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
             let deadline = Instant::now() + Duration::from_secs(2);
             while Instant::now() < deadline {
                 let snapshot = publisher.snapshot();
-                if let Some(plugin) = snapshot.renderer.targets.iter()
+                if let Some(plugin) = snapshot
+                    .renderer
+                    .targets
+                    .iter()
                     .flat_map(|target| &target.plugins)
-                    .find(|plugin| plugin.id == "codlet" && plugin.lifecycle == PluginLifecycle::Activating)
+                    .find(|plugin| {
+                        plugin.id == "codlet" && plugin.lifecycle == PluginLifecycle::Activating
+                    })
                 {
                     assert!(!plugin.active);
                     assert!(snapshot.sampled_at_unix_ms > 0);
@@ -583,8 +588,13 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     reader.join().unwrap();
     let snapshot = publisher.snapshot();
     assert!(snapshot.renderer.targets.is_empty());
-    assert!(snapshot.renderer.recent_events.iter()
-        .any(|event| event.code == "attach_failed"));
+    assert!(
+        snapshot
+            .renderer
+            .recent_events
+            .iter()
+            .any(|event| event.code == "attach_failed")
+    );
 
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
@@ -654,9 +664,12 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
     let snapshot = publisher.snapshot();
     assert_eq!(snapshot.renderer.targets.len(), 2);
     assert!(snapshot.renderer.targets.iter().all(|target| {
-        target.plugins.len() == 2 && target.plugins.iter().all(|plugin| {
-            plugin.active && plugin.activation_confirmed && plugin.lifecycle == PluginLifecycle::Active
-        })
+        target.plugins.len() == 2
+            && target.plugins.iter().all(|plugin| {
+                plugin.active
+                    && plugin.activation_confirmed
+                    && plugin.lifecycle == PluginLifecycle::Active
+            })
     }));
 
     client
@@ -664,10 +677,22 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
         .unwrap();
     assert_eq!(runtime.pump_bindings_with_timeout(DEADLINE).unwrap(), 1);
     assert_eq!(runtime.plugin_count(), 1);
-    assert!(publisher.snapshot().renderer.targets.iter()
-        .all(|target| target.plugins.len() == 1 && target.plugins[0].id == "codex.ui.adapter"));
-    assert!(publisher.snapshot().renderer.recent_events.iter()
-        .any(|event| event.code == "cleanup_failed"));
+    assert!(
+        publisher
+            .snapshot()
+            .renderer
+            .targets
+            .iter()
+            .all(|target| target.plugins.len() == 1 && target.plugins[0].id == "codex.ui.adapter")
+    );
+    assert!(
+        publisher
+            .snapshot()
+            .renderer
+            .recent_events
+            .iter()
+            .any(|event| event.code == "cleanup_failed")
+    );
     let diagnostics = runtime.take_diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].target_id, "cleanup-failure");
@@ -709,20 +734,44 @@ fn status_does_not_infer_activation_from_a_recreated_context() {
     let publisher = StatusPublisher::new();
     runtime.set_status_publisher(publisher.clone());
     runtime.attach(&sessions[0]).unwrap();
-    assert!(publisher.snapshot().renderer.targets[0].plugins.iter().all(|p| p.active));
-    client.request("Fake.clearContexts", None, None, DEADLINE).unwrap();
+    assert!(
+        publisher.snapshot().renderer.targets[0]
+            .plugins
+            .iter()
+            .all(|p| p.active)
+    );
+    client
+        .request("Fake.clearContexts", None, None, DEADLINE)
+        .unwrap();
     runtime.pump_bindings_with_timeout(DEADLINE).unwrap();
-    assert!(publisher.snapshot().renderer.targets[0].plugins.iter()
-        .all(|plugin| !plugin.context_present && !plugin.active && !plugin.activation_confirmed));
-    client.request("Fake.restoreContexts", None, None, DEADLINE).unwrap();
+    assert!(
+        publisher.snapshot().renderer.targets[0]
+            .plugins
+            .iter()
+            .all(|plugin| !plugin.context_present
+                && !plugin.active
+                && !plugin.activation_confirmed)
+    );
+    client
+        .request("Fake.restoreContexts", None, None, DEADLINE)
+        .unwrap();
     let deadline = Instant::now() + DEADLINE;
-    while !publisher.snapshot().renderer.targets[0].plugins.iter().all(|p| p.context_present) {
-        runtime.pump_bindings_with_timeout(deadline.saturating_duration_since(Instant::now()))
+    while !publisher.snapshot().renderer.targets[0]
+        .plugins
+        .iter()
+        .all(|p| p.context_present)
+    {
+        runtime
+            .pump_bindings_with_timeout(deadline.saturating_duration_since(Instant::now()))
             .unwrap();
         assert!(Instant::now() < deadline);
     }
-    assert!(publisher.snapshot().renderer.targets[0].plugins.iter()
-        .all(|plugin| !plugin.active && !plugin.activation_confirmed));
+    assert!(
+        publisher.snapshot().renderer.targets[0]
+            .plugins
+            .iter()
+            .all(|plugin| !plugin.active && !plugin.activation_confirmed)
+    );
     runtime.deactivate_target("main").unwrap();
     client.request("Fake.finish", None, None, DEADLINE).unwrap();
     assert_child_success(&child);

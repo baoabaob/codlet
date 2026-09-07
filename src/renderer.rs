@@ -450,7 +450,11 @@ impl RendererRuntime {
         self.capabilities
             .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
         self.sessions.remove(target_id);
-        self.record_status_event(target_id, "session_ended", "renderer target session has ended");
+        self.record_status_event(
+            target_id,
+            "session_ended",
+            "renderer target session has ended",
+        );
         self.publish_status();
         Err("renderer target session has ended".to_owned())
     }
@@ -600,10 +604,14 @@ impl RendererRuntime {
                 let session_live = session.session.is_live();
                 truncated |= session.plugins.len() > MAX_STATUS_PLUGINS_PER_TARGET;
                 truncated |= target_id.len() > 1024 || session.session.session_id().len() > 1024;
-                truncated |= session.plugins.iter().any(|plugin| {
-                    plugin.id.len() > 1024 || plugin.version.len() > 1024
-                });
-                let plugins = session.plugins.iter().take(MAX_STATUS_PLUGINS_PER_TARGET)
+                truncated |= session
+                    .plugins
+                    .iter()
+                    .any(|plugin| plugin.id.len() > 1024 || plugin.version.len() > 1024);
+                let plugins = session
+                    .plugins
+                    .iter()
+                    .take(MAX_STATUS_PLUGINS_PER_TARGET)
                     .map(|plugin| PluginStatus {
                         id: status_text(&plugin.id),
                         version: status_text(&plugin.version),
@@ -757,7 +765,11 @@ impl RendererRuntime {
         if let Err(error) = departed.detach() {
             first_error.get_or_insert(error.into());
         }
-        self.record_status_event(target_id, "navigated_away", "renderer target left the supported page");
+        self.record_status_event(
+            target_id,
+            "navigated_away",
+            "renderer target left the supported page",
+        );
         self.publish_status();
         first_error.map_or(Ok(()), Err)
     }
@@ -771,7 +783,11 @@ impl RendererRuntime {
             self.capabilities
                 .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
             self.sessions.remove(target_id);
-            self.record_status_event(target_id, "session_ended", "renderer target session has ended");
+            self.record_status_event(
+                target_id,
+                "session_ended",
+                "renderer target session has ended",
+            );
             self.publish_status();
         }
     }

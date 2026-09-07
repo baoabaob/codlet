@@ -432,15 +432,21 @@ fn scenario_renderer_runtime(
     complete_bundled_renderer_install(&mut reader, output, &session_id, "", 41, 42)?;
     if status_context {
         expect_root_command(&mut reader, output, "Fake.clearContexts")?;
-        write_json_frame(output, &json!({
-            "method": "Runtime.executionContextsCleared", "sessionId": session_id, "params": {}
-        }))?;
+        write_json_frame(
+            output,
+            &json!({
+                "method": "Runtime.executionContextsCleared", "sessionId": session_id, "params": {}
+            }),
+        )?;
         expect_root_command(&mut reader, output, "Fake.restoreContexts")?;
         for (id, plugin) in [(141, "codex.ui.adapter"), (142, "codlet")] {
-            write_json_frame(output, &json!({
-                "method": "Runtime.executionContextCreated", "sessionId": session_id,
-                "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1")}}
-            }))?;
+            write_json_frame(
+                output,
+                &json!({
+                    "method": "Runtime.executionContextCreated", "sessionId": session_id,
+                    "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1")}}
+                }),
+            )?;
         }
     }
     complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", 43, 44)?;

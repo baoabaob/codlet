@@ -20,7 +20,6 @@ use crate::plugins::{
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::runtime_status::{CodexStatus, StatusCode, StatusPublisher};
-use crate::windows::status_pipe::{StatusPipeError, StatusServer, query_current_user};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
 use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage, PackageError,
@@ -30,6 +29,7 @@ use crate::windows::process::{
     ChildProcess, ProcessError, RunningProcess, launch_with_cdp_pipes,
     running_processes_for_package,
 };
+use crate::windows::status_pipe::{StatusPipeError, StatusServer, query_current_user};
 
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 const LAUNCH_MUTEX_DEADLINE: Duration = Duration::from_secs(30);
@@ -244,14 +244,19 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
 fn run_status(json: bool) -> Result<(), ProbeError> {
     let report = query_current_user();
     if json {
-        println!("{}", serde_json::to_string(&report).expect("status is serializable"));
+        println!(
+            "{}",
+            serde_json::to_string(&report).expect("status is serializable")
+        );
     } else {
         print!("{}", report.to_human_readable());
     }
     if report.is_success() {
         Ok(())
     } else {
-        Err(ProbeError::StatusFailed { status: report.status })
+        Err(ProbeError::StatusFailed {
+            status: report.status,
+        })
     }
 }
 
@@ -419,10 +424,13 @@ fn start_attached_codex_with_status(
         &executable,
         running,
         || running_processes_for_package(CODEX_PACKAGE_FAMILY, &executable),
-        || status.as_ref()
-            .map(|status| StatusServer::bind_current_user(status.clone()))
-            .transpose()
-            .map_err(ProbeError::from),
+        || {
+            status
+                .as_ref()
+                .map(|status| StatusServer::bind_current_user(status.clone()))
+                .transpose()
+                .map_err(ProbeError::from)
+        },
         |server| Ok((launch_with_cdp_pipes(&executable, &[], false)?, server)),
     )?;
     if let Some(status) = status {
@@ -879,7 +887,11 @@ where
     Launch: FnOnce() -> Result<T, ProcessError>,
 {
     checked_launch_prepared(
-        executable, initial_scan, second_scan, || Ok(()), |()| Ok(launch()?),
+        executable,
+        initial_scan,
+        second_scan,
+        || Ok(()),
+        |()| Ok(launch()?),
     )
 }
 
@@ -1033,21 +1045,47 @@ mod tests {
         for conflict_scan in [0, 1, 2] {
             let prepared = AtomicUsize::new(0);
             let launched = AtomicUsize::new(0);
-            let running = || vec![RunningProcess { process_id: 42, executable: executable.clone() }];
+            let running = || {
+                vec![RunningProcess {
+                    process_id: 42,
+                    executable: executable.clone(),
+                }]
+            };
             let result = checked_launch_prepared(
                 &executable,
-                if conflict_scan == 1 { running() } else { Vec::new() },
-                || Ok(if conflict_scan == 2 { running() } else { Vec::new() }),
+                if conflict_scan == 1 {
+                    running()
+                } else {
+                    Vec::new()
+                },
+                || {
+                    Ok(if conflict_scan == 2 {
+                        running()
+                    } else {
+                        Vec::new()
+                    })
+                },
                 || {
                     prepared.fetch_add(1, Ordering::SeqCst);
-                    Err::<(), _>(ProbeError::StatusPipe(StatusPipeError::Invalid("fixture IPC allocation failure".into())))
+                    Err::<(), _>(ProbeError::StatusPipe(StatusPipeError::Invalid(
+                        "fixture IPC allocation failure".into(),
+                    )))
                 },
-                |()| { launched.fetch_add(1, Ordering::SeqCst); Ok(()) },
+                |()| {
+                    launched.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
             );
             assert_eq!(launched.load(Ordering::SeqCst), 0);
-            assert_eq!(prepared.load(Ordering::SeqCst), usize::from(conflict_scan == 0));
-            if conflict_scan == 0 { assert!(matches!(result, Err(ProbeError::StatusPipe(_)))); }
-            else { assert!(matches!(result, Err(ProbeError::InstanceConflict { .. }))); }
+            assert_eq!(
+                prepared.load(Ordering::SeqCst),
+                usize::from(conflict_scan == 0)
+            );
+            if conflict_scan == 0 {
+                assert!(matches!(result, Err(ProbeError::StatusPipe(_))));
+            } else {
+                assert!(matches!(result, Err(ProbeError::InstanceConflict { .. })));
+            }
         }
     }
 
