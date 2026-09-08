@@ -1,8 +1,9 @@
 # Trusted local renderer plugins
 
-Codlet loads explicitly registered local directories when a new Codlet session
-starts. Installation, inspection, enablement changes, and removal do not launch,
-attach to, or restart Codex. Live CLI control and file watching are separate work.
+Codlet loads explicitly registered local directories at session startup or through
+the running Host's enable/reload commands. Registration, inspection, and removal
+do not launch or attach to Codex. Live management and opt-in file watching share
+the [runtime control contract](RUNTIME_CONTROL.md).
 
 ## Register a directory
 
@@ -40,13 +41,17 @@ A different directory cannot silently replace an existing registration.
 codlet plugin list
 codlet plugin disable dev.example.plugin
 codlet plugin enable dev.example.plugin
+codlet plugin reload dev.example.plugin
 codlet doctor --json
 codlet plugin remove dev.example.plugin
 ```
 
-Changes apply to the next `codlet launch`. Removal forgets the local registration
-and preserves both the source directory and the ID's enablement preference.
-Bundled plugins can be disabled but cannot be removed.
+With a matching Host, enable/disable/reload execute in that Host. Enable/disable
+may save a preference for the next `codlet launch` only after proving this registry
+has no Host; reload requires a Host. Removal forgets the local registration and
+preserves both the source directory and the ID's enablement preference. Disable a
+running plugin before removing its registration to unload it immediately. Bundled
+plugins can be disabled but cannot be removed.
 
 Each launch re-reads and validates enabled plugin code, manifest identity, declared
 permissions, and dependencies before discovering or starting Codex. Source edits
@@ -61,14 +66,21 @@ directory or entry has disappeared. `enable` validates it before persisting succ
 Enabling also checks that the validated registration did not change concurrently;
 retry the command from fresh state if its authorization changed or was removed.
 
-The GUI management list uses the launch catalog and the calling target's actual
+The GUI management list uses the current loaded catalog and the calling target's actual
 active state. A plugin with an explicitly granted `runtime.manage` permission may
 use the existing authenticated `disableSelf` transaction; this persists disablement
 before unloading it from every attached target. It does not remove its registration.
 `doctor` keeps runtime observations unprobed; use `codlet status` for sampled Host
-state through the read-only IPC. Live CLI enable/disable/reload remain future work. The
-current renderer RPC transport supports target-scoped requirements; the generic
-kernel's other scope declarations do not imply a working renderer route.
+state through the read-only IPC. The current renderer RPC transport supports
+target-scoped requirements; the generic kernel's other scope declarations do not
+imply a working renderer route.
+
+Use `codlet launch --watch` to observe the manifest and renderer entry of local
+plugins already loaded by that Host. The watcher waits for the affected dependency
+closure to stabilize, then uses the same reload transaction. A failed version is
+attempted once until its contents or relevant grants change. Changed registrations
+cannot automatically select a new directory; see the control contract for path
+guards and receipt-based recovery after a CLI timeout.
 
 ## Plugin format
 
@@ -119,6 +131,8 @@ offline test does not establish compatibility with the installed Codex build.
 
 ## Registry transactions
 
+Registry reads and writes are limited to 1 MiB, including JSON formatting. An
+oversized file or candidate save is rejected without replacing the current file.
 Registry schema 2 adds an explicit `localPlugins` map. Schema 1 enablement files
 remain readable without modification; an explicit successful save migrates them
 atomically. Older Codlet versions that only understand schema 1 cannot read the

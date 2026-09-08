@@ -96,6 +96,52 @@ that exact helper's handle. EOF disables stdin input while retaining the Host
 and any existing child; it does not send a close request. A helper waiting before
 start after stdin EOF cannot be started through another transport.
 
+## Fixed stdin plugin control
+
+After the coordinator has verified startup, the lab accepts one fixed lifecycle
+line at a time:
+
+```text
+plugin enable <bundled-id>
+plugin disable <bundled-id>
+plugin reload <bundled-id>
+```
+
+These lines are parsed by the lab's bounded stdin input, with exactly three
+space-separated fields. They do not accept `--json`, extra arguments, paths,
+`eval`, or a local plugin id. `src/lab/management.rs` checks the id against this
+build's bundled catalog before forwarding the request; a local directory or
+arbitrary plugin is rejected. The lab does not bind the production runtime
+control pipe or expose the production CLI control endpoint.
+
+Before `start`, a plugin line emits the JSONL event
+`plugin_control_rejected` with `reason: "not_started"` and
+`child_created: false`. After `start` but before `startup_verified`, or after
+quit/CDP/renderer failure makes the owner unavailable, the same event reports
+`reason: "runtime_not_ready"`. `start` itself remains a one-time attestation;
+repeated `start` emits `already_started` and never creates another child.
+
+The foreground lab loop selects at most one plugin request per round and defers
+additional input lines for a later round. The selected request is executed by
+the same `RendererRuntime.manage_plugin` lifecycle owner used by the renderer;
+the lab wrapper only restricts the request to bundled ids. A successful request
+emits `plugin_control_requested` followed by `plugin_control_result`; a lifecycle
+or validation error emits `plugin_control_failed`. The result carries the
+normal plugin control report, while failure carries its structured error.
+
+Every lab control result continues to report `gui_mount_verified: false`.
+`plugin_control_requested`, `plugin_control_result`, and
+`plugin_control_failed` are JSONL lifecycle observations, not GUI visual
+acceptance. They do not prove a menu mount, populated panel, theme/layout
+behavior, navigation recovery, or production compatibility. The lab control is
+manual and one-shot; it does not add a file watcher or extend the lab with a
+`launch --watch` mode.
+
+The completed [2026-09-08 isolated manual-control acceptance](RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md)
+records the dependency rejection, reload closure, cross-window disable/enable,
+serial stdin commands, final generations, and owned-process cleanup. Its
+production-control and watcher exclusions remain in force.
+
 ## Directories and fixed policy
 
 The following table describes the fresh-root layout. Resume keeps the same
@@ -305,3 +351,22 @@ leases, latest receipts, live/recycled PID identities and stale startup logs. Th
 GUI repair's full Rust run passed 255 tests with one external real Codex gate
 ignored; all 63 Node tests passed. These automated tests launch no official Desktop
 or backend; real evidence is recorded separately above.
+
+The separate manual lifecycle-control batch historically reported 276 Rust tests
+passed with one real-start gate still ignored by default, and all 63 Node tests
+passed. At that stage the re-enable multi-plugin authorization guard and its
+integration recheck were still pending; this remains a historical batch record,
+not the final repository result.
+
+The follow-up acceptance report records the guard's manual-control recheck and
+the resulting historical 277 Rust / 63 Node totals, including 44/44 related
+cases. The final repository validation then passed 289 Rust tests with one
+explicit real-production-start gate left default-ignored, 63 Node tests, Clippy,
+fmt, diffcheck, and the locked release build. It included 12 watcher regressions
+(7 clock/file-state, 1 execution-path guard, 1 dual-target end-to-end, 2
+parser/scheduling, 1 registry-limit). The isolated lab run remains distinct from
+ordinary production launch and production GUI acceptance; M0/M1 and
+`DEFECT-001`/`DEFECT-002` remain open.
+The isolated manual-control evidence is based on source commit `5a0be1e`; the
+watcher/safety/UI cleanup source is `851395a`. The final suite summary is recorded
+in [verification.json](../.codlet-artifacts/runtime-watch-2026-09-08/verification.json).

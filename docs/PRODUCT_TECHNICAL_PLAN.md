@@ -1,12 +1,14 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.18；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.20；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
 Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有用户主动选择 Codlet 专用启动器时，启动前端才创建独立、会话级长驻的 Runtime Host；由 Runtime Host 启动官方 Codex、在整个 Codex 会话中持有继承式 CDP pipe，并通过通用 capability 基础设施装载、隔离和调度用户插件。
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider。所有 Codex 私有知识由第一方 adapter codlet 提供；管理 GUI 本身也只是这些能力的普通消费者。产品的核心价值不是内置大量增强功能，而是提供稳定、可诊断、可热更新的插件运行时，让用户在明确授权下扩展 renderer、host 和 Codex backend。
+
+当前候选已补齐 M1c 范围内的运行中 `enable` / `disable` / `reload` 与 receipt 控制，以及显式 `codlet launch --watch` 的本地文件监听候选。在线控制由前台 Host 执行；只有证明无 Host 时，`enable` / `disable` 才可离线保存并在下一次启动生效，`reload` 必须在线。手动 lifecycle 隔离实测、authenticated control IPC native fixtures 和 watcher 回归均已通过，但普通生产 launch、GUI、launch+watch 实机门禁仍开放。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件在插件列表中显示为“Codlet GUI”，内部 id 保持 `codlet`；工具栏入口与管理窗口标题保持“Codlet”。
 
@@ -100,6 +102,8 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 
 随后用户授权[登录后 GUI 验收](GUI_ACCEPTANCE_2026-09-08.md)，亲自完成登录与 Windows UAC。独立后台重启并重新读取已写入的配置后，Windows 设置循环解除；Codlet 入口和面板可见、Escape 可关闭，但插件列表持续加载，原生窗口刷新后入口消失。本轮 GUI 判定未通过。下一修复优先处理页面切换后的 renderer 上下文与真实就绪恢复，以及 RPC 无响应时的有界失败，再复验管理操作和布局。测试实例已正常退出；这次用户确认的系统级沙箱设置不构成“全部共享 OS 状态未变化”的证据。
 
+上述段落记录修复前的 GUI 验收失败。随后 2026-09-08 的[GUI 根因修复与复测](GUI_REPAIR_2026-09-08.md)已完成其中的导航恢复、真实激活确认和 RPC 有界失败：主 frame 所有权不再被同名子 frame 覆盖，主文档导航按 provider → consumer 执行新的激活握手，隔离客户端中的插件列表、刷新、两次原生重载、明暗主题、窄窗、第二窗口和跨窗口自我停用均通过。该证据仍不关闭普通 `codlet launch` 的生产 M0/M1 门禁，也不关闭 `DEFECT-001` 或 `DEFECT-002`。
+
 同一 Browser Process 内的 BrowserWindow 不属于 `DEFECT-001`。Draft 0.6 起，Runtime Host 使用 `Target.setDiscoverTargets`、启动快照和 `Target.targetCreated` / `Target.targetInfoChanged` / `Target.targetDestroyed` 事件，持续管理规范文档为 `app://-/index.html` 的全部 page target。目标可以携带 Codex 为窗口路由添加的 query 或 fragment，但其他 origin、path 与非 page 类型仍被拒绝。初始窗口与“在新窗口打开”产生的 renderer 走同一 attach、enable 与 bootstrap 入口，同一 `targetId` 不重复注入，销毁后清理状态。
 
 #### 4.2.2 已知缺陷：`DEFECT-002` Runtime Host 异常退出后 Codex 可能残留
@@ -124,7 +128,7 @@ M1a 新增首个正式启动入口：
 codlet launch
 ```
 
-该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，按统一 catalog 加载内置与授信本地插件，并为当前文档与后续导航安装同一 generation。当前实现仍是实机候选：插件启用状态与本地授权记录由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；GUI 自我禁用已通过鉴权事务实现；文件热重载和运行中 CLI 控制仍待完成。
+该命令启动前台 Runtime Host，在每个匹配 renderer 中为每个已启用插件创建独立的 isolated world，按统一 catalog 加载内置与授信本地插件，并为当前文档与后续导航安装同一 generation。插件启用状态与本地授权记录由 `%LOCALAPPDATA%/Codlet/config.json` 原子持久化；GUI 自我禁用已通过鉴权事务实现。运行中 CLI `enable` / `disable` / `reload` 通过独立的 authenticated control IPC 以 receipt 执行，离线只允许在证明无 Host 时保存 `enable` / `disable` 的下一次启动偏好；`codlet launch --watch` 仅监听已加载的本地插件源。手动 lifecycle 隔离实测、IPC native fixtures 与 watcher 候选回归已通过，但普通 `codlet launch` 的生产 M0/M1、GUI 和 launch+watch 实机门禁仍开放。
 
 M0 的仓库级 Windows 外部验收统一使用以下入口；`-CodletPath` 必须由操作者明确指向已经构建好的 `codlet.exe`，脚本不发现、安装或修改工具链：
 
@@ -144,18 +148,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-M0CrashAcce
 
 该 harness 启动前拒绝任何已有的精确 `ChatGPT.exe`、`Codex.exe` 或 `codlet.exe`。进入 active 后，它以 PID、父 PID、启动时间和规范化可执行路径同时锁定本次 Runtime Host 与 Codex child，并持有两者的 process handle；执行动作前再次核验同一身份和存活状态。它只对自己创建并持有 handle 的 Runtime Host 调用一次 `System.Diagnostics.Process.Kill()`，绝不对 Codex 调用终止 API；随后观察而不假定同一个 Codex process handle 是否会因 pipe-disconnect 退出，并在共享 deadline 内扫描相关进程残留。身份无法建立或发生变化时按基础设施错误拒绝，不按裸 PID 猜测。当前 harness 仍把“Codex 未在 deadline 内退出”记录为 crash contract 失败，用于持续暴露 `DEFECT-002`，而不是把残留改写为成功。
 
-以下只读和下一次启动控制命令已经实现；它们不发现、启动、附着、关闭或重启 Codex：
+以下插件注册、离线偏好和运行中控制命令已经实现；它们不发现、启动、附着、关闭或重启 Codex：
 
 ```text
 codlet plugin list
 codlet plugin enable <id>
 codlet plugin disable <id>
+codlet plugin reload <id>
+codlet plugin operation <receipt>
 codlet plugin add <path>
 codlet plugin add <path> --trust [--grant <permission>]...
 codlet plugin remove <id>
 ```
 
-`list` 在状态文件不存在时只显示内置默认值，不创建文件。`enable` / `disable` 采用同目录临时文件、flush + `sync_all` 和原子 rename 替换状态；当前 Runtime Host IPC 仅提供只读状态，因此命令仍明确报告只对下一次 `codlet launch` 生效。这些离线 CLI 命令不提供运行中立即启停或热重载；GUI 自我禁用另由已实现的鉴权管理事务完成。
+`list` 在状态文件不存在时只显示内置默认值，不创建文件。在线 `enable` / `disable` / `reload` 先由 Host 准备 opaque receipt，再只提交一次并通过 `operation` 或结果查询读取状态；`enable` 不隐式开启未加载依赖，已加载 root 的恢复可在授权 guard 下重启其当前传递 dependents，`disable` 拒绝仍启用或运行的 dependents，`reload` 更新目标及其传递 dependents 并保留无关插件。只有证明该 registry 没有 Host 时，`enable` / `disable` 才可原子保存并注明只对下一次 `codlet launch` 生效；`reload` 无 Host 即拒绝。GUI 自我禁用另由已实现的鉴权管理事务完成。
 
 `add` 缺少 `--trust` 时仅检查目录、显示权限并非零退出，不写配置。明确授信并显式授予所有请求权限后，保存 canonical 本地路径、固定插件 id 与 grants。`remove` 只忘记外部注册，保留源文件与启用偏好；无法移除内置插件。完整格式、边界与示例见 [LOCAL_PLUGINS.md](LOCAL_PLUGINS.md)。
 
@@ -166,12 +172,12 @@ codlet status
 codlet status --json
 ```
 
-状态来自 Host 中的目标/插件采样，包含采样时间、generation、context 与激活确认；不通过 CDP 再次探测、不读插件配置，也不把 `ready` 当作 GUI 挂载或实机兼容性通过。Windows named pipe 限定当前用户和本地连接，区分未运行、忙、超时、版本不兼容及服务端身份拒绝。导航产生的新 context 尚无二次就绪握手，因此明确标为未确认。协议、限制与恢复语义见 [RUNTIME_STATUS.md](RUNTIME_STATUS.md)。
+状态来自 Host 中的目标/插件采样，包含采样时间、generation、context 与激活确认；不通过 CDP 再次探测、不读插件配置，也不把 `ready` 当作 GUI 挂载或实机兼容性通过。Windows named pipe 限定当前用户和本地连接，区分未运行、忙、超时、版本不兼容及服务端身份拒绝。主文档导航会撤销旧作用域并按 provider → consumer 完成新的激活握手；恢复进行中或失败时保持未确认，成功后才将实际激活报告为 `active`。协议、限制与恢复语义见 [RUNTIME_STATUS.md](RUNTIME_STATUS.md)。
 
-以下命令仍属于后续里程碑：
+运行中控制使用 opaque receipt；提交后只允许查询，不自动重试或从 uncertain 在线结果降级为离线编辑。完整 CLI、receipt、scope、授权、回滚和 watcher 边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 
 ```text
-codlet plugin reload <id>
+codlet plugin operation <receipt> [--json]
 ```
 
 第一方 `codlet` 插件默认启用。它使用普通 plugin manifest、生命周期和 renderer bridge，在 Codex 顶部应用栏的原生菜单之后增加一个紧凑按钮；点击后打开 Codlet 管理面板。按钮插槽由 adapter capability `codex.ui.titlebar.afterMenu` 提供，不允许插件散落硬编码 selector。当前面板通过 `codlet.runtime.manage@1` 的 `list` / `disableSelf` 最小事务显示内置与授信本地插件并禁用自身；该 capability 仍是 M2 完整 `runtime.manage` API 的先行纵切，不代表任意插件管理均已完成。
@@ -180,7 +186,7 @@ codlet plugin reload <id>
 
 仅对齐菜单与颜色不能视为原生风格完成。用户检查首版预览后要求进一步参考真实设置页、行、按钮、开关和弹层；同一组执行任务继续逐项对齐。更丰富的 UI adapter 能力规划见 [UI_ADAPTER_CAPABILITIES.md](UI_ADAPTER_CAPABILITIES.md)：挂载、主题/语义样式与通用控件交互分别维护，先以第一方 GUI 验证，再收敛可供本地插件复用的版本化接口；当前不宣称已实现完整组件库。
 
-当前 build `26.901.6511.0` 的只读源码证据确认顶部菜单是 renderer DOM；Windows 主窗口移除了 Electron 原生菜单。adapter 在根标记 `data-codex-window-chrome="application-menu"` 下，验证 File/Edit/View/Help 四个 menuitem 的精确 ID、直属关系和顺序，将 mount 放在 menubar 的同排后继位置，不加入 Radix 私有键盘集合。历史 `header[data-app-shell-header-layout] [data-testid="app-shell-header-context-menu-surface"]` 仅保留为明确标识的 `legacy-header` fallback；它位于另一行，不等同“帮助”之后。`getMount` 返回稳定 token 和可选 placement；暂时无锚点时 GUI 等待 adapter 后续挂载。详见 [CODEX_UI_ADAPTER_EVIDENCE.md](CODEX_UI_ADAPTER_EVIDENCE.md)。这属于源码与隔离测试支持，尚未通过当前 build 实机 GUI 门禁。
+当前 build `26.901.6511.0` 的只读源码证据确认顶部菜单是 renderer DOM；Windows 主窗口移除了 Electron 原生菜单。adapter 在根标记 `data-codex-window-chrome="application-menu"` 下，验证 File/Edit/View/Help 四个 menuitem 的精确 ID、直属关系和顺序，将 mount 放在 menubar 的同排后继位置，不加入 Radix 私有键盘集合。历史 `header[data-app-shell-header-layout] [data-testid="app-shell-header-context-menu-surface"]` 仅保留为明确标识的 `legacy-header` fallback；它位于另一行，不等同“帮助”之后。`getMount` 返回稳定 token 和可选 placement；暂时无锚点时 GUI 等待 adapter 后续挂载。详见 [CODEX_UI_ADAPTER_EVIDENCE.md](CODEX_UI_ADAPTER_EVIDENCE.md)。2026-09-08 的隔离客户端 GUI 修复复测已通过；普通 `codlet launch` 的生产 M0/M1 GUI 门禁仍开放。
 
 用户可在 GUI 中确认后禁用该插件；对应 CLI 已提供：
 
@@ -189,7 +195,7 @@ codlet plugin disable codlet
 codlet plugin enable codlet
 ```
 
-GUI 自我禁用按固定事务执行：验证 `runtime.manage` grant 与依赖关系，原子写入 registry，尝试向调用 renderer 回包，然后从全部当前 target 卸载 GUI 并撤销其 capability principal；清理失败或 renderer 销毁造成的回包失败进入 Runtime Host 诊断，不结束 Host，已持久化的禁用状态继续生效。禁用后只保留 CLI；CLI 重新启用当前在下一次 `codlet launch` 生效。升级不得擅自重新启用用户已禁用的 GUI。若 Codex 更新导致所有已知顶栏锚点失效，GUI 保持未挂载，只在 adapter 再次找到精确锚点后恢复；持续不匹配需要适配更新。Host 的插件生命周期不等同 DOM 已挂载，完整可视界面诊断仍是后续工作。
+GUI 自我禁用按固定事务执行：验证 `runtime.manage` grant 与依赖关系，原子写入 registry，尝试向调用 renderer 回包，然后从全部当前 target 卸载 GUI 并撤销其 capability principal；清理失败或 renderer 销毁造成的回包失败进入 Runtime Host 诊断，不结束 Host，已持久化的禁用状态继续生效。禁用后只保留 CLI；CLI 可通过匹配 Host 的在线 receipt 事务重新启用，也可在证明无 Host 时保存为下一次 `codlet launch` 的偏好。升级不得擅自重新启用用户已禁用的 GUI。若 Codex 更新导致所有已知顶栏锚点失效，GUI 保持未挂载，只在 adapter 再次找到精确锚点后恢复；持续不匹配需要适配更新。Host 的插件生命周期不等同 DOM 已挂载；2026-09-08 隔离客户端复测已确认列表、刷新、原生重载、主题、窄窗、第二窗口和跨窗口自我停用均可恢复，但普通 `codlet launch` 的生产 M0/M1 门禁仍开放。
 
 ## 5. 总体架构
 
@@ -689,7 +695,7 @@ M1c 验收条件：
 
 - 每插件独立 isolated world、bootstrap、binding namespace 和 generation；
 - 第一方 `codex.ui.adapter` 真实提供 `codex.ui.titlebar.afterMenu@1`，第一方 GUI `codlet` 只消费该 capability，不再拥有 header selector；
-- provider 到 consumer 顺序在初始窗口、刷新、DOM 重建和“在新窗口打开”中一致；
+- provider 到 consumer 顺序在初始窗口、刷新、DOM 重建、主文档导航恢复和“在新窗口打开”中一致，并由真实 ready handshake 确认；
 - consumer 到 provider 的反向停用能移除按钮、面板、mount token、style、listener 和 observer；
 - 本地 registry、文件热重载、CLI 启停/重载与 GUI 自我禁用可用；
 - `codlet doctor` 给出 build、target、capability provider、插件 generation 与可行动的错误原因。
@@ -753,14 +759,14 @@ M1c 验收条件：
 
 2026-09-07 的审查与任务拆分见 [REVIEW_AND_EXECUTION_2026-09-07.md](REVIEW_AND_EXECUTION_2026-09-07.md)。保留既有 capability kernel 与 adapter 边界，按以下依赖关系继续推进：
 
-1. **内核可靠性与诊断**：集成可重入 lifecycle/provider RPC、跨进程 registry 合并事务和只读 `doctor --json`，通过统一自动化门禁。
+1. **内核可靠性与诊断**：集成可重入 lifecycle/provider RPC、跨进程 registry 合并事务和只读 `doctor --json`，通过统一自动化门禁。`doctor` 当前只收集静态诊断，其 runtime target/generation/provider-ready 字段保持 unavailable；运行中 target/generation 以独立 `status [--json]` 为准。
 2. **本地插件目录（候选已实现）**：显式加载用户授信目录，严格校验 manifest、entry 路径和 grant，复用内置插件的 registry、catalog 与依赖图。新增权限需显式授权，目录损坏时仍能禁用或忘记注册。
-3. **原生 GUI 与运行状态（候选已实现）**：入口移到当前 build 的菜单行 Help 之后，主题/私有 DOM 集中在 adapter，补齐列表重试、确认、焦点和挂载恢复。Windows 只读 IPC 支持 `status [--json]`，不扩大现有生命周期管理权限；GUI 截图与实机门禁仍未通过。
-4. **运行中控制**：在只读 IPC 基础上完善导航后就绪确认，将 CLI enable/disable/reload 接入与 GUI 共用的管理事务，先验证手动 reload 的换代、反向停用和失败回滚。
-5. **文件热重载**：在手动 reload 契约稳定后接入 watcher，验证连续保存、失败诊断与 generation 撤销。
-6. **当前 build 实机门禁**：在专门启动的 Codlet 会话中验证 GUI、导航、DOM 重建、多窗口和正常退出。2026-09-07 只读检测到 `26.901.6511.0`，该结果不构成兼容性通过证据。
+3. **原生 GUI 与运行状态（候选已实现）**：入口移到当前 build 的菜单行 Help 之后，主题/私有 DOM 集中在 adapter，补齐列表重试、确认、焦点和挂载恢复。Windows 只读 IPC 支持 `status [--json]`，不扩大现有生命周期管理权限。2026-09-08 隔离客户端 GUI 修复复测已通过列表、刷新、原生重载、主题、窄窗、新窗口和自我停用；普通 `codlet launch` 的生产 M0/M1 门禁仍未关闭。
+4. **运行中控制（M1c 候选已实现）**：CLI `enable` / `disable` / `reload` 通过独立 authenticated control IPC 使用 prepare/submit/result receipt，由 GUI 与 CLI 共用前台 lifecycle executor；手动控制、依赖拒绝、generation 换代、授权 guard、失败回滚和多 target 回归已通过。
+5. **文件热重载（M1c 候选已实现）**：`codlet launch --watch` 只观察已加载 local 的 `plugin.json` / `renderer.entry`，执行整条依赖闭包的稳定检测、路径/grants guard、诊断和 generation 撤销；本批 watcher 回归已通过，普通 launch+watch 真实生产门禁仍开放。
+6. **当前 build 实机门禁**：在专门启动的 Codlet 会话中验证 GUI、导航、DOM 重建、多窗口和正常退出。2026-09-07 只读检测到 `26.901.6511.0`；2026-09-08 隔离客户端 GUI 修复复测已通过，但该结果仍不构成普通 `codlet launch` 的生产兼容性通过证据。
 
-第 1 项是后续加载与控制工作的前置；第 2-5 项涉及相同生命周期文件，应串行集成。真实门禁全部满足前，M0/M1 仍保持未关闭。L4 只读研究不阻塞 M1/M2，也不允许以第二 App Server 路径提前伪造完成。
+第 1 项是后续加载与控制工作的前置；第 2-5 项涉及相同生命周期文件，运行控制与 watcher 候选已完成本批集成和回归。真实生产门禁全部满足前，M0/M1 仍保持未关闭。L4 只读研究不阻塞 M1/M2，也不允许以第二 App Server 路径提前伪造完成。
 
 ### 16.1 第一轮审查前的实现基线
 
@@ -791,17 +797,28 @@ target controller 现在按顺序向 Runtime Host 暴露 `Attached`、`Navigated
 - `doctor` / GUI 可识别本地来源、路径、grants、请求权限与验证结果。运行中管理列表使用启动快照，`active` 来自调用 target 的真实 Active 状态；面板打开时重新查询，避免 activation 期间的快照永久隐藏自禁用开关。
 - `examples/local-echo` 保持既有 `module.exports` ABI，通过 awaited Host ping 后提供 `example.echo@1`；Node 测试使用真实 bootstrap 验证准备、调用和卸载。
 
-本轮没有启动、附着或结束真实 Codex，也没有修改真实用户插件配置。运行中 CLI IPC、文件 watcher、手动 reload 与当前 build 的实机门禁仍是后续工作。
+本轮历史记录没有启动、附着或结束真实 Codex，也没有修改真实用户插件配置；当时运行中 CLI IPC、文件 watcher、手动 reload 与当前 build 的实机门禁仍是后续工作。本批随后完成了运行控制与 watcher 候选的集成回归，真实生产门禁仍另行开放。
 
 ### 16.4 原生 GUI 与只读 Host 状态
 
 三个独立 Astra xhigh worktree 完成 GUI、适配器与 Windows 状态 IPC，主任务审查并集成；用户反馈首版只匹配菜单与主题后，复用 GUI/adapter 两个执行任务继续依据真实组件修正。
 
 - 菜单定位以当前包的 DOM menubar 和 Windows `removeMenu()` 双重源码证据为准，入口紧跟 Help；不接入 Radix 私有导航集合，不修改官方菜单内容。
-- GUI 使用原生 wide 600px 弹层变体与 compact 420px 确认态，设置行、开关、字体和按钮按实际消费组件映射。原生 `dialog` 提供模态基础，插件负责局部关闭、确认、焦点和异步清理。adapter 暴露 27 个自有语义变量，私有 token 不进入 GUI；完整可复用控件接口仍按专门规划推进。
-- 预览相对加载真实 adapter 和 GUI，宿主结构/主题种子/RPC 是明确标识的模拟值，初始显示管理界面、测试控制折叠。浏览器 URL 策略拒绝本地预览，因此截图、实际 Tab 范围与窄窗视觉验收仍未完成。
-- `status [--json]` 使用当前用户限定的本地 named pipe，提供 Host/子进程身份和真实 owner 生命周期采样；请求、响应、等待和工作线程均有界，退出回收。没有 Host、忙、超时、版本或身份拒绝互不混淆。导航重建后的激活明确未确认；状态命令不扩大插件管理权限。
+- GUI 使用原生 wide 600px 弹层变体与 compact 420px 确认态，设置行、开关、字体和按钮按实际消费组件映射。原生 `dialog` 提供模态基础，插件负责局部关闭、确认、焦点和异步清理。adapter 的语义变量由原有 27 个别名和 2026-09-08 外观跟进新增的 8 个别名组成，共 35 个；私有 token 不进入 GUI，完整可复用控件接口仍按专门规划推进。详见 [官方外观动态适配核对](APPEARANCE_FOLLOWUP_2026-09-08.md)。
+- 预览相对加载真实 adapter 和 GUI，宿主结构/主题种子/RPC 是明确标识的模拟值，初始显示管理界面、测试控制折叠。2026-09-08 隔离客户端 GUI 修复复测已完成列表、刷新、两次原生重载、明暗主题、窄窗和新窗口验证；完整 Tab/Shift-Tab 遍历未单独实测，普通 `codlet launch` 的生产门禁仍未关闭。
+- `status [--json]` 使用当前用户限定的本地 named pipe，提供 Host/子进程身份和真实 owner 生命周期采样；请求、响应、等待和工作线程均有界，退出回收。没有 Host、忙、超时、版本或身份拒绝互不混淆。主文档导航会撤销旧作用域并重新执行 provider → consumer 激活握手；恢复进行中或失败时保持未确认，成功后才报告实际 active。状态命令不扩大插件管理权限。
 - 228 项 Rust 测试、58 项 Node 测试、四组 PowerShell 数据夹具、格式/Clippy 和 release 构建通过；最后 GUI/诊断文案整合后再次通过对应 53 项 Rust 回归。实机门禁保持未关闭，完整证据与构建摘要见本轮 review 记录。
+- 2026-09-08 GUI 修复复测新增的验证中，Windows Rust 测试为 255 项通过、1 项外部真机 gate ignored，Node VM 测试为 63 项通过；隔离客户端 GUI 复测通过，普通 `codlet launch` 的生产 M0/M1 门禁以及 `DEFECT-001`、`DEFECT-002` 仍开放。
+- 最终批次 `cargo test --locked --all-targets --all-features` 为 289 项通过，另有 1 项显式真实生产启动 gate 保持默认 ignored；`node --test tests/*.test.mjs` 为 63 项通过，Clippy、fmt、diffcheck 和 release build 均通过。watch 相关 12 项回归（7 时钟/文件状态机、1 执行路径 guard、1 双 target 端到端、2 解析调度、1 registry 限额）已纳入该批次；这些结果不关闭普通生产 launch、GUI、launch+watch、M0/M1 或 `DEFECT-001/002` 门禁。
+
+### 16.5 运行控制与文件监听候选收尾
+
+本批把 M1c 的运行控制和文件监听候选收敛到同一前台职责边界：DTO 只承载 typed request/report，authenticated IPC mailbox 管理 receipt，lifecycle plan 计算依赖闭包和 generation，renderer executor 执行 detach/activate/rollback，watch observer 只观察已加载 local 源，foreground orchestrator 优先消费 CLI 并把 watcher 请求交给同一 executor。完整边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+
+- 手动控制隔离实测和 owned 证据见 [RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md](RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md)，其源 commit 为 `5a0be1e`；该报告中的 GUI 与 lifecycle 观察不等同普通生产 GUI 验收。
+- watcher、统一 registry 安全读写上限和 GUI 提示清理的最终源码提交为 `851395a`；最终汇总证据位于 `.codlet-artifacts/runtime-watch-2026-09-08/verification.json`。本批 watch 12 项回归与 289/63 总体验证已通过，release build 已通过，但不作发布完成声明。
+- `doctor` 仍是 static package/config/catalog/registry 诊断，不查询运行中的 Host；live target、generation、provider-ready 和兼容性字段仍不可用。运行中事实由独立 `status [--json]` 提供，因此本节不宣称完整 M1c 或完整 doctor 已完成。
+- 本批完成的是 M1c 运行控制与文件监听候选；M2 host/broker/permission API 尚未启动。普通 `codlet launch`、`codlet launch --watch` 的真实生产验收，M0/M1、`DEFECT-001` 和 `DEFECT-002` 仍开放。
 
 ## 17. 主要风险
 

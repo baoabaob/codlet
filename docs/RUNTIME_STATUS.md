@@ -5,6 +5,9 @@
 read plugin configuration, execute JavaScript, or start/stop/restart Codex.
 `m0-probe` and `m0-runtime` do not publish this endpoint.
 
+Live enable/disable/reload use the separate [runtime control endpoint](RUNTIME_CONTROL.md).
+This status schema remains read-only.
+
 ## CLI contract
 
 JSON stdout contains one report, including on failure. Exit code is 0 for
