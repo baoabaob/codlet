@@ -5,6 +5,11 @@
 read plugin configuration, execute JavaScript, or start/stop/restart Codex.
 `m0-probe` and `m0-runtime` do not publish this endpoint.
 
+`codlet doctor` may query a separate authenticated control-pipe `Inspect`
+operation for its additive runtime evidence. That operation does not change this
+status-v1 request/response wire or its read-only snapshot semantics; see
+[DOCTOR_RUNTIME.md](DOCTOR_RUNTIME.md).
+
 Live enable/disable/reload use the separate [runtime control endpoint](RUNTIME_CONTROL.md).
 This status schema remains read-only.
 

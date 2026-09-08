@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.20；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.21；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -759,7 +759,7 @@ M1c 验收条件：
 
 2026-09-07 的审查与任务拆分见 [REVIEW_AND_EXECUTION_2026-09-07.md](REVIEW_AND_EXECUTION_2026-09-07.md)。保留既有 capability kernel 与 adapter 边界，按以下依赖关系继续推进：
 
-1. **内核可靠性与诊断**：集成可重入 lifecycle/provider RPC、跨进程 registry 合并事务和只读 `doctor --json`，通过统一自动化门禁。`doctor` 当前只收集静态诊断，其 runtime target/generation/provider-ready 字段保持 unavailable；运行中 target/generation 以独立 `status [--json]` 为准。
+1. **内核可靠性与诊断**：集成可重入 lifecycle/provider RPC、跨进程 registry 合并事务和只读 `doctor --json`，通过统一自动化门禁。`doctor` 在有匹配 Host 时通过 authenticated scoped `Inspect` 增加一份 owner/kernel runtime sample；无 Host、其他 registry 或不支持 Inspect 的 legacy Host 仍报告 unavailable，不因这些情况单独退出 1。实际 target/generation/provider readiness 来自同一次 owner publication，status v1 保持独立。详见 [DOCTOR_RUNTIME.md](DOCTOR_RUNTIME.md)。
 2. **本地插件目录（候选已实现）**：显式加载用户授信目录，严格校验 manifest、entry 路径和 grant，复用内置插件的 registry、catalog 与依赖图。新增权限需显式授权，目录损坏时仍能禁用或忘记注册。
 3. **原生 GUI 与运行状态（候选已实现）**：入口移到当前 build 的菜单行 Help 之后，主题/私有 DOM 集中在 adapter，补齐列表重试、确认、焦点和挂载恢复。Windows 只读 IPC 支持 `status [--json]`，不扩大现有生命周期管理权限。2026-09-08 隔离客户端 GUI 修复复测已通过列表、刷新、原生重载、主题、窄窗、新窗口和自我停用；普通 `codlet launch` 的生产 M0/M1 门禁仍未关闭。
 4. **运行中控制（M1c 候选已实现）**：CLI `enable` / `disable` / `reload` 通过独立 authenticated control IPC 使用 prepare/submit/result receipt，由 GUI 与 CLI 共用前台 lifecycle executor；手动控制、依赖拒绝、generation 换代、授权 guard、失败回滚和多 target 回归已通过。
@@ -817,8 +817,54 @@ target controller 现在按顺序向 Runtime Host 暴露 `Attached`、`Navigated
 
 - 手动控制隔离实测和 owned 证据见 [RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md](RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md)，其源 commit 为 `5a0be1e`；该报告中的 GUI 与 lifecycle 观察不等同普通生产 GUI 验收。
 - watcher、统一 registry 安全读写上限和 GUI 提示清理的最终源码提交为 `851395a`；最终汇总证据位于 `.codlet-artifacts/runtime-watch-2026-09-08/verification.json`。本批 watch 12 项回归与 289/63 总体验证已通过，release build 已通过，但不作发布完成声明。
-- `doctor` 仍是 static package/config/catalog/registry 诊断，不查询运行中的 Host；live target、generation、provider-ready 和兼容性字段仍不可用。运行中事实由独立 `status [--json]` 提供，因此本节不宣称完整 M1c 或完整 doctor 已完成。
+- 本节之前的 doctor static-only 描述属于该阶段的历史状态；本批新增的 scoped Inspect 合约见 16.6。本节仍不宣称完整 M1c 或完整 doctor 已完成。
 - 本批完成的是 M1c 运行控制与文件监听候选；M2 host/broker/permission API 尚未启动。普通 `codlet launch`、`codlet launch --watch` 的真实生产验收，M0/M1、`DEFECT-001` 和 `DEFECT-002` 仍开放。
+
+### 16.6 Doctor runtime Inspect 契约
+
+本批新增的 doctor runtime 合约保持 `codlet.doctor/v1` additive：在当前
+registry 有匹配且支持 Inspect 的 Host 时，doctor 通过 scoped authenticated
+control pipe 读取一份只读 owner publication；无 Host、其他 registry 或
+不支持 Inspect 的 legacy Host 仍为 unavailable，不能仅因这些状态新增
+exit 1。身份、传输、畸形或过大响应导致的 runtime issue 会进入
+`failedChecks`；只有 fresh、complete、quiet publication 中观察到实际
+generation mismatch、inactive 或 not-observed plugin 时，才形成 activation
+runtime failure。
+
+Inspect 不改变 status v1 wire，不读磁盘 `provides` 冒充 loaded provider，
+不执行 CDP、不 prepare/submit、不启动或停止进程、不写 registry。provider
+来自实际 kernel registrations，target/plugin generation/lifecycle/active
+来自同一次 owner publication；recent events 只是历史上下文。Starting、
+Terminated、stale、future/clock-skew、busy、incomplete、recovery/transition
+等观察状态不单独判插件失败；兼容性和 endpoint health 始终 unprobed。
+
+Native Inspect DTO 保持 snake_case target 字段，doctor 聚合字段使用
+camelCase；provider 上限、每 provider capability 上限、总 capability 上限、
+target/plugin 采样上限和 256 KiB response bound 均按
+[DOCTOR_RUNTIME.md](DOCTOR_RUNTIME.md) 的契约执行。
+
+最终验证已在源码提交 `0802046e8ce6227547b248ddbe073d37f73ded13` 上完成：
+`cargo test --locked --all-targets --all-features` 共 307 项通过、0 项失败，
+另有 1 项既有生产 M0 启动 gate 按约定保持 ignored。分组计数为：lib 166、
+doctor CLI 6、doctor model 13、doctor runtime 7、fake child 46、lab 2、
+local-plugin CLI 7、local-plugin registry 16、local plugins 30、plugin CLI 6、
+plugin registry 6、status CLI 2。Clippy（all targets/features，`-D warnings`）、
+fmt（all，`--check`）和 locked release bins 均通过，release 构建耗时 12.54 秒。
+本批未改 JavaScript，未重跑既有 Node 63 项结果，不能将其记为本批通过。
+
+使用 release 二进制执行本机只读 `codlet doctor --json`：进程退出码为 0，
+runtime 为 `not_running`，安装包版本为 `26.901.6511.0`，已有原版 Codex
+使 `launchPreflight` 为 `blocked`；`config.json` 前后均不存在，doctor 未创建
+registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前后
+保持不变。实时 Inspect 已由 native pipe 与双 target fake-child 验证；本轮没有
+启动真实 Codex 或 lab，也不据此宣称真实 GUI 验收。证据位于
+`.codlet-artifacts/doctor-runtime-2026-09-08/` 下的
+`verification.json`、`cargo-test.log`、`doctor-local.json`、
+`doctor-local-verification.json`、`codlet.exe` 和 `codlet-lab.exe`。
+
+这些结果只覆盖本次 runtime Inspect 与本地只读 doctor 验证；生产 M0/M1、
+`DEFECT-001`、`DEFECT-002` 仍开放，M2 尚未开始，不构成完整 M1c、完整 doctor
+或 release 发布完成声明。
 
 ## 17. 主要风险
 

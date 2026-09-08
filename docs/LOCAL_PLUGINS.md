@@ -70,10 +70,15 @@ The GUI management list uses the current loaded catalog and the calling target's
 active state. A plugin with an explicitly granted `runtime.manage` permission may
 use the existing authenticated `disableSelf` transaction; this persists disablement
 before unloading it from every attached target. It does not remove its registration.
-`doctor` keeps runtime observations unprobed; use `codlet status` for sampled Host
-state through the read-only IPC. The current renderer RPC transport supports
-target-scoped requirements; the generic kernel's other scope declarations do not
-imply a working renderer route.
+`doctor` may add a read-only authenticated scoped `Inspect` sample from the
+matching Host; it uses actual kernel registrations and the same owner target,
+generation, and activation publication, never disk declarations as proof of
+loaded state. No Host, another registry, and an unsupported legacy Host remain
+unavailable without adding a failure solely for that reason. Transport or
+identity failures become an explicit runtime issue. Use `codlet status` for the
+unchanged status-v1 sampled snapshot. See [the doctor runtime inspection contract](DOCTOR_RUNTIME.md).
+The current renderer RPC transport supports target-scoped requirements; the
+generic kernel's other scope declarations do not imply a working renderer route.
 
 Use `codlet launch --watch` to observe the manifest and renderer entry of local
 plugins already loaded by that Host. The watcher waits for the affected dependency

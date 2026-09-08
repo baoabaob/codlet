@@ -58,7 +58,7 @@ The plugin command uses a bounded wait. If the Host does not return a terminal r
 
 The control mailbox admits at most eight queued or running operations and retains at most 128 receipts. A completed or prepared receipt may be evicted when the table is full. An old Host receipt, an unknown receipt, or an evicted receipt is terminal for control purposes and can never execute again. Host shutdown rejects new work and clears queued jobs; a late completion cannot reopen admission.
 
-The transport uses control schema version `1`, bounded request and response frames, and one request/response exchange with an acknowledgement. Its status values distinguish `prepared`, `queued`, `running`, `completed`, `not_running`, `busy`, `not_ready`, `stopping`, `expired`, `stale_host`, `invalid_request`, `incompatible`, `untrusted_server`, `communication_error`, and `timeout`.
+The transport uses control schema version `1`, bounded request and response frames, and one request/response exchange with an acknowledgement. Its status values distinguish `identified`, `inspected`, `inspection_too_large`, `prepared`, `queued`, `running`, `completed`, `not_running`, `busy`, `not_ready`, `stopping`, `expired`, `stale_host`, `invalid_request`, `incompatible`, `untrusted_server`, `communication_error`, and `timeout`. The two inspection-specific outcomes appear only on `Inspect`; legacy command replies keep their original field set.
 
 ## Lifecycle semantics
 
@@ -165,6 +165,11 @@ The control endpoint is derived from the canonical registry path and current-use
 Authentication is mutual. The server verifies the connecting client's current-user SID and executable image identity before accepting a request. The client verifies the server's SID, live PID, executable image path, control schema, registry scope, and liveness before sending a management body and again before accepting the result. A different build directory, mismatched scope, squatted endpoint, or identity change is rejected as untrusted. The discovery pipe accepts only an identify request and cannot execute a mutation.
 
 The control pipe is independent of the status pipe. `codlet status [--json]` remains a read-only Host snapshot and is not upgraded by this contract into a lifecycle control channel.
+
+`codlet doctor` may use the same scoped pipe's pure read-only `Inspect` request
+to obtain one authenticated owner publication. It never prepares/submits a
+receipt or executes renderer work; actual provider registrations and target
+activation facts are documented in [DOCTOR_RUNTIME.md](DOCTOR_RUNTIME.md).
 
 ## Implementation and verification status
 
