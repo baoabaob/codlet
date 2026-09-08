@@ -109,6 +109,217 @@ fn poll_watch(
 }
 
 #[test]
+fn runtime_inspection_samples_owned_registration_and_lifecycle_without_cdp_or_disk_execution() {
+    use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
+    use codlet::runtime_inspection::ProviderKind;
+    let (directory, _registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(400));
+    let publisher = StatusPublisher::new();
+    publisher
+        .bind_runtime_identity([9; 16], "fixture-inspection")
+        .unwrap();
+    runtime.set_status_publisher(publisher.clone());
+    for session in &sessions {
+        runtime.attach(session).unwrap();
+    }
+    publisher.set_ready();
+    let original = publisher.inspection_snapshot().unwrap();
+    let renderer = original.renderer.as_ref().unwrap();
+    assert!(!renderer.lifecycle_busy && !renderer.truncated);
+    assert_eq!(renderer.targets.len(), 2);
+    assert!(renderer.targets.iter().all(|target| {
+        target.document_epoch == 1
+            && target.scope_active
+            && target.session_live
+            && !target.recovery_pending
+            && target
+                .plugins
+                .iter()
+                .all(|plugin| plugin.active && plugin.activation_confirmed)
+    }));
+    assert!(
+        renderer.providers.iter().any(
+            |provider| provider.id == "codlet.core.host" && provider.kind == ProviderKind::Host
+        )
+    );
+    let original_provider = renderer
+        .providers
+        .iter()
+        .find(|provider| provider.id == "dev.provider")
+        .unwrap()
+        .clone();
+    assert_eq!(original_provider.generation, 1);
+    assert_eq!(original_provider.provides[0].name.as_str(), "dev.api");
+    assert_eq!(
+        renderer.targets[0].plugins,
+        publisher.snapshot().renderer.targets[0].plugins
+    );
+
+    let manifest_path = directory.path().join("dev.provider/plugin.json");
+    let source_path = directory.path().join("dev.provider/renderer.js");
+    let manifest = std::fs::read(&manifest_path).unwrap();
+    let before = client
+        .request("Fake.commandCount", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap()["count"]
+        .as_u64()
+        .unwrap();
+    std::fs::write(&manifest_path, "invalid disk manifest after launch").unwrap();
+    std::fs::write(
+        &source_path,
+        "throw new Error('inspection must not execute disk source');",
+    )
+    .unwrap();
+    for _ in 0..5 {
+        runtime.publish_status();
+        let current = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+        assert_eq!(
+            current
+                .providers
+                .iter()
+                .find(|provider| provider.id == "dev.provider")
+                .unwrap(),
+            &original_provider
+        );
+    }
+    let after = client
+        .request("Fake.commandCount", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap()["count"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(after, before + 1);
+    std::fs::write(&manifest_path, manifest).unwrap();
+    std::fs::write(
+        &source_path,
+        "// fixture-timeout-candidate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+
+    let (ready, observing) = std::sync::mpsc::channel();
+    let observer = {
+        let publisher = publisher.clone();
+        std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            let deadline = Instant::now() + DEADLINE;
+            loop {
+                let sample = publisher.inspection_snapshot().unwrap();
+                if sample
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.lifecycle_busy)
+                {
+                    return sample;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the owner never published its lifecycle transition"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })
+    };
+    observing.recv_timeout(DEADLINE).unwrap();
+    let reloaded = runtime
+        .manage_plugin(control_request(Action::Reload, "dev.provider"))
+        .unwrap();
+    assert_eq!(reloaded.outcome, Outcome::RolledBack);
+    let during = observer.join().unwrap();
+    assert!(during.renderer.unwrap().lifecycle_busy);
+    let after = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+    assert!(!after.lifecycle_busy);
+    assert_eq!(
+        after
+            .providers
+            .iter()
+            .find(|provider| provider.id == "dev.provider")
+            .unwrap()
+            .generation,
+        3
+    );
+    assert!(
+        after
+            .targets
+            .iter()
+            .all(|target| target.plugins.iter().all(|plugin| plugin.active))
+    );
+    assert_eq!(
+        original
+            .renderer
+            .unwrap()
+            .providers
+            .iter()
+            .find(|provider| provider.id == "dev.provider")
+            .unwrap()
+            .generation,
+        1
+    );
+
+    assert_eq!(
+        runtime
+            .manage_plugin(control_request(Action::Disable, "dev.consumer"))
+            .unwrap()
+            .outcome,
+        Outcome::Applied
+    );
+    client
+        .request(
+            "Fake.configure",
+            Some(json!({"failCleanupWorld":"codlet.plugin.dev.provider.g3"})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime
+            .manage_plugin(control_request(Action::Disable, "dev.provider"))
+            .unwrap()
+            .outcome,
+        Outcome::Degraded
+    );
+    let stopped = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+    assert!(!stopped.lifecycle_busy);
+    assert!(
+        stopped
+            .providers
+            .iter()
+            .all(|provider| provider.id != "dev.provider")
+    );
+    assert!(
+        stopped
+            .recent_events
+            .iter()
+            .any(|event| event.code == "cleanup_failed"
+                && event.message.contains("simulated cleanup failure"))
+    );
+    assert!(
+        stopped
+            .targets
+            .iter()
+            .all(|target| target.plugins.len() == 1
+                && target.plugins[0].id == "dev.other"
+                && target.plugins[0].active)
+    );
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    assert!(
+        publisher
+            .inspection_snapshot()
+            .unwrap()
+            .renderer
+            .unwrap()
+            .targets
+            .is_empty()
+    );
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
 fn watch_requests_reuse_managed_lifecycle_and_preserve_saves_during_two_target_activation() {
     use codlet::plugin_control::PluginControlOutcome as Outcome;
     use codlet::plugin_watch::PluginWatcher;
@@ -1454,6 +1665,11 @@ fn document_recovery_case(timeout_first_recovery: bool) {
     let (child, client, events) = launch(scenario, &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
     let (_directory, mut runtime) = bundled_runtime();
+    let publisher = StatusPublisher::new();
+    publisher
+        .bind_runtime_identity([10; 16], "fixture-recovery")
+        .unwrap();
+    runtime.set_status_publisher(publisher.clone());
     runtime.attach(&sessions[0]).unwrap();
     client
         .request("Fake.navigateDocument", None, None, DEADLINE)
@@ -1466,6 +1682,10 @@ fn document_recovery_case(timeout_first_recovery: bool) {
     if timeout_first_recovery {
         assert!(started.elapsed() < DEADLINE * 3);
         assert!(runtime.status_snapshot().targets[0].plugins.is_empty());
+        let failed = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+        assert!(!failed.lifecycle_busy);
+        assert!(!failed.targets[0].scope_active);
+        assert_eq!(failed.targets[0].document_epoch, 2);
         assert!(
             runtime
                 .status_snapshot()
@@ -1485,6 +1705,14 @@ fn document_recovery_case(timeout_first_recovery: bool) {
         runtime.pump_bindings().unwrap();
     }
     let restored = runtime.status_snapshot();
+    let inspected = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+    assert!(!inspected.lifecycle_busy && !inspected.targets[0].recovery_pending);
+    assert!(inspected.targets[0].scope_active);
+    assert_eq!(
+        inspected.targets[0].document_epoch,
+        if timeout_first_recovery { 3 } else { 2 }
+    );
+    assert_eq!(inspected.targets[0].plugins, restored.targets[0].plugins);
     assert!(
         restored.targets[0]
             .plugins

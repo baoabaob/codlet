@@ -11,7 +11,8 @@ use crate::cdp::{
     TargetSession,
 };
 use crate::diagnostics::{
-    Check, DiagnosticIssue, DoctorInputs, DoctorReport, PackageInfo, ProcessInfo, ProcessSnapshot,
+    Check, DiagnosticIssue, DoctorInputs, DoctorReport, DoctorRuntimeInput, PackageInfo,
+    ProcessInfo, ProcessSnapshot,
 };
 use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
 use crate::plugin_control::{
@@ -23,7 +24,9 @@ use crate::plugins::{
     bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
-use crate::runtime_control::{ControlBroker, ControlJob};
+use crate::runtime_control::{
+    ControlBroker, ControlJob, ControlReport, ControlRequest, ControlStatus,
+};
 use crate::runtime_status::{CodexStatus, StatusCode, StatusPublisher};
 use crate::windows::control_pipe::{ControlServer, RegistryScope, RegistryScopeGuard};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
@@ -420,14 +423,134 @@ pub fn collect_doctor_report() -> DoctorReport {
         Ok(registry) => PluginCatalog::load(registry),
         Err(_) => bundled_plugins().map(PluginCatalog::from_bundled),
     };
-    DoctorReport::from_inputs(DoctorInputs {
+    let report = DoctorReport::from_inputs(DoctorInputs {
         package,
         executable,
         processes,
-        registry_path,
+        registry_path: registry_path.clone(),
         registry,
         catalog,
-    })
+    });
+    report.with_runtime(collect_runtime_inspection(registry_path.as_deref()))
+}
+
+/// Runtime evidence is an independent, authenticated observation. Static registry
+/// validation may fail without preventing a read from its known registry scope.
+fn collect_runtime_inspection(registry_path: Option<&Path>) -> DoctorRuntimeInput {
+    let Some(registry_path) = registry_path else {
+        return DoctorRuntimeInput::Unavailable {
+            code: "runtime_registry_unavailable",
+            message: "The registry path is unavailable; no Runtime Host scope was guessed.".into(),
+        };
+    };
+    let scope = match RegistryScope::for_path(registry_path) {
+        Ok(scope) => scope,
+        Err(error) => {
+            return DoctorRuntimeInput::Unavailable {
+                code: "runtime_registry_unavailable",
+                message: format!(
+                    "Cannot establish the registry identity for runtime inspection: {error}"
+                ),
+            };
+        }
+    };
+    // This path never acquires a lease, reserves a receipt, or submits a mutation.
+    let mut report = crate::windows::control_pipe::query(&scope, &ControlRequest::inspect());
+    match report.status {
+        ControlStatus::Inspected => match report.inspection.take() {
+            Some(inspection) => DoctorRuntimeInput::Inspected {
+                inspection: Box::new(inspection),
+                queried_at_unix_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64,
+            },
+            None => DoctorRuntimeInput::Unavailable {
+                code: "runtime_inspection_invalid",
+                message: "The Host inspection response contains no snapshot.".into(),
+            },
+        },
+        ControlStatus::NotRunning => inspect_missing_runtime(&scope),
+        _ => runtime_control_unavailable(report),
+    }
+}
+
+fn inspect_missing_runtime(scope: &RegistryScope) -> DoctorRuntimeInput {
+    let discovery = crate::windows::control_pipe::discover();
+    match discovery.status {
+        ControlStatus::Identified => {
+            let Some(registry_scope) = discovery.registry_scope else {
+                return DoctorRuntimeInput::Unavailable {
+                    code: "runtime_discovery_invalid",
+                    message: "The Host discovery response contains no registry identity.".into(),
+                };
+            };
+            if registry_scope != scope.id() {
+                DoctorRuntimeInput::OtherRegistry {
+                    host_pid: discovery.host_pid,
+                    registry_scope,
+                }
+            } else {
+                DoctorRuntimeInput::Unavailable {
+                    code: "runtime_endpoint_missing",
+                    message: "A Host identifies this registry, but its scoped inspection endpoint is unavailable.".into(),
+                }
+            }
+        }
+        ControlStatus::NotRunning => {
+            // Legacy status may prove an older Host exists. Its sampled plugin
+            // list cannot supply current provider registrations or scope identity.
+            let legacy = query_current_user();
+            match legacy.status {
+                StatusCode::NotRunning => DoctorRuntimeInput::NotRunning,
+                StatusCode::Running => DoctorRuntimeInput::Unsupported {
+                    host_pid: legacy.snapshot.as_ref().map(|snapshot| snapshot.host_pid),
+                    message: "A Host exposes legacy status but no scoped inspection endpoint; runtime provider evidence requires a Host with Inspect support.".into(),
+                },
+                status => DoctorRuntimeInput::Unavailable {
+                    code: match status {
+                        StatusCode::Busy => "runtime_busy",
+                        StatusCode::Timeout => "runtime_timeout",
+                        StatusCode::UntrustedServer => "runtime_untrusted_host",
+                        StatusCode::Incompatible => "runtime_legacy_status_incompatible",
+                        _ => "runtime_communication_error",
+                    },
+                    message: legacy.error.unwrap_or_else(|| format!("Legacy Host discovery returned {status:?}.")),
+                },
+            }
+        }
+        _ => runtime_control_unavailable(discovery),
+    }
+}
+
+fn runtime_control_unavailable(report: ControlReport) -> DoctorRuntimeInput {
+    let message = report
+        .error
+        .unwrap_or_else(|| format!("Host inspection returned {:?}.", report.status));
+    match report.status {
+        ControlStatus::InvalidRequest | ControlStatus::Incompatible => {
+            DoctorRuntimeInput::Unsupported {
+                host_pid: (report.host_pid != 0).then_some(report.host_pid),
+                message: format!(
+                    "The Host does not support this versioned runtime inspection request: {message}"
+                ),
+            }
+        }
+        status => DoctorRuntimeInput::Unavailable {
+            code: match status {
+                ControlStatus::Busy => "runtime_busy",
+                ControlStatus::Timeout => "runtime_timeout",
+                ControlStatus::UntrustedServer => "runtime_untrusted_host",
+                ControlStatus::NotReady => "runtime_not_ready",
+                ControlStatus::Stopping => "runtime_stopping",
+                ControlStatus::StaleHost => "runtime_identity_mismatch",
+                ControlStatus::InspectionTooLarge => "runtime_inspection_too_large",
+                _ => "runtime_communication_error",
+            },
+            message,
+        },
+    }
 }
 
 fn package_issue(error: &PackageError) -> DiagnosticIssue {
@@ -507,9 +630,14 @@ fn start_attached_codex_with_services(
         || {
             services
                 .map(|services| {
+                    // Bind the one incarnation before any pipe worker can sample
+                    // this publisher, including the unchanged legacy status view.
+                    let control =
+                        ControlServer::bind_current_user(services.lease, services.status.clone())?;
+                    let status = StatusServer::bind_current_user(services.status)?;
                     Ok::<_, ProbeError>(HostServers {
-                        _status: StatusServer::bind_current_user(services.status)?,
-                        control: ControlServer::bind_current_user(services.lease)?,
+                        _status: status,
+                        control,
                     })
                 })
                 .transpose()
@@ -1198,6 +1326,47 @@ mod tests {
             assert_eq!(pending_watch.len(), 1 - index);
         }
         assert!(next_management_job(&control, || pending_watch.pop_front()).is_none());
+    }
+
+    #[test]
+    fn runtime_collection_distinguishes_unsupported_hosts_from_failed_or_unscoped_inspection() {
+        let mut old_host =
+            ControlReport::failure(ControlStatus::InvalidRequest, "unknown inspect command");
+        old_host.host_pid = 42;
+        old_host.registry_scope = Some("a".repeat(64));
+        assert!(matches!(
+            runtime_control_unavailable(old_host),
+            DoctorRuntimeInput::Unsupported {
+                host_pid: Some(42),
+                ..
+            }
+        ));
+        for (status, expected) in [
+            (ControlStatus::Busy, "runtime_busy"),
+            (ControlStatus::Timeout, "runtime_timeout"),
+            (ControlStatus::UntrustedServer, "runtime_untrusted_host"),
+            (ControlStatus::NotReady, "runtime_not_ready"),
+            (ControlStatus::StaleHost, "runtime_identity_mismatch"),
+            (
+                ControlStatus::InspectionTooLarge,
+                "runtime_inspection_too_large",
+            ),
+        ] {
+            let input = runtime_control_unavailable(ControlReport::failure(
+                status,
+                "fixture observation failed",
+            ));
+            assert!(
+                matches!(input, DoctorRuntimeInput::Unavailable { code, message } if code == expected && message == "fixture observation failed")
+            );
+        }
+        assert!(matches!(
+            collect_runtime_inspection(None),
+            DoctorRuntimeInput::Unavailable {
+                code: "runtime_registry_unavailable",
+                ..
+            }
+        ));
     }
 
     #[test]

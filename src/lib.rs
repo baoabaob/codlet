@@ -9,6 +9,7 @@ pub mod plugin_watch;
 pub mod plugins;
 pub mod renderer;
 pub mod runtime_control;
+pub mod runtime_inspection;
 pub mod runtime_status;
 
 #[cfg(windows)]

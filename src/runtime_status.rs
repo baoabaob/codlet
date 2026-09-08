@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::runtime_inspection::{RendererInspection, RuntimeInspection};
 
 pub const STATUS_SCHEMA_VERSION: u32 = 1;
 pub const MAX_STATUS_REQUEST_BYTES: usize = 1024;
@@ -55,7 +58,7 @@ pub struct HostSnapshot {
     pub termination: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodexStatus {
     pub pid: u32,
@@ -214,10 +217,30 @@ impl StatusReport {
     }
 }
 
-/// Readers only clone an Arc while holding this lock. Serialization and all IO
-/// happen after releasing it; publication never waits for a client or a worker.
+/// Readers only clone the components of a single publication while holding this
+/// lock. DTO construction, serialization and IO happen after releasing it.
 #[derive(Clone)]
-pub struct StatusPublisher(Arc<Mutex<Arc<HostSnapshot>>>);
+pub struct StatusPublisher(Arc<Mutex<PublishedState>>);
+
+struct PublishedState {
+    legacy: Arc<HostSnapshot>,
+    renderer: Option<Arc<RendererInspection>>,
+    identity: Option<Arc<RuntimeIdentity>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RuntimeIdentity {
+    incarnation: String,
+    scope: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RuntimeIdentityError {
+    #[error("the publisher is already bound to a different Host incarnation or registry scope")]
+    AlreadyBound,
+    #[error("a terminated publisher cannot acquire a new Host identity")]
+    Terminated,
+}
 
 impl Default for StatusPublisher {
     fn default() -> Self {
@@ -227,50 +250,127 @@ impl Default for StatusPublisher {
 
 impl StatusPublisher {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(Arc::new(HostSnapshot {
-            host_pid: std::process::id(),
-            codlet_version: env!("CARGO_PKG_VERSION").to_owned(),
-            state: HostState::Starting,
-            sequence: 0,
-            sampled_at_unix_ms: now_ms(),
-            codex: None,
-            renderer: RendererStatus::default(),
-            termination: None,
-        }))))
+        Self(Arc::new(Mutex::new(PublishedState {
+            legacy: Arc::new(HostSnapshot {
+                host_pid: std::process::id(),
+                codlet_version: env!("CARGO_PKG_VERSION").to_owned(),
+                state: HostState::Starting,
+                sequence: 0,
+                sampled_at_unix_ms: now_ms(),
+                codex: None,
+                renderer: RendererStatus::default(),
+                termination: None,
+            }),
+            renderer: None,
+            identity: None,
+        })))
     }
 
     pub fn snapshot(&self) -> Arc<HostSnapshot> {
-        Arc::clone(&self.0.lock().unwrap_or_else(|p| p.into_inner()))
+        Arc::clone(&self.0.lock().unwrap_or_else(|p| p.into_inner()).legacy)
     }
 
-    fn update(&self, update: impl FnOnce(&mut HostSnapshot)) {
+    pub fn bind_runtime_identity(
+        &self,
+        incarnation: [u8; 16],
+        scope: &str,
+    ) -> Result<(), RuntimeIdentityError> {
+        let identity = RuntimeIdentity {
+            incarnation: incarnation
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            scope: scope.to_owned(),
+        };
         let mut current = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        let snapshot = Arc::make_mut(&mut current);
+        if let Some(existing) = &current.identity {
+            return if **existing == identity {
+                Ok(())
+            } else {
+                Err(RuntimeIdentityError::AlreadyBound)
+            };
+        }
+        if current.legacy.state == HostState::Terminated {
+            return Err(RuntimeIdentityError::Terminated);
+        }
+        current.identity = Some(Arc::new(identity));
+        let legacy = Arc::make_mut(&mut current.legacy);
+        legacy.sequence = legacy.sequence.saturating_add(1);
+        legacy.sampled_at_unix_ms = now_ms();
+        Ok(())
+    }
+
+    pub fn inspection_snapshot(&self) -> Option<RuntimeInspection> {
+        let (legacy, renderer, identity) = {
+            let current = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            (
+                Arc::clone(&current.legacy),
+                current.renderer.as_ref().map(Arc::clone),
+                Arc::clone(current.identity.as_ref()?),
+            )
+        };
+        Some(RuntimeInspection {
+            host_incarnation: identity.incarnation.clone(),
+            registry_scope: identity.scope.clone(),
+            host_pid: legacy.host_pid,
+            codlet_version: legacy.codlet_version.clone(),
+            state: legacy.state,
+            sequence: legacy.sequence,
+            sampled_at_unix_ms: legacy.sampled_at_unix_ms,
+            codex: legacy.codex.clone(),
+            renderer: renderer.as_deref().cloned(),
+            termination: legacy.termination.clone(),
+        })
+    }
+
+    fn update(&self, update: impl FnOnce(&mut HostSnapshot, &mut Option<Arc<RendererInspection>>)) {
+        let mut current = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let PublishedState {
+            legacy, renderer, ..
+        } = &mut *current;
+        let snapshot = Arc::make_mut(legacy);
         if snapshot.state == HostState::Terminated {
             return;
         }
-        update(snapshot);
+        update(snapshot, renderer);
         snapshot.sequence = snapshot.sequence.saturating_add(1);
         snapshot.sampled_at_unix_ms = now_ms();
     }
 
     pub fn set_codex(&self, codex: CodexStatus) {
-        self.update(|snapshot| snapshot.codex = Some(codex));
+        self.update(|snapshot, _| snapshot.codex = Some(codex));
     }
 
     pub fn set_ready(&self) {
-        self.update(|snapshot| snapshot.state = HostState::Ready);
+        self.update(|snapshot, _| snapshot.state = HostState::Ready);
     }
 
     pub fn publish_renderer(&self, renderer: RendererStatus) {
-        self.update(|snapshot| snapshot.renderer = renderer);
+        self.update(|snapshot, inspection| {
+            snapshot.renderer = renderer;
+            // Legacy-only callers did not sample provider facts for this state.
+            *inspection = None;
+        });
+    }
+
+    pub fn publish_renderer_observation(
+        &self,
+        legacy: RendererStatus,
+        inspection: RendererInspection,
+    ) {
+        let inspection = Arc::new(inspection);
+        self.update(|snapshot, renderer| {
+            snapshot.renderer = legacy;
+            *renderer = Some(inspection);
+        });
     }
 
     pub fn terminate(&self, reason: impl Into<String>) {
-        self.update(|snapshot| {
+        self.update(|snapshot, inspection| {
             snapshot.state = HostState::Terminated;
             snapshot.termination = Some(reason.into());
             snapshot.renderer.targets.clear();
+            *inspection = None;
         });
     }
 }
@@ -286,6 +386,165 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::{CapabilityDescriptor, CapabilityScope};
+    use crate::runtime_inspection::{InspectedTarget, ProviderKind, RegisteredProvider};
+
+    fn observation(generation: u64) -> (RendererStatus, RendererInspection) {
+        let plugin = PluginStatus {
+            id: "dev.provider".into(),
+            version: "1".into(),
+            generation,
+            lifecycle: PluginLifecycle::Active,
+            context_present: true,
+            activation_confirmed: true,
+            active: true,
+        };
+        (
+            RendererStatus {
+                targets: vec![TargetStatus {
+                    target_id: "main".into(),
+                    session_id: "session-main".into(),
+                    session_live: true,
+                    plugins: vec![plugin.clone()],
+                }],
+                ..RendererStatus::default()
+            },
+            RendererInspection {
+                providers: vec![RegisteredProvider {
+                    id: "dev.provider".into(),
+                    generation,
+                    kind: ProviderKind::Renderer,
+                    provides: vec![
+                        CapabilityDescriptor::new("dev.api", 1, CapabilityScope::Target).unwrap(),
+                    ],
+                    capabilities_truncated: false,
+                }],
+                targets: vec![InspectedTarget {
+                    target_id: "main".into(),
+                    session_id: "session-main".into(),
+                    session_live: true,
+                    document_epoch: generation,
+                    recovery_pending: false,
+                    scope_active: true,
+                    plugins: vec![plugin],
+                }],
+                ..RendererInspection::default()
+            },
+        )
+    }
+
+    #[test]
+    fn inspection_identity_legacy_publication_and_termination_keep_status_v1_unchanged() {
+        let publisher = StatusPublisher::new();
+        assert!(publisher.inspection_snapshot().is_none());
+        publisher
+            .bind_runtime_identity([42; 16], "fixture-scope")
+            .unwrap();
+        let bound_sequence = publisher.snapshot().sequence;
+        publisher
+            .bind_runtime_identity([42; 16], "fixture-scope")
+            .unwrap();
+        assert_eq!(publisher.snapshot().sequence, bound_sequence);
+        assert_eq!(
+            publisher.bind_runtime_identity([41; 16], "fixture-scope"),
+            Err(RuntimeIdentityError::AlreadyBound)
+        );
+        assert_eq!(
+            publisher.bind_runtime_identity([42; 16], "other-scope"),
+            Err(RuntimeIdentityError::AlreadyBound)
+        );
+        let (legacy, renderer) = observation(1);
+        publisher.publish_renderer_observation(legacy, renderer);
+        let complete = publisher.inspection_snapshot().unwrap();
+        assert_eq!(complete.host_incarnation, "2a".repeat(16));
+        assert_eq!(complete.registry_scope, "fixture-scope");
+        let wire = serde_json::to_value(&*publisher.snapshot()).unwrap();
+        let fields: std::collections::BTreeSet<_> = wire
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            fields,
+            std::collections::BTreeSet::from([
+                "host_pid",
+                "codlet_version",
+                "state",
+                "sequence",
+                "sampled_at_unix_ms",
+                "codex",
+                "renderer",
+                "termination"
+            ])
+        );
+
+        publisher.publish_renderer(RendererStatus::default());
+        assert!(publisher.inspection_snapshot().unwrap().renderer.is_none());
+        assert_eq!(
+            complete.renderer.as_ref().unwrap().providers[0].generation,
+            1
+        );
+        let (legacy, renderer) = observation(2);
+        publisher.publish_renderer_observation(legacy, renderer);
+        publisher.terminate("test shutdown");
+        let terminal = publisher.inspection_snapshot().unwrap();
+        let (legacy, renderer) = observation(3);
+        publisher.publish_renderer_observation(legacy, renderer);
+        publisher.set_ready();
+        assert_eq!(publisher.inspection_snapshot().unwrap(), terminal);
+        assert_eq!(terminal.state, HostState::Terminated);
+        assert!(terminal.renderer.is_none());
+        assert!(publisher.snapshot().renderer.targets.is_empty());
+        let unbound = StatusPublisher::new();
+        unbound.terminate("never bound");
+        assert_eq!(
+            unbound.bind_runtime_identity([42; 16], "fixture-scope"),
+            Err(RuntimeIdentityError::Terminated)
+        );
+        assert!(unbound.inspection_snapshot().is_none());
+    }
+
+    #[test]
+    fn inspection_metadata_and_provider_target_generations_are_one_immutable_publication() {
+        let publisher = StatusPublisher::new();
+        publisher
+            .bind_runtime_identity([7; 16], "fixture-scope")
+            .unwrap();
+        publisher.set_ready();
+        let (legacy, renderer) = observation(1);
+        publisher.publish_renderer_observation(legacy, renderer);
+        let original = publisher.inspection_snapshot().unwrap();
+        let base_sequence = original.sequence;
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                barrier.wait();
+                for generation in 2..=101 {
+                    let (legacy, renderer) = observation(generation);
+                    publisher.publish_renderer_observation(legacy, renderer);
+                }
+            });
+            barrier.wait();
+            for _ in 0..500 {
+                let sample = publisher.inspection_snapshot().unwrap();
+                let renderer = sample.renderer.unwrap();
+                let generation = renderer.providers[0].generation;
+                assert_eq!(renderer.targets[0].plugins[0].generation, generation);
+                assert_eq!(renderer.targets[0].document_epoch, generation);
+                assert_eq!(sample.sequence, base_sequence + generation - 1);
+            }
+        });
+        assert_eq!(original.renderer.unwrap().providers[0].generation, 1);
+        let legacy = publisher.snapshot();
+        let latest = publisher.inspection_snapshot().unwrap();
+        assert_eq!(latest.sequence, legacy.sequence);
+        assert_eq!(latest.sampled_at_unix_ms, legacy.sampled_at_unix_ms);
+        assert_eq!(
+            latest.renderer.unwrap().targets[0].plugins,
+            legacy.renderer.targets[0].plugins
+        );
+    }
 
     #[test]
     fn status_requests_are_strict_and_read_only() {

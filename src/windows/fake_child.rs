@@ -120,9 +120,11 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
     let mut scripts: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut trace: Vec<Value> = Vec::new();
     let mut sequence = 100_u64;
+    let mut command_count = 0_u64;
     let mut settings = json!({});
     loop {
         let request = reader.next()?;
+        command_count += 1;
         let id = request["id"]
             .as_u64()
             .ok_or_else(|| FakeChildError::InvalidRequest("control request has no id".into()))?;
@@ -294,6 +296,7 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
             "Fake.stats" => {
                 result = json!({"trace":trace,"bindings":bindings.keys().collect::<Vec<_>>(),"scripts":scripts.values().map(|(_,world)|world).collect::<Vec<_>>()});
             }
+            "Fake.commandCount" => result = json!({"count":command_count}),
             "Fake.hostStillAlive" => {}
             "Fake.finish" => {
                 if !scripts.is_empty() || !bindings.is_empty() {

@@ -17,6 +17,11 @@ use crate::cdp::{
     is_main_renderer_url,
 };
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
+use crate::runtime_inspection::{
+    InspectedTarget, MAX_INSPECTION_CAPABILITIES, MAX_INSPECTION_CAPABILITIES_PER_PROVIDER,
+    MAX_INSPECTION_ID_BYTES, MAX_INSPECTION_PROVIDERS, ProviderKind, RegisteredProvider,
+    RendererInspection,
+};
 use crate::runtime_status::{
     MAX_STATUS_PLUGINS_PER_TARGET, MAX_STATUS_TARGETS, PluginLifecycle as RendererPluginState,
     PluginStatus, RendererStatus, StatusEvent, StatusPublisher, TargetStatus,
@@ -101,6 +106,7 @@ pub struct RendererRuntime {
     status_events: Vec<StatusEvent>,
     generations: BTreeMap<String, u64>,
     management_active: bool,
+    owner_lifecycle_depth: usize,
 }
 
 struct RendererSession {
@@ -269,6 +275,7 @@ impl RendererRuntime {
             status_events: Vec::new(),
             generations,
             management_active: false,
+            owner_lifecycle_depth: 0,
         })
     }
 
@@ -276,7 +283,10 @@ impl RendererRuntime {
         &mut self,
         session: &TargetSession,
     ) -> Result<RendererBootstrapReport, RendererError> {
+        self.owner_lifecycle_depth += 1;
+        self.publish_status();
         let result = self.attach_inner(session);
+        self.owner_lifecycle_depth -= 1;
         if let Err(error) = &result {
             self.record_status_event(session.target_id(), "attach_failed", &error.to_string());
         }
@@ -606,6 +616,8 @@ impl RendererRuntime {
     }
 
     pub fn deactivate_target(&mut self, target_id: &str) -> Result<(), RendererError> {
+        self.owner_lifecycle_depth += 1;
+        self.publish_status();
         let scope = CapabilityScopeInstance::Target(target_id.to_owned());
         let plugins = self
             .sessions
@@ -627,6 +639,7 @@ impl RendererRuntime {
         self.capabilities.deactivate_scope(&scope);
         self.sessions.remove(target_id);
         self.flush_host_actions();
+        self.owner_lifecycle_depth -= 1;
         self.publish_status();
         first_error.map_or(Ok(()), Err)
     }
@@ -642,57 +655,139 @@ impl RendererRuntime {
 
     /// Samples owner records only. It issues no CDP requests and reads no config.
     pub fn status_snapshot(&self) -> RendererStatus {
+        self.sample_runtime_observation().0
+    }
+
+    fn sample_runtime_observation(&self) -> (RendererStatus, RendererInspection) {
         let mut target_ids: Vec<_> = self.sessions.keys().collect();
         target_ids.sort();
         let mut truncated = target_ids.len() > MAX_STATUS_TARGETS;
-        let targets = target_ids
-            .into_iter()
-            .take(MAX_STATUS_TARGETS)
-            .map(|target_id| {
-                let session = &self.sessions[target_id];
-                let session_live = session.session.is_live();
-                truncated |= session.plugins.len() > MAX_STATUS_PLUGINS_PER_TARGET;
-                truncated |= target_id.len() > 1024 || session.session.session_id().len() > 1024;
-                truncated |= session
-                    .plugins
-                    .iter()
-                    .any(|plugin| plugin.id.len() > 1024 || plugin.version.len() > 1024);
-                let plugins = session
-                    .plugins
-                    .iter()
-                    .take(MAX_STATUS_PLUGINS_PER_TARGET)
-                    .map(|plugin| PluginStatus {
-                        id: status_text(&plugin.id),
-                        version: status_text(&plugin.version),
-                        generation: plugin.generation,
-                        lifecycle: plugin.state,
-                        context_present: plugin.context_id.is_some(),
-                        activation_confirmed: plugin.activation_confirmed,
-                        active: session_live
-                            && !session.recovery_pending
-                            && plugin.context_id.is_some()
-                            && plugin.activation_confirmed
-                            && plugin.state == RendererPluginState::Active,
-                    })
-                    .collect();
-                TargetStatus {
-                    target_id: status_text(target_id),
-                    session_id: status_text(session.session.session_id()),
-                    session_live,
-                    plugins,
+        let mut targets = Vec::new();
+        let mut inspected_targets = Vec::new();
+        for target_id in target_ids.into_iter().take(MAX_STATUS_TARGETS) {
+            let session = &self.sessions[target_id];
+            // This flag is changed by the CDP worker. Both views must use the
+            // same read rather than taking two independent runtime snapshots.
+            let session_live = session.session.is_live();
+            let session_id = session.session.session_id();
+            truncated |= session.plugins.len() > MAX_STATUS_PLUGINS_PER_TARGET;
+            truncated |= target_id.len() > 1024 || session_id.len() > 1024;
+            truncated |= session
+                .plugins
+                .iter()
+                .any(|plugin| plugin.id.len() > 1024 || plugin.version.len() > 1024);
+            let mut plugins = Vec::new();
+            let mut inspected_plugins = Vec::new();
+            for plugin in session.plugins.iter().take(MAX_STATUS_PLUGINS_PER_TARGET) {
+                let status = PluginStatus {
+                    id: status_text(&plugin.id),
+                    version: status_text(&plugin.version),
+                    generation: plugin.generation,
+                    lifecycle: plugin.state,
+                    context_present: plugin.context_id.is_some(),
+                    activation_confirmed: plugin.activation_confirmed,
+                    active: session_live
+                        && !session.recovery_pending
+                        && plugin.context_id.is_some()
+                        && plugin.activation_confirmed
+                        && plugin.state == RendererPluginState::Active,
+                };
+                if plugin.id.len() <= MAX_INSPECTION_ID_BYTES
+                    && plugin.version.len() <= MAX_INSPECTION_ID_BYTES
+                {
+                    inspected_plugins.push(status.clone());
                 }
-            })
-            .collect();
-        RendererStatus {
-            targets,
-            recent_events: self.status_events.clone(),
-            truncated,
+                plugins.push(status);
+            }
+            targets.push(TargetStatus {
+                target_id: status_text(target_id),
+                session_id: status_text(session_id),
+                session_live,
+                plugins,
+            });
+            // Inspection never turns a truncated identity into a join key.
+            if target_id.len() <= MAX_INSPECTION_ID_BYTES
+                && session_id.len() <= MAX_INSPECTION_ID_BYTES
+            {
+                inspected_targets.push(InspectedTarget {
+                    target_id: target_id.clone(),
+                    session_id: session_id.to_owned(),
+                    session_live,
+                    document_epoch: session.document_epoch,
+                    recovery_pending: session.recovery_pending,
+                    scope_active: self
+                        .capabilities
+                        .scope_is_active(&CapabilityScopeInstance::Target(target_id.clone())),
+                    plugins: inspected_plugins,
+                });
+            }
         }
+        let (providers, providers_truncated) = self.sample_registered_providers();
+        (
+            RendererStatus {
+                targets,
+                recent_events: self.status_events.clone(),
+                truncated,
+            },
+            RendererInspection {
+                providers,
+                targets: inspected_targets,
+                recent_events: self.status_events.clone(),
+                truncated: truncated || providers_truncated,
+                lifecycle_busy: self.management_active
+                    || self.owner_lifecycle_depth != 0
+                    || self.drive_depth != 0
+                    || self.drive_deadline.is_some()
+                    || self
+                        .sessions
+                        .values()
+                        .any(|session| session.recovery_pending),
+            },
+        )
+    }
+
+    fn sample_registered_providers(&self) -> (Vec<RegisteredProvider>, bool) {
+        let mut providers = Vec::new();
+        let mut remaining_capabilities = MAX_INSPECTION_CAPABILITIES;
+        let mut truncated = false;
+        for (index, (id, generation, provides)) in self
+            .capabilities
+            .registered_providers()
+            .filter(|(_, _, provides)| !provides.is_empty())
+            .enumerate()
+        {
+            if index == MAX_INSPECTION_PROVIDERS {
+                truncated = true;
+                break;
+            }
+            let mut descriptors: Vec<_> = provides.iter().collect();
+            descriptors.sort();
+            let keep = descriptors
+                .len()
+                .min(MAX_INSPECTION_CAPABILITIES_PER_PROVIDER)
+                .min(remaining_capabilities);
+            let capabilities_truncated = keep < descriptors.len();
+            remaining_capabilities -= keep;
+            truncated |= capabilities_truncated;
+            providers.push(RegisteredProvider {
+                id: id.to_owned(),
+                generation,
+                kind: if id == BUILTIN_HOST_PROVIDER_ID {
+                    ProviderKind::Host
+                } else {
+                    ProviderKind::Renderer
+                },
+                provides: descriptors.into_iter().take(keep).cloned().collect(),
+                capabilities_truncated,
+            });
+        }
+        (providers, truncated)
     }
 
     pub fn publish_status(&self) {
         if let Some(publisher) = &self.status_publisher {
-            publisher.publish_renderer(self.status_snapshot());
+            let (legacy, inspection) = self.sample_runtime_observation();
+            publisher.publish_renderer_observation(legacy, inspection);
         }
     }
 
@@ -1400,6 +1495,7 @@ impl RendererRuntime {
                 self.management_active = true;
                 let failures = self.disable_committed(&plugin_id);
                 self.management_active = false;
+                self.publish_status();
                 for failure in failures {
                     self.diagnostics.push(RendererDiagnostic {
                         target_id: failure.target_id,
@@ -2106,6 +2202,189 @@ mod tests {
         let directory = tempdir().unwrap();
         let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
         (directory, registry)
+    }
+
+    #[test]
+    fn inspection_provider_evidence_comes_from_current_kernel_registrations_not_catalog_caches() {
+        let (_directory, registry) = test_registry();
+        let mut runtime = RendererRuntime::bundled(registry).unwrap();
+        let publisher = StatusPublisher::new();
+        publisher
+            .bind_runtime_identity([1; 16], "fixture-scope")
+            .unwrap();
+        runtime.set_status_publisher(publisher.clone());
+        let original = publisher.inspection_snapshot().unwrap();
+        let original_provider = original
+            .renderer
+            .as_ref()
+            .unwrap()
+            .providers
+            .iter()
+            .find(|provider| provider.id == "codex.ui.adapter")
+            .unwrap()
+            .clone();
+        let cached = runtime
+            .plugins
+            .iter_mut()
+            .find(|plugin| plugin.manifest.id == "codex.ui.adapter")
+            .unwrap();
+        cached.generation = 99;
+        cached.manifest.provides =
+            vec![CapabilityDescriptor::new("dev.cached.only", 1, CapabilityScope::Target).unwrap()];
+        runtime.publish_status();
+        let current = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+        assert_eq!(
+            current
+                .providers
+                .iter()
+                .find(|provider| provider.id == "codex.ui.adapter")
+                .unwrap(),
+            &original_provider
+        );
+        runtime
+            .capabilities
+            .unregister_provider("codex.ui.adapter")
+            .unwrap();
+        runtime.publish_status();
+        assert!(
+            publisher
+                .inspection_snapshot()
+                .unwrap()
+                .renderer
+                .unwrap()
+                .providers
+                .iter()
+                .all(|provider| provider.id != "codex.ui.adapter")
+        );
+        let actual =
+            CapabilityDescriptor::new("dev.actual.registration", 1, CapabilityScope::Target)
+                .unwrap();
+        runtime
+            .capabilities
+            .register_provider(
+                "codex.ui.adapter",
+                7,
+                std::slice::from_ref(&actual),
+                &[],
+                &[],
+            )
+            .unwrap();
+        runtime.publish_status();
+        let current = publisher.inspection_snapshot().unwrap().renderer.unwrap();
+        let provider = current
+            .providers
+            .iter()
+            .find(|provider| provider.id == "codex.ui.adapter")
+            .unwrap();
+        assert_eq!(provider.generation, 7);
+        assert_eq!(provider.provides, [actual]);
+        assert_eq!(provider.kind, ProviderKind::Renderer);
+        assert!(
+            current
+                .providers
+                .iter()
+                .any(|provider| provider.id == BUILTIN_HOST_PROVIDER_ID
+                    && provider.kind == ProviderKind::Host)
+        );
+        assert!(
+            current
+                .providers
+                .iter()
+                .all(|provider| provider.id != "codlet")
+        ); // A consumer is not a capability provider.
+        assert_eq!(
+            original
+                .renderer
+                .unwrap()
+                .providers
+                .iter()
+                .find(|provider| provider.id == "codex.ui.adapter")
+                .unwrap(),
+            &original_provider
+        );
+    }
+
+    #[test]
+    fn inspection_truncates_complete_provider_records_without_changing_legacy_status_limits() {
+        let (_directory, registry) = test_registry();
+        let mut runtime = RendererRuntime::new(Vec::new(), registry).unwrap();
+        let wide: Vec<_> = (0..MAX_INSPECTION_CAPABILITIES_PER_PROVIDER + 7)
+            .map(|index| {
+                CapabilityDescriptor::new(format!("dev.cap{index:03}"), 1, CapabilityScope::Target)
+                    .unwrap()
+            })
+            .collect();
+        runtime
+            .capabilities
+            .register_provider("dev.wide", 1, &wide, &[], &[])
+            .unwrap();
+        let (legacy, inspection) = runtime.sample_runtime_observation();
+        assert!(!legacy.truncated);
+        assert!(inspection.truncated);
+        let provider = inspection
+            .providers
+            .iter()
+            .find(|provider| provider.id == "dev.wide")
+            .unwrap();
+        assert_eq!(
+            provider.provides.len(),
+            MAX_INSPECTION_CAPABILITIES_PER_PROVIDER
+        );
+        assert!(provider.capabilities_truncated);
+        assert_eq!(provider.provides[0], wide[0]);
+        for group in 0..8 {
+            let provides: Vec<_> = (0..MAX_INSPECTION_CAPABILITIES_PER_PROVIDER)
+                .map(|index| {
+                    CapabilityDescriptor::new(
+                        format!("dev.group{group}.cap{index:03}"),
+                        1,
+                        CapabilityScope::Target,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            runtime
+                .capabilities
+                .register_provider(&format!("dev.group{group}"), 1, &provides, &[], &[])
+                .unwrap();
+        }
+        let (_, inspection) = runtime.sample_runtime_observation();
+        assert_eq!(
+            inspection
+                .providers
+                .iter()
+                .map(|provider| provider.provides.len())
+                .sum::<usize>(),
+            MAX_INSPECTION_CAPABILITIES
+        );
+        for index in 0..MAX_INSPECTION_PROVIDERS + 1 {
+            let descriptor = CapabilityDescriptor::new(
+                format!("dev.small{index:03}"),
+                1,
+                CapabilityScope::Target,
+            )
+            .unwrap();
+            runtime
+                .capabilities
+                .register_provider(&format!("dev.small{index:03}"), 1, &[descriptor], &[], &[])
+                .unwrap();
+        }
+        let (legacy, inspection) = runtime.sample_runtime_observation();
+        assert!(!legacy.truncated);
+        assert!(inspection.truncated);
+        assert_eq!(inspection.providers.len(), MAX_INSPECTION_PROVIDERS);
+        assert!(
+            inspection
+                .providers
+                .windows(2)
+                .all(|pair| pair[0].id < pair[1].id)
+        );
+        assert!(
+            inspection
+                .providers
+                .iter()
+                .all(|provider| provider.id.len() < MAX_INSPECTION_ID_BYTES)
+        );
     }
 
     #[test]

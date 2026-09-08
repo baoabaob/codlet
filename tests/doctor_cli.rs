@@ -25,7 +25,16 @@ fn json_output(output: &Output) -> Value {
     );
     let failed_checks = report["result"]["failedChecks"].as_array().unwrap();
     assert_eq!(output.status.success(), failed_checks.is_empty());
-    assert_eq!(report["runtime"]["status"], "not_probed");
+    // These commands each use a fresh registry scope. A Host for the user's
+    // real configuration may exist, but cannot supply this fixture's facts.
+    assert!(
+        matches!(
+            report["runtime"]["status"].as_str(),
+            Some("not_running" | "other_registry" | "unsupported" | "unavailable")
+        ),
+        "{report}"
+    );
+    assert!(report["runtime"].get("sample").is_none());
     for key in [
         "targets",
         "pluginGenerations",
@@ -126,7 +135,7 @@ fn doctor_human_output_distinguishes_declarations_and_unavailable_runtime() {
         "declares-provider:",
         "declares-requirement:",
         "static desired configuration only",
-        "runtime: not_probed",
+        "runtime: ",
         "targets: unavailable",
         "plugin-generations: unavailable",
         "provider-ready: unavailable",
@@ -134,6 +143,7 @@ fn doctor_human_output_distinguishes_declarations_and_unavailable_runtime() {
     ] {
         assert!(stdout.contains(expected), "missing {expected}: {stdout}");
     }
+    assert!(!stdout.contains("runtime: not_probed"));
     assert!(!directory.path().join("Codlet").exists());
 }
 
@@ -155,4 +165,41 @@ fn doctor_rejects_extra_arguments_before_any_diagnostic_or_configuration_work() 
         );
     }
     assert!(!directory.path().join("Codlet").exists());
+}
+
+#[test]
+fn doctor_without_registry_path_keeps_static_diagnostics_and_reports_runtime_unavailable() {
+    let directory = tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_codlet"))
+        .args(["doctor", "--json"])
+        .env_remove("LOCALAPPDATA")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    let report = json_output(&output);
+    assert_eq!(
+        report["registry"]["error"]["code"],
+        "registry_path_unavailable"
+    );
+    assert_eq!(report["runtime"]["status"], "unavailable");
+    assert!(
+        report["runtime"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"] == "runtime_registry_unavailable")
+    );
+    assert!(
+        report["result"]["failedChecks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("runtime"))
+    );
+    assert!(
+        !report["declaredHostProviders"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(directory.path().read_dir().unwrap().count(), 0);
 }

@@ -1,5 +1,11 @@
 //! Read-only doctor report contract. A valid desired configuration is not runtime evidence.
 
+mod runtime;
+pub use runtime::{
+    DoctorRuntimeInput, ProviderTargetReadiness, RuntimeGenerations, RuntimeProvider,
+    RuntimeProviders, RuntimeSample,
+};
+
 use std::fmt::Write;
 use std::path::PathBuf;
 
@@ -14,7 +20,6 @@ use crate::plugins::{
 use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
 
 pub const DOCTOR_SCHEMA: &str = "codlet.doctor/v1";
-const RUNTIME_UNAVAILABLE: &str = "Read-only doctor does not query the Runtime Host; use `codlet status` for sampled Host state. GUI compatibility requires the real Codex gate.";
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -151,11 +156,17 @@ pub struct DependencyGraph {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeObservations {
     pub status: &'static str,
-    pub reason: &'static str,
+    pub reason: String,
     pub targets: Check<Vec<String>>,
-    pub plugin_generations: Check<Value>,
-    pub provider_ready: Check<Value>,
+    pub plugin_generations: Check<RuntimeGenerations>,
+    pub provider_ready: Check<RuntimeProviders>,
     pub compatibility: Check<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample: Option<RuntimeSample>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<DiagnosticIssue>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_events: Vec<crate::runtime_status::StatusEvent>,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,22 +294,7 @@ impl DoctorReport {
             plugin_validation,
             declared_host_providers,
             dependency_graph,
-            runtime: RuntimeObservations {
-                status: "not_probed",
-                reason: RUNTIME_UNAVAILABLE,
-                targets: Check::Unavailable {
-                    reason: RUNTIME_UNAVAILABLE,
-                },
-                plugin_generations: Check::Unavailable {
-                    reason: RUNTIME_UNAVAILABLE,
-                },
-                provider_ready: Check::Unavailable {
-                    reason: RUNTIME_UNAVAILABLE,
-                },
-                compatibility: Check::Unavailable {
-                    reason: RUNTIME_UNAVAILABLE,
-                },
-            },
+            runtime: RuntimeObservations::not_probed(),
             result: DoctorResult {
                 status: if failed { "failed" } else { "passed" },
                 exit_code: u8::from(failed),
@@ -440,11 +436,7 @@ impl DoctorReport {
                 );
             },
         );
-        let _ = writeln!(
-            output,
-            "runtime: not_probed\ntargets: unavailable\nplugin-generations: unavailable\nprovider-ready: unavailable\ncompatibility: not_probed\n  reason: {}",
-            self.runtime.reason
-        );
+        self.runtime.render(&mut output);
         let _ = writeln!(
             output,
             "result: {}; exit-code={}; failed-checks={:?}; launch-preflight={}\n  scope: {}",

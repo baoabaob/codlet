@@ -360,6 +360,24 @@ impl CapabilityRegistry {
         }
     }
 
+    /// Inspect current declarations already admitted by this registry. The
+    /// borrowed view exposes neither authority tokens nor registration epochs.
+    pub(crate) fn registered_providers(
+        &self,
+    ) -> impl Iterator<Item = (&str, u64, &[CapabilityDescriptor])> {
+        self.registrations.iter().map(|(id, registration)| {
+            (
+                id.as_str(),
+                registration.generation,
+                registration.provides.as_slice(),
+            )
+        })
+    }
+
+    pub(crate) fn scope_is_active(&self, scope: &CapabilityScopeInstance) -> bool {
+        self.active_scopes.contains_key(scope)
+    }
+
     pub fn register_provider(
         &mut self,
         provider_id: &str,

@@ -24,6 +24,7 @@ use crate::runtime_control::{
     ControlStatus, MAX_CONTROL_REQUEST_BYTES, MAX_CONTROL_RESPONSE_BYTES, decode_request,
     encode_response,
 };
+use crate::runtime_status::StatusPublisher;
 
 pub const CONTROL_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 const SERVER_TRANSACTION_TIMEOUT: Duration = Duration::from_millis(750);
@@ -40,16 +41,27 @@ pub struct ControlServer {
 impl ControlServer {
     /// Bind only after launch-conflict checks. Acquire the lease before loading
     /// runtime configuration and keep it through the complete Host lifetime.
-    pub fn bind_current_user(lease: RegistryScopeGuard) -> Result<Self, ControlPipeError> {
+    pub fn bind_current_user(
+        lease: RegistryScopeGuard,
+        publisher: StatusPublisher,
+    ) -> Result<Self, ControlPipeError> {
         let discovery = discovery_pipe_name()?;
-        Self::bind(lease, Some(&discovery))
+        Self::bind(lease, Some(&discovery), publisher)
     }
 
     fn bind(
         lease: RegistryScopeGuard,
         discovery: Option<&OsStr>,
+        publisher: StatusPublisher,
     ) -> Result<Self, ControlPipeError> {
-        let broker = ControlBroker::new(random_incarnation()?, lease.scope().id().to_owned());
+        let incarnation = random_incarnation()?;
+        publisher
+            .bind_runtime_identity(incarnation, lease.scope().id())
+            .map_err(|error| {
+                ControlPipeError::Invalid(format!("inspection identity binding failed: {error}"))
+            })?;
+        let broker =
+            ControlBroker::with_inspection(incarnation, lease.scope().id().to_owned(), publisher);
         let mut workers = vec![PipeWorker::bind(
             lease.scope().pipe_name(),
             broker.clone(),
@@ -347,6 +359,12 @@ fn decode_response(
             );
         }
     }
+    if !matches!(request, ControlRequest::Inspect { .. }) && value.get("inspection").is_some() {
+        return failure(
+            ControlStatus::CommunicationError,
+            "The legacy control reply must not contain an inspection field",
+        );
+    }
     let report: ControlReport = match serde_json::from_slice(bytes) {
         Ok(report) => report,
         Err(error) => return failure(ControlStatus::CommunicationError, error),
@@ -370,7 +388,36 @@ fn decode_response(
             "Control response registry scope differs from this endpoint",
         );
     }
+    if let Some(inspection) = &report.inspection {
+        if !matches!(request, ControlRequest::Inspect { .. }) {
+            return failure(
+                ControlStatus::CommunicationError,
+                "Inspection data is not allowed on this control command",
+            );
+        }
+        if inspection.host_pid != pid
+            || report.registry_scope.as_deref() != Some(inspection.registry_scope.as_str())
+            || !valid_incarnation(&inspection.host_incarnation)
+        {
+            return failure(
+                ControlStatus::UntrustedServer,
+                "Inspection identity does not match its authenticated Host and registry",
+            );
+        }
+    }
     let valid_shape = match report.status {
+        ControlStatus::Inspected => {
+            matches!(request, ControlRequest::Inspect { .. })
+                && report.inspection.is_some()
+                && report.operation.is_none()
+                && report.error.is_none()
+        }
+        ControlStatus::InspectionTooLarge => {
+            matches!(request, ControlRequest::Inspect { .. })
+                && report.inspection.is_none()
+                && report.operation.is_none()
+                && report.error.is_some()
+        }
         ControlStatus::Identified => {
             matches!(request, ControlRequest::Identify { .. })
                 && report.operation.is_none()
@@ -410,7 +457,8 @@ fn decode_response(
         | ControlStatus::CommunicationError
         | ControlStatus::Timeout => false,
         _ => report.operation.is_none() && report.error.is_some(),
-    };
+    } && (report.status == ControlStatus::Inspected
+        || report.inspection.is_none());
     if !valid_shape {
         return failure(
             ControlStatus::CommunicationError,
@@ -418,6 +466,13 @@ fn decode_response(
         );
     }
     report
+}
+
+fn valid_incarnation(incarnation: &str) -> bool {
+    incarnation.len() == 32
+        && incarnation
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn failure(status: ControlStatus, message: impl std::fmt::Display) -> ControlReport {
@@ -454,7 +509,12 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, RegistryScope, ControlServer) {
         let directory = tempfile::tempdir().unwrap();
         let scope = RegistryScope::for_path(&directory.path().join("config.json")).unwrap();
-        let server = ControlServer::bind(scope.acquire(Duration::ZERO).unwrap(), None).unwrap();
+        let server = ControlServer::bind(
+            scope.acquire(Duration::ZERO).unwrap(),
+            None,
+            StatusPublisher::new(),
+        )
+        .unwrap();
         server.broker().set_ready();
         (directory, scope, server)
     }
@@ -554,6 +614,7 @@ mod tests {
         let server = ControlServer::bind(
             scope.acquire(Duration::ZERO).unwrap(),
             Some(&discovery_name),
+            StatusPublisher::new(),
         )
         .unwrap();
         server.broker().set_ready();
@@ -570,6 +631,12 @@ mod tests {
             &serde_json::to_vec(&ControlRequest::prepare(request())).unwrap(),
         );
         assert_eq!(rejected.status, ControlStatus::InvalidRequest);
+        let inspected = raw_request(
+            &discovery_name,
+            &serde_json::to_vec(&ControlRequest::inspect()).unwrap(),
+        );
+        assert_eq!(inspected.status, ControlStatus::InvalidRequest);
+        assert!(inspected.inspection.is_none());
         assert!(server.broker().take_next().is_none());
         let other = RegistryScope::for_path(&directory.path().join("two/config.json")).unwrap();
         assert_eq!(
@@ -739,5 +806,177 @@ mod tests {
             .status,
             ControlStatus::CommunicationError
         );
+    }
+
+    #[test]
+    fn scoped_inspection_reads_one_publication_without_config_io_or_receipt_work() {
+        use crate::runtime_inspection::RendererInspection;
+        use crate::runtime_status::{HostState, RendererStatus};
+
+        let directory = tempfile::tempdir().unwrap();
+        let scope = RegistryScope::for_path(&directory.path().join("config.json")).unwrap();
+        let publisher = StatusPublisher::new();
+        let server = ControlServer::bind(
+            scope.acquire(Duration::ZERO).unwrap(),
+            None,
+            publisher.clone(),
+        )
+        .unwrap();
+        let broker = server.broker();
+        let starting = get(&scope, &ControlRequest::inspect());
+        assert_eq!(starting.status, ControlStatus::Inspected, "{starting:?}");
+        let starting = starting.inspection.unwrap();
+        assert_eq!(starting.state, HostState::Starting);
+        assert_eq!(starting.host_pid, std::process::id());
+        assert_eq!(starting.registry_scope, scope.id());
+        assert!(valid_incarnation(&starting.host_incarnation));
+        assert!(broker.take_next().is_none());
+        // Deliberately invalid disk declarations cannot poison this cached view.
+        let invalid = b"{ invalid configuration and invented provider claims";
+        std::fs::write(scope.path(), invalid).unwrap();
+        publisher.set_ready();
+        publisher
+            .publish_renderer_observation(RendererStatus::default(), RendererInspection::default());
+        broker.set_ready();
+        let ready = get(&scope, &ControlRequest::inspect());
+        assert_eq!(ready.status, ControlStatus::Inspected);
+        let inspection = ready.inspection.as_ref().unwrap();
+        assert_eq!(inspection.state, HostState::Ready);
+        assert_eq!(inspection.sequence, publisher.snapshot().sequence);
+        assert_eq!(
+            inspection.sampled_at_unix_ms,
+            publisher.snapshot().sampled_at_unix_ms
+        );
+        assert_eq!(inspection.host_incarnation, starting.host_incarnation);
+        assert!(inspection.renderer.as_ref().unwrap().providers.is_empty());
+        assert_eq!(std::fs::read(scope.path()).unwrap(), invalid);
+        assert_eq!(directory.path().read_dir().unwrap().count(), 1);
+
+        let prepared = get(&scope, &ControlRequest::prepare(request()));
+        assert!(
+            prepared
+                .operation_id()
+                .unwrap()
+                .ends_with("-0000000000000001")
+        );
+        assert!(prepared.inspection.is_none());
+        let mut leaked = broker.handle(ControlRequest::identify());
+        let mut null_extension = serde_json::to_value(&leaked).unwrap();
+        null_extension["inspection"] = serde_json::Value::Null;
+        assert_eq!(
+            decode_response(
+                &serde_json::to_vec(&null_extension).unwrap(),
+                std::process::id(),
+                Some(scope.id()),
+                &ControlRequest::identify()
+            )
+            .status,
+            ControlStatus::CommunicationError
+        );
+        leaked.inspection = ready.inspection.clone();
+        assert_eq!(
+            decode_response(
+                &encode_response(&leaked).unwrap(),
+                std::process::id(),
+                Some(scope.id()),
+                &ControlRequest::identify()
+            )
+            .status,
+            ControlStatus::CommunicationError
+        );
+        for mode in ["pid", "scope", "incarnation"] {
+            let mut forged = ready.clone();
+            let inspection = forged.inspection.as_mut().unwrap();
+            match mode {
+                "pid" => inspection.host_pid = 0,
+                "scope" => inspection.registry_scope = "b".repeat(64),
+                _ => inspection.host_incarnation = "invalid-epoch".into(),
+            }
+            assert_eq!(
+                decode_response(
+                    &encode_response(&forged).unwrap(),
+                    std::process::id(),
+                    Some(scope.id()),
+                    &ControlRequest::inspect()
+                )
+                .status,
+                ControlStatus::UntrustedServer,
+                "mode={mode}"
+            );
+        }
+        publisher.terminate("fixture stopped");
+        broker.stop();
+        let terminated = get(&scope, &ControlRequest::inspect());
+        assert_eq!(terminated.status, ControlStatus::Inspected);
+        assert_eq!(terminated.inspection.unwrap().state, HostState::Terminated);
+        assert!(broker.take_next().is_none());
+    }
+
+    #[test]
+    fn old_host_inspect_rejection_is_readable_and_foreign_snapshot_incarnation_is_refused() {
+        let scope = "a".repeat(64);
+        let old_name = name();
+        let server = Channel {
+            pipe: create_server_pipe(&old_name).unwrap(),
+            event: create_event().unwrap(),
+            stop: Arc::new(create_event().unwrap()),
+        };
+        let old_broker = ControlBroker::new([1; 16], scope.clone());
+        let worker = thread::spawn(move || {
+            server.connect().unwrap();
+            let deadline = Instant::now() + CONTROL_QUERY_TIMEOUT;
+            let body = server
+                .read_frame(MAX_CONTROL_REQUEST_BYTES, deadline)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()["command"],
+                "inspect"
+            );
+            let rejected = server_failure(
+                &old_broker,
+                ControlStatus::InvalidRequest,
+                "This older Host recognizes identify/prepare/submit/result only",
+            );
+            assert!(
+                serde_json::to_value(&rejected)
+                    .unwrap()
+                    .get("inspection")
+                    .is_none()
+            );
+            server
+                .write_frame(&encode_response(&rejected).unwrap(), deadline)
+                .unwrap();
+            let mut ack = [0];
+            server.read_exact(&mut ack, deadline).unwrap();
+            assert_eq!(ack, [RESPONSE_ACK]);
+            assert!(old_broker.take_next().is_none());
+        });
+        let rejected = exchange(
+            &old_name,
+            Some(&scope),
+            &ControlRequest::inspect(),
+            CONTROL_QUERY_TIMEOUT,
+        );
+        assert_eq!(
+            rejected.status,
+            ControlStatus::InvalidRequest,
+            "{rejected:?}"
+        );
+        assert!(rejected.inspection.is_none());
+        worker.join().unwrap();
+
+        let publisher = StatusPublisher::new();
+        publisher.bind_runtime_identity([1; 16], &scope).unwrap();
+        let foreign = ControlBroker::with_inspection([2; 16], scope.clone(), publisher);
+        let foreign_name = name();
+        let _worker = PipeWorker::bind(&foreign_name, foreign, false).unwrap();
+        let rejected = exchange(
+            &foreign_name,
+            Some(&scope),
+            &ControlRequest::inspect(),
+            CONTROL_QUERY_TIMEOUT,
+        );
+        assert_eq!(rejected.status, ControlStatus::StaleHost, "{rejected:?}");
+        assert!(rejected.inspection.is_none());
     }
 }

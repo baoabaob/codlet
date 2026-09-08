@@ -50,6 +50,7 @@ impl RendererRuntime {
         self.flush_host_actions();
         self.management_active = true;
         self.drive_deadline = self.management_phase_deadline();
+        self.publish_status();
         let result = self.manage_plugin_inner(&request, source_policy);
         self.drive_deadline = None;
         self.management_active = false;
