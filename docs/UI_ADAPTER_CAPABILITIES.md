@@ -92,6 +92,12 @@ It remains a scoped stylesheet contract; it does not yet expose component factor
 or a general settings-surface API. Keep this distinction when documenting support
 for third-party codlets.
 
+The [2026-09-08 follow-up](APPEARANCE_FOLLOWUP_2026-09-08.md) extends that baseline to
+35 aliases for menu states, font weights, control cursor and reduced-motion
+preferences. These references resolve from the current host settings. The GUI's
+menu trigger grows with its effective font size instead of fixing its height to
+the 14px baseline. No new capability, global theme writer or control factory is added.
+
 ## Ownership And Compatibility
 
 - Scope recipes to adapter-owned mounts and explicitly opted-in plugin surfaces.

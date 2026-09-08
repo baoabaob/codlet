@@ -405,11 +405,13 @@ test('theme contract is scoped to owned mounts and opted-in portals with native 
     f.flush();
     const css = f.style().textContent;
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
-    assert.equal(rules.length, 3);
+    assert.equal(rules.length, 5);
     assert.equal(rules[0][1].trim(), `${mountSelector}, [data-codlet-ui-theme="${token}"]`);
     const variables = [...rules[0][2].matchAll(/--codlet-ui-([\w-]+):\s*([^;]+);/g)];
     assert.deepEqual(variables.map(([, name]) => name).sort(),
         ['bg', 'fg', 'muted', 'border', 'hover', 'active', 'focus', 'font', 'font-size', 'menu-height', 'radius',
+            'font-weight-normal', 'font-weight-medium', 'menu-fg', 'menu-hover-fg', 'menu-hover-bg', 'menu-active-fg',
+            'cursor', 'motion-duration',
             'surface', 'surface-raised', 'surface-group', 'secondary', 'accent', 'on-accent',
             'font-small', 'font-caption', 'font-heading', 'dialog-radius', 'group-radius', 'dialog-shadow',
             'backdrop', 'danger-bg', 'danger-hover', 'danger-fg'].sort());
@@ -417,13 +419,27 @@ test('theme contract is scoped to owned mounts and opted-in portals with native 
         if (name === 'backdrop') assert.equal(value, '#00000022');
         else if (name === 'danger-bg' || name === 'danger-hover') {
             assert.match(value, /^color-mix\(in oklab, var\(--color-chart-red, CanvasText\) (10|20)%, transparent\)$/);
+        } else if (name === 'menu-hover-bg') {
+            assert.equal(value, 'color-mix(in oklab, var(--color-text, CanvasText) 5%, transparent)');
         } else assert.match(value, /^var\(--[\w-]+, .+\)$/);
     }
+    const aliases = Object.fromEntries(variables.map(([, name, value]) => [name, value]));
+    assert.equal(aliases['menu-fg'], 'var(--color-text-tertiary, GrayText)');
+    assert.equal(aliases['menu-hover-fg'], 'var(--color-codex-description, GrayText)');
+    assert.equal(aliases['menu-active-fg'], 'var(--color-text, CanvasText)');
+    assert.equal(aliases.font, 'var(--font-sans, system-ui, sans-serif)');
+    assert.equal(aliases['font-size'], 'var(--text-base, 14px)');
+    assert.equal(aliases.cursor, 'var(--cursor-interaction, default)');
     assert.equal(rules[1][1].trim(), mountSelector);
     assert.match(rules[1][2], /-webkit-app-region:\s*no-drag/);
     assert.match(rules[1][2], /pointer-events:\s*auto/);
     assert.equal(rules[2][1].trim(), `[data-codlet-ui-theme="${token}"]::backdrop`);
     assert.equal(rules[2][2].trim(), '--codlet-ui-backdrop: #00000022;');
+    const ownedTheme = `:is(${mountSelector}, [data-codlet-ui-theme="${token}"])`;
+    assert.equal(rules[3][1].trim(), `:root[data-reduced-motion="true"] ${ownedTheme}`);
+    assert.equal(rules[4][1].trim(), `:root:not([data-reduced-motion]) ${ownedTheme}`);
+    assert.match(css, /@media\s*\(prefers-reduced-motion: reduce\)/);
+    for (const rule of rules.slice(3)) assert.equal(rule[2].trim(), '--codlet-ui-motion-duration: 0ms;');
     assert.deepEqual(f.document.documentElement.style, { userSetting: 'untouched' });
     assert.deepEqual(f.document.body.style, { userSetting: 'untouched' });
     f.plugin.deactivate();

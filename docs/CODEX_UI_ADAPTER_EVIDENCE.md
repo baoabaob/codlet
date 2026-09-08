@@ -52,6 +52,8 @@ An adapter-owned stylesheet defines aliases only on the owned mount selector and
 
 All mappings below are CSS `var()` references. They resolve in the consumer element's native theme ancestry, so theme, font and size changes update through CSS inheritance without snapshotting colors or writing inline styles to the host root or body.
 
+The [2026-09-08 appearance follow-up](APPEARANCE_FOLLOWUP_2026-09-08.md) corrects the GUI consumer's menu color role and extends this contract to 35 aliases. The original 27-alias tables below remain the baseline; the additional menu-state, weight, cursor and motion mappings are documented in that follow-up. This is live inheritance of the user's effective settings, not a copy of the source defaults.
+
 | Codlet property | Observed host property and meaning | Fallback |
 | --- | --- | --- |
 | `--codlet-ui-bg` | `--color-background-application-menu`, background used by application-menu content; second choice `--color-background-elevated-primary`, primary elevated surface | `Canvas` |
@@ -175,7 +177,7 @@ The extended stylesheet contract is covered by the existing adapter VM test: exa
 - A mount is moved and reused across menu, toolbar and header reconstruction, preserving consumer nodes and listeners. When no qualifying anchor exists it is detached until a matching anchor returns.
 - Reconciliation removes only duplicate artifacts with this provider's exact capability/stylesheet markers. It does not replace unrelated DOM.
 - Child-list and relevant structural-attribute changes are coalesced through one pending microtask. Mutations inside owned mount content or its stylesheet are ignored. A stable reconciliation performs no DOM writes.
-- Theme changes need no mutation subscriptions for style/class changes. The stylesheet is reattached if its node is removed.
+- Theme changes need no mutation subscriptions for style/class changes. The current scoped motion rules also follow the host's `data-reduced-motion` preference without an observer. The stylesheet is reattached if its node is removed.
 - Deactivation disconnects the observer, cancels readiness listeners, retires queued work through a session identity check, and removes the owned mount and stylesheet. A superseded `getMount` handler reports unavailable.
 - `node --test tests/codex_ui_adapter.test.mjs`: 11 passing behavior tests covering selection, malformed menus, fallback upgrade, rebuilding, duplicates, observer stability, cancellation, superseded generations, cleanup and stylesheet scope.
 - `node --test tests/*.test.mjs`: 35 passing tests including the existing runtime, GUI and local-plugin example suites at the initial `2ecb27e` baseline. The follow-up result is recorded above.

@@ -30,6 +30,8 @@ The entry tolerates a late or rebuilt toolbar. Plugin lists load when the dialog
 
 The next adapter layer is planned in [native UI capabilities](docs/UI_ADAPTER_CAPABILITIES.md): host slots, semantic appearance roles and local control interactions have separate ownership. Matching colors alone is not native-style acceptance, and a reusable component library is not implemented yet.
 
+The [appearance follow-up](docs/APPEARANCE_FOLLOWUP_2026-09-08.md) fixes the menu entry's normal/hover/open color roles and its sizing at larger UI fonts. Official-style aliases inherit the client's effective palette, contrast, font family/face, text sizes and accent; control cursor and reduced-motion preferences also follow the host. This applies to the adapter's mount and opted-in plugin surfaces, including Codlet GUI. Other plugins keep their own styling.
+
 Query a running Codlet Host from another terminal using the same executable:
 
 ```powershell

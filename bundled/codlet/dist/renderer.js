@@ -124,20 +124,29 @@ module.exports = (() => {
                 pointer-events: auto;
                 flex: 0 0 auto;
                 box-sizing: border-box;
-                height: calc(var(--codlet-ui-menu-height, 36px) - 12px);
-                padding: 0 8px;
-                border: 0;
+                height: auto;
+                padding: 4px 10px;
+                border: 1px solid transparent;
                 border-radius: var(--codlet-ui-radius, 4px);
                 background: transparent;
-                font-weight: 400;
+                color: var(--codlet-ui-menu-fg, var(--codlet-ui-muted, GrayText));
+                font-weight: var(--codlet-ui-font-weight-normal, 400);
                 line-height: 1;
                 white-space: nowrap;
                 cursor: default;
             }
-            [${BUTTON_ATTRIBUTE}]:hover, [${PANEL_ATTRIBUTE}] button:hover:not(:disabled) {
+            [${BUTTON_ATTRIBUTE}]:hover, [${BUTTON_ATTRIBUTE}]:focus-visible {
+                color: var(--codlet-ui-menu-hover-fg, var(--codlet-ui-muted, GrayText));
+                background: var(--codlet-ui-menu-hover-bg, color-mix(in oklab, CanvasText 5%, transparent));
+            }
+            [${PANEL_ATTRIBUTE}] button:hover:not(:disabled) {
                 background: var(--codlet-ui-hover, color-mix(in srgb, CanvasText 8%, Canvas));
             }
-            [${BUTTON_ATTRIBUTE}][aria-expanded="true"], [${PANEL_ATTRIBUTE}] button:active:not(:disabled) {
+            [${BUTTON_ATTRIBUTE}][aria-expanded="true"] {
+                color: var(--codlet-ui-menu-active-fg, var(--codlet-ui-fg, CanvasText));
+                background: var(--codlet-ui-active, color-mix(in srgb, CanvasText 12%, Canvas));
+            }
+            [${PANEL_ATTRIBUTE}] button:active:not(:disabled) {
                 background: var(--codlet-ui-active, color-mix(in srgb, CanvasText 12%, Canvas));
             }
             [${BUTTON_ATTRIBUTE}]:focus-visible, [${PANEL_ATTRIBUTE}] :focus-visible {
@@ -180,7 +189,7 @@ module.exports = (() => {
                 color: inherit;
                 font: inherit;
                 letter-spacing: 0;
-                cursor: default;
+                cursor: var(--codlet-ui-cursor, default);
             }
             [${PANEL_ATTRIBUTE}] button:disabled { opacity: 0.4; }
             [${PANEL_ATTRIBUTE}] .codlet-panel-header {
@@ -196,7 +205,7 @@ module.exports = (() => {
                 margin: 0;
                 font-size: var(--codlet-ui-font-heading, 20px);
                 line-height: 28px;
-                font-weight: 500;
+                font-weight: var(--codlet-ui-font-weight-medium, 500);
             }
             [${PANEL_ATTRIBUTE}] .codlet-icon-button {
                 display: inline-flex;
@@ -232,7 +241,7 @@ module.exports = (() => {
             [${PANEL_ATTRIBUTE}] .codlet-section-title {
                 margin: 0;
                 font-size: inherit;
-                font-weight: 500;
+                font-weight: var(--codlet-ui-font-weight-medium, 500);
             }
             [${PANEL_ATTRIBUTE}] .codlet-status,
             [${PANEL_ATTRIBUTE}] .codlet-plugin-version,
@@ -267,7 +276,7 @@ module.exports = (() => {
                 background: var(--codlet-ui-border, ButtonBorder);
             }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-copy { min-width: 0; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-name { font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; font-weight: 500; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-name { font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; font-weight: var(--codlet-ui-font-weight-medium, 500); }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-version { margin-top: 2px; font-size: var(--codlet-ui-font-caption, 12px); line-height: 16px; }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width: 88px; font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; text-align: right; }
             [${PANEL_ATTRIBUTE}] .codlet-toggle {
@@ -281,7 +290,8 @@ module.exports = (() => {
                 border-radius: 999px;
                 background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 10%, transparent);
                 color: var(--codlet-ui-on-accent, HighlightText);
-                transition: background-color 150ms;
+                cursor: var(--codlet-ui-cursor, default);
+                transition: background-color var(--codlet-ui-motion-duration, var(--codlet-fallback-motion-duration, 150ms)) ease-out;
             }
             [${PANEL_ATTRIBUTE}] .codlet-toggle::before {
                 content: '';
@@ -292,7 +302,7 @@ module.exports = (() => {
                 height: 16px;
                 border-radius: 50%;
                 background: currentColor;
-                transition: left 150ms;
+                transition: left var(--codlet-ui-motion-duration, var(--codlet-fallback-motion-duration, 150ms)) ease-out;
             }
             [${PANEL_ATTRIBUTE}] .codlet-toggle:checked {
                 background: var(--codlet-ui-accent, Highlight);
@@ -309,7 +319,7 @@ module.exports = (() => {
                 border-radius: 999px;
                 font-size: var(--codlet-ui-font-small, 13px);
                 line-height: 18px;
-                font-weight: 500;
+                font-weight: var(--codlet-ui-font-weight-medium, 500);
                 background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 5%, transparent);
             }
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions button:hover:not(:disabled) {
@@ -323,7 +333,7 @@ module.exports = (() => {
                 background: var(--codlet-ui-danger-hover, Highlight);
             }
             @media (prefers-reduced-motion: reduce) {
-                [${PANEL_ATTRIBUTE}] .codlet-toggle, [${PANEL_ATTRIBUTE}] .codlet-toggle::before { transition: none; }
+                [${PANEL_ATTRIBUTE}] { --codlet-fallback-motion-duration: 0ms; }
             }
             @media (forced-colors: active) {
                 [${PANEL_ATTRIBUTE}] .codlet-toggle { appearance: auto; }

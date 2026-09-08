@@ -7,6 +7,7 @@ module.exports = (() => {
     const PROVIDER_ID = 'codex.ui.adapter';
     const STYLE_ATTRIBUTE = 'data-codlet-ui-adapter-style';
     const MOUNT_SELECTOR = `[${CAPABILITY_ATTRIBUTE}="${CAPABILITY_TOKEN}"][${PROVIDER_ATTRIBUTE}="${PROVIDER_ID}"]`;
+    const THEME_SELECTOR = `[data-codlet-ui-theme="${CAPABILITY_TOKEN}"]`;
     const STYLE_SELECTOR = `style[${STYLE_ATTRIBUTE}="${CAPABILITY_TOKEN}"]`;
     const MENU_IDS = ['file', 'edit', 'view', 'help'].map(name => `application-menu-trigger-${name}-menu`);
     const CAPABILITY = {
@@ -61,7 +62,7 @@ module.exports = (() => {
             session.style.setAttribute(STYLE_ATTRIBUTE, CAPABILITY_TOKEN);
             // Keep native variables in this adapter; CSS inheritance handles live theme/font changes.
             session.style.textContent = `
-                ${MOUNT_SELECTOR}, [data-codlet-ui-theme="${CAPABILITY_TOKEN}"] {
+                ${MOUNT_SELECTOR}, ${THEME_SELECTOR} {
                     --codlet-ui-bg: var(--color-background-application-menu, var(--color-background-elevated-primary, Canvas));
                     --codlet-ui-fg: var(--color-text, CanvasText);
                     --codlet-ui-muted: var(--color-text-tertiary, GrayText);
@@ -71,6 +72,14 @@ module.exports = (() => {
                     --codlet-ui-focus: var(--color-border-focus, Highlight);
                     --codlet-ui-font: var(--font-sans, system-ui, sans-serif);
                     --codlet-ui-font-size: var(--text-base, 14px);
+                    --codlet-ui-font-weight-normal: var(--font-weight-normal, 400);
+                    --codlet-ui-font-weight-medium: var(--font-weight-medium, 500);
+                    --codlet-ui-menu-fg: var(--color-text-tertiary, GrayText);
+                    --codlet-ui-menu-hover-fg: var(--color-codex-description, GrayText);
+                    --codlet-ui-menu-hover-bg: color-mix(in oklab, var(--color-text, CanvasText) 5%, transparent);
+                    --codlet-ui-menu-active-fg: var(--color-text, CanvasText);
+                    --codlet-ui-cursor: var(--cursor-interaction, default);
+                    --codlet-ui-motion-duration: var(--transition-duration-basic, 150ms);
                     --codlet-ui-menu-height: var(--height-toolbar-sm, 36px);
                     --codlet-ui-radius: var(--radius-md, 6px);
                     --codlet-ui-surface: var(--color-surface, Canvas);
@@ -99,8 +108,16 @@ module.exports = (() => {
                     pointer-events: auto;
                     -webkit-app-region: no-drag;
                 }
-                [data-codlet-ui-theme="${CAPABILITY_TOKEN}"]::backdrop {
+                ${THEME_SELECTOR}::backdrop {
                     --codlet-ui-backdrop: #00000022;
+                }
+                :root[data-reduced-motion="true"] :is(${MOUNT_SELECTOR}, ${THEME_SELECTOR}) {
+                    --codlet-ui-motion-duration: 0ms;
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    :root:not([data-reduced-motion]) :is(${MOUNT_SELECTOR}, ${THEME_SELECTOR}) {
+                        --codlet-ui-motion-duration: 0ms;
+                    }
                 }
             `;
         }
