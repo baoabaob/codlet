@@ -10,21 +10,24 @@ Shell timeout and windowless resident-client failures. Two fresh official
 Dev/WebSocket runs passed the automatic startup gate in about 1.9 seconds,
 activated both bundled renderer plugins, and exited normally in about one second.
 The [initial results](ISOLATED_CLIENT_RESULTS_2026-09-07.md) and
-[source audit](ISOLATED_CLIENT_EVIDENCE.md) retain the earlier evidence. Login,
-GUI mount/interaction and production acceptance remain open. The coordinator owns
+[source audit](ISOLATED_CLIENT_EVIDENCE.md) retain the earlier evidence. Those fresh
+runs stopped before login or GUI interaction. The coordinator owns
 the backend lifecycle, connection ownership and before/after checks.
 
 The later [manual-login GUI acceptance](GUI_ACCEPTANCE_2026-09-08.md) is a separate
 scope extension: the user completed login and Windows setup. A restart of only
 the dedicated backend cleared its stale setup-readiness result, but GUI list
-loading and window-reload recovery failed. The fresh-root preparation below
-retains its unauthenticated precondition; it is not a profile-resume command.
+loading and window-reload recovery failed. The [GUI repair and retest](GUI_REPAIR_2026-09-08.md)
+subsequently passed with that retained authenticated profile, including two native
+reloads and self-disable across two windows. Production acceptance remains open.
+Fresh-root preparation below retains its unauthenticated precondition; explicit
+profile resume has a separate contract.
 
 ## Preparation and start
 
 Use an existing plain local parent directory and an empty or nonexistent leaf
-root. The harness does not create missing ancestors or reuse a root from an
-earlier attempt. Example command shape (the port is an illustrative placeholder):
+root. Without `--resume-from`, the harness does not create missing ancestors or
+reuse a root from an earlier attempt. Example command shape (the port is an illustrative placeholder):
 
 ```text
 codlet-lab --experimental-isolated-client --root C:/Users/cccake/.cache/codlet-lab/new-attempt --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:49233
@@ -95,6 +98,9 @@ start after stdin EOF cannot be started through another transport.
 
 ## Directories and fixed policy
 
+The following table describes the fresh-root layout. Resume keeps the same
+application directories and gives each run its own environment/report subdirectory.
+
 | Child setting / artifact | New location or value |
 | --- | --- |
 | `CODEX_ELECTRON_USER_DATA_PATH` | `root/user-data` |
@@ -162,8 +168,52 @@ Root claiming rejects UNC/device/drive-relative paths, traversal/alias names,
 nonempty roots and reparse-point directories in the complete ancestry. Directory
 handles deny deletion/renaming while held. Files use `create_new`, including the
 root claim marker and logs. Root evidence is retained on cancellation/failure or
-completion; repeated runs need another empty/new root. This is not a sandbox
+completion; another fresh run needs an empty/new root, while resume requires the
+closed-run checks below. This is not a sandbox
 against a malicious same-user process changing filesystem state.
+
+## Resuming a closed experimental profile
+
+Append `--resume-from <absolute-report-path>` after the app-server URL options to
+reuse a previously created lab profile. It cannot be combined with `--startup-trace`.
+The root, package version and dedicated backend are still explicit:
+
+```text
+codlet-lab --experimental-isolated-client --root C:/Users/cccake/.cache/codlet-lab/known-attempt --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:49233 --resume-from C:/Users/cccake/.cache/codlet-lab/known-attempt/logs/report.jsonl
+```
+
+Resume acquires a read/write lease on the existing experimental marker and pins
+the plain root ancestry and lab directories. It accepts only `logs/report.jsonl`
+or `logs/run-*/report.jsonl` under that root. A complete schema-1 report must name
+the same root/package/Host and record either child exit 0 plus CDP worker cleanup,
+or `no_child_created` from a completed preparation-only attempt. The old child's
+PID and creation FILETIME are checked with a read-only process handle; a still-live
+matching process or an inaccessible identity blocks resume. A newer/ambiguous run
+report blocks selecting an older receipt. These are conservative local evidence
+checks, not authentication against another process running as the same user.
+
+No configuration, login state or history is copied or rewritten by resume.
+The two core configuration files are bounded, read as snapshots and checked again
+before Desktop creation; the Codlet catalog still permits only bundled plugins.
+An optional `auth.json` receives metadata/link checks only, with no credential byte
+read. Plain files must have a single hard link. Runtime cache directories are
+revalidated under the existing size/depth budgets and all three marker hashes are
+compared to the official package; no fresh copy is made.
+
+Each resumed run writes `logs/run-<time>-<pid>/report.jsonl` and a new
+`child-environment.json`. Use the **exact `environment_manifest` from this run's
+`prepared` event** when starting its backend. The coordinator must verify the new
+listener's process ownership, effective file credential storage, expected account
+state and readiness before sending `start`. An authenticated profile is expected
+only after the separately authorized manual-login flow; do not apply the fresh
+run's null-account assertion to it. Neither the harness nor this option performs
+login, sandbox setup or background-service restart. A prior backend also has to be
+stopped and its cleanup verified by the coordinator, which owns that lifecycle.
+
+Startup evidence must be from a log created no earlier than the new Desktop's
+creation FILETIME, as well as match its PID. This prevents a retained old log from
+satisfying the gate if Windows later reuses a process ID. Process creation still
+happens once, after the same package, environment and shell checks.
 
 ## Observation and shutdown
 
@@ -172,7 +222,8 @@ sample time and `detail`. Key events are:
 
 | Event | Interpretation |
 | --- | --- |
-| `prepared`, `awaiting_start` | Fresh directories/configuration are available; no Desktop child yet. |
+| `lab_opened` | Fresh root or validated resume lease acquired; records the selected run log directory. |
+| `prepared`, `awaiting_start` | Directories/configuration and this run's clean environment manifest are available; no Desktop child yet. |
 | `runtime_assets_prepared`, `shell_preflight_verified` | Runtime copy and final shell probe completed before Desktop creation. |
 | `child_created` | Exact new Desktop PID, handle-derived creation FILETIME, package and executable. |
 | `cdp_transport_open` | Pipe worker startup succeeded; no protocol response claimed yet. |
@@ -185,6 +236,7 @@ sample time and `detail`. Key events are:
 | `quit_sent`, `quit_response_unavailable`, `quit_unavailable` | Result of the single fixed application-quit attempt; none proves process exit. |
 | `quit_timed_out` | The child remains alive after 15 seconds; retain its handle and report failed graceful exit. |
 | `child_exited`, `cdp_workers_reaped` | Exact child exit code and subsequent CDP worker cleanup. |
+| `no_child_created` | Preparation ended without creating a Desktop; permits a later explicit resume. |
 
 Every GUI-related row says `gui_mount_verified=false`: owner activation is not a
 DOM mount assertion. A fresh profile may stop at sign-in, use a different route,
@@ -223,9 +275,10 @@ names and paths even with source logging disabled, and remain local artifacts.
 Only this optional mode requires an ASCII root without whitespace or single
 quotes for V8 flag parsing. Ordinary lab roots retain Unicode/space support.
 
-The stop point for the real experiment is sign-in. Login, model turns, browser/
-Chrome operations, official plugin installation and production gates are outside
-this harness validation. Windows KnownFolder behavior, HKCU, OS credentials,
+The initial fresh experiment stopped at sign-in. The later user-authorized GUI
+acceptance used manual login and setup; resume does not automate either. Model
+turns, browser/Chrome operations, official plugin installation and production gates
+remain outside this harness validation. Windows KnownFolder behavior, HKCU, OS credentials,
 shared shortcuts/native endpoints and unauthenticated loopback access are not
 made private by directory/environment redirection. The audited fixed strategy
 reduces specific startup interactions; the coordinator still checks actual
@@ -247,6 +300,8 @@ configuration guards, runtime copy/tamper/reuse checks and known SHA-256 vectors
 shell output validation, PID-scoped startup logs and partial writes, deadlines,
 quit acknowledgments, fixed profiling arguments and control ordering. Node VM
 tests exercise the actual quit script and reject wrong documents, subframes and
-missing bridges. The final full Rust run passed 246 tests with one external real
-Codex gate ignored; the two new Node tests passed. These automated tests launch
-no official Desktop or backend; real evidence is recorded separately above.
+missing bridges. Resume checks additionally cover profile preservation, exclusive
+leases, latest receipts, live/recycled PID identities and stale startup logs. The
+GUI repair's full Rust run passed 255 tests with one external real Codex gate
+ignored; all 63 Node tests passed. These automated tests launch no official Desktop
+or backend; real evidence is recorded separately above.

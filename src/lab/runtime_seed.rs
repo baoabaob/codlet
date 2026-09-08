@@ -35,6 +35,8 @@ pub(super) struct RuntimeSeed {
     pub cache_key: String,
     pub copied_files: usize,
     pub copied_bytes: u64,
+    pub reused_existing: bool,
+    pub validated_files: usize,
     markers: Vec<Marker>,
     #[serde(skip)]
     _pins: Vec<File>,
@@ -61,14 +63,84 @@ impl RuntimeSeed {
             cache_key,
             copied_files: 0,
             copied_bytes: 0,
+            reused_existing: false,
+            validated_files: 0,
             markers,
             _pins: pins,
         };
         let source = seed.source.clone();
         let destination = seed.destination.clone();
         seed.copy_contents(&source, &destination, 0)?;
+        seed.validated_files = seed.copied_files;
         seed.verify()?;
         Ok(seed)
+    }
+
+    pub fn reuse(resources: &Path, local_app_data: &Path) -> Result<Self, LabError> {
+        let source = resources.join("cua_node");
+        let _source_guard = pin_plain_directory(&source)?;
+        let markers = markers(&source)?;
+        let cache_key = cache_key(&markers)?;
+        let mut destination = local_app_data.to_owned();
+        let mut pins = Vec::new();
+        for part in ["OpenAI", "Codex", "runtimes", "cua_node", &cache_key] {
+            destination.push(part);
+            pins.push(pin_plain_directory(&destination)?);
+        }
+        let mut seed = Self {
+            source,
+            destination,
+            cache_key,
+            copied_files: 0,
+            copied_bytes: 0,
+            reused_existing: true,
+            validated_files: 0,
+            markers,
+            _pins: pins,
+        };
+        let mut bytes = 0;
+        seed.validate_existing(&seed.destination.clone(), 0, &mut bytes)?;
+        seed.verify()?;
+        Ok(seed)
+    }
+
+    fn validate_existing(
+        &mut self,
+        directory: &Path,
+        depth: usize,
+        bytes: &mut u64,
+    ) -> Result<(), LabError> {
+        if depth > 32 {
+            return Err(LabError::Preflight("runtime nesting limit exceeded".into()));
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(LabError::Preflight(
+                    "resumed runtime contains a reparse point".into(),
+                ));
+            }
+            if metadata.is_dir() {
+                self._pins.push(pin_plain_directory(&entry.path())?);
+                self.validate_existing(&entry.path(), depth + 1, bytes)?;
+            } else if metadata.is_file() {
+                self.validated_files += 1;
+                *bytes = bytes
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| LabError::Preflight("runtime size overflow".into()))?;
+                if self.validated_files > MAX_FILES || *bytes > MAX_BYTES {
+                    return Err(LabError::Preflight(
+                        "resumed runtime exceeds validation budget".into(),
+                    ));
+                }
+            } else {
+                return Err(LabError::Preflight(
+                    "resumed runtime contains a non-file entry".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn verify(&self) -> Result<(), LabError> {
@@ -322,6 +394,27 @@ mod tests {
             fs::read(resources.path().join("cua_node/bin/node.exe")).unwrap(),
             b"node fixture"
         );
+    }
+
+    #[test]
+    fn closed_lab_runtime_reuse_validates_without_copying_or_following_links() {
+        let resources = fixture();
+        let destination = tempfile::tempdir().unwrap();
+        let prepared = RuntimeSeed::prepare(resources.path(), destination.path()).unwrap();
+        let cache = prepared.destination.clone();
+        drop(prepared);
+        let resumed = RuntimeSeed::reuse(resources.path(), destination.path()).unwrap();
+        assert!(resumed.reused_existing);
+        assert_eq!(resumed.copied_files, 0);
+        assert_eq!(resumed.copied_bytes, 0);
+        assert_eq!(resumed.validated_files, 4);
+        drop(resumed);
+        fs::write(cache.join("bin/node.exe"), b"modified runtime").unwrap();
+        assert!(RuntimeSeed::reuse(resources.path(), destination.path()).is_err());
+        fs::write(cache.join("bin/node.exe"), b"node fixture").unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::os::windows::fs::symlink_dir(other.path(), cache.join("linked")).unwrap();
+        assert!(RuntimeSeed::reuse(resources.path(), destination.path()).is_err());
     }
 
     #[test]

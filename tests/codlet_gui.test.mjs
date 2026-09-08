@@ -11,6 +11,19 @@ const deferred = () => {
     return { promise, resolve, reject };
 };
 
+test('a timed-out plugin list shows a retry action and a later refresh can succeed', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    f.override('list', () => { throw Object.assign(new Error('RPC deadline'), { code: 'rpc_timeout' }); });
+    await f.open();
+    assert.equal(f.byClass('codlet-status').textContent, 'Plugin list timed out. Refresh to try again.');
+    assert.equal(f.byClass('codlet-plugin-list').getAttribute('aria-busy'), 'false');
+    f.override('list', () => ({ plugins: [{ id: 'recovered' }] }));
+    await f.refresh().emit('click');
+    assert.equal(f.byClass('codlet-plugin-list').hidden, false);
+    f.plugin.deactivate();
+});
+
 function fixture({ mounted = true, ready = true } = {}) {
     let mutations = 0;
     let layoutReads = 0;

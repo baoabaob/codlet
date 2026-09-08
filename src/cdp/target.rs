@@ -576,7 +576,7 @@ fn is_main_renderer(target: &TargetObservation) -> bool {
     target.target_type == "page" && is_main_renderer_url(&target.url)
 }
 
-fn is_main_renderer_url(url: &str) -> bool {
+pub(crate) fn is_main_renderer_url(url: &str) -> bool {
     url == MAIN_RENDERER_URL
         || url
             .strip_prefix(MAIN_RENDERER_URL)

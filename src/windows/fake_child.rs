@@ -48,8 +48,12 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "target-delayed" => scenario_target_delayed(&mut input, &mut output),
         "target-never" => scenario_target_never_matches(&mut input, &mut output),
         "target-lifecycle" => scenario_target_lifecycle(&mut input, &mut output),
-        "renderer-runtime" => scenario_renderer_runtime(&mut input, &mut output, false),
-        "renderer-status-context" => scenario_renderer_runtime(&mut input, &mut output, true),
+        mode @ ("renderer-runtime" | "renderer-status-context" | "renderer-subframe-context") => {
+            scenario_renderer_runtime(&mut input, &mut output, mode)
+        }
+        mode @ ("renderer-document-recovery" | "renderer-document-recovery-timeout") => {
+            scenario_renderer_document_recovery(&mut input, &mut output, mode.ends_with("timeout"))
+        }
         "lab-environment" => scenario_lab_environment(&mut input, &mut output),
         "renderer-ready-handshake" => scenario_renderer_ready_handshake(&mut input, &mut output),
         "renderer-ready-rejection" => scenario_renderer_ready_rejection(&mut input, &mut output),
@@ -413,7 +417,7 @@ fn scenario_target_lifecycle(input: &mut File, output: &mut File) -> Result<(), 
 fn scenario_renderer_runtime(
     input: &mut File,
     output: &mut File,
-    status_context: bool,
+    context_scenario: &str,
 ) -> Result<(), FakeChildError> {
     let mut reader = RequestReader::new(input);
     enable_target_discovery(&mut reader, output)?;
@@ -431,7 +435,7 @@ fn scenario_renderer_runtime(
     )?;
     let session_id = establish_named_target_session(&mut reader, output, "main")?;
     complete_bundled_renderer_install(&mut reader, output, &session_id, "", 41, 42)?;
-    if status_context {
+    if context_scenario == "renderer-status-context" {
         expect_root_command(&mut reader, output, "Fake.clearContexts")?;
         write_json_frame(
             output,
@@ -445,12 +449,202 @@ fn scenario_renderer_runtime(
                 output,
                 &json!({
                     "method": "Runtime.executionContextCreated", "sessionId": session_id,
-                    "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1")}}
+                    "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1"), "auxData": {"frameId": "frame-main", "isDefault": false}}}
                 }),
             )?;
         }
     }
+    if context_scenario == "renderer-subframe-context" {
+        expect_root_command(&mut reader, output, "Fake.subframeContexts")?;
+        for (id, plugin, frame, is_default) in [
+            (241, "codex.ui.adapter", "frame-widget", false),
+            (242, "codlet", "frame-widget", false),
+            (243, "codlet", "frame-main", true),
+        ] {
+            write_json_frame(
+                output,
+                &json!({
+                    "method": "Runtime.executionContextCreated", "sessionId": session_id,
+                    "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1"),
+                        "auxData": {"frameId": frame, "isDefault": is_default}}}
+                }),
+            )?;
+            write_json_frame(
+                output,
+                &json!({
+                    "method": "Runtime.executionContextDestroyed", "sessionId": session_id,
+                    "params": {"executionContextId": id}
+                }),
+            )?;
+        }
+        expect_root_command(&mut reader, output, "Fake.subframeEventsSent")?;
+    }
     complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", 43, 44)?;
+    expect_root_command(&mut reader, output, "Fake.finish")
+}
+
+fn scenario_renderer_document_recovery(
+    input: &mut File,
+    output: &mut File,
+    timeout_first_recovery: bool,
+) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let request = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({"id":request,"result":{"targetInfos":[
+            {"targetId":"main","type":"page","url":"app://-/index.html"}
+        ]}}),
+    )?;
+    let session = establish_named_target_session(&mut reader, output, "main")?;
+    let old = complete_bundled_renderer_install(&mut reader, output, &session, "", 41, 42)?;
+    expect_root_command(&mut reader, output, "Fake.navigateDocument")?;
+    write_json_frame(
+        output,
+        &json!({"method":"Page.frameNavigated","sessionId":session,
+        "params":{"frame":{"id":"frame-main","url":"app://-/index.html#/reloaded","loaderId":"new-document"}}}),
+    )?;
+    write_json_frame(
+        output,
+        &json!({"method":"Runtime.executionContextsCleared","sessionId":session,"params":{}}),
+    )?;
+    expect_root_command(&mut reader, output, "Fake.navigationEventsSent")?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &session, "", 143, 144)?;
+
+    if timeout_first_recovery {
+        let world = "codlet.plugin.codex.ui.adapter.g1.d2";
+        complete_isolated_world(&mut reader, output, &session, world, 41)?;
+        expect_renderer_binding(&mut reader, output, &session, world)?;
+        expect_renderer_script(
+            &mut reader,
+            output,
+            &session,
+            world,
+            "__codletRendererV1",
+            "recovery-timeout",
+        )?;
+        complete_renderer_evaluation(
+            &mut reader,
+            output,
+            &session,
+            41,
+            "__codletRendererV1",
+            json!({"ok":true}),
+        )?;
+        let request = reader.next()?;
+        expect_method(request, "Runtime.evaluate", Some(&session))?; // Deliberately never acknowledges activation.
+        complete_renderer_evaluation(
+            &mut reader,
+            output,
+            &session,
+            41,
+            "__rpcClose",
+            json!({"ok":true}),
+        )?;
+        expect_remove_renderer_script(&mut reader, output, &session, "recovery-timeout")?;
+        expect_remove_renderer_binding(&mut reader, output, &session)?;
+        expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
+        expect_root_command(&mut reader, output, "Fake.retryNavigation")?;
+        write_json_frame(
+            output,
+            &json!({"method":"Page.frameNavigated","sessionId":session,
+            "params":{"frame":{"id":"frame-main","url":"app://-/index.html#/retry","loaderId":"retry-document"}}}),
+        )?;
+        expect_root_command(&mut reader, output, "Fake.navigationEventsSent")?;
+    }
+    let epoch = if timeout_first_recovery { 3 } else { 2 };
+
+    let mut bindings = Vec::new();
+    // Reuse numeric context IDs to model a renderer-process swap. The new
+    // document must still receive different worlds and binding identities.
+    for (plugin, context, identifier) in [
+        ("codex.ui.adapter", 41, "recovery-adapter"),
+        ("codlet", 42, "recovery-codlet"),
+    ] {
+        let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
+        complete_isolated_world(&mut reader, output, &session, &world, context)?;
+        bindings.push(expect_renderer_binding(
+            &mut reader,
+            output,
+            &session,
+            &world,
+        )?);
+        expect_renderer_script(
+            &mut reader,
+            output,
+            &session,
+            &world,
+            "__codletRendererV1",
+            identifier,
+        )?;
+        complete_renderer_evaluation(
+            &mut reader,
+            output,
+            &session,
+            context,
+            "__codletRendererV1",
+            json!({"ok":true}),
+        )?;
+        complete_renderer_evaluation(
+            &mut reader,
+            output,
+            &session,
+            context,
+            "runtime.activate",
+            json!({"ok":true}),
+        )?;
+    }
+    if bindings[0] == old.adapter_binding || bindings[1] == old.codlet_binding {
+        return Err(FakeChildError::InvalidRequest(
+            "navigation reused an old renderer binding".into(),
+        ));
+    }
+    expect_root_command(&mut reader, output, "Fake.checkRestoredRpc")?;
+    emit_renderer_request(output, &session, &old, 1, "codlet.runtime.ping", "ping")?;
+    expect_consumer_error_response(&mut reader, output, &session, 42, "unknown_binding")?;
+    let current = RendererBindingInfo {
+        adapter_binding: bindings[0].clone(),
+        codlet_binding: bindings[1].clone(),
+        adapter_context: 41,
+        codlet_context: 42,
+    };
+    emit_renderer_request(
+        output,
+        &session,
+        &current,
+        1,
+        "codlet.runtime.manage",
+        "list",
+    )?;
+    let (request, response) = read_management_list_response(&mut reader, &session, 42)?;
+    let plugins = response
+        .pointer("/result/plugins")
+        .and_then(Value::as_array)
+        .ok_or_else(|| FakeChildError::InvalidRequest("recovered list is absent".into()))?;
+    if plugins.len() != 2 || plugins.iter().any(|plugin| plugin["active"] != true) {
+        return Err(FakeChildError::InvalidRequest(
+            "recovered plugins were not confirmed active".into(),
+        ));
+    }
+    write_evaluation_value(output, request, json!({"ok":true}), &session)?;
+    for (plugin, context, identifier) in [
+        ("codlet", 42, "recovery-codlet"),
+        ("codex.ui.adapter", 41, "recovery-adapter"),
+    ] {
+        let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
+        complete_isolated_world(&mut reader, output, &session, &world, context)?;
+        complete_renderer_evaluation(
+            &mut reader,
+            output,
+            &session,
+            context,
+            &format!(".deactivate(\"{plugin}\", 1)"),
+            json!({"ok":true}),
+        )?;
+        expect_remove_renderer_script(&mut reader, output, &session, identifier)?;
+        expect_remove_renderer_binding(&mut reader, output, &session)?;
+    }
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
@@ -623,14 +817,6 @@ fn scenario_renderer_reentrant(
     write_evaluation_value(output, provider, json!({"ok":true,"value":null}), &session)?;
     expect_consumer_success_response(&mut reader, output, &session, 202)?;
     write_evaluation_value(output, activation, json!({"ok":true}), &session)?;
-    expect_renderer_script(
-        &mut reader,
-        output,
-        &session,
-        "codlet.plugin.codlet.g1",
-        "runtime.activate",
-        "script-codlet-nested",
-    )?;
 
     expect_root_command(&mut reader, output, "Fake.beginNested")?;
     emit_renderer_request(
@@ -743,7 +929,6 @@ fn scenario_renderer_reentrant(
     )?;
     expect_consumer_host_success_response(&mut reader, output, &session, 202)?;
     write_evaluation_value(output, deactivate, json!({"ok":true}), &session)?;
-    expect_remove_renderer_script(&mut reader, output, &session, "script-codlet-nested")?;
     expect_remove_renderer_script(
         &mut reader,
         output,
@@ -1103,7 +1288,6 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         ".deactivate(\"codlet\", 1)",
         json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
     )?;
-    expect_remove_renderer_script(&mut reader, output, &session_id, "script-codlet-rpc")?;
     expect_remove_renderer_script(
         &mut reader,
         output,
@@ -1127,7 +1311,6 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         ".deactivate(\"codex.ui.adapter\", 1)",
         json!({"ok": true, "id": "codex.ui.adapter", "generation": 1, "inactive": true}),
     )?;
-    expect_remove_renderer_script(&mut reader, output, &session_id, "script-adapter-rpc")?;
     expect_remove_renderer_script(
         &mut reader,
         output,
@@ -1215,12 +1398,6 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         &mut reader,
         output,
         &failure_session,
-        "script-codlet-manage-failure",
-    )?;
-    expect_remove_renderer_script(
-        &mut reader,
-        output,
-        &failure_session,
         "script-bootstrap-codlet-manage-failure",
     )?;
     expect_remove_renderer_binding(&mut reader, output, &failure_session)?;
@@ -1240,7 +1417,6 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         ".deactivate(\"codlet\", 1)",
         json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
     )?;
-    expect_remove_renderer_script(&mut reader, output, &session_id, "script-codlet-manage")?;
     expect_remove_renderer_script(
         &mut reader,
         output,
@@ -1327,14 +1503,6 @@ fn scenario_renderer_local_manage(
         expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
     }
     write_evaluation_value(output, activation, json!({"ok":true}), session)?;
-    expect_renderer_script(
-        &mut reader,
-        output,
-        session,
-        world,
-        "fixture-local-source",
-        "local-entry",
-    )?;
 
     expect_root_command(&mut reader, output, "Fake.emitLocalList")?;
     emit_local_manage_request(output, session, &binding, 2, "list")?;
@@ -1362,7 +1530,6 @@ fn scenario_renderer_local_manage(
         expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
     }
     write_evaluation_value(output, deactivate, json!({"ok":true}), session)?;
-    expect_remove_renderer_script(&mut reader, output, session, "local-entry")?;
     expect_remove_renderer_script(&mut reader, output, session, "local-bootstrap")?;
     expect_remove_renderer_binding(&mut reader, output, session)?;
     complete_bundled_renderer_deactivation(&mut reader, output, session, "local", 302, 301)?;
@@ -1478,12 +1645,6 @@ fn scenario_renderer_manage_response_failure(
         113,
         ".deactivate(\"codlet\", 1)",
         json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
-    )?;
-    expect_remove_renderer_script(
-        &mut reader,
-        output,
-        &session_id,
-        "script-codlet-manage-response-failure",
     )?;
     expect_remove_renderer_script(
         &mut reader,
@@ -1849,13 +2010,11 @@ fn scenario_renderer_navigation(input: &mut File, output: &mut File) -> Result<(
             "params": {"targetInfo": {"targetId": "main", "type": "page", "url": "about:blank"}}
         }),
     )?;
-    for identifiers in [
-        ["script-codlet-nav-1", "script-bootstrap-codlet-nav-1"],
-        ["script-adapter-nav-1", "script-bootstrap-adapter-nav-1"],
+    for identifier in [
+        "script-bootstrap-codlet-nav-1",
+        "script-bootstrap-adapter-nav-1",
     ] {
-        for identifier in identifiers {
-            expect_remove_renderer_script(&mut reader, output, "session-main-nav-1", identifier)?;
-        }
+        expect_remove_renderer_script(&mut reader, output, "session-main-nav-1", identifier)?;
         expect_remove_renderer_binding(&mut reader, output, "session-main-nav-1")?;
     }
     let detach_request = reader.next()?;
@@ -1907,7 +2066,6 @@ fn complete_bundled_renderer_install(
 ) -> Result<RendererBindingInfo, FakeChildError> {
     let codlet_world = "codlet.plugin.codlet.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
-    let codlet = renderer_identifier("script-codlet", identifier_suffix);
     let adapter_binding = complete_adapter_renderer_install(
         reader,
         output,
@@ -1942,14 +2100,6 @@ fn complete_bundled_renderer_install(
         "runtime.activate",
         json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
     )?;
-    expect_renderer_script(
-        reader,
-        output,
-        session_id,
-        codlet_world,
-        "runtime.activate",
-        &codlet,
-    )?;
     Ok(RendererBindingInfo {
         adapter_binding,
         codlet_binding,
@@ -1974,7 +2124,6 @@ fn complete_bundled_renderer_install_with_ready_handshake(
         adapter_context,
         codlet_context,
     )?;
-    let codlet = renderer_identifier("script-codlet", identifier_suffix);
 
     emit_renderer_request(
         output,
@@ -2011,14 +2160,6 @@ fn complete_bundled_renderer_install_with_ready_handshake(
         activation_id,
         json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
         session_id,
-    )?;
-    expect_renderer_script(
-        reader,
-        output,
-        session_id,
-        "codlet.plugin.codlet.g1",
-        "runtime.activate",
-        &codlet,
     )?;
     Ok(bindings)
 }
@@ -2132,7 +2273,6 @@ fn complete_adapter_renderer_install(
 ) -> Result<String, FakeChildError> {
     let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    let adapter = renderer_identifier("script-adapter", identifier_suffix);
     complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
     let adapter_binding = expect_renderer_binding(reader, output, session_id, adapter_world)?;
     let bootstrap_script = expect_renderer_script(
@@ -2172,14 +2312,6 @@ fn complete_adapter_renderer_install(
         "codex.ui.adapter",
         json!({"ok": true, "id": "codex.ui.adapter", "generation": 1, "reused": false}),
     )?;
-    expect_renderer_script(
-        reader,
-        output,
-        session_id,
-        adapter_world,
-        "codex.ui.adapter",
-        &adapter,
-    )?;
     Ok(adapter_binding)
 }
 
@@ -2193,7 +2325,6 @@ fn complete_bundled_renderer_deactivation(
 ) -> Result<(), FakeChildError> {
     let codlet_world = "codlet.plugin.codlet.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
-    let codlet = renderer_identifier("script-codlet", identifier_suffix);
     complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
     complete_renderer_evaluation(
         reader,
@@ -2203,7 +2334,6 @@ fn complete_bundled_renderer_deactivation(
         ".deactivate(\"codlet\", 1)",
         json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
     )?;
-    expect_remove_renderer_script(reader, output, session_id, &codlet)?;
     expect_remove_renderer_script(reader, output, session_id, &bootstrap_codlet)?;
     expect_remove_renderer_binding(reader, output, session_id)?;
 
@@ -2225,7 +2355,6 @@ fn complete_adapter_renderer_deactivation(
 ) -> Result<(), FakeChildError> {
     let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    let adapter = renderer_identifier("script-adapter", identifier_suffix);
     complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
     complete_renderer_evaluation(
         reader,
@@ -2235,7 +2364,6 @@ fn complete_adapter_renderer_deactivation(
         ".deactivate(\"codex.ui.adapter\", 1)",
         json!({"ok": true, "id": "codex.ui.adapter", "generation": 1, "inactive": true}),
     )?;
-    expect_remove_renderer_script(reader, output, session_id, &adapter)?;
     expect_remove_renderer_script(reader, output, session_id, &bootstrap_adapter)?;
     expect_remove_renderer_binding(reader, output, session_id)?;
     Ok(())
@@ -2261,7 +2389,7 @@ fn complete_isolated_world(
         output,
         &json!({
             "id": get_frame_tree,
-            "result": {"frameTree": {"frame": {"id": "frame-main"}}},
+            "result": {"frameTree": {"frame": {"id": "frame-main", "url": "app://-/index.html"}}},
             "sessionId": session_id
         }),
     )?;

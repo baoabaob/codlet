@@ -25,6 +25,7 @@ use crate::windows::packages::{
 use crate::windows::process::{ChildProcess, launch_with_cdp_pipes_in_environment};
 
 mod input;
+mod resume;
 mod runtime_seed;
 mod shell;
 mod shutdown;
@@ -40,11 +41,27 @@ const LAB_SHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.
 const AUDITED_PACKAGE_VERSION: &str = "26.901.6511.0";
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
+const LAB_DIRECTORIES: &[&str] = &[
+    "user-data",
+    "codex-home",
+    "sqlite",
+    "codlet",
+    "project",
+    "logs",
+    "home",
+    "home/Documents",
+    "home/AppData",
+    "home/AppData/Roaming",
+    "home/AppData/Local",
+    "home/AppData/Local/Codex",
+    "home/AppData/Local/Codex/Logs",
+    "temp",
+];
 
 #[derive(Debug, Error)]
 pub enum LabError {
     #[error(
-        "use `codlet-lab --experimental-isolated-client --root <empty-or-new-absolute-directory> --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:<port> [--startup-trace]`; then stdin start or quit"
+        "use `codlet-lab --experimental-isolated-client --root <absolute-lab-directory> --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:<port> [--resume-from <closed-run-report>] [--startup-trace]`; then stdin start or quit"
     )]
     Usage,
     #[error("preflightBlocked: {0}")]
@@ -63,6 +80,7 @@ struct LabOptions {
     expected_version: String,
     app_server_url: Option<String>,
     startup_trace: bool,
+    resume_from: Option<PathBuf>,
 }
 
 impl LabOptions {
@@ -96,6 +114,19 @@ impl LabOptions {
         } else {
             (extra, false)
         };
+        let (extra, resume_from) = match extra {
+            [rest @ .., flag, report] if flag == OsStr::new("--resume-from") => {
+                let report = PathBuf::from(report);
+                validate_root_path(report.parent().ok_or(LabError::Usage)?)?;
+                (rest, Some(report))
+            }
+            _ => (extra, None),
+        };
+        if startup_trace && resume_from.is_some() {
+            return Err(LabError::Preflight(
+                "startup profiling is only available for a fresh lab run".into(),
+            ));
+        }
         if startup_trace
             && root.to_str().is_none_or(|root| {
                 !root.is_ascii()
@@ -127,6 +158,7 @@ impl LabOptions {
             expected_version: version.to_owned(),
             app_server_url,
             startup_trace,
+            resume_from,
         })
     }
 }
@@ -141,12 +173,33 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     let executable =
         resolve_package_executable(&package, Path::new(CODEX_EXECUTABLE_RELATIVE_PATH))
             .map_err(|error| LabError::Preflight(error.to_string()))?;
-    let root = LabRoot::claim(&options.root)?;
+    let root = if let Some(report) = &options.resume_from {
+        LabRoot::resume(
+            &options.root,
+            report,
+            &package.full_name,
+            &package.version.to_string(),
+        )?
+    } else {
+        LabRoot::claim(&options.root)?
+    };
     let mut reporter = Reporter::new(&root)?;
-    let runtime_seed = runtime_seed::RuntimeSeed::prepare(
-        &package.install_location.join("app/resources"),
-        &root.path.join("home/AppData/Local"),
-    )?;
+    reporter.emit(
+        "lab_opened",
+        json!({
+            "root": root.path, "package_full_name": package.full_name,
+            "package_version": package.version.to_string(), "experimental": true,
+            "resume_from": options.resume_from, "resume_evidence": root.resume_evidence,
+            "run_logs": root.logs,
+        }),
+    );
+    let resources = package.install_location.join("app/resources");
+    let local_data = root.path.join("home/AppData/Local");
+    let runtime_seed = if root.resume_evidence.is_some() {
+        runtime_seed::RuntimeSeed::reuse(&resources, &local_data)?
+    } else {
+        runtime_seed::RuntimeSeed::prepare(&resources, &local_data)?
+    };
     reporter.emit(
         "runtime_assets_prepared",
         json!({"runtime": runtime_seed, "child_created": false}),
@@ -181,6 +234,8 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             "project": root.path.join("project"),
             "user_data": root.path.join("user-data"),
             "backend_lifecycle_owner": "coordinator",
+            "resumed_profile": root.resume_evidence.is_some(),
+            "backend_requires_effective_file_credential_store": true,
             "startup_trace": options.startup_trace,
             "startup_trace_path": options.startup_trace.then(|| root.path.join("logs/startup-trace.json"))
         }),
@@ -210,7 +265,8 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         json!({"check": shell_check, "child_created": false}),
     );
     // This deliberately bypasses production process-conflict checks only in this
-    // explicit lab binary. No existing process is opened, attached or changed.
+    // explicit lab binary. Resume inspected only the previous process identity;
+    // no existing Desktop is attached or controlled.
     let child_arguments = startup_trace_arguments(&root.path, options.startup_trace);
     let (child, pipes) = launch_with_cdp_pipes_in_environment(
         &executable,
@@ -257,6 +313,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     let startup = StartupCheck::new(
         root.path.join("home/AppData/Local/Codex/Logs"),
         child.process_id(),
+        creation.unwrap_or(u64::MAX),
     );
     hold_lab_child(
         child,
@@ -630,26 +687,16 @@ fn request_own_child_quit(
 
 struct LabRoot {
     path: PathBuf,
+    logs: PathBuf,
+    resume_evidence: Option<resume::ResumeEvidence>,
+    config_snapshot: Option<[Vec<u8>; 2]>,
     _pins: Vec<File>,
     _claim: File,
 }
 
 impl LabRoot {
     fn claim(path: &Path) -> Result<Self, LabError> {
-        validate_root_path(path)?;
-        let mut pins = Vec::new();
-        let mut current = PathBuf::new();
-        let components: Vec<_> = path.components().collect();
-        for (index, component) in components.iter().enumerate() {
-            current.push(component.as_os_str());
-            if matches!(component, Component::Prefix(_)) {
-                continue;
-            }
-            if index + 1 == components.len() && !current.try_exists()? {
-                fs::create_dir(&current)?;
-            }
-            pins.push(pin_plain_directory(&current)?);
-        }
+        let pins = pin_lab_ancestry(path, true)?;
         if fs::read_dir(path)?.next().is_some() {
             return Err(LabError::Preflight(format!(
                 "lab root must be empty/new and is never reused: {}",
@@ -665,27 +712,13 @@ impl LabRoot {
         claim.sync_all()?;
         let mut root = Self {
             path: path.to_owned(),
+            logs: path.join("logs"),
+            resume_evidence: None,
+            config_snapshot: None,
             _pins: pins,
             _claim: claim,
         };
-        for directory in [
-            "user-data",
-            "codex-home",
-            "sqlite",
-            "codlet",
-            "project",
-            "logs",
-            "home",
-            // Windows KnownFolder resolution otherwise yields an empty Documents
-            // path for a redirected, newly created profile, including $PROFILE.
-            "home/Documents",
-            "home/AppData",
-            "home/AppData/Roaming",
-            "home/AppData/Local",
-            "home/AppData/Local/Codex",
-            "home/AppData/Local/Codex/Logs",
-            "temp",
-        ] {
+        for directory in LAB_DIRECTORIES {
             let directory = root.path.join(directory);
             fs::create_dir(&directory)?;
             root._pins.push(pin_plain_directory(&directory)?);
@@ -698,6 +731,69 @@ impl LabRoot {
         config.write_all(CODEX_CONFIG)?;
         config.sync_all()?;
         Ok(root)
+    }
+
+    fn resume(path: &Path, report: &Path, package: &str, version: &str) -> Result<Self, LabError> {
+        let mut pins = pin_lab_ancestry(path, false)?;
+        // A read/write handle with no write/delete sharing is the root lease.
+        // It cannot be acquired while another fresh or resumed Host holds it.
+        let claim = resume::open_plain(&path.join(".codlet-lab-owner.json"), true)?;
+        let marker: Value =
+            serde_json::from_slice(&resume::bounded_bytes(claim.try_clone()?, 4096)?)
+                .map_err(|_| LabError::Preflight("invalid lab origin marker".into()))?;
+        if marker["schema_version"] != 1
+            || marker["experimental"] != true
+            || marker["host_pid"].as_u64().is_none()
+        {
+            return Err(LabError::Preflight(
+                "directory is not a marked experimental lab".into(),
+            ));
+        }
+        for directory in LAB_DIRECTORIES {
+            pins.push(pin_plain_directory(&path.join(directory))?);
+        }
+        let evidence = resume::ResumeEvidence::verify(path, report, package, version)?;
+        let snapshots = [
+            resume::bounded_bytes(
+                resume::open_plain(&path.join("codex-home/config.toml"), false)?,
+                1024 * 1024,
+            )?,
+            resume::bounded_bytes(
+                resume::open_plain(&path.join("codlet/config.json"), false)?,
+                1024 * 1024,
+            )?,
+        ];
+        let registry: Value = serde_json::from_slice(&snapshots[1])
+            .map_err(|_| LabError::Preflight("invalid resumed Codlet registry".into()))?;
+        if registry["schema"] != 2
+            || !registry["localPlugins"]
+                .as_object()
+                .is_some_and(|entries| entries.is_empty())
+        {
+            return Err(LabError::Preflight(
+                "resumed lab permits only bundled Codlet plugins".into(),
+            ));
+        }
+        resume::check_optional_auth(&path.join("codex-home/auth.json"))?;
+        let run = format!(
+            "run-{}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            std::process::id()
+        );
+        let logs = path.join("logs").join(run);
+        fs::create_dir(&logs)?;
+        pins.push(pin_plain_directory(&logs)?);
+        Ok(Self {
+            path: path.to_owned(),
+            logs,
+            resume_evidence: Some(evidence),
+            config_snapshot: Some(snapshots),
+            _pins: pins,
+            _claim: claim,
+        })
     }
 
     fn write_environment_manifest(
@@ -718,7 +814,7 @@ impl LabRoot {
                 ))
             })
             .collect::<Result<std::collections::BTreeMap<_, _>, LabError>>()?;
-        let path = self.path.join("logs/child-environment.json");
+        let path = self.logs.join("child-environment.json");
         let mut file = new_file(&path)?;
         serde_json::to_writer_pretty(&mut file, &entries).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
@@ -728,16 +824,19 @@ impl LabRoot {
 
     fn verify_configuration(&self) -> Result<Vec<File>, LabError> {
         let mut guards = Vec::new();
-        for (relative, expected) in [
+        for (index, (relative, initial)) in [
             ("codex-home/config.toml", CODEX_CONFIG),
             ("codlet/config.json", CODLET_CONFIG),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let expected = self
+                .config_snapshot
+                .as_ref()
+                .map_or(initial, |snapshot| snapshot[index].as_slice());
             let path = self.path.join(relative);
-            let mut file = OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(&path)?;
+            let mut file = resume::open_plain(&path, false)?;
             let metadata = file.metadata()?;
             if !metadata.is_file()
                 || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -758,6 +857,10 @@ impl LabRoot {
             }
             guards.push(file);
         }
+        if self.resume_evidence.is_some() {
+            resume::check_optional_auth(&self.path.join("codex-home/auth.json"))?;
+            return Ok(guards);
+        }
         match fs::symlink_metadata(self.path.join("codex-home/auth.json")) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -769,6 +872,24 @@ impl LabRoot {
         }
         Ok(guards)
     }
+}
+
+fn pin_lab_ancestry(path: &Path, create_leaf: bool) -> Result<Vec<File>, LabError> {
+    validate_root_path(path)?;
+    let mut pins = Vec::new();
+    let mut current = PathBuf::new();
+    let components: Vec<_> = path.components().collect();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
+        if create_leaf && index + 1 == components.len() && !current.try_exists()? {
+            fs::create_dir(&current)?;
+        }
+        pins.push(pin_plain_directory(&current)?);
+    }
+    Ok(pins)
 }
 
 fn validate_root_path(path: &Path) -> Result<(), LabError> {
@@ -918,7 +1039,7 @@ struct Reporter {
 impl Reporter {
     fn new(root: &LabRoot) -> io::Result<Self> {
         Ok(Self {
-            file: new_file(&root.path.join("logs/report.jsonl"))?,
+            file: new_file(&root.logs.join("report.jsonl"))?,
             child_pid: None,
         })
     }
@@ -941,6 +1062,14 @@ impl Reporter {
                 "codlet-lab: report write failed; own child PID {:?}: {error}",
                 self.child_pid
             );
+        }
+    }
+}
+
+impl Drop for Reporter {
+    fn drop(&mut self) {
+        if self.child_pid.is_none() {
+            self.emit("no_child_created", json!({"preparation_ended": true}));
         }
     }
 }
@@ -1023,6 +1152,101 @@ mod tests {
         assert!(LabRoot::claim(&occupied).is_err());
         assert_eq!(fs::read(occupied.join("keep.txt")).unwrap(), b"original");
         assert_eq!(fs::read_dir(&occupied).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn closed_profile_resume_preserves_configuration_and_requires_the_latest_exclusive_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("resumed-profile");
+        let root = LabRoot::claim(&path).unwrap();
+        let report = root.logs.join("report.jsonl");
+        let mut reporter = Reporter::new(&root).unwrap();
+        reporter.emit("lab_opened", json!({"root":path,"package_full_name":"fixture","package_version":"1","experimental":true}));
+        drop(reporter); // Records that preparation ended without creating a child.
+        drop(root);
+        let config = b"cli_auth_credentials_store = \"file\"\n[windows]\nsandbox = \"elevated\"\n";
+        let auth_fixture = [0xff, 0xfe, 0, 1];
+        fs::write(path.join("codex-home/config.toml"), config).unwrap();
+        fs::write(path.join("codex-home/auth.json"), auth_fixture).unwrap();
+        let resumed = LabRoot::resume(&path, &report, "fixture", "1").unwrap();
+        assert_ne!(resumed.logs, path.join("logs"));
+        assert!(
+            resumed
+                .resume_evidence
+                .as_ref()
+                .unwrap()
+                .previous_child_pid
+                .is_none()
+        );
+        drop(resumed.verify_configuration().unwrap());
+        assert!(LabRoot::resume(&path, &report, "fixture", "1").is_err());
+        assert_eq!(
+            fs::read(path.join("codex-home/config.toml")).unwrap(),
+            config
+        );
+        assert_eq!(
+            fs::read(path.join("codex-home/auth.json")).unwrap(),
+            auth_fixture
+        );
+        fs::write(
+            path.join("codex-home/config.toml"),
+            b"changed after prepared",
+        )
+        .unwrap();
+        assert!(resumed.verify_configuration().is_err());
+        fs::write(path.join("codex-home/config.toml"), config).unwrap();
+        let next_report = resumed.logs.join("report.jsonl");
+        let mut reporter = Reporter::new(&resumed).unwrap();
+        reporter.emit("lab_opened", json!({"root":path,"package_full_name":"fixture","package_version":"1","experimental":true}));
+        drop(reporter);
+        drop(resumed);
+        assert!(LabRoot::resume(&path, &report, "fixture", "1").is_err());
+        let next = LabRoot::resume(&path, &next_report, "fixture", "1").unwrap();
+        drop(next.verify_configuration().unwrap());
+        assert!(LabRoot::claim(&path).is_err());
+    }
+
+    #[test]
+    fn resume_cli_requires_an_explicit_report_and_cannot_mix_startup_profiling() {
+        let base = [
+            EXPERIMENT_FLAG,
+            "--root",
+            "C:/lab",
+            "--expected-package-version",
+            "26.901.6511.0",
+            "--app-server-url",
+            "ws://127.0.0.1:49233",
+        ];
+        let parse = |extra: &[&str]| {
+            LabOptions::parse(
+                base.into_iter()
+                    .chain(extra.iter().copied())
+                    .map(OsString::from),
+            )
+        };
+        assert_eq!(
+            parse(&["--resume-from", "C:/lab/logs/report.jsonl"])
+                .unwrap()
+                .resume_from,
+            Some(PathBuf::from("C:/lab/logs/report.jsonl"))
+        );
+        for extra in [
+            vec!["--resume-from"],
+            vec!["--resume-from", "relative.jsonl"],
+            vec![
+                "--resume-from",
+                "C:/lab/logs/report.jsonl",
+                "--resume-from",
+                "C:/lab/logs/report.jsonl",
+            ],
+            vec![
+                "--resume-from",
+                "C:/lab/logs/report.jsonl",
+                "--startup-trace",
+            ],
+        ] {
+            assert!(parse(&extra).is_err());
+        }
     }
 
     #[test]

@@ -100,16 +100,18 @@ fn field<'a>(message: &'a str, name: &str) -> Option<&'a str> {
 pub(super) struct StartupCheck {
     directory: PathBuf,
     process_id: u32,
+    minimum_creation_time: u64,
     started: Instant,
     next_poll: Instant,
     pub evidence: Evidence,
 }
 
 impl StartupCheck {
-    pub fn new(directory: PathBuf, process_id: u32) -> Self {
+    pub fn new(directory: PathBuf, process_id: u32, minimum_creation_time: u64) -> Self {
         Self {
             directory,
             process_id,
+            minimum_creation_time,
             started: Instant::now(),
             next_poll: Instant::now(),
             evidence: Evidence::default(),
@@ -120,7 +122,7 @@ impl StartupCheck {
         self.started.elapsed().as_millis()
     }
 
-    /// Reads only this newly created PID's main-process log in the fresh root.
+    /// Reads only this newly created process's main-process log in its lab root.
     /// No log text or environment values are emitted in the report.
     pub fn poll(&mut self) -> Result<bool, &'static str> {
         if self.started.elapsed() >= STARTUP_BUDGET {
@@ -130,12 +132,17 @@ impl StartupCheck {
             return Ok(false);
         }
         self.next_poll = Instant::now() + POLL_INTERVAL;
-        self.evidence = read_evidence(&self.directory, self.process_id)?;
+        self.evidence =
+            read_evidence(&self.directory, self.process_id, self.minimum_creation_time)?;
         Ok(self.evidence.complete())
     }
 }
 
-fn read_evidence(directory: &Path, process_id: u32) -> Result<Evidence, &'static str> {
+fn read_evidence(
+    directory: &Path,
+    process_id: u32,
+    minimum_creation_time: u64,
+) -> Result<Evidence, &'static str> {
     let mut files = Vec::new();
     find_logs(directory, 0, process_id, &mut files)?;
     files.sort();
@@ -150,6 +157,11 @@ fn read_evidence(directory: &Path, process_id: u32) -> Result<Evidence, &'static
         let metadata = file.metadata().map_err(|_| "startup_log_unreadable")?;
         if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err("startup_log_not_plain_file");
+        }
+        // A resumed profile retains logs. A recycled PID must not make an old
+        // startup satisfy the gate for this process.
+        if metadata.creation_time() < minimum_creation_time {
+            continue;
         }
         let mut bytes = Vec::new();
         file.take(MAX_LOG_BYTES + 1)
@@ -253,14 +265,15 @@ mod tests {
         fs::create_dir_all(&day).unwrap();
         let lines = successful_lines();
         fs::write(day.join("codex-desktop-fixture-22-t0-i1.log"), &lines).unwrap();
-        assert!(!read_evidence(root.path(), 11).unwrap().complete());
+        assert!(!read_evidence(root.path(), 11, 0).unwrap().complete());
         let mut own = fs::File::create(day.join("codex-desktop-fixture-11-t0-i1.log")).unwrap();
         own.write_all(lines.trim_end().as_bytes()).unwrap();
         own.flush().unwrap();
-        assert!(!read_evidence(root.path(), 11).unwrap().complete());
+        assert!(!read_evidence(root.path(), 11, 0).unwrap().complete());
         own.write_all(b"\n").unwrap();
         own.flush().unwrap();
-        assert!(read_evidence(root.path(), 11).unwrap().complete());
+        assert!(read_evidence(root.path(), 11, 0).unwrap().complete());
+        assert!(!read_evidence(root.path(), 11, u64::MAX).unwrap().complete());
     }
 
     #[test]
@@ -269,10 +282,10 @@ mod tests {
         let linked = tempfile::tempdir().unwrap();
         std::os::windows::fs::symlink_dir(linked.path(), root.path().join("2026")).unwrap();
         assert_eq!(
-            read_evidence(root.path(), 11).unwrap_err(),
+            read_evidence(root.path(), 11, 0).unwrap_err(),
             "startup_log_directory_not_plain"
         );
-        let mut check = StartupCheck::new(linked.path().to_owned(), 11);
+        let mut check = StartupCheck::new(linked.path().to_owned(), 11, 0);
         check.started = Instant::now() - STARTUP_BUDGET;
         assert_eq!(check.poll(), Err("startup_evidence_timed_out"));
     }

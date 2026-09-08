@@ -8,7 +8,7 @@ const entry = readFileSync(new URL('../examples/local-echo/renderer.js', import.
 const manifest = JSON.parse(readFileSync(new URL('../examples/local-echo/plugin.json', import.meta.url), 'utf8'));
 
 function fixture() {
-    const context = vm.createContext({ module: { exports: {} } });
+    const context = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout });
     vm.runInContext(bootstrap, context);
     vm.runInContext(entry, context);
     const requests = [];

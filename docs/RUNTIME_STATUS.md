@@ -97,14 +97,23 @@ ended/detached targets are removed. Plugins come from those sessions, not from
 configuration enablement. A loaded-but-disabled plugin is not included. Lifecycle
 is `activating`, `ready`, `active`, or `stopping` from the actual owner record.
 `active` requires a live session, a present context, an observed successful
-activation in that context, and owner lifecycle `active`.
+activation in that context, owner lifecycle `active`, and no pending document recovery.
 
-After a context is destroyed/cleared or replaced, `activation_confirmed` becomes
-false. The current bootstrap has no new-document activation acknowledgment to the
-Host. Therefore a re-created context can have `context_present=true`, owner
-`lifecycle=active`, but `activation_confirmed=false` and `active=false`: execution
-is unconfirmed, not necessarily failed. A future navigation handshake is separate
-work; status neither evaluates JavaScript to check it nor proves DOM mounting.
+After an owned context is destroyed/cleared or replaced, `activation_confirmed`
+becomes false. Context-created events must match the exact main frame and a
+non-default isolated world; a same-named subframe cannot overwrite that identity.
+Context creation alone can still yield `context_present=true`, `lifecycle=active`,
+but `activation_confirmed=false` and `active=false`.
+
+A supported main `Page.frameNavigated` event schedules document recovery outside
+nested RPC dispatch. The renderer owner retires the previous resources and scope,
+issues fresh authorizations and document-specific bindings, then awaits activation
+in provider-before-consumer order. The plugin generation remains unchanged, while
+world/binding names gain a document epoch so recycled numeric context IDs cannot
+authenticate an old call. `document_recovering`, `document_recovered`, and
+`recovery_failed` describe these transitions. A failed recovery leaves no active
+candidate and waits for another main-document navigation before retrying. Status
+queries still perform no renderer work and do not prove DOM mounting.
 
 At most 128 targets and 256 plugins per target are sampled. Target/session/plugin
 identity strings and versions are limited to 1024 UTF-8 bytes, with `truncated`

@@ -353,7 +353,19 @@ fn target_controller_bootstraps_existing_and_new_browser_windows_once() {
     client
         .request("Fake.emitDestroyed", None, None, DEADLINE)
         .unwrap();
-    let changes = targets.pump(DEADLINE).unwrap();
+    let expires = Instant::now() + DEADLINE;
+    let changes = loop {
+        let changes = targets
+            .pump(expires.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if !changes.is_empty() {
+            break changes;
+        }
+        assert!(
+            Instant::now() < expires,
+            "target destruction was not observed"
+        );
+    };
     assert!(matches!(
         changes.as_slice(),
         [TargetChange::SessionEnded { target_id, session_id }]
@@ -727,6 +739,31 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
 }
 
 #[test]
+fn subframe_and_default_contexts_cannot_replace_the_owned_plugin_contexts() {
+    let (child, client, events) = launch("renderer-subframe-context", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let (_directory, mut runtime) = bundled_runtime();
+    runtime.attach(&sessions[0]).unwrap();
+    client
+        .request("Fake.subframeContexts", None, None, DEADLINE)
+        .unwrap();
+    client
+        .request("Fake.subframeEventsSent", None, None, DEADLINE)
+        .unwrap();
+    runtime.pump_bindings().unwrap();
+    let snapshot = runtime.status_snapshot();
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+    assert!(
+        snapshot.targets[0]
+            .plugins
+            .iter()
+            .all(|plugin| plugin.active)
+    );
+}
+
+#[test]
 fn status_does_not_infer_activation_from_a_recreated_context() {
     let (child, client, events) = launch("renderer-status-context", &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
@@ -772,6 +809,84 @@ fn status_does_not_infer_activation_from_a_recreated_context() {
             .iter()
             .all(|plugin| !plugin.active && !plugin.activation_confirmed)
     );
+    runtime.deactivate_target("main").unwrap();
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn main_document_navigation_reconfirms_plugins_and_rejects_old_bindings() {
+    document_recovery_case(false);
+}
+
+#[test]
+fn failed_document_recovery_is_bounded_and_a_later_navigation_can_retry() {
+    document_recovery_case(true);
+}
+
+fn document_recovery_case(timeout_first_recovery: bool) {
+    let scenario = if timeout_first_recovery {
+        "renderer-document-recovery-timeout"
+    } else {
+        "renderer-document-recovery"
+    };
+    let (child, client, events) = launch(scenario, &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let (_directory, mut runtime) = bundled_runtime();
+    runtime.attach(&sessions[0]).unwrap();
+    client
+        .request("Fake.navigateDocument", None, None, DEADLINE)
+        .unwrap();
+    client
+        .request("Fake.navigationEventsSent", None, None, DEADLINE)
+        .unwrap();
+    let started = Instant::now();
+    runtime.pump_bindings().unwrap();
+    if timeout_first_recovery {
+        assert!(started.elapsed() < DEADLINE * 3);
+        assert!(runtime.status_snapshot().targets[0].plugins.is_empty());
+        assert!(
+            runtime
+                .status_snapshot()
+                .recent_events
+                .iter()
+                .any(|event| event.code == "recovery_failed")
+        );
+        client
+            .request("Fake.hostStillAlive", None, None, DEADLINE)
+            .unwrap();
+        client
+            .request("Fake.retryNavigation", None, None, DEADLINE)
+            .unwrap();
+        client
+            .request("Fake.navigationEventsSent", None, None, DEADLINE)
+            .unwrap();
+        runtime.pump_bindings().unwrap();
+    }
+    let restored = runtime.status_snapshot();
+    assert!(
+        restored.targets[0]
+            .plugins
+            .iter()
+            .all(|plugin| plugin.active)
+    );
+    assert!(
+        restored
+            .recent_events
+            .iter()
+            .any(|event| event.code == "document_recovered")
+    );
+    client
+        .request("Fake.checkRestoredRpc", None, None, DEADLINE)
+        .unwrap();
+    let expires = Instant::now() + DEADLINE;
+    let mut handled = 0;
+    while handled < 2 {
+        handled += runtime
+            .pump_bindings_with_timeout(expires.saturating_duration_since(Instant::now()))
+            .unwrap();
+        assert!(Instant::now() < expires);
+    }
     runtime.deactivate_target("main").unwrap();
     client.request("Fake.finish", None, None, DEADLINE).unwrap();
     assert_child_success(&child);

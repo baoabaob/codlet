@@ -14,6 +14,7 @@ use crate::capabilities::{
 use crate::catalog::{CatalogError, PluginCatalog, capability_graph};
 use crate::cdp::{
     CdpEvent, CdpEventStream, EventStreamError, TargetChange, TargetError, TargetSession,
+    is_main_renderer_url,
 };
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
 use crate::runtime_status::{
@@ -100,6 +101,9 @@ pub struct RendererRuntime {
 
 struct RendererSession {
     session: TargetSession,
+    main_frame_id: Option<String>,
+    document_epoch: u64,
+    recovery_pending: bool,
     plugins: Vec<ActivePlugin>,
     events: CdpEventStream,
 }
@@ -117,7 +121,6 @@ struct ActivePlugin {
     leases: BTreeMap<CapabilityDescriptor, CapabilityLease>,
     last_request_id: Cell<u64>,
     bootstrap_identifier: String,
-    script_identifier: Option<String>,
     state: RendererPluginState,
 }
 
@@ -275,6 +278,14 @@ impl RendererRuntime {
         &mut self,
         session: &TargetSession,
     ) -> Result<RendererBootstrapReport, RendererError> {
+        self.attach_document(session, 1)
+    }
+
+    fn attach_document(
+        &mut self,
+        session: &TargetSession,
+        document_epoch: u64,
+    ) -> Result<RendererBootstrapReport, RendererError> {
         let target_id = session.target_id().to_owned();
         if self.sessions.contains_key(&target_id) {
             return Err(RendererError::TargetAlreadyAttached(target_id));
@@ -290,6 +301,9 @@ impl RendererRuntime {
         };
         let renderer_session = RendererSession {
             session: session.clone(),
+            main_frame_id: None,
+            document_epoch,
+            recovery_pending: false,
             plugins: Vec::with_capacity(self.plugins.len()),
             events: session.subscribe_events(),
         };
@@ -335,12 +349,33 @@ impl RendererRuntime {
             .expect("installing renderer session must exist")
             .session
             .clone();
+        let session = self
+            .drive_deadline
+            .map_or_else(|| session.clone(), |end| session.until(end));
+        let document_epoch = self.sessions[target_id].document_epoch;
 
         for plugin in catalog {
-            let world_name = renderer_world_name(&plugin);
-            let context_id = current_isolated_context(&session, &world_name)?;
-            let binding_name =
-                renderer_binding_name(session.target_id(), session.session_id(), &plugin);
+            let world_name = document_name(renderer_world_name(&plugin), document_epoch);
+            let (context_id, frame_id) = current_isolated_context(&session, &world_name)?;
+            let owner = self
+                .sessions
+                .get_mut(target_id)
+                .expect("installing target exists");
+            if owner
+                .main_frame_id
+                .as_ref()
+                .is_some_and(|current| current != &frame_id)
+            {
+                return Err(RendererError::InvalidResponse {
+                    method: "Page.getFrameTree",
+                    message: "main frame changed during installation",
+                });
+            }
+            owner.main_frame_id = Some(frame_id);
+            let binding_name = document_name(
+                renderer_binding_name(session.target_id(), session.session_id(), &plugin),
+                document_epoch,
+            );
             add_renderer_binding(&session, &binding_name, &world_name)?;
             let bootstrap_identifier =
                 match add_new_document_script(&session, BOOTSTRAP_SOURCE, &world_name) {
@@ -378,7 +413,6 @@ impl RendererRuntime {
                     leases,
                     last_request_id: Cell::new(0),
                     bootstrap_identifier,
-                    script_identifier: None,
                     state: RendererPluginState::Activating,
                 });
             self.publish_status();
@@ -399,6 +433,12 @@ impl RendererRuntime {
                     message,
                 }
             })?;
+            if self.sessions[target_id].recovery_pending {
+                return Err(RendererError::PluginRejected {
+                    plugin_id: plugin.manifest.id.clone(),
+                    message: "main document changed during activation".into(),
+                });
+            }
             let candidate = self
                 .sessions
                 .get_mut(target_id)
@@ -413,13 +453,6 @@ impl RendererRuntime {
             candidate.activation_confirmed = candidate.context_id == Some(context_id);
             self.publish_status();
 
-            let script_identifier = add_new_document_script(&session, &expression, &world_name)?;
-            self.ensure_live_target(target_id).map_err(|message| {
-                RendererError::PluginRejected {
-                    plugin_id: plugin.manifest.id.clone(),
-                    message,
-                }
-            })?;
             let candidate = self
                 .sessions
                 .get_mut(target_id)
@@ -428,7 +461,6 @@ impl RendererRuntime {
                 .iter_mut()
                 .find(|candidate| candidate.id == plugin.manifest.id)
                 .expect("ready candidate exists");
-            candidate.script_identifier = Some(script_identifier);
             candidate.state = RendererPluginState::Active;
             self.publish_status();
         }
@@ -620,6 +652,7 @@ impl RendererRuntime {
                         context_present: plugin.context_id.is_some(),
                         activation_confirmed: plugin.activation_confirmed,
                         active: session_live
+                            && !session.recovery_pending
                             && plugin.context_id.is_some()
                             && plugin.activation_confirmed
                             && plugin.state == RendererPluginState::Active,
@@ -709,7 +742,88 @@ impl RendererRuntime {
                 }
             }
         }
+        self.recover_documents();
         Ok(handled)
+    }
+
+    fn recover_documents(&mut self) {
+        if self.drive_depth != 0 {
+            return;
+        }
+        let mut pending: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, owner)| owner.recovery_pending && owner.session.is_live())
+            .map(|(id, owner)| {
+                (
+                    id.clone(),
+                    owner.session.clone(),
+                    owner.main_frame_id.clone(),
+                    owner.document_epoch,
+                )
+            })
+            .collect();
+        pending.sort_by(|left, right| left.0.cmp(&right.0));
+        for (target_id, session, frame_id, epoch) in pending {
+            let Some(next_epoch) = epoch.checked_add(1) else {
+                self.sessions
+                    .get_mut(&target_id)
+                    .expect("target exists")
+                    .recovery_pending = false;
+                self.record_status_event(&target_id, "recovery_failed", "document epoch exhausted");
+                continue;
+            };
+            self.sessions
+                .get_mut(&target_id)
+                .expect("target exists")
+                .recovery_pending = false;
+            self.record_status_event(
+                &target_id,
+                "document_recovering",
+                "reinitializing renderer plugins for the current main document",
+            );
+            let previous_deadline = self.drive_deadline;
+            let result = session
+                .request_deadline()
+                .map_err(RendererError::from)
+                .and_then(|end| {
+                    self.drive_deadline = Some(end);
+                    self.deactivate_target(&target_id)?;
+                    self.attach_document(&session, next_epoch)
+                });
+            self.drive_deadline = previous_deadline;
+            match result {
+                Ok(_) => self.record_status_event(
+                    &target_id,
+                    "document_recovered",
+                    "current document plugin activation was confirmed",
+                ),
+                Err(error) => {
+                    // Retain only an observer after failure. Retry requires a new
+                    // main-document navigation; no unbounded automatic retry loop.
+                    if session.is_live() && !self.sessions.contains_key(&target_id) {
+                        self.sessions.insert(
+                            target_id.clone(),
+                            RendererSession {
+                                events: session.subscribe_events(),
+                                session,
+                                main_frame_id: frame_id,
+                                document_epoch: next_epoch,
+                                recovery_pending: false,
+                                plugins: Vec::new(),
+                            },
+                        );
+                    }
+                    self.record_status_event(&target_id, "recovery_failed", &error.to_string());
+                    self.diagnostics.push(RendererDiagnostic {
+                        target_id,
+                        plugin_id: "renderer-recovery".into(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+            self.publish_status();
+        }
     }
 
     fn resolve_target_authorizations(
@@ -801,6 +915,32 @@ impl RendererRuntime {
             return Ok(false);
         }
         let result = match event.method.as_str() {
+            "Page.frameNavigated" => {
+                let Some(frame) = event.params.as_ref().and_then(|params| params.get("frame"))
+                else {
+                    return Ok(false);
+                };
+                if frame.get("parentId").is_some() {
+                    return Ok(false);
+                }
+                let (Some(id), Some(url)) = (
+                    frame.get("id").and_then(Value::as_str),
+                    frame.get("url").and_then(Value::as_str),
+                ) else {
+                    return Ok(false);
+                };
+                if !is_main_renderer_url(url) {
+                    return Ok(false); // TargetController owns departure/detach.
+                }
+                let owner = self.sessions.get_mut(target_id).expect("target exists");
+                owner.main_frame_id = Some(id.to_owned());
+                owner.recovery_pending = true;
+                for plugin in &mut owner.plugins {
+                    plugin.context_id = None;
+                    plugin.activation_confirmed = false;
+                }
+                Ok(false)
+            }
             "Runtime.executionContextCreated" => {
                 let context = event
                     .params
@@ -823,6 +963,24 @@ impl RendererRuntime {
                 let context_id = context.get("id").and_then(Value::as_u64).ok_or(
                     RendererError::InvalidBindingEvent("context.id is not an unsigned integer"),
                 )?;
+                let owner = self
+                    .sessions
+                    .get(target_id)
+                    .expect("renderer target exists");
+                let aux = context.get("auxData");
+                // New-document scripts create the named world in every frame,
+                // even when the script itself returns early in a subframe.
+                if aux
+                    .and_then(|value| value.get("frameId"))
+                    .and_then(Value::as_str)
+                    != owner.main_frame_id.as_deref()
+                    || aux
+                        .and_then(|value| value.get("isDefault"))
+                        .and_then(Value::as_bool)
+                        != Some(false)
+                {
+                    return Ok(false);
+                }
                 if let Some(plugin) = self
                     .sessions
                     .get_mut(target_id)
@@ -1227,7 +1385,7 @@ impl RendererRuntime {
         let mut first_error = None;
         if !was_activating {
             match current_isolated_context(&lifecycle_session, &plugin.world_name) {
-                Ok(context_id) => {
+                Ok((context_id, _frame_id)) => {
                     plugin.context_id = Some(context_id);
                     if let Some(current) = self
                         .sessions
@@ -1270,11 +1428,6 @@ impl RendererRuntime {
             );
         }
         if target_session.is_live() {
-            if let Some(identifier) = &plugin.script_identifier
-                && let Err(error) = remove_new_document_script(&cleanup_session, identifier)
-            {
-                first_error.get_or_insert(error);
-            }
             if let Err(error) =
                 remove_new_document_script(&cleanup_session, &plugin.bootstrap_identifier)
             {
@@ -1309,11 +1462,6 @@ impl RendererSession {
     fn remove_persisted_resources(&self) -> Result<(), RendererError> {
         let mut first_error = None;
         for plugin in self.plugins.iter().rev() {
-            if let Some(identifier) = &plugin.script_identifier
-                && let Err(error) = remove_new_document_script(&self.session, identifier)
-            {
-                first_error.get_or_insert(error);
-            }
             if let Err(error) =
                 remove_new_document_script(&self.session, &plugin.bootstrap_identifier)
             {
@@ -1330,8 +1478,18 @@ impl RendererSession {
 fn current_isolated_context(
     session: &TargetSession,
     world_name: &str,
-) -> Result<u64, RendererError> {
+) -> Result<(u64, String), RendererError> {
     let frame_tree = session.request("Page.getFrameTree", None)?;
+    if !frame_tree
+        .pointer("/frameTree/frame/url")
+        .and_then(Value::as_str)
+        .is_some_and(is_main_renderer_url)
+    {
+        return Err(RendererError::InvalidResponse {
+            method: "Page.getFrameTree",
+            message: "main frame is outside the supported document",
+        });
+    }
     let frame_id = frame_tree
         .pointer("/frameTree/frame/id")
         .and_then(Value::as_str)
@@ -1343,13 +1501,14 @@ fn current_isolated_context(
         "Page.createIsolatedWorld",
         Some(json!({"frameId": frame_id, "worldName": world_name})),
     )?;
-    result
+    let context_id = result
         .get("executionContextId")
         .and_then(Value::as_u64)
         .ok_or(RendererError::InvalidResponse {
             method: "Page.createIsolatedWorld",
             message: "executionContextId is not an unsigned integer",
-        })
+        })?;
+    Ok((context_id, frame_id.to_owned()))
 }
 
 fn add_new_document_script(
@@ -1468,7 +1627,17 @@ fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
 
 fn deactivation_expression(plugin_id: &str, generation: u64) -> String {
     let plugin_id = serde_json::to_string(plugin_id).expect("string serialization cannot fail");
-    format!("globalThis.__codletRendererV1.deactivate({plugin_id}, {generation})")
+    format!(
+        "globalThis.__codletRendererV1 ? globalThis.__codletRendererV1.deactivate({plugin_id}, {generation}) : ({{ ok: true, inactive: true }})"
+    )
+}
+
+fn document_name(base: String, epoch: u64) -> String {
+    if epoch == 1 {
+        base
+    } else {
+        format!("{base}.d{epoch}")
+    }
 }
 
 fn new_document_expression(expression: &str) -> String {

@@ -11,6 +11,9 @@
     const activating = new Map();
     const stopping = new Set();
     const operations = new Map();
+    const RPC_TIMEOUT_MS = 15000;
+    const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
+    const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
     let nextRequestId = 1;
 
     const message = (error) => typeof error?.message === 'string' ? error.message : String(error);
@@ -96,7 +99,11 @@
             const id = nextRequestId;
             nextRequestId += 1;
             const pending = new Promise((resolve, reject) => {
-                record.pending.set(id, { resolve, reject });
+                const timer = scheduleTimeout(() => {
+                    const request = takePending(record, id);
+                    request?.reject(rpcError('rpc_timeout', 'Plugin request timed out. Please retry.'));
+                }, RPC_TIMEOUT_MS);
+                record.pending.set(id, { resolve, reject, timer });
             });
             try {
                 callBinding(record, {
@@ -110,9 +117,8 @@
                     params: requestData.params
                 });
             } catch (error) {
-                record.pending.delete(id);
                 const rejection = error instanceof Error ? error : rpcError('binding_error', message(error));
-                return Promise.reject(rejection);
+                takePending(record, id)?.reject(rejection);
             }
             return pending;
         };
@@ -162,8 +168,19 @@
         return Object.freeze({ request, notify, provide, onNotification });
     }
 
+    function takePending(record, id) {
+        const request = record.pending.get(id);
+        if (!request) return null;
+        record.pending.delete(id);
+        cancelTimeout(request.timer);
+        return request;
+    }
+
     function rejectPending(record, error) {
-        for (const { reject } of record.pending.values()) reject(error);
+        for (const { reject, timer } of record.pending.values()) {
+            cancelTimeout(timer);
+            reject(error);
+        }
         record.pending.clear();
     }
 
@@ -325,9 +342,8 @@
             if (!current || !response || response.v !== 1 || response.type !== 'response') {
                 return { ok: false, error: 'renderer binding response is not recognized' };
             }
-            const pending = current.pending.get(response.id);
+            const pending = takePending(current, response.id);
             if (!pending) return { ok: false, error: 'renderer RPC response id is not pending' };
-            current.pending.delete(response.id);
             if (response.ok === true) {
                 pending.resolve(response.result === undefined ? null : response.result);
             } else {

@@ -448,7 +448,9 @@ module.exports = (() => {
             managementStatus.textContent = management.plugins.length ? '' : 'No plugins';
         } catch (error) {
             if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
-            managementStatus.textContent = error instanceof Error ? error.message : 'Plugin list unavailable';
+            managementStatus.textContent = error?.code === 'rpc_timeout'
+                ? 'Plugin list timed out. Refresh to try again.'
+                : error instanceof Error ? error.message : 'Plugin list unavailable';
         }
         if (epoch === lifecycle && panel === currentPanel && currentPanel.open && !currentPanel.hidden && request === panelRequest) {
             pluginList.setAttribute('aria-busy', 'false');

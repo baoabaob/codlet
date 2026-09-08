@@ -9,7 +9,7 @@ const bootstrapSource = readFileSync(
 );
 
 function createRuntime() {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     const result = vm.runInContext(bootstrapSource, context);
     assert.equal(result.ok, true);
     assert.equal(result.reused, false);
@@ -29,12 +29,13 @@ const capability = Object.freeze({
     scope: 'target'
 });
 
-function rpcFixture() {
-    const context = vm.createContext({});
+function rpcFixture(timers = { setTimeout, clearTimeout }) {
+    const context = vm.createContext(timers);
     vm.runInContext(bootstrapSource, context);
     const requests = [];
     context.test_binding = (payload) => requests.push(JSON.parse(payload));
     return {
+        context,
         runtime: context.__codletRendererV1,
         requests,
         reply(request, result = null) {
@@ -45,6 +46,67 @@ function rpcFixture() {
         metadata: metadata(1, { binding: 'test_binding', requires: [capability], provides: [capability] })
     };
 }
+
+function controlledTimers() {
+    let next = 1;
+    const pending = new Map();
+    return {
+        pending,
+        setTimeout(callback, delay) {
+            assert.ok(delay > 0 && delay <= 15000, 'RPC waiting must be bounded');
+            const id = next++;
+            pending.set(id, callback);
+            return id;
+        },
+        clearTimeout(id) { pending.delete(id); },
+        expire() {
+            const callbacks = [...pending.values()];
+            pending.clear();
+            for (const callback of callbacks) callback();
+        }
+    };
+}
+
+test('RPC timeout retires the request, rejects a late reply and permits retry', async () => {
+    const timers = controlledTimers();
+    const fixture = rpcFixture(timers);
+    let ctx;
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(value) { ctx = value; }, deactivate() {}
+    });
+    const first = ctx.rpc.request(capability, 'list');
+    const rejected = assert.rejects(first, { code: 'rpc_timeout' });
+    assert.equal(timers.pending.size, 1);
+    timers.expire();
+    await rejected;
+    assert.equal(fixture.reply(fixture.requests[0], 'late').ok, false);
+    const retry = ctx.rpc.request(capability, 'list');
+    assert.equal(timers.pending.size, 1);
+    fixture.reply(fixture.requests[1], 'recovered');
+    assert.equal(await retry, 'recovered');
+    assert.equal(timers.pending.size, 0);
+});
+
+test('binding failure and plugin retirement clear RPC timers', async () => {
+    const timers = controlledTimers();
+    const fixture = rpcFixture(timers);
+    let ctx;
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(value) { ctx = value; }, deactivate() {}
+    });
+    const pending = ctx.rpc.request(capability, 'list');
+    const retired = assert.rejects(pending, { code: 'plugin_deactivated' });
+    assert.equal(timers.pending.size, 1);
+    await fixture.runtime.deactivate('dev.example', 1);
+    await retired;
+    assert.equal(timers.pending.size, 0);
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(value) { ctx = value; }, deactivate() {}
+    });
+    fixture.context.test_binding = () => { throw new Error('fixture binding failure'); };
+    await assert.rejects(ctx.rpc.request(capability, 'list'), /fixture binding failure/);
+    assert.equal(timers.pending.size, 0);
+});
 
 test('deactivate awaits RPC while hidden from status and provider dispatch', async () => {
     const fixture = rpcFixture();
@@ -278,7 +340,7 @@ test('deactivation is idempotent for an inactive generation', async () => {
 });
 
 test('bootstrap entry point and lifecycle methods are immutable', () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     const result = vm.runInContext(bootstrapSource, context);
     assert.equal(result.ok, true);
 
@@ -300,7 +362,7 @@ test('bootstrap entry point and lifecycle methods are immutable', () => {
 });
 
 test('activation can await a renderer RPC without publishing active state early', async () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     vm.runInContext(bootstrapSource, context);
     const envelopes = [];
     context.codlet_rpc_activating = (payload) => envelopes.push(JSON.parse(payload));
@@ -339,7 +401,7 @@ test('activation can await a renderer RPC without publishing active state early'
 });
 
 test('activation RPC rejection cleans the candidate and releases its operation gate', async () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     vm.runInContext(bootstrapSource, context);
     const envelopes = [];
     context.codlet_rpc_activating_error = (payload) => envelopes.push(JSON.parse(payload));
@@ -380,7 +442,7 @@ test('activation RPC rejection cleans the candidate and releases its operation g
 });
 
 test('renderer request uses the fixed binding envelope and resolves a host response', async () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     const installed = vm.runInContext(bootstrapSource, context);
     assert.equal(installed.ok, true);
     const envelopes = [];
@@ -420,7 +482,7 @@ test('renderer request uses the fixed binding envelope and resolves a host respo
 });
 
 test('renderer provider dispatches only its declared endpoint', async () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     vm.runInContext(bootstrapSource, context);
     let invocations = 0;
     await context.__codletRendererV1.activate(metadata(1, {
@@ -480,7 +542,7 @@ test('renderer provider dispatches only its declared endpoint', async () => {
 });
 
 test('renderer notification uses the fixed envelope without a request id', async () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     vm.runInContext(bootstrapSource, context);
     const envelopes = [];
     context.codlet_rpc_notify = (payload) => envelopes.push(JSON.parse(payload));
@@ -508,7 +570,7 @@ test('renderer notification uses the fixed envelope without a request id', async
 });
 
 test('renderer response errors preserve diagnostic code and message', async () => {
-    const context = vm.createContext({});
+    const context = vm.createContext({ setTimeout, clearTimeout });
     vm.runInContext(bootstrapSource, context);
     context.codlet_rpc_error = () => {};
     let pluginContext;
