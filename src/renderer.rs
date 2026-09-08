@@ -711,6 +711,31 @@ impl RendererRuntime {
         self.plugins.len()
     }
 
+    /// Current local source snapshots only. Reading this view performs no disk
+    /// I/O, follows no new registration and copies no renderer source bytes.
+    pub fn local_watch_sources(&self) -> Vec<crate::local_plugins::LocalWatchSource<'_>> {
+        self.plugins
+            .iter()
+            .filter_map(|plugin| {
+                let entry = self
+                    .catalog
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == plugin.manifest.id)?;
+                match &entry.source {
+                    crate::catalog::PluginSource::Local { path, grants } => {
+                        Some(crate::local_plugins::LocalWatchSource {
+                            path,
+                            grants,
+                            plugin,
+                        })
+                    }
+                    crate::catalog::PluginSource::Bundled => None,
+                }
+            })
+            .collect()
+    }
+
     pub fn take_diagnostics(&mut self) -> Vec<RendererDiagnostic> {
         std::mem::take(&mut self.diagnostics)
     }

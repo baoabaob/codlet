@@ -8,10 +8,37 @@ use crate::plugin_control::{
 };
 use crate::plugin_lifecycle::{self, ActivationPlan, LifecycleError};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourcePolicy {
+    CurrentRegistration,
+    LoadedLocalPaths,
+}
+
 impl RendererRuntime {
     pub fn manage_plugin(
         &mut self,
         request: PluginControlRequest,
+    ) -> Result<PluginControlReport, PluginControlError> {
+        self.manage_plugin_with_policy(request, SourcePolicy::CurrentRegistration)
+    }
+
+    pub(crate) fn manage_watched_plugin(
+        &mut self,
+        request: PluginControlRequest,
+    ) -> Result<PluginControlReport, PluginControlError> {
+        if request.action != PluginControlAction::Reload {
+            return Err(PluginControlError::new(
+                "watch_reload_only",
+                "file watching can only reload a currently loaded plugin",
+            ));
+        }
+        self.manage_plugin_with_policy(request, SourcePolicy::LoadedLocalPaths)
+    }
+
+    fn manage_plugin_with_policy(
+        &mut self,
+        request: PluginControlRequest,
+        source_policy: SourcePolicy,
     ) -> Result<PluginControlReport, PluginControlError> {
         request.validate()?;
         if self.management_active || self.drive_depth != 0 || self.drive_deadline.is_some() {
@@ -23,7 +50,7 @@ impl RendererRuntime {
         self.flush_host_actions();
         self.management_active = true;
         self.drive_deadline = self.management_phase_deadline();
-        let result = self.manage_plugin_inner(&request);
+        let result = self.manage_plugin_inner(&request, source_policy);
         self.drive_deadline = None;
         self.management_active = false;
         self.publish_status();
@@ -34,6 +61,7 @@ impl RendererRuntime {
     fn manage_plugin_inner(
         &mut self,
         request: &PluginControlRequest,
+        source_policy: SourcePolicy,
     ) -> Result<PluginControlReport, PluginControlError> {
         let registry = PluginRegistry::load(self.plugin_registry.path())
             .map_err(|error| control_error(error.into()))?;
@@ -63,6 +91,9 @@ impl RendererRuntime {
                 ))
             }
             PluginControlAction::Enable | PluginControlAction::Reload => {
+                if source_policy == SourcePolicy::LoadedLocalPaths {
+                    self.verify_watched_paths(id, &registry)?;
+                }
                 let exists = self.plugins.iter().any(|plugin| plugin.manifest.id == *id);
                 if request.action == PluginControlAction::Enable
                     && exists
@@ -118,6 +149,36 @@ impl RendererRuntime {
                 Ok(self.execute_activation(request, plan, registry))
             }
         }
+    }
+
+    fn verify_watched_paths(
+        &self,
+        plugin_id: &str,
+        registry: &PluginRegistry,
+    ) -> Result<(), PluginControlError> {
+        let affected = plugin_lifecycle::dependent_closure(&self.plugins, plugin_id);
+        for entry in self
+            .catalog
+            .entries()
+            .iter()
+            .filter(|entry| affected.contains(&entry.id))
+        {
+            if let crate::catalog::PluginSource::Local { path, .. } = &entry.source
+                && registry
+                    .local_plugins()
+                    .get(&entry.id)
+                    .is_none_or(|registration| registration.path != *path)
+            {
+                return Err(PluginControlError::new(
+                    "watch_source_changed",
+                    format!(
+                        "plugin {} no longer has its loaded local directory registered; select the source with a manual enable or reload",
+                        entry.id
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Called only after the disable preference was durably committed. The GUI
@@ -427,5 +488,139 @@ fn global_failure(plugin_id: &str, stage: &str, error: String) -> PluginTargetFa
         plugin_id: plugin_id.to_owned(),
         stage: stage.to_owned(),
         error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin_watch::PluginWatcher;
+    use crate::plugins::LocalPluginRegistration;
+    use tempfile::tempdir;
+
+    #[test]
+    fn watched_reload_rejects_a_consumer_path_changed_after_poll_before_reading_sources() {
+        let directory = tempdir().unwrap();
+        let registry_path = directory.path().join("config.json");
+        let mut registry = PluginRegistry::load(&registry_path).unwrap();
+        for id in ["codlet", "codex.ui.adapter"] {
+            registry.set_enabled(id, false).unwrap();
+        }
+        for id in ["dev.provider", "dev.consumer"] {
+            let root = directory.path().join(id);
+            std::fs::create_dir(&root).unwrap();
+            let descriptor = json!([{"name":"dev.api","api":1,"scope":"target"}]);
+            let mut manifest = json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":"isolated"}});
+            manifest[if id == "dev.provider" {
+                "provides"
+            } else {
+                "requires"
+            }] = descriptor;
+            std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+            std::fs::write(root.join("renderer.js"), "module.exports = {};").unwrap();
+            registry
+                .register_local(
+                    id,
+                    LocalPluginRegistration {
+                        path: root,
+                        grants: vec![],
+                    },
+                )
+                .unwrap();
+        }
+        registry.save().unwrap();
+        let catalog = PluginCatalog::load(&registry).unwrap();
+        let mut runtime = RendererRuntime::from_catalog(catalog, registry.clone()).unwrap();
+        let mut watcher = PluginWatcher::new(registry_path.clone());
+        let now = Instant::now();
+        assert!(watcher.poll(now, &runtime.local_watch_sources()).is_none());
+        std::fs::write(
+            directory.path().join("dev.provider/renderer.js"),
+            "// saved\nmodule.exports = {};",
+        )
+        .unwrap();
+        assert!(
+            watcher
+                .poll(
+                    now + Duration::from_millis(250),
+                    &runtime.local_watch_sources()
+                )
+                .is_none()
+        );
+        let request = watcher
+            .poll(
+                now + Duration::from_millis(500),
+                &runtime.local_watch_sources(),
+            )
+            .unwrap();
+        let replacement = directory.path().join("replacement-consumer");
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::copy(
+            directory.path().join("dev.consumer/plugin.json"),
+            replacement.join("plugin.json"),
+        )
+        .unwrap();
+        std::fs::write(
+            replacement.join("renderer.js"),
+            "// different trusted root\nmodule.exports = {};",
+        )
+        .unwrap();
+        registry.remove_local("dev.consumer").unwrap();
+        registry.save().unwrap();
+        registry
+            .register_local(
+                "dev.consumer",
+                LocalPluginRegistration {
+                    path: replacement.clone(),
+                    grants: vec![],
+                },
+            )
+            .unwrap();
+        registry.save().unwrap();
+
+        let provider_manifest = directory.path().join("dev.provider/plugin.json");
+        let original = std::fs::read(&provider_manifest).unwrap();
+        std::fs::write(&provider_manifest, "invalid source after the poll").unwrap();
+        let error = runtime.manage_watched_plugin(request.clone()).unwrap_err();
+        assert_eq!(error.code, "watch_source_changed");
+        assert!(
+            runtime
+                .generations
+                .values()
+                .all(|generation| *generation == 1)
+        );
+        assert_eq!(
+            runtime
+                .local_watch_sources()
+                .iter()
+                .find(|source| source.plugin.manifest.id == "dev.consumer")
+                .unwrap()
+                .path,
+            directory.path().join("dev.consumer")
+        );
+        std::fs::write(provider_manifest, original).unwrap();
+        assert_eq!(
+            runtime.manage_plugin(request).unwrap().outcome,
+            PluginControlOutcome::Applied
+        );
+        assert_eq!(
+            runtime
+                .local_watch_sources()
+                .iter()
+                .find(|source| source.plugin.manifest.id == "dev.consumer")
+                .unwrap()
+                .path,
+            replacement
+        );
+        assert_eq!(
+            runtime
+                .manage_watched_plugin(PluginControlRequest {
+                    action: PluginControlAction::Enable,
+                    plugin_id: "dev.consumer".into()
+                })
+                .unwrap_err()
+                .code,
+            "watch_reload_only"
+        );
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -14,6 +14,7 @@ use crate::capabilities::CapabilityDescriptor;
 
 const MANIFEST_SCHEMA: u32 = 1;
 const REGISTRY_SCHEMA: u32 = 2;
+pub const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
 const MAX_VERSION_BYTES: usize = 64;
 const REGISTRY_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -21,7 +22,7 @@ const REGISTRY_LOCK_POLL: Duration = Duration::from_millis(10);
 const TEMP_FILE_ATTEMPTS: usize = 128;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     pub schema: u32,
@@ -36,14 +37,14 @@ pub struct PluginManifest {
     pub requires: Vec<CapabilityDescriptor>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RendererManifest {
     pub entry: String,
     pub world: RendererWorld,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RendererWorld {
     Isolated,
@@ -162,6 +163,10 @@ pub enum PluginRegistryError {
     },
     #[error("plugin registry {path} is not valid JSON: {message}")]
     Json { path: PathBuf, message: String },
+    #[error(
+        "plugin registry {path} exceeds the {MAX_REGISTRY_BYTES}-byte limit; reduce its size before retrying"
+    )]
+    TooLarge { path: PathBuf },
     #[error("plugin registry schema must be 1 or {REGISTRY_SCHEMA}, got {0}")]
     Schema(u32),
     #[error("plugin registry contains an invalid plugin id: {0}")]
@@ -416,6 +421,11 @@ impl PluginRegistry {
             let mut bytes = serde_json::to_vec_pretty(&latest)
                 .expect("the typed plugin registry is always serializable");
             bytes.push(b'\n');
+            if bytes.len() > MAX_REGISTRY_BYTES {
+                return Err(PluginRegistryError::TooLarge {
+                    path: self.path.clone(),
+                });
+            }
             TemporaryRegistry::create(&self.path)?.replace(&self.path, &bytes)?;
         }
         self.local_plugins = latest.local_plugins.clone();
@@ -681,8 +691,8 @@ impl Default for RegistryDocument {
 
 impl RegistryDocument {
     fn read(path: &Path) -> Result<Self, PluginRegistryError> {
-        let document = match fs::read_to_string(path) {
-            Ok(json) => {
+        let document = match read_registry_text(path)? {
+            Some(json) => {
                 let input: RegistryInput =
                     serde_json::from_str(&json).map_err(|error| PluginRegistryError::Json {
                         path: path.to_owned(),
@@ -710,14 +720,7 @@ impl RegistryDocument {
                     local_plugins: input.local_plugins.unwrap_or_default(),
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
-            Err(source) => {
-                return Err(PluginRegistryError::Io {
-                    operation: "read",
-                    path: path.to_owned(),
-                    source,
-                });
-            }
+            None => Self::default(),
         };
         document.validate(path)?;
         Ok(document)
@@ -755,6 +758,42 @@ impl RegistryDocument {
         }
         Ok(())
     }
+}
+
+fn read_registry_text(path: &Path) -> Result<Option<String>, PluginRegistryError> {
+    let read_error = |source| PluginRegistryError::Io {
+        operation: "read",
+        path: path.to_owned(),
+        source,
+    };
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(read_error(error)),
+    };
+    if file.metadata().map_err(read_error)?.len() > MAX_REGISTRY_BYTES as u64 {
+        return Err(PluginRegistryError::TooLarge {
+            path: path.to_owned(),
+        });
+    }
+    let mut bytes = Vec::new();
+    // Metadata is only an early rejection. A concurrent writer cannot make the
+    // allocation/read unbounded by growing the file after that check.
+    file.take(MAX_REGISTRY_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(read_error)?;
+    if bytes.len() > MAX_REGISTRY_BYTES {
+        return Err(PluginRegistryError::TooLarge {
+            path: path.to_owned(),
+        });
+    }
+    let text = String::from_utf8(bytes).map_err(|_| {
+        read_error(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        ))
+    })?;
+    Ok(Some(text))
 }
 
 pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
@@ -830,6 +869,39 @@ mod tests {
     use super::*;
     use crate::capabilities::CapabilityScope;
     use tempfile::tempdir;
+
+    #[test]
+    fn registry_byte_limit_rejects_large_reads_and_oversized_saves_without_overwrite() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let initial = br#"{"schema":2,"plugins":{},"localPlugins":{}}"#;
+        let mut oversized = initial.to_vec();
+        oversized.resize(MAX_REGISTRY_BYTES + 1, b' ');
+        fs::write(&path, &oversized).unwrap();
+        let error = PluginRegistry::load(&path).unwrap_err();
+        assert!(matches!(error, PluginRegistryError::TooLarge { .. }));
+        assert!(error.to_string().contains("1048576-byte limit"));
+        assert_eq!(fs::read(&path).unwrap(), oversized);
+        assert_eq!(directory.path().read_dir().unwrap().count(), 1);
+
+        fs::write(&path, initial).unwrap();
+        let mut registry = PluginRegistry::load(&path).unwrap();
+        let previous = registry.document.clone();
+        for index in 0..8192 {
+            registry
+                .set_enabled(&format!("dev.{}.{index}", "x".repeat(100)), false)
+                .unwrap();
+        }
+        let staged = registry.pending.clone();
+        assert!(matches!(
+            registry.save(),
+            Err(PluginRegistryError::TooLarge { .. })
+        ));
+        assert_eq!(registry.document, previous);
+        assert_eq!(registry.pending, staged);
+        assert_eq!(fs::read(&path).unwrap(), initial);
+        assert_eq!(directory.path().read_dir().unwrap().count(), 2); // registry + stable lock only
+    }
 
     #[test]
     fn bundled_codlet_uses_the_public_manifest_contract() {

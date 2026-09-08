@@ -251,6 +251,16 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                         std::fs::write(path, "not valid registry JSON")?;
                         settings = json!({});
                     }
+                    if session == "session-second"
+                        && expression.contains("fixture-edit-during-activate")
+                        && let (Some(path), Some(source)) = (
+                            settings["editSourcePath"].as_str(),
+                            settings["editSourceText"].as_str(),
+                        )
+                    {
+                        std::fs::write(path, source)?;
+                        settings = json!({});
+                    }
                 } else if expression.starts_with(
                     "globalThis.__codletRendererV1 ? globalThis.__codletRendererV1.deactivate(",
                 ) {

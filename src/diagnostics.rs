@@ -549,6 +549,10 @@ fn registry_issue(error: &PluginRegistryError) -> DiagnosticIssue {
             "registry_json_invalid",
             "Back up the reported Codlet registry, then repair its JSON and allowed fields. Schema 1 contains enablement only; schema 2 also requires localPlugins with explicit path and grants. Rerun doctor.",
         ),
+        PluginRegistryError::TooLarge { .. } => (
+            "registry_too_large",
+            "Reduce the Codlet registry to at most 1 MiB, then rerun doctor. The oversized file was not modified.",
+        ),
         PluginRegistryError::Schema(_) => (
             "registry_schema_unsupported",
             "Use a Codlet version that supports this registry schema, or restore a known-good schema 1 or 2 backup after backing up the current file.",

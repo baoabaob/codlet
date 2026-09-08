@@ -1,6 +1,6 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use thiserror::Error;
@@ -14,13 +14,16 @@ use crate::diagnostics::{
     Check, DiagnosticIssue, DoctorInputs, DoctorReport, PackageInfo, ProcessInfo, ProcessSnapshot,
 };
 use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
-use crate::plugin_control::{PluginControlAction, PluginControlRequest};
+use crate::plugin_control::{
+    PluginControlAction, PluginControlError, PluginControlReport, PluginControlRequest,
+};
+use crate::plugin_watch::PluginWatcher;
 use crate::plugins::{
     LocalPluginRegistration, ManifestError, Permission, PluginRegistry, PluginRegistryError,
     bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
-use crate::runtime_control::ControlBroker;
+use crate::runtime_control::{ControlBroker, ControlJob};
 use crate::runtime_status::{CodexStatus, StatusCode, StatusPublisher};
 use crate::windows::control_pipe::{ControlServer, RegistryScope, RegistryScopeGuard};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
@@ -87,7 +90,7 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch [--watch]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error(
@@ -165,9 +168,40 @@ struct CodletRuntime {
     client: CdpClient,
     targets: TargetController,
     renderer: RendererRuntime,
+    watcher: Option<PluginWatcher>,
     initial_outcomes: Vec<RendererOutcome>,
     // Keep listeners and the registry lease until renderer cleanup has finished.
     _servers: HostServers,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LaunchOptions {
+    watch: bool,
+}
+
+fn parse_launch_options(arguments: &[OsString]) -> Result<LaunchOptions, ProbeError> {
+    match arguments {
+        [] => Ok(LaunchOptions::default()),
+        [option] if option == OsStr::new("--watch") => Ok(LaunchOptions { watch: true }),
+        _ => Err(ProbeError::Usage),
+    }
+}
+
+enum ManagementJob {
+    Cli(ControlJob),
+    Watch(PluginControlRequest),
+}
+
+/// Polling the watcher is lazy: a CLI operation neither consumes nor rebaselines
+/// an observed edit. The next idle iteration supplies the current loaded catalog.
+fn next_management_job(
+    control: &ControlBroker,
+    poll_watch: impl FnOnce() -> Option<PluginControlRequest>,
+) -> Option<ManagementJob> {
+    control
+        .take_next()
+        .map(ManagementJob::Cli)
+        .or_else(|| poll_watch().map(ManagementJob::Watch))
 }
 
 struct PreparedServices {
@@ -183,8 +217,9 @@ struct HostServers {
 pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeError> {
     let arguments: Vec<_> = arguments.collect();
     match arguments.as_slice() {
-        [command] if command == OsStr::new("launch") => {
-            let runtime = start_codlet_runtime()?;
+        [command, options @ ..] if command == OsStr::new("launch") => {
+            let options = parse_launch_options(options)?;
+            let runtime = start_codlet_runtime(options)?;
             runtime.print_identity_and_initial_state();
             println!("runtime-state: active; Codlet renderer runtime attached");
             println!(
@@ -506,7 +541,7 @@ fn start_attached_codex_with_services(
     ))
 }
 
-fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
+fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeError> {
     let scope = RegistryScope::for_path(&default_registry_path()?)?;
     let lease = scope
         .acquire(REGISTRY_LEASE_DEADLINE)
@@ -517,6 +552,9 @@ fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
             other => ProbeError::from(other),
         })?;
     let registry = PluginRegistry::load(scope.path())?;
+    let watcher = options
+        .watch
+        .then(|| PluginWatcher::new(registry.path().to_owned()));
     let mut renderer = prepare_renderer_runtime(registry)?;
     let status = StatusPublisher::new();
     renderer.set_status_publisher(status.clone());
@@ -546,6 +584,7 @@ fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
         client: attached.client,
         targets: attached.targets,
         renderer,
+        watcher,
         initial_outcomes,
     })
 }
@@ -733,6 +772,12 @@ impl CodletRuntime {
         for outcome in &self.initial_outcomes {
             print_renderer_outcome(outcome);
         }
+        if self.watcher.is_some() {
+            println!(
+                "plugin-watch: state=enabled; local-plugin-count={}",
+                self.renderer.local_watch_sources().len()
+            );
+        }
     }
 
     fn wait(mut self) -> Result<u32, ProbeError> {
@@ -773,9 +818,33 @@ impl CodletRuntime {
                 }
             }
             let _ = self.renderer.pump_bindings()?;
-            if let Some(job) = self.control.take_next() {
-                let result = self.renderer.manage_plugin(job.request);
-                self.control.complete(&job.operation_id, result);
+            let job = next_management_job(&self.control, || {
+                let watcher = self.watcher.as_mut()?;
+                let sources = self.renderer.local_watch_sources();
+                let request = watcher.poll(Instant::now(), &sources);
+                for diagnostic in watcher.take_diagnostics() {
+                    eprintln!(
+                        "plugin-watch: plugin-id={}; state=diagnostic; code={}; message={}",
+                        diagnostic.plugin_id, diagnostic.code, diagnostic.message
+                    );
+                }
+                request
+            });
+            match job {
+                Some(ManagementJob::Cli(job)) => {
+                    let result = self.renderer.manage_plugin(job.request);
+                    self.control.complete(&job.operation_id, result);
+                }
+                Some(ManagementJob::Watch(request)) => {
+                    println!(
+                        "plugin-watch: plugin-id={}; state=requested; action=reload",
+                        request.plugin_id
+                    );
+                    let plugin_id = request.plugin_id.clone();
+                    let result = self.renderer.manage_watched_plugin(request);
+                    print_watch_result(&plugin_id, result);
+                }
+                None => {}
             }
             self.renderer.publish_status();
             for diagnostic in self.renderer.take_diagnostics() {
@@ -795,6 +864,37 @@ impl CodletRuntime {
             Ok(exit_code)
         } else {
             Err(ProbeError::CodexExit { exit_code })
+        }
+    }
+}
+
+fn print_watch_result(plugin_id: &str, result: Result<PluginControlReport, PluginControlError>) {
+    match result {
+        Ok(report) => {
+            let outcome = serde_json::to_value(report.outcome)
+                .expect("plugin lifecycle outcome is serializable");
+            println!(
+                "plugin-watch: plugin-id={plugin_id}; state=result; outcome={}; affected-plugin-count={}",
+                outcome.as_str().unwrap(),
+                report.affected_plugin_ids.len()
+            );
+            if let Some(message) = &report.message {
+                eprintln!(
+                    "plugin-watch: plugin-id={plugin_id}; state=diagnostic; message={message}"
+                );
+            }
+            for failure in &report.target_failures {
+                eprintln!(
+                    "plugin-watch: plugin-id={}; state=error; target-id={}; stage={}; error={}",
+                    failure.plugin_id, failure.target_id, failure.stage, failure.error
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "plugin-watch: plugin-id={plugin_id}; state=error; code={}; message={}",
+                error.code, error.message
+            );
         }
     }
 }
@@ -1012,6 +1112,93 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
+
+    #[test]
+    fn file_watching_requires_exact_explicit_launch_flag() {
+        assert_eq!(
+            parse_launch_options(&[]).unwrap(),
+            LaunchOptions { watch: false }
+        );
+        assert_eq!(
+            parse_launch_options(&["--watch".into()]).unwrap(),
+            LaunchOptions { watch: true }
+        );
+        for arguments in [
+            vec!["--watch=false"],
+            vec!["--watch", "--watch"],
+            vec!["--watch", "--json"],
+            vec!["--watch", "C:/new-plugin"],
+            vec!["--reload"],
+        ] {
+            let arguments: Vec<OsString> = arguments.into_iter().map(OsString::from).collect();
+            assert!(matches!(
+                parse_launch_options(&arguments),
+                Err(ProbeError::Usage)
+            ));
+        }
+    }
+
+    #[test]
+    fn cli_receipts_keep_priority_without_consuming_pending_watch_reloads() {
+        use crate::runtime_control::ControlRequest;
+        use std::collections::VecDeque;
+
+        let control = ControlBroker::new([9; 16], "a".repeat(64));
+        control.set_ready();
+        let mut tickets = Vec::new();
+        for plugin_id in ["dev.first", "dev.second"] {
+            let prepared = control.handle(ControlRequest::prepare(PluginControlRequest {
+                action: PluginControlAction::Reload,
+                plugin_id: plugin_id.into(),
+            }));
+            let ticket = prepared.operation_id().unwrap().to_owned();
+            control.handle(ControlRequest::submit(&ticket));
+            tickets.push(ticket);
+        }
+        let mut pending_watch: VecDeque<_> = ["dev.watched-one", "dev.watched-two"]
+            .into_iter()
+            .map(|plugin_id| PluginControlRequest {
+                action: PluginControlAction::Reload,
+                plugin_id: plugin_id.into(),
+            })
+            .collect();
+        let mut polls = 0;
+        for ticket in tickets {
+            let selected = next_management_job(&control, || {
+                polls += 1;
+                pending_watch.pop_front()
+            });
+            let Some(ManagementJob::Cli(job)) = selected else {
+                panic!("queued CLI receipt lost priority");
+            };
+            assert_eq!(job.operation_id, ticket);
+            assert_eq!(polls, 0);
+            assert_eq!(pending_watch.len(), 2);
+            control.complete(
+                &ticket,
+                Err(PluginControlError::new(
+                    "fixture",
+                    "no renderer is executed in this scheduling test",
+                )),
+            );
+        }
+        for (index, plugin_id) in ["dev.watched-one", "dev.watched-two"]
+            .into_iter()
+            .enumerate()
+        {
+            let selected = next_management_job(&control, || {
+                polls += 1;
+                pending_watch.pop_front()
+            });
+            let Some(ManagementJob::Watch(request)) = selected else {
+                panic!("deferred watch edit was lost");
+            };
+            assert_eq!(request.plugin_id, plugin_id);
+            assert_eq!(polls, index + 1);
+            assert_eq!(pending_watch.len(), 1 - index);
+        }
+        assert!(next_management_job(&control, || pending_watch.pop_front()).is_none());
+    }
 
     #[test]
     fn extracts_only_successful_boolean_evaluation() {

@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod local_plugins;
 pub mod plugin_control;
 mod plugin_lifecycle;
+pub mod plugin_watch;
 pub mod plugins;
 pub mod renderer;
 pub mod runtime_control;

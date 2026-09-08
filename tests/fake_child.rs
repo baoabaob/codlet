@@ -96,6 +96,125 @@ fn control_request(
     }
 }
 
+fn poll_watch(
+    watcher: &mut codlet::plugin_watch::PluginWatcher,
+    runtime: &RendererRuntime,
+    start: Instant,
+    tick: u64,
+) -> Option<codlet::plugin_control::PluginControlRequest> {
+    watcher.poll(
+        start + Duration::from_millis(250 * tick),
+        &runtime.local_watch_sources(),
+    )
+}
+
+#[test]
+fn watch_requests_reuse_managed_lifecycle_and_preserve_saves_during_two_target_activation() {
+    use codlet::plugin_control::PluginControlOutcome as Outcome;
+    use codlet::plugin_watch::PluginWatcher;
+    let (directory, registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    for session in &sessions {
+        runtime.attach(session).unwrap();
+    }
+    let mut watcher = PluginWatcher::new(registry_path);
+    let start = Instant::now();
+    assert!(poll_watch(&mut watcher, &runtime, start, 0).is_none());
+    let source_path = directory.path().join("dev.provider/renderer.js");
+    std::fs::write(
+        &source_path,
+        "// fixture-revised\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    assert!(poll_watch(&mut watcher, &runtime, start, 1).is_none());
+    let request = poll_watch(&mut watcher, &runtime, start, 2).unwrap();
+    assert_eq!(request.plugin_id, "dev.provider");
+    assert_eq!(
+        runtime.manage_plugin(request).unwrap().outcome,
+        Outcome::Applied
+    );
+    assert!(poll_watch(&mut watcher, &runtime, start, 3).is_none());
+    assert!(poll_watch(&mut watcher, &runtime, start, 4).is_none());
+
+    std::fs::write(
+        &source_path,
+        "// fixture-fail-candidate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    assert!(poll_watch(&mut watcher, &runtime, start, 5).is_none());
+    let request = poll_watch(&mut watcher, &runtime, start, 6).unwrap();
+    let report = runtime.manage_plugin(request).unwrap();
+    assert_eq!(report.outcome, Outcome::RolledBack);
+    assert!(
+        report
+            .generations
+            .iter()
+            .all(|plugin| plugin.generation == 4)
+    );
+    for tick in 7..=10 {
+        assert!(poll_watch(&mut watcher, &runtime, start, tick).is_none());
+    }
+
+    std::fs::write(
+        &source_path,
+        "// fixture-edit-during-activate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    assert!(poll_watch(&mut watcher, &runtime, start, 11).is_none());
+    let request = poll_watch(&mut watcher, &runtime, start, 12).unwrap();
+    let saved_again = "// saved-again while updating windows\nmodule.exports = { activate() {}, deactivate() {} };";
+    client
+        .request(
+            "Fake.configure",
+            Some(json!({"editSourcePath":source_path,"editSourceText":saved_again})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    assert_eq!(
+        runtime.manage_plugin(request).unwrap().outcome,
+        Outcome::Applied
+    );
+    assert_eq!(std::fs::read_to_string(&source_path).unwrap(), saved_again);
+    assert!(poll_watch(&mut watcher, &runtime, start, 13).is_none());
+    let request = poll_watch(&mut watcher, &runtime, start, 14).unwrap();
+    assert_eq!(request.plugin_id, "dev.provider");
+    let report = runtime.manage_plugin(request).unwrap();
+    assert_eq!(report.outcome, Outcome::Applied);
+    assert!(
+        report
+            .generations
+            .iter()
+            .all(|plugin| plugin.generation == 6)
+    );
+    assert!(poll_watch(&mut watcher, &runtime, start, 15).is_none());
+    assert!(poll_watch(&mut watcher, &runtime, start, 16).is_none());
+    assert!(watcher.take_diagnostics().is_empty());
+    assert!(
+        runtime
+            .local_watch_sources()
+            .iter()
+            .any(|source| source.plugin.manifest.id == "dev.provider"
+                && source.plugin.source == saved_again)
+    );
+    assert!(
+        runtime
+            .status_snapshot()
+            .targets
+            .iter()
+            .all(|target| target.plugins.iter().all(|plugin| plugin.active))
+    );
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
 #[test]
 fn running_control_batches_dependency_order_fresh_generations_validation_and_compensation() {
     use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};

@@ -59,6 +59,14 @@ impl LifecycleError {
 /// Includes the root. The existing validated graph uniquely identifies each
 /// capability provider, so traversing declared descriptors is deterministic.
 pub(crate) fn dependent_closure(plugins: &[LoadedPlugin], root: &str) -> BTreeSet<String> {
+    dependent_closure_refs(plugins.iter(), root)
+}
+
+pub(crate) fn dependent_closure_refs<'a>(
+    plugins: impl IntoIterator<Item = &'a LoadedPlugin>,
+    root: &str,
+) -> BTreeSet<String> {
+    let plugins: Vec<_> = plugins.into_iter().collect();
     let mut affected = BTreeSet::from([root.to_owned()]);
     loop {
         let provided: Vec<_> = plugins

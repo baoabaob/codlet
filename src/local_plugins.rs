@@ -9,7 +9,9 @@
 //! by a malicious same-user process. It does not make manifest/source snapshots
 //! atomic. JavaScript is returned unchanged, never parsed or executed here.
 
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
@@ -33,6 +35,80 @@ pub struct LocalPluginCandidate {
     pub root: PathBuf,
     pub manifest: PluginManifest,
     pub source: String,
+}
+
+/// A borrowed view of a currently loaded local source. Observers gain no
+/// execution authority and do not clone renderer source on each host pump.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalWatchSource<'a> {
+    pub path: &'a Path,
+    pub grants: &'a [Permission],
+    pub plugin: &'a LoadedPlugin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LocalWatchFingerprint(u64);
+
+pub(crate) fn loaded_watch_fingerprint(plugin: &LoadedPlugin) -> LocalWatchFingerprint {
+    semantic_watch_fingerprint(&plugin.manifest, &plugin.source)
+}
+
+fn semantic_watch_fingerprint(manifest: &PluginManifest, source: &str) -> LocalWatchFingerprint {
+    let mut hash = DefaultHasher::new();
+    0_u8.hash(&mut hash);
+    serde_json::to_vec(manifest)
+        .expect("typed manifest serialization cannot fail")
+        .hash(&mut hash);
+    source.hash(&mut hash);
+    LocalWatchFingerprint(hash.finish())
+}
+
+/// Observe bounded input bytes through the same checked reader as activation.
+/// Invalid JSON/UTF-8 keeps a byte fingerprint, so different invalid edits do
+/// not collapse to an identical parser error. This function never executes code
+/// or treats a successful read as a permission grant.
+pub(crate) fn inspect_watch_fingerprint(root: &Path, current_entry: &str) -> LocalWatchFingerprint {
+    let mut hash = DefaultHasher::new();
+    1_u8.hash(&mut hash);
+    let root = match canonical_local_root(root) {
+        Ok(root) => root,
+        Err(error) => {
+            error.to_string().hash(&mut hash);
+            return LocalWatchFingerprint(hash.finish());
+        }
+    };
+    let manifest_bytes =
+        match read_bytes(&root, MANIFEST_NAME, MAX_MANIFEST_BYTES, "watch manifest") {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                error.to_string().hash(&mut hash);
+                return LocalWatchFingerprint(hash.finish());
+            }
+        };
+    manifest_bytes.hash(&mut hash);
+    let manifest = std::str::from_utf8(&manifest_bytes)
+        .ok()
+        .and_then(|text| PluginManifest::parse(text).ok());
+    let entry = manifest
+        .as_ref()
+        .map(|manifest| manifest.renderer.entry.as_str())
+        .unwrap_or(current_entry);
+    if let Err(error) = validate_entry(&root, entry) {
+        error.to_string().hash(&mut hash);
+        return LocalWatchFingerprint(hash.finish());
+    }
+    let source_bytes = match read_bytes(&root, entry, MAX_SOURCE_BYTES, "watch renderer entry") {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            error.to_string().hash(&mut hash);
+            return LocalWatchFingerprint(hash.finish());
+        }
+    };
+    source_bytes.hash(&mut hash);
+    if let (Some(manifest), Ok(source)) = (manifest, std::str::from_utf8(&source_bytes)) {
+        return semantic_watch_fingerprint(&manifest, source);
+    }
+    LocalWatchFingerprint(hash.finish())
 }
 
 #[derive(Debug, Error)]
@@ -110,21 +186,7 @@ fn validate_grants_at(
 }
 
 pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPluginError> {
-    validate_root_input(root)?;
-    let absolute = if root.is_absolute() {
-        root.to_owned()
-    } else {
-        std::env::current_dir()
-            .map_err(|error| io_error(root, "resolve current directory", error))?
-            .join(root)
-    };
-    validate_root_input(&absolute)?;
-    let root =
-        fs::canonicalize(&absolute).map_err(|error| io_error(root, "resolve root", error))?;
-    validate_root_input(&root)?;
-    let metadata =
-        fs::symlink_metadata(&root).map_err(|error| io_error(&root, "inspect root", error))?;
-    require_file_type(&metadata, &root, "inspect root", true)?;
+    let root = canonical_local_root(root)?;
 
     let manifest_path = root.join(MANIFEST_NAME);
     let json = read_text(&root, MANIFEST_NAME, MAX_MANIFEST_BYTES, "read manifest")?;
@@ -150,6 +212,26 @@ pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPl
         manifest,
         source,
     })
+}
+
+fn canonical_local_root(root: &Path) -> Result<PathBuf, LocalPluginError> {
+    validate_root_input(root)?;
+    let absolute = if root.is_absolute() {
+        root.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| io_error(root, "resolve current directory", error))?
+            .join(root)
+    };
+    validate_root_input(&absolute)?;
+    let root =
+        fs::canonicalize(&absolute).map_err(|error| io_error(root, "resolve root", error))?;
+    validate_root_input(&root)?;
+    let metadata =
+        fs::symlink_metadata(&root).map_err(|error| io_error(&root, "inspect root", error))?;
+    require_file_type(&metadata, &root, "inspect root", true)?;
+
+    Ok(root)
 }
 
 fn validate_root_input(root: &Path) -> Result<(), LocalPluginError> {
@@ -363,6 +445,34 @@ fn read_text(
     limit: usize,
     stage: &'static str,
 ) -> Result<String, LocalPluginError> {
+    let bytes = read_bytes(root, relative, limit, stage)?;
+    let path = root.join(relative);
+    let text = String::from_utf8(bytes).map_err(|_| {
+        reject(
+            &path,
+            stage,
+            "file must be valid UTF-8; convert it to UTF-8 text",
+        )
+    })?;
+    if text
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\t' | '\r' | '\n'))
+    {
+        return Err(reject(
+            &path,
+            stage,
+            "binary/control characters are not allowed; use UTF-8 text with tabs and line breaks",
+        ));
+    }
+    Ok(text)
+}
+
+fn read_bytes(
+    root: &Path,
+    relative: &str,
+    limit: usize,
+    stage: &'static str,
+) -> Result<Vec<u8>, LocalPluginError> {
     let path = checked_path(root, relative, stage)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -404,24 +514,7 @@ fn read_text(
     }
     checked_path(root, relative, stage)?;
     verify_open_file(&file, &path, stage)?;
-    let text = String::from_utf8(bytes).map_err(|_| {
-        reject(
-            &path,
-            stage,
-            "file must be valid UTF-8; convert it to UTF-8 text",
-        )
-    })?;
-    if text
-        .chars()
-        .any(|character| character.is_control() && !matches!(character, '\t' | '\r' | '\n'))
-    {
-        return Err(reject(
-            &path,
-            stage,
-            "binary/control characters are not allowed; use UTF-8 text with tabs and line breaks",
-        ));
-    }
-    Ok(text)
+    Ok(bytes)
 }
 
 #[cfg(windows)]

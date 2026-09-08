@@ -499,7 +499,7 @@ module.exports = (() => {
         const consequence = addText(confirmation, 'p', 'codlet-confirmation-copy',
             'The Codlet GUI will close in all open windows. To restore it, run ');
         addText(consequence, 'code', '', 'codlet plugin enable codlet');
-        consequence.appendChild(document.createTextNode(', then start Codlet again.'));
+        consequence.appendChild(document.createTextNode('.'));
         consequence.id = `${panel.id}-disable-consequence`;
         confirmation.setAttribute('aria-describedby', consequence.id);
         confirmationStatus = addText(confirmation, 'div', 'codlet-status', '');
