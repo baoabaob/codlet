@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.17；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.18；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -97,6 +97,8 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 首次[实测结果](ISOLATED_CLIENT_RESULTS_2026-09-07.md)记录了官方 build `26.901.6511.0` 独立 Dev/WebSocket 实例的 Shell 超时和关窗后进程驻留。用户授权继续后的[修复复测](ISOLATED_CLIENT_REPAIR_2026-09-08.md)定位到启动时同步复制包内 Node 运行时阻塞主线程；实验入口现在先将这些静态文件准备到全新测试缓存，自动核验本次 PID 的启动日志后才加载插件，并通过本次客户端的原生 `quit-app` 入口退出。两个全新目录的 Shell 就绪分别为 942／950 ms，完整启动检查为 1875／1909 ms，正常退出为 1011／1112 ms。两个内置插件均确认激活，本轮全部测试进程和端口已清理，未使用强制终止；原客户端与原后台身份、Chrome native-host 注册前后相同。
 
 本轮未登录、未发送模型任务，也未再使用 Computer Use 输入。GUI 挂载、交互、主题和窄窗布局仍未验收。上述结果只覆盖固定 Dev/WebSocket 实验条件，不关闭 M0/M1、`DEFECT-001` 或 Runtime Host 崩溃契约 `DEFECT-002`。
+
+随后用户授权[登录后 GUI 验收](GUI_ACCEPTANCE_2026-09-08.md)，亲自完成登录与 Windows UAC。独立后台重启并重新读取已写入的配置后，Windows 设置循环解除；Codlet 入口和面板可见、Escape 可关闭，但插件列表持续加载，原生窗口刷新后入口消失。本轮 GUI 判定未通过。下一修复优先处理页面切换后的 renderer 上下文与真实就绪恢复，以及 RPC 无响应时的有界失败，再复验管理操作和布局。测试实例已正常退出；这次用户确认的系统级沙箱设置不构成“全部共享 OS 状态未变化”的证据。
 
 同一 Browser Process 内的 BrowserWindow 不属于 `DEFECT-001`。Draft 0.6 起，Runtime Host 使用 `Target.setDiscoverTargets`、启动快照和 `Target.targetCreated` / `Target.targetInfoChanged` / `Target.targetDestroyed` 事件，持续管理规范文档为 `app://-/index.html` 的全部 page target。目标可以携带 Codex 为窗口路由添加的 query 或 fragment，但其他 origin、path 与非 page 类型仍被拒绝。初始窗口与“在新窗口打开”产生的 renderer 走同一 attach、enable 与 bootstrap 入口，同一 `targetId` 不重复注入，销毁后清理状态。
 

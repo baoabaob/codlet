@@ -14,6 +14,12 @@ The [initial results](ISOLATED_CLIENT_RESULTS_2026-09-07.md) and
 GUI mount/interaction and production acceptance remain open. The coordinator owns
 the backend lifecycle, connection ownership and before/after checks.
 
+The later [manual-login GUI acceptance](GUI_ACCEPTANCE_2026-09-08.md) is a separate
+scope extension: the user completed login and Windows setup. A restart of only
+the dedicated backend cleared its stale setup-readiness result, but GUI list
+loading and window-reload recovery failed. The fresh-root preparation below
+retains its unauthenticated precondition; it is not a profile-resume command.
+
 ## Preparation and start
 
 Use an existing plain local parent directory and an empty or nonexistent leaf
