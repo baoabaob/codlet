@@ -495,7 +495,18 @@ fn plugin_info(entry: &PluginCatalogEntry, registry: Option<&PluginRegistry>) ->
 }
 
 fn catalog_issue(error: CatalogError) -> DiagnosticIssue {
-    let CatalogError::InvalidPlugin { id, message } = error;
+    let (id, message) = match error {
+        CatalogError::InvalidPlugin { id, message } => (id, message),
+        CatalogError::UnknownPlugin(id) => {
+            let mut issue = DiagnosticIssue::new(
+                "plugin_not_found",
+                format!("Plugin {id} is not registered"),
+                "Inspect `codlet plugin list` and explicitly register the intended local directory before enabling it.",
+            );
+            issue.details = json!({"pluginId": id});
+            return issue;
+        }
+    };
     let mut issue = DiagnosticIssue::new(
         "enabled_plugin_invalid",
         message,

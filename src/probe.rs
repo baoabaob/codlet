@@ -13,13 +13,16 @@ use crate::cdp::{
 use crate::diagnostics::{
     Check, DiagnosticIssue, DoctorInputs, DoctorReport, PackageInfo, ProcessInfo, ProcessSnapshot,
 };
-use crate::local_plugins::{LocalPluginError, inspect_local_plugin, load_local_plugin};
+use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
+use crate::plugin_control::{PluginControlAction, PluginControlRequest};
 use crate::plugins::{
     LocalPluginRegistration, ManifestError, Permission, PluginRegistry, PluginRegistryError,
     bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
+use crate::runtime_control::ControlBroker;
 use crate::runtime_status::{CodexStatus, StatusCode, StatusPublisher};
+use crate::windows::control_pipe::{ControlServer, RegistryScope, RegistryScopeGuard};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
 use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage, PackageError,
@@ -33,6 +36,7 @@ use crate::windows::status_pipe::{StatusPipeError, StatusServer, query_current_u
 
 const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
 const LAUNCH_MUTEX_DEADLINE: Duration = Duration::from_secs(30);
+const REGISTRY_LEASE_DEADLINE: Duration = Duration::from_millis(1500);
 const REAL_PROBE_CONFIRMATION: &str = "--launch-codex";
 const RUNTIME_WAIT_SLICE: Duration = Duration::from_millis(50);
 
@@ -69,6 +73,12 @@ pub enum ProbeError {
     LocalPlugin(#[from] LocalPluginError),
     #[error(transparent)]
     StatusPipe(#[from] StatusPipeError),
+    #[error(transparent)]
+    PluginCli(#[from] crate::plugin_cli::PluginCliError),
+    #[error(
+        "runtime registry {path} is already owned by a Codlet Host or offline editor; check status before launching"
+    )]
+    RegistryOwned { path: PathBuf },
     #[error("Host status query failed: {status:?}; see the status report")]
     StatusFailed { status: StatusCode },
     #[error("marker cleanup also failed after {primary}: {cleanup}")]
@@ -77,11 +87,9 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id>`, `codlet plugin disable <id>`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
-    #[error("unknown plugin {0}; use `codlet plugin list` to inspect available plugins")]
-    UnknownPlugin(String),
     #[error(
         "local plugin {0} was inspected but not registered; review its directory and requested permissions, then explicitly supply --trust and --grant for each requested permission"
     )]
@@ -149,8 +157,8 @@ struct RendererOutcome {
 }
 
 struct CodletRuntime {
-    _status_server: StatusServer,
     status: StatusPublisher,
+    control: ControlBroker,
     package: InstalledPackage,
     executable: PathBuf,
     process: ChildProcess,
@@ -158,6 +166,18 @@ struct CodletRuntime {
     targets: TargetController,
     renderer: RendererRuntime,
     initial_outcomes: Vec<RendererOutcome>,
+    // Keep listeners and the registry lease until renderer cleanup has finished.
+    _servers: HostServers,
+}
+
+struct PreparedServices {
+    status: StatusPublisher,
+    lease: RegistryScopeGuard,
+}
+
+struct HostServers {
+    _status: StatusServer,
+    control: ControlServer,
 }
 
 pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeError> {
@@ -187,13 +207,37 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             let registry = PluginRegistry::load_default()?;
             print_plugin_registry(&registry)
         }
-        [command, action, plugin_id]
+        [command, action, plugin_id, options @ ..]
             if command == OsStr::new("plugin")
-                && (action == OsStr::new("enable") || action == OsStr::new("disable")) =>
+                && matches!(
+                    action.to_str(),
+                    Some("enable" | "disable" | "reload" | "operation")
+                ) =>
         {
-            let enabled = action == OsStr::new("enable");
+            let json = match options {
+                [] => false,
+                [option] if option == OsStr::new("--json") => true,
+                _ => return Err(ProbeError::Usage),
+            };
             let plugin_id = plugin_id.to_str().ok_or(ProbeError::Usage)?;
-            set_plugin_enabled(plugin_id, enabled)
+            if action == OsStr::new("operation") {
+                crate::plugin_cli::operation(plugin_id, json)?;
+            } else {
+                let action = match action.to_str().unwrap() {
+                    "enable" => PluginControlAction::Enable,
+                    "disable" => PluginControlAction::Disable,
+                    "reload" => PluginControlAction::Reload,
+                    _ => unreachable!(),
+                };
+                crate::plugin_cli::manage(
+                    PluginControlRequest {
+                        action,
+                        plugin_id: plugin_id.into(),
+                    },
+                    json,
+                )?;
+            }
+            Ok(())
         }
         [command, action, directory, options @ ..]
             if command == OsStr::new("plugin") && action == OsStr::new("add") =>
@@ -412,12 +456,13 @@ fn start_probed_codex() -> Result<ProbedCodex, ProbeError> {
 }
 
 fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
-    start_attached_codex_with_status(None).map(|(attached, _)| attached)
+    start_attached_codex_with_services(None).map(|(attached, _)| attached)
 }
 
-fn start_attached_codex_with_status(
-    status: Option<StatusPublisher>,
-) -> Result<(AttachedCodex, Option<StatusServer>), ProbeError> {
+fn start_attached_codex_with_services(
+    services: Option<PreparedServices>,
+) -> Result<(AttachedCodex, Option<HostServers>), ProbeError> {
+    let status = services.as_ref().map(|services| services.status.clone());
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
     let ((process, pipes), server) = checked_launch_prepared(
@@ -425,11 +470,14 @@ fn start_attached_codex_with_status(
         running,
         || running_processes_for_package(CODEX_PACKAGE_FAMILY, &executable),
         || {
-            status
-                .as_ref()
-                .map(|status| StatusServer::bind_current_user(status.clone()))
+            services
+                .map(|services| {
+                    Ok::<_, ProbeError>(HostServers {
+                        _status: StatusServer::bind_current_user(services.status)?,
+                        control: ControlServer::bind_current_user(services.lease)?,
+                    })
+                })
                 .transpose()
-                .map_err(ProbeError::from)
         },
         |server| Ok((launch_with_cdp_pipes(&executable, &[], false)?, server)),
     )?;
@@ -459,11 +507,23 @@ fn start_attached_codex_with_status(
 }
 
 fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
-    let registry = PluginRegistry::load_default()?;
+    let scope = RegistryScope::for_path(&default_registry_path()?)?;
+    let lease = scope
+        .acquire(REGISTRY_LEASE_DEADLINE)
+        .map_err(|error| match error {
+            StatusPipeError::Timeout => ProbeError::RegistryOwned {
+                path: scope.path().to_owned(),
+            },
+            other => ProbeError::from(other),
+        })?;
+    let registry = PluginRegistry::load(scope.path())?;
     let mut renderer = prepare_renderer_runtime(registry)?;
     let status = StatusPublisher::new();
     renderer.set_status_publisher(status.clone());
-    let (attached, server) = start_attached_codex_with_status(Some(status.clone()))?;
+    let (attached, servers) = start_attached_codex_with_services(Some(PreparedServices {
+        status: status.clone(),
+        lease,
+    }))?;
     let initial_outcomes = attached
         .sessions
         .iter()
@@ -473,9 +533,13 @@ fn start_codlet_runtime() -> Result<CodletRuntime, ProbeError> {
         })
         .collect();
     status.set_ready();
+    let servers = servers.expect("runtime launch prepared its IPC servers");
+    let control = servers.control.broker();
+    control.set_ready();
     Ok(CodletRuntime {
-        _status_server: server.expect("runtime launch prepared the status server"),
+        _servers: servers,
         status,
+        control,
         package: attached.package,
         executable: attached.executable,
         process: attached.process,
@@ -522,29 +586,6 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
             );
         }
     }
-    Ok(())
-}
-
-fn set_plugin_enabled(plugin_id: &str, enabled: bool) -> Result<(), ProbeError> {
-    let mut registry = PluginRegistry::load_default()?;
-    let is_bundled = bundled_plugins()?
-        .iter()
-        .any(|plugin| plugin.manifest.id == plugin_id);
-    if !is_bundled {
-        let registration = registry
-            .local_plugins()
-            .get(plugin_id)
-            .cloned()
-            .ok_or_else(|| ProbeError::UnknownPlugin(plugin_id.to_owned()))?;
-        if enabled {
-            load_local_plugin(plugin_id, &registration.path, &registration.grants, 1)?;
-            // The authorization that passed validation must still exist at commit.
-            registry.register_local(plugin_id, registration)?;
-        }
-    }
-    registry.set_enabled(plugin_id, enabled)?;
-    registry.save()?;
-    println!("plugin-state: id={plugin_id}; enabled={enabled}; applies=next-codlet-launch");
     Ok(())
 }
 
@@ -732,6 +773,10 @@ impl CodletRuntime {
                 }
             }
             let _ = self.renderer.pump_bindings()?;
+            if let Some(job) = self.control.take_next() {
+                let result = self.renderer.manage_plugin(job.request);
+                self.control.complete(&job.operation_id, result);
+            }
             self.renderer.publish_status();
             for diagnostic in self.renderer.take_diagnostics() {
                 eprintln!(
@@ -743,6 +788,7 @@ impl CodletRuntime {
                 break exit_code;
             }
         };
+        self.control.stop();
         self.status.terminate(format!("child_exited: {exit_code}"));
         self.client.shutdown()?;
         if exit_code == 0 {
@@ -755,6 +801,7 @@ impl CodletRuntime {
 
 impl Drop for CodletRuntime {
     fn drop(&mut self) {
+        self.control.stop();
         self.status.terminate("host_dropped");
     }
 }

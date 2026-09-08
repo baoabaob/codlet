@@ -61,6 +61,8 @@ pub struct PluginCatalog {
 
 #[derive(Debug, Error)]
 pub enum CatalogError {
+    #[error("plugin {0} is not bundled or registered")]
+    UnknownPlugin(String),
     #[error(
         "enabled plugin {id} failed validation: {message}; repair its registration or disable it before launching"
     )]
@@ -79,16 +81,8 @@ impl PluginCatalog {
             let plugin = if bundled_ids.contains(id) || id == BUILTIN_HOST_PROVIDER_ID {
                 Err(LocalPluginError::ReservedId(id.clone()))
             } else {
-                load_local_plugin(id, &registration.path, &registration.grants, 1).and_then(|plugin| {
-                    if let Some(requirement) = plugin.manifest.requires.iter().find(|requirement| requirement.scope != CapabilityScope::Target) {
-                        return Err(LocalPluginError::Rejected {
-                            path: registration.path.join("plugin.json"),
-                            stage: "renderer capability routing",
-                            reason: format!("plugin {id} requires {requirement}; this renderer runtime only supports target-scoped requirements"),
-                        });
-                    }
-                    Ok(plugin)
-                })
+                load_local_plugin(id, &registration.path, &registration.grants, 1)
+                    .and_then(|plugin| validate_renderer_requirements(plugin, &registration.path))
             };
             catalog.entries.push(PluginCatalogEntry {
                 id: id.clone(),
@@ -122,6 +116,64 @@ impl PluginCatalog {
         &self.entries
     }
 
+    /// Read only the explicitly selected registration. Unrelated entries remain
+    /// launch snapshots, including disabled or invalid local plugins.
+    pub(crate) fn reload_entry(
+        &self,
+        id: &str,
+        registry: &PluginRegistry,
+        generation: u64,
+    ) -> Result<PluginCatalogEntry, CatalogError> {
+        if let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.id == id && matches!(entry.source, PluginSource::Bundled))
+        {
+            let mut plugin = entry
+                .plugin
+                .as_ref()
+                .expect("bundled entry is valid")
+                .clone();
+            plugin.generation = generation;
+            return Ok(PluginCatalogEntry {
+                id: id.to_owned(),
+                source: PluginSource::Bundled,
+                plugin: Ok(plugin),
+            });
+        }
+        let registration = registry
+            .local_plugins()
+            .get(id)
+            .ok_or_else(|| CatalogError::UnknownPlugin(id.to_owned()))?;
+        let plugin = load_local_plugin(id, &registration.path, &registration.grants, generation)
+            .and_then(|plugin| validate_renderer_requirements(plugin, &registration.path))
+            .map_err(|error| CatalogError::InvalidPlugin {
+                id: id.to_owned(),
+                message: error.to_string(),
+            })?;
+        Ok(PluginCatalogEntry {
+            id: id.to_owned(),
+            source: PluginSource::Local {
+                path: registration.path.clone(),
+                grants: registration.grants.clone(),
+            },
+            plugin: Ok(plugin),
+        })
+    }
+
+    pub(crate) fn replace_entry(&mut self, entry: PluginCatalogEntry) {
+        if let Some(current) = self
+            .entries
+            .iter_mut()
+            .find(|current| current.id == entry.id)
+        {
+            *current = entry;
+        } else {
+            self.entries.push(entry);
+            self.entries.sort_by(|left, right| left.id.cmp(&right.id));
+        }
+    }
+
     pub fn enabled_plugins(
         &self,
         registry: &PluginRegistry,
@@ -141,6 +193,28 @@ impl PluginCatalog {
             })
             .collect()
     }
+}
+
+fn validate_renderer_requirements(
+    plugin: LoadedPlugin,
+    path: &Path,
+) -> Result<LoadedPlugin, LocalPluginError> {
+    if let Some(requirement) = plugin
+        .manifest
+        .requires
+        .iter()
+        .find(|requirement| requirement.scope != CapabilityScope::Target)
+    {
+        return Err(LocalPluginError::Rejected {
+            path: path.join("plugin.json"),
+            stage: "renderer capability routing",
+            reason: format!(
+                "plugin {} requires {requirement}; this renderer runtime only supports target-scoped requirements",
+                plugin.manifest.id
+            ),
+        });
+    }
+    Ok(plugin)
 }
 
 /// Doctor and the renderer use the same scoped declarations and graph rules.

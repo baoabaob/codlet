@@ -795,7 +795,7 @@ pub fn enabled_bundled_plugins(
         .collect())
 }
 
-fn valid_plugin_id(id: &str) -> bool {
+pub(crate) fn valid_plugin_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_PLUGIN_ID_BYTES
         && id.is_ascii()

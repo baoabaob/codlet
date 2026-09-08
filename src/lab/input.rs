@@ -1,4 +1,5 @@
 //! Poll bounded stdin input. No blocking reader thread survives Host completion.
+use crate::plugin_control::{PluginControlAction, PluginControlRequest};
 use std::io;
 use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -13,6 +14,7 @@ use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 pub(super) enum InputEvent {
     Start,
     Quit,
+    Plugin(PluginControlRequest),
     Invalid,
     Eof,
     Error(String),
@@ -183,16 +185,39 @@ impl ControlInput {
             events.push(match (self.oversized, self.line.as_slice()) {
                 (false, b"start") => InputEvent::Start,
                 (false, b"quit") => InputEvent::Quit,
+                (false, line) => {
+                    parse_plugin_command(line).map_or(InputEvent::Invalid, InputEvent::Plugin)
+                }
                 _ => InputEvent::Invalid,
             });
             self.line.clear();
             self.oversized = false;
-        } else if self.line.len() < 128 {
+        } else if self.line.len() < 256 {
             self.line.push(byte);
         } else {
             self.oversized = true;
         }
     }
+}
+
+fn parse_plugin_command(line: &[u8]) -> Option<PluginControlRequest> {
+    let line = std::str::from_utf8(line).ok()?;
+    let parts: Vec<_> = line.split(' ').collect();
+    let ["plugin", action, plugin_id] = parts.as_slice() else {
+        return None;
+    };
+    let action = match *action {
+        "enable" => PluginControlAction::Enable,
+        "disable" => PluginControlAction::Disable,
+        "reload" => PluginControlAction::Reload,
+        _ => return None,
+    };
+    let request = PluginControlRequest {
+        action,
+        plugin_id: (*plugin_id).to_owned(),
+    };
+    request.validate().ok()?;
+    Some(request)
 }
 
 #[cfg(test)]
@@ -226,9 +251,39 @@ mod tests {
         for _ in 0..4096 {
             input.byte(b'x', &mut events);
         }
-        assert_eq!(input.line.len(), 128);
+        assert_eq!(input.line.len(), 256);
         input.byte(b'\n', &mut events);
         assert!(matches!(events.as_slice(), [InputEvent::Invalid]));
         assert!(input.line.is_empty());
+    }
+
+    #[test]
+    fn plugin_commands_accept_fixed_actions_and_ids_without_paths_or_extra_arguments() {
+        for (line, action) in [
+            ("plugin enable codlet", PluginControlAction::Enable),
+            ("plugin disable codlet", PluginControlAction::Disable),
+            (
+                "plugin reload codex.ui.adapter",
+                PluginControlAction::Reload,
+            ),
+        ] {
+            assert_eq!(
+                parse_plugin_command(line.as_bytes()).unwrap().action,
+                action
+            );
+        }
+        for line in [
+            "plugin reload",
+            "plugin reload codlet --force",
+            "plugin reload C:/plugin",
+            "plugin eval codlet",
+            "plugin reload ../codlet",
+            "plugin reload codlet\0",
+            "plugin  reload codlet",
+            "plugin reload Codlet",
+            "plugin reload codlet ",
+        ] {
+            assert!(parse_plugin_command(line.as_bytes()).is_none(), "{line:?}");
+        }
     }
 }

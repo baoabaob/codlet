@@ -25,6 +25,7 @@ use crate::windows::packages::{
 use crate::windows::process::{ChildProcess, launch_with_cdp_pipes_in_environment};
 
 mod input;
+mod management;
 mod resume;
 mod runtime_seed;
 mod shell;
@@ -225,6 +226,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             "experimental": true, "isolation_is_not_a_security_boundary": true,
             "gui_mount_verified": false,
             "control": "start after coordinator verifies the dedicated backend; quit cancels before start or requests the owned application's quit bridge afterward; EOF keeps Host alive",
+            "plugin_control": "after verified startup, stdin accepts plugin enable|disable|reload <bundled-id>; uses the same lifecycle owner without binding production control IPC",
             "shell": LAB_SHELL, "shell_profiles_checked_absent": shell_check.profiles_checked_absent,
             "shell_environment_probe": shell_check,
             "requested_app_server_url": options.app_server_url,
@@ -347,6 +349,10 @@ fn wait_for_start(input: &mut ControlInput, reporter: &mut Reporter) -> bool {
                     reporter.emit("cancelled_before_start", json!({"child_created": false}));
                     return false;
                 }
+                InputEvent::Plugin(_) => reporter.emit(
+                    "plugin_control_rejected",
+                    json!({"reason": "not_started", "child_created": false}),
+                ),
                 InputEvent::Invalid => {
                     reporter.emit("invalid_control", json!({"accepted": ["start", "quit"]}))
                 }
@@ -521,7 +527,9 @@ fn hold_lab_child(
                 )))
             };
         }
-        for event in input.poll() {
+        let mut plugin_request = None;
+        let mut input_events = input.poll().into_iter();
+        while let Some(event) = input_events.next() {
             match event {
                 InputEvent::Start => {
                     reporter.emit("already_started", json!({"no_second_child": true}))
@@ -532,8 +540,13 @@ fn hold_lab_child(
                 InputEvent::Quit => {
                     reporter.emit("quit_already_requested", json!({"no_retry": true}))
                 }
+                InputEvent::Plugin(request) => {
+                    plugin_request = Some(request);
+                    input.defer(input_events.collect());
+                    break;
+                }
                 InputEvent::Invalid => {
-                    reporter.emit("invalid_control", json!({"accepted": "quit"}))
+                    reporter.emit("invalid_control", json!({"accepted": ["quit", "plugin enable <bundled-id>", "plugin disable <bundled-id>", "plugin reload <bundled-id>"]}))
                 }
                 InputEvent::Eof => reporter.emit("control_eof", json!({"child_retained": true})),
                 InputEvent::Error(error) => reporter.emit(
@@ -606,6 +619,24 @@ fn hold_lab_child(
                     failure = Some(format!("startup verification failed: {reason}"));
                     reporter.emit("startup_failed", json!({"reason": reason, "elapsed_ms": startup.elapsed_ms(), "renderer_plugins_loaded": false}));
                     request_own_child_quit(&mut quit, &sessions, "startup_failed", reporter);
+                }
+            }
+        }
+        if let Some(request) = plugin_request {
+            if !startup_verified || quit.requested() || renderer_pump_failed || cdp_closed_reported
+            {
+                reporter.emit(
+                    "plugin_control_rejected",
+                    json!({"request": request, "reason": "runtime_not_ready"}),
+                );
+            } else {
+                reporter.emit("plugin_control_requested", json!({"request": request}));
+                match management::execute(&mut renderer, request) {
+                    Ok(result) => reporter.emit(
+                        "plugin_control_result",
+                        json!({"result": result, "gui_mount_verified": false}),
+                    ),
+                    Err(error) => reporter.emit("plugin_control_failed", json!({"error": error})),
                 }
             }
         }

@@ -1,6 +1,9 @@
+pub mod control_pipe;
+mod control_scope;
 pub mod environment;
 pub mod fake_child;
 pub mod launch_mutex;
+mod local_ipc;
 pub mod packages;
 pub mod pipes;
 pub mod process;

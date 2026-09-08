@@ -45,6 +45,508 @@ fn bundled_runtime() -> (TempDir, RendererRuntime) {
     (directory, runtime)
 }
 
+fn control_runtime() -> (TempDir, PathBuf, RendererRuntime) {
+    use codlet::catalog::PluginCatalog;
+    use codlet::plugins::LocalPluginRegistration;
+    let directory = tempdir().unwrap();
+    let registry_path = directory.path().join("config.json");
+    let mut registry = PluginRegistry::load(&registry_path).unwrap();
+    registry.set_enabled("codlet", false).unwrap();
+    registry.set_enabled("codex.ui.adapter", false).unwrap();
+    for id in ["dev.provider", "dev.consumer", "dev.other", "dev.extra"] {
+        let root = directory.path().join(id);
+        std::fs::create_dir(&root).unwrap();
+        let mut manifest = json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":[]});
+        if id == "dev.provider" {
+            manifest["provides"] = json!([{"name":"dev.api","api":1,"scope":"target"}]);
+        }
+        if id == "dev.consumer" {
+            manifest["requires"] = json!([{"name":"dev.api","api":1,"scope":"target"}]);
+        }
+        std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+        std::fs::write(
+            root.join("renderer.js"),
+            "// fixture-original\nmodule.exports = { activate() {}, deactivate() {} };",
+        )
+        .unwrap();
+        registry
+            .register_local(
+                id,
+                LocalPluginRegistration {
+                    path: root,
+                    grants: vec![],
+                },
+            )
+            .unwrap();
+    }
+    registry.set_enabled("dev.extra", false).unwrap();
+    registry.save().unwrap();
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    let runtime = RendererRuntime::from_catalog(catalog, registry).unwrap();
+    (directory, registry_path, runtime)
+}
+
+fn control_request(
+    action: codlet::plugin_control::PluginControlAction,
+    id: &str,
+) -> codlet::plugin_control::PluginControlRequest {
+    codlet::plugin_control::PluginControlRequest {
+        action,
+        plugin_id: id.to_owned(),
+    }
+}
+
+#[test]
+fn running_control_batches_dependency_order_fresh_generations_validation_and_compensation() {
+    use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
+    let (directory, registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    for session in &sessions {
+        assert_eq!(runtime.attach(session).unwrap().plugin_count, 3);
+    }
+
+    let rejected = runtime
+        .manage_plugin(control_request(Action::Disable, "dev.provider"))
+        .unwrap_err();
+    assert_eq!(rejected.code, "dependency_conflict");
+    assert!(
+        PluginRegistry::load(&registry_path)
+            .unwrap()
+            .is_enabled("dev.provider")
+    );
+    let before = client
+        .request("Fake.stats", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap();
+    std::fs::write(
+        directory.path().join("dev.provider/renderer.js"),
+        "// fixture-revised\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    let reloaded = runtime
+        .manage_plugin(control_request(Action::Reload, "dev.provider"))
+        .unwrap();
+    assert_eq!(reloaded.outcome, Outcome::Applied);
+    assert_eq!(
+        reloaded.affected_plugin_ids,
+        ["dev.consumer", "dev.provider"]
+    );
+    assert!(
+        reloaded
+            .generations
+            .iter()
+            .all(|plugin| plugin.generation == 2)
+    );
+    let stats = client
+        .request("Fake.stats", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap();
+    let changes = &stats["trace"].as_array().unwrap()[before["trace"].as_array().unwrap().len()..];
+    assert_eq!(changes[0]["world"], "codlet.plugin.dev.consumer.g1");
+    assert_eq!(changes[1]["world"], "codlet.plugin.dev.provider.g1");
+    assert_eq!(changes[4]["world"], "codlet.plugin.dev.provider.g2");
+    assert_eq!(changes[5]["world"], "codlet.plugin.dev.consumer.g2");
+    assert!(runtime.status_snapshot().targets.iter().all(|target| {
+        target
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id == "dev.other" && plugin.generation == 1 && plugin.active)
+    }));
+
+    let manifest_path = directory.path().join("dev.provider/plugin.json");
+    let original_manifest = std::fs::read(&manifest_path).unwrap();
+    let mut denied_manifest: serde_json::Value =
+        serde_json::from_slice(&original_manifest).unwrap();
+    denied_manifest["permissions"] = json!(["runtime.manage"]);
+    std::fs::write(&manifest_path, denied_manifest.to_string()).unwrap();
+    let denied = runtime
+        .manage_plugin(control_request(Action::Reload, "dev.provider"))
+        .unwrap_err();
+    assert_eq!(denied.code, "local_plugin_invalid");
+    assert_eq!(
+        client
+            .request("Fake.stats", None, None, DEADLINE)
+            .unwrap()
+            .result
+            .unwrap(),
+        stats
+    );
+    std::fs::write(&manifest_path, original_manifest).unwrap();
+
+    std::fs::write(
+        directory.path().join("dev.provider/renderer.js"),
+        "// fixture-fail-candidate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    let rolled_back = runtime
+        .manage_plugin(control_request(Action::Reload, "dev.provider"))
+        .unwrap();
+    assert_eq!(rolled_back.outcome, Outcome::RolledBack);
+    assert_eq!(rolled_back.target_failures.len(), 1);
+    assert_eq!(rolled_back.target_failures[0].target_id, "second");
+    assert!(
+        rolled_back
+            .generations
+            .iter()
+            .all(|plugin| plugin.generation == 4)
+    );
+    let rollback_generation = rolled_back.generations[0].generation;
+    assert!(
+        runtime
+            .status_snapshot()
+            .targets
+            .iter()
+            .all(|target| target.plugins.iter().all(|plugin| plugin.active))
+    );
+    let stats = client
+        .request("Fake.stats", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(stats["bindings"].as_array().unwrap().len(), 6);
+    assert!(stats["scripts"].as_array().unwrap().iter().all(|world| {
+        world == "codlet.plugin.dev.other.g1"
+            || world
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(".g{rollback_generation}"))
+    }));
+
+    for id in ["dev.consumer", "dev.provider"] {
+        assert_eq!(
+            runtime
+                .manage_plugin(control_request(Action::Disable, id))
+                .unwrap()
+                .outcome,
+            Outcome::Applied
+        );
+    }
+    assert_eq!(
+        runtime
+            .manage_plugin(control_request(Action::Enable, "dev.consumer"))
+            .unwrap_err()
+            .code,
+        "dependency_conflict"
+    );
+    assert!(
+        !PluginRegistry::load(&registry_path)
+            .unwrap()
+            .is_enabled("dev.consumer")
+    );
+    std::fs::write(
+        directory.path().join("dev.provider/renderer.js"),
+        "module.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    for id in ["dev.provider", "dev.consumer"] {
+        let enabled = runtime
+            .manage_plugin(control_request(Action::Enable, id))
+            .unwrap();
+        assert_eq!(enabled.outcome, Outcome::Applied);
+        assert!(enabled.generations[0].generation > rollback_generation);
+        assert!(PluginRegistry::load(&registry_path).unwrap().is_enabled(id));
+    }
+    assert_eq!(
+        runtime
+            .manage_plugin(control_request(Action::Enable, "dev.provider"))
+            .unwrap()
+            .outcome,
+        Outcome::Unchanged
+    );
+    let generation = runtime.status_snapshot().targets[0]
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == "dev.consumer")
+        .unwrap()
+        .generation;
+    client
+        .request(
+            "Fake.configure",
+            Some(json!({"failCleanupWorld":format!("codlet.plugin.dev.consumer.g{generation}")})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    let disabled = runtime
+        .manage_plugin(control_request(Action::Disable, "dev.consumer"))
+        .unwrap();
+    assert_eq!(disabled.outcome, Outcome::Degraded);
+    assert!(!disabled.desired_enabled);
+    assert!(
+        !PluginRegistry::load(&registry_path)
+            .unwrap()
+            .is_enabled("dev.consumer")
+    );
+    assert!(runtime.status_snapshot().targets.iter().all(|target| {
+        target
+            .plugins
+            .iter()
+            .all(|plugin| plugin.id != "dev.consumer")
+    }));
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn running_control_does_not_restore_a_local_plugin_after_trust_is_removed() {
+    use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
+    let (directory, registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    for session in &sessions {
+        runtime.attach(session).unwrap();
+    }
+    std::fs::write(
+        directory.path().join("dev.provider/renderer.js"),
+        "// fixture-fail-candidate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    client
+        .request(
+            "Fake.configure",
+            Some(json!({"revokeRegistry":registry_path,"revokePlugin":"dev.provider"})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    let report = runtime
+        .manage_plugin(control_request(Action::Reload, "dev.provider"))
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Degraded);
+    assert!(report.generations.is_empty());
+    assert!(
+        report
+            .target_failures
+            .iter()
+            .any(|failure| failure.stage == "rollback_validate")
+    );
+    assert!(
+        runtime
+            .status_snapshot()
+            .targets
+            .iter()
+            .all(|target| target.plugins.len() == 1
+                && target.plugins[0].id == "dev.other"
+                && target.plugins[0].active)
+    );
+    assert!(
+        !PluginRegistry::load(&registry_path)
+            .unwrap()
+            .local_plugins()
+            .contains_key("dev.provider")
+    );
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn running_enable_retires_new_instances_if_its_registry_commit_fails() {
+    use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
+    let (directory, registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    for session in &sessions {
+        runtime.attach(session).unwrap();
+    }
+    std::fs::write(
+        directory.path().join("dev.extra/renderer.js"),
+        "// fixture-break-commit\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    client
+        .request(
+            "Fake.configure",
+            Some(json!({"corruptRegistry":registry_path})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    let report = runtime
+        .manage_plugin(control_request(Action::Enable, "dev.extra"))
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::RolledBack);
+    assert!(!report.desired_enabled);
+    assert!(report.generations.is_empty());
+    assert_eq!(report.target_failures[0].stage, "commit");
+    assert_eq!(runtime.plugin_count(), 3);
+    assert!(runtime.status_snapshot().targets.iter().all(
+        |target| target.plugins.len() == 3 && target.plugins.iter().all(|plugin| plugin.active)
+    ));
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn running_control_uses_one_forward_deadline_across_targets_then_a_fresh_compensation_budget() {
+    use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
+    let (directory, _registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let budget = Duration::from_millis(300);
+    let (_targets, sessions) = discover_targets(client.clone(), events, budget);
+    for session in &sessions {
+        runtime.attach(session).unwrap();
+    }
+    std::fs::write(
+        directory.path().join("dev.provider/renderer.js"),
+        "// fixture-timeout-candidate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    let started = Instant::now();
+    let report = runtime
+        .manage_plugin(control_request(Action::Reload, "dev.provider"))
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_millis(900));
+    assert_eq!(report.outcome, Outcome::RolledBack);
+    assert!(
+        report
+            .target_failures
+            .iter()
+            .any(|failure| failure.error.contains("deadline"))
+    );
+    let stats = client
+        .request("Fake.stats", None, None, DEADLINE)
+        .unwrap()
+        .result
+        .unwrap();
+    // A fresh per-target deadline would issue the second withheld activation.
+    assert_eq!(
+        stats["trace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["timedOut"] == true)
+            .count(),
+        1
+    );
+    assert!(
+        runtime
+            .status_snapshot()
+            .targets
+            .iter()
+            .all(|target| target.plugins.iter().all(|plugin| plugin.active))
+    );
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
+#[test]
+fn running_enable_does_not_recreate_a_removed_registration_through_its_unchanged_path() {
+    use codlet::plugin_control::PluginControlAction as Action;
+    let (_directory, registry_path, mut runtime) = control_runtime();
+    let mut registry = PluginRegistry::load(&registry_path).unwrap();
+    registry.remove_local("dev.provider").unwrap();
+    registry.save().unwrap();
+    let bytes = std::fs::read(&registry_path).unwrap();
+    let error = runtime
+        .manage_plugin(control_request(Action::Enable, "dev.provider"))
+        .unwrap_err();
+    assert_eq!(error.code, "rollback_trust_changed");
+    assert_eq!(std::fs::read(&registry_path).unwrap(), bytes);
+}
+
+#[test]
+fn running_enable_recovery_guards_every_restarted_dependents_registration_at_commit() {
+    use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
+    let (directory, registry_path, mut runtime) = control_runtime();
+    let (child, client, events) = launch("renderer-control", &[]);
+    let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    for session in &sessions {
+        runtime.attach(session).unwrap();
+    }
+    client
+        .request(
+            "Fake.unconfirmContext",
+            Some(json!({"targetId":"second","world":"codlet.plugin.dev.provider.g1"})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    runtime.pump_bindings().unwrap();
+    assert!(runtime.status_snapshot().targets.iter().any(|target| {
+        target.target_id == "second"
+            && target
+                .plugins
+                .iter()
+                .any(|plugin| plugin.id == "dev.provider" && !plugin.active)
+    }));
+    std::fs::write(
+        directory.path().join("dev.consumer/renderer.js"),
+        "// fixture-revoke-on-activate\nmodule.exports = { activate() {}, deactivate() {} };",
+    )
+    .unwrap();
+    client
+        .request(
+            "Fake.configure",
+            Some(json!({"revokeRegistry":registry_path,"revokePlugin":"dev.consumer"})),
+            None,
+            DEADLINE,
+        )
+        .unwrap();
+    let report = runtime
+        .manage_plugin(control_request(Action::Enable, "dev.provider"))
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Degraded);
+    assert_eq!(report.affected_plugin_ids, ["dev.consumer", "dev.provider"]);
+    assert!(
+        report
+            .target_failures
+            .iter()
+            .any(|failure| failure.stage == "commit"
+                && failure.error.contains("registration was removed"))
+    );
+    assert!(report.generations.is_empty());
+    assert!(
+        !PluginRegistry::load(&registry_path)
+            .unwrap()
+            .local_plugins()
+            .contains_key("dev.consumer")
+    );
+    assert!(
+        runtime
+            .status_snapshot()
+            .targets
+            .iter()
+            .all(|target| target.plugins.len() == 1
+                && target.plugins[0].id == "dev.other"
+                && target.plugins[0].active)
+    );
+    client
+        .request("Fake.hostStillAlive", None, None, DEADLINE)
+        .unwrap();
+    for session in &sessions {
+        runtime.deactivate_target(session.target_id()).unwrap();
+    }
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    assert_child_success(&child);
+}
+
 fn assert_child_success(child: &ChildProcess) {
     assert_eq!(child.wait(DEADLINE).unwrap(), Some(0));
 }

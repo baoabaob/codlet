@@ -60,6 +60,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "renderer-ready-timeout" => scenario_renderer_ready_timeout(&mut input, &mut output),
         "renderer-rpc" => scenario_renderer_rpc(&mut input, &mut output),
         "renderer-manage" => scenario_renderer_manage(&mut input, &mut output),
+        "renderer-control" => scenario_renderer_control(&mut input, &mut output),
         "renderer-local-manage" => scenario_renderer_local_manage(&mut input, &mut output, true),
         "renderer-local-manage-denied" => {
             scenario_renderer_local_manage(&mut input, &mut output, false)
@@ -94,6 +95,218 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "wrong-session" => scenario_wrong_session(&mut input, &mut output),
         "whitelist" => scenario_whitelist(&mut output, parsed.sentinel, parsed.sentinel_token),
         other => Err(FakeChildError::UnknownScenario(other.to_owned())),
+    }
+}
+
+/// Stateful lifecycle peer: validates resource identity across arbitrary
+/// generations and lets one transaction batch exercise both renderer targets.
+fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut reader = RequestReader::new(input);
+    enable_target_discovery(&mut reader, output)?;
+    let id = expect_method(reader.next()?, "Target.getTargets", None)?;
+    write_json_frame(
+        output,
+        &json!({"id":id,"result":{"targetInfos":[
+            {"targetId":"main","type":"page","url":"app://-/index.html"},
+            {"targetId":"second","type":"page","url":"app://-/index.html"}
+        ]}}),
+    )?;
+    establish_named_target_session(&mut reader, output, "main")?;
+    establish_named_target_session(&mut reader, output, "second")?;
+    let mut contexts: BTreeMap<(String, String), u64> = BTreeMap::new();
+    let mut bindings: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut used_bindings = BTreeSet::new();
+    let mut scripts: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut trace: Vec<Value> = Vec::new();
+    let mut sequence = 100_u64;
+    let mut settings = json!({});
+    loop {
+        let request = reader.next()?;
+        let id = request["id"]
+            .as_u64()
+            .ok_or_else(|| FakeChildError::InvalidRequest("control request has no id".into()))?;
+        let method = request["method"].as_str().unwrap_or("");
+        let session = request["sessionId"].as_str().unwrap_or("").to_owned();
+        let params = &request["params"];
+        let mut result = json!({});
+        match method {
+            "Page.getFrameTree" => {
+                result = json!({"frameTree":{"frame":{"id":format!("frame-{session}"),"url":"app://-/index.html"}}})
+            }
+            "Page.createIsolatedWorld" => {
+                let world = params["worldName"].as_str().unwrap().to_owned();
+                let context = *contexts.entry((session.clone(), world)).or_insert_with(|| {
+                    sequence += 1;
+                    sequence
+                });
+                result = json!({"executionContextId":context});
+            }
+            "Runtime.addBinding" => {
+                let name = params["name"].as_str().unwrap().to_owned();
+                if !used_bindings.insert(name.clone()) {
+                    return Err(FakeChildError::InvalidRequest(
+                        "a retired binding name was reused".into(),
+                    ));
+                }
+                bindings.insert(
+                    name,
+                    (
+                        session.clone(),
+                        params["executionContextName"].as_str().unwrap().to_owned(),
+                    ),
+                );
+            }
+            "Page.addScriptToEvaluateOnNewDocument" => {
+                sequence += 1;
+                let identifier = format!("control-script-{sequence}");
+                scripts.insert(
+                    identifier.clone(),
+                    (
+                        session.clone(),
+                        params["worldName"].as_str().unwrap().to_owned(),
+                    ),
+                );
+                result = json!({"identifier":identifier});
+            }
+            "Page.removeScriptToEvaluateOnNewDocument" => {
+                if scripts
+                    .remove(params["identifier"].as_str().unwrap())
+                    .is_none()
+                {
+                    return Err(FakeChildError::InvalidRequest(
+                        "removed an unknown script".into(),
+                    ));
+                }
+            }
+            "Runtime.removeBinding" => {
+                if bindings.remove(params["name"].as_str().unwrap()).is_none() {
+                    return Err(FakeChildError::InvalidRequest(
+                        "removed an unknown binding".into(),
+                    ));
+                }
+            }
+            "Runtime.evaluate" => {
+                let expression = params["expression"].as_str().unwrap();
+                let context_id = params["contextId"].as_u64().unwrap();
+                let world = contexts
+                    .iter()
+                    .find(|((owner, _), context)| owner == &session && **context == context_id)
+                    .map(|((_, world), _)| world.clone())
+                    .ok_or_else(|| {
+                        FakeChildError::InvalidRequest("evaluation in an unknown context".into())
+                    })?;
+                let mut value = json!({"ok":true});
+                if let Some(rest) = expression.split("return await runtime.activate(").nth(1) {
+                    let metadata: Value =
+                        serde_json::from_str(rest.split(", module.exports)").next().unwrap())
+                            .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                    let binding = metadata["binding"].as_str().unwrap();
+                    if bindings.get(binding) != Some(&(session.clone(), world.clone())) {
+                        return Err(FakeChildError::InvalidRequest(
+                            "activation does not own its world and binding".into(),
+                        ));
+                    }
+                    let expected_world = format!(
+                        "codlet.plugin.{}.g{}",
+                        metadata["id"].as_str().unwrap(),
+                        metadata["generation"]
+                    );
+                    if world != expected_world {
+                        return Err(FakeChildError::InvalidRequest(
+                            "generation was reused across worlds".into(),
+                        ));
+                    }
+                    let fail = session == "session-second"
+                        && expression.contains("fixture-fail-candidate");
+                    let timed_out = expression.contains("fixture-timeout-candidate");
+                    trace.push(json!({"operation":"activate","session":session,"world":world,"pluginId":metadata["id"],"generation":metadata["generation"],"failed":fail,"timedOut":timed_out,"revised":expression.contains("fixture-revised")}));
+                    if timed_out {
+                        continue;
+                    }
+                    if (fail
+                        || (session == "session-second"
+                            && expression.contains("fixture-revoke-on-activate")))
+                        && let (Some(path), Some(plugin_id)) = (
+                            settings["revokeRegistry"].as_str(),
+                            settings["revokePlugin"].as_str(),
+                        )
+                    {
+                        let mut registry = crate::plugins::PluginRegistry::load(path)
+                            .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                        registry
+                            .remove_local(plugin_id)
+                            .and_then(|()| registry.save())
+                            .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                        settings = json!({});
+                    }
+                    if fail {
+                        value =
+                            json!({"ok":false,"error":"simulated candidate activation failure"});
+                    }
+                    if session == "session-second"
+                        && expression.contains("fixture-break-commit")
+                        && let Some(path) = settings["corruptRegistry"].as_str()
+                    {
+                        std::fs::write(path, "not valid registry JSON")?;
+                        settings = json!({});
+                    }
+                } else if expression.starts_with(
+                    "globalThis.__codletRendererV1 ? globalThis.__codletRendererV1.deactivate(",
+                ) {
+                    trace.push(json!({"operation":"deactivate","session":session,"world":world}));
+                    if settings["failCleanupWorld"].as_str() == Some(world.as_str()) {
+                        value = json!({"ok":false,"error":"simulated cleanup failure"});
+                        settings = json!({});
+                    }
+                } else if expression.contains(".__rpcReceive(") {
+                    trace.push(json!({"operation":"response","session":session,"world":world}));
+                }
+                result = json!({"result":{"type":"object","value":value}});
+            }
+            "Fake.configure" => settings = params.clone(),
+            "Fake.unconfirmContext" => {
+                let target_session = format!("session-{}", params["targetId"].as_str().unwrap());
+                let world = params["world"].as_str().unwrap().to_owned();
+                let context_id =
+                    contexts
+                        .get(&(target_session.clone(), world))
+                        .ok_or_else(|| {
+                            FakeChildError::InvalidRequest(
+                                "cannot unconfirm an unknown world".into(),
+                            )
+                        })?;
+                write_json_frame(
+                    output,
+                    &json!({"method":"Runtime.executionContextDestroyed", "sessionId":target_session, "params":{"executionContextId":context_id}}),
+                )?;
+            }
+            "Fake.stats" => {
+                result = json!({"trace":trace,"bindings":bindings.keys().collect::<Vec<_>>(),"scripts":scripts.values().map(|(_,world)|world).collect::<Vec<_>>()});
+            }
+            "Fake.hostStillAlive" => {}
+            "Fake.finish" => {
+                if !scripts.is_empty() || !bindings.is_empty() {
+                    return Err(FakeChildError::InvalidRequest(format!(
+                        "managed resources leaked: {} bindings, {} scripts",
+                        bindings.len(),
+                        scripts.len()
+                    )));
+                }
+                write_json_frame(output, &json!({"id":id,"result":{}}))?;
+                return Ok(());
+            }
+            _ => {
+                return Err(FakeChildError::InvalidRequest(format!(
+                    "unexpected control method {method}"
+                )));
+            }
+        }
+        let mut response = json!({"id":id,"result":result});
+        if !session.is_empty() {
+            response["sessionId"] = json!(session);
+        }
+        write_json_frame(output, &response)?;
     }
 }
 

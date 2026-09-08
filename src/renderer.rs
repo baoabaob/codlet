@@ -35,6 +35,8 @@ const BUILTIN_MANAGE_CAPABILITY_API: u32 = 1;
 const RUNTIME_MANAGE_GRANT: &str = "runtime.manage";
 const MAX_RENDERER_WAIT_DEPTH: usize = 8;
 
+mod management;
+
 #[derive(Debug, Error)]
 pub enum RendererError {
     #[error(transparent)]
@@ -97,6 +99,8 @@ pub struct RendererRuntime {
     pending_actions: Vec<HostAction>,
     status_publisher: Option<StatusPublisher>,
     status_events: Vec<StatusEvent>,
+    generations: BTreeMap<String, u64>,
+    management_active: bool,
 }
 
 struct RendererSession {
@@ -247,6 +251,10 @@ impl RendererRuntime {
             });
         }
         let (plugins, capabilities) = order_plugins(plugins)?;
+        let generations = plugins
+            .iter()
+            .map(|plugin| (plugin.manifest.id.clone(), plugin.generation))
+            .collect();
         Ok(Self {
             catalog,
             plugins,
@@ -259,6 +267,8 @@ impl RendererRuntime {
             pending_actions: Vec::new(),
             status_publisher: None,
             status_events: Vec::new(),
+            generations,
+            management_active: false,
         })
     }
 
@@ -333,16 +343,23 @@ impl RendererRuntime {
     fn install_target_plugins(
         &mut self,
         target_id: &str,
+        authorizations: TargetAuthorizations,
+    ) -> Result<(), RendererError> {
+        self.install_plugins(target_id, self.plugins.clone(), authorizations)
+    }
+
+    fn install_plugins(
+        &mut self,
+        target_id: &str,
+        catalog: Vec<LoadedPlugin>,
         mut authorizations: TargetAuthorizations,
     ) -> Result<(), RendererError> {
-        if let Some(plugin) = self
-            .plugins
+        if let Some(plugin) = catalog
             .iter()
             .find(|plugin| plugin.manifest.renderer.world != RendererWorld::Isolated)
         {
             return Err(RendererError::UnsupportedWorld(plugin.manifest.id.clone()));
         }
-        let catalog = self.plugins.clone();
         let session = self
             .sessions
             .get(target_id)
@@ -830,7 +847,15 @@ impl RendererRuntime {
         &self,
         scope: &CapabilityScopeInstance,
     ) -> Result<TargetAuthorizations, CapabilityAccessError> {
-        self.plugins
+        self.resolve_plugin_authorizations(&self.plugins, scope)
+    }
+
+    fn resolve_plugin_authorizations(
+        &self,
+        plugins: &[LoadedPlugin],
+        scope: &CapabilityScopeInstance,
+    ) -> Result<TargetAuthorizations, CapabilityAccessError> {
+        plugins
             .iter()
             .map(|plugin| {
                 let principal = self.capabilities.issue_principal(
@@ -1219,18 +1244,29 @@ impl RendererRuntime {
                         .filter(|plugin| plugin.state == RendererPluginState::Active)
                         .map(|plugin| plugin.id.clone())
                         .collect();
-                    match invoke_builtin_host_endpoint(
-                        HostEndpointContext {
-                            registry: &mut self.plugin_registry,
-                            catalog: &self.catalog,
-                            plugins: &self.plugins,
-                            active_plugin_ids,
-                        },
-                        &consumer.id,
-                        consumer.principal.has_grant(RUNTIME_MANAGE_GRANT),
-                        &descriptor,
-                        &request,
-                    ) {
+                    let host_outcome = if self.management_active
+                        && descriptor.name.as_str() == BUILTIN_MANAGE_CAPABILITY_NAME
+                        && request.method != "list"
+                    {
+                        Err(host_failure(
+                            "runtime_busy",
+                            "a plugin lifecycle operation is in progress",
+                        ))
+                    } else {
+                        invoke_builtin_host_endpoint(
+                            HostEndpointContext {
+                                registry: &mut self.plugin_registry,
+                                catalog: &self.catalog,
+                                plugins: &self.plugins,
+                                active_plugin_ids,
+                            },
+                            &consumer.id,
+                            consumer.principal.has_grant(RUNTIME_MANAGE_GRANT),
+                            &descriptor,
+                            &request,
+                        )
+                    };
+                    match host_outcome {
                         Ok(host) => {
                             after_response = host.after_response;
                             Ok(host.value)
@@ -1325,7 +1361,7 @@ impl RendererRuntime {
     }
 
     fn flush_host_actions(&mut self) {
-        if self.drive_depth > 0 || self.drive_deadline.is_some() {
+        if self.drive_depth > 0 || self.drive_deadline.is_some() || self.management_active {
             return;
         }
         for action in std::mem::take(&mut self.pending_actions) {
@@ -1336,20 +1372,16 @@ impl RendererRuntime {
     fn apply_host_action(&mut self, action: HostAction) {
         match action {
             HostAction::DisablePlugin { plugin_id } => {
-                let mut target_ids: Vec<_> = self.sessions.keys().cloned().collect();
-                target_ids.sort();
-                for target_id in target_ids {
-                    if let Err(error) = self.deactivate_plugin(&target_id, &plugin_id) {
-                        self.diagnostics.push(RendererDiagnostic {
-                            target_id,
-                            plugin_id: plugin_id.clone(),
-                            message: error.to_string(),
-                        });
-                    }
+                self.management_active = true;
+                let failures = self.disable_committed(&plugin_id);
+                self.management_active = false;
+                for failure in failures {
+                    self.diagnostics.push(RendererDiagnostic {
+                        target_id: failure.target_id,
+                        plugin_id: failure.plugin_id,
+                        message: failure.error,
+                    });
                 }
-                let _ = self.capabilities.unregister_provider(&plugin_id);
-                self.plugins
-                    .retain(|plugin| plugin.manifest.id != plugin_id);
             }
         }
     }
@@ -1416,7 +1448,12 @@ impl RendererRuntime {
         self.drive_deadline = previous_deadline;
         // Retirement is a separate, bounded cleanup phase. It never pumps plugin
         // code and cannot renew the deadline of an abandoned nested evaluation.
-        let cleanup_session = target_session.until(target_session.request_deadline()?);
+        let cleanup_deadline = if self.management_active {
+            previous_deadline.unwrap_or(target_session.request_deadline()?)
+        } else {
+            target_session.request_deadline()?
+        };
+        let cleanup_session = target_session.until(cleanup_deadline);
         if (was_activating || first_error.is_some())
             && target_session.is_live()
             && let Some(context_id) = plugin.context_id
@@ -1911,40 +1948,18 @@ fn invoke_builtin_host_endpoint(
                             "runtime manage disableSelf expects null params",
                         ));
                     }
-                    let caller = context
-                        .plugins
-                        .iter()
-                        .find(|plugin| plugin.manifest.id == caller_id)
-                        .ok_or_else(|| {
-                            host_failure(
-                                "plugin_not_active",
-                                "the calling plugin is not active in the runtime catalog",
-                            )
-                        })?;
-                    if let Some(dependent) =
-                        context.plugins.iter().find(|plugin| {
-                            plugin.manifest.id != caller_id
-                                && plugin.manifest.requires.iter().any(|requirement| {
-                                    caller.manifest.provides.contains(requirement)
-                                })
-                        })
-                    {
-                        return Err(host_failure(
-                            "dependency_conflict",
-                            format!(
-                                "plugin {} still depends on a capability provided by {caller_id}",
-                                dependent.manifest.id
-                            ),
-                        ));
-                    }
-
-                    let mut candidate = context.registry.clone();
-                    candidate
-                        .set_enabled(caller_id, false)
+                    let latest = PluginRegistry::load(context.registry.path())
                         .map_err(|error| host_failure("registry_error", error.to_string()))?;
-                    candidate
-                        .save()
-                        .map_err(|error| host_failure("registry_error", error.to_string()))?;
+                    crate::plugin_lifecycle::validate_disable(
+                        context.plugins,
+                        context.catalog,
+                        &latest,
+                        caller_id,
+                    )
+                    .map_err(|error| host_failure(error.code(), error.to_string()))?;
+                    let candidate =
+                        crate::plugin_lifecycle::persist_preference(&latest, caller_id, false)
+                            .map_err(|error| host_failure(error.code(), error.to_string()))?;
                     *context.registry = candidate;
                     Ok(HostEndpointOutcome {
                         value: json!({"pluginId": caller_id, "enabled": false}),

@@ -166,3 +166,48 @@ fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement
     );
     assert!(!PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
 }
+
+#[test]
+fn management_json_has_one_versioned_result_for_success_and_early_failures() {
+    let local_app_data = tempdir().unwrap();
+    for (arguments, expected_code) in [
+        (
+            vec!["plugin", "reload", "codlet", "--json"],
+            "host_required",
+        ),
+        (
+            vec!["plugin", "enable", "../plugin", "--json"],
+            "invalid_plugin_id",
+        ),
+        (
+            vec!["plugin", "enable", "unknown.plugin", "--json"],
+            "unknown_plugin",
+        ),
+        (
+            vec!["plugin", "operation", "invalid", "--json"],
+            "invalid_operation",
+        ),
+    ] {
+        let output = run(local_app_data.path(), &arguments);
+        assert!(!output.status.success());
+        let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["schema_version"], 1);
+        assert_eq!(reply["outcome"], "failed");
+        assert_eq!(reply["error"]["code"], expected_code);
+        assert!(!local_app_data.path().join("Codlet").exists());
+    }
+    let output = run(
+        local_app_data.path(),
+        &["plugin", "disable", "codlet", "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["schema_version"], 1);
+    assert_eq!(reply["outcome"], "offline_saved");
+    assert_eq!(reply["offline"]["enabled"], false);
+    assert!(reply["error"].is_null());
+}
