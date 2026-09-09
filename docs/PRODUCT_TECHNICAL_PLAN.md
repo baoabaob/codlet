@@ -1,12 +1,12 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.21；日期：2026-09-08；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.22；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
 Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有用户主动选择 Codlet 专用启动器时，启动前端才创建独立、会话级长驻的 Runtime Host；由 Runtime Host 启动官方 Codex、在整个 Codex 会话中持有继承式 CDP pipe，并通过通用 capability 基础设施装载、隔离和调度用户插件。
 
-Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider。所有 Codex 私有知识由第一方 adapter codlet 提供；管理 GUI 本身也只是这些能力的普通消费者。产品的核心价值不是内置大量增强功能，而是提供稳定、可诊断、可热更新的插件运行时，让用户在明确授权下扩展 renderer、host 和 Codex backend。
+Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
 当前候选已补齐 M1c 范围内的运行中 `enable` / `disable` / `reload` 与 receipt 控制，以及显式 `codlet launch --watch` 的本地文件监听候选。在线控制由前台 Host 执行；只有证明无 Host 时，`enable` / `disable` 才可离线保存并在下一次启动生效，`reload` 必须在线。手动 lifecycle 隔离实测、authenticated control IPC native fixtures 和 watcher 回归均已通过，但普通生产 launch、GUI、launch+watch 实机门禁仍开放。
 
@@ -23,7 +23,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 3. Codex 只有通过 Codlet 专用启动器才应进入扩展模式；官方入口启动原版纯净 Codex 是产品目标，但当前受 `DEFECT-001` 的 Electron 单主实例限制。
 4. Codlet 不监视、不提示、不接管通过官方入口启动的 Codex，也不在后台等待或劫持后续启动。
 5. Codlet 安装、升级和卸载均不关闭或重启 Codex，不修改或捆绑官方安装包、快捷方式、协议关联、配置与用户数据。
-6. 插件采用 host/renderer 双半模型。
+6. 插件允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。当前 M1 仍为 renderer 必填模型，M2 按已确认的开放 Core 边界调整装载与执行职责。
 7. renderer 插件允许分级获得 isolated DOM、main world 和 raw CDP 能力。
 8. 首版只运行用户明确授信的本地插件；不宣称提供安全沙箱。
 9. 不修改 `app.asar`，不修改官方安装目录，不复制或再分发 Codex，不做 DLL 注入。
@@ -31,9 +31,9 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 11. 第一方插件默认启用但可完全禁用；禁用后不留下按钮、面板或观察器，CLI 始终是可恢复的控制平面。
 12. inherited CDP pipe 是会话级 transport 与存活信号，Runtime Host 正常情况下必须与其启动的 Codex 同寿命；pipe 断开只会请求 Electron 执行协作式 `Browser::Quit()`，不是 Codex 进程必然退出的所有权保证。
 13. Codlet Core 只提供通用插件 registry、lifecycle、capability graph、RPC transport、权限和诊断，不包含 Codex-specific selector、React 对象或 backend schema。
-14. Codex UI Adapter 和 Codex Backend Adapter 都是第一方高权限 codlet，使用与第三方相同的 manifest、依赖解析、生命周期和诊断；高权限来自显式 grant，不来自隐藏加载路径。
+14. 托管 renderer 运行支持、Codex UI Adapter 和 Codex Backend Adapter 均是可选官方实现。第一方使用的底层接口同样向第三方开放；高权限来自显式 grant，不来自隐藏 provider ID 或特权加载路径。可选性不要求立即拆成独立进程、包或动态插件。
 15. 插件能力分为四层：L1 `renderer.dom`、L2 `renderer.main-world`、L3 `cdp.*` / `host.*`、L4 `codex.backend.*`。层级描述语义和风险，不强制规定 adapter 的内部实现路径。
-16. L4 必须复用 Desktop 已有的同一 App Server connection 与 thread/turn/item 事实源；独立启动第二个 App Server 不能作为透明 fallback。
+16. 官方 backend adapter 及任何声称操作当前 Desktop 会话的实现，必须证明同一连接与 thread/turn/item 事实源；独立 App Server 不能冒充透明 fallback。这是该语义承诺的正确性条件，Core 本身不依赖 App Server，也不把官方 adapter 作为用户插件的唯一 backend 通路。
 
 ## 3. 产品定位
 
@@ -48,7 +48,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 1. 用户主动从 Codlet 入口启动 Codex，扩展自动加载。
 2. 开发者将一个本地插件目录加入 Codlet，保存代码后插件热重载。
 3. 插件增加侧栏、状态区、命令入口或修改现有交互。
-4. 高级插件在用户明确授权后进入 main world，观察 React 或调用页面已暴露的 `electronBridge`。
+4. 高级插件可在用户明确授权的底层原语范围内进入 main world，自行适配 React 或页面实际可达的 `electronBridge` 接口；不要求官方 adapter，也不构成 Electron main/Node 任意执行承诺。
 5. 单个插件崩溃或启动失败时，Runtime Host 和 CDP pipe 保持运行，Codex 本身继续运行，Codlet 给出明确诊断。
 6. Codex 更新导致适配能力缺失时，相关插件拒绝激活，不静默猜测兼容。
 
@@ -81,7 +81,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider�
 - 用户主动启动 Codlet，且没有 Codex 实例：启动扩展实例。
 - 用户主动启动 Codlet，且已有 Codlet 扩展实例：激活现有窗口。
 - 用户主动启动 Codlet，但已有官方纯净实例：Codlet 仅在自己的启动结果中说明实例冲突并退出；不关闭、不重启、不向现有 Codex 注入，也不持续监视。用户可自行关闭 Codex 后重试。
-- Codex build 未识别：进入诊断态，只加载满足已探测能力的插件。
+- 官方 adapter 未识别 Codex build：该 adapter 拒绝提供未验证的语义能力并给出诊断；只影响依赖它的插件，不阻断使用 Core 原语、自带适配的插件执行自己的探测与激活。
 
 上述行为是产品不变量：Codlet 不安装预先常驻的服务，不监视官方入口；只有 Codlet 启动器被主动调用时才检查运行环境，并且只创建和控制本次会话的 Runtime Host 与 Codex 子进程。Runtime Host 在该 Codex 会话期间长驻，Codex 退出后随即退出。`DEFECT-001` 是已接受的当前缺陷，不改写这些产品不变量。
 
@@ -209,11 +209,12 @@ Codlet Runtime Host (independent, lives for the Codex session)
 ├── CDP pipe client and target/session controller
 ├── plugin registry, lifecycle and permission grants
 ├── capability registry, dependency graph and scoped RPC broker
-├── renderer world/binding manager
 ├── optional plugin-host supervisor
 └── diagnostics and logs
           │
-          ├── first-party adapter codlets
+          ├── optional managed renderer runtime
+          │   └── worlds / bootstrap / binding / ready / recovery / cleanup
+          ├── optional first-party adapter codlets
           │   ├── Codex UI Adapter       -> renderer.dom / renderer.main-world
           │   └── Codex Backend Adapter  -> codex.backend.*
           ├── user codlets
@@ -229,6 +230,8 @@ M0 只交付可实机验收的前台 Runtime Host 路径。M1 候选现已提供
 
 ### 5.1 核心与适配器分离
 
+2026-09-09 用户已确认底层原语开放、托管 renderer 运行支持与 UI/backend adapter 可选、插件隔离不构成安全保证，以及保留最小 Core 原语并避免过早拆包。历史依据、当前实现缺口和确认后的验收条件见 [Core 扩展边界](CORE_EXTENSION_BOUNDARY_2026-09-09.md)。该方向约束 M2–M4，不改写本轮 M0/M1 的已有验收条件；可选执行后端和完整 raw 插件接口仍待后续实现。
+
 稳定内核负责：
 
 - Windows 启动和 pipe 生命周期；
@@ -236,14 +239,17 @@ M0 只交付可实机验收的前台 Runtime Host 路径。M1 候选现已提供
 - 插件 ABI、注册表、状态机、generation 和错误模型；
 - capability provider/consumer 注册、精确版本匹配、依赖排序和循环拒绝；
 - scoped RPC transport、权限确认、日志和诊断。
+- 最小插件装载、host 进程通信及原始 CDP 请求/事件接口，允许不依赖任何官方功能插件的单一用户插件工作。
 
-第一方 Codex adapter codlet 负责：
+可选托管 renderer 运行支持负责高级 world/bootstrap/binding ABI、导航恢复、ready 握手与清理便利。用户可采用它，也可用 Core 原语自行实现相同职责；Core 保留启动第一个插件所需的最小机制，不形成自举循环。
+
+可选 Codex adapter codlet 负责：
 
 - 识别 Codex build 和同一 Browser Process 内的全部 renderer target；
 - 提供版本相关的 DOM anchor、React hook、preload bridge 和 App Server 语义；
 - 对目标 build 执行兼容性探测。
 
-用户插件依赖 adapter capability，而不是直接依赖 Codlet 内核版本。选择 raw main-world/CDP 的插件自行承担 Codex 内部变化风险。Core 不为 adapter 提供 Codex-specific 特权分支；第一方 adapter 通过普通 manifest 申请并获得高权限 grant。
+用户插件可选择依赖 adapter capability 来减少适配代码，也可直接使用 Core 原语，自行处理 main-world/CDP、导航恢复和 backend 接入。Core 不要求官方 adapter 或 provider ID，也不为第一方提供 Codex-specific 特权分支；选择 raw 路径的插件自行维护兼容性与副作用清理。
 
 ### 5.2 四层 capability 模型
 
@@ -254,12 +260,12 @@ M0 只交付可实机验收的前台 Runtime Host 路径。M1 候选现已提供
 | L3 | `cdp.*` / `host.*` | raw CDP、文件、进程、网络、系统能力 | Runtime Host broker / plugin host | Codlet 自有契约 |
 | L4 | `codex.backend.*` | thread、turn、item、skill、model、provider、approval | Desktop 同一 App Server connection 的 adapter | 官方语义 + 私有接入 |
 
-层级不是插件继承关系。插件只声明自己实际需要的 capability；例如纯 UI 插件不因依赖 L1 而自动获得 L2-L4。L3 明确拆为两类安全边界：
+层级不是插件继承关系。插件只声明自己实际需要的 capability；例如纯 UI 插件不因依赖 L1 而自动获得 L2-L4。L3 区分两类授权与路由接口，它们不构成插件安全沙箱：
 
 - `cdp.raw`：直接向目标 session 发送 CDP method；
 - `host.fs`、`host.process`、`host.network`、`host.system`：由 Runtime Host 在授权后提供的系统能力。
 
-L4 使用 App Server 的官方语义 `Thread -> Turn -> Item`；产品 UI 中的 task/conversation 只能是 adapter 提供的映射，不进入 Core。L4 adapter 可以通过 L2 private bridge 实现，但对消费者暴露的是稳定、版本化的 backend capability，而不是 React 对象。
+官方 L4 adapter 使用 App Server 的 `Thread -> Turn -> Item` 语义；产品 UI 中 task/conversation 的映射不进入 Core。L4 是业务语义层，不是另一种注入技术：用户插件可基于通用原语自行实现，或选用经 L2 private bridge 等路径实现的官方 backend capability。
 
 ### 5.3 通用 capability 内核
 
@@ -286,7 +292,7 @@ L4 使用 App Server 的官方语义 `Thread -> Turn -> Item`；产品 UI 中的
 | 观察结构化输出、turn/item 生命周期 | L4 | App Server notification adapter | 否 |
 | 替换已持久化的 assistant item | 当前不承诺 | 只有经验证的官方/私有 backend mutation contract 才可开放 | 未证实 |
 
-pre-submit interceptor 是 adapter capability，不是 Core 内建业务钩子。多个 interceptor 按用户明确配置顺序串行执行，每个接收上一个的结构化结果；拒绝、超时或异常必须阻止提交并给出来源，不允许绕过失败插件继续发送未经确认的输入。
+官方 pre-submit interceptor 是可选 adapter capability，不是 Core 内建业务钩子。该接口中的多个 interceptor 按用户明确配置顺序串行执行，每个接收上一个的结构化结果；拒绝、超时或异常必须阻止提交并给出来源，不允许绕过失败插件继续发送未经确认的输入。用户自带实现不必依赖这套官方接口，其行为与承诺由自身定义。
 
 output presentation transformer 只改变当前 renderer 的显示，不得伪装成 backend history 已被修改。L4 的 item delta observer 可以提供语义完整的流事件，但公开 App Server 协议目前没有通用的“重写既有 assistant item”方法；在新证据出现前，SDK 必须保留这条边界。
 
@@ -366,7 +372,7 @@ example-plugin/
 }
 ```
 
-有 host 时增加：
+当前 M1 的 manifest 只实现 renderer；M2 将支持纯 host 入口或组合入口。host 格式草案如下，最终须先由不依赖官方功能插件的 host 示例验证，不能把 renderer 保留为必填的空壳：
 
 ```json
 {
@@ -394,7 +400,7 @@ example-plugin/
 | `codex.backend.write` | L4：启动、steer、中断 turn 或响应 approval | 极高 |
 | `runtime.manage` | 查询、启停、重载插件并修改运行时配置 | 高 |
 
-权限不是 OS 沙箱。用户必须明确授信插件；安装界面不得暗示陌生插件是安全的。
+权限不是 OS 沙箱。用户明确授信表达允许执行，不是代码安全的证明。Core 可验证自身管理的消息、generation 撤销、声明的依赖/冲突与资源归属；共享 DOM、main-world patch、raw CDP 和普通用户权限 host 程序的所有副作用或相互干扰不在安全与完整回滚保证内。
 
 Electron main process 任意能力不进入 ABI v1。若未来需要 Node inspector 或原生注入，必须作为独立实验项目评审。
 
@@ -441,11 +447,13 @@ host 半：
 
 - 通过 Desktop preload 暴露的 app-host `MessagePort` 复用 Desktop 已维护的 App Server connection；
 - 将私有 envelope 映射为版本化的 `codex.backend.thread/turn/item/skill/model/provider/approval` capability；
-- 不把 `window.electronBridge`、内部 manager、request id 或 host routing object 直接泄漏给第三方；
-- Desktop build 未通过 schema、身份、事件流和写入门禁时拒绝提供 L4；
+- 官方语义 API 不把 `window.electronBridge`、内部 manager、request id 或 host routing object 当成稳定公开类型；用户仍可经公开底层原语自行适配，不由 Core 设置官方独占通路；
+- Desktop build 未通过 schema、身份、事件流和写入门禁时，该 adapter 拒绝注册相应 L4 provider；不阻断不依赖它的 raw 插件；
 - 不启动独立 App Server 作为静默 fallback。
 
-## 8. Renderer bridge
+## 8. 可选托管 Renderer bridge
+
+本节描述官方托管运行支持的便利 ABI。当前 M1 尚将它实现在 RendererRuntime 内；M2 起先解除通用装载与 renderer 必填的耦合，再明确可选/可替换接口，不要求立即拆独立部署单元。直接使用 Core 原语的插件可自行实现注入、world、通信和恢复，不必采用本节全部约定。
 
 ### 8.1 注入顺序
 
@@ -584,10 +592,10 @@ Codex-specific 类型由 adapter 自己发布，例如 `@codlet/codex-ui` 和 `@
 1. 不开放固定或随机 TCP CDP listener，优先 inherited pipe。
 2. 不使用 `--remote-allow-origins=*`。
 3. 不把 CDP handle、页面数据或秘密写入日志。
-4. renderer bridge 不暴露 Node、原始 `ipcRenderer` 或任意 Electron main IPC。
+4. 官方托管 renderer bridge 不把 Node、原始 `ipcRenderer` 或任意 Electron main IPC 封装为默认便利能力；raw 路径按已授予原语工作，不隐含新增原生注入或 Electron main 任意执行承诺。
 5. raw CDP、main world 和 host process 必须逐项显示高风险授权。
 6. 插件来源和入口路径在激活前 canonicalize；越出插件根目录即拒绝。
-7. 未识别 Codex target、build 或 capability 时失败并给出诊断。
+7. 通用协议、资源归属或已声明依赖无效时 Core 给出失败；Codex target/build 的语义兼容性由选用的 adapter 或用户实现判断。官方 adapter 失败不形成其他 raw 插件的全局禁令。
 8. 默认无遥测；测试指标仅保存在本机。
 
 ## 13. 性能目标
@@ -702,37 +710,48 @@ M1c 验收条件：
 
 ### M2：L3 Host/CDP 与权限门禁
 
+先交付并验收开放 Core 原语，再用相同公开接口建设官方便利层。保留现有通用 capability kernel，解除通用插件装载/lifecycle 与 RendererRuntime、renderer 必填入口的耦合。可选性先通过接口、依赖方向和可停用/可替换关系落实，不要求逐层拆包或增加进程。
+
 验收条件：
 
+- 禁用全部可选官方功能插件后，Core 加一个自带实现的第三方 host 插件能够启动；不要求 renderer 空入口、官方 adapter、官方 provider ID 或隐藏特权；
+- 该插件能通过公开 CDP 请求/事件与 host 通信原语自行注入 renderer、处理导航恢复并建立所需消息通路；跨层扩展不依赖官方托管 ABI，后续 L4 的 Codex 私有映射留在插件中；
+- 第一方将使用的底层接口也向第三方开放，官方 adapter 的缺失或不兼容只影响它的声明依赖者，不阻断自带适配的 raw 路径；
 - 可选 host process、JSONL RPC 和按插件隔离的 Job Object 可用；
 - `cdp.raw`、`host.fs`、`host.process`、`host.network`、`host.system` 使用独立 broker endpoint；
-- 每项高风险权限在首次使用前显示并持久记录授权，撤销后立即使对应 endpoint 失效；
+- 每项高风险权限在首次使用前显示并持久记录授权，撤销后使受管理 endpoint 与对应旧 generation 失效；明确授权不是安全证明，无法据此保证已执行程序的任意副作用撤回；
 - 公开、版本化的 `runtime.manage` API 能支持第一方 GUI 查询、启停和重载插件；
-- host crash、hang、malformed response、deadline 和越权调用都有确定结果，不拖垮其他插件；
-- renderer/host RPC 的 request、response、notification、server-request、generation 和错误语义由 Core SDK 固化；
-- 示例 host 插件完成获准目录读取和网络请求，并在撤销权限后停止。
+- host crash、hang、malformed response、deadline 和越权的受管理调用都有确定结果，清理 Core 所持有的资源；不承诺任意恶意程序无法干扰其他插件或 Codex；
+- 通用插件 RPC 的 request、response、notification、server-request、generation 和错误语义由 Core SDK 固化，可选托管 renderer ABI 复用这些语义；raw 插件不必使用官方 binding/bootstrap 实现；
+- 示例 host 插件完成获准目录读取和网络请求，撤销后拒绝对应受管理调用；单独记录普通用户权限进程仍不是 OS 沙箱。
 
-### M3：L2 Main-World Adapter 门禁
+### M3：可选托管运行时与 L2/UI Adapter 门禁
+
+M3 官方实现消费 M2 已向第三方公开的同一组原语；其兼容性承诺不成为 Core 的全局白名单。
 
 验收条件：
 
-- main-world 插件必须申请 `ui.mainWorld`，且与 isolated world 使用不同 binding/principal；
-- `codex.ui.adapter` 对当前 build 探测页面 global、React/私有对象和 `window.electronBridge`，缺失时明确拒绝提供相应 capability；
-- 不向第三方暴露原始 `ipcRenderer`、任意 Electron main IPC 或未声明的页面对象；
-- pre-submit interceptor 在实际 `turn/start` 前按确定顺序运行，失败时阻止提交并标明插件来源；
+- 官方托管 renderer ABI 的 world、bootstrap、binding、导航恢复、ready 与清理支持可选择、停用或替换；不选它的插件仍可自行实现这些机制；
+- 选择托管 main-world ABI 的插件必须申请 `ui.mainWorld`，且与 isolated world 使用不同 binding/principal；自行使用 raw CDP 的插件按其底层授权与资源归属处理；
+- 可选 `codex.ui.adapter` 对当前 build 探测页面 global、React/私有对象和 `window.electronBridge`，缺失时仅拒绝自己的相应 capability；
+- 官方稳定 API 不暴露原始 `ipcRenderer`、任意 Electron main IPC 或未声明页面对象；这不禁止第三方在既定 raw 原语范围内自行适配，也不新增任意 Electron main/原生注入承诺；
+- 官方 pre-submit interceptor 在实际 `turn/start` 前按确定顺序运行，失败时阻止提交并标明插件来源；该业务规则不进入 Core；
 - main-world patch 无法热卸载时明确要求 renderer reload，不伪造可逆性；
-- Codex 更新后的 capability drift 可由自动探针和 `doctor` 定位。
+- Codex 更新后的官方 capability drift 可由自动探针和 `doctor` 定位；同时验收关闭官方 UI adapter 后，自带实现的单一用户插件仍可通过底层原语工作。
 
-### M4：L4 Backend Adapter 门禁
+### M4：可选 L4 Backend Adapter 门禁
+
+L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 thread/turn/approval 私有业务。以下连接/语义兼容性条件约束官方 backend adapter 及其对当前 Desktop 会话的承诺，不是所有插件访问底层连接的前置条件。
 
 验收条件：
 
-- 在当前 Desktop build 上通过 preload `connect-app-host` MessagePort 复用 Desktop 同一个 App Server connection，不启动第二个 backend；
-- adapter 用官方 `Thread -> Turn -> Item` 语义提供 thread read/list、turn start/steer/interrupt、item stream、skill/model/provider read 和 approval/server-request 往返；
+- 禁用全部可选官方功能插件后，Core 加一个自带实现的用户插件仍能完成所需跨层功能；其 L4 适配不能依赖官方 provider ID、隐藏特权或未向第三方公开的接口；
+- 官方 adapter 在当前 Desktop build 上通过 preload `connect-app-host` MessagePort 复用 Desktop 同一个 App Server connection，不将第二个 backend 冒充透明替代；
+- 官方 adapter 用 `Thread -> Turn -> Item` 语义提供 thread read/list、turn start/steer/interrupt、item stream、skill/model/provider read 和 approval/server-request 往返；
 - 证明 Desktop 发起的 turn 与 Codlet 观察到的事件拥有相同 threadId/turnId/itemId，Codlet 写入也由当前 Desktop UI 和同一事件流观察到；
-- 私有 app-host envelope、hostId、request id 和 manager object 不进入公开 SDK；
-- input rewrite、context injection、presentation transform 和 authoritative history mutation 是不同 capability；未证实的 assistant item rewrite 不开放；
-- build/schema/身份/事件流任一门禁失败时，L4 provider 不注册，且不回退到独立 App Server。
+- 私有 app-host envelope、hostId、request id 和 manager object 不进入 Core SDK；官方语义 SDK 只承诺自己的稳定类型，不阻断用户插件自行维护私有映射；
+- 官方 adapter 区分 input rewrite、context injection、presentation transform 和 authoritative history mutation；未证实的 assistant item rewrite 不作为已支持能力开放；
+- build/schema/身份/事件流任一门禁失败时，该 adapter 的相关 L4 provider 不注册且不回退到独立 App Server；不依赖它的 raw 插件仍可执行自己的探测与激活。
 
 ### M5：Private Alpha 门禁
 
@@ -866,6 +885,14 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 `DEFECT-001`、`DEFECT-002` 仍开放，M2 尚未开始，不构成完整 M1c、完整 doctor
 或 release 发布完成声明。
 
+### 16.7 2026-09-09 M0/M1 验收推进
+
+当前安装 build 已更新为 `26.903.8094.0`。本轮验证原版实例存在时，普通 `launch` 与 `launch --watch` 均明确拒绝，doctor/status 只读报告无 Host，用户 registry 未被创建；该结果覆盖冲突边界，不是一次成功的扩展会话运行。
+
+验收发现并修复 control response ACK 后重复查询已断开 pipe 身份的竞态。确定性 native pipe 回归先复现 Win32 error 233 / `UntrustedServer`，修复后保留 ACK 前身份校验、ACK 后同一 Host process handle 存活检查；未扩大 deadline 或重试 submit。Rust 最终 308 项通过、1 项生产启动 gate 保持 ignored；Node 63 项、正常与 crash PowerShell harness 夹具、Clippy/fmt 和 release 构建通过。
+
+正常验收脚本新增显式 M1/M1-watch 模式，复用前中后快照与正常退出证据，M1 报告独立标识为 `codlet.m1-acceptance/v1`。当前原版 Codex 承载验收任务，M0 与 M1-watch 的真实脚本均在 preflight 留证拒绝、没有调用 Codlet。正式启动、当前 build GUI/控制/watch/Inspect 组合、100 次冷启动和 crash 实测仍待在原版实例退出后从独立控制台完成，M0/M1 未关闭。完整记录与可执行步骤见 [M0/M1 验收](M0_M1_ACCEPTANCE_2026-09-09.md)。
+
 ## 17. 主要风险
 
 | 风险 | 影响 | 对策 |
@@ -905,12 +932,14 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 
 ## 20. 当前 Go/No-Go 问题
 
-inherited CDP pipe、同 Browser Process 多窗口注入和第一方 GUI 的可行性已经获得实机证据；`DEFECT-001`、`DEFECT-002` 继续开放，M0 仍不能宣称完整关闭。当前下一门禁是：
+inherited CDP pipe、同 Browser Process 多窗口注入和第一方 GUI 的可行性已有历史实机证据；当前 build 的完整生产 M0/M1 验收仍未完成，`DEFECT-001`、`DEFECT-002` 继续开放。当前先完成第 15 节已有 M0/M1 条件，包括正式 launch/watch、现有第一方 GUI 闭环、生命周期、重复性与外部副作用证据，不因新的开放 Core 方向跳过这些检查。
 
-> 通用 capability kernel 能否在不理解 Codex 私有结构的前提下，严格解析 provider/consumer、确定激活与反向停用顺序、隔离每个插件 world/generation，并让 `codex.ui.adapter` 与 GUI `codlet` 完成第一个真实、可逆、跨刷新和多窗口的 capability 闭环。
+进入 M2 后，第一条架构门禁是：
 
-该门禁通过后进入 L3。L4 另有独立条件门禁：
+> 关闭全部可选官方功能插件后，Core 能否装载一个无 renderer 空入口、无官方 adapter 依赖的第三方 host 插件，让它通过公开底层原语自行完成注入、通信、恢复与所需跨层功能。
+
+M3/M4 的官方便利层使用同一套公开接口。可选官方 L4 adapter 另有独立条件门禁：
 
 > 当前 Desktop build 的 app-host MessagePort 能否在不暴露私有 envelope、不启动第二 App Server 的前提下，被第一方 Backend Adapter 稳定映射为同一 thread/turn/item 事实源。
 
-L4 门禁不阻塞 L1-L3，但失败时必须禁止注册 `codex.backend.*` provider，不能降低产品诚实度来换取表面功能。
+官方 L4 adapter 的兼容性门禁不阻塞 L1-L3；失败时仅禁止该 adapter 注册相应 provider，不阻止不依赖它的用户插件经 Core 原语执行自己的探测、适配和能力注册。独立 backend 必须如实标识，不得冒充当前 Desktop 同一会话；Core 不内建这些私有业务规则。
