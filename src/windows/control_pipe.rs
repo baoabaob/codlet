@@ -8,10 +8,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED,
+    ERROR_FILE_NOT_FOUND, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetEvent};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetEvent, WaitForSingleObject};
 
 pub use super::control_scope::{RegistryScope, RegistryScopeGuard};
 use super::control_scope::{discovery_pipe_name, random_incarnation};
@@ -325,8 +325,19 @@ fn exchange_expected(
             error,
         );
     }
-    if let Err(error) = identity.check_live(&channel.pipe) {
-        return failure(ControlStatus::UntrustedServer, error);
+    finish_acknowledged_response(report, &identity)
+}
+
+fn finish_acknowledged_response(report: ControlReport, identity: &ServerIdentity) -> ControlReport {
+    // The response and connected pipe identity were checked before sending ACK.
+    // ACK permits the server to disconnect immediately, so querying that pipe's
+    // peer PID here can reject a valid response with ERROR_PIPE_NOT_CONNECTED.
+    // The retained process handle still identifies the exact authenticated Host.
+    if unsafe { WaitForSingleObject(raw(&identity.process), 0) } != WAIT_TIMEOUT {
+        return failure(
+            ControlStatus::UntrustedServer,
+            "pipe server process ended during the query",
+        );
     }
     report
 }
@@ -601,7 +612,7 @@ mod tests {
         assert!(broker.take_next().is_none());
         broker.complete(ticket, Ok(report()));
         let completed = get(&scope, &ControlRequest::result(ticket));
-        assert!(completed.is_success());
+        assert!(completed.is_success(), "{completed:?}");
         assert_eq!(completed, get(&scope, &ControlRequest::submit(ticket)));
         assert!(broker.take_next().is_none());
     }
@@ -978,5 +989,57 @@ mod tests {
         );
         assert_eq!(rejected.status, ControlStatus::StaleHost, "{rejected:?}");
         assert!(rejected.inspection.is_none());
+    }
+
+    #[test]
+    fn acknowledged_response_survives_server_disconnect_before_final_liveness_check() {
+        let name = name();
+        let server = Channel {
+            pipe: create_server_pipe(&name).unwrap(),
+            event: create_event().unwrap(),
+            stop: Arc::new(create_event().unwrap()),
+        };
+        let broker = ControlBroker::new([1; 16], "a".repeat(64));
+        let expected = broker.handle(ControlRequest::identify());
+        let (disconnected_tx, disconnected_rx) = std::sync::mpsc::sync_channel(1);
+        let bytes = encode_response(&expected).unwrap();
+        let worker = thread::spawn(move || {
+            server.connect().unwrap();
+            let deadline = Instant::now() + CONTROL_QUERY_TIMEOUT;
+            server
+                .read_frame(MAX_CONTROL_REQUEST_BYTES, deadline)
+                .unwrap();
+            server.write_frame(&bytes, deadline).unwrap();
+            let mut ack = [0];
+            server.read_exact(&mut ack, deadline).unwrap();
+            assert_eq!(ack, [RESPONSE_ACK]);
+            assert_ne!(unsafe { DisconnectNamedPipe(raw(&server.pipe)) }, 0);
+            disconnected_tx.send(()).unwrap();
+        });
+        let client = channel(&name);
+        let identity =
+            ServerIdentity::verify(&client.pipe, &std::env::current_exe().unwrap()).unwrap();
+        let deadline = Instant::now() + CONTROL_QUERY_TIMEOUT;
+        client
+            .write_frame(
+                &serde_json::to_vec(&ControlRequest::identify()).unwrap(),
+                deadline,
+            )
+            .unwrap();
+        let bytes = client
+            .read_frame(MAX_CONTROL_RESPONSE_BYTES, deadline)
+            .unwrap();
+        identity.check_live(&client.pipe).unwrap();
+        let report = decode_response(
+            &bytes,
+            identity.pid,
+            Some(&"a".repeat(64)),
+            &ControlRequest::identify(),
+        );
+        client.write_all(&[RESPONSE_ACK], deadline).unwrap();
+        disconnected_rx.recv_timeout(CONTROL_QUERY_TIMEOUT).unwrap();
+        worker.join().unwrap();
+        let completed = finish_acknowledged_response(report, &identity);
+        assert_eq!(completed, expected, "post-ACK result: {completed:?}");
     }
 }
