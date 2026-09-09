@@ -30,6 +30,21 @@ must use the same `codlet.exe` image path and the same current-user registry at
 by image authentication. A different registry gets a separate scope and cannot
 control that Host; its offline eligibility follows the evidence rules below.
 
+The bundled GUI's canonical plugin ID is `codlet-gui`; its menu, window, and
+product name remains `Codlet`, and its capability names remain
+`codlet.runtime.*`. For backward compatibility, `enable`, `disable`, and
+`reload` accept the legacy ID `codlet` and normalize it to `codlet-gui` before
+preparing a receipt. `list`, `doctor`, `status`, and GUI rows use the canonical
+ID. Both IDs are reserved and cannot be claimed by a local plugin.
+
+The explicit `plugins.codlet-gui` preference wins. If absent, the legacy
+`plugins.codlet` preference is read as a read-only fallback. `list` and `doctor`
+never migrate these keys. An explicit GUI preference update writes the new key
+and removes the legacy key while holding the existing registry save lock. A
+running Host's identities and already-issued receipts are not rewritten in
+place; the canonical identity takes effect on the next launch with the updated
+binary.
+
 ## CLI surface
 
 The commands are:
@@ -41,7 +56,12 @@ codlet plugin reload <id> [--json]
 codlet plugin operation <receipt> [--json]
 ```
 
-`enable`, `disable`, and `reload` address one plugin id. `operation` accepts the opaque receipt returned by a prepared or submitted operation and performs a read-only lookup. A receipt is bound to the Host incarnation that issued it; callers must not construct, edit, or reuse it as a new mutation request.
+`enable`, `disable`, and `reload` address one plugin id. The legacy bundled GUI
+alias is normalized before `prepare`, so receipts identify the canonical plugin
+used by the Host. `operation` accepts the opaque receipt returned by a prepared
+or submitted operation and performs a read-only lookup. A receipt is bound to
+the Host incarnation that issued it; callers must not construct, edit, or reuse
+it as a new mutation request.
 
 Human output reports the control status, operation id, requested action and plugin, lifecycle outcome, affected plugins, remaining generations, target failures, and any diagnostic message. JSON output has schema version `1` and includes `outcome`, `operation_id`, `control`, `offline`, and `error` fields. A completed lifecycle report with `applied` or `unchanged` is successful. `rolled_back` and `degraded` are completed reports that still represent a failed or compensated lifecycle request, so the CLI returns an error while preserving the report for inspection.
 
@@ -84,6 +104,17 @@ than persisting a partial preference.
 `reload` requires a running target plugin and a Host. It rebuilds the target and its transitive dependents as one affected closure, while preserving unrelated plugins. It retires the old resources, allocates new generations, removes the old providers, and activates the replacement graph in dependency order. Reload does not implicitly alter enablement preferences.
 
 If replacement activation or validation fails, the Host retires candidate resources before compensation. It rechecks the original local registration and grants, restores the previous runtime code under fresh generations and capability epochs, and reports `rolled_back` when restoration is complete. If cleanup or restoration remains incomplete, it reports `degraded` with per-target failure details; affected plugins remain stopped when the prior runtime cannot be safely restored. A rollback never resurrects an old generation, binding, scope, or principal.
+
+### GUI registry reconciliation
+
+The GUI management list reads the latest registry and the current loaded plugin
+set on each refresh. A registered loaded plugin uses its actual target active
+state. A plugin that is no longer registered but remains loaded stays visible
+until the runtime unloads it and is shown as `Registration removed; still
+loaded`. Once the plugin is both unloaded and unregistered, the row disappears. Removal alone does not unload running code.
+A newly registered `not_loaded` plugin contributes metadata only; the GUI does
+not read its source to invent runtime state. A registry read failure is shown as
+an explicit error and never falls back to stale cached registry data.
 
 Lifecycle outcomes are:
 

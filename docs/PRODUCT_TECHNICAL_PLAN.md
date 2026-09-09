@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.22；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.23；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,9 +8,9 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 范围内的运行中 `enable` / `disable` / `reload` 与 receipt 控制，以及显式 `codlet launch --watch` 的本地文件监听候选。在线控制由前台 Host 执行；只有证明无 Host 时，`enable` / `disable` 才可离线保存并在下一次启动生效，`reload` 必须在线。手动 lifecycle 隔离实测、authenticated control IPC native fixtures 和 watcher 回归均已通过，但普通生产 launch、GUI、launch+watch 实机门禁仍开放。
+当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。本批 315 项 Rust、64 项 Node 回归通过；普通 launch 的一次退出 1 仍待查因，新修复的实机复测、重复冷启动与 crash 门禁仍未关闭。详见第 16.8 节。
 
-术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件在插件列表中显示为“Codlet GUI”，内部 id 保持 `codlet`；工具栏入口与管理窗口标题保持“Codlet”。
+术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
 一句话定义：
 
@@ -180,7 +180,7 @@ codlet status --json
 codlet plugin operation <receipt> [--json]
 ```
 
-第一方 `codlet` 插件默认启用。它使用普通 plugin manifest、生命周期和 renderer bridge，在 Codex 顶部应用栏的原生菜单之后增加一个紧凑按钮；点击后打开 Codlet 管理面板。按钮插槽由 adapter capability `codex.ui.titlebar.afterMenu` 提供，不允许插件散落硬编码 selector。当前面板通过 `codlet.runtime.manage@1` 的 `list` / `disableSelf` 最小事务显示内置与授信本地插件并禁用自身；该 capability 仍是 M2 完整 `runtime.manage` API 的先行纵切，不代表任意插件管理均已完成。
+第一方 `codlet-gui` 插件默认启用。它使用普通 plugin manifest、生命周期和 renderer bridge，在 Codex 顶部应用栏的原生菜单之后增加一个紧凑按钮；点击后打开 Codlet 管理面板。按钮插槽由 adapter capability `codex.ui.titlebar.afterMenu` 提供，不允许插件散落硬编码 selector。当前面板通过 `codlet.runtime.manage@1` 的 `list` / `disableSelf` 最小事务显示内置与授信本地插件并禁用自身；该 capability 仍是 M2 完整 `runtime.manage` API 的先行纵切，不代表任意插件管理均已完成。
 
 2026-09-07 明确 GUI 设计约束：第一方 Codlet 的入口、配色、字号、间距、悬停、焦点和关闭行为尽量遵循原生 Codex 客户端。入口应在顶部菜单的“帮助”之后，以普通同栏菜单文字呈现；管理面板采用紧凑设置界面。独立窗口是后续可选形式，不是本轮必需。GUI 仅消费 adapter 提供的挂载标记与 `--codlet-ui-*` 主题变量，原生 DOM 与主题令牌映射集中在 adapter；不复制官方素材。窗口变窄、主题切换、工具栏延迟创建或重建、列表失败与插件卸载都必须有明确且可恢复的行为。
 
@@ -191,8 +191,8 @@ codlet plugin operation <receipt> [--json]
 用户可在 GUI 中确认后禁用该插件；对应 CLI 已提供：
 
 ```text
-codlet plugin disable codlet
-codlet plugin enable codlet
+codlet plugin disable codlet-gui
+codlet plugin enable codlet-gui
 ```
 
 GUI 自我禁用按固定事务执行：验证 `runtime.manage` grant 与依赖关系，原子写入 registry，尝试向调用 renderer 回包，然后从全部当前 target 卸载 GUI 并撤销其 capability principal；清理失败或 renderer 销毁造成的回包失败进入 Runtime Host 诊断，不结束 Host，已持久化的禁用状态继续生效。禁用后只保留 CLI；CLI 可通过匹配 Host 的在线 receipt 事务重新启用，也可在证明无 Host 时保存为下一次 `codlet launch` 的偏好。升级不得擅自重新启用用户已禁用的 GUI。若 Codex 更新导致所有已知顶栏锚点失效，GUI 保持未挂载，只在 adapter 再次找到精确锚点后恢复；持续不匹配需要适配更新。Host 的插件生命周期不等同 DOM 已挂载；2026-09-08 隔离客户端复测已确认列表、刷新、原生重载、主题、窄窗、第二窗口和跨窗口自我停用均可恢复，但普通 `codlet launch` 的生产 M0/M1 门禁仍开放。
@@ -422,7 +422,7 @@ host 半：
 
 ### 7.5 第一方 GUI codlet
 
-第一方 GUI 的显示名和首版插件 ID 均为 `codlet`。它随 Runtime 发布并默认启用，但在内核看来仍是一个普通插件：
+第一方 GUI 的插件 ID 与列表名称为 `codlet-gui`。它随 Runtime 发布并默认启用，在内核看来仍是普通插件；旧 ID `codlet` 的偏好仅作兼容读取，显式更新 GUI 偏好时才在 registry 合并锁内保存新 key 并移除旧 key：
 
 - 使用相同的 manifest、activate/deactivate、generation、权限和错误模型；
 - 顶栏按钮只消费 Codex UI Adapter 提供的 `codex.ui.titlebar.afterMenu@1` target-scoped capability；
@@ -634,7 +634,7 @@ Codex-specific 类型由 adapter 自己发布，例如 `@codlet/codex-ui` 和 `@
 - Codex UI Adapter mount token 在刷新、DOM 重建和多窗口中的隔离与恢复；
 - Desktop app-host 同连接探测、L4 notification 订阅、server request/approval 往返和 stale generation 拒绝；
 - 文件保存、rename 和半写入场景；
-- 第一方 `codlet` 插件的按钮挂载、面板开关、自我禁用和 CLI 重新启用。
+- 第一方 `codlet-gui` 插件的按钮挂载、面板开关、自我禁用和 CLI 重新启用。
 
 ### 14.3 实机门禁
 
@@ -702,7 +702,7 @@ M1b 验收条件：
 M1c 验收条件：
 
 - 每插件独立 isolated world、bootstrap、binding namespace 和 generation；
-- 第一方 `codex.ui.adapter` 真实提供 `codex.ui.titlebar.afterMenu@1`，第一方 GUI `codlet` 只消费该 capability，不再拥有 header selector；
+- 第一方 `codex.ui.adapter` 真实提供 `codex.ui.titlebar.afterMenu@1`，第一方 GUI `codlet-gui` 只消费该 capability，不再拥有 header selector；
 - provider 到 consumer 顺序在初始窗口、刷新、DOM 重建、主文档导航恢复和“在新窗口打开”中一致，并由真实 ready handshake 确认；
 - consumer 到 provider 的反向停用能移除按钮、面板、mount token、style、listener 和 observer；
 - 本地 registry、文件热重载、CLI 启停/重载与 GUI 自我禁用可用；
@@ -892,6 +892,16 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 验收发现并修复 control response ACK 后重复查询已断开 pipe 身份的竞态。确定性 native pipe 回归先复现 Win32 error 233 / `UntrustedServer`，修复后保留 ACK 前身份校验、ACK 后同一 Host process handle 存活检查；未扩大 deadline 或重试 submit。Rust 最终 308 项通过、1 项生产启动 gate 保持 ignored；Node 63 项、正常与 crash PowerShell harness 夹具、Clippy/fmt 和 release 构建通过。
 
 正常验收脚本新增显式 M1/M1-watch 模式，复用前中后快照与正常退出证据，M1 报告独立标识为 `codlet.m1-acceptance/v1`。当前原版 Codex 承载验收任务，M0 与 M1-watch 的真实脚本均在 preflight 留证拒绝、没有调用 Codlet。正式启动、当前 build GUI/控制/watch/Inspect 组合、100 次冷启动和 crash 实测仍待在原版实例退出后从独立控制台完成，M0/M1 未关闭。完整记录与可执行步骤见 [M0/M1 验收](M0_M1_ACCEPTANCE_2026-09-09.md)。
+
+### 16.8 正式实测反馈、列表同步修复与 GUI 更名
+
+用户在 build `26.903.8094.0` 报告完成无需重启的本地注册/启用/重载/禁用/重新启用、watch 两次 requested/applied、adapter 依赖拒绝与连带换代、status/doctor ready/inspected，并明确确认 GUI 视觉检查符合预期。例外是 disable+remove 后刷新仍残留 disabled 条目。该人工确认与诊断生命周期字段分别留证。
+
+三份原始 harness：M0 Host 63976 / Codex 11692 正常退出 0，marker/active/stopped 完整；M1 Host 19844 / Codex 55168 退出 1、缺少 stopped，用户不记得原因，保留待核验；M1-watch Host 29692 / Codex 36240 正常退出 0、active/stopped 完整。三次 after 均无相关进程，前中后快照的相关 TCP listener 均为空。原始 pending/decision 不改写，详情见 [GUI 注册列表修复与实测记录](GUI_REGISTRY_REPAIR_2026-09-09.md)。
+
+源码 `202d89b` 将管理 list 改为合并最新 registry、实际 loaded 集合与标明来源的缓存元数据。已停用并移除注册的 local 消失；仍 loaded 者保留并提示注册已移除。新注册仅展示元数据，不通过刷新读取/执行源码；registry 读取失败直接返回错误，不回退陈旧列表。GUI ID/列表名称改为 `codlet-gui`，旧 CLI ID 在准备 receipt 前归一化，旧配置兼容读取；显式 GUI 偏好写入才在已有合并锁内迁移 key。产品标题、Core namespace 与旧 Host receipt 保持其原身份。
+
+315 项 Rust、64 项 Node、Clippy/fmt 和 release 构建通过。随后本机只读 list/doctor 仅列出 adapter 与 `codlet-gui`，确认 marker 注册已移除、GUI 启用偏好恢复，registry SHA-256 前后一致，当前无 Runtime Host。这是当前配置清理证据，不是旧 Host 关闭前的最终采样。本轮没有再次启动真实 Codex；新构建与结果位于 `.codlet-artifacts/gui-registry-repair-2026-09-09/`，完整 M0/M1 仍未关闭。
 
 ## 17. 主要风险
 

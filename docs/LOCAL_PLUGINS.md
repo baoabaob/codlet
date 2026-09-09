@@ -1,4 +1,4 @@
-# Trusted local renderer plugins
+# Registered local renderer plugins
 
 Codlet loads explicitly registered local directories at session startup or through
 the running Host's enable/reload commands. Registration, inspection, and removal
@@ -7,7 +7,7 @@ the [runtime control contract](RUNTIME_CONTROL.md).
 
 ## Register a directory
 
-Inspect a plugin before recording trust:
+Inspect a plugin before recording its registration:
 
 ```powershell
 codlet plugin add "C:\my-plugins\example"
@@ -26,8 +26,8 @@ Repeat `--grant` for multiple permissions. Currently only isolated renderers and
 the `ui.dom` and `runtime.manage` permissions are supported for local plugins.
 Unsupported worlds, permissions, or missing grants are rejected. Extra grants are
 recorded only when explicitly supplied; the runtime uses permissions declared by
-the manifest that also pass the grant check. Trust is not an OS sandbox: these are
-user-trusted renderer programs with access to a shared document.
+the manifest that also pass the grant check. The `--trust` flag is user consent, not an OS sandbox: these are
+user-authorized renderer programs with access to a shared document.
 
 The canonical local directory, expected plugin ID, and granted permissions are
 persisted in `%LOCALAPPDATA%\Codlet\config.json`. A new registration uses the saved
@@ -55,7 +55,7 @@ plugins can be disabled but cannot be removed.
 
 Each launch re-reads and validates enabled plugin code, manifest identity, declared
 permissions, and dependencies before discovering or starting Codex. Source edits
-are allowed within the trusted directory; newly requested permissions require
+are allowed within the registered directory; newly requested permissions require
 matching explicit grants. Re-register with the intended full grant list to change
 that authorization. There is no automatic grant expansion.
 
@@ -66,10 +66,17 @@ directory or entry has disappeared. `enable` validates it before persisting succ
 Enabling also checks that the validated registration did not change concurrently;
 retry the command from fresh state if its authorization changed or was removed.
 
-The GUI management list uses the current loaded catalog and the calling target's actual
-active state. A plugin with an explicitly granted `runtime.manage` permission may
-use the existing authenticated `disableSelf` transaction; this persists disablement
-before unloading it from every attached target. It does not remove its registration.
+The GUI management list reads the latest registry and the current loaded plugin set
+on each refresh. A registered loaded plugin uses its actual target active state. A
+plugin that is no longer registered but remains loaded stays visible until the
+runtime unloads it and shows `Registration removed; still loaded`. Once the plugin is both unloaded and
+unregistered, the row disappears. Removal alone does not unload running code. A newly registered `not_loaded`
+plugin contributes metadata only; the GUI does not read its source to invent runtime
+state. A registry read failure is shown as an explicit error and never falls back to
+stale cached registry data. A plugin with an explicitly granted `runtime.manage`
+permission may use the existing authenticated `disableSelf` transaction; this
+persists disablement before unloading it from every attached target. It does not
+remove its registration.
 `doctor` may add a read-only authenticated scoped `Inspect` sample from the
 matching Host; it uses actual kernel registrations and the same owner target,
 generation, and activation publication, never disk declarations as proof of
@@ -120,7 +127,7 @@ codlet plugin add .\examples\local-echo --trust
 codlet doctor --json
 ```
 
-In a deliberately started Codlet session, another trusted plugin that declares
+In a deliberately started Codlet session, another registered plugin that declares
 `example.echo@1` in its requirements can call:
 
 ```javascript
@@ -149,3 +156,19 @@ latest record under the lock before applying any changes. Conflicts fail without
 partially committing preferences or authorizations. Reload the current registry
 and explicitly restage the intended operation after a conflict. Unrelated enable
 or disable commands never replay an old registration or grant snapshot.
+
+## Bundled GUI identity
+
+The bundled GUI's canonical plugin ID is `codlet-gui`. Its menu, window, and
+product display name remains `Codlet`, and its capability names remain
+`codlet.runtime.*`. The legacy ID `codlet` is reserved as a CLI compatibility
+alias for `enable`, `disable`, and `reload`; it is normalized to `codlet-gui`
+before control. Both `codlet` and `codlet-gui` are reserved local IDs and cannot
+be claimed by a local plugin.
+
+The explicit `plugins.codlet-gui` preference wins. If it is absent, the legacy
+`plugins.codlet` preference is read as a read-only fallback. `list` and `doctor`
+do not migrate or write either key. An explicit GUI preference update writes the
+new key and removes the old key within the existing registry save lock. A running
+Host's plugin identity and existing receipts are not rewritten in place; the new
+identity applies on the next launch with the updated binary.

@@ -50,7 +50,7 @@ A running Host example (identities and timestamps here are illustrative):
         "session_id": "session-main-1",
         "session_live": true,
         "plugins": [{
-          "id": "codlet",
+          "id": "codlet-gui",
           "version": "0.1.0",
           "generation": 1,
           "lifecycle": "active",
@@ -106,6 +106,13 @@ configuration enablement. A loaded-but-disabled plugin is not included. Lifecycl
 is `activating`, `ready`, `active`, or `stopping` from the actual owner record.
 `active` requires a live session, a present context, an observed successful
 activation in that context, owner lifecycle `active`, and no pending document recovery.
+
+The bundled GUI is reported with canonical plugin ID `codlet-gui`; its menu,
+window, and product display name remains `Codlet`, and its capability names remain
+`codlet.runtime.*`. The legacy `codlet` value is a control CLI compatibility alias,
+not a second runtime identity. Status reports loaded runtime state only and does
+not merge registry metadata or synthesize the GUI's `Registration removed; still
+loaded` row.
 
 After an owned context is destroyed/cleared or replaced, `activation_confirmed`
 becomes false. Context-created events must match the exact main frame and a
