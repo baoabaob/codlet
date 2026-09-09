@@ -504,7 +504,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let registry_path = directory.path().join("config.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
-        for id in ["codlet", "codex.ui.adapter"] {
+        for id in ["codlet-gui", "codex.ui.adapter"] {
             registry.set_enabled(id, false).unwrap();
         }
         for id in ["dev.provider", "dev.consumer"] {

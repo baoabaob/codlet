@@ -26,14 +26,14 @@ fn plugin_cli_lists_and_persists_bundled_plugin_state_without_launching_codex() 
     assert!(listed.status.success());
     let stdout = String::from_utf8(listed.stdout).unwrap();
     assert!(stdout.contains("plugin: id=codex.ui.adapter;"));
-    assert!(stdout.contains("plugin: id=codlet; version=0.1.0; source=bundled; enabled=true"));
+    assert!(stdout.contains("plugin: id=codlet-gui; version=0.1.0; source=bundled; enabled=true"));
     assert!(!registry.exists());
 
-    let disabled = run(local_app_data.path(), &["plugin", "disable", "codlet"]);
+    let disabled = run(local_app_data.path(), &["plugin", "disable", "codlet-gui"]);
     assert!(disabled.status.success());
     assert_eq!(
         String::from_utf8(disabled.stdout).unwrap().trim(),
-        "plugin-state: id=codlet; enabled=false; applies=next-codlet-launch"
+        "plugin-state: id=codlet-gui; enabled=false; applies=next-codlet-launch"
     );
     assert!(registry.exists());
 
@@ -42,14 +42,14 @@ fn plugin_cli_lists_and_persists_bundled_plugin_state_without_launching_codex() 
     assert!(
         String::from_utf8(listed.stdout)
             .unwrap()
-            .contains("plugin: id=codlet; version=0.1.0; source=bundled; enabled=false")
+            .contains("plugin: id=codlet-gui; version=0.1.0; source=bundled; enabled=false")
     );
 
-    let enabled = run(local_app_data.path(), &["plugin", "enable", "codlet"]);
+    let enabled = run(local_app_data.path(), &["plugin", "enable", "codlet-gui"]);
     assert!(enabled.status.success());
     assert_eq!(
         String::from_utf8(enabled.stdout).unwrap().trim(),
-        "plugin-state: id=codlet; enabled=true; applies=next-codlet-launch"
+        "plugin-state: id=codlet-gui; enabled=true; applies=next-codlet-launch"
     );
 }
 
@@ -82,7 +82,7 @@ fn plugin_cli_preserves_valid_unknown_preferences() {
     .unwrap();
 
     for action in ["disable", "enable"] {
-        let output = run(local_app_data.path(), &["plugin", action, "codlet"]);
+        let output = run(local_app_data.path(), &["plugin", action, "codlet-gui"]);
         assert!(output.status.success());
         assert!(
             !PluginRegistry::load(&path)
@@ -104,8 +104,8 @@ fn plugin_cli_rejects_corrupt_documents_without_changing_them() {
         fs::write(&path, document).unwrap();
         for arguments in [
             vec!["plugin", "list"],
-            vec!["plugin", "enable", "codlet"],
-            vec!["plugin", "disable", "codlet"],
+            vec!["plugin", "enable", "codlet-gui"],
+            vec!["plugin", "disable", "codlet-gui"],
         ] {
             let output = run(local_app_data.path(), &arguments);
             assert!(!output.status.success());
@@ -122,7 +122,7 @@ fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement
     let local_app_data = tempdir().unwrap();
     let path = local_app_data.path().join("Codlet").join("config.json");
     assert!(
-        run(local_app_data.path(), &["plugin", "enable", "codlet"])
+        run(local_app_data.path(), &["plugin", "enable", "codlet-gui"])
             .status
             .success()
     );
@@ -134,7 +134,7 @@ fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement
         .unwrap();
     lock.try_lock().unwrap();
     let started = Instant::now();
-    let busy = run(local_app_data.path(), &["plugin", "disable", "codlet"]);
+    let busy = run(local_app_data.path(), &["plugin", "disable", "codlet-gui"]);
     assert!(!busy.status.success());
     assert!(started.elapsed() < Duration::from_secs(15));
     assert!(String::from_utf8_lossy(&busy.stderr).contains("plugin registry is busy"));
@@ -151,7 +151,7 @@ fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement
         .share_mode(0x1 | 0x2)
         .open(&path)
         .unwrap();
-    let failed = run(local_app_data.path(), &["plugin", "disable", "codlet"]);
+    let failed = run(local_app_data.path(), &["plugin", "disable", "codlet-gui"]);
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("failed to replace"));
     assert!(!String::from_utf8_lossy(&failed.stdout).contains("plugin-state:"));
@@ -160,11 +160,15 @@ fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement
     drop(blocker);
 
     assert!(
-        run(local_app_data.path(), &["plugin", "disable", "codlet"])
+        run(local_app_data.path(), &["plugin", "disable", "codlet-gui"])
             .status
             .success()
     );
-    assert!(!PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+    assert!(
+        !PluginRegistry::load(&path)
+            .unwrap()
+            .is_enabled("codlet-gui")
+    );
 }
 
 #[test]
@@ -172,7 +176,7 @@ fn management_json_has_one_versioned_result_for_success_and_early_failures() {
     let local_app_data = tempdir().unwrap();
     for (arguments, expected_code) in [
         (
-            vec!["plugin", "reload", "codlet", "--json"],
+            vec!["plugin", "reload", "codlet-gui", "--json"],
             "host_required",
         ),
         (
@@ -198,7 +202,7 @@ fn management_json_has_one_versioned_result_for_success_and_early_failures() {
     }
     let output = run(
         local_app_data.path(),
-        &["plugin", "disable", "codlet", "--json"],
+        &["plugin", "disable", "codlet-gui", "--json"],
     );
     assert!(
         output.status.success(),

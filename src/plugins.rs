@@ -14,6 +14,8 @@ use crate::capabilities::CapabilityDescriptor;
 
 const MANIFEST_SCHEMA: u32 = 1;
 const REGISTRY_SCHEMA: u32 = 2;
+pub const GUI_PLUGIN_ID: &str = "codlet-gui";
+const LEGACY_GUI_PLUGIN_ID: &str = "codlet";
 pub const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
 const MAX_PLUGIN_ID_BYTES: usize = 128;
 const MAX_VERSION_BYTES: usize = 64;
@@ -239,9 +241,15 @@ impl PluginRegistry {
 
     /// Includes staged edits; persistence is confirmed only by a successful `save`.
     pub fn is_enabled(&self, plugin_id: &str) -> bool {
+        let plugin_id = canonical_plugin_id(plugin_id);
         self.pending
             .get(plugin_id)
             .or_else(|| self.document.plugins.get(plugin_id))
+            .or_else(|| {
+                (plugin_id == GUI_PLUGIN_ID)
+                    .then(|| self.document.plugins.get(LEGACY_GUI_PLUGIN_ID))
+                    .flatten()
+            })
             .map(|preference| preference.enabled)
             .unwrap_or(true)
     }
@@ -357,8 +365,10 @@ impl PluginRegistry {
         if !valid_plugin_id(plugin_id) {
             return Err(PluginRegistryError::PluginId(plugin_id.to_owned()));
         }
-        self.pending
-            .insert(plugin_id.to_owned(), PluginPreference { enabled });
+        self.pending.insert(
+            canonical_plugin_id(plugin_id).to_owned(),
+            PluginPreference { enabled },
+        );
         Ok(())
     }
 
@@ -407,6 +417,12 @@ impl PluginRegistry {
         }
         if !self.pending.is_empty() || !self.pending_local.is_empty() || latest.schema == 1 {
             latest.plugins.extend(self.pending.clone());
+            // Upgrade only an explicitly edited GUI preference, under the same
+            // merge lock. Read-only inspection and unrelated writes preserve the
+            // legacy key; a newer canonical assignment always takes precedence.
+            if self.pending.contains_key(GUI_PLUGIN_ID) {
+                latest.plugins.remove(LEGACY_GUI_PLUGIN_ID);
+            }
             for (id, edit) in &self.pending_local {
                 if let Some(registration) = &edit.desired {
                     latest
@@ -676,7 +692,20 @@ fn validate_local_registration(registration: &LocalPluginRegistration) -> Result
 }
 
 fn reserved_plugin_id(id: &str) -> bool {
-    matches!(id, "codlet" | "codex.ui.adapter" | "codlet.core.host")
+    matches!(
+        id,
+        LEGACY_GUI_PLUGIN_ID | GUI_PLUGIN_ID | "codex.ui.adapter" | "codlet.core.host"
+    )
+}
+
+/// User-facing aliases are resolved before preparing a control receipt. Runtime
+/// identities and already-issued receipts retain their original exact IDs.
+pub(crate) fn canonical_plugin_id(id: &str) -> &str {
+    if id == LEGACY_GUI_PLUGIN_ID {
+        GUI_PLUGIN_ID
+    } else {
+        id
+    }
 }
 
 impl Default for RegistryDocument {
@@ -906,7 +935,7 @@ mod tests {
     #[test]
     fn bundled_codlet_uses_the_public_manifest_contract() {
         let plugin = bundled_codlet().unwrap();
-        assert_eq!(plugin.manifest.id, "codlet");
+        assert_eq!(plugin.manifest.id, "codlet-gui");
         assert_eq!(plugin.manifest.renderer.world, RendererWorld::Isolated);
         assert_eq!(
             plugin.manifest.permissions,
@@ -1052,7 +1081,7 @@ mod tests {
         let path = directory.path().join("config.json");
         let registry = PluginRegistry::load(&path).unwrap();
 
-        assert!(registry.is_enabled("codlet"));
+        assert!(registry.is_enabled("codlet-gui"));
         assert!(registry.is_enabled("codex.ui.adapter"));
         assert_eq!(registry.path(), path);
         assert!(!path.exists());
@@ -1064,13 +1093,21 @@ mod tests {
         let path = directory.path().join("state").join("config.json");
         let mut registry = PluginRegistry::load(&path).unwrap();
 
-        registry.set_enabled("codlet", false).unwrap();
+        registry.set_enabled("codlet-gui", false).unwrap();
         registry.save().unwrap();
-        assert!(!PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        assert!(
+            !PluginRegistry::load(&path)
+                .unwrap()
+                .is_enabled("codlet-gui")
+        );
 
-        registry.set_enabled("codlet", true).unwrap();
+        registry.set_enabled("codlet-gui", true).unwrap();
         registry.save().unwrap();
-        assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        assert!(
+            PluginRegistry::load(&path)
+                .unwrap()
+                .is_enabled("codlet-gui")
+        );
         assert_eq!(directory.path().read_dir().unwrap().count(), 1);
         assert_eq!(path.parent().unwrap().read_dir().unwrap().count(), 2);
         assert!(path.with_extension("json.lock").exists());
@@ -1083,13 +1120,13 @@ mod tests {
         let mut first = PluginRegistry::load(&path).unwrap();
         let mut second = PluginRegistry::load(&path).unwrap();
 
-        first.set_enabled("codlet", false).unwrap();
+        first.set_enabled("codlet-gui", false).unwrap();
         second.set_enabled("codex.ui.adapter", false).unwrap();
         first.save().unwrap();
         second.save().unwrap();
 
         let committed = PluginRegistry::load(&path).unwrap();
-        assert!(!committed.is_enabled("codlet"));
+        assert!(!committed.is_enabled("codlet-gui"));
         assert!(!committed.is_enabled("codex.ui.adapter"));
         assert_eq!(second.document, committed.document);
         assert!(second.pending.is_empty());
@@ -1107,12 +1144,12 @@ mod tests {
         first.set_enabled("future.plugin", true).unwrap();
         first.set_enabled("another.future-plugin", false).unwrap();
         first.save().unwrap();
-        stale.set_enabled("codlet", false).unwrap();
+        stale.set_enabled("codlet-gui", false).unwrap();
         stale.save().unwrap();
 
         assert!(stale.is_enabled("future.plugin"));
         assert!(!stale.is_enabled("another.future-plugin"));
-        assert!(!stale.is_enabled("codlet"));
+        assert!(!stale.is_enabled("codlet-gui"));
         assert_eq!(
             stale.document,
             PluginRegistry::load(&path).unwrap().document
@@ -1128,16 +1165,24 @@ mod tests {
         let path = directory.path().join("config.json");
         let mut first = PluginRegistry::load(&path).unwrap();
         let mut second = first.clone();
-        second.set_enabled("codlet", true).unwrap();
-        first.set_enabled("codlet", false).unwrap();
+        second.set_enabled("codlet-gui", true).unwrap();
+        first.set_enabled("codlet-gui", false).unwrap();
         first.save().unwrap();
         second.save().unwrap();
-        assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        assert!(
+            PluginRegistry::load(&path)
+                .unwrap()
+                .is_enabled("codlet-gui")
+        );
 
         // Saving again without an assignment refreshes, never replays the old disable.
         first.save().unwrap();
-        assert!(first.is_enabled("codlet"));
-        assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        assert!(first.is_enabled("codlet-gui"));
+        assert!(
+            PluginRegistry::load(&path)
+                .unwrap()
+                .is_enabled("codlet-gui")
+        );
     }
 
     #[test]
@@ -1145,7 +1190,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.json");
         let mut registry = PluginRegistry::load(&path).unwrap();
-        registry.set_enabled("codlet", false).unwrap();
+        registry.set_enabled("codlet-gui", false).unwrap();
         let previous = registry.clone();
 
         for bytes in [
@@ -1175,7 +1220,7 @@ mod tests {
         )
         .unwrap();
         registry.save().unwrap();
-        assert!(!registry.is_enabled("codlet"));
+        assert!(!registry.is_enabled("codlet-gui"));
         assert!(!registry.is_enabled("future.plugin"));
         assert!(registry.pending.is_empty());
     }
@@ -1212,7 +1257,7 @@ mod tests {
         registry.set_enabled("future.plugin", false).unwrap();
         registry.save().unwrap();
         let original = fs::read(&path).unwrap();
-        registry.set_enabled("codlet", false).unwrap();
+        registry.set_enabled("codlet-gui", false).unwrap();
         let previous = registry.clone();
         let blocker = OpenOptions::new()
             .read(true)
@@ -1237,7 +1282,7 @@ mod tests {
         another.set_enabled("future.plugin", true).unwrap();
         another.save().unwrap();
         registry.save().unwrap();
-        assert!(!registry.is_enabled("codlet"));
+        assert!(!registry.is_enabled("codlet-gui"));
         assert!(registry.is_enabled("future.plugin"));
         assert_eq!(
             registry.document,
@@ -1264,7 +1309,7 @@ mod tests {
     fn disabled_bundled_plugins_are_excluded_from_the_launch_catalog() {
         let directory = tempdir().unwrap();
         let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
-        registry.set_enabled("codlet", false).unwrap();
+        registry.set_enabled("codlet-gui", false).unwrap();
 
         let plugins = enabled_bundled_plugins(&registry).unwrap();
         assert_eq!(plugins.len(), 1);

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "id": "codlet",
+  "id": "codlet-gui",
   "version": "0.1.0",
   "renderer": {
     "entry": "dist/renderer.js",

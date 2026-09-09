@@ -611,11 +611,11 @@ fn successful_inspection_and_load_do_not_execute_source_or_create_configuration(
 fn reserved_ids_are_left_for_the_composed_catalog() {
     let fixture = Fixture::new();
     let mut value = manifest();
-    value["id"] = json!("codlet");
+    value["id"] = json!("codlet-gui");
     fixture.write_manifest(&value);
-    load_local_plugin("codlet", &fixture.root, &[Permission::UiDom], 1).unwrap();
+    load_local_plugin("codlet-gui", &fixture.root, &[Permission::UiDom], 1).unwrap();
     assert!(
-        LocalPluginError::ReservedId("codlet".to_owned())
+        LocalPluginError::ReservedId("codlet-gui".to_owned())
             .to_string()
             .contains("reserved")
     );

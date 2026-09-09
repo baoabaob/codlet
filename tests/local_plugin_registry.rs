@@ -187,7 +187,7 @@ fn schema_two_rejects_malformed_fields_ids_paths_and_grants_without_rewriting() 
         "",
         "Bad.id",
         "dev..example",
-        "codlet",
+        "codlet-gui",
         "codex.ui.adapter",
         "codlet.core.host",
     ] {
@@ -233,7 +233,7 @@ fn invalid_api_edits_preserve_staged_registrations_and_preferences() {
         .register_local("dev.example", initial.clone())
         .unwrap();
     registry.set_enabled("dev.example", false).unwrap();
-    for id in ["codlet", "codex.ui.adapter", "codlet.core.host"] {
+    for id in ["codlet-gui", "codex.ui.adapter", "codlet.core.host"] {
         assert_eq!(
             io_kind(registry.register_local(id, initial.clone()).unwrap_err()),
             io::ErrorKind::InvalidInput
@@ -458,7 +458,7 @@ fn concurrent_adds_and_grants_updates_conflict_without_partial_preference_commit
     let local = registration(directory.path(), &[Permission::UiDom]);
     first.register_local("dev.example", local.clone()).unwrap();
     second.register_local("dev.example", local.clone()).unwrap();
-    second.set_enabled("codlet", false).unwrap();
+    second.set_enabled("codlet-gui", false).unwrap();
     first.save().unwrap();
     let committed = fs::read(&path).unwrap();
     assert_eq!(
@@ -466,13 +466,17 @@ fn concurrent_adds_and_grants_updates_conflict_without_partial_preference_commit
         io::ErrorKind::AlreadyExists
     );
     assert_eq!(fs::read(&path).unwrap(), committed);
-    assert!(!second.is_enabled("codlet"));
-    assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+    assert!(!second.is_enabled("codlet-gui"));
+    assert!(
+        PluginRegistry::load(&path)
+            .unwrap()
+            .is_enabled("codlet-gui")
+    );
 
     second = PluginRegistry::load(&path).unwrap();
     // Even explicitly restaging unchanged old grants cannot undo a concurrent revoke.
     second.register_local("dev.example", local).unwrap();
-    second.set_enabled("codlet", false).unwrap();
+    second.set_enabled("codlet-gui", false).unwrap();
     first
         .register_local("dev.example", registration(directory.path(), &[]))
         .unwrap();
@@ -487,7 +491,11 @@ fn concurrent_adds_and_grants_updates_conflict_without_partial_preference_commit
         second.local_plugins()["dev.example"].grants,
         [Permission::UiDom]
     );
-    assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+    assert!(
+        PluginRegistry::load(&path)
+            .unwrap()
+            .is_enabled("codlet-gui")
+    );
 }
 
 #[test]
@@ -503,7 +511,7 @@ fn remove_wins_over_stale_update_and_retries_cannot_silently_recreate_it() {
             registration(directory.path(), &[Permission::HostProcess]),
         )
         .unwrap();
-    stale_update.set_enabled("codlet", false).unwrap();
+    stale_update.set_enabled("codlet-gui", false).unwrap();
     stale_remove.remove_local("dev.example").unwrap();
     current.remove_local("dev.example").unwrap();
     current.save().unwrap();
@@ -523,7 +531,11 @@ fn remove_wins_over_stale_update_and_retries_cannot_silently_recreate_it() {
         stale_update.local_plugins()["dev.example"].grants,
         [Permission::HostProcess]
     );
-    assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+    assert!(
+        PluginRegistry::load(&path)
+            .unwrap()
+            .is_enabled("codlet-gui")
+    );
     let mut reloaded = PluginRegistry::load(&path).unwrap();
     reloaded
         .register_local("dev.example", registration(directory.path(), &[]))
@@ -582,7 +594,7 @@ fn independent_ids_cannot_commit_the_same_path_from_stale_snapshots() {
     let local = registration(directory.path(), &[]);
     first.register_local("dev.one", local.clone()).unwrap();
     second.register_local("dev.two", local).unwrap();
-    second.set_enabled("codlet", false).unwrap();
+    second.set_enabled("codlet-gui", false).unwrap();
     first.save().unwrap();
     let committed = fs::read(&path).unwrap();
     assert!(
@@ -593,7 +605,11 @@ fn independent_ids_cannot_commit_the_same_path_from_stale_snapshots() {
             .contains("duplicate paths")
     );
     assert_eq!(fs::read(&path).unwrap(), committed);
-    assert!(PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+    assert!(
+        PluginRegistry::load(&path)
+            .unwrap()
+            .is_enabled("codlet-gui")
+    );
 }
 
 #[test]
@@ -673,7 +689,7 @@ fn invalid_latest_document_blocks_the_entire_local_transaction_and_can_be_repair
             registration(directory.path(), &[Permission::UiDom]),
         )
         .unwrap();
-    registry.set_enabled("codlet", false).unwrap();
+    registry.set_enabled("codlet-gui", false).unwrap();
     let invalid = br#"{"schema":2,"localPlugins":{"dev.example":{"path":"relative","grants":[]}}}"#;
     fs::write(&path, invalid).unwrap();
     assert!(registry.save().is_err());
@@ -682,10 +698,10 @@ fn invalid_latest_document_blocks_the_entire_local_transaction_and_can_be_repair
         registry.local_plugins()["dev.example"].grants,
         [Permission::UiDom]
     );
-    assert!(!registry.is_enabled("codlet"));
+    assert!(!registry.is_enabled("codlet-gui"));
     fs::write(&path, original).unwrap();
     registry.save().unwrap();
-    assert!(!registry.is_enabled("codlet"));
+    assert!(!registry.is_enabled("codlet-gui"));
     assert_eq!(
         registry.local_plugins()["dev.example"].grants,
         [Permission::UiDom]

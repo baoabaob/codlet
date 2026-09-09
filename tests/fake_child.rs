@@ -51,7 +51,7 @@ fn control_runtime() -> (TempDir, PathBuf, RendererRuntime) {
     let directory = tempdir().unwrap();
     let registry_path = directory.path().join("config.json");
     let mut registry = PluginRegistry::load(&registry_path).unwrap();
-    registry.set_enabled("codlet", false).unwrap();
+    registry.set_enabled("codlet-gui", false).unwrap();
     registry.set_enabled("codex.ui.adapter", false).unwrap();
     for id in ["dev.provider", "dev.consumer", "dev.other", "dev.extra"] {
         let root = directory.path().join(id);
@@ -1374,7 +1374,7 @@ fn activating_plugin_cannot_commit_runtime_management_actions() {
     assert!(matches!(
         error,
         RendererError::PluginRejected { plugin_id, message }
-            if plugin_id == "codlet" && message == "activation self-disable rejected"
+            if plugin_id == "codlet-gui" && message == "activation self-disable rejected"
     ));
     assert_eq!(runtime.session_count(), 0);
     assert!(!registry_path.exists());
@@ -1404,7 +1404,7 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
                     .iter()
                     .flat_map(|target| &target.plugins)
                     .find(|plugin| {
-                        plugin.id == "codlet" && plugin.lifecycle == PluginLifecycle::Activating
+                        plugin.id == "codlet-gui" && plugin.lifecycle == PluginLifecycle::Activating
                     })
                 {
                     assert!(!plugin.active);
@@ -1422,7 +1422,7 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     assert!(matches!(
         error,
         RendererError::PluginRejected { plugin_id, message }
-            if plugin_id == "codlet"
+            if plugin_id == "codlet-gui"
                 && message.contains("Runtime.evaluate")
                 && message.contains("exceeded its deadline")
     ));
@@ -1540,7 +1540,7 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
     let diagnostics = runtime.take_diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].target_id, "cleanup-failure");
-    assert_eq!(diagnostics[0].plugin_id, "codlet");
+    assert_eq!(diagnostics[0].plugin_id, "codlet-gui");
     assert!(
         diagnostics[0]
             .message
@@ -1549,7 +1549,7 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
     assert!(
         !PluginRegistry::load(&registry_path)
             .unwrap()
-            .is_enabled("codlet")
+            .is_enabled("codlet-gui")
     );
 
     client
@@ -1742,7 +1742,7 @@ fn document_recovery_case(timeout_first_recovery: bool) {
 }
 
 #[test]
-fn local_runtime_management_uses_launch_snapshot_and_preserves_concurrent_registry_edits() {
+fn local_runtime_management_uses_loaded_metadata_and_preserves_concurrent_registry_edits() {
     local_runtime_management_case(true);
 }
 
@@ -1820,7 +1820,7 @@ fn local_runtime_management_case(has_grant: bool) {
 
     if has_grant {
         let mut cli_registry = PluginRegistry::load(&registry_path).unwrap();
-        cli_registry.set_enabled("codlet", false).unwrap();
+        cli_registry.set_enabled("codlet-gui", false).unwrap();
         cli_registry
             .register_local(
                 "dev.later",
@@ -1840,7 +1840,7 @@ fn local_runtime_management_case(has_grant: bool) {
     assert!(runtime.take_diagnostics().is_empty());
     let saved = PluginRegistry::load(&registry_path).unwrap();
     assert_eq!(saved.is_enabled("dev.local"), !has_grant);
-    assert_eq!(saved.is_enabled("codlet"), !has_grant);
+    assert_eq!(saved.is_enabled("codlet-gui"), !has_grant);
     assert_eq!(saved.local_plugins()["dev.local"].path, registration.path);
     assert_eq!(
         saved.local_plugins()["dev.local"].grants,
@@ -1881,12 +1881,12 @@ fn persisted_runtime_action_survives_renderer_response_delivery_failure() {
     assert!(
         !PluginRegistry::load(&registry_path)
             .unwrap()
-            .is_enabled("codlet")
+            .is_enabled("codlet-gui")
     );
     let diagnostics = runtime.take_diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].target_id, "main");
-    assert_eq!(diagnostics[0].plugin_id, "codlet");
+    assert_eq!(diagnostics[0].plugin_id, "codlet-gui");
     assert!(diagnostics[0].message.contains("response delivery failed"));
 
     client

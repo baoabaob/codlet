@@ -40,6 +40,7 @@ const BUILTIN_MANAGE_CAPABILITY_API: u32 = 1;
 const RUNTIME_MANAGE_GRANT: &str = "runtime.manage";
 const MAX_RENDERER_WAIT_DEPTH: usize = 8;
 
+mod listing;
 mod management;
 
 #[derive(Debug, Error)]
@@ -2023,30 +2024,15 @@ fn invoke_builtin_host_endpoint(
                             "runtime manage list expects null params",
                         ));
                     }
-                    let plugins = context.catalog.entries()
-                        .iter()
-                        .map(|entry| {
-                            let plugin = entry.plugin.as_ref().ok();
-                            let enabled = context.registry.is_enabled(&entry.id);
-                            let active = plugin.is_some() && context.active_plugin_ids.contains(&entry.id);
-                            json!({
-                                "id": entry.id,
-                                "version": plugin.map(|plugin| &plugin.manifest.version),
-                                "source": entry.source.kind(),
-                                "path": entry.source.path().map(|path| path.to_string_lossy()),
-                                "grants": entry.grants(),
-                                "requestedPermissions": plugin.map(|plugin| &plugin.manifest.permissions),
-                                "validation": match &entry.plugin {
-                                    Ok(_) => json!({"status": "ok"}),
-                                    Err(error) => json!({"status": "failed", "error": {"code": "local_plugin_invalid", "message": error.to_string()}}),
-                                },
-                                "enabled": enabled,
-                                "active": active
-                            })
-                        })
-                        .collect::<Vec<_>>();
+                    let latest = PluginRegistry::load(context.registry.path())
+                        .map_err(|error| host_failure("registry_error", error.to_string()))?;
                     Ok(HostEndpointOutcome {
-                        value: json!({"plugins": plugins}),
+                        value: listing::plugin_list(
+                            context.catalog,
+                            context.plugins,
+                            &latest,
+                            &context.active_plugin_ids,
+                        ),
                         after_response: None,
                     })
                 }
@@ -2290,7 +2276,7 @@ mod tests {
             current
                 .providers
                 .iter()
-                .all(|provider| provider.id != "codlet")
+                .all(|provider| provider.id != "codlet-gui")
         ); // A consumer is not a capability provider.
         assert_eq!(
             original
@@ -2415,7 +2401,7 @@ mod tests {
                 .iter()
                 .map(|plugin| plugin.manifest.id.as_str())
                 .collect::<Vec<_>>(),
-            ["codex.ui.adapter", "codlet"]
+            ["codex.ui.adapter", "codlet-gui"]
         );
     }
 
@@ -2426,7 +2412,10 @@ mod tests {
             renderer_world_name(&plugins[0]),
             "codlet.plugin.codex.ui.adapter.g1"
         );
-        assert_eq!(renderer_world_name(&plugins[1]), "codlet.plugin.codlet.g1");
+        assert_eq!(
+            renderer_world_name(&plugins[1]),
+            "codlet.plugin.codlet-gui.g1"
+        );
         assert_ne!(
             renderer_world_name(&plugins[0]),
             renderer_world_name(&plugins[1])
@@ -2579,7 +2568,7 @@ mod tests {
         let request = BindingMessage {
             v: 1,
             message_type: "request".to_owned(),
-            plugin_id: "codlet".to_owned(),
+            plugin_id: "codlet-gui".to_owned(),
             generation: 1,
             id: Some(1),
             capability: descriptor.clone(),
@@ -2592,9 +2581,9 @@ mod tests {
                 registry: &mut registry,
                 catalog: &catalog,
                 plugins: &plugins,
-                active_plugin_ids: BTreeSet::from(["codlet".to_owned()]),
+                active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
             },
-            "codlet",
+            "codlet-gui",
             false,
             &descriptor,
             &request,
@@ -2608,9 +2597,9 @@ mod tests {
                 registry: &mut registry,
                 catalog: &catalog,
                 plugins: &plugins,
-                active_plugin_ids: BTreeSet::from(["codlet".to_owned()]),
+                active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
             },
-            "codlet",
+            "codlet-gui",
             true,
             &descriptor,
             &request,
@@ -2618,15 +2607,19 @@ mod tests {
         .unwrap();
         assert_eq!(
             result.value,
-            json!({"pluginId": "codlet", "enabled": false})
+            json!({"pluginId": "codlet-gui", "enabled": false})
         );
         assert_eq!(
             result.after_response,
             Some(HostAction::DisablePlugin {
-                plugin_id: "codlet".to_owned()
+                plugin_id: "codlet-gui".to_owned()
             })
         );
-        assert!(!PluginRegistry::load(&path).unwrap().is_enabled("codlet"));
+        assert!(
+            !PluginRegistry::load(&path)
+                .unwrap()
+                .is_enabled("codlet-gui")
+        );
         drop(registry_directory);
     }
 

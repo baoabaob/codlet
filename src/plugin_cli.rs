@@ -56,7 +56,8 @@ pub enum PluginCliError {
     InvalidOperation,
 }
 
-pub fn manage(request: PluginControlRequest, json: bool) -> Result<(), PluginCliError> {
+pub fn manage(mut request: PluginControlRequest, json: bool) -> Result<(), PluginCliError> {
+    request.plugin_id = crate::plugins::canonical_plugin_id(&request.plugin_id).to_owned();
     with_output(json, |output| manage_inner(request, output))
 }
 

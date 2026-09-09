@@ -152,7 +152,7 @@ fn observed_inventory_stays_independent_of_disk_and_historical_failures() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|plugin| plugin["id"] == "codlet")
+            .any(|plugin| plugin["id"] == "codlet-gui")
     );
     let human = report.to_human_readable();
     for text in [

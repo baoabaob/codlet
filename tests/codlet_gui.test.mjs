@@ -176,7 +176,7 @@ function fixture({ mounted = true, ready = true } = {}) {
     const overrides = {};
     const calls = [];
     const context = {
-        pluginId: 'codlet', generation: 1,
+        pluginId: 'codlet-gui', generation: 1,
         rpc: { async request(capability, method, args) {
             const name = method === 'ping' ? 'codlet.runtime.ping'
                 : method === 'getMount' ? 'codex.ui.titlebar.afterMenu' : 'codlet.runtime.manage';
@@ -187,13 +187,13 @@ function fixture({ mounted = true, ready = true } = {}) {
             if (method === 'ping') return { pong: true, abi: 1 };
             if (method === 'getMount') return { available: mount.isConnected, token };
             if (method === 'list') return { plugins: [
-                { id: 'codlet', version: '1', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
+                { id: 'codlet-gui', version: '1', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
                 { id: 'dev.broken', version: null, source: 'local', path: 'C:/fixture/missing', enabled: false, active: false,
                     validation: { status: 'failed', error: { message: 'Missing renderer entry' } } }
             ] };
             if (method === 'disableSelf') {
                 plugin.deactivate();
-                return { pluginId: 'codlet', enabled: false };
+                return { pluginId: 'codlet-gui', enabled: false };
             }
             throw new Error('Unexpected method');
         } }
@@ -288,6 +288,36 @@ test('empty and malformed lists report honest recoverable states', async () => {
     await f.open();
     assert.equal(f.byClass('codlet-status').textContent, 'No plugins');
     assert.equal(f.byClass('codlet-plugin-list').hidden, false);
+    f.plugin.deactivate();
+});
+
+test('refresh removes forgotten rows and distinguishes an unregistered loaded plugin', async () => {
+    const f = fixture();
+    let rows = [
+        { id: 'codlet-gui', enabled: true, active: true, source: 'bundled' },
+        { id: 'dev.removed', enabled: false, active: false, source: 'local' }
+    ];
+    f.override('list', () => ({ plugins: rows }));
+    await f.plugin.activate(f.context);
+    await f.open();
+    assert.match(f.panel().textContent, /codlet-gui/);
+    assert.match(f.panel().textContent, /dev\.removed/);
+    rows = [rows[0],
+        { id: 'dev.still-running', enabled: false, active: true, loaded: true, registered: false,
+            source: 'local', loadedPath: 'C:/fixture/loaded', validation: { status: 'ok' } },
+        { id: 'dev.new', enabled: true, active: false, loaded: false, registered: true,
+            source: 'local', validation: { status: 'not_loaded' } }
+    ];
+    await f.refresh().emit('click');
+    assert.doesNotMatch(f.panel().textContent, /dev\.removed/);
+    assert.match(f.panel().textContent, /dev\.still-running/);
+    assert.match(f.panel().textContent, /Registration removed; still loaded/);
+    assert.match(f.panel().textContent, /Registered, not loaded/);
+    assert.doesNotMatch(f.panel().textContent, /Plugin validation failed/);
+    const unregisteredRow = f.nodes().find(element => element.className === 'codlet-plugin-row' && element.textContent.includes('dev.still-running'));
+    assert.equal(unregisteredRow.children[0].title, 'C:/fixture/loaded');
+    await f.requestDisable();
+    assert.match(f.panel().textContent, /codlet plugin enable codlet-gui/);
     f.plugin.deactivate();
 });
 
@@ -627,7 +657,7 @@ test('old disable responses cannot mutate or poison a reactivated GUI', async ()
         await f.open();
         const mutations = f.mutations();
         if (fails) pending.reject(new Error('Old disable failure'));
-        else pending.resolve({ pluginId: 'codlet', enabled: false });
+        else pending.resolve({ pluginId: 'codlet-gui', enabled: false });
         await disabling;
         assert.equal(f.mutations(), mutations);
         assert.equal(f.byClass('codlet-confirmation').hidden, true);

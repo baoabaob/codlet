@@ -383,11 +383,17 @@ module.exports = (() => {
         row.className = 'codlet-plugin-row';
         const copy = document.createElement('div');
         copy.className = 'codlet-plugin-copy';
-        addText(copy, 'div', 'codlet-plugin-name', plugin.id === 'codlet' ? 'Codlet GUI' : plugin.id);
+        addText(copy, 'div', 'codlet-plugin-name', plugin.id);
         const metadata = [plugin.version, plugin.source === 'local' ? 'Local' : null]
             .filter(value => typeof value === 'string' && value.length > 0);
         if (metadata.length) addText(copy, 'div', 'codlet-plugin-version', metadata.join(' / '));
-        if (typeof plugin.path === 'string') copy.title = plugin.path;
+        const path = typeof plugin.path === 'string' ? plugin.path : plugin.loadedPath;
+        if (typeof path === 'string') copy.title = path;
+        if (plugin.registered === false && plugin.loaded === true) {
+            addText(copy, 'div', 'codlet-plugin-version', 'Registration removed; still loaded');
+        } else if (plugin.validation?.status === 'not_loaded') {
+            addText(copy, 'div', 'codlet-plugin-version', 'Registered, not loaded');
+        }
         if (plugin.validation?.status === 'failed') {
             const message = plugin.validation.error?.message;
             addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
@@ -498,7 +504,7 @@ module.exports = (() => {
         confirmation.setAttribute('aria-label', 'Disable Codlet?');
         const consequence = addText(confirmation, 'p', 'codlet-confirmation-copy',
             'The Codlet GUI will close in all open windows. To restore it, run ');
-        addText(consequence, 'code', '', 'codlet plugin enable codlet');
+        addText(consequence, 'code', '', 'codlet plugin enable codlet-gui');
         consequence.appendChild(document.createTextNode('.'));
         consequence.id = `${panel.id}-disable-consequence`;
         confirmation.setAttribute('aria-describedby', consequence.id);

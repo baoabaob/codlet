@@ -118,6 +118,9 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
     let mut bindings: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut used_bindings = BTreeSet::new();
     let mut scripts: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut plugin_metadata: BTreeMap<String, Value> = BTreeMap::new();
+    let mut management_request_id = 0_u64;
+    let mut management_response = Value::Null;
     let mut trace: Vec<Value> = Vec::new();
     let mut sequence = 100_u64;
     let mut command_count = 0_u64;
@@ -182,6 +185,7 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                 }
             }
             "Runtime.removeBinding" => {
+                plugin_metadata.remove(params["name"].as_str().unwrap());
                 if bindings.remove(params["name"].as_str().unwrap()).is_none() {
                     return Err(FakeChildError::InvalidRequest(
                         "removed an unknown binding".into(),
@@ -219,6 +223,7 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                             "generation was reused across worlds".into(),
                         ));
                     }
+                    plugin_metadata.insert(binding.to_owned(), metadata.clone());
                     let fail = session == "session-second"
                         && expression.contains("fixture-fail-candidate");
                     let timed_out = expression.contains("fixture-timeout-candidate");
@@ -273,10 +278,49 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                     }
                 } else if expression.contains(".__rpcReceive(") {
                     trace.push(json!({"operation":"response","session":session,"world":world}));
+                    let encoded = expression
+                        .split_once("JSON.parse(")
+                        .and_then(|(_, tail)| tail.strip_suffix("))"))
+                        .ok_or_else(|| {
+                            FakeChildError::InvalidRequest(
+                                "invalid management response expression".into(),
+                            )
+                        })?;
+                    let decoded: String = serde_json::from_str(encoded)
+                        .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                    management_response = serde_json::from_str(&decoded)
+                        .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
                 }
                 result = json!({"result":{"type":"object","value":value}});
             }
             "Fake.configure" => settings = params.clone(),
+            "Fake.emitManagementList" => {
+                let target_session = format!("session-{}", params["targetId"].as_str().unwrap());
+                let (binding, (owner, world)) = bindings
+                    .iter()
+                    .find(|(binding, (owner, _))| {
+                        owner == &target_session
+                            && plugin_metadata
+                                .get(*binding)
+                                .is_some_and(|metadata| metadata["id"] == params["pluginId"])
+                    })
+                    .ok_or_else(|| {
+                        FakeChildError::InvalidRequest("management caller is not loaded".into())
+                    })?;
+                let metadata = &plugin_metadata[binding];
+                let context_id = contexts[&(owner.clone(), world.clone())];
+                management_request_id += 1;
+                management_response = Value::Null;
+                write_json_frame(
+                    output,
+                    &json!({"method":"Runtime.bindingCalled","sessionId":owner,"params":{
+                        "name":binding,"executionContextId":context_id,
+                        "payload":json!({"v":1,"type":"request","pluginId":metadata["id"],"generation":metadata["generation"],"id":management_request_id,
+                            "capability":{"name":"codlet.runtime.manage","api":1,"scope":"target"},"method":"list","params":null}).to_string()
+                    }}),
+                )?;
+            }
+            "Fake.managementResponse" => result = std::mem::take(&mut management_response),
             "Fake.unconfirmContext" => {
                 let target_session = format!("session-{}", params["targetId"].as_str().unwrap());
                 let world = params["world"].as_str().unwrap().to_owned();
@@ -670,7 +714,7 @@ fn scenario_renderer_runtime(
             }),
         )?;
         expect_root_command(&mut reader, output, "Fake.restoreContexts")?;
-        for (id, plugin) in [(141, "codex.ui.adapter"), (142, "codlet")] {
+        for (id, plugin) in [(141, "codex.ui.adapter"), (142, "codlet-gui")] {
             write_json_frame(
                 output,
                 &json!({
@@ -684,8 +728,8 @@ fn scenario_renderer_runtime(
         expect_root_command(&mut reader, output, "Fake.subframeContexts")?;
         for (id, plugin, frame, is_default) in [
             (241, "codex.ui.adapter", "frame-widget", false),
-            (242, "codlet", "frame-widget", false),
-            (243, "codlet", "frame-main", true),
+            (242, "codlet-gui", "frame-widget", false),
+            (243, "codlet-gui", "frame-main", true),
         ] {
             write_json_frame(
                 output,
@@ -786,7 +830,7 @@ fn scenario_renderer_document_recovery(
     // document must still receive different worlds and binding identities.
     for (plugin, context, identifier) in [
         ("codex.ui.adapter", 41, "recovery-adapter"),
-        ("codlet", 42, "recovery-codlet"),
+        ("codlet-gui", 42, "recovery-codlet"),
     ] {
         let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
         complete_isolated_world(&mut reader, output, &session, &world, context)?;
@@ -855,7 +899,7 @@ fn scenario_renderer_document_recovery(
     }
     write_evaluation_value(output, request, json!({"ok":true}), &session)?;
     for (plugin, context, identifier) in [
-        ("codlet", 42, "recovery-codlet"),
+        ("codlet-gui", 42, "recovery-codlet"),
         ("codex.ui.adapter", 41, "recovery-adapter"),
     ] {
         let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
@@ -1115,11 +1159,11 @@ fn scenario_renderer_reentrant(
         &mut reader,
         output,
         &session,
-        "codlet.plugin.codlet.g1",
+        "codlet.plugin.codlet-gui.g1",
         202,
     )?;
     let deactivate =
-        expect_held_evaluation(&mut reader, &session, 202, ".deactivate(\"codlet\", 1)")?;
+        expect_held_evaluation(&mut reader, &session, 202, ".deactivate(\"codlet-gui\", 1)")?;
     if mode == "renderer-reentrant-destroy-deactivate" {
         return destroy_during_wait(&mut reader, output, &session, &bindings);
     }
@@ -1350,7 +1394,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
     let host_request = json!({
         "v": 1,
         "type": "request",
-        "pluginId": "codlet",
+        "pluginId": "codlet-gui",
         "generation": 1,
         "id": 1,
         "capability": {
@@ -1387,7 +1431,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
     let first_request = json!({
         "v": 1,
         "type": "request",
-        "pluginId": "codlet",
+        "pluginId": "codlet-gui",
         "generation": 1,
         "id": 2,
         "capability": capability.clone(),
@@ -1434,7 +1478,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
     let stale_request = json!({
         "v": 1,
         "type": "request",
-        "pluginId": "codlet",
+        "pluginId": "codlet-gui",
         "generation": 0,
         "id": 3,
         "capability": capability.clone(),
@@ -1503,7 +1547,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         &mut reader,
         output,
         &session_id,
-        "codlet.plugin.codlet.g1",
+        "codlet.plugin.codlet-gui.g1",
         bindings.codlet_context,
     )?;
     complete_renderer_evaluation(
@@ -1511,8 +1555,8 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         output,
         &session_id,
         bindings.codlet_context,
-        ".deactivate(\"codlet\", 1)",
-        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+        ".deactivate(\"codlet-gui\", 1)",
+        json!({"ok": true, "id": "codlet-gui", "generation": 1, "inactive": true}),
     )?;
     expect_remove_renderer_script(
         &mut reader,
@@ -1601,7 +1645,7 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         &mut reader,
         output,
         &failure_session,
-        "codlet.plugin.codlet.g1",
+        "codlet.plugin.codlet-gui.g1",
         105,
     )?;
     complete_renderer_evaluation(
@@ -1609,7 +1653,7 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         output,
         &failure_session,
         105,
-        ".deactivate(\"codlet\", 1)",
+        ".deactivate(\"codlet-gui\", 1)",
         json!({"ok": false, "error": "simulated codlet cleanup failure"}),
     )?;
     complete_renderer_evaluation(
@@ -1632,7 +1676,7 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         &mut reader,
         output,
         &session_id,
-        "codlet.plugin.codlet.g1",
+        "codlet.plugin.codlet-gui.g1",
         106,
     )?;
     complete_renderer_evaluation(
@@ -1640,8 +1684,8 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         output,
         &session_id,
         106,
-        ".deactivate(\"codlet\", 1)",
-        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+        ".deactivate(\"codlet-gui\", 1)",
+        json!({"ok": true, "id": "codlet-gui", "generation": 1, "inactive": true}),
     )?;
     expect_remove_renderer_script(
         &mut reader,
@@ -1724,7 +1768,7 @@ fn scenario_renderer_local_manage(
     let activation = expect_held_evaluation(&mut reader, session, 303, "fixture-local-source")?;
     emit_local_manage_request(output, session, &binding, 1, "list")?;
     if has_grant {
-        expect_local_management_list(&mut reader, output, session, false, true)?;
+        expect_local_management_list(&mut reader, output, session, false, true, false)?;
     } else {
         expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
     }
@@ -1733,7 +1777,7 @@ fn scenario_renderer_local_manage(
     expect_root_command(&mut reader, output, "Fake.emitLocalList")?;
     emit_local_manage_request(output, session, &binding, 2, "list")?;
     if has_grant {
-        expect_local_management_list(&mut reader, output, session, true, true)?;
+        expect_local_management_list(&mut reader, output, session, true, true, false)?;
     } else {
         expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
     }
@@ -1751,7 +1795,7 @@ fn scenario_renderer_local_manage(
         expect_held_evaluation(&mut reader, session, 303, ".deactivate(\"dev.local\", 1)")?;
     emit_local_manage_request(output, session, &binding, 4, "list")?;
     if has_grant {
-        expect_local_management_list(&mut reader, output, session, false, false)?;
+        expect_local_management_list(&mut reader, output, session, false, false, true)?;
     } else {
         expect_consumer_error_response(&mut reader, output, session, 303, "permission_denied")?;
     }
@@ -1785,6 +1829,7 @@ fn expect_local_management_list(
     session: &str,
     active: bool,
     enabled: bool,
+    expect_later_registration: bool,
 ) -> Result<(), FakeChildError> {
     let (id, response) = read_management_list_response(reader, session, 303)?;
     let plugins = response
@@ -1797,6 +1842,7 @@ fn expect_local_management_list(
         })?;
     let local = plugins.iter().find(|plugin| plugin["id"] == "dev.local");
     let broken = plugins.iter().find(|plugin| plugin["id"] == "dev.broken");
+    let later = plugins.iter().find(|plugin| plugin["id"] == "dev.later");
     if local.is_none_or(|plugin| {
         plugin["active"] != active
             || plugin["enabled"] != enabled
@@ -1811,8 +1857,16 @@ fn expect_local_management_list(
             || plugin["enabled"] != false
             || plugin["validation"]["status"] != "failed"
             || !plugin["version"].is_null()
-    }) || plugins.iter().any(|plugin| plugin["id"] == "dev.later")
-    {
+    }) || if expect_later_registration {
+        later.is_none_or(|plugin| {
+            plugin["registered"] != true
+                || plugin["loaded"] != false
+                || plugin["validation"]["status"] != "not_loaded"
+                || !plugin["version"].is_null()
+        })
+    } else {
+        later.is_some()
+    } {
         return Err(FakeChildError::InvalidRequest(format!(
             "incorrect local management snapshot: {response}"
         )));
@@ -1861,7 +1915,7 @@ fn scenario_renderer_manage_response_failure(
         &mut reader,
         output,
         &session_id,
-        "codlet.plugin.codlet.g1",
+        "codlet.plugin.codlet-gui.g1",
         113,
     )?;
     complete_renderer_evaluation(
@@ -1869,8 +1923,8 @@ fn scenario_renderer_manage_response_failure(
         output,
         &session_id,
         113,
-        ".deactivate(\"codlet\", 1)",
-        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+        ".deactivate(\"codlet-gui\", 1)",
+        json!({"ok": true, "id": "codlet-gui", "generation": 1, "inactive": true}),
     )?;
     expect_remove_renderer_script(
         &mut reader,
@@ -1899,7 +1953,7 @@ fn emit_disable_self_binding(
     let request = json!({
         "v": 1,
         "type": "request",
-        "pluginId": "codlet",
+        "pluginId": "codlet-gui",
         "generation": 1,
         "id": 1,
         "capability": {
@@ -2049,7 +2103,7 @@ fn expect_consumer_management_list_response(
         .ok_or_else(|| {
             FakeChildError::InvalidRequest("management response has no plugin list".to_owned())
         })?;
-    for (plugin_id, expected_active) in [("codex.ui.adapter", true), ("codlet", false)] {
+    for (plugin_id, expected_active) in [("codex.ui.adapter", true), ("codlet-gui", false)] {
         if plugins
             .iter()
             .find(|plugin| plugin["id"] == plugin_id)
@@ -2290,7 +2344,7 @@ fn complete_bundled_renderer_install(
     adapter_context: u64,
     codlet_context: u64,
 ) -> Result<RendererBindingInfo, FakeChildError> {
-    let codlet_world = "codlet.plugin.codlet.g1";
+    let codlet_world = "codlet.plugin.codlet-gui.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
     let adapter_binding = complete_adapter_renderer_install(
         reader,
@@ -2324,7 +2378,7 @@ fn complete_bundled_renderer_install(
         session_id,
         codlet_context,
         "runtime.activate",
-        json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
+        json!({"ok": true, "id": "codlet-gui", "generation": 1, "reused": false}),
     )?;
     Ok(RendererBindingInfo {
         adapter_binding,
@@ -2384,7 +2438,7 @@ fn complete_bundled_renderer_install_with_ready_handshake(
     write_evaluation_value(
         output,
         activation_id,
-        json!({"ok": true, "id": "codlet", "generation": 1, "reused": false}),
+        json!({"ok": true, "id": "codlet-gui", "generation": 1, "reused": false}),
         session_id,
     )?;
     Ok(bindings)
@@ -2405,7 +2459,7 @@ fn begin_bundled_renderer_activation(
         identifier_suffix,
         adapter_context,
     )?;
-    let codlet_world = "codlet.plugin.codlet.g1";
+    let codlet_world = "codlet.plugin.codlet-gui.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
     complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
     let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
@@ -2464,7 +2518,7 @@ fn emit_renderer_request(
     let request = json!({
         "v": 1,
         "type": "request",
-        "pluginId": "codlet",
+        "pluginId": "codlet-gui",
         "generation": 1,
         "id": id,
         "capability": {
@@ -2549,7 +2603,7 @@ fn complete_bundled_renderer_deactivation(
     codlet_context: u64,
     adapter_context: u64,
 ) -> Result<(), FakeChildError> {
-    let codlet_world = "codlet.plugin.codlet.g1";
+    let codlet_world = "codlet.plugin.codlet-gui.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
     complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
     complete_renderer_evaluation(
@@ -2557,8 +2611,8 @@ fn complete_bundled_renderer_deactivation(
         output,
         session_id,
         codlet_context,
-        ".deactivate(\"codlet\", 1)",
-        json!({"ok": true, "id": "codlet", "generation": 1, "inactive": true}),
+        ".deactivate(\"codlet-gui\", 1)",
+        json!({"ok": true, "id": "codlet-gui", "generation": 1, "inactive": true}),
     )?;
     expect_remove_renderer_script(reader, output, session_id, &bootstrap_codlet)?;
     expect_remove_renderer_binding(reader, output, session_id)?;

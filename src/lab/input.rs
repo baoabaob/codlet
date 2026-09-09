@@ -214,7 +214,7 @@ fn parse_plugin_command(line: &[u8]) -> Option<PluginControlRequest> {
     };
     let request = PluginControlRequest {
         action,
-        plugin_id: (*plugin_id).to_owned(),
+        plugin_id: crate::plugins::canonical_plugin_id(plugin_id).to_owned(),
     };
     request.validate().ok()?;
     Some(request)

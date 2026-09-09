@@ -63,16 +63,16 @@ fn missing_registry_reports_defaults_without_creating_any_directory_or_runtime_f
         report["registry"]["data"]["appliesTo"],
         "next_codlet_launch"
     );
-    assert_eq!(plugin(&report, "codlet")["desiredEnabled"], true);
+    assert_eq!(plugin(&report, "codlet-gui")["desiredEnabled"], true);
     assert_eq!(
         report["dependencyGraph"]["data"]["basis"],
         "static_desired_configuration"
     );
     assert_eq!(
         report["dependencyGraph"]["data"]["activationOrder"],
-        json!(["codex.ui.adapter", "codlet.core.host", "codlet"])
+        json!(["codex.ui.adapter", "codlet.core.host", "codlet-gui"])
     );
-    assert!(plugin(&report, "codlet").get("generation").is_none());
+    assert!(plugin(&report, "codlet-gui").get("generation").is_none());
     assert_runtime_unavailable(&report);
     assert!(!path.parent().unwrap().exists());
 }
@@ -107,9 +107,9 @@ fn package_unavailable_still_reports_corrupt_registry_and_declared_capabilities(
     assert_eq!(json["registry"]["error"]["code"], "registry_json_invalid");
     assert_eq!(json["dependencyGraph"]["status"], "unavailable");
     assert_eq!(json["processes"]["status"], "unavailable");
-    assert!(plugin(&json, "codlet")["desiredEnabled"].is_null());
+    assert!(plugin(&json, "codlet-gui")["desiredEnabled"].is_null());
     assert_eq!(
-        plugin(&json, "codlet")["requires"]
+        plugin(&json, "codlet-gui")["requires"]
             .as_array()
             .unwrap()
             .len(),
@@ -145,7 +145,7 @@ fn disabled_provider_invalidates_the_desired_graph_and_identifies_a_repair() {
     assert_eq!(plugin(&report, "codex.ui.adapter")["desiredEnabled"], false);
     let error = &report["dependencyGraph"]["error"];
     assert_eq!(error["code"], "dependency_provider_disabled");
-    assert_eq!(error["details"]["consumer"], "codlet");
+    assert_eq!(error["details"]["consumer"], "codlet-gui");
     assert_eq!(
         error["details"]["disabledProviders"],
         json!(["codex.ui.adapter"])
@@ -164,7 +164,7 @@ fn disabled_provider_invalidates_the_desired_graph_and_identifies_a_repair() {
 fn disabling_both_provider_and_consumer_has_a_valid_static_graph() {
     let directory = tempdir().unwrap();
     let mut inputs = fixture(&directory.path().join("config.json"));
-    for id in ["codlet", "codex.ui.adapter"] {
+    for id in ["codlet-gui", "codex.ui.adapter"] {
         inputs
             .registry
             .as_mut()

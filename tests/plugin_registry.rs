@@ -105,7 +105,12 @@ fn processes_contend_on_one_lock_and_merge_preloaded_snapshots() {
     let path = directory.path().join("config.json");
     fs::write(&path, INITIAL).unwrap();
     let lock = open_lock(&path);
-    let first = Worker::spawn(&directory.path().join("first"), &path, "writer", "codlet");
+    let first = Worker::spawn(
+        &directory.path().join("first"),
+        &path,
+        "writer",
+        "codlet-gui",
+    );
     let second = Worker::spawn(
         &directory.path().join("second"),
         &path,
@@ -129,7 +134,7 @@ fn processes_contend_on_one_lock_and_merge_preloaded_snapshots() {
     first.finish();
     second.finish();
     let registry = PluginRegistry::load(&path).unwrap();
-    assert!(!registry.is_enabled("codlet"));
+    assert!(!registry.is_enabled("codlet-gui"));
     assert!(!registry.is_enabled("codex.ui.adapter"));
     assert!(!registry.is_enabled("future.plugin"));
     let snapshots: Vec<[bool; 2]> = ["first", "second"]
@@ -161,11 +166,11 @@ fn process_exit_without_destructors_releases_registry_lock() {
         &directory.path().join("owner"),
         &path,
         "exit-lock",
-        "codlet",
+        "codlet-gui",
     );
     worker.wait_for("locked");
     let mut registry = PluginRegistry::load(&path).unwrap();
-    registry.set_enabled("codlet", false).unwrap();
+    registry.set_enabled("codlet-gui", false).unwrap();
     let started = Instant::now();
     assert!(matches!(
         registry.save(),
@@ -177,7 +182,7 @@ fn process_exit_without_destructors_releases_registry_lock() {
     worker.signal("exit");
     worker.finish();
     registry.save().unwrap();
-    assert!(!registry.is_enabled("codlet"));
+    assert!(!registry.is_enabled("codlet-gui"));
     assert!(!registry.is_enabled("future.plugin"));
     assert!(path.with_extension("json.lock").exists());
 }
@@ -188,7 +193,7 @@ fn temporary_name_collisions_are_retried_without_removing_existing_files() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.json");
         fs::write(&path, INITIAL).unwrap();
-        Worker::spawn(&directory.path().join("worker"), &path, mode, "codlet").finish();
+        Worker::spawn(&directory.path().join("worker"), &path, mode, "codlet-gui").finish();
     }
 }
 
@@ -348,7 +353,7 @@ fn process_local_conflicts_after_lock_retry_never_partially_commit_or_restore_gr
         second.finish();
         assert_eq!(fs::read(&path).unwrap(), committed);
         let registry = PluginRegistry::load(&path).unwrap();
-        assert!(registry.is_enabled("codlet"));
+        assert!(registry.is_enabled("codlet-gui"));
         assert!(!registry.is_enabled("future.plugin"));
         if first_mode == "local-remove" {
             assert!(registry.local_plugins().is_empty());
@@ -398,7 +403,7 @@ fn registry_process_worker() {
                 _ => panic!("unknown local registry worker mode"),
             }
             if mode.ends_with("-conflict") {
-                registry.set_enabled("codlet", false).unwrap();
+                registry.set_enabled("codlet-gui", false).unwrap();
             }
             let staged = registry.local_plugins().clone();
             fs::write(control.join("loaded"), b"ready").unwrap();
@@ -418,7 +423,7 @@ fn registry_process_worker() {
                     assert!(error.to_string().contains("reload and explicitly restage"));
                     assert!(matches!(error, PluginRegistryError::Io { .. }));
                     assert_eq!(registry.local_plugins(), &staged);
-                    assert!(!registry.is_enabled("codlet"));
+                    assert!(!registry.is_enabled("codlet-gui"));
                 }
             } else {
                 registry.save().unwrap();
@@ -451,7 +456,7 @@ fn registry_process_worker() {
             fs::write(
                 control.join("snapshot"),
                 serde_json::to_vec(&[
-                    registry.is_enabled("codlet"),
+                    registry.is_enabled("codlet-gui"),
                     registry.is_enabled("codex.ui.adapter"),
                 ])
                 .unwrap(),
