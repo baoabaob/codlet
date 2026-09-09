@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.25；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.26；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。按用户要求继续 M2a 纯 host/CDP 开发，使用针对性验证。详见第 16.8–16.9 节。
+当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。随后 M2a 交付公开 host/CDP 原语并统一 JS/TS 目录包；本轮 M2b 已接入 JS host 在线启停/重载、新注册插件与当前授信约束的换代补偿，采用针对性验证。host Inspect/watch、组合入口及完整 M2 仍待后续，详见第 16.8–16.11 节。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -713,7 +713,7 @@ M1c 验收条件：
 
 先交付并验收开放 Core 原语，再用相同公开接口建设官方便利层。保留现有通用 capability kernel，解除通用插件装载/lifecycle 与 RendererRuntime、renderer 必填入口的耦合。可选性先通过接口、依赖方向和可停用/可替换关系落实，不要求逐层拆包或增加进程。
 
-首批 M2a 已落地 host-only 的装载、进程/JSONL 生命周期与 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe`，含无官方依赖示例与原生假 CDP 闭环。此为下列完整 M2 条件的一个子集；host 热启停/重载、跨执行器 capability、broker 便利 API 和完整诊断仍待后续。见 [M2a 实现合约](M2A_HOST_RUNTIME_2026-09-09.md)。
+首批 M2a 已落地 host-only 的装载、进程/JSONL 生命周期与 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe`，随后统一为 JS/TS 目录包。M2b 已接入同一 CLI receipt 的 host 热启停/重载、启动后新增 host、代数高水位和当前授信下的失败补偿。此为下列完整 M2 条件的一个子集；host watch、组合入口、跨执行器 capability、broker 便利 API 和完整诊断仍待后续。见 [M2a 历史合约](M2A_HOST_RUNTIME_2026-09-09.md)与 [M2b 现行合约](M2B_HOST_CONTROL_2026-09-10.md)。
 
 验收条件：
 
@@ -915,6 +915,12 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 ### 16.10 JS/TS 统一格式
 
 第 16.9 节的可执行 host 示例是过渡历史；用户随后要求首版统一 JS/TS。当前实现已将其替换为目录内 JS 示例及 Codlet 固定的 JS 执行环境，复用既有进程监督、JSONL、CDP 与资源回收，不维护任意可执行文件插件分支。后续 hot lifecycle 和跨执行器工作均基于这套统一形式。
+
+### 16.11 M2b JS host 在线生命周期
+
+2026-09-10：在统一目录包上接入 `enable` / `disable` / `reload` 的 host 执行路径。前台协调器持有单个 pending receipt，进程 owner 异步处理启动/停止，等待期间继续 renderer 事件和其他 host CDP；不因 CLI 等待超时重提 mutation。新注册 host 按本次请求读取最新 registration，已分配 ID 在本次 runtime 固定执行器。验证失败不退休旧代；换代失败只在原目录仍注册、当前权限仍覆盖旧 manifest 且仍 enabled 时用旧源码快照和新代数恢复。disable 不读取源码，可清理损坏或已移除注册的实际 host。
+
+本包验收使用真实固定 Node 子进程、假 CDP、协调器和同一 control broker receipt，覆盖在线闭环、故障补偿、撤权/停用并发与前台可响应性；未重复全量 M0/M1 或启动真实 Codex。host Inspect/watch、组合入口及跨执行器 capability 继续保留；shutdown 不接收新的 Core 清理请求，不能把进程退休等同于撤回任意页面效果。专项结果见 [M2b 记录](M2B_HOST_CONTROL_2026-09-10.md)。
 
 ## 17. 主要风险
 

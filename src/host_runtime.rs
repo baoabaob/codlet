@@ -2,9 +2,9 @@
 //! knows no renderer URLs, JavaScript bootstrap, DOM, or official adapters.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -18,8 +18,12 @@ use crate::plugin_host::{
 };
 use crate::plugins::{LoadedPlugin, Permission};
 
+mod lifecycle;
+pub use lifecycle::{HostOperation, HostOperationResult, MAX_HOST_IDENTITIES};
+
 const TICK: Duration = Duration::from_millis(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_PENDING: usize = 4;
 const MAX_OUTBOX: usize = 8;
 const MAX_HOSTS: usize = 16;
@@ -51,6 +55,8 @@ struct Published {
 pub struct HostRuntime {
     published: Arc<Mutex<Published>>,
     stopping: Arc<AtomicBool>,
+    commands: mpsc::SyncSender<lifecycle::Command>,
+    operations: Arc<AtomicUsize>,
     worker: Option<JoinHandle<Vec<HostStopReport>>>,
 }
 
@@ -110,57 +116,7 @@ impl HostRuntime {
         runtime: Option<JsRuntime>,
     ) -> Result<Self, HostError> {
         Self::validate_plugins(&plugins)?;
-        let published = Arc::new(Mutex::new(Published::default()));
-        let stopping = Arc::new(AtomicBool::new(false));
-        if plugins.is_empty() {
-            return Ok(Self {
-                published,
-                stopping,
-                worker: None,
-            });
-        }
-        let runtime = runtime.ok_or_else(|| {
-            HostError::new(
-                "js_runtime_missing",
-                "enabled host JS plugins require the managed runtime",
-            )
-        })?;
-        let owners: Vec<_> = plugins
-            .into_iter()
-            .map(|plugin| HostOwner::start(plugin, &runtime))
-            .collect();
-        publish(&published, &owners);
-        let worker_published = Arc::clone(&published);
-        let worker_stopping = Arc::clone(&stopping);
-        let worker = thread::Builder::new()
-            .name("codlet-core-host-rpc".into())
-            .spawn(move || {
-                let mut owners = owners;
-                while !worker_stopping.load(Ordering::Acquire) {
-                    client.poll_raw_io();
-                    for owner in &mut owners {
-                        owner.pump(&client);
-                    }
-                    publish(&worker_published, &owners);
-                    thread::sleep(TICK);
-                }
-                // Broadcast shutdown before waiting on any one child, so every
-                // plugin gets the same opportunity to exit cooperatively.
-                for owner in &mut owners {
-                    if let Some(supervisor) = &mut owner.supervisor {
-                        supervisor.begin_stop();
-                    }
-                }
-                let reports = owners.iter_mut().filter_map(HostOwner::stop).collect();
-                publish(&worker_published, &owners);
-                reports
-            })
-            .map_err(|error| HostError::new("owner_spawn_failed", error.to_string()))?;
-        Ok(Self {
-            published,
-            stopping,
-            worker: Some(worker),
-        })
+        lifecycle::launch(plugins, client, runtime)
     }
 
     pub fn observations(&self) -> Vec<PluginExecutionObservation> {
@@ -227,10 +183,18 @@ impl Drop for HostRuntime {
 
 fn publish(published: &Mutex<Published>, owners: &[HostOwner]) {
     let mut current = published.lock().unwrap_or_else(|p| p.into_inner());
-    for (index, owner) in owners.iter().enumerate() {
-        if current.observations.get(index).is_none_or(|old| {
-            old.state != owner.observation.state || old.error != owner.observation.error
-        }) {
+    for owner in owners {
+        if current
+            .observations
+            .iter()
+            .find(|old| {
+                old.plugin.manifest.id == owner.observation.plugin.manifest.id
+                    && old.plugin.generation == owner.observation.plugin.generation
+            })
+            .is_none_or(|old| {
+                old.state != owner.observation.state || old.error != owner.observation.error
+            })
+        {
             if current.diagnostics.len() == 64 {
                 current.diagnostics.remove(0);
             }
@@ -258,6 +222,7 @@ struct HostOwner {
     observation: PluginExecutionObservation,
     supervisor: Option<HostSupervisor>,
     invocation: Option<JsInvocation>,
+    launching: bool,
     initialize_id: u64,
     initialize_deadline: Instant,
     pending: Vec<(u64, QueuedCdpRequest)>,
@@ -265,11 +230,15 @@ struct HostOwner {
     subscription_id: u64,
     outbox: VecDeque<Outbound>,
     stop_report: Option<HostStopReport>,
+    failure: Option<HostError>,
+    stop_deadline: Option<Instant>,
+    start_operation: Option<lifecycle::Completion>,
+    stop_operation: Option<lifecycle::Completion>,
 }
 
 impl HostOwner {
-    fn start(plugin: LoadedPlugin, runtime: &JsRuntime) -> Self {
-        let mut owner = Self {
+    fn new(plugin: LoadedPlugin) -> Self {
+        Self {
             observation: PluginExecutionObservation {
                 plugin,
                 state: ExecutionState::Starting,
@@ -278,6 +247,7 @@ impl HostOwner {
             },
             supervisor: None,
             invocation: None,
+            launching: false,
             initialize_id: 0,
             initialize_deadline: Instant::now() + INITIALIZE_TIMEOUT,
             pending: Vec::new(),
@@ -285,7 +255,15 @@ impl HostOwner {
             subscription_id: 0,
             outbox: VecDeque::new(),
             stop_report: None,
-        };
+            failure: None,
+            stop_deadline: None,
+            start_operation: None,
+            stop_operation: None,
+        }
+    }
+
+    fn start(plugin: LoadedPlugin, runtime: &JsRuntime) -> Self {
+        let mut owner = Self::new(plugin);
         let result = (|| {
             let plugin = &owner.observation.plugin;
             let host = plugin.host.as_ref().expect("validated host entry");
@@ -316,7 +294,7 @@ impl HostOwner {
             Ok::<_, HostError>(())
         })();
         if let Err(error) = result {
-            owner.fail(error.to_string());
+            owner.fail(error);
         }
         owner
     }
@@ -328,26 +306,21 @@ impl HostOwner {
         ) {
             return;
         }
+        if self.observation.state == ExecutionState::Stopping {
+            self.pump_retirement();
+            return;
+        }
         let Some(supervisor) = &mut self.supervisor else {
             return;
         };
         let events = supervisor.poll();
-        if self.observation.state == ExecutionState::Stopping {
-            if let Some(report) = supervisor.exit_report() {
-                self.stop_report = Some(HostStopReport {
-                    plugin_id: self.observation.plugin.manifest.id.clone(),
-                    result: Ok(report),
-                });
-                self.supervisor.take();
-                self.invocation.take();
-                self.observation.state = ExecutionState::Failed;
-            }
-            return;
-        }
         // A terminal event retires the generation before queued requests can act.
         if let Some(error) = events.iter().find_map(|event| match event {
-            HostEvent::Failed { error } => Some(error.to_string()),
-            HostEvent::Exited { exit_code } => Some(format!("host_exited: {exit_code}")),
+            HostEvent::Failed { error } => Some(error.clone()),
+            HostEvent::Exited { exit_code } => Some(HostError::new(
+                "host_exited",
+                format!("Host exited with code {exit_code}"),
+            )),
             _ => None,
         }) {
             self.fail(error);
@@ -365,20 +338,21 @@ impl HostOwner {
                     Ok(value) if value.get("ready") == Some(&Value::Bool(true)) => {
                         match self.supervisor.as_mut().unwrap().mark_ready() {
                             Ok(()) => self.observation.state = ExecutionState::Active,
-                            Err(error) => self.fail(error.to_string()),
+                            Err(error) => self.fail(error),
                         }
                     }
-                    Ok(_) => {
-                        self.fail("initialize_failed: response must contain ready=true".into())
-                    }
-                    Err(error) => self.fail(format!(
-                        "initialize_failed: {}",
-                        error.message.chars().take(4096).collect::<String>()
+                    Ok(_) => self.fail(HostError::new(
+                        "initialize_failed",
+                        "response must contain ready=true",
+                    )),
+                    Err(error) => self.fail(HostError::new(
+                        "initialize_failed",
+                        error.message.chars().take(4096).collect::<String>(),
                     )),
                 },
-                HostEvent::RequestTimedOut { id } if id == self.initialize_id => {
-                    self.fail("initialize_timeout".into())
-                }
+                HostEvent::RequestTimedOut { id } if id == self.initialize_id => self.fail(
+                    HostError::new("initialize_timeout", "Host initialization request expired"),
+                ),
                 // Notifications never authorize Core actions; RPC requires a reply id.
                 _ => {}
             }
@@ -435,7 +409,7 @@ impl HostOwner {
             if let Err(error) = result
                 && !matches!(error.code, "unknown_request" | "request_expired")
             {
-                self.fail(error.to_string());
+                self.fail(error);
             }
         }
     }
@@ -557,7 +531,10 @@ impl HostOwner {
 
     fn queue(&mut self, message: Outbound) {
         if self.outbox.len() == MAX_OUTBOX {
-            self.fail("outgoing_queue_full: Core host bridge queue exceeded eight frames".into());
+            self.fail(HostError::new(
+                "outgoing_queue_full",
+                "Core host bridge queue exceeded eight frames",
+            ));
         } else {
             self.outbox.push_back(message);
         }
@@ -573,17 +550,63 @@ impl HostOwner {
         }
     }
 
-    fn fail(&mut self, error: String) {
-        self.observation.error = Some(error);
+    fn fail(&mut self, error: HostError) {
+        if self.failure.is_none() {
+            self.observation.error = Some(error.to_string());
+            self.failure = Some(error);
+        }
+        self.begin_retirement();
+    }
+
+    fn begin_retirement(&mut self) {
         self.pending.clear();
         self.subscription.take();
         self.outbox.clear();
         if let Some(supervisor) = &mut self.supervisor {
             supervisor.begin_stop();
+            self.stop_deadline
+                .get_or_insert_with(|| Instant::now() + CLEANUP_TIMEOUT);
             self.observation.state = ExecutionState::Stopping;
         } else {
-            self.observation.state = ExecutionState::Failed;
+            self.observation.state = if self.launching {
+                self.stop_deadline
+                    .get_or_insert_with(|| Instant::now() + CLEANUP_TIMEOUT);
+                ExecutionState::Stopping
+            } else if self.failure.is_some() {
+                ExecutionState::Failed
+            } else {
+                ExecutionState::Exited
+            };
         }
+    }
+
+    fn pump_retirement(&mut self) {
+        let Some(supervisor) = &mut self.supervisor else {
+            return;
+        };
+        let _ = supervisor.poll();
+        let Some(report) = supervisor.exit_report() else {
+            return;
+        };
+        if report.exit_code != 0 && self.failure.is_none() {
+            let error = HostError::new(
+                "shutdown_failed",
+                format!("Host exited with code {}", report.exit_code),
+            );
+            self.observation.error = Some(error.to_string());
+            self.failure = Some(error);
+        }
+        self.stop_report = Some(HostStopReport {
+            plugin_id: self.observation.plugin.manifest.id.clone(),
+            result: Ok(report),
+        });
+        self.supervisor.take();
+        self.invocation.take();
+        self.observation.state = if self.failure.is_some() {
+            ExecutionState::Failed
+        } else {
+            ExecutionState::Exited
+        };
     }
 
     fn stop(&mut self) -> Option<HostStopReport> {
@@ -599,15 +622,18 @@ impl HostOwner {
             };
             if let Err(error) = &result {
                 self.observation.error = Some(error.to_string());
+                self.failure = Some(error.clone());
             }
             drop(supervisor);
             self.invocation.take();
-            Some(HostStopReport {
+            let report = HostStopReport {
                 plugin_id: self.observation.plugin.manifest.id.clone(),
                 result,
-            })
+            };
+            self.stop_report = Some(report.clone());
+            Some(report)
         } else {
-            self.stop_report.take()
+            self.stop_report.clone()
         }
     }
 }

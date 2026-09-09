@@ -47,7 +47,7 @@ Core 可以检查自己的 RPC 来源、scope/generation、已声明的 provider
 
 当前 capability 名称没有官方 provider 白名单；第三方可发布合法 capability，已有夹具在禁用两个官方插件后运行自有 provider/consumer。它不是一个只能装官方 adapter 消费者的系统。
 
-讨论前的 M1 是 renderer 优先的实现：manifest 要求 renderer 入口，实际只支持 isolated world 和 target 路由，Rust 内部 CDP 能力没有作为插件 API 开放。M2a 现已允许无 renderer 的本地 host 入口，经独立 JSONL 连接使用通用 CDP 请求和事件；纯 host 启动跳过官方 renderer target 筛选。示例与原生夹具证明这条路径无需官方插件，尚不代表真实 Codex 中所有层级、导航恢复、host 热管理或完整 M2 验收完成。
+讨论前的 M1 是 renderer 优先的实现：manifest 要求 renderer 入口，实际只支持 isolated world 和 target 路由，Rust 内部 CDP 能力没有作为插件 API 开放。M2a 现已允许无 renderer 的本地 host JS 入口，经独立 JSONL 连接使用通用 CDP 请求和事件；纯 host 启动跳过官方 renderer target 筛选。M2b 在同一插件包与 CLI receipt 上增加 host 在线启停/重载和受当前授信约束的换代补偿。示例与原生夹具证明这些路径无需官方插件，尚不代表真实 Codex 中所有层级、导航恢复或完整 M2 验收完成。进程热管理也不意味着任意 raw 注入副作用都能自动撤回。
 
 ## M2–M4 的架构验收条目
 

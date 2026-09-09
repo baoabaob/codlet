@@ -1,13 +1,13 @@
 # Registered local plugins
 
 Host JS plugins are supported by the first M2a slice. They use
-`host.process` and optionally `cdp.raw`, start/stop with the Runtime Host, and do not
+`host.process` and optionally `cdp.raw`, use Codlet's managed Node executor, and do not
 require a renderer entry. Both use `codlet.json` and built `.js`/`.cjs` entrypoints;
 TS is compiled before loading. Executable entries and Node native addons are
 unsupported. See the [host contract](JS_PLUGIN_RUNTIME_2026-09-09.md)
-and [raw host example](../examples/raw-host/README.md). Online enable/disable/reload
-and file watching below currently apply to renderer plugins; host hot management
-is explicitly rejected by this slice. Status-v1 and doctor Inspect still observe
+and [raw host example](../examples/raw-host/README.md). M2b adds online host
+enable/disable/reload through the same CLI receipts; see [host lifecycle](M2B_HOST_CONTROL_2026-09-10.md).
+File watching still applies only to renderer plugins. Status-v1 and doctor Inspect still observe
 the managed renderer only; host execution is reported in the launch log and GUI.
 
 Codlet loads explicitly registered local directories at session startup or through
@@ -25,7 +25,7 @@ codlet plugin add "C:\my-plugins\example"
 
 This inspects its manifest and selected entry, displays the directory and requested
 permissions, and exits nonzero without creating registry state. It does not execute
-the source or host executable. After reviewing the plugin, explicitly authorize the directory and
+the plugin source. After reviewing the plugin, explicitly authorize the directory and
 every requested permission:
 
 ```powershell
@@ -63,6 +63,16 @@ has no Host; reload requires a Host. Removal forgets the local registration and
 preserves both the source directory and the ID's enablement preference. Disable a
 running plugin before removing its registration to unload it immediately. Bundled
 plugins can be disabled but cannot be removed.
+
+A JS host registered after launch can be enabled without restarting Codex. Its
+process is retired before a replacement generation starts; startup failure can
+restore the prior JS entry snapshot under fresh generations only while its
+original registration, current grants and enabled preference still allow it.
+`disable` can clean up a loaded host even after removal or source corruption.
+Reloading a disabled host is rejected before execution; use `enable` first.
+An ID that has already been assigned an executor cannot switch between host and
+renderer until Codlet restarts. Host lifecycle manages process/RPC resources;
+arbitrary injected page effects are still the plugin's responsibility.
 
 Each launch re-reads and validates enabled plugin code, manifest identity, declared
 permissions, and dependencies before discovering or starting Codex. Source edits

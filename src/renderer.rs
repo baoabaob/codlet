@@ -833,6 +833,16 @@ impl RendererRuntime {
         !self.plugins.is_empty()
     }
 
+    /// Executor affinity survives disable and failed replacements for this
+    /// runtime. A new executor cannot reuse a previously allocated generation.
+    pub(crate) fn allocated_generation(&self, plugin_id: &str) -> Option<u64> {
+        self.generations.get(plugin_id).copied()
+    }
+
+    pub(crate) fn catalog_snapshot(&self) -> &PluginCatalog {
+        &self.catalog
+    }
+
     /// Replace the optional management UI's external-executor view. These
     /// observations never become renderer providers, targets, or sessions.
     pub fn set_external_observations(&mut self, observations: Vec<PluginExecutionObservation>) {

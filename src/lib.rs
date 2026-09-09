@@ -15,6 +15,8 @@ pub mod runtime_inspection;
 pub mod runtime_status;
 
 #[cfg(windows)]
+pub mod host_control;
+#[cfg(windows)]
 pub mod host_runtime;
 #[cfg(windows)]
 pub mod js_runtime;

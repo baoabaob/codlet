@@ -2,7 +2,7 @@
 
 > Status: manual enable/disable/reload are implemented in source commit `5a0be1e`; native fixtures validate the authenticated control IPC, and the manual isolated acceptance validates lifecycle behavior. The watcher and its safety guards are in source commit `851395a`; the final automated regression passed. Ordinary production launch+watch acceptance remains open, as do the production M0/M1 gates and `DEFECT-001` / `DEFECT-002`.
 
-This contract covers the first live plugin lifecycle controls. It is separate from the read-only `codlet status` protocol in [RUNTIME_STATUS.md](RUNTIME_STATUS.md). The foreground Runtime Host is the only component that owns renderer lifecycle work; the CLI only prepares, submits, and reads operation receipts.
+This contract covers live plugin lifecycle controls, including [M2b JS host control](M2B_HOST_CONTROL_2026-09-10.md). It is separate from the read-only `codlet status` protocol in [RUNTIME_STATUS.md](RUNTIME_STATUS.md). The foreground Runtime Host owns lifecycle coordination; the CLI only prepares, submits, and reads operation receipts. The renderer executes on that foreground owner, while independent JS process owners complete host operations asynchronously.
 
 ## Responsibilities
 
@@ -13,8 +13,9 @@ This contract covers the first live plugin lifecycle controls. It is separate fr
 | Mailbox | Reserve/submit/query receipts and bound queue and retention independently of the renderer and Windows transport. |
 | Lifecycle plan | Resolve the affected dependency closure, validate catalog/registrations/grants, allocate generations, and define compensation. |
 | Renderer executor | `RendererRuntime.manage_plugin` owns detach, provider removal, activation, persistence, rollback, and per-target diagnostics on the foreground owner. |
+| Host coordinator/executor | `HostControl` validates current registry trust, allocates generations and compensates replacements; the JS owner performs bounded asynchronous process startup/retirement and continues raw CDP. |
 | Watch observer | Inspect only already-loaded local sources and emit a typed reload request; it does not load code or execute a lifecycle action. |
-| Foreground orchestrator | Prioritize one CLI mailbox job over at most one watcher request on each owner-loop round, then invoke the shared renderer executor. |
+| Foreground orchestrator | Prioritize one CLI mailbox job over at most one watcher request. A pending host receipt serializes further lifecycle work while renderer events and host RPC keep pumping. |
 
 ## Launch modes and registry identity
 
@@ -71,7 +72,7 @@ When a verified Host owns the registry, the CLI performs this sequence:
 
 1. `prepare` validates the action and plugin id and creates an inert, Host-issued receipt. It does not run plugin code or change the registry.
 2. `submit` is sent exactly once for that receipt. The receipt already binds the action and id, so submission carries no second mutation body.
-3. The Host queues the job and the foreground renderer owner calls `manage_plugin`. Renderer detach, provider removal, activation, persistence, and compensation stay on that owner thread.
+3. The Host queues the job. Already allocated owners determine the executor; new host IDs are validated from the explicitly requested current registration. Renderer work calls `manage_plugin`; host work advances through asynchronous start/stop phases under the same running receipt.
 4. The CLI polls `result` only as a read-only query. A separate `codlet plugin operation <receipt>` query is also read-only and can be used after the original command returns.
 
 The plugin command uses a bounded wait. If the Host does not return a terminal result before the wait expires, the result is `uncertain`; the CLI must tell the operator to query the receipt. It never submits the same receipt again, converts an uncertain online action into an offline edit, or retries the mutation automatically. If submission itself was not accepted, the command reports `not_submitted`; a later attempt may prepare a new receipt after checking the Host state.
@@ -81,6 +82,11 @@ The control mailbox admits at most eight queued or running operations and retain
 The transport uses control schema version `1`, bounded request and response frames, and one request/response exchange with an acknowledgement. Its status values distinguish `identified`, `inspected`, `inspection_too_large`, `prepared`, `queued`, `running`, `completed`, `not_running`, `busy`, `not_ready`, `stopping`, `expired`, `stale_host`, `invalid_request`, `incompatible`, `untrusted_server`, `communication_error`, and `timeout`. The two inspection-specific outcomes appear only on `Inspect`; legacy command replies keep their original field set.
 
 ## Lifecycle semantics
+
+The following dependency-closure details describe renderer plugins. Host-only JS
+plugins have no cross-executor capability declarations in this release. They use
+the same actions, outcomes and receipts with one process owner per plugin; see
+[the host transaction and compensation rules](M2B_HOST_CONTROL_2026-09-10.md).
 
 ### Enable
 

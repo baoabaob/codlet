@@ -67,7 +67,9 @@ impl RendererRuntime {
         let registry = PluginRegistry::load(self.plugin_registry.path())
             .map_err(|error| control_error(error.into()))?;
         let id = &request.plugin_id;
-        if self
+        if self.external_observations.iter().any(|observation| {
+            observation.plugin.manifest.id == *id && requires_host_executor(&observation.plugin)
+        }) || self
             .catalog
             .entries()
             .iter()
@@ -161,7 +163,17 @@ impl RendererRuntime {
                     .iter()
                     .find(|plugin| requires_host_executor(plugin))
                 {
-                    return Err(host_executor_required(&plugin.manifest.id));
+                    return Err(if self.generations.contains_key(&plugin.manifest.id) {
+                        PluginControlError::new(
+                            "executor_kind_changed",
+                            format!(
+                                "plugin {} already belongs to the renderer executor; changing executor kind requires restarting Codlet",
+                                plugin.manifest.id
+                            ),
+                        )
+                    } else {
+                        host_executor_required(&plugin.manifest.id)
+                    });
                 }
                 plugin_lifecycle::verify_registrations(&registry, &plan.affected)
                     .map_err(control_error)?;
@@ -511,7 +523,7 @@ fn host_executor_required(plugin_id: &str) -> PluginControlError {
     PluginControlError::new(
         "host_executor_required",
         format!(
-            "plugin {plugin_id} uses a JS host; online enable/disable/reload is not implemented yet. Change enablement while Codlet is stopped, then launch again."
+            "plugin {plugin_id} uses a JS host; route its lifecycle through the Core host coordinator instead of the renderer executor"
         ),
     )
 }
@@ -677,7 +689,14 @@ mod tests {
                     plugin_id: "dev.local".into(),
                 })
                 .unwrap_err();
-            assert_eq!(error.code, "host_executor_required");
+            assert_eq!(
+                error.code,
+                if was_renderer {
+                    "executor_kind_changed"
+                } else {
+                    "host_executor_required"
+                }
+            );
             assert_eq!(runtime.generations, previous_generations);
             assert_eq!(runtime.plugin_count(), usize::from(was_renderer));
             assert!(

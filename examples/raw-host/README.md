@@ -10,9 +10,19 @@ With a Codlet distribution that includes its managed JS runtime:
 codlet plugin add .\examples\raw-host --trust --grant host.process --grant cdp.raw
 ```
 
-If this ID already has a disabled preference, enable it while Codlet is stopped.
 The next `codlet launch` loads `host.entry` using CommonJS `activate(context)` and
-`deactivate()`. Host hot enable/disable/reload is a later M2 slice.
+`deactivate()`. A running Codlet session also supports online management, including
+this example registered after launch. Use the same Codlet executable that owns
+the session:
+
+```powershell
+codlet plugin enable example.raw-host
+codlet plugin reload example.raw-host
+codlet plugin disable example.raw-host
+```
+
+Reload requires an enabled plugin; use `enable` to start a disabled one. Commands
+use the existing lifecycle receipts described in [the host control contract](../../docs/M2B_HOST_CONTROL_2026-09-10.md).
 
 The example uses `context.cdp` to discover any target, attach a flattened session,
 subscribe to that session, enable Runtime, evaluate an expression, unsubscribe

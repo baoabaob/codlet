@@ -14,6 +14,7 @@ use crate::diagnostics::{
     Check, DiagnosticIssue, DoctorInputs, DoctorReport, DoctorRuntimeInput, PackageInfo,
     ProcessInfo, ProcessSnapshot,
 };
+use crate::host_control::HostControl;
 use crate::host_runtime::HostRuntime;
 use crate::js_runtime::JsRuntime;
 use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
@@ -184,6 +185,7 @@ struct CodletRuntime {
     client: CdpClient,
     targets: Option<TargetController>,
     hosts: HostRuntime,
+    host_control: HostControl,
     renderer: RendererRuntime,
     watcher: Option<PluginWatcher>,
     initial_outcomes: Vec<RendererOutcome>,
@@ -708,6 +710,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let watcher = options
         .watch
         .then(|| PluginWatcher::new(registry.path().to_owned()));
+    let host_control = HostControl::new(registry.path().to_owned());
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
     let js_runtime = if host_plugins.is_empty() {
         None
@@ -771,6 +774,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         client: connected.client,
         targets,
         hosts,
+        host_control,
         renderer,
         watcher,
         initial_outcomes,
@@ -1044,32 +1048,42 @@ impl CodletRuntime {
                 }
             }
             let _ = self.renderer.pump_bindings()?;
-            let job = next_management_job(&self.control, || {
-                let watcher = self.watcher.as_mut()?;
-                let sources = self.renderer.local_watch_sources();
-                let request = watcher.poll(Instant::now(), &sources);
-                for diagnostic in watcher.take_diagnostics() {
-                    eprintln!(
-                        "plugin-watch: plugin-id={}; state=diagnostic; code={}; message={}",
-                        diagnostic.plugin_id, diagnostic.code, diagnostic.message
-                    );
-                }
-                request
-            });
+            self.host_control.poll(&self.hosts, &self.control);
+            let job = if self.host_control.is_pending() {
+                None
+            } else {
+                next_management_job(&self.control, || {
+                    let watcher = self.watcher.as_mut()?;
+                    let sources = self.renderer.local_watch_sources();
+                    let request = watcher.poll(Instant::now(), &sources);
+                    for diagnostic in watcher.take_diagnostics() {
+                        eprintln!(
+                            "plugin-watch: plugin-id={}; state=diagnostic; code={}; message={}",
+                            diagnostic.plugin_id, diagnostic.code, diagnostic.message
+                        );
+                    }
+                    request
+                })
+            };
             match job {
                 Some(ManagementJob::Cli(job)) => {
-                    let mut result = self.renderer.manage_plugin(job.request);
-                    if let Ok(report) = &mut result
-                        && self.targets.is_none()
-                        && self.renderer.has_renderer_plugins()
-                        && let Err(error) = self.start_renderer_executor()
+                    if let Some(job) =
+                        self.host_control
+                            .dispatch(job, &self.renderer, &self.hosts, &self.control)
                     {
-                        report.outcome = crate::plugin_control::PluginControlOutcome::Degraded;
-                        report.message = Some(format!(
-                            "Plugin configuration applied, but renderer startup failed: {error}"
-                        ));
+                        let mut result = self.renderer.manage_plugin(job.request);
+                        if let Ok(report) = &mut result
+                            && self.targets.is_none()
+                            && self.renderer.has_renderer_plugins()
+                            && let Err(error) = self.start_renderer_executor()
+                        {
+                            report.outcome = crate::plugin_control::PluginControlOutcome::Degraded;
+                            report.message = Some(format!(
+                                "Plugin configuration applied, but renderer startup failed: {error}"
+                            ));
+                        }
+                        self.control.complete(&job.operation_id, result);
                     }
-                    self.control.complete(&job.operation_id, result);
                 }
                 Some(ManagementJob::Watch(request)) => {
                     println!(

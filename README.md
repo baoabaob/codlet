@@ -13,8 +13,11 @@ executable entries and native Node addons are not supported. This unifies the
 package format and runtime contract without claiming a sandbox.
 
 The [standalone JS example](examples/raw-host/README.md) uses `context.cdp` without
-an official plugin or renderer entry. Host hot management and the rest of M2 remain
-pending. See the [unified JS contract and migration](docs/JS_PLUGIN_RUNTIME_2026-09-09.md).
+an official plugin or renderer entry. M2b adds online host enable/disable/reload
+through the existing CLI receipts, including hosts registered after launch. See
+the [host lifecycle contract](docs/M2B_HOST_CONTROL_2026-09-10.md) and
+[unified JS contract and migration](docs/JS_PLUGIN_RUNTIME_2026-09-09.md).
+Host file watching, combined entries and complete host Inspect remain pending.
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 

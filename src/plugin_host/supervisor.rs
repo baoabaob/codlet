@@ -143,6 +143,7 @@ pub struct HostSupervisor {
     failure: Option<HostError>,
     failure_reported: bool,
     exit_code: Option<u32>,
+    job_empty: bool,
     process_exited_at: Option<Instant>,
     exit_reported: bool,
     stdout_closed_since: Option<Instant>,
@@ -206,6 +207,7 @@ impl HostSupervisor {
             failure: None,
             failure_reported: false,
             exit_code: None,
+            job_empty: false,
             process_exited_at: None,
             exit_reported: false,
             stdout_closed_since: None,
@@ -491,6 +493,12 @@ impl HostSupervisor {
             Err(error) => self.fail(HostError::new("process_wait_failed", error.to_string())),
         }
         self.join_finished();
+        if self.exit_code.is_some() && !self.job_empty {
+            match self.process.job_is_empty() {
+                Ok(empty) => self.job_empty = empty,
+                Err(error) => self.fail(HostError::new("job_query_failed", error.to_string())),
+            }
+        }
         if let Some(error) = &self.failure
             && !self.failure_reported
         {
@@ -502,6 +510,7 @@ impl HostSupervisor {
         if let Some(exit_code) = self.exit_code
             && !self.exit_reported
             && self.workers.is_empty()
+            && self.job_empty
             && (self.state == HostState::Failed || (input_final && input_exhausted))
         {
             self.outgoing_pending.clear();
@@ -535,7 +544,7 @@ impl HostSupervisor {
     }
 
     pub fn exit_report(&self) -> Option<HostExitReport> {
-        if !self.exit_reported || !self.workers.is_empty() {
+        if !self.exit_reported || !self.workers.is_empty() || !self.job_empty {
             return None;
         }
         Some(HostExitReport {
@@ -583,10 +592,10 @@ impl HostSupervisor {
                 "owned Host process exit was not observed before the shutdown deadline",
             ));
         };
-        if !self.workers.is_empty() {
+        if !self.workers.is_empty() || !self.job_empty || !self.exit_reported {
             return Err(HostError::new(
                 "cleanup_incomplete",
-                "owned stdio workers have not finished cancellation",
+                "owned plugin job and stdio workers have not completed retirement",
             ));
         }
         Ok(HostExitReport {

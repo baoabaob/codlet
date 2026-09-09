@@ -120,9 +120,10 @@ export = plugin;
 入口；没有保留 native 插件兼容分支。Bundled 插件、local-echo 和 raw-host 示例已迁移。
 用户已留证的历史日志与旧产物不重写。
 
-host 在线启停/重载、watch、组合入口、跨执行器 capability 与完整 host Inspect 仍为后续
-M2 工作。状态目前从 launch 日志和可选 GUI 获取，status v1 / doctor Inspect 仍主要观察
-托管 renderer。首次 JS 改造不扩大成这些功能已经完成。
+本次 JS 改造之后，[M2b](M2B_HOST_CONTROL_2026-09-10.md)接入了同一 CLI receipt 的 host
+在线启停/重载，并支持启动后注册的新 host。host watch、组合入口、跨执行器 capability 与
+完整 host Inspect 仍为后续 M2 工作。host 状态目前从 launch 日志、生命周期 receipt 与可选
+GUI 获取，status v1 / doctor Inspect 仍主要观察托管 renderer。
 
 统一 JS/TS 是开发与分发契约，开放性由 Core 暴露的原语决定。图灵完备本身不能替代缺失
 的系统接口。普通 Node host 仍可直接操作当前用户有权访问的文件、网络或进程；禁用 addon
