@@ -5,18 +5,49 @@ param(
 
     [string] $ArtifactsDirectory,
 
-    [string] $InternalTestFixturePath
+    [string] $InternalTestFixturePath,
+
+    [string] $RuntimeMode = 'M0',
+
+    [switch] $Watch
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if (-not $PSBoundParameters.ContainsKey('ArtifactsDirectory')) {
-    $ArtifactsDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) '.codlet-artifacts\m0-acceptance'
+    $relativeArtifacts = if ($RuntimeMode -ieq 'M1') { '.codlet-artifacts\m1-acceptance' } else { '.codlet-artifacts\m0-acceptance' }
+    $ArtifactsDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) $relativeArtifacts
 }
 
 $validationExitCode = 64
 $infrastructureExitCode = 70
+
+function Get-RuntimeSpecification {
+    param(
+        [string] $Mode,
+        [bool] $WatchRequested
+    )
+
+    if ($Mode -notin @('M0', 'M1')) {
+        throw 'RuntimeMode must be M0 or M1.'
+    }
+    if ($WatchRequested -and $Mode -ine 'M1') {
+        throw 'Watch is supported only with RuntimeMode M1.'
+    }
+
+    $modeName = $Mode.ToUpperInvariant()
+    $arguments = if ($modeName -eq 'M0') { @('m0-runtime', '--launch-codex') } elseif ($WatchRequested) { @('launch', '--watch') } else { @('launch') }
+    [pscustomobject][ordered]@{
+        mode          = $modeName
+        arguments     = @($arguments)
+        activeLine    = if ($modeName -eq 'M0') { 'runtime-state: active; holding inherited CDP pipes until the launched Codex exits' } else { 'runtime-state: active; Codlet renderer runtime attached' }
+        stoppedLine   = 'runtime-state: stopped; CDP workers reaped'
+        schema        = 'codlet.{0}-acceptance/v1' -f $modeName.ToLowerInvariant()
+        outputPolicy  = 'allowlisted-{0}-stdout-v1' -f $modeName.ToLowerInvariant()
+        watchRequested = $WatchRequested
+    }
+}
 
 function Get-UtcTimestamp {
     [DateTimeOffset]::UtcNow.ToString('o')
@@ -227,7 +258,8 @@ function Write-CapturedLine {
 function Test-ReportableCodletOutput {
     param(
         [string] $Stream,
-        [string] $Text
+        [string] $Text,
+        [object] $Specification
     )
 
     if ($Stream -ne 'stdout') {
@@ -239,13 +271,14 @@ function Test-ReportableCodletOutput {
         '^version: [0-9]+(?:\.[0-9]+){3}$',
         '^executable: (?:[A-Za-z]:\\|\\\\\?\\[A-Za-z]:\\)[^\r\n]+$',
         '^launched-process-id: [1-9][0-9]*$',
-        '^marker-inserted: (?:true|false)$',
-        '^marker-removed: (?:true|false)$',
-        '^runtime-state: active; holding inherited CDP pipes until the launched Codex exits$',
         '^action: use Codex normally, then close Codex to stop this foreground runtime$',
         '^codex-exit-code: [0-9]+$',
         '^runtime-state: stopped; CDP workers reaped$'
     )
+    $patterns += '^' + [Regex]::Escape([string] $Specification.activeLine) + '$'
+    if ($Specification.mode -eq 'M0') {
+        $patterns += @('^marker-inserted: (?:true|false)$', '^marker-removed: (?:true|false)$')
+    }
 
     foreach ($pattern in $patterns) {
         if ($Text -cmatch $pattern) {
@@ -259,7 +292,8 @@ function Test-ReportableCodletOutput {
 function Invoke-CodletRuntime {
     param(
         [string] $CodletExecutable,
-        [object] $Fixture
+        [object] $Fixture,
+        [object] $Specification
     )
 
     $reportableOutput = [Collections.Generic.List[object]]::new()
@@ -281,7 +315,7 @@ function Invoke-CodletRuntime {
                 text          = [string] $source.text
             }
             Write-CapturedLine -Stream $entry.stream -Text $entry.text
-            if (Test-ReportableCodletOutput -Stream $entry.stream -Text $entry.text) {
+            if (Test-ReportableCodletOutput -Stream $entry.stream -Text $entry.text -Specification $Specification) {
                 $reportableOutput.Add($entry)
             } else {
                 $omittedOutputLineCount += 1
@@ -290,13 +324,13 @@ function Invoke-CodletRuntime {
                 if ($entry.text -cmatch '^launched-process-id: ([1-9][0-9]*)$') {
                     $launchedProcessId = [int] $Matches[1]
                 }
-                if ($entry.text -ceq 'runtime-state: active; holding inherited CDP pipes until the launched Codex exits') {
+                if ($entry.text -ceq $Specification.activeLine) {
                     $activeLineSeen = $true
                     if ($null -eq $activeSnapshot) {
                         $activeSnapshot = Get-ActiveSnapshot -CodletExecutable $CodletExecutable -Fixture $Fixture
                     }
                 }
-                if ($entry.text -ceq 'runtime-state: stopped; CDP workers reaped') {
+                if ($entry.text -ceq $Specification.stoppedLine) {
                     $stoppedLineSeen = $true
                 }
             }
@@ -319,7 +353,8 @@ function Invoke-CodletRuntime {
     $nativeExitCode = $null
     try {
         $ErrorActionPreference = 'Continue'
-        & $CodletExecutable 'm0-runtime' '--launch-codex' 2>&1 |
+        $runtimeArguments = @($Specification.arguments)
+        & $CodletExecutable @runtimeArguments 2>&1 |
             ForEach-Object {
                 $stream = if ($_ -is [Management.Automation.ErrorRecord]) { 'stderr' } else { 'stdout' }
                 $entry = [pscustomobject][ordered]@{
@@ -328,7 +363,7 @@ function Invoke-CodletRuntime {
                     text          = [string] $_
                 }
                 Write-CapturedLine -Stream $entry.stream -Text $entry.text
-                if (Test-ReportableCodletOutput -Stream $entry.stream -Text $entry.text) {
+                if (Test-ReportableCodletOutput -Stream $entry.stream -Text $entry.text -Specification $Specification) {
                     $reportableOutput.Add($entry)
                 } else {
                     $omittedOutputLineCount += 1
@@ -337,13 +372,13 @@ function Invoke-CodletRuntime {
                     if ($entry.text -cmatch '^launched-process-id: ([1-9][0-9]*)$') {
                         $launchedProcessId = [int] $Matches[1]
                     }
-                    if ($entry.text -ceq 'runtime-state: active; holding inherited CDP pipes until the launched Codex exits') {
+                    if ($entry.text -ceq $Specification.activeLine) {
                         $activeLineSeen = $true
                         if ($null -eq $activeSnapshot) {
                             $activeSnapshot = Get-ActiveSnapshot -CodletExecutable $CodletExecutable -Fixture $Fixture
                         }
                     }
-                    if ($entry.text -ceq 'runtime-state: stopped; CDP workers reaped') {
+                    if ($entry.text -ceq $Specification.stoppedLine) {
                         $stoppedLineSeen = $true
                     }
                 }
@@ -373,23 +408,24 @@ function Invoke-CodletRuntime {
 }
 
 try {
+    $runtimeSpecification = Get-RuntimeSpecification -Mode $RuntimeMode -WatchRequested ([bool] $Watch)
     $resolvedCodletPath = Resolve-CodletExecutable -Path $CodletPath
     $testFixture = Read-TestFixture -Path $InternalTestFixturePath
     $resolvedArtifactsDirectory = Resolve-ArtifactsDirectory -Path $ArtifactsDirectory
 } catch {
-    [Console]::Error.WriteLine("M0 acceptance validation failed: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("$RuntimeMode acceptance validation failed: $($_.Exception.Message)")
     exit $validationExitCode
 }
 
 try {
     [void] (New-Item -ItemType Directory -Path $resolvedArtifactsDirectory -Force)
 } catch {
-    [Console]::Error.WriteLine("M0 acceptance could not create the report directory: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("$($runtimeSpecification.mode) acceptance could not create the report directory: $($_.Exception.Message)")
     exit $infrastructureExitCode
 }
 
 $startedAt = [DateTimeOffset]::UtcNow
-$reportName = 'm0-acceptance-{0}-{1}.json' -f $startedAt.ToString('yyyyMMddTHHmmssfffZ'), $PID
+$reportName = '{0}-acceptance-{1}-{2}.json' -f $runtimeSpecification.mode.ToLowerInvariant(), $startedAt.ToString('yyyyMMddTHHmmssfffZ'), $PID
 $reportPath = Join-Path $resolvedArtifactsDirectory $reportName
 $executionMode = if ($null -eq $testFixture) { 'real' } else { 'test' }
 $beforeSnapshot = $null
@@ -425,7 +461,7 @@ try {
         $scriptExitCode = 2
     } else {
         $codletInvoked = $true
-        $commandResult = Invoke-CodletRuntime -CodletExecutable $resolvedCodletPath -Fixture $testFixture
+        $commandResult = Invoke-CodletRuntime -CodletExecutable $resolvedCodletPath -Fixture $testFixture -Specification $runtimeSpecification
         $codletExitCode = $commandResult.exitCode
         $commandOutput = @($commandResult.output)
         $omittedOutputLineCount = $commandResult.omittedOutputLineCount
@@ -460,7 +496,7 @@ try {
     }
 } catch {
     $failureMessages.Add($_.Exception.Message)
-    [Console]::Error.WriteLine("M0 acceptance failed: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("$($runtimeSpecification.mode) acceptance failed: $($_.Exception.Message)")
     $executionStatus = 'script_error'
     $scriptExitCode = $infrastructureExitCode
 } finally {
@@ -469,7 +505,7 @@ try {
     } catch {
         $afterSnapshot = New-FailedSnapshot -Message $_.Exception.Message
         $failureMessages.Add("Post-run snapshot failed: $($_.Exception.Message)")
-        [Console]::Error.WriteLine("M0 acceptance post-run snapshot failed: $($_.Exception.Message)")
+        [Console]::Error.WriteLine("$($runtimeSpecification.mode) acceptance post-run snapshot failed: $($_.Exception.Message)")
         $executionStatus = 'snapshot_failed'
         $scriptExitCode = $infrastructureExitCode
     }
@@ -519,7 +555,7 @@ if ($executionStatus -eq 'codlet_completed') {
     if ($evidenceFailures.Count -gt 0) {
         foreach ($message in $evidenceFailures) {
             $failureMessages.Add($message)
-            [Console]::Error.WriteLine("M0 acceptance evidence failed: $message")
+            [Console]::Error.WriteLine("$($runtimeSpecification.mode) acceptance evidence failed: $message")
         }
         $executionStatus = 'evidence_failed'
         $scriptExitCode = $infrastructureExitCode
@@ -549,18 +585,42 @@ $manualChecks = @(
         description = 'A forced Runtime Host crash caused its Codex child to exit via the pipe-disconnect contract without an orphan.'
     }
 )
+if ($runtimeSpecification.mode -eq 'M1') {
+    $manualChecks += @(
+        [pscustomobject][ordered]@{
+            id = 'm1_gui_navigation_and_multiwindow'
+            status = 'pending_manual_confirmation'
+            description = 'Verify the Codlet GUI, list refresh, navigation/reload recovery, appearance and multiple windows in this ordinary production launch.'
+        },
+        [pscustomobject][ordered]@{
+            id = 'm1_live_plugin_control'
+            status = 'pending_manual_confirmation'
+            description = 'Verify CLI enable/disable/reload and GUI self-disable, dependency handling and current generations against this live Host.'
+        },
+        [pscustomobject][ordered]@{
+            id = 'm1_local_file_watch'
+            status = 'pending_manual_confirmation'
+            description = if ($runtimeSpecification.watchRequested) { 'Verify changes to an already trusted local plugin trigger the expected reload, failure recovery and later edits while launch --watch is running.' } else { 'This run did not request --watch; a separate explicit RuntimeMode M1 -Watch run is required to verify local file reloads.' }
+        },
+        [pscustomobject][ordered]@{
+            id = 'm1_runtime_doctor'
+            status = 'pending_manual_confirmation'
+            description = 'While the Host is running, verify doctor reports the matching Host, target/plugin generations and provider observations, and retain its separate report.'
+        }
+    )
+}
 
 $report = [pscustomobject][ordered]@{
-    schema           = 'codlet.m0-acceptance/v1'
+    schema           = $runtimeSpecification.schema
     executionMode    = $executionMode
     startedAtUtc     = $startedAt.ToString('o')
     endedAtUtc       = $endedAt.ToString('o')
     codlet           = [pscustomobject][ordered]@{
         executablePath = $resolvedCodletPath
-        arguments      = @('m0-runtime', '--launch-codex')
+        arguments      = @($runtimeSpecification.arguments)
         invoked        = $codletInvoked
         exitCode       = $codletExitCode
-        outputPolicy   = 'allowlisted-m0-stdout-v1'
+        outputPolicy   = $runtimeSpecification.outputPolicy
         output         = @($commandOutput)
         omittedOutputLineCount = $omittedOutputLineCount
         protocol       = [pscustomobject][ordered]@{
@@ -586,14 +646,27 @@ $report = [pscustomobject][ordered]@{
         messages        = @($failureMessages)
     }
 }
+if ($runtimeSpecification.mode -eq 'M1') {
+    $report | Add-Member -NotePropertyName scope -NotePropertyValue ([pscustomobject][ordered]@{
+        milestone = 'M1'
+        entrypoint = 'production_launch'
+        watchRequested = [bool] $runtimeSpecification.watchRequested
+        coverage = 'foreground_lifecycle_evidence_only'
+    })
+    $report.result | Add-Member -NotePropertyName m1Decision -NotePropertyValue 'not_determined'
+}
 
 try {
     $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding UTF8
 } catch {
-    [Console]::Error.WriteLine("M0 acceptance could not write its report: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("$($runtimeSpecification.mode) acceptance could not write its report: $($_.Exception.Message)")
     exit $infrastructureExitCode
 }
 
-[Console]::Out.WriteLine("M0 acceptance report: $reportPath")
-[Console]::Out.WriteLine('M0 decision remains not determined; all manual checks are still pending confirmation.')
+[Console]::Out.WriteLine("$($runtimeSpecification.mode) acceptance report: $reportPath")
+if ($runtimeSpecification.mode -eq 'M0') {
+    [Console]::Out.WriteLine('M0 decision remains not determined; all manual checks are still pending confirmation.')
+} else {
+    [Console]::Out.WriteLine('M0 and M1 decisions remain not determined; GUI, live control, watch and doctor checks are still pending confirmation.')
+}
 exit $scriptExitCode

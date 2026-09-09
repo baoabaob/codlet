@@ -52,20 +52,21 @@ function Invoke-TestFixture {
     param(
         [string] $CodletExecutable,
         [string] $ArtifactsDirectory,
-        [string] $FixturePath
+        [string] $FixturePath,
+        [string[]] $AdditionalArguments = @()
     )
 
     $previousTestMode = $env:CODLET_M0_ACCEPTANCE_TEST_MODE
     $env:CODLET_M0_ACCEPTANCE_TEST_MODE = '1'
     try {
-        $result = Invoke-ChildPowerShell -Arguments @(
+        $result = Invoke-ChildPowerShell -Arguments (@(
             '-NoProfile',
             '-ExecutionPolicy', 'Bypass',
             '-File', $acceptanceScript,
             '-CodletPath', $CodletExecutable,
             '-ArtifactsDirectory', $ArtifactsDirectory,
             '-InternalTestFixturePath', $FixturePath
-        )
+        ) + $AdditionalArguments)
     } finally {
         if ($null -eq $previousTestMode) {
             Remove-Item Env:CODLET_M0_ACCEPTANCE_TEST_MODE -ErrorAction SilentlyContinue
@@ -466,6 +467,138 @@ try {
     Assert-True -Condition ($nativeFailureReport.codlet.invoked -eq $true) -Message 'native failure report must record command invocation'
     Assert-True -Condition ($nativeFailureReport.codlet.exitCode -eq 1) -Message 'native failure report must preserve the real nonzero exit code'
     Assert-True -Condition ($nativeFailureReport.result.executionStatus -eq 'codlet_failed') -Message 'native nonzero exit must be reported as codlet_failed'
+
+    # M1 reuses the existing harness while keeping the default M0 wire intact.
+    Assert-True -Condition ($report.PSObject.Properties.Name -notcontains 'scope') -Message 'the default M0 report must not gain M1 scope fields'
+    Assert-True -Condition ($report.result.PSObject.Properties.Name -notcontains 'm1Decision') -Message 'the default M0 result must not gain M1 fields'
+    Assert-True -Condition ((@($report.codlet.arguments) -join '|') -ceq 'm0-runtime|--launch-codex') -Message 'default M0 arguments must remain unchanged'
+    foreach ($invalid in @(
+        [pscustomobject]@{ name = 'invalid-mode'; arguments = @('-RuntimeMode', 'M2'); message = 'RuntimeMode must be M0 or M1' },
+        [pscustomobject]@{ name = 'implicit-m0-watch'; arguments = @('-Watch'); message = 'Watch is supported only' },
+        [pscustomobject]@{ name = 'explicit-m0-watch'; arguments = @('-RuntimeMode', 'M0', '-Watch'); message = 'Watch is supported only' }
+    )) {
+        $invalidArtifacts = Join-Path $tempRoot $invalid.name
+        $invalidResult = Invoke-TestFixture -CodletExecutable $fakeCodletPath -ArtifactsDirectory $invalidArtifacts -FixturePath $schemaFixturePath -AdditionalArguments $invalid.arguments
+        Assert-True -Condition ($invalidResult.exitCode -eq 64) -Message "$($invalid.name) must fail parameter validation before preflight or execution"
+        Assert-True -Condition (($invalidResult.output -join "`n") -match $invalid.message) -Message "$($invalid.name) must have an actionable validation error"
+        Assert-True -Condition (-not (Test-Path -LiteralPath $invalidArtifacts)) -Message "$($invalid.name) must not create an evidence directory"
+    }
+
+    $m1Fixture = $schemaFixture | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    foreach ($line in $m1Fixture.command.output) {
+        if ($line.text -ceq 'runtime-state: active; holding inherited CDP pipes until the launched Codex exits') {
+            $line.text = 'runtime-state: active; Codlet renderer runtime attached'
+        }
+    }
+    $m1FixturePath = Join-Path $tempRoot 'm1-fixture.json'
+    Write-JsonFile -Path $m1FixturePath -Value $m1Fixture
+    foreach ($watchRequested in @($false, $true)) {
+        $modeArguments = @('-RuntimeMode', 'M1')
+        $caseName = if ($watchRequested) { 'm1-watch' } else { 'm1' }
+        if ($watchRequested) { $modeArguments += '-Watch' }
+        $m1Artifacts = Join-Path $tempRoot $caseName
+        $m1Result = Invoke-TestFixture -CodletExecutable $fakeCodletPath -ArtifactsDirectory $m1Artifacts -FixturePath $m1FixturePath -AdditionalArguments $modeArguments
+        Assert-True -Condition ($m1Result.exitCode -eq 0) -Message "$caseName must collect the exact production launch lifecycle"
+        $m1Report = Read-OnlyReport -ArtifactsDirectory $m1Artifacts
+        Assert-True -Condition ($m1Report.schema -ceq 'codlet.m1-acceptance/v1') -Message 'M1 evidence must have its own schema'
+        Assert-True -Condition ($m1Report.executionMode -ceq 'test') -Message 'M1 fixtures must remain explicitly test evidence'
+        Assert-True -Condition ($m1Report.scope.entrypoint -ceq 'production_launch' -and $m1Report.scope.coverage -ceq 'foreground_lifecycle_evidence_only') -Message 'M1 scope must distinguish production launch lifecycle from GUI/full milestone acceptance'
+        Assert-True -Condition ($m1Report.scope.watchRequested -eq $watchRequested) -Message 'M1 scope must record whether watching was requested'
+        $expectedArguments = if ($watchRequested) { 'launch|--watch' } else { 'launch' }
+        Assert-True -Condition ((@($m1Report.codlet.arguments) -join '|') -ceq $expectedArguments) -Message "$caseName must record exact intended argv"
+        Assert-True -Condition ($m1Report.codlet.outputPolicy -ceq 'allowlisted-m1-stdout-v1') -Message 'M1 must declare its separate strict stdout policy'
+        Assert-True -Condition (@($m1Report.codlet.output).Count -eq 3 -and $m1Report.codlet.omittedOutputLineCount -eq 2) -Message 'M1 must retain only identity/lifecycle evidence, excluding renderer/plugin logs and stderr'
+        Assert-True -Condition ($m1Report.codlet.protocol.activeLineSeen -and $m1Report.codlet.protocol.stoppedLineSeen -and $m1Report.codlet.protocol.launchedProcessId -eq 5100) -Message 'M1 protocol evidence must bind the launched PID and worker completion'
+        Assert-True -Condition (@($m1Report.snapshots.active.processes).Count -eq 1 -and @($m1Report.snapshots.active.tcpListeners).Count -eq 1) -Message 'M1 must preserve the same three-phase process/port evidence'
+        Assert-True -Condition ($m1Report.result.executionStatus -ceq 'codlet_completed' -and $m1Report.result.m0Decision -ceq 'not_determined' -and $m1Report.result.m1Decision -ceq 'not_determined') -Message 'lifecycle collection must not close either milestone'
+        Assert-True -Condition (@($m1Report.manualChecks).Count -eq 8 -and @($m1Report.manualChecks | Where-Object { $_.status -ne 'pending_manual_confirmation' }).Count -eq 0) -Message 'all original and M1 manual checks must remain pending'
+        foreach ($checkId in @('m1_gui_navigation_and_multiwindow', 'm1_live_plugin_control', 'm1_local_file_watch', 'm1_runtime_doctor')) {
+            Assert-True -Condition (@($m1Report.manualChecks | Where-Object { $_.id -ceq $checkId }).Count -eq 1) -Message "M1 must explicitly retain pending check $checkId"
+        }
+    }
+
+    $m1ConflictArtifacts = Join-Path $tempRoot 'm1-conflict'
+    $m1ConflictResult = Invoke-TestFixture -CodletExecutable $fakeCodletPath -ArtifactsDirectory $m1ConflictArtifacts -FixturePath $conflictFixturePath -AdditionalArguments @('-RuntimeMode', 'M1', '-Watch')
+    $m1ConflictReport = Read-OnlyReport -ArtifactsDirectory $m1ConflictArtifacts
+    Assert-True -Condition ($m1ConflictResult.exitCode -eq 2 -and -not $m1ConflictReport.codlet.invoked) -Message 'M1 --watch must preserve the ordinary-instance conflict refusal'
+    Assert-True -Condition (($m1ConflictResult.output -join "`n") -notmatch 'MUST_NOT_RUN') -Message 'M1 conflict must not execute even the command fixture'
+
+    foreach ($failure in @(
+        [pscustomobject]@{ name = 'm1-wrong-active'; kind = 'wrong_active'; exit = 70; status = 'snapshot_failed' },
+        [pscustomobject]@{ name = 'm1-stderr-active'; kind = 'stderr_active'; exit = 70; status = 'snapshot_failed' },
+        [pscustomobject]@{ name = 'm1-missing-stopped'; kind = 'missing_stopped'; exit = 70; status = 'evidence_failed' },
+        [pscustomobject]@{ name = 'm1-pid-mismatch'; kind = 'pid'; exit = 70; status = 'evidence_failed' },
+        [pscustomobject]@{ name = 'm1-residual'; kind = 'residual'; exit = 70; status = 'evidence_failed' },
+        [pscustomobject]@{ name = 'm1-nonzero'; kind = 'nonzero'; exit = 9; status = 'codlet_failed' }
+    )) {
+        $failureFixture = $m1Fixture | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        switch ($failure.kind) {
+            'wrong_active' { $failureFixture.command.output[1].text = 'runtime-state: active; holding inherited CDP pipes until the launched Codex exits' }
+            'stderr_active' { $failureFixture.command.output[1].stream = 'stderr' }
+            'missing_stopped' { $failureFixture.command.output = @($failureFixture.command.output | Where-Object { $_.text -cne 'runtime-state: stopped; CDP workers reaped' }) }
+            'pid' { $failureFixture.snapshots.active.processes[0].processId = 5101 }
+            'residual' { $failureFixture.snapshots.after.processes = @($residualFixture.snapshots.after.processes) }
+            'nonzero' { $failureFixture.command.exitCode = 9 }
+        }
+        $failureFixturePath = Join-Path $tempRoot ($failure.name + '.json')
+        Write-JsonFile -Path $failureFixturePath -Value $failureFixture
+        $failureArtifacts = Join-Path $tempRoot $failure.name
+        $failureResult = Invoke-TestFixture -CodletExecutable $fakeCodletPath -ArtifactsDirectory $failureArtifacts -FixturePath $failureFixturePath -AdditionalArguments @('-RuntimeMode', 'M1')
+        $failureReport = Read-OnlyReport -ArtifactsDirectory $failureArtifacts
+        Assert-True -Condition ($failureResult.exitCode -eq $failure.exit -and $failureReport.result.executionStatus -ceq $failure.status) -Message "$($failure.name) must preserve its explicit failure, got $($failureResult.exitCode): $($failureResult.output -join ' | ')"
+        Assert-True -Condition ($failureReport.result.m1Decision -ceq 'not_determined') -Message 'M1 failure must not close the milestone'
+    }
+
+    # Exercise actual native argv, not only the fixture's planned command field.
+    $argumentProbeDirectory = Join-Path $tempRoot 'native-argument-probe'
+    [void] (New-Item -ItemType Directory -Path $argumentProbeDirectory)
+    $argumentProbePath = Join-Path $argumentProbeDirectory 'codlet.exe'
+    Add-Type -OutputAssembly $argumentProbePath -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public static class CodletAcceptanceArgumentProbe {
+    public static int Main(string[] args) {
+        string actual = string.Join("|", args);
+        if (actual != Environment.GetEnvironmentVariable("CODLET_ACCEPTANCE_EXPECT_ARGUMENTS")) {
+            Console.Error.WriteLine("Unexpected acceptance arguments: " + actual);
+            return 37;
+        }
+        Console.WriteLine("launched-process-id: 5100");
+        Console.WriteLine(args[0] == "launch"
+            ? "runtime-state: active; Codlet renderer runtime attached"
+            : "runtime-state: active; holding inherited CDP pipes until the launched Codex exits");
+        Console.WriteLine("codex-exit-code: 0");
+        Console.WriteLine("runtime-state: stopped; CDP workers reaped");
+        return 0;
+    }
+}
+'@
+    $argumentFixture = $schemaFixture | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $argumentFixture.command = $null
+    $argumentFixturePath = Join-Path $tempRoot 'native-argument-fixture.json'
+    Write-JsonFile -Path $argumentFixturePath -Value $argumentFixture
+    $previousExpectedArguments = $env:CODLET_ACCEPTANCE_EXPECT_ARGUMENTS
+    try {
+        foreach ($argumentCase in @(
+            [pscustomobject]@{ name = 'default-m0'; options = @(); expected = 'm0-runtime|--launch-codex' },
+            [pscustomobject]@{ name = 'explicit-m0'; options = @('-RuntimeMode', 'M0'); expected = 'm0-runtime|--launch-codex' },
+            [pscustomobject]@{ name = 'explicit-m1'; options = @('-RuntimeMode', 'M1'); expected = 'launch' },
+            [pscustomobject]@{ name = 'explicit-m1-watch'; options = @('-RuntimeMode', 'M1', '-Watch'); expected = 'launch|--watch' }
+        )) {
+            $env:CODLET_ACCEPTANCE_EXPECT_ARGUMENTS = $argumentCase.expected
+            $argumentArtifacts = Join-Path $tempRoot ('arguments-' + $argumentCase.name)
+            $argumentResult = Invoke-TestFixture -CodletExecutable $argumentProbePath -ArtifactsDirectory $argumentArtifacts -FixturePath $argumentFixturePath -AdditionalArguments $argumentCase.options
+            Assert-True -Condition ($argumentResult.exitCode -eq 0) -Message "native $($argumentCase.name) must receive exact argv, got $($argumentResult.exitCode): $($argumentResult.output -join ' | ')"
+            $argumentReport = Read-OnlyReport -ArtifactsDirectory $argumentArtifacts
+            Assert-True -Condition ((@($argumentReport.codlet.arguments) -join '|') -ceq $argumentCase.expected) -Message 'persisted argv must match the actual invocation'
+            Assert-True -Condition ($argumentReport.executionMode -ceq 'test') -Message 'native stub evidence must never appear as a real Codex run'
+        }
+    } finally {
+        if ($null -eq $previousExpectedArguments) {
+            Remove-Item Env:CODLET_ACCEPTANCE_EXPECT_ARGUMENTS -ErrorAction SilentlyContinue
+        } else {
+            $env:CODLET_ACCEPTANCE_EXPECT_ARGUMENTS = $previousExpectedArguments
+        }
+    }
 } finally {
     $resolvedTempRoot = [IO.Path]::GetFullPath($tempRoot)
     $resolvedSystemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -475,4 +608,4 @@ try {
     Remove-Item -LiteralPath $resolvedTempRoot -Recurse -Force
 }
 
-[Console]::Out.WriteLine('M0 acceptance PowerShell tests passed.')
+[Console]::Out.WriteLine('M0/M1 acceptance PowerShell tests passed.')
