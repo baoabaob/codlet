@@ -199,6 +199,9 @@ fn validate_renderer_requirements(
     plugin: LoadedPlugin,
     path: &Path,
 ) -> Result<LoadedPlugin, LocalPluginError> {
+    if plugin.manifest.renderer.is_none() {
+        return Ok(plugin);
+    }
     if let Some(requirement) = plugin
         .manifest
         .requires

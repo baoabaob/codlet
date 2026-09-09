@@ -379,6 +379,14 @@ module.exports = (() => {
     }
 
     function createPluginRow(context, plugin) {
+        const execution = plugin.execution?.kind === 'host' ? plugin.execution : null;
+        const executionState = execution?.state === 'starting' ? 'Starting'
+            : execution?.state === 'active' ? 'Active'
+            : execution?.state === 'stopping' ? 'Stopping'
+            : execution?.state === 'failed' ? 'Failed'
+            : execution?.state === 'exited' ? 'Exited' : null;
+        const executionError = typeof execution?.error === 'string' && execution.error.length > 0
+            ? execution.error : execution?.state === 'failed' ? 'Host process failed' : null;
         const row = document.createElement('div');
         row.className = 'codlet-plugin-row';
         const copy = document.createElement('div');
@@ -394,7 +402,9 @@ module.exports = (() => {
         } else if (plugin.validation?.status === 'not_loaded') {
             addText(copy, 'div', 'codlet-plugin-version', 'Registered, not loaded');
         }
-        if (plugin.validation?.status === 'failed') {
+        if (executionError) {
+            addText(copy, 'div', 'codlet-plugin-version', executionError);
+        } else if (plugin.validation?.status === 'failed') {
             const message = plugin.validation.error?.message;
             addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
         }
@@ -415,9 +425,9 @@ module.exports = (() => {
             });
             row.appendChild(toggle);
         } else {
-            const state = plugin.active === true ? 'Active'
+            const state = executionState ?? (plugin.active === true ? 'Active'
                 : plugin.validation?.status === 'failed' ? 'Unavailable'
-                : plugin.enabled === true ? 'Not active' : 'Disabled';
+                : plugin.enabled === true ? 'Not active' : 'Disabled');
             addText(row, 'div', 'codlet-plugin-state', state);
         }
         return row;

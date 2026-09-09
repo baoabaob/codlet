@@ -1,4 +1,12 @@
-# Registered local renderer plugins
+# Registered local plugins
+
+Native host-only plugins are supported by the first M2a slice. They use
+`host.process` and optionally `cdp.raw`, start/stop with the Runtime Host, and do not
+require a renderer entry. See the [host contract](M2A_HOST_RUNTIME_2026-09-09.md)
+and [raw host example](../examples/raw-host/README.md). Online enable/disable/reload
+and file watching below currently apply to renderer plugins; host hot management
+is explicitly rejected by this slice. Status-v1 and doctor Inspect still observe
+the managed renderer only; host execution is reported in the launch log and GUI.
 
 Codlet loads explicitly registered local directories at session startup or through
 the running Host's enable/reload commands. Registration, inspection, and removal
@@ -13,17 +21,17 @@ Inspect a plugin before recording its registration:
 codlet plugin add "C:\my-plugins\example"
 ```
 
-This reads its manifest and renderer entry, displays the directory and requested
+This inspects its manifest and selected entry, displays the directory and requested
 permissions, and exits nonzero without creating registry state. It does not execute
-the source. After reviewing the plugin, explicitly authorize the directory and
+the source or host executable. After reviewing the plugin, explicitly authorize the directory and
 every requested permission:
 
 ```powershell
 codlet plugin add "C:\my-plugins\example" --trust --grant ui.dom
 ```
 
-Repeat `--grant` for multiple permissions. Currently only isolated renderers and
-the `ui.dom` and `runtime.manage` permissions are supported for local plugins.
+Repeat `--grant` for multiple permissions. Isolated renderer entries support
+`ui.dom` and `runtime.manage`; native host entries support `host.process` and `cdp.raw`.
 Unsupported worlds, permissions, or missing grants are rejected. Extra grants are
 recorded only when explicitly supplied; the runtime uses permissions declared by
 the manifest that also pass the grant check. The `--trust` flag is user consent, not an OS sandbox: these are

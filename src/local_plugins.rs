@@ -3,17 +3,20 @@
 //! The selected root is canonicalized, so a link chosen as the root is allowed.
 //! Below it, exact directory-entry spelling is required and symbolic links,
 //! Windows reparse points (including junctions), hard-linked files, and special
-//! files are rejected. Checks surround a bounded read; Windows also checks the
-//! opened handle's final path and denies sharing for writes/deletion while read.
+//! files are rejected. Checks surround bounded text reads and executable opens;
+//! Windows also checks the opened handle's final path and denies sharing for
+//! writes/deletion while that handle is retained.
 //! This is not an OS sandbox or a guarantee against every filesystem race caused
 //! by a malicious same-user process. It does not make manifest/source snapshots
 //! atomic. JavaScript is returned unchanged, never parsed or executed here.
+//! Executables are retained as read-only handles, never read as source or run.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -22,7 +25,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
 };
 
-use crate::plugins::{LoadedPlugin, Permission, PluginManifest, RendererWorld};
+use crate::plugins::{LoadedHost, LoadedPlugin, Permission, PluginManifest, RendererWorld};
 
 const MANIFEST_NAME: &str = "plugin.json";
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
@@ -34,7 +37,8 @@ const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub struct LocalPluginCandidate {
     pub root: PathBuf,
     pub manifest: PluginManifest,
-    pub source: String,
+    pub source: Option<String>,
+    pub host: Option<LoadedHost>,
 }
 
 /// A borrowed view of a currently loaded local source. Observers gain no
@@ -50,10 +54,13 @@ pub struct LocalWatchSource<'a> {
 pub(crate) struct LocalWatchFingerprint(u64);
 
 pub(crate) fn loaded_watch_fingerprint(plugin: &LoadedPlugin) -> LocalWatchFingerprint {
-    semantic_watch_fingerprint(&plugin.manifest, &plugin.source)
+    semantic_watch_fingerprint(&plugin.manifest, plugin.source.as_deref())
 }
 
-fn semantic_watch_fingerprint(manifest: &PluginManifest, source: &str) -> LocalWatchFingerprint {
+fn semantic_watch_fingerprint(
+    manifest: &PluginManifest,
+    source: Option<&str>,
+) -> LocalWatchFingerprint {
     let mut hash = DefaultHasher::new();
     0_u8.hash(&mut hash);
     serde_json::to_vec(manifest)
@@ -89,9 +96,17 @@ pub(crate) fn inspect_watch_fingerprint(root: &Path, current_entry: &str) -> Loc
     let manifest = std::str::from_utf8(&manifest_bytes)
         .ok()
         .and_then(|text| PluginManifest::parse(text).ok());
+    if let Some(manifest) = &manifest
+        && manifest.renderer.is_none()
+    {
+        // Renderer watching may observe an entry changing kind. Fingerprint the
+        // new declaration without treating a host executable as JavaScript.
+        return semantic_watch_fingerprint(manifest, None);
+    }
     let entry = manifest
         .as_ref()
-        .map(|manifest| manifest.renderer.entry.as_str())
+        .and_then(|manifest| manifest.renderer.as_ref())
+        .map(|renderer| renderer.entry.as_str())
         .unwrap_or(current_entry);
     if let Err(error) = validate_entry(&root, entry) {
         error.to_string().hash(&mut hash);
@@ -106,7 +121,7 @@ pub(crate) fn inspect_watch_fingerprint(root: &Path, current_entry: &str) -> Loc
     };
     source_bytes.hash(&mut hash);
     if let (Some(manifest), Ok(source)) = (manifest, std::str::from_utf8(&source_bytes)) {
-        return semantic_watch_fingerprint(&manifest, source);
+        return semantic_watch_fingerprint(&manifest, Some(source));
     }
     LocalWatchFingerprint(hash.finish())
 }
@@ -157,7 +172,7 @@ fn validate_grants_at(
 ) -> Result<(), LocalPluginError> {
     validate_local_manifest(manifest, path)?;
     for (index, permission) in grants.iter().enumerate() {
-        require_supported_permission(*permission, path, "grant validation")?;
+        require_supported_permission(manifest, *permission, path, "grant validation")?;
         if grants[..index].contains(permission) {
             return Err(reject(
                 path,
@@ -193,24 +208,45 @@ pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPl
     let manifest = PluginManifest::parse(&json)
         .map_err(|error| reject(&manifest_path, "parse manifest", error.to_string()))?;
     validate_local_manifest(&manifest, &manifest_path)?;
-    validate_entry(&root, &manifest.renderer.entry)?;
-    let source = read_text(
-        &root,
-        &manifest.renderer.entry,
-        MAX_SOURCE_BYTES,
-        "read renderer entry",
-    )?;
-    if source.trim().is_empty() {
-        return Err(reject(
-            &root.join(&manifest.renderer.entry),
+    let source = if let Some(renderer) = &manifest.renderer {
+        validate_entry(&root, &renderer.entry)?;
+        let source = read_text(
+            &root,
+            &renderer.entry,
+            MAX_SOURCE_BYTES,
             "read renderer entry",
-            "entry must contain non-whitespace JavaScript source",
-        ));
-    }
+        )?;
+        if source.trim().is_empty() {
+            return Err(reject(
+                &root.join(&renderer.entry),
+                "read renderer entry",
+                "entry must contain non-whitespace JavaScript source",
+            ));
+        }
+        Some(source)
+    } else {
+        None
+    };
+    let host = if let Some(host) = &manifest.host {
+        // Manifest validation guarantees the command has an executable. The
+        // checked opener shares the renderer reader's path and handle checks.
+        let entry = &host.command[0];
+        validate_entry(&root, entry)?;
+        let (file, executable) = open_checked_file(&root, entry, "open host executable")?;
+        Some(LoadedHost {
+            root: root.clone(),
+            executable,
+            args: host.command[1..].to_vec(),
+            executable_file: Arc::new(file),
+        })
+    } else {
+        None
+    };
     Ok(LocalPluginCandidate {
         root,
         manifest,
         source,
+        host,
     })
 }
 
@@ -298,12 +334,31 @@ pub fn load_local_plugin(
     Ok(LoadedPlugin {
         manifest: candidate.manifest,
         source: candidate.source,
+        host: candidate.host,
         generation,
     })
 }
 
 fn validate_local_manifest(manifest: &PluginManifest, path: &Path) -> Result<(), LocalPluginError> {
-    if manifest.renderer.world != RendererWorld::Isolated {
+    if manifest.renderer.is_some() && manifest.host.is_some() {
+        return Err(reject(
+            path,
+            "entry validation",
+            "combined host and renderer entries are not implemented; use one entry kind",
+        ));
+    }
+    if manifest.host.is_some() && (!manifest.provides.is_empty() || !manifest.requires.is_empty()) {
+        return Err(reject(
+            path,
+            "host capability routing",
+            "host provides/requires are unsupported until cross-executor capability routing is implemented",
+        ));
+    }
+    if manifest
+        .renderer
+        .as_ref()
+        .is_some_and(|renderer| renderer.world != RendererWorld::Isolated)
+    {
         return Err(reject(
             path,
             "renderer world validation",
@@ -311,29 +366,74 @@ fn validate_local_manifest(manifest: &PluginManifest, path: &Path) -> Result<(),
         ));
     }
     for permission in &manifest.permissions {
-        require_supported_permission(*permission, path, "permission validation")?;
+        require_supported_permission(manifest, *permission, path, "permission validation")?;
     }
     Ok(())
 }
 
 fn require_supported_permission(
+    manifest: &PluginManifest,
     permission: Permission,
     path: &Path,
     stage: &'static str,
 ) -> Result<(), LocalPluginError> {
     // This is the current loader's implementation boundary. Capability names,
     // API versions, scopes, and runtime authorization stay in the existing kernel.
-    match permission {
-        Permission::UiDom | Permission::RuntimeManage => Ok(()),
-        Permission::UiMainWorld | Permission::CdpRaw | Permission::HostProcess => Err(reject(
+    let supported = if manifest.host.is_some() {
+        matches!(permission, Permission::HostProcess | Permission::CdpRaw)
+    } else {
+        matches!(permission, Permission::UiDom | Permission::RuntimeManage)
+    };
+    if supported {
+        Ok(())
+    } else {
+        Err(reject(
             path,
             stage,
             format!(
-                "permission {} is not implemented for local plugins",
-                permission.as_str()
+                "permission {} is not implemented for local {} plugins",
+                permission.as_str(),
+                if manifest.host.is_some() {
+                    "host"
+                } else {
+                    "renderer"
+                }
             ),
-        )),
+        ))
     }
+}
+
+/// Recheck the retained executable immediately before process creation. This
+/// performs no source read, process launch, or grant decision; callers must keep
+/// the `LoadedHost` alive through launch and the child lifetime.
+pub fn revalidate_host_executable(host: &LoadedHost) -> Result<(), LocalPluginError> {
+    let stage = "revalidate host executable";
+    if canonical_local_root(&host.root)? != host.root {
+        return Err(reject(
+            &host.root,
+            stage,
+            "selected plugin root has changed",
+        ));
+    }
+    let relative = host
+        .executable
+        .strip_prefix(&host.root)
+        .ok()
+        .and_then(Path::to_str)
+        .ok_or_else(|| {
+            reject(
+                &host.executable,
+                stage,
+                "executable must remain inside its plugin root",
+            )
+        })?
+        .replace('\\', "/");
+    validate_entry(&host.root, &relative)?;
+    let path = checked_path(&host.root, &relative, stage)?;
+    if path != host.executable {
+        return Err(reject(&path, stage, "executable path has changed"));
+    }
+    verify_open_file(&host.executable_file, &path, stage)
 }
 
 fn validate_entry(root: &Path, entry: &str) -> Result<(), LocalPluginError> {
@@ -432,7 +532,7 @@ fn require_file_type(
             if directory {
                 "expected an ordinary directory"
             } else {
-                "expected an ordinary UTF-8 text file"
+                "expected an ordinary file"
             },
         ));
     }
@@ -473,27 +573,10 @@ fn read_bytes(
     limit: usize,
     stage: &'static str,
 ) -> Result<Vec<u8>, LocalPluginError> {
-    let path = checked_path(root, relative, stage)?;
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        // Hold the inspected file stable while reading and avoid impersonation.
-        options
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .security_qos_flags(0);
-    }
-    let file = options
-        .open(&path)
-        .map_err(|error| io_error(&path, stage, error))?;
+    let (file, path) = open_checked_file(root, relative, stage)?;
     let metadata = file
         .metadata()
         .map_err(|error| io_error(&path, stage, error))?;
-    require_file_type(&metadata, &path, stage, false)?;
-    verify_open_file(&file, &path, stage)?;
-    checked_path(root, relative, stage)?;
     let too_large = || {
         reject(
             &path,
@@ -515,6 +598,36 @@ fn read_bytes(
     checked_path(root, relative, stage)?;
     verify_open_file(&file, &path, stage)?;
     Ok(bytes)
+}
+
+fn open_checked_file(
+    root: &Path,
+    relative: &str,
+    stage: &'static str,
+) -> Result<(File, PathBuf), LocalPluginError> {
+    let path = checked_path(root, relative, stage)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Hold the inspected file stable while retained and avoid impersonation.
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .security_qos_flags(0);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|error| io_error(&path, stage, error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| io_error(&path, stage, error))?;
+    require_file_type(&metadata, &path, stage, false)?;
+    verify_open_file(&file, &path, stage)?;
+    checked_path(root, relative, stage)?;
+    verify_open_file(&file, &path, stage)?;
+    Ok((file, path))
 }
 
 #[cfg(windows)]

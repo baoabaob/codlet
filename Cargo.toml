@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
+autoexamples = false
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -23,6 +24,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Console",
     "Win32_System_Environment",
     "Win32_System_IO",
+    "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",
 ] }
@@ -41,3 +43,11 @@ path = "src/bin/codlet-fake-child.rs"
 [[bin]]
 name = "codlet-lab"
 path = "src/bin/codlet-lab.rs"
+
+[[bin]]
+name = "codlet-fake-host"
+path = "src/bin/codlet-fake-host.rs"
+
+[[bin]]
+name = "codlet-raw-host-example"
+path = "examples/raw-host/main.rs"

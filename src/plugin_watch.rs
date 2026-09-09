@@ -137,6 +137,9 @@ impl PluginWatcher {
     ) -> Option<PluginControlRequest> {
         let sources: BTreeMap<_, _> = sources
             .iter()
+            .filter(|source| {
+                source.plugin.manifest.renderer.is_some() && source.plugin.source.is_some()
+            })
             .map(|source| (source.plugin.manifest.id.as_str(), source))
             .collect();
         self.states
@@ -172,7 +175,13 @@ impl PluginWatcher {
                 None => Observation::Ready {
                     fingerprint: inspect_watch_fingerprint(
                         source.path,
-                        &source.plugin.manifest.renderer.entry,
+                        &source
+                            .plugin
+                            .manifest
+                            .renderer
+                            .as_ref()
+                            .expect("watch sources have renderer entries")
+                            .entry,
                     ),
                     grants: registry.local_plugins()[id].grants.clone(),
                 },
@@ -505,7 +514,7 @@ mod tests {
         assert!(fixture.poll(&mut watcher, start, 8).is_none());
         assert!(fixture.poll(&mut watcher, start, 9).is_some());
         assert!(fixture.poll(&mut watcher, start, 10).is_none());
-        fixture.source(0, &fixture.plugins[0].plugin.source);
+        fixture.source(0, fixture.plugins[0].plugin.source.as_deref().unwrap());
         assert!(fixture.poll(&mut watcher, start, 11).is_none());
         assert!(fixture.poll(&mut watcher, start, 12).is_none());
 

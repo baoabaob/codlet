@@ -1,6 +1,6 @@
 # 已确认的 Core、可选托管运行时与 adapter 边界
 
-状态：2026-09-09 用户已确认，并通过侧边讨论同步到主任务。本文约束 M2–M4 的设计与验收，不代表 L2–L4 已实现或验收通过。当前 M0/M1 验收继续按现有标准留证，M2–M4 尚未开工。
+状态：2026-09-09 用户已确认，并通过侧边讨论同步到主任务。本文约束 M2–M4 的设计与验收，不代表 L2–L4 已全部实现或验收通过。M0/M1 保留尚未关闭的正式门禁；按用户继续开发的要求，M2 已进入首个 host/CDP 实现小包，见 [M2a 合约与验证](M2A_HOST_RUNTIME_2026-09-09.md)。
 
 ## 已确认方向
 
@@ -45,7 +45,7 @@ Core 可以检查自己的 RPC 来源、scope/generation、已声明的 provider
 
 当前 capability 名称没有官方 provider 白名单；第三方可发布合法 capability，已有夹具在禁用两个官方插件后运行自有 provider/consumer。它不是一个只能装官方 adapter 消费者的系统。
 
-但 M1 仍是 renderer 优先的实现：manifest 要求 renderer 入口，实际只支持 isolated world 和 target 路由；Rust 内部 CDP client 的原始请求能力尚未作为插件 API 开放，main-world、host 入口和完整 L3/L4 通路仍未实现。没有官方 GUI/adapter 的独立 L1 插件可行，只有 Core 加一个插件覆盖全部层级还属于目标。
+讨论前的 M1 是 renderer 优先的实现：manifest 要求 renderer 入口，实际只支持 isolated world 和 target 路由，Rust 内部 CDP 能力没有作为插件 API 开放。M2a 现已允许无 renderer 的本地 host 入口，经独立 JSONL 连接使用通用 CDP 请求和事件；纯 host 启动跳过官方 renderer target 筛选。示例与原生夹具证明这条路径无需官方插件，尚不代表真实 Codex 中所有层级、导航恢复、host 热管理或完整 M2 验收完成。
 
 ## M2–M4 的架构验收条目
 

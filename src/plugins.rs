@@ -3,6 +3,7 @@ use std::env;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,7 +31,10 @@ pub struct PluginManifest {
     pub schema: u32,
     pub id: String,
     pub version: String,
-    pub renderer: RendererManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<RendererManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostManifest>,
     #[serde(default)]
     pub permissions: Vec<Permission>,
     #[serde(default)]
@@ -44,6 +48,21 @@ pub struct PluginManifest {
 pub struct RendererManifest {
     pub entry: String,
     pub world: RendererWorld,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HostManifest {
+    /// The executable is relative to the plugin root. Remaining strings are
+    /// literal process arguments, never a command line for a shell to expand.
+    pub command: Vec<String>,
+    pub protocol: HostProtocol,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum HostProtocol {
+    #[serde(rename = "jsonl")]
+    Jsonl,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -91,8 +110,20 @@ pub struct LocalPluginRegistration {
 #[derive(Debug, Clone)]
 pub struct LoadedPlugin {
     pub manifest: PluginManifest,
-    pub source: String,
+    /// The unchanged renderer source, absent for a host-only plugin.
+    pub source: Option<String>,
+    pub host: Option<LoadedHost>,
     pub generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedHost {
+    pub root: PathBuf,
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+    /// Retain this read-only handle throughout launch and the child lifetime.
+    /// On Windows it also denies writes/deletion of the inspected executable.
+    pub executable_file: Arc<File>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,10 +175,16 @@ pub enum ManifestError {
     Id(String),
     #[error("plugin version is invalid: {0}")]
     Version(String),
+    #[error("plugin manifest must declare a renderer or host entry")]
+    EntryRequired,
     #[error("renderer entry must be a normalized relative path: {0}")]
     RendererEntry(String),
     #[error("permission ui.mainWorld is required when renderer.world is main")]
     MainWorldPermissionRequired,
+    #[error("host command is invalid: {0}")]
+    HostCommand(String),
+    #[error("permission host.process is required when a host entry is declared")]
+    HostProcessPermissionRequired,
 }
 
 #[derive(Debug, Error)]
@@ -206,13 +243,45 @@ impl PluginManifest {
         {
             return Err(ManifestError::Version(self.version.clone()));
         }
-        if !valid_relative_entry(&self.renderer.entry) {
-            return Err(ManifestError::RendererEntry(self.renderer.entry.clone()));
+        if self.renderer.is_none() && self.host.is_none() {
+            return Err(ManifestError::EntryRequired);
         }
-        if self.renderer.world == RendererWorld::Main
-            && !self.permissions.contains(&Permission::UiMainWorld)
-        {
-            return Err(ManifestError::MainWorldPermissionRequired);
+        if let Some(renderer) = &self.renderer {
+            if !valid_relative_entry(&renderer.entry) {
+                return Err(ManifestError::RendererEntry(renderer.entry.clone()));
+            }
+            if renderer.world == RendererWorld::Main
+                && !self.permissions.contains(&Permission::UiMainWorld)
+            {
+                return Err(ManifestError::MainWorldPermissionRequired);
+            }
+        }
+        if let Some(host) = &self.host {
+            let Some(executable) = host.command.first() else {
+                return Err(ManifestError::HostCommand(
+                    "provide a plugin-root-relative .exe path as the first argument".to_owned(),
+                ));
+            };
+            if !valid_relative_entry(executable)
+                || !executable.to_ascii_lowercase().ends_with(".exe")
+            {
+                return Err(ManifestError::HostCommand(format!(
+                    "executable must be a normalized plugin-root-relative .exe path: {executable}"
+                )));
+            }
+            if host
+                .command
+                .iter()
+                .skip(1)
+                .any(|argument| argument.contains('\0'))
+            {
+                return Err(ManifestError::HostCommand(
+                    "literal arguments must not contain NUL characters".to_owned(),
+                ));
+            }
+            if !self.permissions.contains(&Permission::HostProcess) {
+                return Err(ManifestError::HostProcessPermissionRequired);
+            }
         }
         Ok(())
     }
@@ -837,7 +906,8 @@ pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
 pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         manifest: PluginManifest::parse(include_str!("../bundled/codlet/plugin.json"))?,
-        source: include_str!("../bundled/codlet/dist/renderer.js").to_owned(),
+        source: Some(include_str!("../bundled/codlet/dist/renderer.js").to_owned()),
+        host: None,
         generation: 1,
     })
 }
@@ -845,7 +915,8 @@ pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
 pub fn bundled_codex_ui_adapter() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         manifest: PluginManifest::parse(include_str!("../bundled/codex-ui-adapter/plugin.json"))?,
-        source: include_str!("../bundled/codex-ui-adapter/dist/renderer.js").to_owned(),
+        source: Some(include_str!("../bundled/codex-ui-adapter/dist/renderer.js").to_owned()),
+        host: None,
         generation: 1,
     })
 }
@@ -936,7 +1007,10 @@ mod tests {
     fn bundled_codlet_uses_the_public_manifest_contract() {
         let plugin = bundled_codlet().unwrap();
         assert_eq!(plugin.manifest.id, "codlet-gui");
-        assert_eq!(plugin.manifest.renderer.world, RendererWorld::Isolated);
+        assert_eq!(
+            plugin.manifest.renderer.as_ref().unwrap().world,
+            RendererWorld::Isolated
+        );
         assert_eq!(
             plugin.manifest.permissions,
             [Permission::UiDom, Permission::RuntimeManage]
@@ -955,16 +1029,48 @@ mod tests {
             plugin.manifest.requires[2],
             CapabilityDescriptor::new("codlet.runtime.manage", 1, CapabilityScope::Target).unwrap()
         );
-        assert!(plugin.source.contains("module.exports"));
-        assert!(plugin.source.contains("codex.ui.titlebar.afterMenu@1"));
-        assert!(plugin.source.contains("context.rpc.request"));
-        assert!(plugin.source.contains("capability?.available"));
-        assert!(plugin.source.contains("codlet.runtime.ping"));
-        assert!(plugin.source.contains("disableSelf"));
-        assert!(!plugin.source.contains("data-app-shell-header-layout"));
+        assert!(plugin.source.as_deref().unwrap().contains("module.exports"));
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("codex.ui.titlebar.afterMenu@1")
+        );
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("context.rpc.request")
+        );
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("capability?.available")
+        );
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("codlet.runtime.ping")
+        );
+        assert!(plugin.source.as_deref().unwrap().contains("disableSelf"));
         assert!(
             !plugin
                 .source
+                .as_deref()
+                .unwrap()
+                .contains("data-app-shell-header-layout")
+        );
+        assert!(
+            !plugin
+                .source
+                .as_deref()
+                .unwrap()
                 .contains("app-shell-header-context-menu-surface")
         );
     }
@@ -973,7 +1079,10 @@ mod tests {
     fn bundled_ui_adapter_provides_the_gui_mount_capability() {
         let plugin = bundled_codex_ui_adapter().unwrap();
         assert_eq!(plugin.manifest.id, "codex.ui.adapter");
-        assert_eq!(plugin.manifest.renderer.world, RendererWorld::Isolated);
+        assert_eq!(
+            plugin.manifest.renderer.as_ref().unwrap().world,
+            RendererWorld::Isolated
+        );
         assert_eq!(plugin.manifest.permissions, [Permission::UiDom]);
         assert_eq!(plugin.manifest.provides.len(), 1);
         assert_eq!(
@@ -982,9 +1091,27 @@ mod tests {
                 .unwrap()
         );
         assert!(plugin.manifest.requires.is_empty());
-        assert!(plugin.source.contains("HEADER_SELECTOR"));
-        assert!(plugin.source.contains("data-app-shell-header-layout"));
-        assert!(plugin.source.contains("codex.ui.titlebar.afterMenu@1"));
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("HEADER_SELECTOR")
+        );
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("data-app-shell-header-layout")
+        );
+        assert!(
+            plugin
+                .source
+                .as_deref()
+                .unwrap()
+                .contains("codex.ui.titlebar.afterMenu@1")
+        );
     }
 
     #[test]
@@ -1073,6 +1200,82 @@ mod tests {
             PluginManifest::parse(json),
             Err(ManifestError::MainWorldPermissionRequired)
         );
+    }
+
+    #[test]
+    fn optional_entries_keep_renderer_schema_one_compatible_and_accept_host_only() {
+        let renderer = bundled_codlet().unwrap();
+        assert!(renderer.manifest.host.is_none());
+        assert!(renderer.host.is_none());
+        let value = serde_json::to_value(&renderer.manifest).unwrap();
+        assert!(value.get("host").is_none());
+        assert_eq!(value["renderer"]["entry"], "dist/renderer.js");
+        assert_eq!(
+            PluginManifest::parse(&value.to_string()).unwrap(),
+            renderer.manifest
+        );
+
+        let host = PluginManifest::parse(
+            r#"{"schema":1,"id":"dev.host","version":"1",
+                "host":{"command":["bin/helper.exe","a b","$HOME","","中文"],"protocol":"jsonl"},
+                "permissions":["host.process","cdp.raw"]}"#,
+        )
+        .unwrap();
+        assert!(host.renderer.is_none());
+        assert_eq!(host.host.as_ref().unwrap().protocol, HostProtocol::Jsonl);
+        assert_eq!(
+            host.host.as_ref().unwrap().command,
+            ["bin/helper.exe", "a b", "$HOME", "", "中文"]
+        );
+        let value = serde_json::to_value(&host).unwrap();
+        assert!(value.get("renderer").is_none());
+        assert_eq!(PluginManifest::parse(&value.to_string()).unwrap(), host);
+        assert_eq!(
+            PluginManifest::parse(r#"{"schema":1,"id":"dev.empty","version":"1"}"#),
+            Err(ManifestError::EntryRequired)
+        );
+    }
+
+    #[test]
+    fn host_manifest_requires_explicit_process_permission_and_literal_executable_command() {
+        let mut value = serde_json::json!({
+            "schema":1, "id":"dev.host", "version":"1",
+            "host":{"command":["bin/helper.exe"], "protocol":"jsonl"},
+            "permissions":["host.process"]
+        });
+        for command in [
+            serde_json::json!([]),
+            serde_json::json!([""]),
+            serde_json::json!(["../helper.exe"]),
+            serde_json::json!(["C:/helper.exe"]),
+            serde_json::json!(["helper.cmd"]),
+            serde_json::json!(["helper"]),
+            serde_json::json!(["helper.exe --flag"]),
+            serde_json::json!(["bin/helper.exe", "bad\0arg"]),
+        ] {
+            value["host"]["command"] = command;
+            assert!(matches!(
+                PluginManifest::parse(&value.to_string()),
+                Err(ManifestError::HostCommand(_))
+            ));
+        }
+        value["host"]["command"] = serde_json::json!(["bin/helper.exe"]);
+        value["permissions"] = serde_json::json!([]);
+        assert_eq!(
+            PluginManifest::parse(&value.to_string()),
+            Err(ManifestError::HostProcessPermissionRequired)
+        );
+        value["permissions"] = serde_json::json!(["host.process"]);
+        for host in [
+            serde_json::json!({"command":["bin/helper.exe"],"protocol":"stdio"}),
+            serde_json::json!({"command":["bin/helper.exe"],"protocol":"jsonl","shell":true}),
+        ] {
+            value["host"] = host;
+            assert!(matches!(
+                PluginManifest::parse(&value.to_string()),
+                Err(ManifestError::Json(_))
+            ));
+        }
     }
 
     #[test]

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "example.raw-host",
+  "version": "0.1.0",
+  "host": {
+    "command": ["bin/codlet-raw-host-example.exe"],
+    "protocol": "jsonl"
+  },
+  "permissions": ["host.process", "cdp.raw"]
+}

@@ -1,10 +1,17 @@
 # Codlet
 
-Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. The current code contains the M0 inherited-CDP transport, an M1b capability-kernel candidate, the first M1c renderer authorization slice, and a persistent bundled/local plugin registry described in `docs/PRODUCT_TECHNICAL_PLAN.md`. On 2026-09-01, the installed Codex build `26.825.6671.0` passed the real inherited-pipe and continuous multi-window target gates. This records build coverage for those runs, not a permanent compatibility guarantee; the complete repetition gates and the current-build M1 GUI gate have not passed yet.
+Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. It includes inherited-CDP transport, managed renderer plugins, a local plugin registry, online renderer management, and an initial native host/CDP path. Official GUI and adapter plugins are optional; a standalone host plugin can use Core's public raw requests and events. See [the technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) for milestone scope and the [acceptance record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md) for the current build's evidence and remaining repetition/crash gates.
 
 It does not modify the Codex package, official shortcuts, protocols, configuration, or user data. It never terminates or restarts an existing Codex process. Normal Codex launches do not run Codlet.
 
 ## Development status
+
+M2a now supports a native host-only plugin through public JSONL methods for raw
+CDP requests and events. A pure host launch skips the managed renderer's URL
+selection; the [standalone example](examples/raw-host/README.md) needs no official
+plugin or renderer entry. This first slice covers startup, communication and owned
+process cleanup; host hot management and the rest of M2 are still pending. See the
+[M2a contract and validation](docs/M2A_HOST_RUNTIME_2026-09-09.md).
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
@@ -17,6 +24,12 @@ Explicitly registered local renderer directories now use the same launch catalog
 The [2026-09-09 GUI repair and acceptance record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md) records the user-run M0, M1 and M1-watch observations. The normal M0 harness was verified with exit `0` (Host PID `63976`, child PID `11692`); the ordinary M1 run ended with exit `1` without a stopped marker, and its cause remains unknown; M1-watch exited `0` with active and stopped observations (Host PID `29692`, child PID `36240`). The user also confirmed the visual checks, hot-added `dev.codlet.acceptance-marker`, online enable/reload/disable/reenable, two applied watch changes, and doctor Inspect. These observations do not close the complete M0/M1 gates, the 100-run baseline, or the crash gate.
 
 ## M0 commands
+
+The repair build was subsequently retested with `launch --watch`: Host `41432`,
+Codex `20540`, exit `0`, active/stopped observed and no remaining related process
+or listener. The older exit-1 report remains inconclusive. Routine development
+continues with focused checks; the open repetition/crash gates are retained for
+milestone closure and do not require repeating full M0/M1 tests for each small fix.
 
 Launch the current renderer-runtime candidate with the bundled first-party `codlet-gui` plugin:
 
@@ -71,7 +84,8 @@ The final validation batch passed 289 Rust tests with one explicit real-producti
 
 Writers serialize on `config.json.lock`, re-read the latest valid document, and merge only their explicit edits. Different plugin enablement edits are preserved; the last committed enablement assignment to the same plugin wins. Local registrations and grants additionally compare the original record under that lock, so concurrent changes fail instead of replacing another writer's authorization. A busy lock returns an error after two seconds. The sidecar remains on disk, while its OS lock is released when the writer closes the handle or exits. Successful saves refresh the in-memory snapshot; failed saves preserve pending edits for an explicit retry.
 
-Run the automated checks on Windows:
+For routine changes, run the affected checks. The comprehensive Windows commands
+below are available for milestone closure or changes that justify the wider scope:
 
 ```powershell
 cargo fmt --all -- --check

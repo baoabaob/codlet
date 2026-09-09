@@ -321,6 +321,43 @@ test('refresh removes forgotten rows and distinguishes an unregistered loaded pl
     f.plugin.deactivate();
 });
 
+test('host execution observations show lifecycle and errors without adding controls to renderer rows', async () => {
+    const f = fixture();
+    const rows = [
+        { id: 'codlet-gui', enabled: true, active: true, source: 'bundled' },
+        { id: 'dev.starting', enabled: true, active: false, execution: { kind: 'host', state: 'starting', processId: 41, error: null } },
+        { id: 'dev.stopping', enabled: false, active: false, loaded: true, registered: false,
+            execution: { kind: 'host', state: 'stopping', processId: 45, error: 'Stopping after worker failure' } },
+        { id: 'dev.running', enabled: false, active: true, loaded: true, registered: false,
+            execution: { kind: 'host', state: 'active', processId: 42, error: null } },
+        { id: 'dev.failed', enabled: true, active: false, loaded: false,
+            validation: { status: 'failed', error: { message: 'Older catalog problem' } },
+            execution: { kind: 'host', state: 'failed', processId: 43, error: 'Worker exited with code 12' } },
+        { id: 'dev.exited', enabled: true, active: false, loaded: false,
+            execution: { kind: 'host', state: 'exited', processId: 44, error: null } },
+        { id: 'dev.renderer', enabled: false, active: false,
+            validation: { status: 'failed', error: { message: 'Missing renderer entry' } } }
+    ];
+    f.override('list', () => ({ plugins: rows }));
+    await f.plugin.activate(f.context);
+    await f.open();
+    const pluginRow = id => f.nodes().find(element => element.className === 'codlet-plugin-row'
+        && element.children[0].textContent.includes(id));
+    for (const [id, state] of [['dev.starting', 'Starting'], ['dev.stopping', 'Stopping'], ['dev.running', 'Active'], ['dev.failed', 'Failed'], ['dev.exited', 'Exited'], ['dev.renderer', 'Unavailable']]) {
+        assert.equal(pluginRow(id).children.at(-1).textContent, state);
+        assert.equal(pluginRow(id).children.some(element => element.tagName === 'input'), false);
+    }
+    assert.match(pluginRow('dev.running').textContent, /Registration removed; still loaded/);
+    assert.match(pluginRow('dev.stopping').textContent, /Registration removed; still loaded/);
+    assert.match(pluginRow('dev.stopping').textContent, /Stopping after worker failure/);
+    assert.match(pluginRow('dev.failed').textContent, /Worker exited with code 12/);
+    assert.doesNotMatch(pluginRow('dev.failed').textContent, /Older catalog problem/);
+    assert.match(pluginRow('dev.renderer').textContent, /Missing renderer entry/);
+    assert.ok(f.toggle());
+    assert.deepEqual(f.calls, ['ping', 'getMount', 'list']);
+    f.plugin.deactivate();
+});
+
 test('overlapping refreshes commit only the latest response without moving focus', async () => {
     const f = fixture();
     await f.plugin.activate(f.context);

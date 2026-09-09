@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.23；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.24；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。本批 315 项 Rust、64 项 Node 回归通过；普通 launch 的一次退出 1 仍待查因，新修复的实机复测、重复冷启动与 crash 门禁仍未关闭。详见第 16.8 节。
+当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。按用户要求继续 M2a 纯 host/CDP 开发，使用针对性验证。详见第 16.8–16.9 节。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -23,7 +23,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 3. Codex 只有通过 Codlet 专用启动器才应进入扩展模式；官方入口启动原版纯净 Codex 是产品目标，但当前受 `DEFECT-001` 的 Electron 单主实例限制。
 4. Codlet 不监视、不提示、不接管通过官方入口启动的 Codex，也不在后台等待或劫持后续启动。
 5. Codlet 安装、升级和卸载均不关闭或重启 Codex，不修改或捆绑官方安装包、快捷方式、协议关联、配置与用户数据。
-6. 插件允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。当前 M1 仍为 renderer 必填模型，M2 按已确认的开放 Core 边界调整装载与执行职责。
+6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。M2a 已允许独立 renderer 或 host，首个小包明确拒绝组合入口及 host 的跨执行器 provides/requires，避免部分执行被误报成功。
 7. renderer 插件允许分级获得 isolated DOM、main world 和 raw CDP 能力。
 8. 首版只运行用户明确授信的本地插件；不宣称提供安全沙箱。
 9. 不修改 `app.asar`，不修改官方安装目录，不复制或再分发 Codex，不做 DLL 注入。
@@ -230,7 +230,7 @@ M0 只交付可实机验收的前台 Runtime Host 路径。M1 候选现已提供
 
 ### 5.1 核心与适配器分离
 
-2026-09-09 用户已确认底层原语开放、托管 renderer 运行支持与 UI/backend adapter 可选、插件隔离不构成安全保证，以及保留最小 Core 原语并避免过早拆包。历史依据、当前实现缺口和确认后的验收条件见 [Core 扩展边界](CORE_EXTENSION_BOUNDARY_2026-09-09.md)。该方向约束 M2–M4，不改写本轮 M0/M1 的已有验收条件；可选执行后端和完整 raw 插件接口仍待后续实现。
+2026-09-09 用户已确认底层原语开放、托管 renderer 运行支持与 UI/backend adapter 可选、插件隔离不构成安全保证，以及保留最小 Core 原语并避免过早拆包。历史依据、当前实现缺口和确认后的验收条件见 [Core 扩展边界](CORE_EXTENSION_BOUNDARY_2026-09-09.md)。该方向约束 M2–M4，不改写 M0/M1 的已有验收条件；首个 host/raw 请求与事件接口已在 M2a 落地，完整运行后端与便利 API 继续后续交付。
 
 稳定内核负责：
 
@@ -372,7 +372,7 @@ example-plugin/
 }
 ```
 
-当前 M1 的 manifest 只实现 renderer；M2 将支持纯 host 入口或组合入口。host 格式草案如下，最终须先由不依赖官方功能插件的 host 示例验证，不能把 renderer 保留为必填的空壳：
+M2a 的 schema 1 manifest 已支持独立 host 入口，不需要 renderer 空壳；必须申请并获授 `host.process`，使用 CDP 还须 `cdp.raw`。`command[0]` 为插件根目录内的相对 `.exe` 路径，其余元素为不经 shell 的字面 argv。组合入口仍待后续交付。当前格式如下：
 
 ```json
 {
@@ -712,6 +712,8 @@ M1c 验收条件：
 
 先交付并验收开放 Core 原语，再用相同公开接口建设官方便利层。保留现有通用 capability kernel，解除通用插件装载/lifecycle 与 RendererRuntime、renderer 必填入口的耦合。可选性先通过接口、依赖方向和可停用/可替换关系落实，不要求逐层拆包或增加进程。
 
+首批 M2a 已落地 host-only 的装载、进程/JSONL 生命周期与 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe`，含无官方依赖示例与原生假 CDP 闭环。此为下列完整 M2 条件的一个子集；host 热启停/重载、跨执行器 capability、broker 便利 API 和完整诊断仍待后续。见 [M2a 实现合约](M2A_HOST_RUNTIME_2026-09-09.md)。
+
 验收条件：
 
 - 禁用全部可选官方功能插件后，Core 加一个自带实现的第三方 host 插件能够启动；不要求 renderer 空入口、官方 adapter、官方 provider ID 或隐藏特权；
@@ -903,6 +905,12 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 
 315 项 Rust、64 项 Node、Clippy/fmt 和 release 构建通过。随后本机只读 list/doctor 仅列出 adapter 与 `codlet-gui`，确认 marker 注册已移除、GUI 启用偏好恢复，registry SHA-256 前后一致，当前无 Runtime Host。这是当前配置清理证据，不是旧 Host 关闭前的最终采样。本轮没有再次启动真实 Codex；新构建与结果位于 `.codlet-artifacts/gui-registry-repair-2026-09-09/`，完整 M0/M1 仍未关闭。
 
+### 16.9 正常退出补证与 M2a 开发
+
+用户复测修复构建的 `launch --watch`：Host `41432` / Codex `20540`，exit `0`，active/stopped 完整，worker 已回收，after 无相关进程、三个阶段无相关 listener。旧普通 M1 exit `1` 保留原因未定；用户认为可能直接关闭了 cmd。本次不改写原始报告，不因该历史疑点或尚未完成的重复/crash 门禁暂停日常开发。
+
+按用户要求，小修复使用针对性检查并继续推进，完整 M0/M1 不作为每个小包的默认重复任务。M2a 首批已实现纯 host 装载和独立 Core RPC owner；原生示例可自行选择任意 CDP target/session、执行 JavaScript 与订阅事件，无官方 adapter 或托管 renderer ABI 依赖。进程启动与回收、严格 JSONL、权限拒绝、队列/帧上限与失败隔离采用专项夹具验证；未启动真实 Codex。范围、用法及剩余项见 [M2a 记录](M2A_HOST_RUNTIME_2026-09-09.md)。
+
 ## 17. 主要风险
 
 | 风险 | 影响 | 对策 |
@@ -942,7 +950,7 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 
 ## 20. 当前 Go/No-Go 问题
 
-inherited CDP pipe、同 Browser Process 多窗口注入和第一方 GUI 的可行性已有历史实机证据；当前 build 的完整生产 M0/M1 验收仍未完成，`DEFECT-001`、`DEFECT-002` 继续开放。当前先完成第 15 节已有 M0/M1 条件，包括正式 launch/watch、现有第一方 GUI 闭环、生命周期、重复性与外部副作用证据，不因新的开放 Core 方向跳过这些检查。
+inherited CDP pipe、同 Browser Process 多窗口注入和第一方 GUI 已有实机证据；当前 build 的正常 launch/watch、在线热管理与用户视觉确认已留证，完整生产 M0/M1、重复性、`DEFECT-001`、`DEFECT-002` 仍保留原门禁。按用户最新指示，日常开发继续进入 M2，使用与改动相称的针对性验证；这些门禁用于正式收口，不再作为每个开发小包的重复前置任务。
 
 进入 M2 后，第一条架构门禁是：
 

@@ -39,6 +39,9 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
     let mut output = unsafe { File::from_raw_handle(parsed.child_writer as *mut _) };
 
     match parsed.scenario.as_str() {
+        mode @ ("raw-host-cdp" | "raw-host-cdp-delayed") => {
+            scenario_raw_host_cdp(&mut input, &mut output, mode.ends_with("delayed"))
+        }
         "routing" => scenario_routing(&mut input, &mut output),
         "eof" => scenario_eof(&mut input),
         "malformed" => scenario_malformed(&mut input, &mut output),
@@ -96,6 +99,103 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "whitelist" => scenario_whitelist(&mut output, parsed.sentinel, parsed.sentinel_token),
         other => Err(FakeChildError::UnknownScenario(other.to_owned())),
     }
+}
+
+/// Generic CDP peer used with native hosts, without renderer discovery or any
+/// application-specific target identity. Core subscribe/unsubscribe stay local.
+fn scenario_raw_host_cdp(
+    input: &mut File,
+    output: &mut File,
+    delayed_target: bool,
+) -> Result<(), FakeChildError> {
+    let mut reader = RequestReader::new(input);
+    let mut trace = Vec::new();
+    let mut sessions = std::collections::BTreeSet::new();
+    let mut next_session = 0_u64;
+    let mut target_queries = 0;
+    while let Some(request) = reader.next_or_eof()? {
+        let (id, method) = request_identity(request.clone())?;
+        let session = request.get("sessionId").and_then(Value::as_str);
+        if trace.len() == 128 {
+            return Err(FakeChildError::InvalidRequest(
+                "raw-host trace exceeded fixture budget".into(),
+            ));
+        }
+        let result = match method.as_str() {
+            "Target.getTargets" => {
+                target_queries += 1;
+                if delayed_target && target_queries <= 2 {
+                    json!({"targetInfos":[]})
+                } else {
+                    json!({"targetInfos":[{"targetId":"arbitrary-worker","type":"worker","url":"https://fixture.invalid/worker.js","title":"Unrelated target","attached":false}]})
+                }
+            }
+            "Target.attachToTarget" => {
+                if session.is_some()
+                    || request["params"]["targetId"] != "arbitrary-worker"
+                    || request["params"]["flatten"] != true
+                {
+                    return Err(FakeChildError::InvalidRequest(
+                        "raw host did not use root flattened attach".into(),
+                    ));
+                }
+                next_session += 1;
+                let session = format!("raw-session-{next_session}");
+                sessions.insert(session.clone());
+                json!({"sessionId":session})
+            }
+            "Runtime.enable" | "Runtime.evaluate" => {
+                let session = session
+                    .filter(|session| sessions.contains(*session))
+                    .ok_or_else(|| {
+                        FakeChildError::InvalidRequest(
+                            "raw Runtime command did not carry its attached session".into(),
+                        )
+                    })?;
+                if method == "Runtime.enable" {
+                    for scope in [None, Some("unrelated-session"), Some(session)] {
+                        let mut event = json!({"method":"Runtime.executionContextCreated","params":{"context":{"id":17,"origin":"https://fixture.invalid","name":"raw","uniqueId":"fixture-context"}}});
+                        if let Some(scope) = scope {
+                            event["sessionId"] = json!(scope);
+                        }
+                        write_json_frame(output, &event)?;
+                    }
+                    json!({})
+                } else {
+                    write_json_frame(
+                        output,
+                        &json!({"method":"Runtime.consoleAPICalled","sessionId":session,"params":{"type":"debug","args":[{"type":"string","value":"raw-event"}],"executionContextId":17,"timestamp":1}}),
+                    )?;
+                    json!({"result":{"type":"string","value":"raw-host-title"},"observedExpression":request["params"]["expression"]})
+                }
+            }
+            "Target.detachFromTarget" => {
+                let selected = request["params"]["sessionId"].as_str().unwrap_or("");
+                if session.is_some() || !sessions.remove(selected) {
+                    return Err(FakeChildError::InvalidRequest(
+                        "raw detach did not name an owned session".into(),
+                    ));
+                }
+                json!({})
+            }
+            "Fixture.trace" => json!({"requests":trace,"liveSessions":sessions}),
+            "Fixture.ping" => json!({"alive":true}),
+            _ => {
+                return Err(FakeChildError::InvalidRequest(format!(
+                    "unexpected raw method {method}"
+                )));
+            }
+        };
+        if !method.starts_with("Fixture.") {
+            trace.push(request.clone());
+        }
+        let mut reply = json!({"id":id,"result":result});
+        if let Some(session) = session {
+            reply["sessionId"] = json!(session);
+        }
+        write_json_frame(output, &reply)?;
+    }
+    Ok(())
 }
 
 /// Stateful lifecycle peer: validates resource identity across arbitrary

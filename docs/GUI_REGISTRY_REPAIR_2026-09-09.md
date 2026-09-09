@@ -57,6 +57,24 @@ disable+remove 后 GUI 仍显示 disabled 条目的例外，本批针对此问�
 
 完整 M0/M1 尚未关闭；100 次冷启动基线和 crash gate 仍未关闭。
 
+## 修复构建的正常退出复测
+
+用户随后重新运行了 M1。新报告实际命令为 `launch --watch`，使用下文固定
+SHA-256 的修复构建，Codex build 仍为 `26.903.8094.0`。报告位于
+`.codlet-artifacts/gui-registry-repair-2026-09-09/production-m1-watch/m1-acceptance-20260909T124017233Z-45096.json`。
+
+- UTC 12:40:17.233 至 12:40:46.817；Runtime Host PID `41432`，Codex PID `20540`。
+- 退出码 `0`，active/stopped 均出现，CDP workers 已回收。
+- before/after 相关进程均为空；三个阶段的 TCP listener 列表均为空，captureError 均为空。
+- `executionStatus=codlet_completed`、`scriptExitCode=0`；原始 decision/manual 字段保持原样。
+
+该记录补充了修复构建正常退出的成功证据。用户认为旧普通 M1 的退出 1 可能来自直接关闭
+cmd，但无法确认；保留旧报告和原因未定，不再用这一条历史疑点阻塞日常开发。
+本次复测没有单独记录 disable/remove 场景的新视觉步骤，不扩大成该场景的实机回归声明。
+
+用户已明确要求小修复采用针对性检查后继续推进。M2 开发继续进行，重复冷启动与 crash
+等里程碑收口证据单独保留，不要求每个开发小包重跑完整 M0/M1 或启动真实 Codex。
+
 ## Final source validation
 
 本轮修复源码提交为

@@ -240,7 +240,8 @@ fn declared_plugin(id: &str, provides: Vec<Value>, requires: Vec<Value>) -> Load
             "schema": 1, "id": id, "version": "1", "renderer": {"entry": "renderer.js", "world": "isolated"},
             "provides": provides, "requires": requires,
         }).to_string()).unwrap(),
-        source: String::new(),
+        source: Some(String::new()),
+        host: None,
         generation: 1,
     }
 }

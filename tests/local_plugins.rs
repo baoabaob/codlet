@@ -82,14 +82,14 @@ fn valid_unicode_and_space_root_returns_canonical_root_and_unchanged_source() {
     let candidate = inspect_local_plugin(&fixture.root).unwrap();
     assert_eq!(candidate.root, fs::canonicalize(&fixture.root).unwrap());
     assert!(candidate.root.is_absolute());
-    assert_eq!(candidate.source, SOURCE);
+    assert_eq!(candidate.source, Some(SOURCE.to_owned()));
     assert_eq!(candidate.manifest.id, "dev.local");
     assert_eq!(candidate.manifest.provides[0].api.get(), 2);
     candidate.validate_grants(&[Permission::UiDom]).unwrap();
     let loaded = load_local_plugin("dev.local", &candidate.root, &[Permission::UiDom], 7).unwrap();
     assert_eq!(loaded.generation, 7);
     assert_eq!(loaded.manifest, candidate.manifest);
-    assert_eq!(loaded.source, SOURCE);
+    assert_eq!(loaded.source, Some(SOURCE.to_owned()));
 }
 
 #[test]
@@ -160,16 +160,12 @@ fn directories_cannot_be_read_as_manifest_or_source() {
     let fixture = Fixture::new();
     fs::remove_file(fixture.root.join("plugin.json")).unwrap();
     fs::create_dir(fixture.root.join("plugin.json")).unwrap();
-    rejected(&fixture.root, "read manifest", "ordinary UTF-8 text file");
+    rejected(&fixture.root, "read manifest", "ordinary file");
     fs::remove_dir(fixture.root.join("plugin.json")).unwrap();
     fixture.write_manifest(&manifest());
     fs::remove_file(fixture.entry()).unwrap();
     fs::create_dir(fixture.entry()).unwrap();
-    rejected(
-        &fixture.root,
-        "read renderer entry",
-        "ordinary UTF-8 text file",
-    );
+    rejected(&fixture.root, "read renderer entry", "ordinary file");
 }
 
 #[test]
@@ -246,7 +242,11 @@ fn manifest_and_source_enforce_byte_limits_including_exact_boundary() {
     source.resize(MAX_SOURCE_BYTES, b' ');
     fs::write(fixture.entry(), &source).unwrap();
     assert_eq!(
-        inspect_local_plugin(&fixture.root).unwrap().source.len(),
+        inspect_local_plugin(&fixture.root)
+            .unwrap()
+            .source
+            .unwrap()
+            .len(),
         MAX_SOURCE_BYTES
     );
     source.push(b' ');
@@ -261,7 +261,10 @@ fn multibyte_utf8_limits_are_measured_in_bytes() {
     source.push('x');
     assert_eq!(source.len(), MAX_SOURCE_BYTES);
     fs::write(fixture.entry(), &source).unwrap();
-    assert_eq!(inspect_local_plugin(&fixture.root).unwrap().source, source);
+    assert_eq!(
+        inspect_local_plugin(&fixture.root).unwrap().source,
+        Some(source.to_owned())
+    );
     source.push('x');
     fs::write(fixture.entry(), source).unwrap();
     rejected(&fixture.root, "read renderer entry", "byte limit");
@@ -312,7 +315,10 @@ fn empty_entry_is_rejected_but_source_is_not_a_javascript_parser() {
     }
     let source = "not valid JavaScript, intentionally; runtime validates it later";
     fs::write(fixture.entry(), source).unwrap();
-    assert_eq!(inspect_local_plugin(&fixture.root).unwrap().source, source);
+    assert_eq!(
+        inspect_local_plugin(&fixture.root).unwrap().source,
+        Some(source.to_owned())
+    );
 }
 
 #[test]
@@ -462,9 +468,9 @@ fn load_rereads_identity_permissions_and_source_each_time() {
         3,
     )
     .unwrap();
-    assert_eq!(loaded.source, replacement);
+    assert_eq!(loaded.source, Some(replacement.to_owned()));
     assert_eq!(loaded.generation, 3);
-    assert_eq!(original.source, SOURCE);
+    assert_eq!(original.source, Some(SOURCE.to_owned()));
     assert_eq!(
         loaded.manifest.permissions,
         [Permission::UiDom, Permission::RuntimeManage]
@@ -592,12 +598,15 @@ fn successful_inspection_and_load_do_not_execute_source_or_create_configuration(
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
-    assert_eq!(inspect_local_plugin(&fixture.root).unwrap().source, source);
+    assert_eq!(
+        inspect_local_plugin(&fixture.root).unwrap().source,
+        Some(source.to_owned())
+    );
     assert_eq!(
         load_local_plugin("dev.local", &fixture.root, &[Permission::UiDom], 1)
             .unwrap()
             .source,
-        source
+        Some(source.to_owned())
     );
     assert!(!sentinel.exists());
     let after: Vec<_> = fs::read_dir(&fixture.root)
@@ -793,9 +802,5 @@ fn unix_special_file_is_rejected_before_opening() {
     let fixture = Fixture::new();
     fs::remove_file(fixture.entry()).unwrap();
     let _listener = UnixListener::bind(fixture.entry()).unwrap();
-    rejected(
-        &fixture.root,
-        "read renderer entry",
-        "ordinary UTF-8 text file",
-    );
+    rejected(&fixture.root, "read renderer entry", "ordinary file");
 }

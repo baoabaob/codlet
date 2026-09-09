@@ -7,21 +7,23 @@ use thiserror::Error;
 
 use crate::catalog::{PluginCatalog, PluginSource};
 use crate::cdp::{
-    CdpClient, ClientSpawnError, ShutdownError, TargetChange, TargetController, TargetError,
-    TargetSession,
+    CdpClient, CdpEventStream, ClientSpawnError, ShutdownError, TargetChange, TargetController,
+    TargetError, TargetSession,
 };
 use crate::diagnostics::{
     Check, DiagnosticIssue, DoctorInputs, DoctorReport, DoctorRuntimeInput, PackageInfo,
     ProcessInfo, ProcessSnapshot,
 };
+use crate::host_runtime::HostRuntime;
 use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
 use crate::plugin_control::{
     PluginControlAction, PluginControlError, PluginControlReport, PluginControlRequest,
 };
+use crate::plugin_host::HostError;
 use crate::plugin_watch::PluginWatcher;
 use crate::plugins::{
-    LocalPluginRegistration, ManifestError, Permission, PluginRegistry, PluginRegistryError,
-    bundled_plugins, default_registry_path,
+    LoadedPlugin, LocalPluginRegistration, ManifestError, Permission, PluginRegistry,
+    PluginRegistryError, bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::runtime_control::{
@@ -71,6 +73,8 @@ pub enum ProbeError {
     Marker(#[from] MarkerFailure),
     #[error(transparent)]
     Renderer(#[from] RendererError),
+    #[error(transparent)]
+    PluginHost(#[from] HostError),
     #[error(transparent)]
     Manifest(#[from] ManifestError),
     #[error(transparent)]
@@ -157,6 +161,14 @@ struct AttachedCodex {
     sessions: Vec<TargetSession>,
 }
 
+struct ConnectedCodex {
+    package: InstalledPackage,
+    executable: PathBuf,
+    process: ChildProcess,
+    client: CdpClient,
+    events: CdpEventStream,
+}
+
 struct RendererOutcome {
     target_id: String,
     result: Result<RendererBootstrapReport, RendererError>,
@@ -169,7 +181,8 @@ struct CodletRuntime {
     executable: PathBuf,
     process: ChildProcess,
     client: CdpClient,
-    targets: TargetController,
+    targets: Option<TargetController>,
+    hosts: HostRuntime,
     renderer: RendererRuntime,
     watcher: Option<PluginWatcher>,
     initial_outcomes: Vec<RendererOutcome>,
@@ -224,7 +237,11 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             let options = parse_launch_options(options)?;
             let runtime = start_codlet_runtime(options)?;
             runtime.print_identity_and_initial_state();
-            println!("runtime-state: active; Codlet renderer runtime attached");
+            if runtime.targets.is_some() {
+                println!("runtime-state: active; Codlet renderer runtime attached");
+            } else {
+                println!("runtime-state: active; Core runtime with optional plugin hosts");
+            }
             println!(
                 "action: use Codex normally, then close Codex to stop this foreground runtime"
             );
@@ -614,12 +631,22 @@ fn start_probed_codex() -> Result<ProbedCodex, ProbeError> {
 }
 
 fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
-    start_attached_codex_with_services(None).map(|(attached, _)| attached)
+    let (connected, _) = start_connected_codex_with_services(None)?;
+    let (targets, sessions) =
+        TargetController::discover(connected.client.clone(), connected.events, REQUEST_DEADLINE)?;
+    Ok(AttachedCodex {
+        package: connected.package,
+        executable: connected.executable,
+        process: connected.process,
+        client: connected.client,
+        targets,
+        sessions,
+    })
 }
 
-fn start_attached_codex_with_services(
+fn start_connected_codex_with_services(
     services: Option<PreparedServices>,
-) -> Result<(AttachedCodex, Option<HostServers>), ProbeError> {
+) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError> {
     let status = services.as_ref().map(|services| services.status.clone());
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
@@ -654,16 +681,13 @@ fn start_attached_codex_with_services(
     }
     drop(launch_guard);
     let (client, events) = CdpClient::spawn(pipes)?;
-    let (targets, sessions) = TargetController::discover(client.clone(), events, REQUEST_DEADLINE)?;
-
     Ok((
-        AttachedCodex {
+        ConnectedCodex {
             package,
             executable,
             process,
             client,
-            targets,
-            sessions,
+            events,
         },
         server,
     ))
@@ -683,21 +707,49 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let watcher = options
         .watch
         .then(|| PluginWatcher::new(registry.path().to_owned()));
-    let mut renderer = prepare_renderer_runtime(registry)?;
+    let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
     let status = StatusPublisher::new();
-    renderer.set_status_publisher(status.clone());
-    let (attached, servers) = start_attached_codex_with_services(Some(PreparedServices {
+    if renderer.has_renderer_plugins() {
+        renderer.set_status_publisher(status.clone());
+    }
+    let (connected, servers) = start_connected_codex_with_services(Some(PreparedServices {
         status: status.clone(),
         lease,
     }))?;
-    let initial_outcomes = attached
-        .sessions
+    let has_hosts = !host_plugins.is_empty();
+    let hosts = HostRuntime::start(host_plugins, connected.client.clone())?;
+    let (targets, sessions) = if renderer.has_renderer_plugins() {
+        match TargetController::discover(
+            connected.client.clone(),
+            connected.events,
+            REQUEST_DEADLINE,
+        ) {
+            Ok((targets, sessions)) => (Some(targets), sessions),
+            Err(error) if has_hosts => {
+                eprintln!("renderer-executor: state=unavailable; error={error}");
+                (None, Vec::new())
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        // Raw hosts receive the connection without private URL matching or any
+        // managed-renderer CDP commands. Retire the unused legacy event sink.
+        drop(connected.events);
+        (None, Vec::new())
+    };
+    let initial_outcomes = sessions
         .iter()
         .map(|session| RendererOutcome {
             target_id: session.target_id().to_owned(),
             result: renderer.attach(session),
         })
         .collect();
+    // Host initialization may make nested CDP requests; its independent owner
+    // continues pumping while the foreground waits for the initial observation.
+    while hosts.is_starting() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    renderer.set_external_observations(hosts.observations());
     status.set_ready();
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
@@ -706,11 +758,12 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         _servers: servers,
         status,
         control,
-        package: attached.package,
-        executable: attached.executable,
-        process: attached.process,
-        client: attached.client,
-        targets: attached.targets,
+        package: connected.package,
+        executable: connected.executable,
+        process: connected.process,
+        client: connected.client,
+        targets,
+        hosts,
         renderer,
         watcher,
         initial_outcomes,
@@ -721,7 +774,36 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
 /// discovery or launch. This only reads plugin files and never executes their source.
 pub fn prepare_renderer_runtime(registry: PluginRegistry) -> Result<RendererRuntime, ProbeError> {
     let catalog = PluginCatalog::load(&registry)?;
+    if let Some(plugin) = catalog
+        .enabled_plugins(&registry)
+        .map_err(RendererError::from)?
+        .into_iter()
+        .find(|plugin| plugin.manifest.host.is_some())
+    {
+        return Err(RendererError::UnsupportedEntry {
+            plugin_id: plugin.manifest.id,
+            message: "native host plugins require codlet launch; this entrypoint only starts the managed renderer",
+        }.into());
+    }
     Ok(RendererRuntime::from_catalog(catalog, registry)?)
+}
+
+/// Validate both executor plans from the same catalog before launching Codex.
+pub fn prepare_plugin_runtimes(
+    registry: PluginRegistry,
+) -> Result<(RendererRuntime, Vec<LoadedPlugin>), ProbeError> {
+    let catalog = PluginCatalog::load(&registry)?;
+    let host_plugins: Vec<_> = catalog
+        .enabled_plugins(&registry)
+        .map_err(RendererError::from)?
+        .into_iter()
+        .filter(|plugin| plugin.manifest.host.is_some())
+        .collect();
+    HostRuntime::validate_plugins(&host_plugins)?;
+    Ok((
+        RendererRuntime::from_catalog(catalog, registry)?,
+        host_plugins,
+    ))
 }
 
 fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
@@ -900,6 +982,7 @@ impl CodletRuntime {
         for outcome in &self.initial_outcomes {
             print_renderer_outcome(outcome);
         }
+        self.print_host_diagnostics();
         if self.watcher.is_some() {
             println!(
                 "plugin-watch: state=enabled; local-plugin-count={}",
@@ -922,8 +1005,13 @@ impl CodletRuntime {
                 break exit_code;
             }
 
-            let changes = match self.targets.pump(Duration::ZERO) {
-                Ok(changes) => changes,
+            let changes = match self
+                .targets
+                .as_mut()
+                .map(|targets| targets.pump(Duration::ZERO))
+                .transpose()
+            {
+                Ok(changes) => changes.unwrap_or_default(),
                 Err(error) => {
                     if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
                         break exit_code;
@@ -931,6 +1019,9 @@ impl CodletRuntime {
                     return Err(error.into());
                 }
             };
+            self.renderer
+                .set_external_observations(self.hosts.observations());
+            self.print_host_diagnostics();
             for change in changes {
                 let target_id = change.target_id().to_owned();
                 match self.renderer.apply_target_change(change) {
@@ -960,7 +1051,17 @@ impl CodletRuntime {
             });
             match job {
                 Some(ManagementJob::Cli(job)) => {
-                    let result = self.renderer.manage_plugin(job.request);
+                    let mut result = self.renderer.manage_plugin(job.request);
+                    if let Ok(report) = &mut result
+                        && self.targets.is_none()
+                        && self.renderer.has_renderer_plugins()
+                        && let Err(error) = self.start_renderer_executor()
+                    {
+                        report.outcome = crate::plugin_control::PluginControlOutcome::Degraded;
+                        report.message = Some(format!(
+                            "Plugin configuration applied, but renderer startup failed: {error}"
+                        ));
+                    }
                     self.control.complete(&job.operation_id, result);
                 }
                 Some(ManagementJob::Watch(request)) => {
@@ -986,6 +1087,7 @@ impl CodletRuntime {
             }
         };
         self.control.stop();
+        self.stop_hosts()?;
         self.status.terminate(format!("child_exited: {exit_code}"));
         self.client.shutdown()?;
         if exit_code == 0 {
@@ -993,6 +1095,63 @@ impl CodletRuntime {
         } else {
             Err(ProbeError::CodexExit { exit_code })
         }
+    }
+
+    fn start_renderer_executor(&mut self) -> Result<(), ProbeError> {
+        let events = self.client.subscribe_events(None);
+        let (targets, sessions) =
+            TargetController::discover(self.client.clone(), events, REQUEST_DEADLINE)?;
+        self.targets = Some(targets);
+        self.renderer.set_status_publisher(self.status.clone());
+        let mut first_error = None;
+        for session in sessions {
+            match self.renderer.attach(&session) {
+                Ok(report) => print_renderer_outcome(&RendererOutcome {
+                    target_id: report.target_id.clone(),
+                    result: Ok(report),
+                }),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), |error| Err(error.into()))
+    }
+
+    fn print_host_diagnostics(&self) {
+        for diagnostic in self.hosts.take_diagnostics() {
+            let state =
+                serde_json::to_value(diagnostic.state).expect("execution state is serializable");
+            println!(
+                "host-plugin: id={}; process-id={:?}; state={}",
+                diagnostic.plugin_id,
+                diagnostic.process_id,
+                state.as_str().unwrap()
+            );
+            if let Some(error) = diagnostic.error {
+                eprintln!("host-plugin: id={}; error={error}", diagnostic.plugin_id);
+            }
+        }
+    }
+
+    fn stop_hosts(&mut self) -> Result<(), HostError> {
+        let mut first_error = None;
+        for report in self.hosts.stop()? {
+            match report.result {
+                Ok(exit) => println!(
+                    "host-plugin-stopped: id={}; process-id={}; exit-code={}; forced={}; workers-reaped={}",
+                    report.plugin_id,
+                    exit.process_id,
+                    exit.exit_code,
+                    exit.forced,
+                    exit.workers_reaped
+                ),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -1030,6 +1189,7 @@ fn print_watch_result(plugin_id: &str, result: Result<PluginControlReport, Plugi
 impl Drop for CodletRuntime {
     fn drop(&mut self) {
         self.control.stop();
+        let _ = self.stop_hosts();
         self.status.terminate("host_dropped");
     }
 }

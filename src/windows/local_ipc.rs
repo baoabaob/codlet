@@ -231,6 +231,27 @@ pub(crate) struct Channel {
     pub(crate) stop: Arc<OwnedHandle>,
 }
 impl Channel {
+    /// One cancellable byte-stream read. Protocol-specific framing remains with
+    /// the caller; None waits for input until the shared stop event is signaled.
+    pub(crate) fn read_some(
+        &self,
+        bytes: &mut [u8],
+        deadline: Option<Instant>,
+    ) -> Result<usize, LocalIpcError> {
+        self.operation(deadline, |overlapped| {
+            Ok(unsafe {
+                ReadFile(
+                    raw(&self.pipe),
+                    bytes.as_mut_ptr(),
+                    bytes.len() as u32,
+                    std::ptr::null_mut(),
+                    overlapped,
+                )
+            } != 0)
+        })
+        .map(|count| count as usize)
+    }
+
     pub(crate) fn is_stopping(&self) -> bool {
         unsafe { WaitForSingleObject(raw(&self.stop), 0) == WAIT_OBJECT_0 }
     }

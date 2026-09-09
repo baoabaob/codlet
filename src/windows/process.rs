@@ -390,13 +390,13 @@ fn process_entry_name(entry: &PROCESSENTRY32W) -> Result<OsString, ProcessError>
     Ok(OsString::from_wide(&entry.szExeFile[..length]))
 }
 
-struct AttributeList {
+pub(crate) struct AttributeList {
     _storage: Vec<usize>,
-    pointer: *mut core::ffi::c_void,
+    pub(crate) pointer: *mut core::ffi::c_void,
 }
 
 impl AttributeList {
-    fn with_handle_list(handles: &[HANDLE]) -> Result<Self, ProcessError> {
+    pub(crate) fn with_handle_list(handles: &[HANDLE]) -> Result<Self, ProcessError> {
         let mut byte_length = 0_usize;
         // SAFETY: a null list is the documented size-query form.
         unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut byte_length) };
@@ -448,7 +448,7 @@ impl Drop for AttributeList {
     }
 }
 
-fn build_command_line(
+pub(crate) fn build_command_line(
     executable: &OsStr,
     arguments: &[OsString],
 ) -> Result<Vec<u16>, ProcessError> {

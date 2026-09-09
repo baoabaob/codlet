@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::catalog::{PluginCatalog, PluginSource};
+use crate::plugin_execution::{ExecutionState, PluginExecutionObservation};
 use crate::plugins::{LoadedPlugin, PluginRegistry};
 
 pub(super) fn plugin_list(
@@ -13,6 +14,7 @@ pub(super) fn plugin_list(
     plugins: &[LoadedPlugin],
     registry: &PluginRegistry,
     active_plugin_ids: &BTreeSet<String>,
+    external_observations: &[PluginExecutionObservation],
 ) -> Value {
     let entries: BTreeMap<_, _> = catalog
         .entries()
@@ -23,12 +25,24 @@ pub(super) fn plugin_list(
         .iter()
         .map(|plugin| (plugin.manifest.id.as_str(), plugin))
         .collect();
+    let external: BTreeMap<_, _> = external_observations
+        .iter()
+        .filter(|observation| observation.plugin.manifest.host.is_some())
+        .map(|observation| (observation.plugin.manifest.id.as_str(), observation))
+        .collect();
     let mut ids: BTreeSet<_> = registry
         .local_plugins()
         .keys()
         .map(String::as_str)
         .collect();
     ids.extend(loaded.keys().copied());
+    ids.extend(external.iter().filter_map(|(id, observation)| {
+        matches!(
+            observation.state,
+            ExecutionState::Starting | ExecutionState::Active | ExecutionState::Stopping
+        )
+        .then_some(*id)
+    }));
     ids.extend(
         entries
             .iter()
@@ -38,15 +52,20 @@ pub(super) fn plugin_list(
     let rows: Vec<_> = ids.into_iter().map(|id| {
         let entry = entries.get(id).copied();
         let runtime = loaded.get(id).copied();
+        let observation = external.get(id).copied();
+        let observed_plugin = observation.map(|observation| &observation.plugin).or(runtime);
+        let is_loaded = observation.map_or(runtime.is_some(), |observation| {
+            matches!(observation.state, ExecutionState::Starting | ExecutionState::Active | ExecutionState::Stopping)
+        });
         let registration = registry.local_plugins().get(id);
         let bundled = entry.is_some_and(|entry| matches!(entry.source, PluginSource::Bundled));
         let current_cached_entry = entry.filter(|entry| match &entry.source {
             PluginSource::Bundled => true,
             PluginSource::Local { path, grants } => registration.is_some_and(|registration| registration.path == *path && registration.grants == *grants),
         });
-        let metadata = runtime.or_else(|| current_cached_entry.and_then(|entry| entry.plugin.as_ref().ok()));
-        let metadata_source = if runtime.is_some() { "runtime" } else if current_cached_entry.is_some() { "catalog_snapshot" } else { "unavailable" };
-        let validation = if runtime.is_some() {
+        let metadata = observed_plugin.or_else(|| current_cached_entry.and_then(|entry| entry.plugin.as_ref().ok()));
+        let metadata_source = if observed_plugin.is_some() { "runtime" } else if current_cached_entry.is_some() { "catalog_snapshot" } else { "unavailable" };
+        let validation = if observed_plugin.is_some() {
             json!({"status":"ok","basis":"runtime"})
         } else if let Some(entry) = current_cached_entry {
             match &entry.plugin {
@@ -56,13 +75,16 @@ pub(super) fn plugin_list(
         } else {
             json!({"status":"not_loaded","basis":"registration"})
         };
-        let loaded_path = runtime.and_then(|_| entry.and_then(|entry| entry.source.path()));
+        let loaded_path = is_loaded.then(|| {
+            observation.and_then(|observation| observation.plugin.host.as_ref().map(|host| host.root.as_path()))
+                .or_else(|| runtime.and_then(|_| entry.and_then(|entry| entry.source.path())))
+        }).flatten();
         let grants = if bundled {
             entry.map(|entry| entry.grants()).unwrap_or_default()
         } else {
             registration.map(|registration| registration.grants.as_slice()).unwrap_or_default()
         };
-        json!({
+        let mut row = json!({
             "id":id,
             "version":metadata.map(|plugin| &plugin.manifest.version),
             "source":if bundled { "bundled" } else { "local" },
@@ -71,13 +93,20 @@ pub(super) fn plugin_list(
             "requestedPermissions":metadata.map(|plugin| &plugin.manifest.permissions),
             "validation":validation,
             "enabled":registry.is_enabled(id),
-            "active":runtime.is_some() && active_plugin_ids.contains(id),
+            "active":observation.map_or(runtime.is_some() && active_plugin_ids.contains(id), |observation| observation.state == ExecutionState::Active),
             "registered":bundled || registration.is_some(),
-            "loaded":runtime.is_some(),
-            "generation":runtime.map(|plugin| plugin.generation),
+            "loaded":is_loaded,
+            "generation":observed_plugin.map(|plugin| plugin.generation),
             "loadedPath":loaded_path.map(|path| path.to_string_lossy()),
             "metadataSource":metadata_source,
-        })
+        });
+        if let Some(observation) = observation {
+            row["execution"] = json!({
+                "kind":"host", "state":observation.state,
+                "processId":observation.process_id, "error":observation.error,
+            });
+        }
+        row
     }).collect();
     json!({"plugins":rows})
 }
@@ -131,7 +160,7 @@ mod tests {
         .unwrap();
         registry.remove_local("dev.list.local").unwrap();
         registry.save().unwrap();
-        let list = plugin_list(&catalog, &loaded, &registry, &active);
+        let list = plugin_list(&catalog, &loaded, &registry, &active, &[]);
         let retained = row(&list, "dev.list.local");
         assert_eq!(retained["registered"], false);
         assert_eq!(retained["loaded"], true);
@@ -157,7 +186,7 @@ mod tests {
             .unwrap();
         registry.set_enabled("dev.list.local", false).unwrap();
         registry.save().unwrap();
-        let list = plugin_list(&catalog, &[], &registry, &BTreeSet::new());
+        let list = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
         assert!(
             list["plugins"]
                 .as_array()
@@ -200,7 +229,7 @@ mod tests {
         registry.set_enabled("dev.list.local", false).unwrap();
         registry.save().unwrap();
         let catalog = PluginCatalog::load(&registry).unwrap();
-        let list = plugin_list(&catalog, &[], &registry, &BTreeSet::new());
+        let list = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
         assert_eq!(
             row(&list, "dev.list.local")["metadataSource"],
             "catalog_snapshot"
@@ -216,7 +245,7 @@ mod tests {
             )
             .unwrap();
         registry.save().unwrap();
-        let changed_grants = plugin_list(&catalog, &[], &registry, &BTreeSet::new());
+        let changed_grants = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
         assert_eq!(
             row(&changed_grants, "dev.list.local")["metadataSource"],
             "unavailable"
@@ -246,18 +275,158 @@ mod tests {
             )
             .unwrap();
         registry.save().unwrap();
-        let list = plugin_list(&catalog, &[running], &registry, &BTreeSet::new());
+        let list = plugin_list(&catalog, &[running], &registry, &BTreeSet::new(), &[]);
         let running = row(&list, "dev.list.local");
         assert_eq!(running["metadataSource"], "runtime");
         assert_eq!(running["version"], "9");
         assert_eq!(running["generation"], 9);
         assert_eq!(running["loadedPath"], json!(original.to_string_lossy()));
         assert_eq!(running["path"], json!(replacement.to_string_lossy()));
-        let unloaded = plugin_list(&catalog, &[], &registry, &BTreeSet::new());
+        let unloaded = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
         assert_eq!(
             row(&unloaded, "dev.list.local")["metadataSource"],
             "unavailable"
         );
         assert!(!replacement.exists());
+    }
+
+    #[test]
+    fn host_observations_preserve_live_removed_processes_and_report_retired_failures_without_renderer_state()
+     {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("host");
+        std::fs::create_dir(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        std::fs::write(root.join("helper.exe"), b"MZ\0\xff").unwrap();
+        std::fs::write(
+            root.join("plugin.json"),
+            json!({
+                "schema":1,"id":"dev.host","version":"1",
+                "host":{"command":["helper.exe"],"protocol":"jsonl"},
+                "permissions":["host.process"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        registry
+            .register_local(
+                "dev.host",
+                LocalPluginRegistration {
+                    path: root.clone(),
+                    grants: vec![Permission::HostProcess],
+                },
+            )
+            .unwrap();
+        let catalog = PluginCatalog::load(&registry).unwrap();
+        let mut plugin = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "dev.host")
+            .unwrap()
+            .plugin
+            .as_ref()
+            .unwrap()
+            .clone();
+        plugin.generation = 8;
+        plugin.manifest.version = "8".into();
+        let mut observation = PluginExecutionObservation {
+            plugin,
+            state: ExecutionState::Starting,
+            process_id: Some(404),
+            error: None,
+        };
+        // A list reads only the observation and current registry. It does not
+        // reread this changed source or infer execution from its declaration.
+        std::fs::write(root.join("plugin.json"), "invalid manifest after launch").unwrap();
+        for state in [
+            ExecutionState::Starting,
+            ExecutionState::Active,
+            ExecutionState::Stopping,
+        ] {
+            observation.state = state;
+            let list = plugin_list(
+                &catalog,
+                &[],
+                &registry,
+                &BTreeSet::new(),
+                std::slice::from_ref(&observation),
+            );
+            let row = row(&list, "dev.host");
+            assert_eq!(row["loaded"], true);
+            assert_eq!(row["active"], state == ExecutionState::Active);
+            assert_eq!(row["version"], "8");
+            assert_eq!(row["generation"], 8);
+            assert_eq!(row["metadataSource"], "runtime");
+            assert_eq!(row["loadedPath"], json!(root.to_string_lossy()));
+            assert_eq!(row["execution"]["kind"], "host");
+            assert_eq!(row["execution"]["processId"], 404);
+            assert!(row.get("targetId").is_none() && row.get("sessionId").is_none());
+        }
+        registry.remove_local("dev.host").unwrap();
+        let live_removed = plugin_list(
+            &catalog,
+            &[],
+            &registry,
+            &BTreeSet::new(),
+            std::slice::from_ref(&observation),
+        );
+        assert_eq!(row(&live_removed, "dev.host")["registered"], false);
+        assert_eq!(row(&live_removed, "dev.host")["loaded"], true);
+
+        observation.state = ExecutionState::Failed;
+        observation.error = Some("Worker exited with code 12".into());
+        let removed = plugin_list(
+            &catalog,
+            &[],
+            &registry,
+            &BTreeSet::new(),
+            std::slice::from_ref(&observation),
+        );
+        assert!(
+            removed["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|plugin| plugin["id"] != "dev.host")
+        );
+        let replacement = directory.path().join("registered-but-not-inspected");
+        registry
+            .register_local(
+                "dev.host",
+                LocalPluginRegistration {
+                    path: replacement.clone(),
+                    grants: vec![Permission::HostProcess],
+                },
+            )
+            .unwrap();
+        let failed = plugin_list(
+            &catalog,
+            &[],
+            &registry,
+            &BTreeSet::new(),
+            std::slice::from_ref(&observation),
+        );
+        let failed = row(&failed, "dev.host");
+        assert_eq!(failed["registered"], true);
+        assert_eq!(failed["loaded"], false);
+        assert_eq!(failed["active"], false);
+        assert_eq!(failed["version"], "8");
+        assert!(failed["loadedPath"].is_null());
+        assert_eq!(failed["execution"]["state"], "failed");
+        assert_eq!(failed["execution"]["error"], "Worker exited with code 12");
+        assert!(!replacement.exists());
+
+        observation.state = ExecutionState::Exited;
+        observation.error = None;
+        registry.remove_local("dev.host").unwrap();
+        let exited = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[observation]);
+        assert!(
+            exited["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|plugin| plugin["id"] != "dev.host")
+        );
     }
 }

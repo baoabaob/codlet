@@ -4,8 +4,9 @@ mod target;
 
 pub(crate) use client::CdpRequest;
 pub use client::{
-    CancelIoFailure, CdpClient, CdpEvent, CdpEventStream, CdpResponse, ClientError,
-    ClientSpawnError, ConnectionError, EventStreamError, RemoteError, ShutdownError,
+    BoundedCdpEvents, CancelIoFailure, CdpClient, CdpEvent, CdpEventFilter, CdpEventStream,
+    CdpResponse, ClientError, ClientSpawnError, ConnectionError, EventStreamError,
+    QueuedCdpRequest, RemoteError, ShutdownError,
 };
 pub use framing::{FramingError, MAX_CDP_FRAME_BYTES, NulJsonDecoder, write_json_frame};
 pub(crate) use target::is_main_renderer_url;

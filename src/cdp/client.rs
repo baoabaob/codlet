@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -14,6 +14,10 @@ use super::framing::MAX_CDP_FRAME_BYTES;
 use super::framing::{FramingError, NulJsonDecoder, encode_json_frame};
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+mod raw_access;
+pub use raw_access::{BoundedCdpEvents, CdpEventFilter, QueuedCdpRequest};
+use raw_access::{BoundedEventSink, RawWritePermit};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteError {
@@ -30,7 +34,8 @@ pub struct CdpResponse {
     pub session_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CdpEvent {
     pub method: String,
     pub params: Option<Value>,
@@ -73,6 +78,8 @@ pub enum ClientError {
     DeadlineOutOfRange,
     #[error("CDP request frame exceeds the {max_bytes}-byte limit")]
     RequestFrameTooLarge { max_bytes: usize },
+    #[error("the bounded raw CDP request queue is full")]
+    RequestQueueFull,
     #[error("CDP method {method} failed with code {error_code}: {message}")]
     Remote {
         method: String,
@@ -90,6 +97,8 @@ pub enum EventStreamError {
     Connection(Arc<ConnectionError>),
     #[error("CDP event stream disconnected")]
     Disconnected,
+    #[error("CDP event subscription overflowed; resubscribe and obtain a fresh snapshot")]
+    Overflow,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -157,6 +166,7 @@ struct State {
     // An absent ID at or below this watermark is therefore retired or a duplicate, never a gap.
     last_issued_id: u64,
     events: Vec<EventSink>,
+    bounded_events: Vec<BoundedEventSink>,
     next_event_registration_id: u64,
     activity_epoch: u64,
     sessions: HashMap<String, (String, Weak<AtomicBool>)>,
@@ -174,6 +184,7 @@ enum WriterCommand {
         expires_at: Instant,
         timeout_error: Arc<ConnectionError>,
         completion: mpsc::Sender<Result<(), Arc<ConnectionError>>>,
+        raw_permit: Option<RawWritePermit>,
     },
     Shutdown,
 }
@@ -280,6 +291,8 @@ enum ShutdownStatus {
 struct ClientInner {
     runtime: Arc<Runtime>,
     next_id: Mutex<u64>,
+    raw_writes: Arc<AtomicUsize>,
+    raw_write_deadline: raw_access::RawWriteDeadline,
     shutdown: Mutex<ShutdownStatus>,
     shutdown_complete: Condvar,
     shutdown_timeout: Duration,
@@ -430,6 +443,7 @@ impl CdpClient {
                     session_id: None,
                     sender: event_sender,
                 }],
+                bounded_events: Vec::new(),
                 next_event_registration_id: 2,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
@@ -481,6 +495,8 @@ impl CdpClient {
                 inner: Arc::new(ClientInner {
                     runtime: Arc::clone(&runtime),
                     next_id: Mutex::new(1),
+                    raw_writes: Arc::new(AtomicUsize::new(0)),
+                    raw_write_deadline: Arc::new(Mutex::new(None)),
                     shutdown: Mutex::new(ShutdownStatus::Running(WorkerHandles {
                         reader: Some(reader_thread),
                         writer: Some(writer_thread),
@@ -530,6 +546,24 @@ impl CdpClient {
         session_id: Option<&str>,
         expires_at: Instant,
     ) -> Result<CdpRequest, ClientError> {
+        self.enqueue_request_until(method, params, session_id, expires_at, false)?
+            .wait_written()
+    }
+
+    fn enqueue_request_until(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        session_id: Option<&str>,
+        expires_at: Instant,
+        bounded: bool,
+    ) -> Result<QueuedCdpRequest, ClientError> {
+        let raw_permit = bounded
+            .then(|| {
+                RawWritePermit::acquire(&self.inner.raw_writes, &self.inner.raw_write_deadline)
+            })
+            .transpose()?;
+        let raw_state = raw_permit.as_ref().map(|permit| Arc::clone(&permit.state));
         let mut next_id = self
             .inner
             .next_id
@@ -558,6 +592,11 @@ impl CdpClient {
                 return Err(ClientError::Connection(error));
             }
         };
+        if bounded && bytes.len() > raw_access::MAX_RAW_FRAME_BYTES {
+            return Err(ClientError::RequestFrameTooLarge {
+                max_bytes: raw_access::MAX_RAW_FRAME_BYTES,
+            });
+        }
         let (response_sender, response_receiver) = mpsc::channel();
         let (write_sender, write_receiver) = mpsc::channel();
         {
@@ -597,6 +636,7 @@ impl CdpClient {
                     expires_at,
                     timeout_error: Arc::clone(&timeout_error),
                     completion: write_sender,
+                    raw_permit,
                 })
                 .is_err()
             {
@@ -629,28 +669,19 @@ impl CdpClient {
         *next_id = following_id;
         drop(next_id);
 
-        match write_receiver.recv_timeout(remaining(expires_at)) {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => return Err(request_error(error, id, method)),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.inner.runtime.stop(Arc::clone(&timeout_error));
-                return Err(ClientError::RequestTimedOut {
-                    id,
-                    method: method.to_owned(),
-                });
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(ClientError::Connection(self.terminal_reason()));
-            }
-        }
-        Ok(CdpRequest {
-            client: self.clone(),
-            id,
-            method: method.to_owned(),
-            expires_at,
-            receiver: response_receiver,
-            completed: false,
-        })
+        Ok(QueuedCdpRequest::new(
+            CdpRequest {
+                client: self.clone(),
+                id,
+                method: method.to_owned(),
+                expires_at,
+                receiver: response_receiver,
+                completed: false,
+            },
+            write_receiver,
+            timeout_error,
+            raw_state,
+        ))
     }
 
     pub fn subscribe_events(&self, session_id: Option<&str>) -> CdpEventStream {
@@ -1031,6 +1062,7 @@ fn writer_loop<W: Write>(
                 expires_at,
                 timeout_error,
                 completion,
+                mut raw_permit,
             } => {
                 if runtime
                     .shared
@@ -1044,8 +1076,17 @@ fn writer_loop<W: Write>(
                 }
                 if Instant::now() >= expires_at {
                     let _ = completion.send(Err(Arc::clone(&timeout_error)));
+                    if raw_permit.is_some() {
+                        continue;
+                    }
                     runtime.stop(timeout_error);
                     return;
+                }
+                if let Some(permit) = &mut raw_permit
+                    && !permit.begin(Arc::clone(&timeout_error))
+                {
+                    let _ = completion.send(Err(timeout_error));
+                    continue;
                 }
                 if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
                     let error = Arc::new(ConnectionError::Framing(FramingError::Write {
@@ -1158,6 +1199,9 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
                 .is_some_and(|id| ended.contains(id)))
             || sink.sender.send(Ok(event.clone())).is_ok()
     });
+    state
+        .bounded_events
+        .retain(|sink| sink.publish(&event, &ended));
     state.activity_epoch = state
         .activity_epoch
         .checked_add(1)
@@ -1272,7 +1316,7 @@ fn optional_string(
 }
 
 fn terminate(shared: &Arc<Shared>, error: Arc<ConnectionError>) {
-    let (pending, events) = {
+    let (pending, events, bounded_events) = {
         let mut state = shared.state.lock().expect("CDP state poisoned");
         if state.terminal.is_some() {
             return;
@@ -1285,6 +1329,7 @@ fn terminate(shared: &Arc<Shared>, error: Arc<ConnectionError>) {
         (
             std::mem::take(&mut state.pending),
             std::mem::take(&mut state.events),
+            std::mem::take(&mut state.bounded_events),
         )
     };
 
@@ -1293,6 +1338,9 @@ fn terminate(shared: &Arc<Shared>, error: Arc<ConnectionError>) {
     }
     for sink in events {
         let _ = sink.sender.send(Err(Arc::clone(&error)));
+    }
+    for sink in bounded_events {
+        sink.close(Arc::clone(&error));
     }
     shared.closed.notify_all();
     shared.activity.notify_all();
@@ -1515,6 +1563,7 @@ mod tests {
                     pending,
                     last_issued_id: id,
                     events: Vec::new(),
+                    bounded_events: Vec::new(),
                     next_event_registration_id: 1,
                     activity_epoch: 0,
                     sessions: HashMap::new(),
@@ -1610,6 +1659,7 @@ mod tests {
                         sender: b_sender,
                     },
                 ],
+                bounded_events: Vec::new(),
                 next_event_registration_id: 4,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
@@ -1661,6 +1711,7 @@ mod tests {
                     session_id: None,
                     sender: event_sender,
                 }],
+                bounded_events: Vec::new(),
                 next_event_registration_id: 2,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
@@ -1682,7 +1733,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    static SPAWN_TEST_LOCK: Mutex<()> = Mutex::new(());
+    pub(super) static SPAWN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(windows)]
     #[test]
@@ -1889,6 +1940,7 @@ mod tests {
                 pending: HashMap::new(),
                 last_issued_id: 0,
                 events: Vec::new(),
+                bounded_events: Vec::new(),
                 next_event_registration_id: 1,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
@@ -2083,7 +2135,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn blocking_pipe_reader() -> (std::fs::File, std::os::windows::io::OwnedHandle) {
+    pub(super) fn blocking_pipe_reader() -> (std::fs::File, std::os::windows::io::OwnedHandle) {
         use std::os::windows::io::FromRawHandle;
         use windows_sys::Win32::Foundation::HANDLE;
         use windows_sys::Win32::System::Pipes::CreatePipe;
@@ -2105,7 +2157,7 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn blocking_pipe_writer() -> (std::fs::File, std::os::windows::io::OwnedHandle) {
+    pub(super) fn blocking_pipe_writer() -> (std::fs::File, std::os::windows::io::OwnedHandle) {
         let (reader, writer) = blocking_pipe_reader();
         use std::os::windows::io::{FromRawHandle, IntoRawHandle};
         let reader = reader.into_raw_handle();

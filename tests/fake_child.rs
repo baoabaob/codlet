@@ -407,7 +407,7 @@ fn watch_requests_reuse_managed_lifecycle_and_preserve_saves_during_two_target_a
             .local_watch_sources()
             .iter()
             .any(|source| source.plugin.manifest.id == "dev.provider"
-                && source.plugin.source == saved_again)
+                && source.plugin.source.as_deref() == Some(saved_again))
     );
     assert!(
         runtime

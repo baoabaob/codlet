@@ -16,6 +16,7 @@ use crate::cdp::{
     CdpEvent, CdpEventStream, EventStreamError, TargetChange, TargetError, TargetSession,
     is_main_renderer_url,
 };
+use crate::plugin_execution::PluginExecutionObservation;
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
 use crate::runtime_inspection::{
     InspectedTarget, MAX_INSPECTION_CAPABILITIES, MAX_INSPECTION_CAPABILITIES_PER_PROVIDER,
@@ -66,6 +67,11 @@ pub enum RendererError {
     PluginRejected { plugin_id: String, message: String },
     #[error("plugin {0} requests a renderer world not implemented by M1")]
     UnsupportedWorld(String),
+    #[error("plugin {plugin_id} cannot run in the renderer executor: {message}")]
+    UnsupportedEntry {
+        plugin_id: String,
+        message: &'static str,
+    },
     #[error("renderer target {0} is already attached")]
     TargetAlreadyAttached(String),
     #[error("plugin {plugin_id} generation {generation} exceeds the renderer integer range")]
@@ -96,6 +102,7 @@ pub struct RendererDiagnostic {
 pub struct RendererRuntime {
     catalog: PluginCatalog,
     plugins: Vec<LoadedPlugin>,
+    external_observations: Vec<PluginExecutionObservation>,
     plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
@@ -214,6 +221,7 @@ struct HostEndpointContext<'a> {
     registry: &'a mut PluginRegistry,
     catalog: &'a PluginCatalog,
     plugins: &'a [LoadedPlugin],
+    external_observations: &'a [PluginExecutionObservation],
     active_plugin_ids: BTreeSet<String>,
 }
 
@@ -239,7 +247,11 @@ impl RendererRuntime {
         catalog: PluginCatalog,
         plugin_registry: PluginRegistry,
     ) -> Result<Self, RendererError> {
-        let plugins = catalog.enabled_plugins(&plugin_registry)?;
+        let plugins = catalog
+            .enabled_plugins(&plugin_registry)?
+            .into_iter()
+            .filter(|plugin| plugin.manifest.renderer.is_some())
+            .collect();
         Self::with_catalog(catalog, plugins, plugin_registry)
     }
 
@@ -248,6 +260,9 @@ impl RendererRuntime {
         plugins: Vec<LoadedPlugin>,
         plugin_registry: PluginRegistry,
     ) -> Result<Self, RendererError> {
+        for plugin in &plugins {
+            require_renderer_entry(plugin)?;
+        }
         if let Some(plugin) = plugins
             .iter()
             .find(|plugin| plugin.generation > MAX_JAVASCRIPT_SAFE_INTEGER)
@@ -265,6 +280,7 @@ impl RendererRuntime {
         Ok(Self {
             catalog,
             plugins,
+            external_observations: Vec::new(),
             plugin_registry,
             capabilities,
             sessions: HashMap::new(),
@@ -365,10 +381,16 @@ impl RendererRuntime {
         catalog: Vec<LoadedPlugin>,
         mut authorizations: TargetAuthorizations,
     ) -> Result<(), RendererError> {
-        if let Some(plugin) = catalog
-            .iter()
-            .find(|plugin| plugin.manifest.renderer.world != RendererWorld::Isolated)
-        {
+        for plugin in &catalog {
+            require_renderer_entry(plugin)?;
+        }
+        if let Some(plugin) = catalog.iter().find(|plugin| {
+            plugin
+                .manifest
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.world != RendererWorld::Isolated)
+        }) {
             return Err(RendererError::UnsupportedWorld(plugin.manifest.id.clone()));
         }
         let session = self
@@ -807,11 +829,22 @@ impl RendererRuntime {
         self.plugins.len()
     }
 
+    pub fn has_renderer_plugins(&self) -> bool {
+        !self.plugins.is_empty()
+    }
+
+    /// Replace the optional management UI's external-executor view. These
+    /// observations never become renderer providers, targets, or sessions.
+    pub fn set_external_observations(&mut self, observations: Vec<PluginExecutionObservation>) {
+        self.external_observations = observations;
+    }
+
     /// Current local source snapshots only. Reading this view performs no disk
     /// I/O, follows no new registration and copies no renderer source bytes.
     pub fn local_watch_sources(&self) -> Vec<crate::local_plugins::LocalWatchSource<'_>> {
         self.plugins
             .iter()
+            .filter(|plugin| plugin.manifest.renderer.is_some() && plugin.source.is_some())
             .filter_map(|plugin| {
                 let entry = self
                     .catalog
@@ -1379,6 +1412,7 @@ impl RendererRuntime {
                                 registry: &mut self.plugin_registry,
                                 catalog: &self.catalog,
                                 plugins: &self.plugins,
+                                external_observations: &self.external_observations,
                                 active_plugin_ids,
                             },
                             &consumer.id,
@@ -1778,10 +1812,30 @@ fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
             }}
         }})()
 //# sourceURL=codlet://{id}/renderer.js"#,
-        source = plugin.source,
+        source = plugin
+            .source
+            .as_deref()
+            .expect("renderer entry was validated before installation"),
         metadata = metadata,
         id = plugin.manifest.id
     )
+}
+
+fn require_renderer_entry(plugin: &LoadedPlugin) -> Result<(), RendererError> {
+    let message = if plugin.manifest.renderer.is_none()
+        || plugin.manifest.host.is_some()
+        || plugin.host.is_some()
+    {
+        "a renderer-only entry is required; host entries belong to the Host executor"
+    } else if plugin.source.is_none() {
+        "renderer source was not loaded"
+    } else {
+        return Ok(());
+    };
+    Err(RendererError::UnsupportedEntry {
+        plugin_id: plugin.manifest.id.clone(),
+        message,
+    })
 }
 
 fn deactivation_expression(plugin_id: &str, generation: u64) -> String {
@@ -2032,6 +2086,7 @@ fn invoke_builtin_host_endpoint(
                             context.plugins,
                             &latest,
                             &context.active_plugin_ids,
+                            context.external_observations,
                         ),
                         after_response: None,
                     })
@@ -2478,7 +2533,8 @@ mod tests {
         .unwrap();
         let plugin = LoadedPlugin {
             manifest,
-            source: "module.exports = {};".to_owned(),
+            source: Some("module.exports = {};".to_owned()),
+            host: None,
             generation: 1,
         };
         let (_registry_directory, registry) = test_registry();
@@ -2507,6 +2563,25 @@ mod tests {
     }
 
     #[test]
+    fn renderer_runtime_rejects_missing_source_and_combined_entries_before_capability_registration()
+    {
+        let mut missing_source = bundled_codex_ui_adapter().unwrap();
+        missing_source.source = None;
+        let mut combined = bundled_codex_ui_adapter().unwrap();
+        combined.manifest.host = Some(crate::plugins::HostManifest {
+            command: vec!["helper.exe".to_owned()],
+            protocol: crate::plugins::HostProtocol::Jsonl,
+        });
+        for plugin in [missing_source, combined] {
+            let (_directory, registry) = test_registry();
+            assert!(matches!(
+                RendererRuntime::new(vec![plugin], registry),
+                Err(RendererError::UnsupportedEntry { plugin_id, .. }) if plugin_id == "codex.ui.adapter"
+            ));
+        }
+    }
+
+    #[test]
     fn built_in_host_ping_is_strict_and_side_effect_free() {
         let (_registry_directory, mut registry) = test_registry();
         let catalog = PluginCatalog::from_bundled(Vec::new());
@@ -2526,6 +2601,7 @@ mod tests {
                 registry: &mut registry,
                 catalog: &catalog,
                 plugins: &[],
+                external_observations: &[],
                 active_plugin_ids: BTreeSet::new(),
             },
             "dev.consumer",
@@ -2545,6 +2621,7 @@ mod tests {
                     registry: &mut registry,
                     catalog: &catalog,
                     plugins: &[],
+                    external_observations: &[],
                     active_plugin_ids: BTreeSet::new(),
                 },
                 "dev.consumer",
@@ -2581,6 +2658,7 @@ mod tests {
                 registry: &mut registry,
                 catalog: &catalog,
                 plugins: &plugins,
+                external_observations: &[],
                 active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
             },
             "codlet-gui",
@@ -2597,6 +2675,7 @@ mod tests {
                 registry: &mut registry,
                 catalog: &catalog,
                 plugins: &plugins,
+                external_observations: &[],
                 active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
             },
             "codlet-gui",
@@ -2639,7 +2718,8 @@ mod tests {
         .unwrap();
         let (ordered, _) = order_plugins(vec![LoadedPlugin {
             manifest,
-            source: "module.exports = {};".to_owned(),
+            source: Some("module.exports = {};".to_owned()),
+            host: None,
             generation: 1,
         }])
         .unwrap();
