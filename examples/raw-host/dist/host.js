@@ -37,8 +37,8 @@ module.exports = {
       result = { ready: true, targetId: target.targetId, sessionId, evaluation, events };
     } catch (error) { primary = error; }
     finally {
-      // A raw plugin owns its CDP sessions and side effects. Cleanup happens
-      // before returning from activate; shutdown admits no new Core calls.
+      // This one-shot example releases its transient resources before returning.
+      // Persistent plugins use deactivate(cleanup); see ../cleanup-host.
       if (!context.signal.aborted) {
         try { if (subscription) await subscription.unsubscribe(); }
         catch (error) { primary ??= error; }

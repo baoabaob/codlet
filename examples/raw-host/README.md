@@ -11,7 +11,7 @@ codlet plugin add .\examples\raw-host --trust --grant host.process --grant cdp.r
 ```
 
 The next `codlet launch` loads `host.entry` using CommonJS `activate(context)` and
-`deactivate()`. A running Codlet session also supports online management, including
+`deactivate(cleanup)`. A running Codlet session also supports online management, including
 this example registered after launch. Use the same Codlet executable that owns
 the session:
 
@@ -27,7 +27,9 @@ use the existing lifecycle receipts described in [the host control contract](../
 The example uses `context.cdp` to discover any target, attach a flattened session,
 subscribe to that session, enable Runtime, evaluate an expression, unsubscribe
 and detach. Target discovery waits briefly for a newly launched client. Errors
-still run cleanup, and shutdown makes no further Core calls. It has no Codex URL
+still release this example's transient resources. Persistent plugins can use the
+bounded `deactivate(cleanup)` CDP phase shown in [cleanup-host](../cleanup-host/README.md).
+It has no Codex URL
 filter, private selector or official capability dependency.
 
 Optionally create `settings.json` in this directory:

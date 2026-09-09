@@ -42,7 +42,7 @@ pub struct LocalPluginCandidate {
 }
 
 /// A borrowed view of a currently loaded local source. Observers gain no
-/// execution authority and do not clone renderer source on each host pump.
+/// execution authority and do not clone JS source on each owner-loop tick.
 #[derive(Debug, Clone, Copy)]
 pub struct LocalWatchSource<'a> {
     pub path: &'a Path,
@@ -50,11 +50,92 @@ pub struct LocalWatchSource<'a> {
     pub plugin: &'a LoadedPlugin,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalWatchExecutor {
+    Renderer,
+    Host,
+}
+
+impl LocalWatchSource<'_> {
+    pub(crate) fn executor(&self) -> Option<LocalWatchExecutor> {
+        if self.plugin.manifest.renderer.is_some()
+            && self.plugin.source.is_some()
+            && self.plugin.manifest.host.is_none()
+        {
+            Some(LocalWatchExecutor::Renderer)
+        } else if self.plugin.manifest.host.is_some()
+            && self.plugin.host.is_some()
+            && self.plugin.manifest.renderer.is_none()
+        {
+            Some(LocalWatchExecutor::Host)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn entry(&self) -> Option<&str> {
+        match self.executor()? {
+            LocalWatchExecutor::Renderer => self
+                .plugin
+                .manifest
+                .renderer
+                .as_ref()
+                .map(|entry| entry.entry.as_str()),
+            LocalWatchExecutor::Host => self
+                .plugin
+                .manifest
+                .host
+                .as_ref()
+                .map(|entry| entry.entry.as_str()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LocalWatchFingerprint(u64);
 
+#[derive(Debug, Error)]
+pub(crate) enum HostWatchRootError {
+    #[error("the loaded host watch root is unavailable: {0}")]
+    Unavailable(#[source] LocalPluginError),
+    #[error(
+        "the loaded host watch root {expected} now resolves to {resolved}; select that directory explicitly before watching it"
+    )]
+    Changed {
+        expected: PathBuf,
+        resolved: PathBuf,
+    },
+}
+
+impl HostWatchRootError {
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable(_) => "watch_root_unavailable",
+            Self::Changed { .. } => "watch_root_changed",
+        }
+    }
+}
+
+/// A CLI-selected junction is canonicalized by the normal loader before it
+/// becomes a watch anchor. Watching must not reinterpret that already selected
+/// canonical directory through a replacement junction or another redirection.
+pub(crate) fn checked_host_watch_root(expected: &Path) -> Result<PathBuf, HostWatchRootError> {
+    let resolved = canonical_local_root(expected).map_err(HostWatchRootError::Unavailable)?;
+    if resolved != expected {
+        return Err(HostWatchRootError::Changed {
+            expected: expected.to_owned(),
+            resolved,
+        });
+    }
+    Ok(resolved)
+}
+
 pub(crate) fn loaded_watch_fingerprint(plugin: &LoadedPlugin) -> LocalWatchFingerprint {
-    semantic_watch_fingerprint(&plugin.manifest, plugin.source.as_deref())
+    let source = plugin
+        .source
+        .as_deref()
+        .or_else(|| plugin.host.as_ref().map(|host| host.source.as_ref()));
+    semantic_watch_fingerprint(&plugin.manifest, source)
 }
 
 fn semantic_watch_fingerprint(
@@ -74,22 +155,29 @@ fn semantic_watch_fingerprint(
 /// Invalid JSON/UTF-8 keeps a byte fingerprint, so different invalid edits do
 /// not collapse to an identical parser error. This function never executes code
 /// or treats a successful read as a permission grant.
-pub(crate) fn inspect_watch_fingerprint(root: &Path, current_entry: &str) -> LocalWatchFingerprint {
+pub(crate) fn inspect_watch_fingerprint(
+    root: &Path,
+    current_entry: &str,
+    executor: LocalWatchExecutor,
+) -> Result<LocalWatchFingerprint, HostWatchRootError> {
     let mut hash = DefaultHasher::new();
     1_u8.hash(&mut hash);
-    let root = match canonical_local_root(root) {
-        Ok(root) => root,
-        Err(error) => {
-            error.to_string().hash(&mut hash);
-            return LocalWatchFingerprint(hash.finish());
-        }
+    let root = match executor {
+        LocalWatchExecutor::Host => checked_host_watch_root(root)?,
+        LocalWatchExecutor::Renderer => match canonical_local_root(root) {
+            Ok(root) => root,
+            Err(error) => {
+                error.to_string().hash(&mut hash);
+                return Ok(LocalWatchFingerprint(hash.finish()));
+            }
+        },
     };
     let manifest_bytes =
         match read_bytes(&root, MANIFEST_NAME, MAX_MANIFEST_BYTES, "watch manifest") {
             Ok(bytes) => bytes,
             Err(error) => {
                 error.to_string().hash(&mut hash);
-                return LocalWatchFingerprint(hash.finish());
+                return Ok(LocalWatchFingerprint(hash.finish()));
             }
         };
     manifest_bytes.hash(&mut hash);
@@ -97,33 +185,41 @@ pub(crate) fn inspect_watch_fingerprint(root: &Path, current_entry: &str) -> Loc
         .ok()
         .and_then(|text| PluginManifest::parse(text).ok());
     if let Some(manifest) = &manifest
-        && manifest.renderer.is_none()
+        && match executor {
+            LocalWatchExecutor::Renderer => manifest.renderer.is_none() || manifest.host.is_some(),
+            LocalWatchExecutor::Host => manifest.host.is_none() || manifest.renderer.is_some(),
+        }
     {
-        // Renderer watching may observe an entry changing kind. Fingerprint the
-        // new declaration without treating it as the running renderer source.
-        return semantic_watch_fingerprint(manifest, None);
+        // Observe kind changes without reading the other executor's entry. The
+        // lifecycle coordinator rejects migration before retiring current code.
+        return Ok(semantic_watch_fingerprint(manifest, None));
     }
     let entry = manifest
         .as_ref()
-        .and_then(|manifest| manifest.renderer.as_ref())
-        .map(|renderer| renderer.entry.as_str())
+        .and_then(|manifest| match executor {
+            LocalWatchExecutor::Renderer => manifest
+                .renderer
+                .as_ref()
+                .map(|renderer| renderer.entry.as_str()),
+            LocalWatchExecutor::Host => manifest.host.as_ref().map(|host| host.entry.as_str()),
+        })
         .unwrap_or(current_entry);
     if let Err(error) = validate_entry(&root, entry) {
         error.to_string().hash(&mut hash);
-        return LocalWatchFingerprint(hash.finish());
+        return Ok(LocalWatchFingerprint(hash.finish()));
     }
-    let source_bytes = match read_bytes(&root, entry, MAX_SOURCE_BYTES, "watch renderer entry") {
+    let source_bytes = match read_bytes(&root, entry, MAX_SOURCE_BYTES, "watch JS entry") {
         Ok(bytes) => bytes,
         Err(error) => {
             error.to_string().hash(&mut hash);
-            return LocalWatchFingerprint(hash.finish());
+            return Ok(LocalWatchFingerprint(hash.finish()));
         }
     };
     source_bytes.hash(&mut hash);
     if let (Some(manifest), Ok(source)) = (manifest, std::str::from_utf8(&source_bytes)) {
-        return semantic_watch_fingerprint(&manifest, Some(source));
+        return Ok(semantic_watch_fingerprint(&manifest, Some(source)));
     }
-    LocalWatchFingerprint(hash.finish())
+    Ok(LocalWatchFingerprint(hash.finish()))
 }
 
 #[derive(Debug, Error)]

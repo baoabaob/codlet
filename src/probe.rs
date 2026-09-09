@@ -28,9 +28,7 @@ use crate::plugins::{
     PluginRegistryError, bundled_plugins, default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
-use crate::runtime_control::{
-    ControlBroker, ControlJob, ControlReport, ControlRequest, ControlStatus,
-};
+use crate::runtime_control::{ControlBroker, ControlJob, ControlReport, ControlStatus};
 use crate::runtime_status::{CodexStatus, StatusCode, StatusPublisher};
 use crate::windows::control_pipe::{ControlServer, RegistryScope, RegistryScopeGuard};
 use crate::windows::launch_mutex::{LaunchMutexError, LaunchMutexGuard};
@@ -206,17 +204,17 @@ fn parse_launch_options(arguments: &[OsString]) -> Result<LaunchOptions, ProbeEr
     }
 }
 
-enum ManagementJob {
+enum ManagementJob<T> {
     Cli(ControlJob),
-    Watch(PluginControlRequest),
+    Watch(T),
 }
 
 /// Polling the watcher is lazy: a CLI operation neither consumes nor rebaselines
 /// an observed edit. The next idle iteration supplies the current loaded catalog.
-fn next_management_job(
+fn next_management_job<T>(
     control: &ControlBroker,
-    poll_watch: impl FnOnce() -> Option<PluginControlRequest>,
-) -> Option<ManagementJob> {
+    poll_watch: impl FnOnce() -> Option<T>,
+) -> Option<ManagementJob<T>> {
     control
         .take_next()
         .map(ManagementJob::Cli)
@@ -475,17 +473,28 @@ fn collect_runtime_inspection(registry_path: Option<&Path>) -> DoctorRuntimeInpu
         }
     };
     // This path never acquires a lease, reserves a receipt, or submits a mutation.
-    let mut report = crate::windows::control_pipe::query(&scope, &ControlRequest::inspect());
+    let mut report = crate::windows::control_pipe::query_execution_inspection(&scope);
     match report.status {
         ControlStatus::Inspected => match report.inspection.take() {
-            Some(inspection) => DoctorRuntimeInput::Inspected {
-                inspection: Box::new(inspection),
-                queried_at_unix_ms: SystemTime::now()
+            Some(inspection) => {
+                let queried_at_unix_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis()
-                    .min(u128::from(u64::MAX)) as u64,
-            },
+                    .min(u128::from(u64::MAX)) as u64;
+                if let Some(hosts) = report.host_inspection.take() {
+                    DoctorRuntimeInput::ExecutionInspected {
+                        inspection: Box::new(inspection),
+                        hosts: Box::new(hosts),
+                        queried_at_unix_ms,
+                    }
+                } else {
+                    DoctorRuntimeInput::Inspected {
+                        inspection: Box::new(inspection),
+                        queried_at_unix_ms,
+                    }
+                }
+            }
             None => DoctorRuntimeInput::Unavailable {
                 code: "runtime_inspection_invalid",
                 message: "The Host inspection response contains no snapshot.".into(),
@@ -710,8 +719,9 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let watcher = options
         .watch
         .then(|| PluginWatcher::new(registry.path().to_owned()));
-    let host_control = HostControl::new(registry.path().to_owned());
+    let mut host_control = HostControl::new(registry.path().to_owned());
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
+    host_control.seed_watch_sources(&renderer, &host_plugins);
     let js_runtime = if host_plugins.is_empty() {
         None
     } else {
@@ -760,6 +770,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         std::thread::sleep(Duration::from_millis(10));
     }
     renderer.set_external_observations(hosts.observations());
+    status.publish_host_observation(hosts.execution_snapshot());
     status.set_ready();
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
@@ -998,6 +1009,10 @@ impl CodletRuntime {
             println!(
                 "plugin-watch: state=enabled; local-plugin-count={}",
                 self.renderer.local_watch_sources().len()
+                    + self
+                        .host_control
+                        .local_watch_sources(&self.hosts.observations())
+                        .len()
             );
         }
     }
@@ -1005,6 +1020,10 @@ impl CodletRuntime {
     fn wait(mut self) -> Result<u32, ProbeError> {
         let result = self.wait_inner();
         if let Err(error) = &result {
+            self.control.stop();
+            if let Err(cleanup) = self.stop_hosts() {
+                eprintln!("host-cleanup: state=failed; error={cleanup}; runtime-error={error}");
+            }
             self.status.terminate(format!("runtime_error: {error}"));
         }
         result
@@ -1030,8 +1049,11 @@ impl CodletRuntime {
                     return Err(error.into());
                 }
             };
+            let host_observations = self.hosts.observations();
             self.renderer
-                .set_external_observations(self.hosts.observations());
+                .set_external_observations(host_observations.clone());
+            self.status
+                .publish_host_observation(self.hosts.execution_snapshot());
             self.print_host_diagnostics();
             for change in changes {
                 let target_id = change.target_id().to_owned();
@@ -1054,8 +1076,12 @@ impl CodletRuntime {
             } else {
                 next_management_job(&self.control, || {
                     let watcher = self.watcher.as_mut()?;
-                    let sources = self.renderer.local_watch_sources();
-                    let request = watcher.poll(Instant::now(), &sources);
+                    if self.host_control.has_watch_receipt() {
+                        return None;
+                    }
+                    let mut sources = self.renderer.local_watch_sources();
+                    sources.extend(self.host_control.local_watch_sources(&host_observations));
+                    let request = watcher.poll_guarded(Instant::now(), &sources);
                     for diagnostic in watcher.take_diagnostics() {
                         eprintln!(
                             "plugin-watch: plugin-id={}; state=diagnostic; code={}; message={}",
@@ -1085,16 +1111,44 @@ impl CodletRuntime {
                         self.control.complete(&job.operation_id, result);
                     }
                 }
-                Some(ManagementJob::Watch(request)) => {
-                    println!(
-                        "plugin-watch: plugin-id={}; state=requested; action=reload",
-                        request.plugin_id
-                    );
-                    let plugin_id = request.plugin_id.clone();
-                    let result = self.renderer.manage_watched_plugin(request);
-                    print_watch_result(&plugin_id, result);
+                Some(ManagementJob::Watch(selection)) => {
+                    let plugin_id = selection.request.plugin_id.clone();
+                    if selection.is_host() {
+                        match self
+                            .host_control
+                            .submit_watched(selection.clone(), &self.control)
+                        {
+                            Ok(operation_id) => println!(
+                                "plugin-watch: plugin-id={plugin_id}; state=requested; action=reload; operation-id={operation_id}"
+                            ),
+                            Err(error) => {
+                                if let Some(watcher) = &mut self.watcher {
+                                    watcher.not_attempted(&selection);
+                                }
+                                print_watch_result(&plugin_id, Err(error));
+                            }
+                        }
+                    } else {
+                        println!(
+                            "plugin-watch: plugin-id={plugin_id}; state=requested; action=reload"
+                        );
+                        let result = self.renderer.manage_watched_plugin(selection.request);
+                        print_watch_result(&plugin_id, result);
+                    }
                 }
                 None => {}
+            }
+            for completed in self.host_control.take_watch_results() {
+                if let Some(selection) = &completed.not_attempted
+                    && let Some(watcher) = &mut self.watcher
+                {
+                    watcher.not_attempted(selection);
+                }
+                println!(
+                    "plugin-watch: plugin-id={}; state=completed; operation-id={}",
+                    completed.plugin_id, completed.operation_id
+                );
+                print_watch_result(&completed.plugin_id, completed.result);
             }
             self.renderer.publish_status();
             for diagnostic in self.renderer.take_diagnostics() {
@@ -1157,7 +1211,10 @@ impl CodletRuntime {
 
     fn stop_hosts(&mut self) -> Result<(), HostError> {
         let mut first_error = None;
-        for report in self.hosts.stop()? {
+        let reports = self.hosts.stop();
+        self.status
+            .publish_host_observation(self.hosts.execution_snapshot());
+        for report in reports? {
             match report.result {
                 Ok(exit) => println!(
                     "host-plugin-stopped: id={}; process-id={}; exit-code={}; forced={}; workers-reaped={}",

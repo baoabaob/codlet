@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "example.cleanup-host",
+  "version": "1.0.0",
+  "host": { "entry": "dist/host.js" },
+  "permissions": ["host.process", "cdp.raw"]
+}

@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.26；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.27；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。随后 M2a 交付公开 host/CDP 原语并统一 JS/TS 目录包；本轮 M2b 已接入 JS host 在线启停/重载、新注册插件与当前授信约束的换代补偿，采用针对性验证。host Inspect/watch、组合入口及完整 M2 仍待后续，详见第 16.8–16.11 节。
+当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。随后 M2a/M2b 统一 JS/TS、开放 host/CDP 并接入在线生命周期。本轮进一步整合 host watch、带预算的停止清理、真实执行器 Inspect/doctor，以及可重复便携分发和组合开发验收。组合入口、跨执行器 capability、专门 OS broker 与完整 M2 仍待后续，详见第 16.8–16.12 节。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -713,7 +713,7 @@ M1c 验收条件：
 
 先交付并验收开放 Core 原语，再用相同公开接口建设官方便利层。保留现有通用 capability kernel，解除通用插件装载/lifecycle 与 RendererRuntime、renderer 必填入口的耦合。可选性先通过接口、依赖方向和可停用/可替换关系落实，不要求逐层拆包或增加进程。
 
-首批 M2a 已落地 host-only 的装载、进程/JSONL 生命周期与 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe`，随后统一为 JS/TS 目录包。M2b 已接入同一 CLI receipt 的 host 热启停/重载、启动后新增 host、代数高水位和当前授信下的失败补偿。此为下列完整 M2 条件的一个子集；host watch、组合入口、跨执行器 capability、broker 便利 API 和完整诊断仍待后续。见 [M2a 历史合约](M2A_HOST_RUNTIME_2026-09-09.md)与 [M2b 现行合约](M2B_HOST_CONTROL_2026-09-10.md)。
+M2a/M2b 已交付独立 JS host、公开 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe` 与同一 CLI receipt 的在线启停/重载，包含新注册插件、代数高水位和授信约束补偿。本轮进一步交付 host watch、同代清理 CDP 总预算、进程执行器 Inspect/doctor 和便携开发分发。此为下列完整 M2 条件的一个子集；组合入口、跨执行器 capability、专门 OS broker 与更完整 raw 资源归属仍待后续。现行使用流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)，早期原语与热管理记录见 [M2a](M2A_HOST_RUNTIME_2026-09-09.md) / [M2b](M2B_HOST_CONTROL_2026-09-10.md)。
 
 验收条件：
 
@@ -785,7 +785,7 @@ L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 th
 2. **本地插件目录（候选已实现）**：显式加载用户授信目录，严格校验 manifest、entry 路径和 grant，复用内置插件的 registry、catalog 与依赖图。新增权限需显式授权，目录损坏时仍能禁用或忘记注册。
 3. **原生 GUI 与运行状态（候选已实现）**：入口移到当前 build 的菜单行 Help 之后，主题/私有 DOM 集中在 adapter，补齐列表重试、确认、焦点和挂载恢复。Windows 只读 IPC 支持 `status [--json]`，不扩大现有生命周期管理权限。2026-09-08 隔离客户端 GUI 修复复测已通过列表、刷新、原生重载、主题、窄窗、新窗口和自我停用；普通 `codlet launch` 的生产 M0/M1 门禁仍未关闭。
 4. **运行中控制（M1c 候选已实现）**：CLI `enable` / `disable` / `reload` 通过独立 authenticated control IPC 使用 prepare/submit/result receipt，由 GUI 与 CLI 共用前台 lifecycle executor；手动控制、依赖拒绝、generation 换代、授权 guard、失败回滚和多 target 回归已通过。
-5. **文件热重载（M1c 候选已实现）**：`codlet launch --watch` 只观察已加载 local 的 `plugin.json` / `renderer.entry`，执行整条依赖闭包的稳定检测、路径/grants guard、诊断和 generation 撤销；本批 watcher 回归已通过，普通 launch+watch 真实生产门禁仍开放。
+5. **文件热重载（已实现）**：`codlet launch --watch` 观察已加载 local 的 `codlet.json` 与声明的 renderer/host 主入口。renderer 沿依赖闭包换代，host 固定加载时 root 和完整 grants；两者共享有界扫描与 CLI 优先调度。失败源不会因补偿代数变化循环重启，未尝试的排队守卫拒绝可以重新稳定观察。host watch 的真实 Codex 验收仍待后续。
 6. **当前 build 实机门禁**：在专门启动的 Codlet 会话中验证 GUI、导航、DOM 重建、多窗口和正常退出。2026-09-07 只读检测到 `26.901.6511.0`；2026-09-08 隔离客户端 GUI 修复复测已通过，但该结果仍不构成普通 `codlet launch` 的生产兼容性通过证据。
 
 第 1 项是后续加载与控制工作的前置；第 2-5 项涉及相同生命周期文件，运行控制与 watcher 候选已完成本批集成和回归。真实生产门禁全部满足前，M0/M1 仍保持未关闭。L4 只读研究不阻塞 M1/M2，也不允许以第二 App Server 路径提前伪造完成。
@@ -921,6 +921,19 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 2026-09-10：在统一目录包上接入 `enable` / `disable` / `reload` 的 host 执行路径。前台协调器持有单个 pending receipt，进程 owner 异步处理启动/停止，等待期间继续 renderer 事件和其他 host CDP；不因 CLI 等待超时重提 mutation。新注册 host 按本次请求读取最新 registration，已分配 ID 在本次 runtime 固定执行器。验证失败不退休旧代；换代失败只在原目录仍注册、当前权限仍覆盖旧 manifest 且仍 enabled 时用旧源码快照和新代数恢复。disable 不读取源码，可清理损坏或已移除注册的实际 host。
 
 本包验收使用真实固定 Node 子进程、假 CDP、协调器和同一 control broker receipt，覆盖在线闭环、故障补偿、撤权/停用并发与前台可响应性；未重复全量 M0/M1 或启动真实 Codex。host Inspect/watch、组合入口及跨执行器 capability 继续保留；shutdown 不接收新的 Core 清理请求，不能把进程退休等同于撤回任意页面效果。专项结果见 [M2b 记录](M2B_HOST_CONTROL_2026-09-10.md)。
+
+### 16.12 Host 开发、清理、诊断与便携分发
+
+2026-09-10：本轮按完整工作包持续整合以下路径，不以单个小功能通过作为交付终点：
+
+- **协作清理**：`deactivate(cleanup)` 在普通请求/事件退场后获得同代、同授信的显式 CDP 清理通路；全部请求共享 Core 的 1500 ms 绝对预算。初始化未完成仍可清理；在线 stop 与全局 shutdown 重叠保持既有清理请求和 deadline，故障、超时和阻塞 JS 继续走 Job/IO 退休门禁。
+- **自动重载**：host 与 renderer 共用有界稳定检测；host watch 经原 broker receipt 与事务执行，固定 root、完整 grants、稳定内容和所选代数。候选失败补偿保留失败签名；排队时尚未真正尝试的选择被守卫拒绝后，可重新采样，避免有效文件版本被永久吞掉。
+- **执行诊断**：显式新增 `inspect_execution`，旧 Inspect/status 和控制回执字段保持。doctor 提供 host PID、generation、请求/订阅/队列、清理阶段和确认退出事实；保留独立源采样时间与终态历史，不虚构 renderer target/provider，不把旧失败记录当作当前配置故障。
+- **可使用的开发分发**：白名单便携构建脚本把固定 Node/许可证、JS 示例、TS 声明和现行文档放入同一目录，生成逐文件 SHA256 manifest，可输出 ZIP。实际 cleanup-host 示例参与组合验收：enable、watch 换代前清理、Inspect/doctor、候选 attach 后失败补偿，以及 disable 资源归零。
+
+接口和定向验证分别见 [Host cleanup](HOST_CLEANUP_2026-09-10.md)、[Host watch](HOST_WATCH_2026-09-10.md)、[Host inspection](HOST_INSPECTION_2026-09-10.md)、[开发使用流程](HOST_DEVELOPMENT_2026-09-10.md)和[分发构建](DISTRIBUTION.md)。本轮共通过 59 个不同的 Rust 场景、9 个 Node 场景与五类包装检查；相关复核按测试名运行，不重复计数。最终 fmt、定向 Clippy（warnings 视为错误）、diffcheck 和 locked release 构建通过。包装流程先用既有开发 exe 验证，新交付包使用本轮重新构建的 exe。
+
+本轮保持真实 Codex/用户 registry 不受影响，未重跑全量 M0/M1；正式生产门禁与剩余 M2 能力分别保留。有限清理和进程退休不证明任意页面或 OS 副作用可逆。
 
 ## 17. 主要风险
 

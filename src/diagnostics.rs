@@ -1,6 +1,8 @@
 //! Read-only doctor report contract. A valid desired configuration is not runtime evidence.
 
+mod hosts;
 mod runtime;
+pub use hosts::{HostProcessFinding, HostStateCounts, RuntimeHostProcesses};
 pub use runtime::{
     DoctorRuntimeInput, ProviderTargetReadiness, RuntimeGenerations, RuntimeProvider,
     RuntimeProviders, RuntimeSample,
@@ -161,6 +163,9 @@ pub struct RuntimeObservations {
     pub plugin_generations: Check<RuntimeGenerations>,
     pub provider_ready: Check<RuntimeProviders>,
     pub compatibility: Check<Value>,
+    /// Absent for legacy Inspect: missing process evidence is not an empty inventory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_processes: Option<RuntimeHostProcesses>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sample: Option<RuntimeSample>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

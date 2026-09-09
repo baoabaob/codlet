@@ -1,5 +1,6 @@
 //! Opt-in, foreground local-source observation. The watcher never loads a
-//! plugin into a renderer: it emits the same typed reload request as the CLI.
+//! plugin into an executor: it selects a stable source for the existing typed
+//! lifecycle transaction. Host selections also carry internal source guards.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
@@ -8,7 +9,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::local_plugins::{
-    LocalWatchFingerprint, LocalWatchSource, inspect_watch_fingerprint, loaded_watch_fingerprint,
+    LocalWatchExecutor, LocalWatchFingerprint, LocalWatchSource, inspect_watch_fingerprint,
+    loaded_watch_fingerprint,
 };
 use crate::plugin_control::{PluginControlAction, PluginControlRequest};
 use crate::plugin_lifecycle::dependent_closure_refs;
@@ -24,6 +26,30 @@ pub struct WatchDiagnostic {
     pub plugin_id: String,
     pub code: String,
     pub message: String,
+}
+
+/// Internal observation evidence, never a control-protocol payload or authority
+/// to select an arbitrary path. The executor still checks its own loaded owner.
+#[derive(Debug, Clone)]
+pub struct WatchedReload {
+    pub request: PluginControlRequest,
+    pub(crate) executor: LocalWatchExecutor,
+    pub(crate) source: WatchSourceGuard,
+}
+
+impl WatchedReload {
+    pub fn is_host(&self) -> bool {
+        self.executor == LocalWatchExecutor::Host
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WatchSourceGuard {
+    pub(crate) path: PathBuf,
+    pub(crate) grants: Vec<Permission>,
+    pub(crate) generation: u64,
+    pub(crate) fingerprint: LocalWatchFingerprint,
+    pub(crate) attempt_signature: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +92,9 @@ impl WatchState {
     fn synchronize(&mut self, source: &LocalWatchSource<'_>, now: Instant) {
         if self.path != source.path {
             *self = Self::new(source, now);
-        } else if self.generation != source.plugin.generation {
+        } else if self.generation != source.plugin.generation
+            || matches!(&self.installed, Observation::Ready { grants, .. } if grants.as_slice() != source.grants)
+        {
             self.generation = source.plugin.generation;
             // The baseline is the immutable source actually loaded by the host,
             // never a post-operation read that could swallow a concurrent save.
@@ -135,11 +163,18 @@ impl PluginWatcher {
         now: Instant,
         sources: &[LocalWatchSource<'_>],
     ) -> Option<PluginControlRequest> {
+        self.poll_guarded(now, sources)
+            .map(|selection| selection.request)
+    }
+
+    pub fn poll_guarded(
+        &mut self,
+        now: Instant,
+        sources: &[LocalWatchSource<'_>],
+    ) -> Option<WatchedReload> {
         let sources: BTreeMap<_, _> = sources
             .iter()
-            .filter(|source| {
-                source.plugin.manifest.renderer.is_some() && source.plugin.source.is_some()
-            })
+            .filter(|source| source.executor().is_some())
             .map(|source| (source.plugin.manifest.id.as_str(), source))
             .collect();
         self.states
@@ -172,18 +207,19 @@ impl PluginWatcher {
             let source = sources[id];
             let observation = match registration_pause(source, &registry) {
                 Some(observation) => observation,
-                None => Observation::Ready {
-                    fingerprint: inspect_watch_fingerprint(
-                        source.path,
-                        &source
-                            .plugin
-                            .manifest
-                            .renderer
-                            .as_ref()
-                            .expect("watch sources have renderer entries")
-                            .entry,
-                    ),
-                    grants: registry.local_plugins()[id].grants.clone(),
+                None => match inspect_watch_fingerprint(
+                    source.path,
+                    source.entry().expect("watch source has a JS entry"),
+                    source.executor().expect("watch source has an executor"),
+                ) {
+                    Ok(fingerprint) => Observation::Ready {
+                        fingerprint,
+                        grants: registry.local_plugins()[id].grants.clone(),
+                    },
+                    Err(error) => Observation::Paused {
+                        code: error.code(),
+                        message: error.to_string(),
+                    },
                 },
             };
             self.states
@@ -270,9 +306,30 @@ impl PluginWatcher {
                     state.last_attempted = Some(signature);
                 }
             }
-            return Some(PluginControlRequest {
-                action: PluginControlAction::Reload,
-                plugin_id: id,
+            let selected = sources[id.as_str()];
+            let Observation::Ready {
+                fingerprint,
+                grants,
+            } = self.states[&id]
+                .observed
+                .as_ref()
+                .expect("selected source was observed")
+            else {
+                unreachable!("selected source is ready")
+            };
+            return Some(WatchedReload {
+                request: PluginControlRequest {
+                    action: PluginControlAction::Reload,
+                    plugin_id: id,
+                },
+                executor: selected.executor().expect("watch source has an executor"),
+                source: WatchSourceGuard {
+                    path: selected.path.to_owned(),
+                    grants: grants.clone(),
+                    generation: selected.plugin.generation,
+                    fingerprint: *fingerprint,
+                    attempt_signature: signature,
+                },
             });
         }
         None
@@ -280,6 +337,21 @@ impl PluginWatcher {
 
     pub fn take_diagnostics(&mut self) -> Vec<WatchDiagnostic> {
         std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Admission or a pre-source guard proved this selection was never tried.
+    /// Invalidate only that attempt, then require two fresh observations. An
+    /// actual source-validation/activation failure retains its failure signature.
+    pub fn not_attempted(&mut self, selection: &WatchedReload) {
+        if selection.is_host()
+            && let Some(state) = self.states.get_mut(&selection.request.plugin_id)
+            && state.path == selection.source.path
+            && state.last_attempted == Some(selection.source.attempt_signature)
+        {
+            state.last_attempted = None;
+            state.observed = None;
+            state.stable_samples = 0;
+        }
     }
 
     fn attempt_signature(&self, affected: &BTreeSet<String>, registry: &PluginRegistry) -> u64 {
@@ -378,6 +450,23 @@ fn registration_pause(
                 "Watching {id} is paused because its registered directory changed; enable or reload it manually to select that source."
             ),
         }),
+        Some(_) if !registry.is_enabled(id) => Some(Observation::Paused {
+            code: "watch_plugin_disabled",
+            message: format!(
+                "Watching {id} is paused because its current preference is disabled; enable it explicitly before reloading."
+            ),
+        }),
+        Some(registration)
+            if source.executor() == Some(LocalWatchExecutor::Host)
+                && registration.grants.as_slice() != source.grants =>
+        {
+            Some(Observation::Paused {
+                code: "watch_grants_changed",
+                message: format!(
+                    "Watching {id} is paused because its grants changed; enable or reload it manually to select the current trust settings."
+                ),
+            })
+        }
         Some(_) => None,
     }
 }
@@ -468,7 +557,23 @@ mod tests {
         }
 
         fn source(&self, index: usize, text: &str) {
-            std::fs::write(self.plugins[index].path.join("renderer.js"), text).unwrap();
+            let plugin = &self.plugins[index];
+            let entry = plugin
+                .plugin
+                .manifest
+                .renderer
+                .as_ref()
+                .map(|entry| entry.entry.as_str())
+                .or_else(|| {
+                    plugin
+                        .plugin
+                        .manifest
+                        .host
+                        .as_ref()
+                        .map(|entry| entry.entry.as_str())
+                })
+                .unwrap();
+            std::fs::write(plugin.path.join(entry), text).unwrap();
         }
 
         fn load_generation(&mut self, index: usize, generation: u64) {
@@ -794,5 +899,65 @@ mod tests {
         .unwrap();
         assert!(fixture.poll(&mut watcher, start, 5).is_none());
         assert!(fixture.poll(&mut watcher, start, 6).is_none());
+    }
+
+    #[test]
+    fn mixed_host_and_renderer_sources_share_one_bounded_round_robin_scan() {
+        let mut fixture = Fixture::new(&[
+            "dev.p0", "dev.p1", "dev.p2", "dev.p3", "dev.p4", "dev.p5", "dev.p6", "dev.p7",
+            "dev.p8",
+        ]);
+        let mut registry = PluginRegistry::load(&fixture.registry_path).unwrap();
+        for index in (0..fixture.plugins.len()).step_by(2) {
+            let source = &mut fixture.plugins[index];
+            let id = source.plugin.manifest.id.clone();
+            // Production host watch anchors are the loader's canonical root.
+            // Renderer fixtures retain their existing path contract.
+            registry.remove_local(&id).unwrap();
+            source.path = std::fs::canonicalize(&source.path).unwrap();
+            std::fs::write(source.path.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":{"entry":"host.js"},"permissions":["host.process"]}).to_string()).unwrap();
+            std::fs::write(
+                source.path.join("host.js"),
+                "module.exports = { activate() {}, deactivate() {} };",
+            )
+            .unwrap();
+            source.grants = vec![Permission::HostProcess];
+            registry
+                .register_local(
+                    &id,
+                    LocalPluginRegistration {
+                        path: source.path.clone(),
+                        grants: source.grants.clone(),
+                    },
+                )
+                .unwrap();
+            source.plugin = load_local_plugin(&id, &source.path, &source.grants, 1).unwrap();
+        }
+        registry.save().unwrap();
+        let mut watcher = PluginWatcher::new(fixture.registry_path.clone());
+        let start = Instant::now();
+        assert!(fixture.poll(&mut watcher, start, 0).is_none());
+        assert_eq!(
+            watcher
+                .states
+                .values()
+                .filter(|state| state.stable_samples != 0)
+                .count(),
+            MAX_SOURCES_PER_POLL
+        );
+        for index in 0..fixture.plugins.len() {
+            fixture.source(
+                index,
+                "// changed\nmodule.exports = { activate() {}, deactivate() {} };",
+            );
+        }
+        let mut requested = BTreeSet::new();
+        for tick in 1..=20 {
+            if let Some(request) = fixture.poll(&mut watcher, start, tick) {
+                assert!(requested.insert(request.plugin_id));
+            }
+        }
+        assert_eq!(requested.len(), fixture.plugins.len());
+        assert!(watcher.take_diagnostics().is_empty());
     }
 }

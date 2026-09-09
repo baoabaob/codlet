@@ -113,6 +113,8 @@ fn scenario_raw_host_cdp(
     let mut sessions = std::collections::BTreeSet::new();
     let mut next_session = 0_u64;
     let mut target_queries = 0;
+    let mut deferred = Vec::new();
+    let mut recorded = Vec::new();
     while let Some(request) = reader.next_or_eof()? {
         let (id, method) = request_identity(request.clone())?;
         let session = request.get("sessionId").and_then(Value::as_str);
@@ -178,7 +180,47 @@ fn scenario_raw_host_cdp(
                 }
                 json!({})
             }
-            "Fixture.trace" => json!({"requests":trace,"liveSessions":sessions}),
+            "Fixture.defer" => {
+                if deferred.len() >= 16 {
+                    return Err(FakeChildError::InvalidRequest(
+                        "fixture deferred response budget exceeded".into(),
+                    ));
+                }
+                deferred.push(request.clone());
+                continue;
+            }
+            "Fixture.release" => {
+                let count = deferred.len();
+                for deferred in deferred.drain(..) {
+                    let mut reply = json!({"id":deferred["id"],"result":{"released":true}});
+                    if let Some(session) = deferred.get("sessionId") {
+                        reply["sessionId"] = session.clone();
+                    }
+                    write_json_frame(output, &reply)?;
+                }
+                json!({"released":count})
+            }
+            "Fixture.error" => {
+                let mut reply =
+                    json!({"id":id,"error":{"code":-32001,"message":"fixture cleanup rejected"}});
+                if let Some(session) = session {
+                    reply["sessionId"] = json!(session);
+                }
+                write_json_frame(output, &reply)?;
+                continue;
+            }
+            "Fixture.record" => {
+                if recorded.len() >= 32 {
+                    return Err(FakeChildError::InvalidRequest(
+                        "fixture record budget exceeded".into(),
+                    ));
+                }
+                recorded.push(request["params"].clone());
+                json!({"recorded":true})
+            }
+            "Fixture.trace" => {
+                json!({"requests":trace,"liveSessions":sessions,"deferred":deferred.len(),"recorded":recorded})
+            }
             "Fixture.ping" => json!({"alive":true}),
             _ => {
                 return Err(FakeChildError::InvalidRequest(format!(

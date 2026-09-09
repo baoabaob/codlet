@@ -5,10 +5,11 @@
 read plugin configuration, execute JavaScript, or start/stop/restart Codex.
 `m0-probe` and `m0-runtime` do not publish this endpoint.
 
-`codlet doctor` may query a separate authenticated control-pipe `Inspect`
-operation for its additive runtime evidence. That operation does not change this
+`codlet doctor` queries the separate authenticated control-pipe `InspectExecution`
+operation for renderer/kernel and JS process evidence, with explicit old-Host
+fallback to `Inspect`. These operations do not change this
 status-v1 request/response wire or its read-only snapshot semantics; see
-[DOCTOR_RUNTIME.md](DOCTOR_RUNTIME.md).
+[DOCTOR_RUNTIME.md](DOCTOR_RUNTIME.md) and [host process inspection](HOST_INSPECTION_2026-09-10.md).
 
 Live enable/disable/reload use the separate [runtime control endpoint](RUNTIME_CONTROL.md).
 This status schema remains read-only.

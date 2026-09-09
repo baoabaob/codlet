@@ -20,6 +20,12 @@ use crate::plugins::{LoadedPlugin, Permission};
 
 mod lifecycle;
 pub use lifecycle::{HostOperation, HostOperationResult, MAX_HOST_IDENTITIES};
+mod cleanup;
+mod snapshot;
+pub use snapshot::{
+    HostCleanupPhase, HostCleanupSnapshot, HostPluginSnapshot, HostProcessExitSnapshot,
+    HostRuntimeSnapshot,
+};
 
 const TICK: Duration = Duration::from_millis(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -48,6 +54,7 @@ pub struct HostStopReport {
 struct Published {
     observations: Vec<PluginExecutionObservation>,
     diagnostics: Vec<HostDiagnostic>,
+    snapshot: HostRuntimeSnapshot,
 }
 
 /// One owner thread pumps all host RPC independently of any optional renderer
@@ -183,6 +190,7 @@ impl Drop for HostRuntime {
 
 fn publish(published: &Mutex<Published>, owners: &[HostOwner]) {
     let mut current = published.lock().unwrap_or_else(|p| p.into_inner());
+    snapshot::update(&mut current, owners);
     for owner in owners {
         if current
             .observations
@@ -232,6 +240,9 @@ struct HostOwner {
     stop_report: Option<HostStopReport>,
     failure: Option<HostError>,
     stop_deadline: Option<Instant>,
+    cleanup_phase: HostCleanupPhase,
+    cleanup_deadline: Option<Instant>,
+    cleanup_error: Option<String>,
     start_operation: Option<lifecycle::Completion>,
     stop_operation: Option<lifecycle::Completion>,
 }
@@ -257,6 +268,9 @@ impl HostOwner {
             stop_report: None,
             failure: None,
             stop_deadline: None,
+            cleanup_phase: HostCleanupPhase::NotStarted,
+            cleanup_deadline: None,
+            cleanup_error: None,
             start_operation: None,
             stop_operation: None,
         }
@@ -307,7 +321,7 @@ impl HostOwner {
             return;
         }
         if self.observation.state == ExecutionState::Stopping {
-            self.pump_retirement();
+            self.pump_cleanup(client);
             return;
         }
         let Some(supervisor) = &mut self.supervisor else {
@@ -397,6 +411,10 @@ impl HostOwner {
                 Err(error) => self.end_subscription(&error.to_string()),
             }
         }
+        self.flush_outbox();
+    }
+
+    fn flush_outbox(&mut self) {
         if let Some(outbound) = self.outbox.pop_front() {
             let supervisor = self.supervisor.as_mut().unwrap();
             let result = match outbound {
@@ -460,6 +478,13 @@ impl HostOwner {
                 deadline = deadline.min(Instant::now() + Duration::from_millis(input.timeout_ms));
                 if self.observation.state == ExecutionState::Starting {
                     deadline = deadline.min(self.initialize_deadline);
+                } else if self.observation.state == ExecutionState::Stopping {
+                    deadline = deadline.min(self.cleanup_deadline.ok_or_else(|| {
+                        HostRpcError::new(
+                            "cleanup_unavailable",
+                            "this generation has no Core cleanup budget",
+                        )
+                    })?);
                 }
                 let request = client
                     .begin_raw_request(
@@ -551,6 +576,17 @@ impl HostOwner {
     }
 
     fn fail(&mut self, error: HostError) {
+        // Faults explicitly cancel both ordinary and cleanup work. A repeated
+        // lifecycle stop, in contrast, must preserve an in-progress cleanup.
+        self.pending.clear();
+        self.subscription.take();
+        self.outbox.clear();
+        if self.observation.state == ExecutionState::Stopping
+            && self.cleanup_phase == HostCleanupPhase::Running
+        {
+            self.cleanup_phase = HostCleanupPhase::Failed;
+            self.cleanup_error = Some(error.to_string());
+        }
         if self.failure.is_none() {
             self.observation.error = Some(error.to_string());
             self.failure = Some(error);
@@ -559,11 +595,23 @@ impl HostOwner {
     }
 
     fn begin_retirement(&mut self) {
+        if self.observation.state == ExecutionState::Stopping {
+            return;
+        }
         self.pending.clear();
         self.subscription.take();
         self.outbox.clear();
         if let Some(supervisor) = &mut self.supervisor {
-            supervisor.begin_stop();
+            if self.cleanup_phase == HostCleanupPhase::NotStarted {
+                self.cleanup_deadline = supervisor.begin_stop_with_requests();
+                self.cleanup_phase = if self.cleanup_deadline.is_some() {
+                    HostCleanupPhase::Running
+                } else {
+                    HostCleanupPhase::Unavailable
+                };
+            } else {
+                supervisor.begin_stop();
+            }
             self.stop_deadline
                 .get_or_insert_with(|| Instant::now() + CLEANUP_TIMEOUT);
             self.observation.state = ExecutionState::Stopping;
@@ -580,11 +628,19 @@ impl HostOwner {
         }
     }
 
+    #[cfg(test)]
     fn pump_retirement(&mut self) {
         let Some(supervisor) = &mut self.supervisor else {
             return;
         };
         let _ = supervisor.poll();
+        self.finish_retirement();
+    }
+
+    fn finish_retirement(&mut self) {
+        let Some(supervisor) = &mut self.supervisor else {
+            return;
+        };
         let Some(report) = supervisor.exit_report() else {
             return;
         };
@@ -602,6 +658,9 @@ impl HostOwner {
         });
         self.supervisor.take();
         self.invocation.take();
+        self.pending.clear();
+        self.subscription.take();
+        self.outbox.clear();
         self.observation.state = if self.failure.is_some() {
             ExecutionState::Failed
         } else {

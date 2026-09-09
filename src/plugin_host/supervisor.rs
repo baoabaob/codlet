@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};
 use windows_sys::Win32::System::Threading::SetEvent;
@@ -79,7 +79,8 @@ pub enum HostEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostExitReport {
     pub process_id: u32,
     pub exit_code: u32,
@@ -149,6 +150,8 @@ pub struct HostSupervisor {
     stdout_closed_since: Option<Instant>,
     forced: bool,
     shutdown_sent: bool,
+    shutdown_request_id: Option<u64>,
+    allow_shutdown_requests: bool,
     stop_grace_until: Option<Instant>,
 }
 
@@ -213,6 +216,8 @@ impl HostSupervisor {
             stdout_closed_since: None,
             forced: false,
             shutdown_sent: false,
+            shutdown_request_id: None,
+            allow_shutdown_requests: false,
             stop_grace_until: None,
         };
         let startup = (|| {
@@ -316,7 +321,14 @@ impl HostSupervisor {
         id: u64,
         result: Result<Value, HostRpcError>,
     ) -> Result<(), HostError> {
-        self.ensure_admission()?;
+        if !(self.state == HostState::Stopping
+            && self.allow_shutdown_requests
+            && self
+                .stop_grace_until
+                .is_some_and(|deadline| Instant::now() < deadline))
+        {
+            self.ensure_admission()?;
+        }
         let expires_at = *self.incoming_pending.get(&id).ok_or_else(|| {
             HostError::new(
                 "unknown_request",
@@ -398,7 +410,11 @@ impl HostSupervisor {
                 }
             }
         }
-        if matches!(self.state, HostState::Starting | HostState::Ready) {
+        if matches!(self.state, HostState::Starting | HostState::Ready)
+            || (self.state == HostState::Stopping
+                && self.allow_shutdown_requests
+                && self.stop_grace_until.is_some_and(|deadline| now < deadline))
+        {
             if self.state == HostState::Starting && now >= self.startup_deadline {
                 self.fail(HostError::new(
                     "startup_timeout",
@@ -530,8 +546,16 @@ impl HostSupervisor {
         {
             if !self.shutdown_sent {
                 self.shutdown_sent = true;
-                match self.send_request("shutdown", Value::Null, STOP_GRACE) {
+                self.incoming_pending.clear();
+                self.outgoing_pending.clear();
+                let params = if self.allow_shutdown_requests {
+                    serde_json::json!({"cleanupBudgetMs":grace_until.saturating_duration_since(Instant::now()).as_millis()})
+                } else {
+                    Value::Null
+                };
+                match self.send_request("shutdown", params, STOP_GRACE) {
                     Ok(id) => {
+                        self.shutdown_request_id = Some(id);
                         self.outgoing_pending.insert(id, grace_until);
                     }
                     Err(error) => self.fail(error),
@@ -541,6 +565,22 @@ impl HostSupervisor {
                 self.state = HostState::Stopping;
             }
         }
+    }
+
+    /// Opt-in request delivery during the same finite shutdown budget. The
+    /// caller must admit only its explicit cleanup protocol and existing grants.
+    pub(crate) fn begin_stop_with_requests(&mut self) -> Option<Instant> {
+        if matches!(self.state, HostState::Starting | HostState::Ready) {
+            self.allow_shutdown_requests = true;
+        }
+        self.begin_stop();
+        (self.allow_shutdown_requests && self.state == HostState::Stopping)
+            .then_some(self.stop_grace_until)
+            .flatten()
+    }
+
+    pub(crate) fn shutdown_request_id(&self) -> Option<u64> {
+        self.shutdown_request_id
     }
 
     pub fn exit_report(&self) -> Option<HostExitReport> {
@@ -659,7 +699,10 @@ impl HostSupervisor {
                     return Err("Host exceeded its pending request limit".into());
                 }
                 self.last_received_id = id;
-                if self.state == HostState::Stopping {
+                if self.state == HostState::Stopping
+                    && !(self.allow_shutdown_requests
+                        && self.stop_grace_until.is_some_and(|deadline| now < deadline))
+                {
                     self.enqueue(
                         WireMessage::response(
                             &self.identity,
@@ -688,8 +731,15 @@ impl HostSupervisor {
                         .map_err(|error| error.to_string())?;
                         return Ok(());
                     }
-                    self.incoming_pending
-                        .insert(id, received_at + REQUEST_TIMEOUT);
+                    let deadline = if self.state == HostState::Stopping {
+                        (received_at + REQUEST_TIMEOUT).min(
+                            self.stop_grace_until
+                                .expect("admitted shutdown request has a deadline"),
+                        )
+                    } else {
+                        received_at + REQUEST_TIMEOUT
+                    };
+                    self.incoming_pending.insert(id, deadline);
                     events.push(HostEvent::Request { id, method, params });
                 }
             }

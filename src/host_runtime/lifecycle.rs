@@ -222,10 +222,22 @@ pub(super) fn launch(
             }
             // A pending creation remains owned until its result is collected.
             // It must never deliver a process after a successful stop receipt.
-            while owners.iter().any(|owner| owner.launching) {
+            while owners.iter().any(|owner| owner.launching)
+                || owners.iter().any(|owner| {
+                    !owner.retired()
+                        && owner
+                            .stop_deadline
+                            .is_some_and(|deadline| Instant::now() < deadline)
+                })
+            {
                 launcher.collect(&mut owners);
+                client.poll_raw_io();
                 for owner in &mut owners {
                     owner.pump(&client);
+                }
+                publish(&worker_published, &owners);
+                for owner in &mut owners {
+                    owner.finish_operations();
                 }
                 thread::sleep(TICK);
             }

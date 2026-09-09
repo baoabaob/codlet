@@ -20,7 +20,8 @@ schema、registry、授信记录和生命周期命名。
 ```
 
 Renderer 使用 `renderer: {"entry":"dist/renderer.js","world":"isolated"}`。两种入口均
-导出 CommonJS `activate(context)` 和 `deactivate()`，可返回 Promise。首批继续支持独立
+导出 CommonJS `activate(context)` 和 `deactivate()`，可返回 Promise。host 的 deactivate
+还会收到可选使用的 `cleanup` 上下文，见下述停止契约。当前支持独立
 host 或独立 renderer；同包双入口协同与 host 的跨执行器 provides/requires 仍待后续。
 这项实现范围不会把两者拆成不同插件格式。
 
@@ -86,10 +87,12 @@ require 和资源路径仍指向原包。原始入口不会被长时间锁住，
 依赖文件和资源按访问时从目录读取；本版没有整包原子快照或自动依赖构建。
 
 初始化仍是 5 秒，插件可以在 activate 的 Promise 完成前调用 Core；成功后才发布 active。
-shutdown 撤销本代请求入口、abort signal 并调用 deactivate；未完成的 Core Promise 被拒绝，
-不会在停止后重新激活。需要 CDP 的清理应在进入 shutdown 前完成；该阶段不再受理新 Core
-调用。初始化失败同样尝试本地 deactivate；阻塞 JS、未退出进程或后代由原有独立 Job
-与有限停止预算回收，失败不关闭其他插件的共享 CDP 连接。
+shutdown 撤销普通请求和事件、abort 普通 signal，并调用 `deactivate(cleanup)`；未完成的
+普通 Core Promise 被拒绝，不会在停止后重新激活。清理上下文的 `cleanup.cdp.request`
+与 `cleanup.core.request('cdp.request', …)` 可在同代、同授信下使用公开 CDP，全部请求
+共享 Core 的 1500 ms 总预算，不增加订阅或延长 deadline。尚未完成的异步 activate 不阻止
+清理；阻塞 JS、未退出进程或后代仍由独立 Job 和有限停止预算回收。完整语义与示例见
+[Host cleanup](HOST_CLEANUP_2026-09-10.md)。
 
 JSONL、CDP 队列与监督截止保留 [M2a 监督层的限度](M2A_HOST_RUNTIME_2026-09-09.md#生命周期与限度)。
 执行器还限制 pending JS RPC 和事件回调数量；订阅响应与第一条事件在同一读取批次中也
@@ -121,9 +124,10 @@ export = plugin;
 用户已留证的历史日志与旧产物不重写。
 
 本次 JS 改造之后，[M2b](M2B_HOST_CONTROL_2026-09-10.md)接入了同一 CLI receipt 的 host
-在线启停/重载，并支持启动后注册的新 host。host watch、组合入口、跨执行器 capability 与
-完整 host Inspect 仍为后续 M2 工作。host 状态目前从 launch 日志、生命周期 receipt 与可选
-GUI 获取，status v1 / doctor Inspect 仍主要观察托管 renderer。
+在线启停/重载，并支持启动后注册的新 host。后续已接入
+[host watch](HOST_WATCH_2026-09-10.md)、带预算的清理与
+[host execution Inspect](HOST_INSPECTION_2026-09-10.md)。doctor 可读实际进程和清理样本，
+旧 status-v1 / Inspect 保持原契约。组合入口、跨执行器 capability 与完整 M2 仍待后续。
 
 统一 JS/TS 是开发与分发契约，开放性由 Core 暴露的原语决定。图灵完备本身不能替代缺失
 的系统接口。普通 Node host 仍可直接操作当前用户有权访问的文件、网络或进程；禁用 addon

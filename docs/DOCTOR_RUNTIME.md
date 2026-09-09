@@ -4,13 +4,20 @@
 `codlet.doctor/v1` report. Static package, executable, process, registry, catalog,
 plugin-validation, and dependency checks remain independent from runtime
 observation. When the current registry has a matching Host that supports the
-versioned `Inspect` request, doctor adds a read-only runtime sample; it does not
+versioned inspection requests, doctor adds a read-only runtime sample; it does not
 change the public `codlet status` schema or wire contract.
+
+The current client prefers `InspectExecution`, which adds independent JS process,
+cleanup and retained-exit evidence under `runtime.hostProcesses`. An authenticated
+older Host can fall back to the original `Inspect`; see the
+[host inspection extension](HOST_INSPECTION_2026-09-10.md). The renderer/kernel
+interpretation below remains unchanged.
 
 ## Collection boundary
 
 Doctor derives the registry scope from the current `%LOCALAPPDATA%\Codlet\config.json`
-path and queries the scoped authenticated control endpoint with `Inspect`. The
+path and queries the scoped authenticated control endpoint with `InspectExecution`,
+falling back to `Inspect` only on an authenticated compatibility rejection. The
 collection path does not acquire a mutation lease, reserve or submit a receipt,
 execute CDP, read plugin source to infer loaded providers, or start/stop/attach
 to Codex. It only reads one Host publication already owned by the foreground
@@ -18,8 +25,8 @@ runtime. The Host publisher and the response must agree on Host PID, Host
 incarnation, and registry scope before the sample is accepted.
 
 The control response keeps the existing schema version and old command replies
-unchanged. Only an `Inspect` response may carry the additive `inspection`
-object. `Inspect` is a control-pipe operation separate from status v1; status v1
+unchanged. Only inspection responses may carry the additive `inspection`
+object; only `InspectExecution` adds `host_inspection`. These control-pipe operations are separate from status v1; status v1
 continues to serve its existing sampled snapshot.
 
 ## Host selection and unavailable states

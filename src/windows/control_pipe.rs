@@ -221,6 +221,39 @@ pub fn query(scope: &RegistryScope, request: &ControlRequest) -> ControlReport {
     )
 }
 
+/// Prefer process-aware inspection, falling back only after an authenticated
+/// older Host explicitly rejects the new read-only command. Both reads share
+/// one deadline; transport errors never trigger a second probe or a mutation.
+pub fn query_execution_inspection(scope: &RegistryScope) -> ControlReport {
+    query_inspection_with(scope.id(), |request, timeout| {
+        exchange(scope.pipe_name(), Some(scope.id()), request, timeout)
+    })
+}
+
+fn query_inspection_with(
+    scope: &str,
+    mut query: impl FnMut(&ControlRequest, Duration) -> ControlReport,
+) -> ControlReport {
+    let deadline = Instant::now() + CONTROL_QUERY_TIMEOUT;
+    let report = query(&ControlRequest::inspect_execution(), CONTROL_QUERY_TIMEOUT);
+    if matches!(
+        report.status,
+        ControlStatus::InvalidRequest | ControlStatus::Incompatible
+    ) && report.host_pid != 0
+        && report.registry_scope.as_deref() == Some(scope)
+    {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return failure(
+                ControlStatus::Timeout,
+                "Runtime inspection compatibility read exceeded its deadline",
+            );
+        }
+        return query(&ControlRequest::inspect(), remaining);
+    }
+    report
+}
+
 pub fn discover() -> ControlReport {
     let name = match discovery_pipe_name() {
         Ok(name) => name,
@@ -370,10 +403,21 @@ fn decode_response(
             );
         }
     }
-    if !matches!(request, ControlRequest::Inspect { .. }) && value.get("inspection").is_some() {
+    let inspecting = matches!(
+        request,
+        ControlRequest::Inspect { .. } | ControlRequest::InspectExecution { .. }
+    );
+    let inspecting_hosts = matches!(request, ControlRequest::InspectExecution { .. });
+    if !inspecting && value.get("inspection").is_some() {
         return failure(
             ControlStatus::CommunicationError,
             "The legacy control reply must not contain an inspection field",
+        );
+    }
+    if !inspecting_hosts && value.get("host_inspection").is_some() {
+        return failure(
+            ControlStatus::CommunicationError,
+            "Host process facts are only allowed on inspect_execution replies",
         );
     }
     let report: ControlReport = match serde_json::from_slice(bytes) {
@@ -400,7 +444,7 @@ fn decode_response(
         );
     }
     if let Some(inspection) = &report.inspection {
-        if !matches!(request, ControlRequest::Inspect { .. }) {
+        if !inspecting {
             return failure(
                 ControlStatus::CommunicationError,
                 "Inspection data is not allowed on this control command",
@@ -418,13 +462,13 @@ fn decode_response(
     }
     let valid_shape = match report.status {
         ControlStatus::Inspected => {
-            matches!(request, ControlRequest::Inspect { .. })
+            inspecting
                 && report.inspection.is_some()
                 && report.operation.is_none()
                 && report.error.is_none()
         }
         ControlStatus::InspectionTooLarge => {
-            matches!(request, ControlRequest::Inspect { .. })
+            inspecting
                 && report.inspection.is_none()
                 && report.operation.is_none()
                 && report.error.is_some()
@@ -469,7 +513,7 @@ fn decode_response(
         | ControlStatus::Timeout => false,
         _ => report.operation.is_none() && report.error.is_some(),
     } && (report.status == ControlStatus::Inspected
-        || report.inspection.is_none());
+        || (report.inspection.is_none() && report.host_inspection.is_none()));
     if !valid_shape {
         return failure(
             ControlStatus::CommunicationError,
@@ -989,6 +1033,154 @@ mod tests {
         );
         assert_eq!(rejected.status, ControlStatus::StaleHost, "{rejected:?}");
         assert!(rejected.inspection.is_none());
+    }
+
+    #[test]
+    fn scoped_execution_inspection_transports_process_facts_without_legacy_field_leaks() {
+        use crate::plugin_execution::HostRuntimeSnapshot;
+        let directory = tempfile::tempdir().unwrap();
+        let scope = RegistryScope::for_path(&directory.path().join("not-created.json")).unwrap();
+        let publisher = StatusPublisher::new();
+        let server = ControlServer::bind(
+            scope.acquire(Duration::from_millis(100)).unwrap(),
+            None,
+            publisher.clone(),
+        )
+        .unwrap();
+        let hosts = HostRuntimeSnapshot {
+            sequence: 12,
+            sampled_at_unix_ms: 5000,
+            owner_alive: true,
+            runtime_stopping: false,
+            retained_limit: 80,
+            history_truncated: true,
+            plugins: Vec::new(),
+        };
+        publisher.publish_host_observation(hosts.clone());
+        publisher.set_ready();
+        server.broker().set_ready();
+        let reply = get(&scope, &ControlRequest::inspect_execution());
+        assert_eq!(reply.status, ControlStatus::Inspected, "{reply:?}");
+        assert_eq!(reply.host_inspection.as_ref(), Some(&hosts));
+        assert_eq!(
+            reply.inspection.as_ref().unwrap().host_pid,
+            std::process::id()
+        );
+        assert_eq!(
+            reply.inspection.as_ref().unwrap().registry_scope,
+            scope.id()
+        );
+        assert!(!scope.path().exists());
+        assert!(server.broker().take_next().is_none());
+
+        for request in [ControlRequest::inspect(), ControlRequest::identify()] {
+            let mut leaked = server.broker().handle(request.clone());
+            assert!(
+                serde_json::to_value(&leaked)
+                    .unwrap()
+                    .get("host_inspection")
+                    .is_none()
+            );
+            leaked.host_inspection = Some(hosts.clone());
+            assert_eq!(
+                decode_response(
+                    &encode_response(&leaked).unwrap(),
+                    std::process::id(),
+                    Some(scope.id()),
+                    &request
+                )
+                .status,
+                ControlStatus::CommunicationError
+            );
+            let mut null_extension =
+                serde_json::to_value(server.broker().handle(request.clone())).unwrap();
+            null_extension["host_inspection"] = serde_json::Value::Null;
+            assert_eq!(
+                decode_response(
+                    &serde_json::to_vec(&null_extension).unwrap(),
+                    std::process::id(),
+                    Some(scope.id()),
+                    &request
+                )
+                .status,
+                ControlStatus::CommunicationError
+            );
+        }
+        let mut missing_identity = reply;
+        missing_identity.inspection = None;
+        assert_eq!(
+            decode_response(
+                &encode_response(&missing_identity).unwrap(),
+                std::process::id(),
+                Some(scope.id()),
+                &ControlRequest::inspect_execution()
+            )
+            .status,
+            ControlStatus::CommunicationError
+        );
+    }
+
+    #[test]
+    fn execution_inspection_falls_back_only_on_authenticated_compatibility_rejection() {
+        let scope = "a".repeat(64);
+        let publisher = StatusPublisher::new();
+        publisher.bind_runtime_identity([8; 16], &scope).unwrap();
+        let broker = ControlBroker::with_inspection([8; 16], scope.clone(), publisher);
+        let mut calls = Vec::new();
+        let reply = query_inspection_with(&scope, |request, timeout| {
+            assert!(timeout <= CONTROL_QUERY_TIMEOUT && !timeout.is_zero());
+            calls.push(request.clone());
+            if matches!(request, ControlRequest::InspectExecution { .. }) {
+                server_failure(
+                    &broker,
+                    ControlStatus::InvalidRequest,
+                    "older Host has no inspect_execution command",
+                )
+            } else {
+                broker.handle(request.clone())
+            }
+        });
+        assert_eq!(reply.status, ControlStatus::Inspected);
+        assert_eq!(
+            calls,
+            [
+                ControlRequest::inspect_execution(),
+                ControlRequest::inspect()
+            ]
+        );
+        assert!(reply.host_inspection.is_none() && reply.inspection.is_some());
+        assert!(broker.take_next().is_none());
+        for status in [
+            ControlStatus::Timeout,
+            ControlStatus::Busy,
+            ControlStatus::UntrustedServer,
+            ControlStatus::CommunicationError,
+            ControlStatus::StaleHost,
+        ] {
+            let mut calls = 0;
+            let reply = query_inspection_with(&scope, |request, _| {
+                calls += 1;
+                assert!(matches!(request, ControlRequest::InspectExecution { .. }));
+                server_failure(&broker, status, "fixture transport failure")
+            });
+            assert_eq!(reply.status, status);
+            assert_eq!(calls, 1);
+        }
+        for authenticated in [false, true] {
+            let mut calls = 0;
+            query_inspection_with(&scope, |_, _| {
+                calls += 1;
+                let mut reply =
+                    server_failure(&broker, ControlStatus::InvalidRequest, "fixture rejection");
+                if authenticated {
+                    reply.registry_scope = Some("b".repeat(64));
+                } else {
+                    reply.host_pid = 0;
+                }
+                reply
+            });
+            assert_eq!(calls, 1);
+        }
     }
 
     #[test]

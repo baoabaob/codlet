@@ -48,9 +48,58 @@ async function host(t, source, setup) {
       });
     },
     initialize() { this.send({ type: 'request', id: 1, method: 'initialize', params: { protocolVersion: 1, pluginVersion: '1' } }); },
-    shutdown() { this.send({ type: 'request', id: 2, method: 'shutdown', params: null }); },
+    shutdown(cleanupBudgetMs) { this.send({ type: 'request', id: 2, method: 'shutdown', params: cleanupBudgetMs === undefined ? null : { cleanupBudgetMs } }); },
   };
 }
+
+test('retired async subscription callbacks cannot abort the separate cleanup phase', async t => {
+  for (const method of ['cdp.event', 'cdp.subscriptionEnded']) {
+    const fixture = await host(t, `module.exports = {
+      async activate(context) {
+        const callback = async () => { await context.cdp.request('Fixture.waitingCallback'); };
+        await context.cdp.subscribe({scope:'all'}, callback, callback);
+      },
+      async deactivate(cleanup) {
+        await cleanup.cdp.request('Fixture.cleanup');
+        console.log('cleanup-finished');
+      }
+    };`);
+    fixture.initialize();
+    const subscribe = await fixture.next();
+    fixture.send({ type: 'response', id: subscribe.id, ok: true, result: { subscriptionId: 1 } });
+    assert.equal((await fixture.next()).result.ready, true);
+    fixture.send({ type: 'notification', method, params: { subscriptionId: 1, event: { method: 'Fixture.event' }, reason: 'fixture-end' } });
+    const pending = await fixture.next();
+    assert.equal(pending.params.method, 'Fixture.waitingCallback');
+    fixture.shutdown(800);
+    const cleanup = await fixture.next();
+    assert.equal(cleanup.method, 'cleanup.request');
+    assert.equal(cleanup.params.params.method, 'Fixture.cleanup');
+    fixture.send({ type: 'response', id: cleanup.id, ok: true, result: {} });
+    assert.equal((await fixture.next()).ok, true);
+    assert.equal((await fixture.exited)[0], 0);
+    assert.match(fixture.stderr(), /cleanup-finished/);
+  }
+});
+
+test('errors in active subscription callbacks still fail their plugin', async t => {
+  for (const method of ['cdp.event', 'cdp.subscriptionEnded']) {
+    const fixture = await host(t, `module.exports = {
+      async activate(context) {
+        const callback = async () => { throw new Error('active-callback-failed'); };
+        await context.cdp.subscribe({scope:'all'}, callback, callback);
+      },
+      deactivate() {}
+    };`);
+    fixture.initialize();
+    const subscribe = await fixture.next();
+    fixture.send({ type: 'response', id: subscribe.id, ok: true, result: { subscriptionId: 1 } });
+    assert.equal((await fixture.next()).result.ready, true);
+    fixture.send({ type: 'notification', method, params: { subscriptionId: 1, event: { method: 'Fixture.event' }, reason: 'fixture-end' } });
+    assert.equal((await fixture.exited)[0], 1);
+    assert.match(fixture.stderr(), /active-callback-failed/);
+  }
+});
 
 test('host bootstrap delivers a coalesced subscription response and first event before activation completes', async t => {
   const fixture = await host(t, `module.exports = {
@@ -131,4 +180,71 @@ test('a CommonJS dependency back-reference sees the source snapshot without eval
   fixture.shutdown();
   assert.equal((await fixture.next()).ok, true);
   assert.equal((await fixture.exited)[0], 0);
+});
+
+test('deactivate has a distinct cleanup request phase while ordinary calls and late replies retire', async t => {
+  const fixture = await host(t, `let ordinary; module.exports = {
+    activate(context) { ordinary = context; return context.cdp.request('Fixture.old'); },
+    async deactivate(cleanup) {
+      try { await ordinary.cdp.request('Fixture.mustNotRun'); } catch (error) { console.log(error.code); }
+      if (!ordinary.signal.aborted || cleanup.signal.aborted) throw new Error('incorrect phase signals');
+      await cleanup.cdp.request('Target.detachFromTarget', {sessionId:'old-session'});
+    }
+  };`);
+  fixture.initialize();
+  const old = await fixture.next();
+  fixture.shutdown(800);
+  const cleanup = await fixture.next();
+  assert.equal(cleanup.method, 'cleanup.request');
+  assert.equal(cleanup.params.method, 'cdp.request');
+  assert.equal(cleanup.params.params.method, 'Target.detachFromTarget');
+  fixture.send(
+    {type:'response', id:old.id, ok:true, result:{late:true}},
+    {type:'response', id:cleanup.id, ok:true, result:{}},
+  );
+  const stopped = await fixture.next();
+  assert.equal(stopped.id, 2);
+  assert.equal(stopped.ok, true);
+  assert.equal((await fixture.exited)[0], 0);
+  assert.match(fixture.stderr(), /host_stopping/);
+});
+
+test('an unresolved activation Promise does not consume the entire deactivate opportunity', async t => {
+  const fixture = await host(t, `module.exports = {
+    async activate(context) { await context.cdp.request('Fixture.started'); return new Promise(() => {}); },
+    deactivate(cleanup) { return cleanup.core.request('cdp.request', {method:'Fixture.cleanup'}); }
+  };`);
+  fixture.initialize();
+  const activated = await fixture.next();
+  fixture.send({type:'response', id:activated.id, ok:true, result:{}});
+  fixture.shutdown(800);
+  const cleanup = await fixture.next();
+  assert.equal(cleanup.method, 'cleanup.request');
+  fixture.send({type:'response', id:cleanup.id, ok:true, result:{}});
+  assert.equal((await fixture.next()).id, 2);
+  assert.equal((await fixture.exited)[0], 0);
+});
+
+test('a sequence of cleanup calls shares one total deadline and yields an explicit failure', async t => {
+  const fixture = await host(t, `module.exports = {
+    activate() {},
+    async deactivate(cleanup) {
+      await cleanup.cdp.request('Fixture.first');
+      await cleanup.cdp.request('Fixture.never', {}, {timeoutMs:15000});
+    }
+  };`);
+  fixture.initialize();
+  assert.equal((await fixture.next()).result.ready, true);
+  const started = performance.now();
+  fixture.shutdown(120);
+  const first = await fixture.next();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  fixture.send({type:'response', id:first.id, ok:true, result:{}});
+  assert.equal((await fixture.next()).params.params.method, 'Fixture.never');
+  const stopped = await fixture.next();
+  assert.equal(stopped.id, 2);
+  assert.equal(stopped.ok, false);
+  assert.equal(stopped.error.code, 'cleanup_timeout');
+  assert.ok(performance.now() - started < 500);
+  assert.equal((await fixture.exited)[0], 1);
 });

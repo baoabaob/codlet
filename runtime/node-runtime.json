@@ -6,7 +6,8 @@
     "win-x64": {
       "archive": "node-v24.21.0-win-x64.zip",
       "archiveSha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
-      "executableSha256": "ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32"
+      "executableSha256": "ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32",
+      "licenseSha256": "ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9"
     },
     "win-arm64": {
       "archive": "node-v24.21.0-win-arm64.zip",

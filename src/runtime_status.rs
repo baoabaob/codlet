@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::plugin_execution::HostRuntimeSnapshot;
 use crate::runtime_inspection::{RendererInspection, RuntimeInspection};
 
 pub const STATUS_SCHEMA_VERSION: u32 = 1;
@@ -225,6 +226,7 @@ pub struct StatusPublisher(Arc<Mutex<PublishedState>>);
 struct PublishedState {
     legacy: Arc<HostSnapshot>,
     renderer: Option<Arc<RendererInspection>>,
+    hosts: Option<Arc<HostRuntimeSnapshot>>,
     identity: Option<Arc<RuntimeIdentity>>,
 }
 
@@ -262,6 +264,7 @@ impl StatusPublisher {
                 termination: None,
             }),
             renderer: None,
+            hosts: None,
             identity: None,
         })))
     }
@@ -301,52 +304,76 @@ impl StatusPublisher {
     }
 
     pub fn inspection_snapshot(&self) -> Option<RuntimeInspection> {
-        let (legacy, renderer, identity) = {
+        self.inspection_components(false)
+            .map(|(runtime, _)| runtime)
+    }
+
+    pub(crate) fn inspection_components(
+        &self,
+        include_hosts: bool,
+    ) -> Option<(RuntimeInspection, Option<HostRuntimeSnapshot>)> {
+        let (legacy, renderer, identity, hosts) = {
             let current = self.0.lock().unwrap_or_else(|p| p.into_inner());
             (
                 Arc::clone(&current.legacy),
                 current.renderer.as_ref().map(Arc::clone),
                 Arc::clone(current.identity.as_ref()?),
+                include_hosts
+                    .then(|| current.hosts.as_ref().map(Arc::clone))
+                    .flatten(),
             )
         };
-        Some(RuntimeInspection {
-            host_incarnation: identity.incarnation.clone(),
-            registry_scope: identity.scope.clone(),
-            host_pid: legacy.host_pid,
-            codlet_version: legacy.codlet_version.clone(),
-            state: legacy.state,
-            sequence: legacy.sequence,
-            sampled_at_unix_ms: legacy.sampled_at_unix_ms,
-            codex: legacy.codex.clone(),
-            renderer: renderer.as_deref().cloned(),
-            termination: legacy.termination.clone(),
-        })
+        Some((
+            RuntimeInspection {
+                host_incarnation: identity.incarnation.clone(),
+                registry_scope: identity.scope.clone(),
+                host_pid: legacy.host_pid,
+                codlet_version: legacy.codlet_version.clone(),
+                state: legacy.state,
+                sequence: legacy.sequence,
+                sampled_at_unix_ms: legacy.sampled_at_unix_ms,
+                codex: legacy.codex.clone(),
+                renderer: renderer.as_deref().cloned(),
+                termination: legacy.termination.clone(),
+            },
+            hosts.as_deref().cloned(),
+        ))
     }
 
-    fn update(&self, update: impl FnOnce(&mut HostSnapshot, &mut Option<Arc<RendererInspection>>)) {
+    fn update(
+        &self,
+        update: impl FnOnce(
+            &mut HostSnapshot,
+            &mut Option<Arc<RendererInspection>>,
+            &mut Option<Arc<HostRuntimeSnapshot>>,
+        ),
+    ) {
         let mut current = self.0.lock().unwrap_or_else(|p| p.into_inner());
         let PublishedState {
-            legacy, renderer, ..
+            legacy,
+            renderer,
+            hosts,
+            ..
         } = &mut *current;
         let snapshot = Arc::make_mut(legacy);
         if snapshot.state == HostState::Terminated {
             return;
         }
-        update(snapshot, renderer);
+        update(snapshot, renderer, hosts);
         snapshot.sequence = snapshot.sequence.saturating_add(1);
         snapshot.sampled_at_unix_ms = now_ms();
     }
 
     pub fn set_codex(&self, codex: CodexStatus) {
-        self.update(|snapshot, _| snapshot.codex = Some(codex));
+        self.update(|snapshot, _, _| snapshot.codex = Some(codex));
     }
 
     pub fn set_ready(&self) {
-        self.update(|snapshot, _| snapshot.state = HostState::Ready);
+        self.update(|snapshot, _, _| snapshot.state = HostState::Ready);
     }
 
     pub fn publish_renderer(&self, renderer: RendererStatus) {
-        self.update(|snapshot, inspection| {
+        self.update(|snapshot, inspection, _| {
             snapshot.renderer = renderer;
             // Legacy-only callers did not sample provider facts for this state.
             *inspection = None;
@@ -359,14 +386,21 @@ impl StatusPublisher {
         inspection: RendererInspection,
     ) {
         let inspection = Arc::new(inspection);
-        self.update(|snapshot, renderer| {
+        self.update(|snapshot, renderer, _| {
             snapshot.renderer = legacy;
             *renderer = Some(inspection);
         });
     }
 
+    /// Publish already sampled process facts. This performs no runtime work or
+    /// plugin/source inspection; the executor retains its own sample sequence.
+    pub fn publish_host_observation(&self, hosts: HostRuntimeSnapshot) {
+        let hosts = Arc::new(hosts);
+        self.update(|_, _, current| *current = Some(hosts));
+    }
+
     pub fn terminate(&self, reason: impl Into<String>) {
-        self.update(|snapshot, inspection| {
+        self.update(|snapshot, inspection, _| {
             snapshot.state = HostState::Terminated;
             snapshot.termination = Some(reason.into());
             snapshot.renderer.targets.clear();

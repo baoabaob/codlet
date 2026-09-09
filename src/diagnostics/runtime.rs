@@ -8,6 +8,7 @@ use serde_json::json;
 
 use super::{Check, DiagnosticIssue, DoctorReport, RuntimeObservations, render_check};
 use crate::capabilities::CapabilityDescriptor;
+use crate::plugin_execution::HostRuntimeSnapshot;
 use crate::runtime_inspection::{
     InspectedTarget, ProviderKind, RegisteredProvider, RuntimeInspection,
 };
@@ -36,6 +37,11 @@ pub enum DoctorRuntimeInput {
     },
     Inspected {
         inspection: Box<RuntimeInspection>,
+        queried_at_unix_ms: u64,
+    },
+    ExecutionInspected {
+        inspection: Box<RuntimeInspection>,
+        hosts: Box<HostRuntimeSnapshot>,
         queried_at_unix_ms: u64,
     },
 }
@@ -137,6 +143,7 @@ impl RuntimeObservations {
             compatibility: Check::Unavailable {
                 reason: COMPATIBILITY_UNPROBED,
             },
+            host_processes: None,
             sample: None,
             issues: Vec::new(),
             recent_events: Vec::new(),
@@ -184,6 +191,12 @@ impl RuntimeObservations {
                 inspection,
                 queried_at_unix_ms,
             } => Self::inspected(*inspection, queried_at_unix_ms),
+            DoctorRuntimeInput::ExecutionInspected {
+                inspection,
+                hosts,
+                queried_at_unix_ms,
+            } => Self::inspected(*inspection, queried_at_unix_ms)
+                .with_hosts(*hosts, queried_at_unix_ms),
         }
     }
 
@@ -395,6 +408,7 @@ impl RuntimeObservations {
                 let _ = writeln!(output, "  termination: {termination}");
             }
         }
+        self.render_hosts(output);
         render_check(output, "targets", &self.targets, |output, targets| {
             let _ = writeln!(output, "targets: {} observed", targets.len());
         });

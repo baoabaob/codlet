@@ -7,8 +7,10 @@ TS is compiled before loading. Executable entries and Node native addons are
 unsupported. See the [host contract](JS_PLUGIN_RUNTIME_2026-09-09.md)
 and [raw host example](../examples/raw-host/README.md). M2b adds online host
 enable/disable/reload through the same CLI receipts; see [host lifecycle](M2B_HOST_CONTROL_2026-09-10.md).
-File watching still applies only to renderer plugins. Status-v1 and doctor Inspect still observe
-the managed renderer only; host execution is reported in the launch log and GUI.
+Opt-in file watching now also supports loaded host JS entries; see
+[host watching](HOST_WATCH_2026-09-10.md). Doctor now uses
+[execution inspection](HOST_INSPECTION_2026-09-10.md) for actual host process and
+cleanup facts; legacy status-v1 and Inspect retain their existing field sets.
 
 Codlet loads explicitly registered local directories at session startup or through
 the running Host's enable/reload commands. Registration, inspection, and removal
@@ -108,12 +110,25 @@ unchanged status-v1 sampled snapshot. See [the doctor runtime inspection contrac
 The current renderer RPC transport supports target-scoped requirements; the
 generic kernel's other scope declarations do not imply a working renderer route.
 
-Use `codlet launch --watch` to observe the manifest and renderer entry of local
-plugins already loaded by that Host. The watcher waits for the affected dependency
-closure to stabilize, then uses the same reload transaction. A failed version is
-attempted once until its contents or relevant grants change. Changed registrations
-cannot automatically select a new directory; see the control contract for path
-guards and receipt-based recovery after a CLI timeout.
+Use `codlet launch --watch` to observe the manifest and declared host or renderer
+JS entry of local plugins already loaded by that Host. The observer shares one
+four-source scan budget and waits for two matching samples plus a quiet interval.
+Renderer dependency closures remain grouped; each host uses its existing online
+reload transaction and a single queryable receipt. A failed host candidate keeps
+its attempted signature across rollback generations, so an unchanged bad version
+does not keep restarting the restored code.
+
+Host watch pins the loaded root and complete grants record. Source reads pause
+when that registration is removed, disabled, moved, or regranted; select changed
+trust explicitly with CLI enable/reload. Registration alone never joins the watch
+set, while an online enable can add a newly loaded host without restarting Codex.
+The execution-time guard also checks generation and the selected stable bytes,
+so a queued watch cannot replace a later CLI generation or run a newer unsettled
+save. Pre-source guard rejections can be selected again after fresh stable
+samples; actual invalid-source or activation failures are attempted only once.
+Resources, dependencies and TS inputs are outside this watch set. See the
+[host watch contract](HOST_WATCH_2026-09-10.md) and [control contract](RUNTIME_CONTROL.md)
+for source guards, bounded diagnostics and receipt-based recovery.
 
 ## Plugin format
 

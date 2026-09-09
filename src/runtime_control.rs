@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::plugin_control::{PluginControlError, PluginControlReport, PluginControlRequest};
+use crate::plugin_execution::HostRuntimeSnapshot;
 use crate::runtime_inspection::RuntimeInspection;
 use crate::runtime_status::StatusPublisher;
 
@@ -23,6 +24,9 @@ pub enum ControlRequest {
         schema_version: u32,
     },
     Inspect {
+        schema_version: u32,
+    },
+    InspectExecution {
         schema_version: u32,
     },
     Prepare {
@@ -47,6 +51,11 @@ impl ControlRequest {
     }
     pub fn inspect() -> Self {
         Self::Inspect {
+            schema_version: CONTROL_SCHEMA_VERSION,
+        }
+    }
+    pub fn inspect_execution() -> Self {
+        Self::InspectExecution {
             schema_version: CONTROL_SCHEMA_VERSION,
         }
     }
@@ -121,6 +130,10 @@ pub struct ControlReport {
     /// their original field set for clients with deny_unknown_fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inspection: Option<RuntimeInspection>,
+    /// Only the explicit InspectExecution command adds host process facts.
+    /// Legacy Inspect and mutation replies keep their original wire fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_inspection: Option<HostRuntimeSnapshot>,
 }
 
 impl ControlReport {
@@ -133,6 +146,7 @@ impl ControlReport {
             operation: None,
             error: Some(message.into()),
             inspection: None,
+            host_inspection: None,
         }
     }
 
@@ -253,8 +267,11 @@ impl ControlBroker {
     }
 
     pub fn handle(&self, request: ControlRequest) -> ControlReport {
-        if matches!(&request, ControlRequest::Inspect { .. }) {
-            return self.inspect();
+        if matches!(
+            &request,
+            ControlRequest::Inspect { .. } | ControlRequest::InspectExecution { .. }
+        ) {
+            return self.inspect(matches!(&request, ControlRequest::InspectExecution { .. }));
         }
         if matches!(
             &request,
@@ -318,7 +335,7 @@ impl ControlBroker {
         }
     }
 
-    fn inspect(&self) -> ControlReport {
+    fn inspect(&self, include_hosts: bool) -> ControlReport {
         // Clone identity under the mailbox lock, then release it before touching
         // the publisher or serializing. Inspection cannot alter receipt state.
         let (incarnation, mut report) = {
@@ -328,10 +345,10 @@ impl ControlBroker {
                 state.report(ControlStatus::Inspected, None, None),
             )
         };
-        let Some(inspection) = self
+        let Some((inspection, hosts)) = self
             .1
             .as_ref()
-            .and_then(StatusPublisher::inspection_snapshot)
+            .and_then(|publisher| publisher.inspection_components(include_hosts))
         else {
             report.status = ControlStatus::NotReady;
             report.error = Some("The Host inspection publisher has not been bound".into());
@@ -349,9 +366,11 @@ impl ControlBroker {
             return report;
         }
         report.inspection = Some(inspection);
+        report.host_inspection = hosts;
         if encode_response(&report).is_err() {
             report.status = ControlStatus::InspectionTooLarge;
             report.inspection = None;
+            report.host_inspection = None;
             report.error = Some(format!(
                 "Host inspection exceeds the {MAX_CONTROL_RESPONSE_BYTES}-byte response limit"
             ));
@@ -478,6 +497,7 @@ impl BrokerState {
             operation,
             error,
             inspection: None,
+            host_inspection: None,
         }
     }
     fn failure(&self, status: ControlStatus, error: impl Into<String>) -> ControlReport {
@@ -600,6 +620,10 @@ mod tests {
         let valid = serde_json::to_vec(&ControlRequest::prepare(request())).unwrap();
         assert!(decode_request(&valid).is_ok());
         assert!(decode_request(&serde_json::to_vec(&ControlRequest::inspect()).unwrap()).is_ok());
+        assert!(
+            decode_request(&serde_json::to_vec(&ControlRequest::inspect_execution()).unwrap())
+                .is_ok()
+        );
         for invalid in [
             br#"{"schema_version":1,"command":"eval","js":"process.exit()"}"#.as_slice(),
             br#"{"schema_version":1,"command":"prepare","request":{"action":"reload","plugin_id":"dev.fixture","path":"C:/other"}}"#,
@@ -608,6 +632,7 @@ mod tests {
             br#"{"schema_version":1,"command":"identify","extra":true}"#,
             br#"{"schema_version":1,"command":"inspect","js":"1+1"}"#,
             br#"{"schema_version":1,"command":"inspect","path":"C:/another-registry"}"#,
+            br#"{"schema_version":1,"command":"inspect_execution","path":"C:/another-registry"}"#,
             br#"{"schema_version":1,"command":"identify","command":"identify"}"#,
             br#"{"schema_version":1,"command":"submit","operation_id":"anything"}"#,
             b"null", b"[]", b"\xff",
@@ -866,6 +891,79 @@ mod tests {
             broker.handle(ControlRequest::submit(ticket)).status,
             ControlStatus::Completed
         );
+        assert!(broker.take_next().is_none());
+    }
+
+    #[test]
+    fn execution_inspection_is_read_only_and_preserves_legacy_shapes_and_response_bounds() {
+        use crate::plugin_execution::{ExecutionState, HostCleanupSnapshot, HostPluginSnapshot};
+        let publisher = StatusPublisher::new();
+        publisher
+            .bind_runtime_identity([3; 16], &"a".repeat(64))
+            .unwrap();
+        let broker = ControlBroker::with_inspection([3; 16], "a".repeat(64), publisher.clone());
+        publisher.set_ready();
+        broker.set_ready();
+        let mut sample = HostRuntimeSnapshot {
+            sequence: 7,
+            sampled_at_unix_ms: 10_000,
+            owner_alive: true,
+            runtime_stopping: false,
+            retained_limit: 80,
+            history_truncated: false,
+            plugins: vec![HostPluginSnapshot {
+                id: "dev.raw".into(),
+                version: "1".into(),
+                generation: 2,
+                state: ExecutionState::Active,
+                process_id: Some(1234),
+                error: None,
+                pending_core_requests: 1,
+                subscriptions: 1,
+                outbox: 0,
+                launching: false,
+                cleanup: HostCleanupSnapshot::default(),
+                exit: None,
+            }],
+        };
+        publisher.publish_host_observation(sample.clone());
+        let sequence = publisher.snapshot().sequence;
+        let inspected = broker.handle(ControlRequest::inspect_execution());
+        assert_eq!(inspected.status, ControlStatus::Inspected);
+        assert_eq!(inspected.host_inspection.as_ref(), Some(&sample));
+        assert_eq!(inspected.inspection.as_ref().unwrap().sequence, sequence);
+        for _ in 0..3 {
+            assert_eq!(
+                broker.handle(ControlRequest::inspect_execution()),
+                inspected
+            );
+        }
+        assert_eq!(publisher.snapshot().sequence, sequence);
+        assert!(broker.take_next().is_none());
+        let ticket = reserve(&broker);
+        assert!(ticket.ends_with("-0000000000000001"));
+        for request in [
+            ControlRequest::inspect(),
+            ControlRequest::identify(),
+            ControlRequest::result(&ticket),
+        ] {
+            let wire = serde_json::to_value(broker.handle(request)).unwrap();
+            assert!(wire.get("host_inspection").is_none());
+        }
+        sample.plugins[0].error = Some("x".repeat(MAX_CONTROL_RESPONSE_BYTES));
+        publisher.publish_host_observation(sample);
+        let oversized = broker.handle(ControlRequest::inspect_execution());
+        assert_eq!(oversized.status, ControlStatus::InspectionTooLarge);
+        assert!(oversized.inspection.is_none() && oversized.host_inspection.is_none());
+        assert!(encode_response(&oversized).unwrap().len() < 4096);
+        assert_eq!(
+            broker.handle(ControlRequest::inspect()).status,
+            ControlStatus::Inspected
+        );
+        publisher.terminate("fixture stopped");
+        let terminal = broker.handle(ControlRequest::inspect_execution());
+        publisher.publish_host_observation(HostRuntimeSnapshot::default());
+        assert_eq!(broker.handle(ControlRequest::inspect_execution()), terminal);
         assert!(broker.take_next().is_none());
     }
 }

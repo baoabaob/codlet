@@ -136,16 +136,22 @@ Reports identify `affected_plugin_ids`, the generations remaining in the runtime
 ## Opt-in file watching
 
 `codlet launch --watch` adds a foreground observer to an otherwise ordinary
-launch. It watches only local plugins that are already loaded by the renderer
-runtime. For each such source it fingerprints the registered `codlet.json` and
-that manifest's `renderer.entry`; bundled plugins, unregistered directories,
+launch. It watches local JS sources already loaded by either the renderer or
+host executor. For each source it fingerprints `codlet.json` and the declared
+`renderer.entry` or `host.entry`; bundled plugins, unregistered directories,
 new plugin ids, and new roots are outside the watch set and are never adopted
 automatically. A normal `codlet launch` creates no watcher.
 
+Host support and its focused evidence are recorded in
+[host JS file watching](HOST_WATCH_2026-09-10.md). A host added after launch joins
+the watch set only after an explicit enable/load. Resources, required JS modules,
+TypeScript input files and build steps are not watched; build the declared JS
+entry yourself or use a manual reload after changing other files.
+
 The observer is a state machine polled by the existing foreground owner loop:
 
-- it schedules a poll every 250 ms, samples at most four loaded local sources per
-  poll, and advances through them round-robin;
+- it schedules a poll every 250 ms, samples at most four loaded local sources in
+  total across both executors per poll, and advances through them round-robin;
 - a candidate must have two identical observations and remain quiet for at least
   250 ms before it is settled;
 - every local source in a proposed reload closure must be settled with that same
@@ -161,22 +167,39 @@ The observer is a state machine polled by the existing foreground owner loop:
   lifecycle manager to guard against a registration path changing after the poll
   by using the loaded-catalog path; this is an internal watch policy and does not
   expand the public request DTO;
+- host sources also pin the complete grants record from initial loading or an
+  explicit CLI enable/reload. A grants change pauses watching before file reads;
+  automatic reload and rollback never silently select a new authorization record;
 - when a provider and its consumers change together, the observer selects the
   provider closure so one reload covers the provider and transitive dependents;
   unrelated loaded plugins remain untouched;
 - the CLI mailbox has priority and at most one management job is taken per owner
-  loop. A watcher reload is considered only when no CLI job was taken that round;
+  loop. A watcher reload is considered only when no existing receipt was taken
+  that round. A pending host transaction pauses new lifecycle work while renderer
+  events and other host RPC continue pumping;
 - an attempted content signature is remembered. A failure with the same content,
-  path, and grants is quiet until one of those observations changes.
+  path, and grants is quiet across compensating generation changes. A host receipt
+  rejected by a pre-source guard is explicitly marked not attempted; only that
+  selection is released and must pass two fresh observations before retrying.
 
 If a registration is deleted, watching pauses with a diagnostic such as
 `watch_registration_removed` and asks for explicit registration plus enable or
 reload. If its registered path changes, watching pauses with
 `watch_registration_path_changed` and asks for a manual enable or reload. A
-registry read failure also pauses with a diagnostic. No diagnostic path creates
+disabled preference pauses source reads; a host grants change produces
+`watch_grants_changed` until its original trust record is restored or a manual
+enable/reload explicitly selects the current record. A registry read failure also
+pauses with a diagnostic. No diagnostic path creates
 a new plugin, selects a new root, or runs code. The observer has no extra thread
-or execution entry; it emits the same typed reload request consumed by the
-foreground renderer executor. Registry reads and writes use one shared **1 MiB**
+or execution entry. Renderer requests retain their existing foreground lifecycle
+path. Host selections reserve/submit exactly one existing control receipt and
+carry private in-process root/grants/generation/fingerprint guards. When that
+receipt executes, the coordinator checks the actual owner and validates the same
+stable source snapshot before retiring it. `watch_source_unsettled` and stale-owner
+guards do not consume a generation. Accepted validation/activation failures retain
+the failure signature and use normal compensation; they are not automatically
+resubmitted. The operation id is logged and supports the ordinary read-only
+`plugin operation` query. Registry reads and writes use one shared **1 MiB**
 bound, preventing a 250 ms observer from reading an unbounded registry document.
 
 ## Offline enablement and disablement

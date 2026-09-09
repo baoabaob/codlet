@@ -3,6 +3,11 @@
 日期：2026-09-10。本包在统一 JS/TS 目录包上接入 host 在线管理，不改变 manifest、公开
 CDP 原语或安全边界；完整 M2 与真实 Codex 的全层级验收仍未完成。
 
+本文保留 M2b 交付时的基线与验证记录。其后已实现
+[host watch](HOST_WATCH_2026-09-10.md)、[带预算的停止清理](HOST_CLEANUP_2026-09-10.md)
+和 [host Inspect/doctor](HOST_INSPECTION_2026-09-10.md)；下文“剩余项”及停止时不能调用
+CDP 的描述属于 M2b 当时状态，现行开发流程见 [组合使用说明](HOST_DEVELOPMENT_2026-09-10.md)。
+
 ## 已交付路径
 
 ```powershell

@@ -7,11 +7,13 @@ const path = require('node:path');
 const { Module, createRequire } = require('node:module');
 const { Console } = require('node:console');
 const { TextDecoder } = require('node:util');
+const { performance } = require('node:perf_hooks');
 const entry = process.argv[1];
 const snapshot = process.argv[2];
 const MAX_FRAME = 1024 * 1024;
 const MAX_PENDING = 16;
 const MAX_TIMEOUT = 15000;
+const MAX_CLEANUP = 1500;
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const positive = value => Number.isSafeInteger(value) && value > 0;
@@ -27,6 +29,9 @@ let lastCoreId = 0;
 let loaded;
 let activation;
 let deactivation;
+let pluginContext;
+let cleanupOpen = false;
+let cleanupDeadline = 0;
 let partial = Buffer.alloc(0);
 let outboundFrames = 0;
 let exiting = false;
@@ -37,9 +42,16 @@ global.console = new Console({ stdout: process.stderr, stderr: process.stderr })
 
 function fatal(reason) {
   if (exiting) return;
+  if (state === 'stopping' && reason?.code === 'host_stopping') return;
   exiting = true;
   process.stderr.write(`Codlet JS host: ${rpcError(reason).message}\n`);
   process.exit(1);
+}
+
+function ordinaryCallbackFailed(failure) {
+  // Shutdown rejects ordinary Core waiters. A retired event/end callback may
+  // consequently reject too; it must not abort the separate deactivate phase.
+  if (state === 'starting' || state === 'active') fatal(failure);
 }
 
 function send(fields, done) {
@@ -62,16 +74,20 @@ function reply(id, result, failure, done) {
   send(fields, done);
 }
 
-function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult) {
-  if (state !== 'starting' && state !== 'active') return Promise.reject(error('host_stopping', 'host no longer admits Core requests'));
+function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup = false) {
+  if (cleanup ? state !== 'stopping' || !cleanupOpen : state !== 'starting' && state !== 'active') return Promise.reject(error('host_stopping', 'host no longer admits this phase of Core requests'));
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT) return Promise.reject(error('invalid_timeout', 'timeoutMs must be 1..15000'));
+  if (cleanup) {
+    timeoutMs = Math.min(timeoutMs, Math.floor(cleanupDeadline - performance.now()));
+    if (timeoutMs < 1) return Promise.reject(error('cleanup_timeout', 'the total Core cleanup budget expired'));
+  }
   if (pending.size >= MAX_PENDING) return Promise.reject(error('request_limit', 'too many pending Core requests'));
   if (!positive(nextId)) return Promise.reject(error('request_ids_exhausted', 'this generation has exhausted request IDs'));
   const id = nextId++;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(error('request_timeout', 'Core request deadline expired'));
+      reject(error(cleanup ? 'cleanup_timeout' : 'request_timeout', 'Core request deadline expired'));
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer, prepareResult });
     try { send({ type: 'request', id, method, params }); }
@@ -86,9 +102,43 @@ function retire() {
   subscriptions.clear();
 }
 
-function deactivate() {
-  if (!deactivation) deactivation = Promise.resolve().then(() => loaded?.deactivate?.());
+function deactivate(cleanup) {
+  if (!deactivation) deactivation = Promise.resolve().then(() => loaded?.deactivate?.(cleanup));
   return deactivation;
+}
+
+function shutdown(message) {
+  const supplied = message.params?.cleanupBudgetMs;
+  if (message.params !== null && (!object(message.params) || !Number.isInteger(supplied) || supplied < 1 || supplied > MAX_CLEANUP)) throw error('protocol_error', 'invalid Core cleanup budget');
+  const budget = supplied ?? MAX_CLEANUP;
+  cleanupDeadline = performance.now() + budget;
+  state = 'stopping'; retire();
+  cleanupOpen = supplied !== undefined;
+  const signal = new AbortController();
+  const core = Object.freeze({ request(method, params, timeoutMs = MAX_TIMEOUT) {
+    return request('cleanup.request', { method, params }, timeoutMs, undefined, true);
+  } });
+  const cleanup = Object.freeze({
+    plugin: pluginContext?.plugin, root: process.cwd(), signal: signal.signal, log: console,
+    remainingMs: () => Math.max(0, Math.floor(cleanupDeadline - performance.now())), core,
+    cdp: Object.freeze({ request(method, params = {}, options = {}) {
+      return core.request('cdp.request', { method, params, ...options }, options.timeoutMs ?? MAX_TIMEOUT);
+    } }),
+  });
+  let settled = false;
+  const finish = failure => {
+    if (settled) return;
+    settled = true; cleanupOpen = false; clearTimeout(timer);
+    signal.abort(failure ?? error('host_stopping', 'cleanup has completed'));
+    for (const item of pending.values()) { clearTimeout(item.timer); item.reject(failure ?? error('host_stopping', 'cleanup has completed')); }
+    pending.clear();
+    reply(message.id, null, failure, () => { exiting = true; process.exit(failure ? 1 : 0); });
+  };
+  const timer = setTimeout(() => finish(error('cleanup_timeout', 'the total Core cleanup budget expired')), budget);
+  // Cancelling activation retires its requests and signal. Its unresolved Promise
+  // cannot prevent deactivate from using the finite cleanup phase.
+  Promise.resolve(activation).catch(() => {});
+  deactivate(cleanup).then(() => finish(), finish).catch(fatal);
 }
 
 function context(params) {
@@ -179,10 +229,12 @@ function handle(message) {
       subscription.inFlight++;
       Promise.resolve().then(() => {
         if ((state === 'starting' || state === 'active') && subscriptions.has(id)) return subscription.onEvent(message.params.event);
-      }).finally(() => { subscription.inFlight--; }).catch(fatal);
+      }).finally(() => { subscription.inFlight--; }).catch(ordinaryCallbackFailed);
     } else if (message.method === 'cdp.subscriptionEnded') {
       subscriptions.delete(id);
-      Promise.resolve().then(() => subscription.onEnd?.(message.params.reason)).catch(fatal);
+      Promise.resolve().then(() => {
+        if (state === 'starting' || state === 'active') return subscription.onEnd?.(message.params.reason);
+      }).catch(ordinaryCallbackFailed);
     }
     return;
   }
@@ -194,7 +246,8 @@ function handle(message) {
     activation = Promise.resolve().then(() => {
       if (state !== 'starting') return;
       loaded = loadPlugin();
-      return loaded.activate(context(message.params));
+      pluginContext = context(message.params);
+      return loaded.activate(pluginContext);
     });
     activation.then(() => {
       if (state !== 'starting') return;
@@ -204,13 +257,7 @@ function handle(message) {
       state = 'failed'; retire(); reply(message.id, null, failure);
     }).catch(fatal);
   } else if (message.method === 'shutdown' && state !== 'stopping') {
-    state = 'stopping'; retire();
-    // If activate ignores abort or JS blocks the event loop, the parent owns
-    // the finite stop deadline and reaps this process and its descendants.
-    Promise.resolve(activation).catch(() => {}).then(deactivate).then(
-      () => reply(message.id, null, null, () => { exiting = true; process.exit(0); }),
-      failure => reply(message.id, null, failure, () => { exiting = true; process.exit(1); }),
-    ).catch(fatal);
+    shutdown(message);
   } else reply(message.id, null, error('method_not_found', 'unsupported lifecycle request'));
 }
 

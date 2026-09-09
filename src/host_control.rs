@@ -5,9 +5,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use crate::catalog::{CatalogError, PluginCatalogEntry};
+use crate::catalog::{CatalogError, PluginCatalogEntry, PluginSource};
 use crate::host_runtime::{HostOperation, HostOperationResult, HostRuntime, MAX_HOST_IDENTITIES};
-use crate::local_plugins::validate_grants;
+use crate::local_plugins::{
+    LocalWatchSource, checked_host_watch_root, loaded_watch_fingerprint, validate_grants,
+};
 use crate::plugin_control::{
     PluginControlAction, PluginControlError, PluginControlOutcome, PluginControlReport,
     PluginGeneration, PluginTargetFailure,
@@ -15,9 +17,25 @@ use crate::plugin_control::{
 use crate::plugin_execution::{ExecutionState, PluginExecutionObservation};
 use crate::plugin_host::{HostError, HostExitReport};
 use crate::plugin_lifecycle::{self, LifecycleError};
-use crate::plugins::{LoadedPlugin, PluginRegistry};
+use crate::plugin_watch::WatchedReload;
+use crate::plugins::{LoadedPlugin, LocalPluginRegistration, PluginRegistry};
 use crate::renderer::RendererRuntime;
-use crate::runtime_control::{ControlBroker, ControlJob};
+use crate::runtime_control::{ControlBroker, ControlJob, ControlRequest, ControlStatus};
+
+const MAX_WATCH_RESULTS: usize = 32;
+
+pub struct HostWatchResult {
+    pub operation_id: String,
+    pub plugin_id: String,
+    pub result: Result<PluginControlReport, PluginControlError>,
+    /// An explicit pre-source rejection, not a failed validation or activation.
+    pub not_attempted: Option<WatchedReload>,
+}
+
+struct WatchReceipt {
+    operation_id: String,
+    selection: WatchedReload,
+}
 
 /// There is at most one foreground host transaction. Its receipt remains
 /// Running while renderer events and the other host owners continue pumping.
@@ -25,6 +43,9 @@ pub struct HostControl {
     registry_path: PathBuf,
     generations: BTreeMap<String, u64>,
     pending: Option<Box<PendingControl>>,
+    watch_sources: BTreeMap<String, LocalPluginRegistration>,
+    watch_receipt: Option<WatchReceipt>,
+    watch_results: Vec<HostWatchResult>,
 }
 
 impl HostControl {
@@ -33,11 +54,123 @@ impl HostControl {
             registry_path,
             generations: BTreeMap::new(),
             pending: None,
+            watch_sources: BTreeMap::new(),
+            watch_receipt: None,
+            watch_results: Vec::new(),
         }
     }
 
     pub fn is_pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// Capture initial loader trust without rereading registrations or source.
+    /// Manual lifecycle selections replace these anchors; automatic watch never
+    /// adopts a changed root or full grant record on its own.
+    pub fn seed_watch_sources(&mut self, renderer: &RendererRuntime, plugins: &[LoadedPlugin]) {
+        for plugin in plugins {
+            let Some(host) = &plugin.host else { continue };
+            let Some(entry) = renderer
+                .catalog_snapshot()
+                .entries()
+                .iter()
+                .find(|entry| entry.id == plugin.manifest.id)
+            else {
+                continue;
+            };
+            let PluginSource::Local { path, grants } = &entry.source else {
+                continue;
+            };
+            if *path == host.root {
+                self.watch_sources.insert(
+                    plugin.manifest.id.clone(),
+                    LocalPluginRegistration {
+                        path: path.clone(),
+                        grants: grants.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn local_watch_sources<'a>(
+        &'a self,
+        observations: &'a [PluginExecutionObservation],
+    ) -> Vec<LocalWatchSource<'a>> {
+        observations
+            .iter()
+            .filter(|observation| {
+                !matches!(
+                    observation.state,
+                    ExecutionState::Starting | ExecutionState::Stopping
+                )
+            })
+            .filter_map(|observation| {
+                let registration = self.watch_sources.get(&observation.plugin.manifest.id)?;
+                let host = observation.plugin.host.as_ref()?;
+                (host.root == registration.path).then_some(LocalWatchSource {
+                    path: &registration.path,
+                    grants: &registration.grants,
+                    plugin: &observation.plugin,
+                })
+            })
+            .collect()
+    }
+
+    pub fn has_watch_receipt(&self) -> bool {
+        self.watch_receipt.is_some()
+    }
+
+    /// Reserve and submit through the same broker once. The queued receipt
+    /// carries only the usual action/id; trusted in-process metadata pins the
+    /// source when that receipt reaches the foreground executor.
+    pub fn submit_watched(
+        &mut self,
+        selection: WatchedReload,
+        broker: &ControlBroker,
+    ) -> Result<String, PluginControlError> {
+        if self.is_pending() || self.watch_receipt.is_some() {
+            return Err(PluginControlError::new(
+                "watch_runtime_busy",
+                "another host lifecycle or watch receipt is pending",
+            ));
+        }
+        if !selection.is_host() || selection.request.action != PluginControlAction::Reload {
+            return Err(PluginControlError::new(
+                "watch_reload_only",
+                "host watching only submits a reload of a selected loaded host",
+            ));
+        }
+        let prepared = broker.handle(ControlRequest::prepare(selection.request.clone()));
+        if prepared.status != ControlStatus::Prepared {
+            return Err(PluginControlError::new(
+                "watch_not_submitted",
+                format!(
+                    "host watch could not reserve a receipt: {:?}",
+                    prepared.status
+                ),
+            ));
+        }
+        let operation_id = prepared
+            .operation_id()
+            .expect("prepared broker reply has a receipt")
+            .to_owned();
+        let submitted = broker.handle(ControlRequest::submit(&operation_id));
+        if submitted.status != ControlStatus::Queued {
+            return Err(PluginControlError::new(
+                "watch_not_submitted",
+                format!("host watch receipt was not queued: {:?}", submitted.status),
+            ));
+        }
+        self.watch_receipt = Some(WatchReceipt {
+            operation_id: operation_id.clone(),
+            selection,
+        });
+        Ok(operation_id)
+    }
+
+    pub fn take_watch_results(&mut self) -> Vec<HostWatchResult> {
+        std::mem::take(&mut self.watch_results)
     }
 
     /// A returned job belongs to the renderer. A consumed job is either already
@@ -49,13 +182,22 @@ impl HostControl {
         hosts: &HostRuntime,
         broker: &ControlBroker,
     ) -> Option<ControlJob> {
+        let watch = self
+            .watch_receipt
+            .take_if(|receipt| receipt.operation_id == job.operation_id)
+            .map(|receipt| receipt.selection);
+        let watched = watch.is_some();
         if self.is_pending() {
-            broker.complete(
+            self.complete(
+                broker,
                 &job.operation_id,
+                &job.request.plugin_id,
                 Err(PluginControlError::new(
                     "runtime_busy",
                     "a host lifecycle operation is already in progress",
                 )),
+                watch,
+                false,
             );
             return None;
         }
@@ -79,11 +221,29 @@ impl HostControl {
                 .allocated_generation(&job.request.plugin_id)
                 .is_some()
         {
+            if watched {
+                self.complete(
+                    broker,
+                    &job.operation_id,
+                    &job.request.plugin_id,
+                    Err(PluginControlError::new(
+                        "watch_source_changed",
+                        "the selected host owner is no longer available",
+                    )),
+                    watch,
+                    false,
+                );
+                return None;
+            }
             return Some(job);
         }
+        let mut source_attempted = false;
         let prepared = (|| {
             job.request.validate()?;
             let registry = PluginRegistry::load(&self.registry_path).map_err(registry_error)?;
+            if let Some(selection) = &watch {
+                self.validate_watched_source(selection, observed.as_ref(), &registry)?;
+            }
             let known_host = observed.is_some()
                 || self.generations.contains_key(&job.request.plugin_id)
                 || (job.request.action == PluginControlAction::Disable
@@ -96,11 +256,26 @@ impl HostControl {
             }
             // Only this explicitly selected registration is reread. A launch
             // catalog cannot reject a plugin registered after Codlet started.
+            source_attempted = true;
             let entry = renderer
                 .catalog_snapshot()
                 .reload_entry(&job.request.plugin_id, &registry, 1)
                 .map_err(catalog_error)?;
             let host = entry.plugin.as_ref().is_ok_and(is_host);
+            if let Some(selection) = &watch
+                && entry.plugin.as_ref().is_ok_and(|plugin| {
+                    plugin
+                        .host
+                        .as_ref()
+                        .is_some_and(|host| host.root != selection.source.path)
+                })
+            {
+                source_attempted = false;
+                return Err(PluginControlError::new(
+                    "watch_root_changed",
+                    "the loaded candidate resolved outside the selected canonical host root",
+                ));
+            }
             if known_host && !host {
                 return Err(PluginControlError::new(
                     "executor_kind_changed",
@@ -110,21 +285,51 @@ impl HostControl {
                     ),
                 ));
             }
+            if let Some(selection) = &watch
+                && entry.plugin.as_ref().is_ok_and(|plugin| {
+                    loaded_watch_fingerprint(plugin) != selection.source.fingerprint
+                })
+            {
+                source_attempted = false;
+                return Err(PluginControlError::new(
+                    "watch_source_unsettled",
+                    "plugin bytes changed after the stable watch observation; waiting for a fresh settled source",
+                ));
+            }
             Ok((known_host || host, registry, Some(entry)))
         })();
         match prepared {
             Ok((false, _, _)) => Some(job),
             Ok((true, registry, entry)) => {
                 let operation_id = job.operation_id.clone();
+                let plugin_id = job.request.plugin_id.clone();
+                let action = job.request.action;
+                let registration = registry.local_plugins().get(&plugin_id).cloned();
                 match self.prepare(job, registry, entry, observed, hosts) {
-                    Ok(Prepared::Complete(report)) => broker.complete(&operation_id, Ok(report)),
-                    Ok(Prepared::Pending(pending)) => self.pending = Some(pending),
-                    Err(error) => broker.complete(&operation_id, Err(error)),
+                    Ok(Prepared::Complete(report)) => {
+                        self.capture_selection(&plugin_id, action, registration, watched);
+                        self.complete(broker, &operation_id, &plugin_id, Ok(report), watch, true);
+                    }
+                    Ok(Prepared::Pending(mut pending)) => {
+                        self.capture_selection(&plugin_id, action, registration, watched);
+                        pending.watch = watch;
+                        self.pending = Some(pending);
+                    }
+                    Err(error) => {
+                        self.complete(broker, &operation_id, &plugin_id, Err(error), watch, true)
+                    }
                 }
                 None
             }
             Err(error) => {
-                broker.complete(&job.operation_id, Err(error));
+                self.complete(
+                    broker,
+                    &job.operation_id,
+                    &job.request.plugin_id,
+                    Err(error),
+                    watch,
+                    source_attempted,
+                );
                 None
             }
         }
@@ -137,10 +342,112 @@ impl HostControl {
             return;
         };
         if let Some(report) = pending.poll(hosts, &mut self.generations) {
-            broker.complete(&pending.job.operation_id, Ok(report));
+            self.complete(
+                broker,
+                &pending.job.operation_id,
+                &pending.job.request.plugin_id,
+                Ok(report),
+                pending.watch.take(),
+                true,
+            );
         } else {
             self.pending = Some(pending);
         }
+    }
+
+    fn capture_selection(
+        &mut self,
+        id: &str,
+        action: PluginControlAction,
+        registration: Option<LocalPluginRegistration>,
+        watched: bool,
+    ) {
+        if action == PluginControlAction::Disable {
+            self.watch_sources.remove(id);
+        } else if !watched && let Some(registration) = registration {
+            self.watch_sources.insert(id.to_owned(), registration);
+        }
+    }
+
+    fn validate_watched_source(
+        &self,
+        selection: &WatchedReload,
+        observed: Option<&PluginExecutionObservation>,
+        registry: &PluginRegistry,
+    ) -> Result<(), PluginControlError> {
+        let id = &selection.request.plugin_id;
+        let source = &selection.source;
+        let observation = observed
+            .filter(|observation| observation.plugin.generation == source.generation)
+            .ok_or_else(|| {
+                PluginControlError::new(
+                    "watch_generation_changed",
+                    "the selected host generation changed before its watch receipt executed",
+                )
+            })?;
+        if matches!(
+            observation.state,
+            ExecutionState::Starting | ExecutionState::Stopping
+        ) {
+            return Err(PluginControlError::new(
+                "watch_owner_busy",
+                "the selected host generation is already starting or stopping",
+            ));
+        }
+        let matches_source = |registration: &LocalPluginRegistration| {
+            registration.path == source.path && registration.grants == source.grants
+        };
+        if observation
+            .plugin
+            .host
+            .as_ref()
+            .is_none_or(|host| host.root != source.path)
+            || self
+                .watch_sources
+                .get(id)
+                .is_none_or(|registration| !matches_source(registration))
+            || registry
+                .local_plugins()
+                .get(id)
+                .is_none_or(|registration| !matches_source(registration))
+        {
+            return Err(PluginControlError::new(
+                "watch_source_changed",
+                "the loaded root or full grant record changed; select the source with a manual enable or reload",
+            ));
+        }
+        if !registry.is_enabled(id) {
+            return Err(PluginControlError::new(
+                "plugin_not_enabled",
+                "the selected host was disabled before its watch receipt executed",
+            ));
+        }
+        checked_host_watch_root(&source.path)
+            .map_err(|error| PluginControlError::new(error.code(), error.to_string()))?;
+        Ok(())
+    }
+
+    fn complete(
+        &mut self,
+        broker: &ControlBroker,
+        operation_id: &str,
+        plugin_id: &str,
+        result: Result<PluginControlReport, PluginControlError>,
+        watch: Option<WatchedReload>,
+        source_attempted: bool,
+    ) {
+        if let Some(selection) = watch {
+            if self.watch_results.len() == MAX_WATCH_RESULTS {
+                self.watch_results.remove(0);
+            }
+            self.watch_results.push(HostWatchResult {
+                operation_id: operation_id.to_owned(),
+                plugin_id: plugin_id.to_owned(),
+                result: result.clone(),
+                not_attempted: (!source_attempted).then_some(selection),
+            });
+        }
+        broker.complete(operation_id, result);
     }
 
     fn prepare(
@@ -251,6 +558,7 @@ struct PendingControl {
     immediate_error: Option<HostError>,
     failures: Vec<PluginTargetFailure>,
     remaining_generation: Option<u64>,
+    watch: Option<WatchedReload>,
 }
 
 impl PendingControl {
@@ -271,6 +579,7 @@ impl PendingControl {
             immediate_error: None,
             failures: Vec::new(),
             remaining_generation: None,
+            watch: None,
         }
     }
 

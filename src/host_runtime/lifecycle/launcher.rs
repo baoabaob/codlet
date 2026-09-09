@@ -106,7 +106,13 @@ impl Launcher {
                         created.start_operation = owner.start_operation.take();
                         created.stop_operation = owner.stop_operation.take();
                         if let Some(error) = owner.failure.take() {
-                            created.fail(error);
+                            // This is the already-requested retirement arriving
+                            // with a late creation, not a new protocol fault.
+                            if created.failure.is_none() {
+                                created.observation.error = Some(error.to_string());
+                                created.failure = Some(error);
+                            }
+                            created.begin_retirement();
                         } else if owner.observation.state == ExecutionState::Stopping {
                             created.begin_retirement();
                         }
