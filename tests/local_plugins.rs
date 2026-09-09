@@ -46,7 +46,7 @@ impl Fixture {
 
     fn write_manifest(&self, manifest: &Value) {
         fs::write(
-            self.root.join("plugin.json"),
+            self.root.join("codlet.json"),
             serde_json::to_vec(manifest).unwrap(),
         )
         .unwrap();
@@ -96,7 +96,7 @@ fn valid_unicode_and_space_root_returns_canonical_root_and_unchanged_source() {
 fn relative_root_is_resolved_without_changing_current_directory() {
     let directory = tempfile::tempdir_in(".").unwrap();
     fs::create_dir(directory.path().join("dist")).unwrap();
-    fs::write(directory.path().join("plugin.json"), manifest().to_string()).unwrap();
+    fs::write(directory.path().join("codlet.json"), manifest().to_string()).unwrap();
     fs::write(directory.path().join("dist/renderer.js"), SOURCE).unwrap();
     let relative = Path::new(".").join(directory.path().file_name().unwrap());
     assert!(relative.is_relative());
@@ -131,7 +131,7 @@ fn unavailable_roots_and_files_have_path_and_stage_without_creation() {
     assert!(!missing.exists());
     rejected(&fixture.entry(), "inspect root", "directory");
 
-    fs::remove_file(fixture.root.join("plugin.json")).unwrap();
+    fs::remove_file(fixture.root.join("codlet.json")).unwrap();
     let error = inspect_local_plugin(&fixture.root).unwrap_err();
     assert!(matches!(
         error,
@@ -140,7 +140,7 @@ fn unavailable_roots_and_files_have_path_and_stage_without_creation() {
             ..
         }
     ));
-    assert!(error.to_string().contains("plugin.json"));
+    assert!(error.to_string().contains("codlet.json"));
     fixture.write_manifest(&manifest());
     fs::remove_file(fixture.entry()).unwrap();
     let error = inspect_local_plugin(&fixture.root).unwrap_err();
@@ -158,10 +158,10 @@ fn unavailable_roots_and_files_have_path_and_stage_without_creation() {
 #[test]
 fn directories_cannot_be_read_as_manifest_or_source() {
     let fixture = Fixture::new();
-    fs::remove_file(fixture.root.join("plugin.json")).unwrap();
-    fs::create_dir(fixture.root.join("plugin.json")).unwrap();
+    fs::remove_file(fixture.root.join("codlet.json")).unwrap();
+    fs::create_dir(fixture.root.join("codlet.json")).unwrap();
     rejected(&fixture.root, "read manifest", "ordinary file");
-    fs::remove_dir(fixture.root.join("plugin.json")).unwrap();
+    fs::remove_dir(fixture.root.join("codlet.json")).unwrap();
     fixture.write_manifest(&manifest());
     fs::remove_file(fixture.entry()).unwrap();
     fs::create_dir(fixture.entry()).unwrap();
@@ -172,7 +172,7 @@ fn directories_cannot_be_read_as_manifest_or_source() {
 fn intermediate_entry_components_must_be_directories() {
     let fixture = Fixture::new();
     let mut value = manifest();
-    value["renderer"]["entry"] = json!("plugin.json/renderer.js");
+    value["renderer"]["entry"] = json!("codlet.json/renderer.js");
     fixture.write_manifest(&value);
     rejected(&fixture.root, "read renderer entry", "ordinary directory");
 }
@@ -210,7 +210,7 @@ fn manifest_uses_existing_strict_schema_id_and_capability_parser() {
     fixture.write_manifest(&value);
     rejected(&fixture.root, "parse manifest", "unknown field");
     for json in ["{", "", r#"{"schema":1,"schema":1}"#] {
-        fs::write(fixture.root.join("plugin.json"), json).unwrap();
+        fs::write(fixture.root.join("codlet.json"), json).unwrap();
         rejected(&fixture.root, "parse manifest", "");
     }
 }
@@ -231,10 +231,10 @@ fn manifest_and_source_enforce_byte_limits_including_exact_boundary() {
     let fixture = Fixture::new();
     let mut json = serde_json::to_vec(&manifest()).unwrap();
     json.resize(MAX_MANIFEST_BYTES, b' ');
-    fs::write(fixture.root.join("plugin.json"), &json).unwrap();
+    fs::write(fixture.root.join("codlet.json"), &json).unwrap();
     inspect_local_plugin(&fixture.root).unwrap();
     json.push(b' ');
-    fs::write(fixture.root.join("plugin.json"), json).unwrap();
+    fs::write(fixture.root.join("codlet.json"), json).unwrap();
     rejected(&fixture.root, "read manifest", "131072-byte limit");
 
     fixture.write_manifest(&manifest());
@@ -295,7 +295,7 @@ fn binary_and_invalid_utf8_files_are_rejected_without_echoing_source() {
         b"source-secret\x1b",
         b"source-secret\xc2\x85",
     ] {
-        fs::write(fixture.root.join("plugin.json"), bytes).unwrap();
+        fs::write(fixture.root.join("codlet.json"), bytes).unwrap();
         let error = rejected(&fixture.root, "read manifest", "UTF-8");
         assert!(!error.to_string().contains("source-secret"));
         fixture.write_manifest(&manifest());
@@ -363,7 +363,7 @@ fn entry_paths_reject_traversal_absolute_drive_unc_ads_and_aliases() {
 fn windows_device_names_and_trailing_dots_are_rejected_on_every_platform() {
     let fixture = Fixture::new();
     for entry in [
-        "CON",
+        "CON.js",
         "con.js",
         "NuL.js",
         "aux.txt.js",
@@ -375,7 +375,7 @@ fn windows_device_names_and_trailing_dots_are_rejected_on_every_platform() {
         "dist/CON.js",
         "NUL/renderer.js",
         "dist./renderer.js",
-        "dist/renderer.js.",
+        "dist/renderer.js./entry.js",
         "dist/.../renderer.js",
     ] {
         let mut value = manifest();
@@ -634,7 +634,7 @@ fn reserved_ids_are_left_for_the_composed_catalog() {
 fn hard_links_to_manifest_and_source_are_rejected_even_within_root() {
     let fixture = Fixture::new();
     let manifest_alias = fixture.root.join("manifest-alias.json");
-    fs::hard_link(fixture.root.join("plugin.json"), &manifest_alias).unwrap();
+    fs::hard_link(fixture.root.join("codlet.json"), &manifest_alias).unwrap();
     rejected(&fixture.root, "read manifest", "links");
     fs::remove_file(&manifest_alias).unwrap();
     let source_alias = fixture._directory.path().join("outside-source.js");
@@ -676,7 +676,7 @@ fn symbolic_manifest_and_source_links_are_rejected_including_contained_targets()
     for manifest_link in [true, false] {
         let fixture = Fixture::new();
         let path = if manifest_link {
-            fixture.root.join("plugin.json")
+            fixture.root.join("codlet.json")
         } else {
             fixture.entry()
         };
@@ -725,14 +725,14 @@ fn symbolic_parent_escape_is_rejected_and_explicit_link_root_is_allowed() {
 fn case_aliases_are_rejected_for_manifest_entry_and_parent_directories() {
     let fixture = Fixture::new();
     fs::rename(
-        fixture.root.join("plugin.json"),
-        fixture.root.join("PLUGIN.JSON"),
+        fixture.root.join("codlet.json"),
+        fixture.root.join("CODLET.JSON"),
     )
     .unwrap();
     rejected(&fixture.root, "read manifest", "alias");
     fs::rename(
-        fixture.root.join("PLUGIN.JSON"),
-        fixture.root.join("plugin.json"),
+        fixture.root.join("CODLET.JSON"),
+        fixture.root.join("codlet.json"),
     )
     .unwrap();
     for entry in ["DIST/renderer.js", "dist/Renderer.js"] {

@@ -132,7 +132,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let root = directory.path().join("loaded");
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("plugin.json"), json!({"schema":1,"id":"dev.list.local","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"]}).to_string()).unwrap();
+        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":"dev.list.local","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"]}).to_string()).unwrap();
         std::fs::write(root.join("renderer.js"), "module.exports = {};").unwrap();
         let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
         for plugin in bundled_plugins().unwrap() {
@@ -152,7 +152,7 @@ mod tests {
         let loaded = catalog.enabled_plugins(&registry).unwrap();
         let active = BTreeSet::from(["dev.list.local".to_owned()]);
 
-        std::fs::write(root.join("plugin.json"), "invalid manifest on disk").unwrap();
+        std::fs::write(root.join("codlet.json"), "invalid manifest on disk").unwrap();
         std::fs::write(
             root.join("renderer.js"),
             "throw new Error('listing must not read or execute this revision');",
@@ -214,7 +214,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let original = directory.path().join("original");
         std::fs::create_dir(&original).unwrap();
-        std::fs::write(original.join("plugin.json"), json!({"schema":1,"id":"dev.list.local","version":"1","renderer":{"entry":"renderer.js","world":"isolated"}}).to_string()).unwrap();
+        std::fs::write(original.join("codlet.json"), json!({"schema":1,"id":"dev.list.local","version":"1","renderer":{"entry":"renderer.js","world":"isolated"}}).to_string()).unwrap();
         std::fs::write(original.join("renderer.js"), "module.exports = {};").unwrap();
         let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
         registry
@@ -297,12 +297,12 @@ mod tests {
         let root = directory.path().join("host");
         std::fs::create_dir(&root).unwrap();
         let root = std::fs::canonicalize(root).unwrap();
-        std::fs::write(root.join("helper.exe"), b"MZ\0\xff").unwrap();
+        std::fs::write(root.join("host.js"), b"module.exports = { activate() {} };").unwrap();
         std::fs::write(
-            root.join("plugin.json"),
+            root.join("codlet.json"),
             json!({
                 "schema":1,"id":"dev.host","version":"1",
-                "host":{"command":["helper.exe"],"protocol":"jsonl"},
+                "host":{"entry":"host.js"},
                 "permissions":["host.process"]
             })
             .to_string(),
@@ -338,7 +338,7 @@ mod tests {
         };
         // A list reads only the observation and current registry. It does not
         // reread this changed source or infer execution from its declaration.
-        std::fs::write(root.join("plugin.json"), "invalid manifest after launch").unwrap();
+        std::fs::write(root.join("codlet.json"), "invalid manifest after launch").unwrap();
         for state in [
             ExecutionState::Starting,
             ExecutionState::Active,

@@ -43,7 +43,7 @@ impl Fixture {
 
     fn write_manifest(&self, id: &str, permissions: &[&str]) {
         fs::write(
-            self.plugin.join("plugin.json"),
+            self.plugin.join("codlet.json"),
             serde_json::to_vec(&json!({
                 "schema": 1,
                 "id": id,
@@ -227,7 +227,7 @@ fn broken_enabled_plugin_is_rejected_before_launch_and_can_be_disabled_and_remov
     successful(fixture.run(&["plugin", "remove", PLUGIN_ID]));
     assert!(fixture.config()["localPlugins"].get(PLUGIN_ID).is_none());
     assert_eq!(fixture.config()["plugins"][PLUGIN_ID]["enabled"], false);
-    assert!(fixture.plugin.join("plugin.json").is_file());
+    assert!(fixture.plugin.join("codlet.json").is_file());
     assert!(!source.exists());
     assert!(!fixture.marker.exists());
 }
@@ -251,8 +251,8 @@ fn registration_cannot_replace_bundled_ids_or_an_existing_directory() {
     let other = fixture.directory.path().join("different-directory");
     fs::create_dir_all(other.join("dist")).unwrap();
     fs::copy(
-        fixture.plugin.join("plugin.json"),
-        other.join("plugin.json"),
+        fixture.plugin.join("codlet.json"),
+        other.join("codlet.json"),
     )
     .unwrap();
     fs::copy(

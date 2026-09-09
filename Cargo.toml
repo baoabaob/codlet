@@ -10,6 +10,7 @@ autoexamples = false
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+tempfile = "3.20"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
@@ -29,9 +30,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Threading",
 ] }
 
-[dev-dependencies]
-tempfile = "3.20"
-
 [[bin]]
 name = "codlet"
 path = "src/main.rs"
@@ -47,7 +45,3 @@ path = "src/bin/codlet-lab.rs"
 [[bin]]
 name = "codlet-fake-host"
 path = "src/bin/codlet-fake-host.rs"
-
-[[bin]]
-name = "codlet-raw-host-example"
-path = "examples/raw-host/main.rs"

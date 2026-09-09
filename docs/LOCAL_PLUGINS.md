@@ -1,8 +1,10 @@
 # Registered local plugins
 
-Native host-only plugins are supported by the first M2a slice. They use
+Host JS plugins are supported by the first M2a slice. They use
 `host.process` and optionally `cdp.raw`, start/stop with the Runtime Host, and do not
-require a renderer entry. See the [host contract](M2A_HOST_RUNTIME_2026-09-09.md)
+require a renderer entry. Both use `codlet.json` and built `.js`/`.cjs` entrypoints;
+TS is compiled before loading. Executable entries and Node native addons are
+unsupported. See the [host contract](JS_PLUGIN_RUNTIME_2026-09-09.md)
 and [raw host example](../examples/raw-host/README.md). Online enable/disable/reload
 and file watching below currently apply to renderer plugins; host hot management
 is explicitly rejected by this slice. Status-v1 and doctor Inspect still observe
@@ -31,11 +33,12 @@ codlet plugin add "C:\my-plugins\example" --trust --grant ui.dom
 ```
 
 Repeat `--grant` for multiple permissions. Isolated renderer entries support
-`ui.dom` and `runtime.manage`; native host entries support `host.process` and `cdp.raw`.
+`ui.dom` and `runtime.manage`; host JS entries support `host.process` and `cdp.raw`.
 Unsupported worlds, permissions, or missing grants are rejected. Extra grants are
 recorded only when explicitly supplied; the runtime uses permissions declared by
 the manifest that also pass the grant check. The `--trust` flag is user consent, not an OS sandbox: these are
-user-authorized renderer programs with access to a shared document.
+user-authorized programs. Renderer JS shares the document; host JS has ordinary
+Node filesystem/network/process access as the current user.
 
 The canonical local directory, expected plugin ID, and granted permissions are
 persisted in `%LOCALAPPDATA%\Codlet\config.json`. A new registration uses the saved
@@ -106,18 +109,20 @@ guards and receipt-based recovery after a CLI timeout.
 
 ```text
 example/
-  plugin.json
+  codlet.json
   renderer.js
 ```
 
-The existing manifest schema and CommonJS renderer ABI are unchanged. The entry
+Manifest schema 1 uses the canonical filename `codlet.json`; rename older
+`plugin.json` files explicitly. There is no legacy filename fallback or native
+`host.command` compatibility mode. The CommonJS lifecycle ABI is shared: the entry
 assigns `module.exports` with `activate(context)` and `deactivate()` methods; both
 may return promises. Renderer code is not a Node process and has no general Node
 `require` API. There is no package installation, dependency bundling, or remote
 source loading in this slice.
 
 The loader limits manifests to 128 KiB and renderer source to 1 MiB, requires
-regular UTF-8 files, and rejects root network/device paths, entry traversal, Windows
+regular UTF-8 files for both host and renderer, and rejects root network/device paths, entry traversal, Windows
 device names, alternate data streams, and linked/reparse entry paths. The selected
 root may be canonicalized from a local alias, but linked files below it are refused.
 These checks do not claim isolation from a malicious process running as the same

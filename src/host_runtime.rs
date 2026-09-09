@@ -1,4 +1,4 @@
-//! Optional native plugin executor over Core's raw CDP transport. This module
+//! Optional JS plugin executor over Core's raw CDP transport. This module
 //! knows no renderer URLs, JavaScript bootstrap, DOM, or official adapters.
 
 use std::collections::VecDeque;
@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::cdp::{BoundedCdpEvents, CdpClient, CdpEventFilter, ClientError, QueuedCdpRequest};
-use crate::local_plugins::revalidate_host_executable;
+use crate::js_runtime::{JsInvocation, JsRuntime};
 use crate::plugin_execution::{ExecutionState, PluginExecutionObservation};
 use crate::plugin_host::{
     HostError, HostEvent, HostExitReport, HostIdentity, HostRpcError, HostSupervisor,
@@ -59,7 +59,7 @@ impl HostRuntime {
         if plugins.len() > MAX_HOSTS {
             return Err(HostError::new(
                 "host_limit",
-                "at most 16 native host plugins may run in this executor",
+                "at most 16 JS host plugins may run in this executor",
             ));
         }
         let mut ids = std::collections::BTreeSet::new();
@@ -96,6 +96,20 @@ impl HostRuntime {
 
     pub fn start(plugins: Vec<LoadedPlugin>, client: CdpClient) -> Result<Self, HostError> {
         Self::validate_plugins(&plugins)?;
+        let runtime = if plugins.is_empty() {
+            None
+        } else {
+            Some(JsRuntime::discover()?)
+        };
+        Self::start_with_runtime(plugins, client, runtime)
+    }
+
+    pub fn start_with_runtime(
+        plugins: Vec<LoadedPlugin>,
+        client: CdpClient,
+        runtime: Option<JsRuntime>,
+    ) -> Result<Self, HostError> {
+        Self::validate_plugins(&plugins)?;
         let published = Arc::new(Mutex::new(Published::default()));
         let stopping = Arc::new(AtomicBool::new(false));
         if plugins.is_empty() {
@@ -105,7 +119,16 @@ impl HostRuntime {
                 worker: None,
             });
         }
-        let owners: Vec<_> = plugins.into_iter().map(HostOwner::start).collect();
+        let runtime = runtime.ok_or_else(|| {
+            HostError::new(
+                "js_runtime_missing",
+                "enabled host JS plugins require the managed runtime",
+            )
+        })?;
+        let owners: Vec<_> = plugins
+            .into_iter()
+            .map(|plugin| HostOwner::start(plugin, &runtime))
+            .collect();
         publish(&published, &owners);
         let worker_published = Arc::clone(&published);
         let worker_stopping = Arc::clone(&stopping);
@@ -234,6 +257,7 @@ enum Outbound {
 struct HostOwner {
     observation: PluginExecutionObservation,
     supervisor: Option<HostSupervisor>,
+    invocation: Option<JsInvocation>,
     initialize_id: u64,
     initialize_deadline: Instant,
     pending: Vec<(u64, QueuedCdpRequest)>,
@@ -244,7 +268,7 @@ struct HostOwner {
 }
 
 impl HostOwner {
-    fn start(plugin: LoadedPlugin) -> Self {
+    fn start(plugin: LoadedPlugin, runtime: &JsRuntime) -> Self {
         let mut owner = Self {
             observation: PluginExecutionObservation {
                 plugin,
@@ -253,6 +277,7 @@ impl HostOwner {
                 error: None,
             },
             supervisor: None,
+            invocation: None,
             initialize_id: 0,
             initialize_deadline: Instant::now() + INITIALIZE_TIMEOUT,
             pending: Vec::new(),
@@ -264,24 +289,25 @@ impl HostOwner {
         let result = (|| {
             let plugin = &owner.observation.plugin;
             let host = plugin.host.as_ref().expect("validated host entry");
-            revalidate_host_executable(host)
-                .map_err(|error| HostError::new("executable_changed", error.to_string()))?;
-            let supervisor = HostSupervisor::spawn(
+            let invocation = runtime.prepare(host)?;
+            let supervisor = HostSupervisor::spawn_with_environment(
                 HostIdentity {
                     plugin_id: plugin.manifest.id.clone(),
                     generation: plugin.generation,
                 },
-                &host.executable,
-                &host.args,
-                &host.root,
+                &invocation.executable,
+                &invocation.arguments,
+                &invocation.cwd,
+                Some(&invocation.environment),
             )?;
+            owner.invocation = Some(invocation);
             owner.observation.process_id = Some(supervisor.process_id());
             owner.supervisor = Some(supervisor);
             owner.initialize_deadline = Instant::now() + INITIALIZE_TIMEOUT;
             owner.initialize_id = owner.supervisor.as_mut().unwrap().send_request(
                 "initialize",
                 json!({
-                    "protocolVersion":1, "coreVersion":env!("CARGO_PKG_VERSION"),
+                    "protocolVersion":1, "coreVersion":env!("CARGO_PKG_VERSION"), "pluginVersion":plugin.manifest.version,
                     "permissions":plugin.manifest.permissions,
                     "methods":["cdp.request","cdp.subscribe","cdp.unsubscribe"],
                 }),
@@ -313,6 +339,7 @@ impl HostOwner {
                     result: Ok(report),
                 });
                 self.supervisor.take();
+                self.invocation.take();
                 self.observation.state = ExecutionState::Failed;
             }
             return;
@@ -574,6 +601,7 @@ impl HostOwner {
                 self.observation.error = Some(error.to_string());
             }
             drop(supervisor);
+            self.invocation.take();
             Some(HostStopReport {
                 plugin_id: self.observation.plugin.manifest.id.clone(),
                 result,

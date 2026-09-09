@@ -347,7 +347,7 @@ fn remove_preserves_files_and_disabled_preference_when_registered_again() {
     let path = directory.path().join("config.json");
     let local = registration(directory.path(), &[Permission::UiDom]);
     fs::create_dir(&local.path).unwrap();
-    let source = local.path.join("plugin.json");
+    let source = local.path.join("codlet.json");
     fs::write(&source, b"source bytes are outside the registry contract").unwrap();
     let mut registry = seed(&path, local.clone());
     registry.set_enabled("dev.example", false).unwrap();

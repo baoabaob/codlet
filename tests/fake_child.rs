@@ -63,7 +63,7 @@ fn control_runtime() -> (TempDir, PathBuf, RendererRuntime) {
         if id == "dev.consumer" {
             manifest["requires"] = json!([{"name":"dev.api","api":1,"scope":"target"}]);
         }
-        std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+        std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
         std::fs::write(
             root.join("renderer.js"),
             "// fixture-original\nmodule.exports = { activate() {}, deactivate() {} };",
@@ -156,7 +156,7 @@ fn runtime_inspection_samples_owned_registration_and_lifecycle_without_cdp_or_di
         publisher.snapshot().renderer.targets[0].plugins
     );
 
-    let manifest_path = directory.path().join("dev.provider/plugin.json");
+    let manifest_path = directory.path().join("dev.provider/codlet.json");
     let source_path = directory.path().join("dev.provider/renderer.js");
     let manifest = std::fs::read(&manifest_path).unwrap();
     let before = client
@@ -486,7 +486,7 @@ fn running_control_batches_dependency_order_fresh_generations_validation_and_com
             .any(|plugin| plugin.id == "dev.other" && plugin.generation == 1 && plugin.active)
     }));
 
-    let manifest_path = directory.path().join("dev.provider/plugin.json");
+    let manifest_path = directory.path().join("dev.provider/codlet.json");
     let original_manifest = std::fs::read(&manifest_path).unwrap();
     let mut denied_manifest: serde_json::Value =
         serde_json::from_slice(&original_manifest).unwrap();
@@ -1768,7 +1768,7 @@ fn local_runtime_management_case(has_grant: bool) {
         {"name":"codex.ui.titlebar.afterMenu","api":1,"scope":"target"},
         {"name":"codlet.runtime.manage","api":1,"scope":"target"}
     ]});
-    std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+    std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
     std::fs::write(
         root.join("renderer.js"),
         "// fixture-local-source\nmodule.exports = { activate() {}, deactivate() {} };",
@@ -1801,7 +1801,7 @@ fn local_runtime_management_case(has_grant: bool) {
     let changed_source = "throw new Error('this disk revision must not be read');";
     std::fs::write(root.join("renderer.js"), changed_source).unwrap();
     std::fs::write(
-        root.join("plugin.json"),
+        root.join("codlet.json"),
         "invalid manifest after launch snapshot",
     )
     .unwrap();

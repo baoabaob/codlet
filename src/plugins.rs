@@ -53,16 +53,9 @@ pub struct RendererManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HostManifest {
-    /// The executable is relative to the plugin root. Remaining strings are
-    /// literal process arguments, never a command line for a shell to expand.
-    pub command: Vec<String>,
-    pub protocol: HostProtocol,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum HostProtocol {
-    #[serde(rename = "jsonl")]
-    Jsonl,
+    /// Built JavaScript relative to the same directory package as renderer.entry.
+    /// Codlet owns the JS executable, bootstrap and transport; plugins choose none.
+    pub entry: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,11 +112,10 @@ pub struct LoadedPlugin {
 #[derive(Debug, Clone)]
 pub struct LoadedHost {
     pub root: PathBuf,
-    pub executable: PathBuf,
-    pub args: Vec<String>,
-    /// Retain this read-only handle throughout launch and the child lifetime.
-    /// On Windows it also denies writes/deletion of the inspected executable.
-    pub executable_file: Arc<File>,
+    pub entry: PathBuf,
+    /// The validated source snapshot, just like the renderer source. Editing the
+    /// original directory does not alter this generation or lock developer files.
+    pub source: Arc<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -177,12 +169,16 @@ pub enum ManifestError {
     Version(String),
     #[error("plugin manifest must declare a renderer or host entry")]
     EntryRequired,
-    #[error("renderer entry must be a normalized relative path: {0}")]
+    #[error(
+        "renderer entry must be a normalized relative path to .js or .cjs; compile TypeScript before loading: {0}"
+    )]
     RendererEntry(String),
     #[error("permission ui.mainWorld is required when renderer.world is main")]
     MainWorldPermissionRequired,
-    #[error("host command is invalid: {0}")]
-    HostCommand(String),
+    #[error(
+        "host entry must be a normalized relative path to .js or .cjs; compile TypeScript before loading: {0}"
+    )]
+    HostEntry(String),
     #[error("permission host.process is required when a host entry is declared")]
     HostProcessPermissionRequired,
 }
@@ -247,7 +243,7 @@ impl PluginManifest {
             return Err(ManifestError::EntryRequired);
         }
         if let Some(renderer) = &self.renderer {
-            if !valid_relative_entry(&renderer.entry) {
+            if !valid_javascript_entry(&renderer.entry) {
                 return Err(ManifestError::RendererEntry(renderer.entry.clone()));
             }
             if renderer.world == RendererWorld::Main
@@ -257,27 +253,8 @@ impl PluginManifest {
             }
         }
         if let Some(host) = &self.host {
-            let Some(executable) = host.command.first() else {
-                return Err(ManifestError::HostCommand(
-                    "provide a plugin-root-relative .exe path as the first argument".to_owned(),
-                ));
-            };
-            if !valid_relative_entry(executable)
-                || !executable.to_ascii_lowercase().ends_with(".exe")
-            {
-                return Err(ManifestError::HostCommand(format!(
-                    "executable must be a normalized plugin-root-relative .exe path: {executable}"
-                )));
-            }
-            if host
-                .command
-                .iter()
-                .skip(1)
-                .any(|argument| argument.contains('\0'))
-            {
-                return Err(ManifestError::HostCommand(
-                    "literal arguments must not contain NUL characters".to_owned(),
-                ));
+            if !valid_javascript_entry(&host.entry) {
+                return Err(ManifestError::HostEntry(host.entry.clone()));
             }
             if !self.permissions.contains(&Permission::HostProcess) {
                 return Err(ManifestError::HostProcessPermissionRequired);
@@ -285,6 +262,10 @@ impl PluginManifest {
         }
         Ok(())
     }
+}
+
+fn valid_javascript_entry(entry: &str) -> bool {
+    valid_relative_entry(entry) && (entry.ends_with(".js") || entry.ends_with(".cjs"))
 }
 
 impl PluginRegistry {
@@ -905,7 +886,7 @@ pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
 
 pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
-        manifest: PluginManifest::parse(include_str!("../bundled/codlet/plugin.json"))?,
+        manifest: PluginManifest::parse(include_str!("../bundled/codlet/codlet.json"))?,
         source: Some(include_str!("../bundled/codlet/dist/renderer.js").to_owned()),
         host: None,
         generation: 1,
@@ -914,7 +895,7 @@ pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
 
 pub fn bundled_codex_ui_adapter() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
-        manifest: PluginManifest::parse(include_str!("../bundled/codex-ui-adapter/plugin.json"))?,
+        manifest: PluginManifest::parse(include_str!("../bundled/codex-ui-adapter/codlet.json"))?,
         source: Some(include_str!("../bundled/codex-ui-adapter/dist/renderer.js").to_owned()),
         host: None,
         generation: 1,
@@ -1217,16 +1198,12 @@ mod tests {
 
         let host = PluginManifest::parse(
             r#"{"schema":1,"id":"dev.host","version":"1",
-                "host":{"command":["bin/helper.exe","a b","$HOME","","中文"],"protocol":"jsonl"},
+                "host":{"entry":"dist/host.js"},
                 "permissions":["host.process","cdp.raw"]}"#,
         )
         .unwrap();
         assert!(host.renderer.is_none());
-        assert_eq!(host.host.as_ref().unwrap().protocol, HostProtocol::Jsonl);
-        assert_eq!(
-            host.host.as_ref().unwrap().command,
-            ["bin/helper.exe", "a b", "$HOME", "", "中文"]
-        );
+        assert_eq!(host.host.as_ref().unwrap().entry, "dist/host.js");
         let value = serde_json::to_value(&host).unwrap();
         assert!(value.get("renderer").is_none());
         assert_eq!(PluginManifest::parse(&value.to_string()).unwrap(), host);
@@ -1237,29 +1214,31 @@ mod tests {
     }
 
     #[test]
-    fn host_manifest_requires_explicit_process_permission_and_literal_executable_command() {
+    fn host_manifest_requires_built_javascript_and_rejects_executable_commands() {
         let mut value = serde_json::json!({
             "schema":1, "id":"dev.host", "version":"1",
-            "host":{"command":["bin/helper.exe"], "protocol":"jsonl"},
+            "host":{"entry":"dist/host.js"},
             "permissions":["host.process"]
         });
-        for command in [
-            serde_json::json!([]),
-            serde_json::json!([""]),
-            serde_json::json!(["../helper.exe"]),
-            serde_json::json!(["C:/helper.exe"]),
-            serde_json::json!(["helper.cmd"]),
-            serde_json::json!(["helper"]),
-            serde_json::json!(["helper.exe --flag"]),
-            serde_json::json!(["bin/helper.exe", "bad\0arg"]),
+        for entry in [
+            "",
+            "../host.js",
+            "C:/host.js",
+            "host.exe",
+            "host.node",
+            "host.ts",
+            "host.mts",
+            "host",
+            "host.js --flag",
+            "host\0.js",
         ] {
-            value["host"]["command"] = command;
+            value["host"]["entry"] = serde_json::json!(entry);
             assert!(matches!(
                 PluginManifest::parse(&value.to_string()),
-                Err(ManifestError::HostCommand(_))
+                Err(ManifestError::HostEntry(_))
             ));
         }
-        value["host"]["command"] = serde_json::json!(["bin/helper.exe"]);
+        value["host"]["entry"] = serde_json::json!("dist/host.cjs");
         value["permissions"] = serde_json::json!([]);
         assert_eq!(
             PluginManifest::parse(&value.to_string()),
@@ -1267,8 +1246,10 @@ mod tests {
         );
         value["permissions"] = serde_json::json!(["host.process"]);
         for host in [
-            serde_json::json!({"command":["bin/helper.exe"],"protocol":"stdio"}),
-            serde_json::json!({"command":["bin/helper.exe"],"protocol":"jsonl","shell":true}),
+            serde_json::json!({"command":["bin/helper.exe"],"protocol":"jsonl"}),
+            serde_json::json!({"entry":"dist/host.js","command":["node.exe"]}),
+            serde_json::json!({"entry":"dist/host.js","protocol":"jsonl"}),
+            serde_json::json!({"entry":"dist/host.js","runtime":"C:/other/node.exe"}),
         ] {
             value["host"] = host;
             assert!(matches!(

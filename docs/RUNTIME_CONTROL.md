@@ -131,7 +131,7 @@ Reports identify `affected_plugin_ids`, the generations remaining in the runtime
 
 `codlet launch --watch` adds a foreground observer to an otherwise ordinary
 launch. It watches only local plugins that are already loaded by the renderer
-runtime. For each such source it fingerprints the registered `plugin.json` and
+runtime. For each such source it fingerprints the registered `codlet.json` and
 that manifest's `renderer.entry`; bundled plugins, unregistered directories,
 new plugin ids, and new roots are outside the watch set and are never adopted
 automatically. A normal `codlet launch` creates no watcher.

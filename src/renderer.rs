@@ -2569,8 +2569,7 @@ mod tests {
         missing_source.source = None;
         let mut combined = bundled_codex_ui_adapter().unwrap();
         combined.manifest.host = Some(crate::plugins::HostManifest {
-            command: vec!["helper.exe".to_owned()],
-            protocol: crate::plugins::HostProtocol::Jsonl,
+            entry: "host.js".to_owned(),
         });
         for plugin in [missing_source, combined] {
             let (_directory, registry) = test_registry();

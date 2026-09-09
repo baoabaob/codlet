@@ -1,17 +1,20 @@
 # Codlet
 
-Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. It includes inherited-CDP transport, managed renderer plugins, a local plugin registry, online renderer management, and an initial native host/CDP path. Official GUI and adapter plugins are optional; a standalone host plugin can use Core's public raw requests and events. See [the technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) for milestone scope and the [acceptance record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md) for the current build's evidence and remaining repetition/crash gates.
+Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. Plugins are JS/TS directory packages with `codlet.json`, built JS entrypoints and resources. Host JS runs in Codlet's managed Node process; renderer JS runs in the page. Official GUI and adapter plugins are optional, and host JS can use public raw CDP requests and events directly. See [the technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) for milestone scope and the [acceptance record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md) for the current build's evidence and remaining repetition/crash gates.
 
 It does not modify the Codex package, official shortcuts, protocols, configuration, or user data. It never terminates or restarts an existing Codex process. Normal Codex launches do not run Codlet.
 
 ## Development status
 
-M2a now supports a native host-only plugin through public JSONL methods for raw
-CDP requests and events. A pure host launch skips the managed renderer's URL
-selection; the [standalone example](examples/raw-host/README.md) needs no official
-plugin or renderer entry. This first slice covers startup, communication and owned
-process cleanup; host hot management and the rest of M2 are still pending. See the
-[M2a contract and validation](docs/M2A_HOST_RUNTIME_2026-09-09.md).
+M2a now uses `host.entry: "dist/host.js"`. Both entry kinds export CommonJS
+`activate(context)` and `deactivate()`; TypeScript is compiled to JS before loading.
+Codlet supplies the pinned JS runtime and handles JSONL internally. Arbitrary
+executable entries and native Node addons are not supported. This unifies the
+package format and runtime contract without claiming a sandbox.
+
+The [standalone JS example](examples/raw-host/README.md) uses `context.cdp` without
+an official plugin or renderer entry. Host hot management and the rest of M2 remain
+pending. See the [unified JS contract and migration](docs/JS_PLUGIN_RUNTIME_2026-09-09.md).
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
@@ -44,7 +47,7 @@ New BrowserWindows receive the same plugin generation automatically. Main-docume
 
 The entry tolerates a late or rebuilt toolbar. Plugin lists load when the dialog opens and can be refreshed after errors, including a 15-second RPC timeout. Escape is handled inside the GUI, and close/unload retires pending work and restores focus. [Open the standalone GUI preview](scripts/preview-codlet-gui.html) to inspect the actual GUI source with simulated toolbar, theme and RPC inputs. It opens the management surface first and keeps test controls folded; it needs no server. Live interaction and 1280/782 px window layouts passed in the isolated-client retest; that evidence does not close the ordinary-launch production gate.
 
-`codlet launch` never watches files. The explicit `codlet launch --watch` mode observes only already-loaded local plugins' `plugin.json` and `renderer.entry`, waits for quiet/two-stable observations across the whole reload closure, and sends reloads through the same foreground lifecycle owner. The final watch policy rechecks loaded catalog paths and registry grants at execution; it never adopts a new plugin id or root and adds no watcher thread or execution entry. Registry reads/writes use a shared 1 MiB bound. The watcher source is commit `851395a`, its final regression is covered by the full validation batch, and ordinary production launch+watch acceptance remains open; see [runtime control](docs/RUNTIME_CONTROL.md).
+`codlet launch` never watches files. The explicit `codlet launch --watch` mode observes only already-loaded local plugins' `codlet.json` and `renderer.entry`, waits for quiet/two-stable observations across the whole reload closure, and sends reloads through the same foreground lifecycle owner. The final watch policy rechecks loaded catalog paths and registry grants at execution; it never adopts a new plugin id or root and adds no watcher thread or execution entry. Registry reads/writes use a shared 1 MiB bound. The watcher source is commit `851395a`, its final regression is covered by the full validation batch, and ordinary production launch+watch acceptance remains open; see [runtime control](docs/RUNTIME_CONTROL.md).
 
 The next adapter layer is planned in [native UI capabilities](docs/UI_ADAPTER_CAPABILITIES.md): host slots, semantic appearance roles and local control interactions have separate ownership. Matching colors alone is not native-style acceptance, and a reusable component library is not implemented yet.
 

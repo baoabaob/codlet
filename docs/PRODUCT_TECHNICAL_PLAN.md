@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.24；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.25；日期：2026-09-09；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -24,6 +24,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 4. Codlet 不监视、不提示、不接管通过官方入口启动的 Codex，也不在后台等待或劫持后续启动。
 5. Codlet 安装、升级和卸载均不关闭或重启 Codex，不修改或捆绑官方安装包、快捷方式、协议关联、配置与用户数据。
 6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。M2a 已允许独立 renderer 或 host，首个小包明确拒绝组合入口及 host 的跨执行器 provides/requires，避免部分执行被误报成功。
+   两种入口属于统一的 JS/TS 目录包格式：`codlet.json`、构建后的 JS 入口、资源文件。TS 在构建时编译为 JS；host JS 在 Codlet 统一管理的 JS 进程执行，renderer JS 在页面执行。首版不接受任意 `.exe` 入口，不支持原生 Node 扩展，不提供运行时 TS 转译。
 7. renderer 插件允许分级获得 isolated DOM、main world 和 raw CDP 能力。
 8. 首版只运行用户明确授信的本地插件；不宣称提供安全沙箱。
 9. 不修改 `app.asar`，不修改官方安装目录，不复制或再分发 Codex，不做 DLL 注入。
@@ -342,11 +343,10 @@ CDP JSON 消息以单个 NUL 字节分帧，不使用换行或 WebSocket。
 
 ```text
 example-plugin/
-├── plugin.json
+├── codlet.json
 ├── dist/
-│   └── renderer.js
-└── host/                 # 可选
-    └── example-host.exe
+│   └── host.js 或 renderer.js
+└── assets/               # 可选资源
 ```
 
 ### 7.2 最小 manifest
@@ -372,18 +372,19 @@ example-plugin/
 }
 ```
 
-M2a 的 schema 1 manifest 已支持独立 host 入口，不需要 renderer 空壳；必须申请并获授 `host.process`，使用 CDP 还须 `cdp.raw`。`command[0]` 为插件根目录内的相对 `.exe` 路径，其余元素为不经 shell 的字面 argv。组合入口仍待后续交付。当前格式如下：
+M2a 的 schema 1 manifest 已支持独立 host JS 入口，不需要 renderer 空壳；必须申请并获授 `host.process`，使用 CDP 还须 `cdp.raw`。`host.entry` 是插件根目录内的 `.js`/`.cjs` 路径，导出与 renderer 一致的 CommonJS `activate(context)` / `deactivate()`。Codlet 持有统一 Node 可执行文件、bootstrap、stdio 与生命周期，插件不选择可执行程序、运行参数或传输协议。组合入口仍待后续交付。当前格式如下：
 
 ```json
 {
   "host": {
-    "command": ["host/example-host.exe"],
-    "protocol": "jsonl"
+    "entry": "dist/host.js"
   }
 }
 ```
 
 首版有 capability dependency graph，但没有包依赖、包解析、远程来源或 semver 求解。插件不能按另一个插件的发行版本建立依赖，只能要求明确的 capability API。
+
+JS/TS 的统一限定不缩小公开 CDP 请求与事件原语。host JS 可以自行注入、恢复、适配或建设便利层；不要求官方 adapter。语言的图灵完备性与执行器实际开放的系统接口是两个问题，Core 仍需提供可达原语。Node host 的普通用户权限和可直接文件/网络/进程访问不构成安全沙箱；禁用原生 Node 扩展也不是任意副作用可回滚的证明。分发、TS 构建与旧格式迁移见 [统一 JS 运行时合约](JS_PLUGIN_RUNTIME_2026-09-09.md)。
 
 ### 7.3 权限层级
 
@@ -910,6 +911,10 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 用户复测修复构建的 `launch --watch`：Host `41432` / Codex `20540`，exit `0`，active/stopped 完整，worker 已回收，after 无相关进程、三个阶段无相关 listener。旧普通 M1 exit `1` 保留原因未定；用户认为可能直接关闭了 cmd。本次不改写原始报告，不因该历史疑点或尚未完成的重复/crash 门禁暂停日常开发。
 
 按用户要求，小修复使用针对性检查并继续推进，完整 M0/M1 不作为每个小包的默认重复任务。M2a 首批已实现纯 host 装载和独立 Core RPC owner；原生示例可自行选择任意 CDP target/session、执行 JavaScript 与订阅事件，无官方 adapter 或托管 renderer ABI 依赖。进程启动与回收、严格 JSONL、权限拒绝、队列/帧上限与失败隔离采用专项夹具验证；未启动真实 Codex。范围、用法及剩余项见 [M2a 记录](M2A_HOST_RUNTIME_2026-09-09.md)。
+
+### 16.10 JS/TS 统一格式
+
+第 16.9 节的可执行 host 示例是过渡历史；用户随后要求首版统一 JS/TS。当前实现已将其替换为目录内 JS 示例及 Codlet 固定的 JS 执行环境，复用既有进程监督、JSONL、CDP 与资源回收，不维护任意可执行文件插件分支。后续 hot lifecycle 和跨执行器工作均基于这套统一形式。
 
 ## 17. 主要风险
 

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const bootstrap = readFileSync(new URL('../bundled/runtime/bootstrap.js', import.meta.url), 'utf8');
 const entry = readFileSync(new URL('../examples/local-echo/renderer.js', import.meta.url), 'utf8');
-const manifest = JSON.parse(readFileSync(new URL('../examples/local-echo/plugin.json', import.meta.url), 'utf8'));
+const manifest = JSON.parse(readFileSync(new URL('../examples/local-echo/codlet.json', import.meta.url), 'utf8'));
 
 function fixture() {
     const context = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout });

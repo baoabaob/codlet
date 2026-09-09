@@ -418,7 +418,7 @@ mod tests {
                 if matches!(*id, "dev.consumer" | "dev.z") {
                     manifest["requires"] = json!([{"name":"dev.api","api":1,"scope":"target"}]);
                 }
-                std::fs::write(path.join("plugin.json"), manifest.to_string()).unwrap();
+                std::fs::write(path.join("codlet.json"), manifest.to_string()).unwrap();
                 std::fs::write(
                     path.join("renderer.js"),
                     "module.exports = { activate() {}, deactivate() {} };",
@@ -518,7 +518,7 @@ mod tests {
         assert!(fixture.poll(&mut watcher, start, 11).is_none());
         assert!(fixture.poll(&mut watcher, start, 12).is_none());
 
-        let manifest = fixture.plugins[0].path.join("plugin.json");
+        let manifest = fixture.plugins[0].path.join("codlet.json");
         std::fs::write(&manifest, r#"{"unexpected":1}"#).unwrap();
         assert!(fixture.poll(&mut watcher, start, 13).is_none());
         assert!(fixture.poll(&mut watcher, start, 14).is_some());
@@ -543,7 +543,7 @@ mod tests {
             assert!(fixture.poll(&mut watcher, start, tick).is_none());
         }
 
-        let manifest_path = fixture.plugins[0].path.join("plugin.json");
+        let manifest_path = fixture.plugins[0].path.join("codlet.json");
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         manifest["permissions"] = json!(["ui.dom"]);
@@ -644,8 +644,8 @@ mod tests {
         let replacement = fixture.directory.path().join("replacement-consumer");
         std::fs::create_dir(&replacement).unwrap();
         std::fs::copy(
-            fixture.plugins[1].path.join("plugin.json"),
-            replacement.join("plugin.json"),
+            fixture.plugins[1].path.join("codlet.json"),
+            replacement.join("codlet.json"),
         )
         .unwrap();
         std::fs::write(
@@ -771,7 +771,7 @@ mod tests {
         let mut watcher = PluginWatcher::new(fixture.registry_path.clone());
         let start = Instant::now();
         assert!(fixture.poll(&mut watcher, start, 0).is_none());
-        let manifest = fixture.plugins[0].path.join("plugin.json");
+        let manifest = fixture.plugins[0].path.join("codlet.json");
         let mut parsed: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
         std::fs::write(&manifest, serde_json::to_vec_pretty(&parsed).unwrap()).unwrap();

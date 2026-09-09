@@ -209,7 +209,7 @@ fn validate_renderer_requirements(
         .find(|requirement| requirement.scope != CapabilityScope::Target)
     {
         return Err(LocalPluginError::Rejected {
-            path: path.join("plugin.json"),
+            path: path.join("codlet.json"),
             stage: "renderer capability routing",
             reason: format!(
                 "plugin {} requires {requirement}; this renderer runtime only supports target-scoped requirements",

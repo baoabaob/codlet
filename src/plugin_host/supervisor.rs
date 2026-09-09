@@ -158,10 +158,20 @@ impl HostSupervisor {
         args: &[String],
         cwd: &Path,
     ) -> Result<Self, HostError> {
+        Self::spawn_with_environment(identity, executable, args, cwd, None)
+    }
+
+    pub(crate) fn spawn_with_environment(
+        identity: HostIdentity,
+        executable: &Path,
+        args: &[String],
+        cwd: &Path,
+        environment: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+    ) -> Result<Self, HostError> {
         identity
             .validate()
             .map_err(|message| HostError::new("invalid_identity", message))?;
-        let (process, stdio) = OwnedPluginProcess::spawn(executable, args, cwd)
+        let (process, stdio) = OwnedPluginProcess::spawn(executable, args, cwd, environment)
             .map_err(|error| HostError::new("spawn_failed", error.to_string()))?;
         let PluginStdio {
             stdin,

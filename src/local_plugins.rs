@@ -3,13 +3,13 @@
 //! The selected root is canonicalized, so a link chosen as the root is allowed.
 //! Below it, exact directory-entry spelling is required and symbolic links,
 //! Windows reparse points (including junctions), hard-linked files, and special
-//! files are rejected. Checks surround bounded text reads and executable opens;
+//! files are rejected. Checks surround bounded text reads;
 //! Windows also checks the opened handle's final path and denies sharing for
 //! writes/deletion while that handle is retained.
 //! This is not an OS sandbox or a guarantee against every filesystem race caused
 //! by a malicious same-user process. It does not make manifest/source snapshots
 //! atomic. JavaScript is returned unchanged, never parsed or executed here.
-//! Executables are retained as read-only handles, never read as source or run.
+//! Both host and renderer retain JavaScript snapshots, never executable entries.
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata, OpenOptions};
@@ -27,7 +27,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use crate::plugins::{LoadedHost, LoadedPlugin, Permission, PluginManifest, RendererWorld};
 
-const MANIFEST_NAME: &str = "plugin.json";
+const MANIFEST_NAME: &str = "codlet.json";
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
 // Even worst-case JSON escaping leaves room in the 16 MiB CDP frame.
 pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -100,7 +100,7 @@ pub(crate) fn inspect_watch_fingerprint(root: &Path, current_entry: &str) -> Loc
         && manifest.renderer.is_none()
     {
         // Renderer watching may observe an entry changing kind. Fingerprint the
-        // new declaration without treating a host executable as JavaScript.
+        // new declaration without treating it as the running renderer source.
         return semantic_watch_fingerprint(manifest, None);
     }
     let entry = manifest
@@ -156,7 +156,7 @@ impl LocalPluginCandidate {
     }
 }
 
-/// Validate grants without file I/O. Errors use the logical `plugin.json` path;
+/// Validate grants without file I/O. Errors use the logical `codlet.json` path;
 /// the candidate method supplies its actual root for path-specific diagnostics.
 pub fn validate_grants(
     manifest: &PluginManifest,
@@ -204,6 +204,17 @@ pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPl
     let root = canonical_local_root(root)?;
 
     let manifest_path = root.join(MANIFEST_NAME);
+    if !manifest_path
+        .try_exists()
+        .map_err(|error| io_error(&manifest_path, "inspect manifest", error))?
+        && root.join("plugin.json").try_exists().unwrap_or(false)
+    {
+        return Err(reject(
+            &manifest_path,
+            "manifest migration",
+            "rename plugin.json to codlet.json; host entries now use host.entry with built JavaScript, not host.command",
+        ));
+    }
     let json = read_text(&root, MANIFEST_NAME, MAX_MANIFEST_BYTES, "read manifest")?;
     let manifest = PluginManifest::parse(&json)
         .map_err(|error| reject(&manifest_path, "parse manifest", error.to_string()))?;
@@ -228,16 +239,20 @@ pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPl
         None
     };
     let host = if let Some(host) = &manifest.host {
-        // Manifest validation guarantees the command has an executable. The
-        // checked opener shares the renderer reader's path and handle checks.
-        let entry = &host.command[0];
+        let entry = &host.entry;
         validate_entry(&root, entry)?;
-        let (file, executable) = open_checked_file(&root, entry, "open host executable")?;
+        let source = read_text(&root, entry, MAX_SOURCE_BYTES, "read host entry")?;
+        if source.trim().is_empty() {
+            return Err(reject(
+                &root.join(entry),
+                "read host entry",
+                "entry must contain non-whitespace JavaScript source",
+            ));
+        }
         Some(LoadedHost {
             root: root.clone(),
-            executable,
-            args: host.command[1..].to_vec(),
-            executable_file: Arc::new(file),
+            entry: root.join(entry),
+            source: Arc::from(source),
         })
     } else {
         None
@@ -401,39 +416,6 @@ fn require_supported_permission(
             ),
         ))
     }
-}
-
-/// Recheck the retained executable immediately before process creation. This
-/// performs no source read, process launch, or grant decision; callers must keep
-/// the `LoadedHost` alive through launch and the child lifetime.
-pub fn revalidate_host_executable(host: &LoadedHost) -> Result<(), LocalPluginError> {
-    let stage = "revalidate host executable";
-    if canonical_local_root(&host.root)? != host.root {
-        return Err(reject(
-            &host.root,
-            stage,
-            "selected plugin root has changed",
-        ));
-    }
-    let relative = host
-        .executable
-        .strip_prefix(&host.root)
-        .ok()
-        .and_then(Path::to_str)
-        .ok_or_else(|| {
-            reject(
-                &host.executable,
-                stage,
-                "executable must remain inside its plugin root",
-            )
-        })?
-        .replace('\\', "/");
-    validate_entry(&host.root, &relative)?;
-    let path = checked_path(&host.root, &relative, stage)?;
-    if path != host.executable {
-        return Err(reject(&path, stage, "executable path has changed"));
-    }
-    verify_open_file(&host.executable_file, &path, stage)
 }
 
 fn validate_entry(root: &Path, entry: &str) -> Result<(), LocalPluginError> {

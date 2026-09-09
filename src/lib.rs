@@ -17,6 +17,8 @@ pub mod runtime_status;
 #[cfg(windows)]
 pub mod host_runtime;
 #[cfg(windows)]
+pub mod js_runtime;
+#[cfg(windows)]
 pub mod lab;
 #[cfg(windows)]
 pub mod plugin_cli;

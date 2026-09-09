@@ -335,7 +335,7 @@ fn register_local_fixture(
 ) -> std::path::PathBuf {
     let root = directory.join(id);
     std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("plugin.json"), json!({
+    std::fs::write(root.join("codlet.json"), json!({
         "schema": 1, "id": id, "version": "1", "renderer": {"entry": "renderer.js", "world": "isolated"},
         "permissions": permissions, "provides": provides, "requires": requires,
     }).to_string()).unwrap();
@@ -390,7 +390,7 @@ fn local_catalog_shares_dependency_validation_and_uses_only_collected_data() {
     .unwrap();
     assert_eq!(runtime.plugin_count(), 4);
     assert_eq!(runtime.session_count(), 0);
-    std::fs::remove_file(provider_path.join("plugin.json")).unwrap();
+    std::fs::remove_file(provider_path.join("codlet.json")).unwrap();
     inputs.catalog = Ok(catalog);
     let report = report_json(inputs);
     assert_eq!(report["result"]["exitCode"], 0);
@@ -505,7 +505,7 @@ fn missing_local_grant_and_permission_upgrade_fail_before_runtime_construction()
     let catalog = PluginCatalog::load(&registry).unwrap();
     assert_eq!(catalog.enabled_plugins(&registry).unwrap().len(), 3);
     let upgraded = json!({"schema":1,"id":"dev.trusted","version":"2","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom","runtime.manage"]});
-    std::fs::write(root.join("plugin.json"), upgraded.to_string()).unwrap();
+    std::fs::write(root.join("codlet.json"), upgraded.to_string()).unwrap();
     let error = codlet::renderer::RendererRuntime::from_catalog(
         PluginCatalog::load(&registry).unwrap(),
         registry,

@@ -22,9 +22,9 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, WaitForSingleObject,
 };
 
 use super::local_ipc::{Channel, LocalIpcError, create_event, create_server_pipe};
@@ -62,6 +62,7 @@ impl OwnedPluginProcess {
         executable: &Path,
         arguments: &[String],
         cwd: &Path,
+        environment: Option<&[(OsString, OsString)]>,
     ) -> Result<(Self, PluginStdio), PluginProcessError> {
         let executable = canonical(executable, false)?;
         let cwd = canonical(cwd, true)?;
@@ -94,6 +95,7 @@ impl OwnedPluginProcess {
         let directory = wide(cwd.as_os_str())?;
         let mut command = build_command_line(executable.as_os_str(), &arguments)
             .map_err(|error| PluginProcessError::Invalid(error.to_string()))?;
+        let environment = environment.map(environment_block).transpose()?;
         let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -111,8 +113,13 @@ impl OwnedPluginProcess {
                 std::ptr::null(),
                 std::ptr::null(),
                 1,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
-                std::ptr::null(),
+                EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_NO_WINDOW
+                    | CREATE_SUSPENDED
+                    | CREATE_UNICODE_ENVIRONMENT,
+                environment
+                    .as_ref()
+                    .map_or(std::ptr::null(), |block| block.as_ptr().cast()),
                 directory.as_ptr(),
                 &startup.StartupInfo,
                 &mut output,
@@ -186,6 +193,32 @@ impl OwnedPluginProcess {
             Ok(())
         }
     }
+}
+
+fn environment_block(environment: &[(OsString, OsString)]) -> Result<Vec<u16>, PluginProcessError> {
+    let mut environment: Vec<_> = environment.iter().collect();
+    environment.sort_by_key(|(key, _)| key.to_string_lossy().to_uppercase());
+    let mut block = Vec::new();
+    for (key, value) in environment {
+        let key: Vec<_> = key.encode_wide().collect();
+        let value: Vec<_> = value.encode_wide().collect();
+        // Windows may expose drive-specific =C: variables; preserve them, but
+        // never permit NUL to manufacture an extra environment entry.
+        if key.is_empty() || key.contains(&0) || value.contains(&0) {
+            return Err(PluginProcessError::Invalid(
+                "invalid process environment entry".into(),
+            ));
+        }
+        block.extend(key);
+        block.push(b'=' as u16);
+        block.extend(value);
+        block.push(0);
+    }
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    Ok(block)
 }
 
 fn canonical(path: &Path, directory: bool) -> Result<PathBuf, PluginProcessError> {

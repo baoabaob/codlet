@@ -3,331 +3,206 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codlet::catalog::PluginCatalog;
-use codlet::local_plugins::{
-    LocalPluginError, MAX_SOURCE_BYTES, inspect_local_plugin, load_local_plugin,
-    revalidate_host_executable,
-};
-use codlet::plugins::{HostProtocol, LocalPluginRegistration, Permission, PluginRegistry};
+use codlet::local_plugins::{MAX_SOURCE_BYTES, inspect_local_plugin, load_local_plugin};
+use codlet::plugins::{LocalPluginRegistration, Permission, PluginRegistry};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
 
-const EXECUTABLE_BYTES: &[u8] = b"MZ\0\xff\x80not-a-valid-executable";
+const SOURCE: &str =
+    "throw new Error('inspection must not execute'); module.exports = { activate() {} };";
 
 struct Fixture {
     directory: TempDir,
     root: PathBuf,
 }
-
 impl Fixture {
     fn new() -> Self {
         let directory = tempdir().unwrap();
-        let root = directory.path().join("本地 host plugin");
-        fs::create_dir_all(root.join("bin")).unwrap();
+        let root = directory.path().join("本地 JS host plugin");
+        fs::create_dir_all(root.join("dist")).unwrap();
         let fixture = Self { directory, root };
-        fixture.write_manifest(&Self::manifest());
-        fs::write(fixture.executable(), EXECUTABLE_BYTES).unwrap();
+        fixture.manifest(&json!({"schema":1,"id":"dev.host","version":"1","host":{"entry":"dist/host.js"},"permissions":["host.process"]}));
+        fs::write(fixture.entry(), SOURCE).unwrap();
         fixture
     }
-
-    fn manifest() -> Value {
-        json!({
-            "schema":1, "id":"dev.host", "version":"1",
-            "host":{
-                "command":["bin/helper.exe", "a b", "$(do-not-expand)", "", "中文"],
-                "protocol":"jsonl"
-            },
-            "permissions":["host.process"]
-        })
+    fn manifest(&self, value: &Value) {
+        fs::write(self.root.join("codlet.json"), value.to_string()).unwrap();
     }
-
-    fn write_manifest(&self, value: &Value) {
-        fs::write(self.root.join("plugin.json"), value.to_string()).unwrap();
+    fn entry(&self) -> PathBuf {
+        self.root.join("dist/host.js")
     }
-
-    fn executable(&self) -> PathBuf {
-        self.root.join("bin/helper.exe")
+    fn load(&self, grants: &[Permission]) -> codlet::plugins::LoadedPlugin {
+        load_local_plugin("dev.host", &self.root, grants, 7).unwrap()
     }
-}
-
-fn rejection(error: &LocalPluginError, stage: &str, reason: &str) {
-    let LocalPluginError::Rejected {
-        stage: actual_stage,
-        reason: actual_reason,
-        ..
-    } = error
-    else {
-        panic!("expected rejection, got {error:?}");
-    };
-    assert_eq!(*actual_stage, stage);
-    assert!(actual_reason.contains(reason), "{error}");
 }
 
 #[test]
-fn host_only_load_retains_a_binary_handle_and_literal_arguments_without_source_or_execution() {
+fn js_host_and_renderer_share_bounded_source_snapshots_without_executing_or_locking_the_package() {
     let fixture = Fixture::new();
-    // A host executable is not JavaScript, has no renderer source size limit,
-    // and is not validated by trying to execute it during inspection.
-    fs::OpenOptions::new()
-        .write(true)
-        .open(fixture.executable())
-        .unwrap()
-        .set_len(MAX_SOURCE_BYTES as u64 + 1)
-        .unwrap();
     let candidate = inspect_local_plugin(&fixture.root).unwrap();
-    assert!(candidate.source.is_none());
-    assert!(candidate.manifest.renderer.is_none());
-    assert_eq!(
-        candidate.manifest.host.as_ref().unwrap().protocol,
-        HostProtocol::Jsonl
-    );
-    candidate
-        .validate_grants(&[Permission::HostProcess])
-        .unwrap();
-    let plugin =
-        load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 7).unwrap();
-    assert_eq!(plugin.generation, 7);
-    assert!(plugin.source.is_none());
+    assert!(candidate.source.is_none() && candidate.manifest.renderer.is_none());
+    assert_eq!(candidate.manifest.host.unwrap().entry, "dist/host.js");
+    let plugin = fixture.load(&[Permission::HostProcess]);
     let host = plugin.host.as_ref().unwrap();
     assert_eq!(host.root, fs::canonicalize(&fixture.root).unwrap());
-    assert_eq!(
-        host.executable,
-        fs::canonicalize(fixture.executable()).unwrap()
-    );
-    assert_eq!(host.args, ["a b", "$(do-not-expand)", "", "中文"]);
-    assert_eq!(
-        host.executable_file.metadata().unwrap().len(),
-        MAX_SOURCE_BYTES as u64 + 1
-    );
-    revalidate_host_executable(host).unwrap();
+    assert_eq!(host.entry, fs::canonicalize(fixture.entry()).unwrap());
+    assert_eq!(&*host.source, SOURCE);
+    assert_eq!(plugin.generation, 7);
     let clone = plugin.clone();
     assert!(Arc::ptr_eq(
-        &host.executable_file,
-        &clone.host.as_ref().unwrap().executable_file
+        &host.source,
+        &clone.host.as_ref().unwrap().source
     ));
+    fs::write(
+        fixture.entry(),
+        "module.exports = { activate() {} }; // edited",
+    )
+    .unwrap();
+    assert_eq!(
+        &*host.source, SOURCE,
+        "an edit changed the running generation"
+    );
+    assert!(
+        fixture
+            .load(&[Permission::HostProcess])
+            .host
+            .unwrap()
+            .source
+            .ends_with("// edited")
+    );
     assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 2);
-    assert_eq!(fs::read_dir(fixture.root.join("bin")).unwrap().count(), 1);
 }
 
 #[test]
-fn host_grants_are_explicit_rechecked_and_do_not_expand_manifest_authority() {
+fn host_javascript_rejects_binary_empty_and_oversized_sources_with_the_same_path_checks() {
     let fixture = Fixture::new();
-    let candidate = inspect_local_plugin(&fixture.root).unwrap();
-    rejection(
-        &candidate.validate_grants(&[]).unwrap_err(),
-        "grant validation",
-        "host.process",
-    );
-    rejection(
-        &candidate
-            .validate_grants(&[Permission::HostProcess, Permission::HostProcess])
-            .unwrap_err(),
-        "grant validation",
-        "duplicate grant",
-    );
-    rejection(
-        &candidate
-            .validate_grants(&[Permission::HostProcess, Permission::RuntimeManage])
-            .unwrap_err(),
-        "grant validation",
-        "not implemented",
-    );
-    let loaded = load_local_plugin(
-        "dev.host",
-        &fixture.root,
-        &[Permission::HostProcess, Permission::CdpRaw],
-        1,
-    )
-    .unwrap();
-    assert_eq!(loaded.manifest.permissions, [Permission::HostProcess]);
-
-    let mut changed = Fixture::manifest();
-    changed["permissions"] = json!(["host.process", "cdp.raw"]);
-    fixture.write_manifest(&changed);
-    rejection(
-        &load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 2).unwrap_err(),
-        "grant validation",
-        "cdp.raw",
-    );
-    load_local_plugin(
-        "dev.host",
-        &fixture.root,
-        &[Permission::HostProcess, Permission::CdpRaw],
-        2,
-    )
-    .unwrap();
-    changed["id"] = json!("dev.replaced");
-    fixture.write_manifest(&changed);
-    rejection(
-        &load_local_plugin(
-            "dev.host",
-            &fixture.root,
-            &[Permission::HostProcess, Permission::CdpRaw],
-            3,
-        )
-        .unwrap_err(),
-        "identity validation",
-        "dev.replaced",
-    );
-    assert_eq!(loaded.manifest.id, "dev.host");
-    assert_eq!(loaded.manifest.permissions, [Permission::HostProcess]);
-}
-
-#[test]
-fn unsupported_entry_combinations_and_host_capabilities_fail_before_opening_either_entry() {
-    let fixture = Fixture::new();
-    fs::remove_file(fixture.executable()).unwrap();
-    let mut value = Fixture::manifest();
-    value["renderer"] = json!({"entry":"missing.js", "world":"isolated"});
-    value["permissions"] = json!(["host.process", "ui.dom"]);
-    fixture.write_manifest(&value);
-    rejection(
-        &inspect_local_plugin(&fixture.root).unwrap_err(),
-        "entry validation",
-        "combined",
-    );
-
-    for declaration in ["provides", "requires"] {
-        let mut value = Fixture::manifest();
-        value[declaration] = json!([{"name":"dev.host.service", "api":1, "scope":"runtime"}]);
-        fixture.write_manifest(&value);
-        rejection(
-            &inspect_local_plugin(&fixture.root).unwrap_err(),
-            "host capability routing",
-            "unsupported",
-        );
+    for bytes in [
+        b"MZ\0\xff".to_vec(),
+        b" \n ".to_vec(),
+        vec![b'x'; MAX_SOURCE_BYTES + 1],
+    ] {
+        fs::write(fixture.entry(), bytes).unwrap();
+        let error = inspect_local_plugin(&fixture.root).unwrap_err().to_string();
+        assert!(error.contains("host entry"), "{error}");
     }
-    let mut value = Fixture::manifest();
-    value["permissions"] = json!(["host.process", "ui.dom"]);
-    fixture.write_manifest(&value);
-    rejection(
-        &inspect_local_plugin(&fixture.root).unwrap_err(),
-        "permission validation",
-        "ui.dom",
+    fs::write(fixture.entry(), "x".repeat(MAX_SOURCE_BYTES)).unwrap();
+    assert_eq!(
+        inspect_local_plugin(&fixture.root)
+            .unwrap()
+            .host
+            .unwrap()
+            .source
+            .len(),
+        MAX_SOURCE_BYTES
     );
-}
-
-#[test]
-fn host_executable_obeys_ordinary_file_path_and_link_checks() {
-    let fixture = Fixture::new();
-    for entry in ["NUL.exe", "bin./helper.exe", "bin/CON.exe"] {
-        let mut value = Fixture::manifest();
-        value["host"]["command"][0] = json!(entry);
-        fixture.write_manifest(&value);
-        rejection(
-            &inspect_local_plugin(&fixture.root).unwrap_err(),
-            "entry path validation",
-            "Windows device names",
-        );
-    }
-    fixture.write_manifest(&Fixture::manifest());
-    let alias = fixture.directory.path().join("outside.exe");
-    fs::hard_link(fixture.executable(), &alias).unwrap();
-    rejection(
-        &inspect_local_plugin(&fixture.root).unwrap_err(),
-        "open host executable",
-        "links",
+    let alias = fixture.directory.path().join("linked.js");
+    fs::hard_link(fixture.entry(), &alias).unwrap();
+    assert!(
+        inspect_local_plugin(&fixture.root)
+            .unwrap_err()
+            .to_string()
+            .contains("links")
     );
     fs::remove_file(alias).unwrap();
-    fs::remove_file(fixture.executable()).unwrap();
-    fs::create_dir(fixture.executable()).unwrap();
-    rejection(
-        &inspect_local_plugin(&fixture.root).unwrap_err(),
-        "open host executable",
-        "ordinary file",
-    );
-    fs::remove_dir(fixture.executable()).unwrap();
-    assert!(matches!(
-        inspect_local_plugin(&fixture.root).unwrap_err(),
-        LocalPluginError::Io {
-            stage: "open host executable",
-            ..
-        }
-    ));
-}
-
-#[cfg(windows)]
-#[test]
-fn retained_host_handle_rejects_mutation_until_all_loaded_clones_are_retired() {
-    let fixture = Fixture::new();
-    let plugin =
-        load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 1).unwrap();
-    let retained = plugin.clone();
-    drop(plugin);
-    assert!(
-        fs::OpenOptions::new()
-            .write(true)
-            .open(fixture.executable())
-            .is_err()
-    );
-    assert!(fs::remove_file(fixture.executable()).is_err());
-    assert!(fs::rename(fixture.executable(), fixture.root.join("renamed.exe")).is_err());
-    revalidate_host_executable(retained.host.as_ref().unwrap()).unwrap();
-    assert_eq!(fs::read(fixture.executable()).unwrap(), EXECUTABLE_BYTES);
-    drop(retained);
-    fs::write(fixture.executable(), b"replacement").unwrap();
-    fs::remove_file(fixture.executable()).unwrap();
-}
-
-#[cfg(windows)]
-#[test]
-fn host_executable_rejects_case_aliases() {
-    let fixture = Fixture::new();
-    for entry in ["BIN/helper.exe", "bin/Helper.exe"] {
-        let mut value = Fixture::manifest();
-        value["host"]["command"][0] = json!(entry);
-        fixture.write_manifest(&value);
-        rejection(
-            &inspect_local_plugin(&fixture.root).unwrap_err(),
-            "open host executable",
-            "alias",
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("codlet.json")).unwrap()).unwrap();
+    for entry in ["NUL.js", "dist./host.js", "dist/CON.js"] {
+        manifest["host"]["entry"] = json!(entry);
+        fixture.manifest(&manifest);
+        assert!(
+            inspect_local_plugin(&fixture.root)
+                .unwrap_err()
+                .to_string()
+                .contains("Windows device names")
         );
     }
 }
 
-#[cfg(unix)]
 #[test]
-fn retained_host_handle_revalidation_detects_a_replaced_executable() {
+fn old_manifest_name_is_an_explicit_read_only_migration_error() {
     let fixture = Fixture::new();
-    let plugin =
-        load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 1).unwrap();
-    fs::rename(fixture.executable(), fixture.root.join("previous.exe")).unwrap();
-    fs::write(fixture.executable(), b"replacement").unwrap();
-    rejection(
-        &revalidate_host_executable(plugin.host.as_ref().unwrap()).unwrap_err(),
-        "revalidate host executable",
-        "changed",
+    fs::rename(
+        fixture.root.join("codlet.json"),
+        fixture.root.join("plugin.json"),
+    )
+    .unwrap();
+    assert!(
+        inspect_local_plugin(&fixture.root)
+            .unwrap_err()
+            .to_string()
+            .contains("rename plugin.json to codlet.json")
+    );
+    assert!(!fixture.root.join("codlet.json").exists());
+    assert!(fixture.root.join("plugin.json").exists());
+}
+
+#[test]
+fn host_grants_are_explicit_and_do_not_expand_the_declared_core_authority() {
+    let fixture = Fixture::new();
+    assert!(
+        load_local_plugin("dev.host", &fixture.root, &[], 1)
+            .unwrap_err()
+            .to_string()
+            .contains("host.process")
+    );
+    assert_eq!(
+        fixture
+            .load(&[Permission::HostProcess, Permission::CdpRaw])
+            .manifest
+            .permissions,
+        [Permission::HostProcess]
+    );
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("codlet.json")).unwrap()).unwrap();
+    manifest["permissions"] = json!(["host.process", "cdp.raw"]);
+    fixture.manifest(&manifest);
+    assert!(
+        load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 1)
+            .unwrap_err()
+            .to_string()
+            .contains("cdp.raw")
+    );
+    for declaration in ["provides", "requires"] {
+        let mut changed = manifest.clone();
+        changed[declaration] = json!([{"name":"dev.host.service","api":1,"scope":"runtime"}]);
+        fixture.manifest(&changed);
+        assert!(
+            inspect_local_plugin(&fixture.root)
+                .unwrap_err()
+                .to_string()
+                .contains("cross-executor")
+        );
+    }
+    manifest["renderer"] = json!({"entry":"missing.js","world":"isolated"});
+    fixture.manifest(&manifest);
+    assert!(
+        inspect_local_plugin(&fixture.root)
+            .unwrap_err()
+            .to_string()
+            .contains("combined")
     );
 }
 
 #[test]
-fn catalog_preserves_a_host_only_selection_without_official_plugin_dependencies() {
+fn catalog_keeps_a_js_host_without_any_official_functional_plugin_or_renderer_entry() {
     let fixture = Fixture::new();
     let mut registry = PluginRegistry::load(fixture.directory.path().join("config.json")).unwrap();
-    registry.set_enabled("codlet-gui", false).unwrap();
-    registry.set_enabled("codex.ui.adapter", false).unwrap();
-    let root = fs::canonicalize(&fixture.root).unwrap();
     registry
         .register_local(
             "dev.host",
             LocalPluginRegistration {
-                path: root.clone(),
+                path: fs::canonicalize(&fixture.root).unwrap(),
                 grants: vec![Permission::HostProcess],
             },
         )
         .unwrap();
+    registry.set_enabled("codex.ui.adapter", false).unwrap();
+    registry.set_enabled("codlet-gui", false).unwrap();
     let catalog = PluginCatalog::load(&registry).unwrap();
-    let plugins = catalog.enabled_plugins(&registry).unwrap();
-    assert_eq!(plugins.len(), 1);
-    assert_eq!(plugins[0].manifest.id, "dev.host");
-    assert!(plugins[0].manifest.renderer.is_none());
-    assert!(plugins[0].source.is_none());
-    assert!(plugins[0].host.is_some());
-    assert!(plugins[0].manifest.provides.is_empty());
-    assert!(plugins[0].manifest.requires.is_empty());
-    let entry = catalog
-        .entries()
-        .iter()
-        .find(|entry| entry.id == "dev.host")
-        .unwrap();
-    assert_eq!(entry.source.path(), Some(root.as_path()));
+    let enabled = catalog.enabled_plugins(&registry).unwrap();
+    assert_eq!(enabled.len(), 1);
+    assert_eq!(enabled[0].manifest.id, "dev.host");
+    assert!(enabled[0].manifest.renderer.is_none());
+    let runtime = codlet::renderer::RendererRuntime::from_catalog(catalog, registry).unwrap();
+    assert!(!runtime.has_renderer_plugins());
 }

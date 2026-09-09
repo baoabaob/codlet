@@ -63,7 +63,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             manifest["requires"] =
                 json!([{"name":"codlet.runtime.manage","api":1,"scope":"target"}]);
         }
-        std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+        std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
         std::fs::write(
             root.join("renderer.js"),
             "module.exports = { activate() {}, deactivate() {} };",
@@ -118,7 +118,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
     // A list refresh must consume only registrations and already loaded metadata.
     for id in ["dev.list.manager", "dev.list.removed", "dev.list.running"] {
         std::fs::write(
-            directory.path().join(id).join("plugin.json"),
+            directory.path().join(id).join("codlet.json"),
             "invalid disk manifest after launch",
         )
         .unwrap();

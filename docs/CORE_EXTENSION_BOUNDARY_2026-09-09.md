@@ -8,6 +8,8 @@
 
 已确认方向：开放的 Core，加可选的托管运行时，再加可选的 UI/backend adapter。下述边界进入 M2–M4 的架构验收条件。
 
+随后用户明确统一 JS/TS 开发与分发形式：目录包使用 `codlet.json`、JS 入口和资源，TS 在构建时编译为 JS。host JS 由 Core 管理的统一 JS 进程执行，renderer JS 在页面中执行；首版不接受任意 `.exe` 入口或原生 Node 扩展。开放性取决于公开原语，而非入口程序格式；通用 CDP/事件与自有适配路径继续开放，安全边界不变。现行实现见 [JS 运行时合约](JS_PLUGIN_RUNTIME_2026-09-09.md)。
+
 ## 与原始方案的关系
 
 最早可追溯的方案提交 `dc14b5a`（Draft 0.4）已经包含 raw main-world/CDP 的开发路径、用户明确授信、无安全沙箱承诺，以及默认启用但可禁用的第一方 GUI。`a1b37df` 后续引入四层 capability 和通用 provider/consumer 模型，也没有撤销第三方 raw 路径。
@@ -23,7 +25,7 @@
 | Core | 启动与持有会话 transport、通用 target/session 路由、原始请求和事件、插件入口与 host 通信、registry/lifecycle/generation、声明的 capability 冲突、可诊断的资源归属 | 不解释 DOM selector、React、thread/turn/approval 等 Codex 私有业务；对第一方和第三方暴露同一底层接口 |
 | 可选 renderer 运行后端 | 方便的 world、bootstrap、binding、ready、导航恢复与清理 ABI | 作为可选官方运行支持；用户插件可以选择它，也可以通过 Core 原语自行注入和维护自己的 renderer 运行时 |
 | 可选 UI/backend adapter | 稳定的挂载、样式或 thread/turn/item 能力，及其自己的 build 兼容性探测 | 任意插件均可实现、替代或绕过，不要求安装官方包 |
-| 用户插件 | 单独完成 UI、main-world、CDP、host 或同一 Desktop backend 的组合扩展；也可消费上述便利能力 | 只依赖实际选择的运行后端或 provider；纯 host 插件不能被迫提供空 renderer 入口 |
+| 用户插件 | 用 JS/TS 目录包完成 UI、main-world、CDP、host 或同一 Desktop backend 的组合扩展；也可消费上述便利能力 | host 与 renderer 是同一格式的运行位置；只依赖实际选择的运行后端或 provider，纯 host 不提供空 renderer 入口 |
 
 Core 必须保留足以启动插件、交付通用 transport 和建立资源归属的最小机制。把所有装载和通信机制也拿走，会产生“必须先运行插件才能装载第一个插件”的循环。这里的可选性针对 renderer 的高级运行 ABI 与 Codex 适配，不是要求 Core 没有任何执行原语。
 

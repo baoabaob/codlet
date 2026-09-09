@@ -511,7 +511,7 @@ fn host_executor_required(plugin_id: &str) -> PluginControlError {
     PluginControlError::new(
         "host_executor_required",
         format!(
-            "plugin {plugin_id} uses a native host; online enable/disable/reload is not implemented yet. Change enablement while Codlet is stopped, then launch again."
+            "plugin {plugin_id} uses a JS host; online enable/disable/reload is not implemented yet. Change enablement while Codlet is stopped, then launch again."
         ),
     )
 }
@@ -537,13 +537,13 @@ mod tests {
         let directory = tempdir().unwrap();
         let root = directory.path().join("host");
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("helper.exe"), b"MZ\0\xff").unwrap();
+        std::fs::write(root.join("host.js"), b"module.exports = { activate() {} };").unwrap();
         let host_manifest = json!({
             "schema":1,"id":"dev.host","version":"1",
-            "host":{"command":["helper.exe"],"protocol":"jsonl"},
+            "host":{"entry":"host.js"},
             "permissions":["host.process"]
         });
-        std::fs::write(root.join("plugin.json"), host_manifest.to_string()).unwrap();
+        std::fs::write(root.join("codlet.json"), host_manifest.to_string()).unwrap();
         let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
         for id in ["codlet-gui", "codex.ui.adapter"] {
             registry.set_enabled(id, false).unwrap();
@@ -619,7 +619,7 @@ mod tests {
             }
             if was_renderer {
                 std::fs::write(
-                    root.join("plugin.json"),
+                    root.join("codlet.json"),
                     json!({
                         "schema":1,"id":"dev.local","version":"1",
                         "renderer":{"entry":"renderer.js","world":"isolated"}
@@ -645,12 +645,12 @@ mod tests {
             )
             .unwrap();
             let previous_generations = runtime.generations.clone();
-            std::fs::write(root.join("helper.exe"), b"MZ\0\xff").unwrap();
+            std::fs::write(root.join("host.js"), b"module.exports = { activate() {} };").unwrap();
             std::fs::write(
-                root.join("plugin.json"),
+                root.join("codlet.json"),
                 json!({
                     "schema":1,"id":"dev.local","version":"2",
-                    "host":{"command":["helper.exe"],"protocol":"jsonl"},
+                    "host":{"entry":"host.js"},
                     "permissions":["host.process"]
                 })
                 .to_string(),
@@ -708,7 +708,7 @@ mod tests {
             } else {
                 "requires"
             }] = descriptor;
-            std::fs::write(root.join("plugin.json"), manifest.to_string()).unwrap();
+            std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
             std::fs::write(root.join("renderer.js"), "module.exports = {};").unwrap();
             registry
                 .register_local(
@@ -748,8 +748,8 @@ mod tests {
         let replacement = directory.path().join("replacement-consumer");
         std::fs::create_dir(&replacement).unwrap();
         std::fs::copy(
-            directory.path().join("dev.consumer/plugin.json"),
-            replacement.join("plugin.json"),
+            directory.path().join("dev.consumer/codlet.json"),
+            replacement.join("codlet.json"),
         )
         .unwrap();
         std::fs::write(
@@ -770,7 +770,7 @@ mod tests {
             .unwrap();
         registry.save().unwrap();
 
-        let provider_manifest = directory.path().join("dev.provider/plugin.json");
+        let provider_manifest = directory.path().join("dev.provider/codlet.json");
         let original = std::fs::read(&provider_manifest).unwrap();
         std::fs::write(&provider_manifest, "invalid source after the poll").unwrap();
         let error = runtime.manage_watched_plugin(request.clone()).unwrap_err();

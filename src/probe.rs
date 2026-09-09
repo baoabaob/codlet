@@ -15,6 +15,7 @@ use crate::diagnostics::{
     ProcessInfo, ProcessSnapshot,
 };
 use crate::host_runtime::HostRuntime;
+use crate::js_runtime::JsRuntime;
 use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
 use crate::plugin_control::{
     PluginControlAction, PluginControlError, PluginControlReport, PluginControlRequest,
@@ -708,6 +709,11 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         .watch
         .then(|| PluginWatcher::new(registry.path().to_owned()));
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
+    let js_runtime = if host_plugins.is_empty() {
+        None
+    } else {
+        Some(JsRuntime::discover()?)
+    };
     let status = StatusPublisher::new();
     if renderer.has_renderer_plugins() {
         renderer.set_status_publisher(status.clone());
@@ -717,7 +723,8 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         lease,
     }))?;
     let has_hosts = !host_plugins.is_empty();
-    let hosts = HostRuntime::start(host_plugins, connected.client.clone())?;
+    let hosts =
+        HostRuntime::start_with_runtime(host_plugins, connected.client.clone(), js_runtime)?;
     let (targets, sessions) = if renderer.has_renderer_plugins() {
         match TargetController::discover(
             connected.client.clone(),
@@ -782,7 +789,7 @@ pub fn prepare_renderer_runtime(registry: PluginRegistry) -> Result<RendererRunt
     {
         return Err(RendererError::UnsupportedEntry {
             plugin_id: plugin.manifest.id,
-            message: "native host plugins require codlet launch; this entrypoint only starts the managed renderer",
+            message: "JS host plugins require codlet launch; this entrypoint only starts the managed renderer",
         }.into());
     }
     Ok(RendererRuntime::from_catalog(catalog, registry)?)
