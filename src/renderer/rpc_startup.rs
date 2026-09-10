@@ -86,7 +86,7 @@ impl RendererRuntime {
                     continue;
                 };
                 let single = BTreeMap::from([(plugin.manifest.id.clone(), authorization)]);
-                if let Err(error) = self.install_plugins(target, vec![plugin.clone()], single) {
+                if let Err(error) = self.install_startup_plugin(target, plugin.clone(), single) {
                     let _ = self.deactivate_target(target);
                     results.insert(target.into(), Err(error));
                 }
@@ -115,6 +115,63 @@ impl RendererRuntime {
                 (target, result)
             })
             .collect()
+    }
+
+    // A rejected optional renderer and its requirement closure do not retire an
+    // unrelated renderer. Explicit management still uses transactional install.
+    pub(super) fn install_startup_plugin(
+        &mut self,
+        target: &str,
+        plugin: LoadedPlugin,
+        authorization: TargetAuthorizations,
+    ) -> Result<(), RendererError> {
+        let id = plugin.manifest.id.clone();
+        let mut missing = None;
+        if let Some((principal, leases)) = authorization.get(&id) {
+            for lease in leases.values() {
+                let provider =
+                    self.capabilities
+                        .invoke_endpoint(principal, lease, |owner, _| owner.to_owned())?;
+                if !self.plugins.iter().any(|p| p.manifest.id == provider) {
+                    continue;
+                }
+                let active = self.sessions.get(target).is_some_and(|s| {
+                    s.plugins
+                        .iter()
+                        .any(|p| p.id == provider && p.state == RendererPluginState::Active)
+                });
+                if !active {
+                    missing = Some(provider);
+                    break;
+                }
+            }
+        }
+        let result = match missing {
+            Some(provider) => Err(RendererError::PluginRejected {
+                plugin_id: id.clone(),
+                message: format!(
+                    "required renderer provider {provider} is unavailable in this document"
+                ),
+            }),
+            None => self.install_plugins(target, vec![plugin], authorization),
+        };
+        if let Err(error) = result {
+            if self
+                .sessions
+                .get(target)
+                .is_none_or(|s| !s.session.is_live() || s.recovery_pending)
+            {
+                return Err(error);
+            }
+            let _ = self.deactivate_plugin(target, &id);
+            self.record_status_event(target, "plugin_activation_failed", &error.to_string());
+            self.diagnostics.push(RendererDiagnostic {
+                target_id: target.into(),
+                plugin_id: id,
+                message: error.to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn wait_native_ready(

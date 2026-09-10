@@ -4,7 +4,7 @@ import { Session } from 'node:inspector';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('../bundled/runtime/bootstrap.js', import.meta.url), 'utf8');
+const source = `(${readFileSync(new URL('../bundled/runtime/bootstrap.js', import.meta.url), 'utf8')})({ world: 'isolated' })`;
 const capability = { name: 'idle.example', api: 1, scope: 'target' };
 
 async function idleRenderer(t, { messageChannel = true } = {}) {

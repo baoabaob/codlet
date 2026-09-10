@@ -213,6 +213,9 @@ $null = [IO.Directory]::CreateDirectory($stage)
 $sourceFiles = @(
     'scripts/Build-Distribution.ps1', 'scripts/Test-Distribution.ps1', 'scripts/Install-JsRuntime.ps1',
     'runtime/node-runtime.json', 'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
+    'types/codex-desktop.d.ts',
+    'bundled/codex-desktop-adapter/codlet.json', 'bundled/codex-desktop-adapter/renderer.js',
+    'examples/desktop-m3-m4/codlet.json', 'examples/desktop-m3-m4/renderer.js', 'examples/desktop-m3-m4/README.md',
     'examples/raw-host/codlet.json', 'examples/raw-host/dist/host.js', 'examples/raw-host/README.md',
     'examples/cleanup-host/codlet.json', 'examples/cleanup-host/dist/host.js', 'examples/cleanup-host/README.md',
     'examples/local-host-renderer-capability/codlet.json', 'examples/local-host-renderer-capability/host.js',
@@ -237,7 +240,8 @@ $sourceFiles = @(
     'docs/COMBINED_PACKAGES_2026-09-10.md', 'docs/HOST_CAPABILITY_2026-09-10.md',
     'docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md', 'docs/LOCAL_PLUGINS.md',
     'docs/CORE_RPC_2026-09-10.md', 'docs/OS_BROKER_2026-09-10.md',
-    'docs/RUNTIME_MANAGE_2026-09-10.md', 'docs/M2_ACCEPTANCE_2026-09-10.md'
+    'docs/RUNTIME_MANAGE_2026-09-10.md', 'docs/M2_ACCEPTANCE_2026-09-10.md',
+    'docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md', 'docs/M3_M4_ACCEPTANCE_2026-09-10.md'
 )
 $payload = New-Object 'Collections.Generic.List[string]'
 try {
@@ -297,6 +301,11 @@ a separate developer command; candidate inspection never starts it or makes its 
 are public developer contracts. [Four Core RPC packages](examples/core-rpc/README.md) demonstrate
 Host/renderer Runtime and Target calls. Type declarations live in types/. The [M2 acceptance record](docs/M2_ACCEPTANCE_2026-09-10.md)
 separates runtime evidence from this bundle's file hashes and read-only CLI checks.
+
+The optional [M3/M4 Desktop Adapter](docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md)
+and [test panel](examples/desktop-m3-m4/README.md) are ordinary directory packages
+with explicit main-world grants. Their [semantic types](types/codex-desktop.d.ts)
+and [acceptance limits](docs/M3_M4_ACCEPTANCE_2026-09-10.md) are included.
 
 The payload list and SHA256 values are in distribution-manifest.json. The packaging
 script performs no signing or publication. Node's license is beside node.exe.

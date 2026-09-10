@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "example.desktop.m3m4",
+  "name": "M3 / M4 验收面板",
+  "version": "0.1.0",
+  "renderer": { "entry": "renderer.js", "world": "main" },
+  "permissions": ["ui.dom", "ui.mainWorld"],
+  "provides": [{ "name": "example.desktop.m3m4", "api": 1, "scope": "target" }],
+  "requires": [
+    { "name": "codex.desktop.compatibility", "api": 1, "scope": "target" },
+    { "name": "codex.ui.preSubmit", "api": 1, "scope": "target" },
+    { "name": "codex.backend.read", "api": 1, "scope": "target" },
+    { "name": "codex.backend.write", "api": 1, "scope": "target" },
+    { "name": "codex.backend.events", "api": 1, "scope": "target" }
+  ]
+}

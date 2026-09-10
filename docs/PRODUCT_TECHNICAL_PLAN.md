@@ -732,11 +732,13 @@ M2a/M2b 交付独立 JS host、公开 CDP 请求/事件、同一 CLI receipt 的
 
 M3 官方实现消费 M2 已向第三方公开的同一组原语；其兼容性承诺不成为 Core 的全局白名单。
 
+2026-09-10 已实现 M3/M4 开发候选，定向自动检查及隔离实机验收通过，见 [验收记录](M3_M4_ACCEPTANCE_2026-09-10.md) 和 [开发说明](DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md)。主世界与会话语义集中在新的可选目录包 `codex.desktop.adapter`，现有低权限 `codex.ui.adapter` 与 GUI 继续使用 isolated world。
+
 验收条件：
 
 - 官方托管 renderer ABI 的 world、bootstrap、binding、导航恢复、ready 与清理支持可选择、停用或替换；不选它的插件仍可自行实现这些机制；
 - 选择托管 main-world ABI 的插件必须申请 `ui.mainWorld`，且与 isolated world 使用不同 binding/principal；自行使用 raw CDP 的插件按其底层授权与资源归属处理；
-- 可选 `codex.ui.adapter` 对当前 build 探测页面 global、React/私有对象和 `window.electronBridge`，缺失时仅拒绝自己的相应 capability；
+- 可选 Desktop Adapter 对当前 build 探测页面 global、React/私有对象和 `window.electronBridge`，缺失时仅拒绝自己的相应 capability；
 - 官方稳定 API 不暴露原始 `ipcRenderer`、任意 Electron main IPC 或未声明页面对象；这不禁止第三方在既定 raw 原语范围内自行适配，也不新增任意 Electron main/原生注入承诺；
 - 官方 pre-submit interceptor 在实际 `turn/start` 前按确定顺序运行，失败时阻止提交并标明插件来源；该业务规则不进入 Core；
 - main-world patch 无法热卸载时明确要求 renderer reload，不伪造可逆性；
@@ -746,10 +748,12 @@ M3 官方实现消费 M2 已向第三方公开的同一组原语；其兼容性�
 
 L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 thread/turn/approval 私有业务。以下连接/语义兼容性条件约束官方 backend adapter 及其对当前 Desktop 会话的承诺，不是所有插件访问底层连接的前置条件。
 
+当前候选的 v1 写接口限定于本窗口已经加载且拥有事件流的任务。已验证真实 Desktop 发起回合、SDK 写入、相同 Thread/Turn/Item 标识、steer、interrupt、命令拒绝和问答回复。当前包的原生任务创建及冷恢复会携带后端不识别的 `features.thread_tools`，该上游问题保留，不把专用验收任务上的通过扩展为所有原生入口兼容。
+
 验收条件：
 
 - 禁用全部可选官方功能插件后，Core 加一个自带实现的用户插件仍能完成所需跨层功能；其 L4 适配不能依赖官方 provider ID、隐藏特权或未向第三方公开的接口；
-- 官方 adapter 在当前 Desktop build 上通过 preload `connect-app-host` MessagePort 复用 Desktop 同一个 App Server connection，不将第二个 backend 冒充透明替代；
+- 官方 adapter 复用 Desktop 同一个 App Server connection。当前构建复用已存在的 app-host MessagePort 服务和原 Native request client；普通 App Server 请求由原 client 经 preload / Electron main 路由。不会再次发送 `connect-app-host`、替换原 view 连接或将第二个 backend 冒充透明替代；
 - 官方 adapter 用 `Thread -> Turn -> Item` 语义提供 thread read/list、turn start/steer/interrupt、item stream、skill/model/provider read 和 approval/server-request 往返；
 - 证明 Desktop 发起的 turn 与 Codlet 观察到的事件拥有相同 threadId/turnId/itemId，Codlet 写入也由当前 Desktop UI 和同一事件流观察到；
 - 私有 app-host envelope、hostId、request id 和 manager object 不进入 Core SDK；官方语义 SDK 只承诺自己的稳定类型，不阻断用户插件自行维护私有映射；

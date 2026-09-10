@@ -1,4 +1,6 @@
-(() => {
+((options = {}) => {
+    const world = options.world ?? 'isolated';
+    if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
     const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
     const TaskChannel = globalThis.MessageChannel;
@@ -27,7 +29,7 @@
     const key = '__codletRendererV1';
     const existing = globalThis[key];
     if (existing !== undefined) {
-        return existing?.abi === 1
+        return existing?.abi === 1 && existing.world === world
             ? { ok: true, reused: true }
             : { ok: false, error: 'renderer bootstrap ABI collision' };
     }
@@ -190,6 +192,7 @@
         };
 
         const provide = (capability, method, handler) => {
+            if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
             if (typeof method !== 'string' || method.length === 0 || typeof handler !== 'function') {
                 throw rpcError('invalid_provider', 'renderer endpoint requires a method and function');
             }
@@ -203,7 +206,16 @@
             if (record.endpoints.size >= MAX_ENDPOINTS) throw rpcError('request_limit', 'renderer endpoint registration limit reached');
             const declared = record.provides.find(provided => capabilityEquals(provided, capability));
             record.endpoints.set(key, { capability: Object.freeze({ name: declared.name, api: declared.api, scope: declared.scope }), handler });
+            record.unavailable.delete(capabilityKey(capability));
             return { ok: true };
+        };
+
+        const unavailable = (capability, reason) => {
+            if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+            if (!record.provides.some(provided => capabilityEquals(provided, capability)) || typeof reason !== 'string' || !reason.length || reason.length > 1024) throw rpcError('invalid_provider', 'unavailable requires an owned capability and a bounded reason');
+            const prefix = `${capabilityKey(capability)}\u0000`;
+            for (const key of record.endpoints.keys()) if (key.startsWith(prefix)) record.endpoints.delete(key);
+            record.unavailable.set(capabilityKey(capability), reason);
         };
 
         const onNotification = (handler) => {
@@ -215,7 +227,7 @@
             return () => record.notifications.delete(handler);
         };
 
-        return Object.freeze({ request, notify, provide, onNotification });
+        return Object.freeze({ request, notify, provide, unavailable, onNotification });
     }
 
     function takePending(record, id) {
@@ -231,22 +243,50 @@
         for (const id of record.pending.keys()) takePending(record, id)?.reject(error);
     }
 
+    function releaseEmptyRuntime() {
+        if (world === 'main' && !plugins.size && !activating.size && !stopping.size && !operations.size && globalThis[key] === runtime) {
+            delete globalThis[key];
+        }
+    }
+
     function closeRecord(record, error) {
         record.closed = true;
+        disposeListeners(record);
         for (const invocation of record.invocations.values()) invocation.cancel(error);
         rejectPending(record, error);
         record.endpoints.clear();
+        record.unavailable.clear();
         record.notifications.clear();
         if (plugins.get(record.id) === record) plugins.delete(record.id);
         if (activating.get(record.id) === record) activating.delete(record.id);
         stopping.delete(record);
     }
 
+    function disposeListeners(record) {
+        const listeners = [...record.disposers];
+        record.disposers.clear();
+        for (const listener of listeners) {
+            try {
+                const result = listener();
+                if (typeof result?.then === 'function') {
+                    Promise.resolve(result).catch(() => {});
+                    throw rpcError('renderer_cleanup_failed', 'onDeactivate listeners must be synchronous');
+                }
+                if (result?.reloadRequired === true) record.disposeError ??= `Renderer reload required: ${result.reason ?? 'page changes could not be undone'}`;
+            } catch (error) { record.disposeError ??= message(error); }
+        }
+    }
+
     async function cleanupRecord(record) {
         if (plugins.get(record.id) === record) plugins.delete(record.id);
         stopping.add(record);
+        disposeListeners(record);
         try {
-            await record.definition.deactivate();
+            const result = await record.definition.deactivate();
+            if (result?.reloadRequired === true) {
+                throw rpcError('renderer_reload_required', `Renderer reload required: ${typeof result.reason === 'string' ? result.reason : 'the plugin cannot undo its page changes'}`);
+            }
+            if (record.disposeError) throw rpcError('renderer_cleanup_failed', record.disposeError);
         } finally {
             closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was deactivated'));
         }
@@ -266,7 +306,9 @@
         }
         const key = `${capabilityKey(request.capability)}\u0000${request.method}`;
         const endpoint = record.endpoints.get(key);
-        if (!endpoint) return { ok: false, code: 'method_not_found', error: 'renderer endpoint is not registered' };
+        if (!endpoint) return record.unavailable.has(capabilityKey(request.capability))
+            ? { ok: false, code: 'capability_unavailable', error: record.unavailable.get(capabilityKey(request.capability)) }
+            : { ok: false, code: 'method_not_found', error: 'renderer endpoint is not registered' };
         if (record.invocations.size >= MAX_INVOCATIONS) return { ok: false, code: 'request_limit', error: 'this renderer has four active invocations' };
         const core = request.coreInvocation;
         if (core !== undefined && (!core || typeof core.token !== 'string' || core.token.length > 128 || !Number.isInteger(core.remainingMs) || core.remainingMs < 1 || core.remainingMs > RPC_TIMEOUT_MS || !Number.isInteger(core.depth) || core.depth < 1 || core.depth > 8 || !core.caller || !core.scope)) return { ok: false, code: 'invalid_invocation', error: 'invalid Core invocation metadata' };
@@ -306,6 +348,7 @@
 
     const runtime = {
         abi: 1,
+        world,
         async activate(metadata, definition) {
             wakeEventLoop();
             if (!metadata || typeof metadata.id !== 'string' || metadata.id.length === 0 ||
@@ -337,8 +380,12 @@
                     requires: Array.isArray(metadata.requires) ? metadata.requires.slice() : [],
                     pending: new Map(),
                     endpoints: new Map(),
+                    unavailable: new Map(),
                     invocations: new Map(),
                     notifications: new Set(),
+                    disposers: new Set(),
+                    disposeError: null,
+                    diagnosticCount: 0,
                     closed: false,
                     definition
                 };
@@ -346,6 +393,20 @@
                     pluginId: metadata.id,
                     version: metadata.version,
                     generation: metadata.generation,
+                    world,
+                    reportDiagnostic(diagnostic) {
+                        if (!diagnostic || typeof diagnostic.code !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(diagnostic.code) || typeof diagnostic.message !== 'string' || new TextEncoder().encode(diagnostic.message).byteLength > 4096 || !['info', 'error'].includes(diagnostic.level ?? 'error')) throw rpcError('invalid_diagnostic', 'expected a bounded diagnostic code, message and level');
+                        if (record.diagnosticCount >= 32) throw rpcError('diagnostic_limit', 'at most 32 diagnostics per renderer generation');
+                        callBinding(record, { v: 1, type: 'diagnostic', pluginId: record.id, generation: record.generation, code: diagnostic.code, message: diagnostic.message, level: diagnostic.level ?? 'error' });
+                        record.diagnosticCount++;
+                    },
+                    onDeactivate(listener) {
+                        if (typeof listener !== 'function') throw rpcError('invalid_listener', 'onDeactivate requires a synchronous function');
+                        if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+                        if (record.disposers.size >= 64) throw rpcError('request_limit', 'renderer cleanup listener limit reached');
+                        record.disposers.add(listener);
+                        return () => record.disposers.delete(listener);
+                    },
                     rpc: createRpc(record)
                 });
                 activating.set(metadata.id, record);
@@ -386,7 +447,7 @@
                     reused: false,
                     cleanupError
                 };
-            });
+            }).finally(releaseEmptyRuntime);
         },
         async deactivate(id, generation) {
             wakeEventLoop();
@@ -403,7 +464,7 @@
                 } catch (error) {
                     return { ok: false, error: message(error) };
                 }
-            });
+            }).finally(releaseEmptyRuntime);
         },
         async __rpcInvoke(binding, request) {
             wakeEventLoop();
@@ -443,10 +504,15 @@
         },
         __rpcClose(binding) {
             wakeEventLoop();
+            const failures = [];
             for (const record of [...plugins.values(), ...activating.values(), ...stopping]) {
-                if (record.binding === binding) closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was retired by the host'));
+                if (record.binding === binding) {
+                    closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was retired by the host'));
+                    if (record.disposeError) failures.push(record.disposeError);
+                }
             }
-            return { ok: true };
+            releaseEmptyRuntime();
+            return failures.length ? { ok: false, error: failures.join('; ') } : { ok: true };
         },
         status() {
             wakeEventLoop();
@@ -456,9 +522,9 @@
 
     Object.defineProperty(globalThis, key, {
         value: Object.freeze(runtime),
-        configurable: false,
+        configurable: world === 'main',
         enumerable: false,
         writable: false
     });
     return { ok: true, reused: false };
-})()
+})

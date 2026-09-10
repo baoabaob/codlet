@@ -167,9 +167,9 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     if let [flag, root_flag, root, command, tail @ ..] = arguments.as_slice()
         && flag == OsStr::new(EXPERIMENT_FLAG)
         && root_flag == OsStr::new("--root")
-        && command == OsStr::new("plugin")
+        && (command == OsStr::new("plugin") || command == OsStr::new("doctor"))
     {
-        return management::run_plugin_cli(Path::new(root), tail);
+        return management::run_scoped_cli(Path::new(root), command, tail);
     }
     let options = LabOptions::parse(arguments.into_iter())?;
     // Read-only package/version/executable preflight precedes any lab file creation.

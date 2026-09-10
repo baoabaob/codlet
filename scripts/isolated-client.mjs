@@ -317,9 +317,18 @@ async function plugins() {
   process.exitCode = result.code ?? 1;
 }
 
+async function doctor() {
+  const child = spawn(labBinary, ['--experimental-isolated-client', '--root', root, 'doctor', ...pluginArguments], {
+    cwd: process.cwd(), env: environment(true), windowsHide: true, stdio: 'inherit',
+  });
+  const result = await exited(child);
+  process.exitCode = result.code ?? 1;
+}
+
 validateRoot();
 verifyHash(labBinary, config.labBinarySha256);
 if (action === 'start') await start();
 else if (action === 'stop') await stop();
 else if (action === 'plugins') await plugins();
-else throw new Error('Expected start, stop or plugins');
+else if (action === 'doctor') await doctor();
+else throw new Error('Expected start, stop, plugins or doctor');

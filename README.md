@@ -1,10 +1,18 @@
 # Codlet
 
-Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. Plugins are JS/TS directory packages with `codlet.json`, built JS entrypoints and resources. Host JS runs in Codlet's managed Node process; renderer JS runs in the page. Official GUI and adapter plugins are optional. Start with the [M2 development workflow](docs/HOST_DEVELOPMENT_2026-09-10.md); the [M2 acceptance record](docs/M2_ACCEPTANCE_2026-09-10.md) tracks current runtime evidence, and the [technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) keeps later milestone boundaries separate.
+Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. Plugins are JS/TS directory packages with `codlet.json`, built JS entrypoints and resources. Host JS runs in Codlet's managed Node process; renderer JS runs in the page. Official GUI and adapter plugins are optional. Start with the [Host development workflow](docs/HOST_DEVELOPMENT_2026-09-10.md) or the [M3/M4 Desktop Adapter](docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md). The [technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) keeps implementation evidence and production gates separate.
 
 The launcher does not patch the Codex package, official shortcuts or launch protocols, and never terminates an existing Codex process to make room. Normal Codex launches do not run Codlet. Explicitly trusted plugins and broker operations can have their own effects; ordinary user Node code is not an OS sandbox.
 
 ## Development status
+
+The M3/M4 candidate adds explicitly granted managed main worlds and an optional
+Desktop Adapter for submission interception, conversation reads/writes, events,
+and approval replies over the current Desktop connection. Its [semantic SDK](types/codex-desktop.d.ts)
+and [test panel](examples/desktop-m3-m4/README.md) keep private Desktop mappings
+out of Core. [Focused checks and isolated live acceptance](docs/M3_M4_ACCEPTANCE_2026-09-10.md)
+passed on package `26.903.8094.0`; the native task creation/resume configuration
+issue and the existing M0/M1 production gates remain open.
 
 The current M2 developer contract uses `host.entry: "dist/host.js"`. Both entry kinds export CommonJS
 `activate(context)` and `deactivate()`; TypeScript is compiled to JS before loading.
@@ -57,8 +65,8 @@ plugin source against a local fixture based on the installed build's markup.
 
 The [independent manual-test client](docs/ISOLATED_CLIENT_UPDATE_2026-09-10.md)
 supports installed build `26.903.8094.0`, reuses the original test login profile,
-and runs the current M2 local-plugin runtime. Its separate start/stop/plugin
-launchers target the test registry and dedicated backend.
+and runs the current local-plugin runtime with optional M3/M4 adapters. Its
+separate start/stop/plugin/doctor launchers target the test registry and dedicated backend.
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
@@ -85,7 +93,7 @@ codlet launch
 codlet launch --watch
 ```
 
-Each matching Codex renderer receives one isolated world per enabled plugin and generation, named `codlet.plugin.<id>.g<generation>`. The bundled GUI adds a plain `Codlet` entry immediately after Help in the current build's application menu row. It opens a settings dialog using the client's observed 600px wide variant, native setting-row proportions and 32x20px switches; confirmation uses the 420px compact variant. The adapter owns the observed menu selectors and native theme mappings; the GUI consumes scoped aliases and uses the browser's modal dialog primitive. An explicitly identified legacy header remains the only fallback. See [the installed-build adapter evidence](docs/CODEX_UI_ADAPTER_EVIDENCE.md) for structural requirements and limits.
+Each isolated renderer plugin receives its own world per generation, named `codlet.plugin.<id>.g<generation>`. Explicitly granted main-world plugins share the page's default context while retaining separate bindings and principals. The bundled GUI adds a plain `Codlet` entry immediately after Help in the current build's application menu row. It opens a settings dialog using the client's observed 600px wide variant, native setting-row proportions and 32x20px switches; confirmation uses the 420px compact variant. The adapter owns the observed menu selectors and native theme mappings; the GUI consumes scoped aliases and uses the browser's modal dialog primitive. An explicitly identified legacy header remains the only fallback. See [the installed-build adapter evidence](docs/CODEX_UI_ADAPTER_EVIDENCE.md) for structural requirements and limits.
 
 New BrowserWindows receive the same plugin generation automatically. Main-document navigation retires the old target authorization and recreates plugins in dependency order, with fresh world and binding names ending in `.d2`, `.d3`, etc. Both initial and recovered activation wait for each plugin's ready promise; Host and renderer-provider RPC remain routable through the authenticated binding while that promise is pending. The panel can persistently disable its own GUI plugin after an inline confirmation; the host confirms the registry write before attempting the reply, then unloads that plugin from every attached renderer. A reply lost to renderer teardown is diagnostic rather than fatal because the persisted action remains authoritative. Explicitly registered local directories are loaded on a new launch.
 
@@ -219,4 +227,4 @@ The candidate includes inherited CDP pipes, bounded request/event routing, stric
 
 Independent host JS runs in Codlet's pinned Node processes and per-plugin Jobs. CLI enable/disable/reload and opt-in watch use the same serialized lifecycle transactions, fresh generations and current-registration compensation guards. Ordinary requests retire before `deactivate(cleanup)`; explicit cleanup CDP requests share Core's finite stop budget. Process exit, whole-Job retirement and joined IO remain separate from cooperative cleanup acknowledgement. Read-only execution inspection exposes those facts without manufacturing renderer targets or providers.
 
-Combined host+renderer packages share startup, reload, rollback and disable; the Host reaches Ready before renderer activation, and renderer cleanup runs before Host retirement. Current M2 includes Core RPC with Runtime/Target ownership, independent scoped OS brokers and public management receipts for Host and renderer clients. Adapter-specific scopes, a reusable native UI capability layer and backend adapters remain later work. Detached launch, a permission-consent UI and marketplace are outside the current delivery. Real Codex acceptance and the remaining M0/M1 production/crash gates are recorded separately from actual JavaScript, fake-CDP and native-process tests.
+Combined host+renderer packages share startup, reload, rollback and disable; the Host reaches Ready before renderer activation, and renderer cleanup runs before Host retirement. Current M2 includes Core RPC with Runtime/Target ownership, independent scoped OS brokers and public management receipts for Host and renderer clients. The optional M3/M4 Desktop Adapter uses Target-scoped capabilities for the current local connection. Cross-host adapters, a reusable native UI component library, detached launch, a permission-consent UI and marketplace are outside the current delivery. Real Codex acceptance and the remaining M0/M1 production/crash gates are recorded separately from actual JavaScript, fake-CDP and native-process tests.

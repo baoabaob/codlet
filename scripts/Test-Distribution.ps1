@@ -31,6 +31,7 @@ $exampleCandidates = @(
     @{ Directory = 'host-os-broker'; Id = 'example.os-broker' },
     @{ Directory = 'raw-m2'; Id = 'example.raw-m2' },
     @{ Directory = 'hide-usage-banner'; Id = 'dev.local.hide-usage-banner' },
+    @{ Directory = 'desktop-m3-m4'; Id = 'example.desktop.m3m4' },
     @{ Directory = 'core-rpc/service'; Id = 'example.rpc.service' },
     @{ Directory = 'core-rpc/view'; Id = 'example.rpc.view' },
     @{ Directory = 'core-rpc/coordinator'; Id = 'example.rpc.coordinator' },
@@ -78,6 +79,10 @@ function Test-Manifest([string]$Directory) {
         'examples/core-rpc/coordinator/codlet.json', 'examples/core-rpc/coordinator/host.js',
         'examples/core-rpc/consumer/codlet.json', 'examples/core-rpc/consumer/renderer.js',
         'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
+        'types/codex-desktop.d.ts',
+        'bundled/codex-desktop-adapter/codlet.json', 'bundled/codex-desktop-adapter/renderer.js',
+        'examples/desktop-m3-m4/codlet.json', 'examples/desktop-m3-m4/renderer.js', 'examples/desktop-m3-m4/README.md',
+        'docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md', 'docs/M3_M4_ACCEPTANCE_2026-09-10.md',
         'docs/COMBINED_PACKAGES_2026-09-10.md', 'docs/HOST_CAPABILITY_2026-09-10.md', 'docs/LOCAL_PLUGINS.md',
         'docs/CORE_RPC_2026-09-10.md', 'docs/OS_BROKER_2026-09-10.md', 'docs/RUNTIME_MANAGE_2026-09-10.md',
         'docs/M2_ACCEPTANCE_2026-09-10.md', 'scripts/Test-Distribution.ps1'

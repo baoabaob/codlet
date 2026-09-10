@@ -590,7 +590,9 @@ fn actual_javascript_document_replacement_retires_old_world_and_preserves_other_
         }
         assert!(
             Instant::now() < deadline,
-            "new document did not activate: {values:?}"
+            "new document did not activate: {values:?}; renderer={:?}; host={:?}",
+            fixture.renderer.status_snapshot(),
+            fixture.hosts.take_diagnostics()
         );
         thread::sleep(Duration::from_millis(5));
     }

@@ -524,11 +524,7 @@ fn grants_must_be_explicit_and_unique_and_never_expand_the_manifest() {
 #[test]
 fn unsupported_permissions_are_rejected_in_both_requests_and_grants() {
     let fixture = Fixture::new();
-    for permission in [
-        Permission::UiMainWorld,
-        Permission::CdpRaw,
-        Permission::HostProcess,
-    ] {
+    for permission in [Permission::CdpRaw, Permission::HostProcess] {
         let candidate = inspect_local_plugin(&fixture.root).unwrap();
         let grants = [Permission::UiDom, permission];
         assert_rejection(
@@ -547,20 +543,21 @@ fn unsupported_permissions_are_rejected_in_both_requests_and_grants() {
 }
 
 #[test]
-fn main_world_is_rejected_even_when_its_permission_is_explicitly_granted() {
+fn main_world_loads_only_with_an_explicit_declared_and_granted_permission() {
     let fixture = Fixture::new();
     let mut value = manifest();
     value["renderer"]["world"] = json!("main");
     value["permissions"] = json!(["ui.mainWorld"]);
     fixture.write_manifest(&value);
-    rejected(
-        &fixture.root,
-        "renderer world validation",
-        "only renderer.world = isolated",
-    );
+    let candidate = inspect_local_plugin(&fixture.root).unwrap();
+    assert!(candidate.validate_grants(&[]).is_err());
+    assert!(candidate.validate_grants(&[Permission::UiDom]).is_err());
     let parsed = PluginManifest::parse(&value.to_string()).unwrap();
-    assert!(validate_grants(&parsed, &[Permission::UiMainWorld]).is_err());
-    assert!(load_local_plugin("dev.local", &fixture.root, &[Permission::UiMainWorld], 1).is_err());
+    validate_grants(&parsed, &[Permission::UiMainWorld]).unwrap();
+    load_local_plugin("dev.local", &fixture.root, &[Permission::UiMainWorld], 1).unwrap();
+    value["permissions"] = json!(["ui.dom"]);
+    fixture.write_manifest(&value);
+    assert!(inspect_local_plugin(&fixture.root).is_err());
 }
 
 #[test]

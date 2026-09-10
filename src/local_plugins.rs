@@ -25,7 +25,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
 };
 
-use crate::plugins::{LoadedHost, LoadedPlugin, Permission, PluginManifest, RendererWorld};
+use crate::plugins::{LoadedHost, LoadedPlugin, Permission, PluginManifest};
 
 const MANIFEST_NAME: &str = "codlet.json";
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
@@ -545,17 +545,6 @@ fn validate_local_manifest(manifest: &PluginManifest, path: &Path) -> Result<(),
             "Core host capabilities support Runtime and Target scopes; adapter scopes need an explicit lifecycle provider",
         ));
     }
-    if manifest
-        .renderer
-        .as_ref()
-        .is_some_and(|renderer| renderer.world != RendererWorld::Isolated)
-    {
-        return Err(reject(
-            path,
-            "renderer world validation",
-            "local plugins support only renderer.world = isolated; main world is not implemented",
-        ));
-    }
     for permission in &manifest.permissions {
         require_supported_permission(manifest, *permission, path, "permission validation")?;
     }
@@ -581,7 +570,10 @@ fn require_supported_permission(
                 | Permission::RuntimeManage
         ))
         || (manifest.renderer.is_some()
-            && matches!(permission, Permission::UiDom | Permission::RuntimeManage));
+            && matches!(
+                permission,
+                Permission::UiDom | Permission::UiMainWorld | Permission::RuntimeManage
+            ));
     if supported {
         Ok(())
     } else {

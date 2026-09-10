@@ -211,15 +211,21 @@ function beginEvaluation(request, session, params) {
   } catch (error) { evaluation.finish(undefined, error); }
 }
 
-function inspect(params) {
+async function inspect(params) {
   const keys = params?.keys ?? [];
   if (!Array.isArray(keys) || keys.length > 16 || keys.some(key => typeof key !== 'string' || key.length > 128)) throw failure('invalid fixture inspection keys');
+  const statuses = new Map([...contexts.values()].map(context => [context.id,
+    vm.runInContext('globalThis.__codletRendererV1?.status() ?? []', context.sandbox, { timeout: 1000 })]));
+  // status(), like other Inspector entry points, posts one bounded wake task.
+  // Sample after that browser turn so inspection does not count its own task as
+  // a leak. Persistent timers and outstanding plugin work remain observable.
+  await new Promise(resolve => setTimeout(resolve, 0));
   return {
     targets: [...targets.values()].map(targetInfo),
     sessions: [...sessions.values()].map(session => ({ id: session.id, targetId: session.target.id, scripts: session.scripts.size, bindings: session.bindings.size })),
     contexts: [...contexts.values()].map(context => ({ id: context.id, targetId: context.target.id, name: context.name, epoch: context.target.epoch,
       globals: Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(context.sandbox, key)).map(key => [key, context.sandbox[key]])),
-      plugins: vm.runInContext('globalThis.__codletRendererV1?.status() ?? []', context.sandbox, { timeout: 1000 }),
+      plugins: statuses.get(context.id) ?? [],
       bindings: [...context.bindings.keys()], timers: context.timers.size,
     })),
     evaluations: evaluations.size, heldAttachments: heldAttachments.size, methods: Object.fromEntries(methods), trace,
@@ -287,7 +293,7 @@ function handle(request) {
     }
     case 'Page.removeScriptToEvaluateOnNewDocument': requireSession(request).scripts.delete(params.identifier); result = {}; break;
     case 'Runtime.evaluate': return beginEvaluation(request, requireSession(request), params);
-    case 'Fixture.inspect': result = inspect(params); break;
+    case 'Fixture.inspect': inspect(params).then(result => response(request, result), error => response(request, undefined, error)); return;
     case 'Fixture.holdNextAttach': holdNextAttachment = true; result = {}; break;
     case 'Fixture.sessionLimit': {
       if (!Number.isInteger(params.value) || params.value < MAX_SESSIONS || params.value > 128) throw failure('invalid fixture session limit');

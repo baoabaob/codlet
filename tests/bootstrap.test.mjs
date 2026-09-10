@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const bootstrapSource = readFileSync(
+const bootstrapFactory = readFileSync(
     new URL('../bundled/runtime/bootstrap.js', import.meta.url),
     'utf8'
 );
+const bootstrapSource = `(${bootstrapFactory})({ world: 'isolated' })`;
 
 function createRuntime() {
     const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
@@ -85,6 +86,64 @@ test('RPC timeout retires the request, rejects a late reply and permits retry', 
     fixture.reply(fixture.requests[1], 'recovered');
     assert.equal(await retry, 'recovered');
     assert.equal(timers.pending.size, 0);
+});
+
+test('main world shares the runtime until the last plugin retires and releases the page global', async () => {
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
+    vm.runInContext(`(${bootstrapFactory})({ world: 'main' })`, context);
+    const runtime = context.__codletRendererV1;
+    assert.equal(runtime.world, 'main');
+    const order = [];
+    for (const id of ['a', 'b']) {
+        await runtime.activate({ id, generation: 1 }, { activate(ctx) { assert.equal(ctx.world, 'main'); ctx.onDeactivate(() => order.push(`${id}:cleanup`)); }, deactivate() { order.push(`${id}:deactivate`); } });
+    }
+    await runtime.deactivate('a', 1);
+    assert.equal(context.__codletRendererV1, runtime);
+    await runtime.deactivate('b', 1);
+    assert.equal(context.__codletRendererV1, undefined);
+    assert.deepEqual(order, ['a:cleanup', 'a:deactivate', 'b:cleanup', 'b:deactivate']);
+});
+
+test('forced retirement invokes cleanup once and irreversible patches report a renderer reload', async () => {
+    const fixture = rpcFixture(); let cleanups = 0;
+    await fixture.runtime.activate(fixture.metadata, { activate(ctx) { ctx.onDeactivate(() => cleanups++); }, deactivate() { return { reloadRequired: true, reason: 'page patch ownership changed' }; } });
+    const result = await fixture.runtime.deactivate('dev.example', 1);
+    assert.equal(result.ok, false); assert.match(result.error, /Renderer reload required.*page patch/);
+    fixture.runtime.__rpcClose('test_binding'); assert.equal(cleanups, 1);
+    await fixture.runtime.activate(metadata(2, { binding: 'second' }), { activate(ctx) { ctx.onDeactivate(() => cleanups++); }, deactivate() { assert.fail('forced retirement must not wait for async plugin cleanup'); } });
+    fixture.runtime.__rpcClose('second'); fixture.runtime.__rpcClose('second'); assert.equal(cleanups, 2);
+});
+
+test('forced retirement reports failed synchronous disposal without leaving the binding active', async () => {
+    const fixture = rpcFixture();
+    await fixture.runtime.activate(fixture.metadata, { activate(ctx) { ctx.onDeactivate(() => ({ reloadRequired: true, reason: 'foreign wrapper retained the patch' })); }, deactivate() {} });
+    const result = fixture.runtime.__rpcClose('test_binding');
+    assert.equal(result.ok, false); assert.match(result.error, /Renderer reload required.*foreign wrapper/);
+    assert.equal(fixture.runtime.status().length, 0);
+});
+
+test('a capability can withhold publication, publish after readiness, and withdraw without retiring peers', async () => {
+    const f = rpcFixture(); let ctx;
+    await f.runtime.activate(f.metadata, { activate(value) { ctx = value; ctx.rpc.unavailable(capability, 'waiting for external service'); }, deactivate() {} });
+    const request = { v: 1, type: 'request', pluginId: 'caller', generation: 1, id: 1, capability, method: 'echo', params: 'value' };
+    assert.equal((await f.runtime.__rpcInvoke('test_binding', request)).code, 'capability_unavailable');
+    ctx.rpc.provide(capability, 'echo', value => value);
+    assert.equal((await f.runtime.__rpcInvoke('test_binding', request)).value, 'value');
+    ctx.rpc.unavailable(capability, 'service identity changed');
+    const withdrawn = await f.runtime.__rpcInvoke('test_binding', request);
+    assert.equal(withdrawn.code, 'capability_unavailable'); assert.equal(withdrawn.error, 'service identity changed');
+    await f.runtime.deactivate('dev.example', 1);
+    assert.throws(() => ctx.rpc.provide(capability, 'echo', () => 'late'), { code: 'plugin_deactivated' });
+});
+
+test('renderer diagnostics retain their binding principal and are bounded for each generation', async () => {
+    const f = rpcFixture(); let ctx;
+    await f.runtime.activate(f.metadata, { activate(value) { ctx = value; }, deactivate() {} });
+    ctx.reportDiagnostic({ code: 'adapter_initializing', message: 'waiting', level: 'info' });
+    assert.deepEqual(f.requests[0], { v: 1, type: 'diagnostic', pluginId: 'dev.example', generation: 1, code: 'adapter_initializing', message: 'waiting', level: 'info' });
+    for (let i = 1; i < 32; i++) ctx.reportDiagnostic({ code: 'detail', message: 'bounded' });
+    assert.throws(() => ctx.reportDiagnostic({ code: 'detail', message: 'overflow' }), { code: 'diagnostic_limit' });
+    await f.runtime.deactivate('dev.example', 1);
 });
 
 test('binding failure and plugin retirement clear RPC timers', async () => {

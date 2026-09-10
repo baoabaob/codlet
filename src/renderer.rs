@@ -68,8 +68,6 @@ pub enum RendererError {
     BootstrapRejected { plugin_id: String, message: String },
     #[error("plugin {plugin_id} rejected activation: {message}")]
     PluginRejected { plugin_id: String, message: String },
-    #[error("plugin {0} requests a renderer world not implemented by M1")]
-    UnsupportedWorld(String),
     #[error("plugin {plugin_id} cannot run in the renderer executor: {message}")]
     UnsupportedEntry {
         plugin_id: String,
@@ -140,6 +138,7 @@ struct ActivePlugin {
     id: String,
     version: String,
     generation: u64,
+    world: RendererWorld,
     world_name: String,
     context_id: Option<u64>,
     activation_confirmed: bool,
@@ -147,6 +146,7 @@ struct ActivePlugin {
     principal: CapabilityPrincipal,
     leases: BTreeMap<CapabilityDescriptor, CapabilityLease>,
     last_request_id: Cell<u64>,
+    diagnostic_count: Cell<u32>,
     bootstrap_identifier: String,
     state: RendererPluginState,
 }
@@ -161,6 +161,20 @@ type TargetAuthorizations = BTreeMap<String, TargetAuthorization>;
 struct LifecycleResult {
     ok: bool,
     error: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RendererReportedDiagnostic {
+    v: u32,
+    #[serde(rename = "type")]
+    message_type: String,
+    #[serde(rename = "pluginId")]
+    plugin_id: String,
+    generation: u64,
+    code: String,
+    message: String,
+    level: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -418,9 +432,16 @@ impl RendererRuntime {
     fn install_target_plugins(
         &mut self,
         target_id: &str,
-        authorizations: TargetAuthorizations,
+        mut authorizations: TargetAuthorizations,
     ) -> Result<(), RendererError> {
-        self.install_plugins(target_id, self.plugins.clone(), authorizations)
+        for plugin in self.plugins.clone() {
+            let id = plugin.manifest.id.clone();
+            let authorization = authorizations
+                .remove(&id)
+                .expect("ordered plugin has authorization");
+            self.install_startup_plugin(target_id, plugin, BTreeMap::from([(id, authorization)]))?;
+        }
+        Ok(())
     }
 
     fn install_plugins(
@@ -431,15 +452,6 @@ impl RendererRuntime {
     ) -> Result<(), RendererError> {
         for plugin in &catalog {
             require_renderer_entry(plugin)?;
-        }
-        if let Some(plugin) = catalog.iter().find(|plugin| {
-            plugin
-                .manifest
-                .renderer
-                .as_ref()
-                .is_some_and(|renderer| renderer.world != RendererWorld::Isolated)
-        }) {
-            return Err(RendererError::UnsupportedWorld(plugin.manifest.id.clone()));
         }
         let session = self
             .sessions
@@ -454,8 +466,14 @@ impl RendererRuntime {
 
         for plugin in catalog {
             self.require_native_dependencies_ready(&plugin, &authorizations)?;
+            let world = plugin
+                .manifest
+                .renderer
+                .as_ref()
+                .expect("renderer was validated")
+                .world;
             let world_name = document_name(renderer_world_name(&plugin), document_epoch);
-            let (context_id, frame_id) = current_isolated_context(&session, &world_name)?;
+            let (context_id, frame_id) = current_renderer_context(&session, world, &world_name)?;
             let owner = self
                 .sessions
                 .get_mut(target_id)
@@ -475,16 +493,17 @@ impl RendererRuntime {
                 renderer_binding_name(session.target_id(), session.session_id(), &plugin),
                 document_epoch,
             );
-            add_renderer_binding(&session, &binding_name, &world_name)?;
+            add_renderer_binding(&session, &binding_name, world, &world_name, context_id)?;
+            let bootstrap = bootstrap_expression(world);
             let bootstrap_identifier =
-                match add_new_document_script(&session, BOOTSTRAP_SOURCE, &world_name) {
+                match add_new_document_script(&session, &bootstrap, world, &world_name) {
                     Ok(identifier) => identifier,
                     Err(error) => {
                         let _ = remove_renderer_binding(&session, &binding_name);
                         return Err(error);
                     }
                 };
-            if let Err(message) = evaluate_lifecycle(&session, BOOTSTRAP_SOURCE, context_id) {
+            if let Err(message) = evaluate_lifecycle(&session, &bootstrap, context_id) {
                 let _ = remove_new_document_script(&session, &bootstrap_identifier);
                 let _ = remove_renderer_binding(&session, &binding_name);
                 return Err(RendererError::BootstrapRejected {
@@ -505,6 +524,7 @@ impl RendererRuntime {
                     id: plugin.manifest.id.clone(),
                     version: plugin.manifest.version.clone(),
                     generation: plugin.generation,
+                    world,
                     world_name: world_name.clone(),
                     context_id: Some(context_id),
                     activation_confirmed: false,
@@ -512,6 +532,7 @@ impl RendererRuntime {
                     principal,
                     leases,
                     last_request_id: Cell::new(0),
+                    diagnostic_count: Cell::new(0),
                     bootstrap_identifier,
                     state: RendererPluginState::Activating,
                 });
@@ -1238,16 +1259,6 @@ impl RendererRuntime {
                     .ok_or(RendererError::InvalidBindingEvent(
                         "context is not an object",
                     ))?;
-                // Default and main-world contexts have no executionContextName. They
-                // are unrelated to the plugin bindings and must not abort the pump.
-                let Some(name_value) = context.get("name") else {
-                    return Ok(false);
-                };
-                let name = name_value
-                    .as_str()
-                    .ok_or(RendererError::InvalidBindingEvent(
-                        "context.name is not a string",
-                    ))?;
                 let context_id = context.get("id").and_then(Value::as_u64).ok_or(
                     RendererError::InvalidBindingEvent("context.id is not an unsigned integer"),
                 )?;
@@ -1262,21 +1273,28 @@ impl RendererRuntime {
                     .and_then(|value| value.get("frameId"))
                     .and_then(Value::as_str)
                     != owner.main_frame_id.as_deref()
-                    || aux
-                        .and_then(|value| value.get("isDefault"))
-                        .and_then(Value::as_bool)
-                        != Some(false)
                 {
                     return Ok(false);
                 }
-                if let Some(plugin) = self
+                let is_default = aux
+                    .and_then(|value| value.get("isDefault"))
+                    .and_then(Value::as_bool);
+                let name = context.get("name").and_then(Value::as_str);
+                for plugin in self
                     .sessions
                     .get_mut(target_id)
                     .expect("renderer target disappeared while handling its event")
                     .plugins
                     .iter_mut()
-                    .find(|plugin| {
-                        plugin.world_name == name && plugin.state != RendererPluginState::Stopping
+                    .filter(|plugin| {
+                        plugin.state != RendererPluginState::Stopping
+                            && match plugin.world {
+                                RendererWorld::Main => is_default == Some(true),
+                                RendererWorld::Isolated => {
+                                    is_default == Some(false)
+                                        && Some(plugin.world_name.as_str()) == name
+                                }
+                            }
                     })
                 {
                     if plugin.context_id != Some(context_id) {
@@ -1427,6 +1445,56 @@ impl RendererRuntime {
         let request = match parse_binding_message(&call.payload) {
             Ok(request) => request,
             Err(message) => {
+                if call.payload.len() <= 8192
+                    && let Ok(diagnostic) =
+                        serde_json::from_str::<RendererReportedDiagnostic>(&call.payload)
+                    && diagnostic.v == 1
+                    && diagnostic.message_type == "diagnostic"
+                    && diagnostic.plugin_id == consumer.id
+                    && diagnostic.generation == consumer.generation
+                    && matches!(
+                        consumer.state,
+                        RendererPluginState::Activating
+                            | RendererPluginState::Ready
+                            | RendererPluginState::Active
+                    )
+                    && !diagnostic.code.is_empty()
+                    && diagnostic.code.len() <= 64
+                    && diagnostic
+                        .code
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+                    && diagnostic.message.len() <= 4096
+                    && matches!(diagnostic.level.as_str(), "info" | "error")
+                    && consumer.diagnostic_count.get() < 32
+                {
+                    consumer
+                        .diagnostic_count
+                        .set(consumer.diagnostic_count.get() + 1);
+                    let plugin_id = consumer.id.clone();
+                    let detail = format!(
+                        "{} generation {} reported {}: {}",
+                        plugin_id, consumer.generation, diagnostic.code, diagnostic.message
+                    );
+                    self.record_status_event(
+                        target_id,
+                        if diagnostic.level == "error" {
+                            "plugin_reported_error"
+                        } else {
+                            "plugin_reported_info"
+                        },
+                        &detail,
+                    );
+                    if diagnostic.level == "error" {
+                        self.diagnostics.push(RendererDiagnostic {
+                            target_id: target_id.to_owned(),
+                            plugin_id,
+                            message: detail,
+                        });
+                    }
+                    self.publish_status();
+                    return Ok(true);
+                }
                 if let Some(id) = binding_request_id(&call.payload) {
                     let response = binding_error(id, "invalid_request", &message);
                     deliver_binding_response(
@@ -1746,7 +1814,7 @@ impl RendererRuntime {
         );
         let mut first_error = None;
         if !was_activating {
-            match current_isolated_context(&lifecycle_session, &plugin.world_name) {
+            match current_renderer_context(&lifecycle_session, plugin.world, &plugin.world_name) {
                 Ok((context_id, _frame_id)) => {
                     plugin.context_id = Some(context_id);
                     if let Some(current) = self
@@ -1789,10 +1857,22 @@ impl RendererRuntime {
             && let Some(context_id) = plugin.context_id
         {
             let binding = serde_json::to_string(&plugin.binding_name).expect("binding is UTF-8");
-            let _ = cleanup_session.evaluate_in_context(
-                &format!("globalThis.__codletRendererV1.__rpcClose({binding})"),
+            match cleanup_session.evaluate_in_context(
+                &format!("globalThis.__codletRendererV1?.__rpcClose({binding}) ?? ({{ok:true}})"),
                 Some(context_id),
-            );
+            ) {
+                Ok(value) => {
+                    if let Err(message) = parse_lifecycle_result(value) {
+                        first_error.get_or_insert(RendererError::PluginRejected {
+                            plugin_id: plugin.id.clone(),
+                            message,
+                        });
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error.into());
+                }
+            }
         }
         if target_session.is_live() {
             if let Err(error) =
@@ -1843,8 +1923,9 @@ impl RendererSession {
     }
 }
 
-fn current_isolated_context(
+fn current_renderer_context(
     session: &TargetSession,
+    world: RendererWorld,
     world_name: &str,
 ) -> Result<(u64, String), RendererError> {
     let frame_tree = session.request("Page.getFrameTree", None)?;
@@ -1865,6 +1946,16 @@ fn current_isolated_context(
             method: "Page.getFrameTree",
             message: "frameTree.frame.id is not a string",
         })?;
+    if world == RendererWorld::Main {
+        let context_id =
+            session
+                .default_context(frame_id)
+                .ok_or(RendererError::InvalidResponse {
+                    method: "Runtime.executionContextCreated",
+                    message: "the main frame has no live default execution context",
+                })?;
+        return Ok((context_id, frame_id.to_owned()));
+    }
     let result = session.request(
         "Page.createIsolatedWorld",
         Some(json!({"frameId": frame_id, "worldName": world_name})),
@@ -1882,13 +1973,15 @@ fn current_isolated_context(
 fn add_new_document_script(
     session: &TargetSession,
     expression: &str,
+    world: RendererWorld,
     world_name: &str,
 ) -> Result<String, RendererError> {
     let source = new_document_expression(expression);
-    let result = session.request(
-        "Page.addScriptToEvaluateOnNewDocument",
-        Some(json!({"source": source, "worldName": world_name})),
-    )?;
+    let mut params = json!({"source": source});
+    if world == RendererWorld::Isolated {
+        params["worldName"] = json!(world_name);
+    }
+    let result = session.request("Page.addScriptToEvaluateOnNewDocument", Some(params))?;
     result
         .get("identifier")
         .and_then(Value::as_str)
@@ -1913,15 +2006,16 @@ fn remove_new_document_script(
 fn add_renderer_binding(
     session: &TargetSession,
     binding_name: &str,
+    world: RendererWorld,
     world_name: &str,
+    context_id: u64,
 ) -> Result<(), RendererError> {
-    session.request(
-        "Runtime.addBinding",
-        Some(json!({
-            "name": binding_name,
-            "executionContextName": world_name
-        })),
-    )?;
+    let mut params = json!({"name": binding_name});
+    match world {
+        RendererWorld::Isolated => params["executionContextName"] = json!(world_name),
+        RendererWorld::Main => params["executionContextId"] = json!(context_id),
+    }
+    session.request("Runtime.addBinding", Some(params))?;
     Ok(())
 }
 
@@ -1961,6 +2055,11 @@ fn parse_lifecycle_result(result: Value) -> Result<(), String> {
             .error
             .unwrap_or_else(|| "renderer lifecycle returned ok=false".to_owned()))
     }
+}
+
+fn bootstrap_expression(world: RendererWorld) -> String {
+    let options = json!({"world": world});
+    format!("({BOOTSTRAP_SOURCE})({options})")
 }
 
 fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
@@ -2054,11 +2153,21 @@ fn renderer_world_name(plugin: &LoadedPlugin) -> String {
 
 fn renderer_binding_name(target_id: &str, session_id: &str, plugin: &LoadedPlugin) -> String {
     format!(
-        "codlet_rpc_v1_p_{}_t_{}_s_{}_g_{}",
+        "codlet_rpc_v1_p_{}_t_{}_s_{}_g_{}{}",
         hex_component(&plugin.manifest.id),
         hex_component(target_id),
         hex_component(session_id),
-        plugin.generation
+        plugin.generation,
+        if plugin
+            .manifest
+            .renderer
+            .as_ref()
+            .is_some_and(|renderer| renderer.world == RendererWorld::Main)
+        {
+            "_main"
+        } else {
+            ""
+        }
     )
 }
 

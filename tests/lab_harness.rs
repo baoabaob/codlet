@@ -76,6 +76,13 @@ fn lab_cli_does_not_create_files_or_launch_without_explicit_audited_options() {
             OsString::from("--experimental-isolated-client"),
             OsString::from("--root"),
             root.clone().into_os_string(),
+            OsString::from("doctor"),
+            OsString::from("--json"),
+        ],
+        vec![
+            OsString::from("--experimental-isolated-client"),
+            OsString::from("--root"),
+            root.clone().into_os_string(),
             OsString::from("--expected-package-version"),
             OsString::from("26.901.6511.0"),
             OsString::from("--eval"),

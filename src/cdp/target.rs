@@ -265,6 +265,10 @@ impl TargetSession {
         self.client.subscribe_events(Some(&self.session_id))
     }
 
+    pub(crate) fn default_context(&self, frame_id: &str) -> Option<u64> {
+        self.client.default_context(&self.session_id, frame_id)
+    }
+
     pub(crate) fn detach(&self) -> Result<(), TargetError> {
         self.client.request(
             "Target.detachFromTarget",

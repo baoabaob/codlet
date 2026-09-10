@@ -32,6 +32,7 @@ foreach ($codletFile in @('node.exe', 'LICENSE')) {
     Copy-Item -LiteralPath (Join-Path $codletNodeSource $codletFile) -Destination (Join-Path $codletOutput $codletNodeRelative)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
 $codletConfiguration = [ordered]@{
     schema = 1; labRoot = $codletLabRoot; labBinary = 'codlet-lab.exe'
     labBinarySha256 = (Get-FileHash -LiteralPath (Join-Path $codletOutput 'codlet-lab.exe') -Algorithm SHA256).Hash
@@ -75,7 +76,7 @@ exit $LASTEXITCODE
 foreach ($codletEntry in @{ 'Start-TestClient.ps1'=$codletStart; 'Stop-TestClient.ps1'=$codletStop; 'Test-Plugins.ps1'=$codletPlugins }.GetEnumerator()) {
     [IO.File]::WriteAllText((Join-Path $codletOutput $codletEntry.Key), $codletEntry.Value, $codletUtf8)
 }
-foreach ($codletName in @('Start-TestClient', 'Stop-TestClient', 'Test-Plugins')) {
+foreach ($codletName in @('Start-TestClient', 'Stop-TestClient', 'Test-Plugins', 'Test-Doctor')) {
     $codletCommand = '@echo off' + [Environment]::NewLine + 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0' + $codletName + '.ps1" %*' + [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $codletOutput ($codletName + '.cmd')), $codletCommand, [Text.Encoding]::ASCII)
 }

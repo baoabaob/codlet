@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const bootstrap = readFileSync(new URL('../bundled/runtime/bootstrap.js', import.meta.url), 'utf8');
+const bootstrap = `(${readFileSync(new URL('../bundled/runtime/bootstrap.js', import.meta.url), 'utf8')})({ world: 'isolated' })`;
 const entry = readFileSync(new URL('../examples/local-echo/renderer.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../examples/local-echo/codlet.json', import.meta.url), 'utf8'));
 

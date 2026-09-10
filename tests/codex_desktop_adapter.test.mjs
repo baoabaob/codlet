@@ -1,0 +1,306 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import test from 'node:test';
+import vm from 'node:vm';
+
+const source = readFileSync(new URL('../bundled/codex-desktop-adapter/renderer.js', import.meta.url), 'utf8');
+const plain = value => JSON.parse(JSON.stringify(value));
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+function fixture() {
+    const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, AbortController, crypto: { randomUUID } });
+    const create = vm.runInContext(source + '\ncreateAdapter', scope);
+    const endpoints = new Map(), cleanup = new Set(), sent = [], failures = [], callbacks = new Map(), approvals = [], requestCalls = [];
+    const thread = { resumeState: 'resumed', requests: [] };
+    const client = { requestPromises: new Map(), onError(id, error) { failures.push({ id, error }); this.requestPromises.delete(id); } };
+    const original = message => { sent.push(message); };
+    const postbox = { postMessage: original };
+    const responses = new Map();
+    const manager = {
+        getConversation: id => id === 'thread-a' ? thread : null,
+        getStreamRole: () => ({ role: 'owner' }),
+        sendRequest: async (method, params) => { requestCalls.push({ method, params }); const result = responses.get(method); if (result instanceof Error) throw result; return typeof result === 'function' ? result(params) : result; },
+        addNotificationCallback(methods, handler) { callbacks.set('notification', handler); return () => callbacks.delete('notification'); },
+        addConversationStateCallback(handler) { callbacks.set('conversation', handler); return () => callbacks.delete('conversation'); },
+        replyWithCommandExecutionApprovalDecision(...args) { approvals.push(['command', ...args]); },
+        replyWithFileChangeApprovalDecision(...args) { approvals.push(['file', ...args]); },
+        replyWithPermissionsRequestApprovalResponse(...args) { approvals.push(['permissions', ...args]); },
+        replyWithUserInputResponse(...args) { approvals.push(['input', ...args]); }
+    };
+    const context = { world: 'main', pluginId: 'adapter', generation: 1, reportDiagnostic() {}, onDeactivate(fn) { cleanup.add(fn); return () => cleanup.delete(fn); }, rpc: { provide(cap, method, handler) { endpoints.set(cap.name + ':' + method, handler); }, unavailable(cap) { for (const key of endpoints.keys()) if (key.startsWith(cap.name + ':')) endpoints.delete(key); } } };
+    let replaced = false;
+    const adapter = create({ manager, client, postbox, check() { if (replaced) throw Object.assign(new Error('connection replaced'), { code: 'desktop_connection_replaced' }); } }, context);
+    const owners = [];
+    function owner(id, generation = 1) {
+        const disposers = new Set();
+        const ctx = { world: 'main', pluginId: id, generation, onDeactivate(fn) { disposers.add(fn); return () => disposers.delete(fn); } };
+        owners.push(disposers);
+        return { ctx, stop() { for (const fn of [...disposers]) fn(); } };
+    }
+    function submit(text = 'original') {
+        const id = randomUUID(); client.requestPromises.set(id, {});
+        const message = { type: 'mcp-request', hostId: 'local', request: { id, method: 'turn/start', params: { threadId: 'thread-a', input: [{ type: 'text', text, text_elements: [] }, { type: 'image', url: 'data:sample' }], additionalContext: { desktop: { kind: 'application', value: 'existing' } }, model: 'chosen-model' } } };
+        postbox.postMessage(message);
+        return message;
+    }
+    return { ...adapter, context, scope, endpoints, cleanup, sent, failures, callbacks, approvals, requestCalls, client, postbox, original, thread, responses, owner, submit, connection: { manager, client, postbox, check() {} }, drift() { replaced = true; } };
+}
+
+test('ordered pre-submit rewrite/context preserves identities, attachment and Desktop options before dispatch', async () => {
+    const f = fixture(), order = [];
+    f.api.registerPreSubmit(f.owner('z-plugin').ctx, { id: 'last', priority: 1 }, draft => { order.push(['last', draft.text]); return { context: [{ text: 'plugin context' }] }; });
+    f.api.registerPreSubmit(f.owner('b-plugin').ctx, { id: 'second' }, draft => { order.push(['second', draft.text]); return { text: draft.text + ' B' }; });
+    f.api.registerPreSubmit(f.owner('a-plugin').ctx, { id: 'first' }, draft => { order.push(['first', draft.text]); assert.equal(Object.isFrozen(draft), true); return { text: draft.text + ' A' }; });
+    const original = f.submit();
+    assert.equal(f.sent.length, 0);
+    await tick();
+    assert.deepEqual(order, [['first', 'original'], ['second', 'original A'], ['last', 'original A B']]);
+    assert.equal(f.sent.length, 1);
+    const next = f.sent[0];
+    assert.equal(next.request.id, original.request.id);
+    assert.equal(next.request.params.threadId, 'thread-a');
+    assert.equal(next.request.params.model, 'chosen-model');
+    assert.equal(next.request.params.input[0].text, 'original A B');
+    assert.deepEqual(plain(next.request.params.input[1]), { type: 'image', url: 'data:sample' });
+    assert.deepEqual(plain(next.request.params.additionalContext.desktop), { kind: 'application', value: 'existing' });
+    assert.equal(Object.values(next.request.params.additionalContext).at(-1).kind, 'untrusted');
+    assert.equal(original.request.params.input[0].text, 'original');
+    f.dispose();
+});
+
+test('failed, timed out and retired interceptors block the original UI request and identify the source', async () => {
+    for (const mode of ['failure', 'timeout', 'retirement', 'adapter-retirement', 'request-retirement']) {
+        const f = fixture(), owner = f.owner('source-plugin');
+        let release, signal;
+        f.api.registerPreSubmit(owner.ctx, { id: 'hook', timeoutMs: 10 }, (_draft, options) => {
+            signal = options.signal;
+            if (mode === 'failure') throw new Error('cannot prepare context');
+            return new Promise(resolve => { release = resolve; });
+        });
+        const message = f.submit();
+        await tick();
+        if (mode === 'retirement') owner.stop();
+        if (mode === 'adapter-retirement') f.dispose();
+        if (mode === 'request-retirement') { f.client.requestPromises.delete(message.request.id); release({ text: 'late' }); }
+        if (mode === 'timeout') await new Promise(resolve => setTimeout(resolve, 25));
+        await tick();
+        assert.equal(f.sent.length, 0, mode);
+        if (mode !== 'request-retirement') {
+            assert.equal(f.failures.length, 1, mode);
+            assert.equal(f.failures[0].id, message.request.id);
+            assert.match(f.failures[0].error.message, /source-plugin\/hook/);
+        }
+        if (mode !== 'request-retirement') assert.equal(signal.aborted, true);
+        release?.({ text: 'must not send after retirement' }); await tick();
+        assert.equal(f.sent.length, 0, mode);
+        f.dispose();
+    }
+});
+
+test('empty pipeline stays synchronous; lifecycle removes callbacks and reports lost patch ownership', async () => {
+    const f = fixture();
+    f.submit(); assert.equal(f.sent.length, 1);
+    const owner = f.owner('consumer');
+    f.api.registerPreSubmit(owner.ctx, { id: 'hook' }, () => undefined);
+    f.api.onEvent(owner.ctx, () => assert.fail('retired listener ran'));
+    owner.stop();
+    assert.equal(f.api.status().hooks, 0);
+    assert.equal(f.dispose(), undefined);
+    assert.equal(f.postbox.postMessage, f.original);
+    assert.equal(f.callbacks.size, 0);
+    assert.equal(f.scope[Symbol.for('codlet.codex.desktop.v1')], undefined);
+    assert.throws(() => f.api.status(), { code: 'adapter_deactivated' });
+    const drift = fixture(); const patch = () => {}; drift.postbox.postMessage = patch;
+    assert.equal(drift.dispose().reloadRequired, true);
+    assert.equal(drift.postbox.postMessage, patch);
+    assert.equal(drift.dispose().reloadRequired, true);
+});
+
+test('stable read DTOs keep Thread/Turn/Item identity and do not return provider secrets', async () => {
+    const f = fixture();
+    f.responses.set('thread/read', { thread: { id: 'thread-a', preview: 'task', modelProvider: 'p', cwd: 'C:/work', privateEnvelope: 'hidden' } });
+    f.responses.set('thread/turns/list', { data: [{ id: 'turn-a', status: 'completed', items: [], privateField: true }], nextCursor: 'next' });
+    f.responses.set('thread/items/list', { data: [{ turnId: 'turn-a', item: { id: 'item-a', type: 'agentMessage', text: 'answer', privateField: true } }] });
+    f.responses.set('config/read', { config: { model_provider: 'private', model_providers: { private: { name: 'Provider', experimental_bearer_token: 'secret', http_headers: { authorization: 'secret' }, base_url: 'secret' } } }, origins: { credentials: 'secret' } });
+    assert.equal((await f.api.read('threads.get', { threadId: 'thread-a' })).id, 'thread-a');
+    assert.equal((await f.api.read('turns.list', { threadId: 'thread-a' })).turns[0].id, 'turn-a');
+    const items = await f.api.read('items.list', { threadId: 'thread-a' });
+    assert.equal(items.items[0].turnId, 'turn-a'); assert.equal(items.items[0].item.id, 'item-a');
+    assert.equal(items.items[0].item.privateField, undefined);
+    const providers = await f.api.read('providers.list');
+    assert.deepEqual(plain(providers), { providers: [{ id: 'private', name: 'Provider', selected: true }] });
+    await assert.rejects(f.api.read('ipc.send', { channel: 'arbitrary' }), { code: 'method_not_found' });
+    await assert.rejects(f.api.read('threads.get', { threadId: 'thread-a', hostId: 'remote' }), { code: 'invalid_argument' });
+    f.dispose();
+});
+
+test('writes use the existing request client, enforce loaded owner identity, and reject connection replacement', async () => {
+    const f = fixture();
+    f.responses.set('turn/start', { turn: { id: 'turn-a', status: 'inProgress', items: [] } });
+    f.responses.set('turn/steer', { turnId: 'turn-a' });
+    const result = await f.api.write('turns.start', { threadId: 'thread-a', text: 'hello' });
+    assert.equal(result.turn.id, 'turn-a');
+    assert.match(f.requestCalls[0].params.clientUserMessageId, /^[a-f0-9-]{36}$/);
+    const { clientUserMessageId, ...params } = plain(f.requestCalls[0].params);
+    assert.deepEqual(params, { threadId: 'thread-a', input: [{ type: 'text', text: 'hello', text_elements: [] }] });
+    await f.api.write('turns.steer', { threadId: 'thread-a', turnId: 'turn-a', text: 'follow up' });
+    assert.equal(f.requestCalls[1].params.expectedTurnId, 'turn-a');
+    await f.api.write('turns.interrupt', { threadId: 'thread-a', turnId: 'turn-a' });
+    assert.equal(f.requestCalls[2].params.turnId, 'turn-a');
+    await assert.rejects(f.api.write('turns.start', { threadId: 'not-loaded', text: 'hello' }), { code: 'desktop_thread_not_loaded' });
+    f.drift();
+    await assert.rejects(f.api.write('turns.start', { threadId: 'thread-a', text: 'hello' }), { code: 'desktop_connection_replaced' });
+    assert.equal(f.requestCalls.length, 3);
+    f.dispose();
+});
+
+test('approval and server-request replies bind opaque handles to the pending Desktop request and retire once', async () => {
+    const f = fixture();
+    f.thread.requests.push({ id: 71, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-a', turnId: 'turn-a', itemId: 'command-a', command: 'echo sample', cwd: 'C:/sample' } });
+    f.thread.requests.push({ id: 'input-id', method: 'item/tool/requestUserInput', params: { threadId: 'thread-a', turnId: 'turn-a', itemId: 'input-a', questions: [{ id: 'q1', header: 'Choice', question: 'Which?', options: [{ label: 'A', description: 'option A' }] }] } });
+    f.callbacks.get('conversation')('thread-a');
+    const requests = (await f.api.read('approvals.list', { threadId: 'thread-a' })).requests;
+    assert.equal(requests.length, 2); assert.equal(requests[0].requestId, undefined);
+    assert.equal((await f.api.write('approvals.respond', { token: requests[0].token, decision: 'decline' })).status, 'submitted');
+    assert.deepEqual(f.approvals[0], ['command', 'thread-a', 71, 'decline']);
+    await assert.rejects(f.api.write('approvals.respond', { token: requests[0].token, decision: 'approve' }), { code: 'approval_retired' });
+    await f.api.write('approvals.respond', { token: requests[1].token, answers: { q1: ['A'] } });
+    assert.deepEqual(plain(f.approvals[1]), ['input', 'thread-a', 'input-id', { answers: { q1: { answers: ['A'] } } }]);
+    f.thread.requests = []; f.callbacks.get('conversation')('thread-a');
+    assert.equal((await f.api.read('approvals.list', { threadId: 'thread-a' })).requests.length, 0);
+    f.dispose();
+});
+
+test('bounded event stream preserves UI ids, reports overflow, cancels waits, and rejects old instance cursors', async () => {
+    const f = fixture();
+    const start = await f.api.readEvents();
+    const controller = new AbortController();
+    const waiting = f.api.readEvents({ cursor: start.cursor, waitMs: 1000 }, controller.signal);
+    f.callbacks.get('notification')({ method: 'item/completed', params: { threadId: 'thread-a', turnId: 'turn-a', item: { id: 'item-a', type: 'agentMessage', text: 'answer' } } });
+    const next = await waiting;
+    assert.equal(next.events[0].threadId, 'thread-a'); assert.equal(next.events[0].turnId, 'turn-a'); assert.equal(next.events[0].item.id, 'item-a');
+    for (let index = 0; index < 300; index++) f.callbacks.get('notification')({ method: 'item/agentMessage/delta', params: { threadId: 'thread-a', turnId: 'turn-a', itemId: 'item-a', delta: 'x' } });
+    assert.equal((await f.api.readEvents({ cursor: start.cursor })).gap, true);
+    const cursor = (await f.api.readEvents()).cursor;
+    const aborted = f.api.readEvents({ cursor, waitMs: 1000 }, controller.signal);
+    controller.abort(); await assert.rejects(aborted, { code: 'invocation_cancelled' });
+    const retired = f.api.readEvents({ cursor, waitMs: 1000 });
+    f.dispose(); await assert.rejects(retired, { code: 'adapter_deactivated' });
+    const newer = fixture(); await assert.rejects(newer.api.readEvents({ cursor }), { code: 'event_cursor_retired' }); newer.dispose();
+});
+
+test('public page API exposes only callbacks and requires one-use tickets from the declared Core capability', () => {
+    const f = fixture(), owner = f.owner('consumer'), other = f.owner('other');
+    const exposed = f.scope[Symbol.for('codlet.codex.desktop.v1')];
+    assert.deepEqual(Object.keys(exposed).sort(), ['api', 'onEvent', 'registerPreSubmit']);
+    const ticket = f.endpoints.get('codex.ui.preSubmit:getApi')({}, { caller: { pluginId: 'consumer', generation: 1 } }).ticket;
+    assert.throws(() => exposed.registerPreSubmit(other.ctx, ticket, { id: 'test' }, () => {}), { code: 'api_ticket_retired' });
+    assert.throws(() => exposed.onEvent(owner.ctx, ticket, () => {}), { code: 'api_ticket_retired' });
+    exposed.registerPreSubmit(owner.ctx, ticket, { id: 'test' }, () => {});
+    assert.throws(() => exposed.registerPreSubmit(owner.ctx, ticket, { id: 'again' }, () => {}), { code: 'api_ticket_retired' });
+    owner.stop(); assert.equal(f.api.status().hooks, 0); f.dispose();
+});
+
+test('unknown builds and uninitialized Desktop state fail before a connection can be created', async () => {
+    const scope = vm.createContext({ module: { exports: {} }, location: { origin: 'app://-', pathname: '/index.html' }, document: { scripts: [], getElementById: () => null }, electronBridge: { getSentryInitOptions: () => ({ appVersion: 'unknown', buildNumber: '0' }) } });
+    const probe = vm.runInContext(source + '\nprobeDesktop', scope);
+    let imports = 0;
+    await assert.rejects(probe(async () => { imports++; }), { code: 'desktop_build_drift' });
+    assert.equal(imports, 0);
+    scope.electronBridge.getSentryInitOptions = () => ({ appVersion: '26.903.61454', buildNumber: '8378' });
+    scope.electronBridge.sendMessageFromView = () => assert.fail('probing must not send preload messages');
+    scope.document.scripts.push({ src: 'app://-/assets/index-71057a3aecef.js' });
+    await assert.rejects(probe(async () => { imports++; return {}; }, 0), { code: 'desktop_scope_missing' });
+    assert.equal(imports, 1);
+});
+
+test('permission approval with unmapped path kinds can only be declined through this SDK', async () => {
+    const f = fixture();
+    f.thread.requests.push({ id: 'permission-id', method: 'item/permissions/requestApproval', params: { threadId: 'thread-a', turnId: 'turn-a', itemId: 'permission-item', permissions: { fileSystem: { entries: [{ access: 'write', path: { type: 'special', value: { kind: 'root' } } }] } } } });
+    const request = (await f.api.read('approvals.list', { threadId: 'thread-a' })).requests[0];
+    assert.equal(request.canApprove, false); assert.equal(request.permissions.hasOtherPaths, true);
+    await assert.rejects(f.api.write('approvals.respond', { token: request.token, decision: 'approve' }), { code: 'unsupported_permissions' });
+    assert.equal(f.approvals.length, 0);
+    await f.api.write('approvals.respond', { token: request.token, decision: 'decline' });
+    assert.deepEqual(plain(f.approvals[0]), ['permissions', 'thread-a', 'permission-id', { permissions: {}, scope: 'turn' }]);
+    f.dispose();
+});
+
+test('schema or event identity drift closes semantic operations while diagnostics remain readable', async () => {
+    for (const source of ['response', 'event']) {
+        const f = fixture(), cursor = (await f.api.readEvents()).cursor;
+        if (source === 'response') {
+            f.responses.set('thread/read', { thread: { id: null } });
+            await assert.rejects(f.api.read('threads.get', { threadId: 'thread-a' }), { code: 'desktop_schema_drift' });
+        } else f.callbacks.get('notification')({ method: 'item/completed', params: { threadId: 'thread-a', turnId: null, item: { id: 'item-a', type: 'agentMessage', text: 'sample' } } });
+        await assert.rejects(f.api.write('turns.start', { threadId: 'thread-a', text: 'must not dispatch' }), { code: 'capability_unavailable' });
+        const diagnostics = f.endpoints.get('codex.desktop.compatibility:probe')();
+        assert.equal(diagnostics.available, false); assert.ok(diagnostics.unavailable.message);
+        const events = await f.api.readEvents({ cursor }); assert.equal(events.events.at(-1).type, 'adapter.drift');
+        assert.equal(f.requestCalls.filter(request => request.method === 'turn/start').length, 0);
+        f.dispose();
+    }
+});
+
+test('approval resolution is confirmed by the server, separately from optimistic Desktop retirement', async () => {
+    const f = fixture(), observed = [];
+    f.api.onEvent(f.owner('consumer').ctx, event => observed.push(event));
+    f.thread.requests.push({ id: 3, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-a', turnId: 'turn-a', itemId: 'item-a', availableDecisions: ['accept', 'cancel'] } });
+    const request = (await f.api.read('approvals.list', { threadId: 'thread-a' })).requests[0];
+    await f.api.write('approvals.respond', { token: request.token, decision: 'decline' });
+    assert.equal(f.approvals[0].at(-1), 'cancel');
+    f.thread.requests = []; f.callbacks.get('conversation')('thread-a');
+    assert.equal(observed.at(-1).type, 'approval.retired');
+    assert.equal(observed.some(event => event.type === 'approval.resolved'), false);
+    f.callbacks.get('notification')({ method: 'serverRequest/resolved', params: { threadId: 'thread-a', requestId: 3 } });
+    assert.equal(observed.at(-1).type, 'approval.resolved'); assert.equal(observed.at(-1).token, request.token);
+    f.dispose();
+});
+
+test('slow Desktop readiness leaves semantic handlers unpublished and finishes without blocking plugin activation', async () => {
+    const f = fixture(); f.dispose(); f.endpoints.clear();
+    const start = vm.runInContext('startAdapter', f.scope);
+    let complete;
+    const connection = new Promise(resolve => { complete = resolve; });
+    const pending = start(f.context, () => connection);
+    assert.equal(pending.probe().initializing, true);
+    assert.deepEqual([...f.endpoints.keys()].sort(), ['codex.desktop.compatibility:probe', 'codex.desktop.compatibility:waitReady']);
+    const waiting = f.endpoints.get('codex.desktop.compatibility:waitReady')({ timeoutMs: 1000 }, { signal: new AbortController().signal });
+    complete(f.connection);
+    assert.equal((await waiting).available, true);
+    assert.equal(pending.probe().initializing, false);
+    assert.ok(f.endpoints.has('codex.backend.write:turns.start'));
+    pending.dispose(); assert.equal(f.callbacks.size, 0);
+});
+
+test('retiring a pending initializer prevents late page patches; failed readiness remains diagnosable', async () => {
+    for (const mode of ['cancel', 'failure']) {
+        const f = fixture(); f.dispose(); f.endpoints.clear();
+        const reported = []; f.context.reportDiagnostic = value => reported.push(value);
+        const start = vm.runInContext('startAdapter', f.scope);
+        let complete, reject;
+        const connection = new Promise((resolve, fail) => { complete = resolve; reject = fail; });
+        const pending = start(f.context, () => connection);
+        if (mode === 'cancel') { pending.dispose(); complete(f.connection); }
+        else reject(Object.assign(new Error('test schema mismatch'), { code: 'desktop_schema_drift' }));
+        await tick();
+        assert.equal(f.scope[Symbol.for('codlet.codex.desktop.v1')], undefined);
+        assert.equal(f.postbox.postMessage, f.original);
+        assert.equal(f.endpoints.has('codex.backend.read:threads.list'), false);
+        if (mode === 'failure') { assert.equal(pending.probe().initializing, false); assert.equal(pending.probe().available, false); assert.equal(reported[0].code, 'desktop_schema_drift'); pending.dispose(); }
+    }
+});
+
+test('probing a family descriptor never constructs a missing local manager or request client', async () => {
+    const scope = vm.createContext({ module: { exports: {} }, location: { origin: 'app://-', pathname: '/index.html' }, electronBridge: { getSentryInitOptions: () => ({ appVersion: '26.903.61454', buildNumber: '8378' }), sendMessageFromView() {} } });
+    vm.runInContext(source, scope);
+    const module = vm.runInContext(`(() => {
+        const token = { id: 'AppScope' }, manager = { read() { throw Error('must not construct manager'); } }, client = { read() { throw Error('must not construct client'); } };
+        const node = { token, store: {}, familyBindings: new Map([[manager, new Map()], [client, new Map()]]) };
+        const root = { __reactContainer$test: { memoizedProps: { value: new Map([[token.id, node]]) } } };
+        globalThis.document = { scripts: [{ src: 'app://-/assets/index-71057a3aecef.js' }], getElementById: () => root };
+        return { t3t: token, Mwt: manager, Nwt: client };
+    })()`, scope);
+    await assert.rejects(vm.runInContext('probeDesktop', scope)(async () => module, 0), { code: 'desktop_connection_not_ready' });
+});

@@ -369,16 +369,7 @@ impl CoreRpcShared {
             endpoint.session.session_id().to_owned(),
             endpoint.document_epoch,
         );
-        if state
-            .targets
-            .get(&target)
-            .and_then(|scope| scope.renderer_document.as_ref())
-            .is_some_and(|old| old.0 == document.0 && old.1 != document.1)
-        {
-            state.retire_target_document(&target);
-        }
-        state.ensure_target(&target)?;
-        state.targets.get_mut(&target).unwrap().renderer_document = Some(document);
+        state.publish_document(&target, document)?;
         state
             .renderers
             .insert((target, endpoint.plugin_id.clone()), endpoint);
@@ -393,17 +384,7 @@ impl CoreRpcShared {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         let target = session.target_id();
         let document = (session.session_id().to_owned(), document_epoch);
-        if state
-            .targets
-            .get(target)
-            .and_then(|scope| scope.renderer_document.as_ref())
-            .is_some_and(|old| old.0 == document.0 && old.1 != document.1)
-        {
-            state.retire_target_document(target);
-        }
-        state.ensure_target(target)?;
-        state.targets.get_mut(target).unwrap().renderer_document = Some(document);
-        Ok(())
+        state.publish_document(target, document)
     }
 
     pub fn retire_renderer(&self, target: &str, plugin: Option<&str>) {
@@ -638,20 +619,18 @@ impl CoreRpcShared {
                             .raw_sessions
                             .get(session)
                             .map(|raw| raw.target_id.clone())
-                            .or_else(|| {
-                                state
-                                    .targets
-                                    .iter()
-                                    .find(|(_, target)| {
-                                        target
-                                            .renderer_document
-                                            .as_ref()
-                                            .is_some_and(|(current, _)| current == session)
-                                    })
-                                    .map(|(id, _)| id.clone())
-                            })
                     });
-                    if let Some(target) = target {
+                    // Managed documents have one navigation owner. Its publication
+                    // advances the shared scope before activating the replacement.
+                    // This worker can receive the same CDP event after that activation;
+                    // observing it again must not revoke the newly issued leases.
+                    // Raw-only targets continue to own their navigation here.
+                    if let Some(target) = target
+                        && state
+                            .targets
+                            .get(&target)
+                            .is_some_and(|scope| scope.renderer_document.is_none())
+                    {
                         state.retire_target_document(&target);
                     }
                 }
@@ -913,6 +892,20 @@ impl CoreRpcShared {
 }
 
 impl State {
+    fn publish_document(&mut self, target: &str, document: (String, u64)) -> Result<(), HostError> {
+        if self
+            .targets
+            .get(target)
+            .and_then(|scope| scope.renderer_document.as_ref())
+            .is_some_and(|old| old != &document)
+        {
+            self.retire_target_document(target);
+        }
+        self.ensure_target(target)?;
+        self.targets.get_mut(target).unwrap().renderer_document = Some(document);
+        Ok(())
+    }
+
     fn schedule_session_cleanup(&mut self, session: &str) {
         let raw = self.raw_sessions.remove(session);
         self.retire_session(session);
@@ -1000,10 +993,15 @@ impl State {
             keep
         });
         let targets = self
-            .renderers
-            .values()
-            .filter(|endpoint| endpoint.session.session_id() == session)
-            .map(|endpoint| endpoint.session.target_id().to_owned())
+            .targets
+            .iter()
+            .filter(|(_, target)| {
+                target
+                    .renderer_document
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == session)
+            })
+            .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for target in targets {
             self.retire_target_document(&target);
@@ -1296,6 +1294,82 @@ mod tests {
                 )
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn delayed_navigation_observer_does_not_retire_a_republished_managed_document() {
+        let shared = CoreRpcShared::default();
+        let capability = descriptor(CapabilityScope::Runtime);
+        let consumer = plugin("dev.consumer", 1, &[], std::slice::from_ref(&capability));
+        let provider = plugin("dev.provider", 1, std::slice::from_ref(&capability), &[]);
+        shared
+            .register_plugins(&[consumer.clone(), provider])
+            .unwrap();
+        shared
+            .0
+            .lock()
+            .unwrap()
+            .publish_document("target-a", ("managed-session".into(), 1))
+            .unwrap();
+        let old = attach(&shared, "dev.consumer", 1, "raw-session");
+        let resolve = |handle: &str| {
+            shared.resolve_host(
+                &consumer,
+                &capability,
+                Some(handle),
+                None,
+                Instant::now() + Duration::from_secs(5),
+            )
+        };
+        let old_route = resolve(&old).unwrap();
+        // The lifecycle owner wins the scheduling race and publishes document 2.
+        shared
+            .0
+            .lock()
+            .unwrap()
+            .publish_document("target-a", ("managed-session".into(), 2))
+            .unwrap();
+        assert!(shared.validate(&old_route).is_err());
+        assert!(resolve(&old).is_err());
+        let current = shared
+            .issue_handle("dev.consumer", 1, "raw-session", "frame-a".into())
+            .unwrap()["handleId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let route = resolve(&current).unwrap();
+        for session in ["managed-session", "raw-session"] {
+            shared.observe(&CdpEvent {
+                method: "Page.frameNavigated".into(),
+                params: Some(json!({"frame":{"id":"frame-a"}})),
+                session_id: Some(session.into()),
+            });
+            assert!(
+                shared.validate(&route).is_ok(),
+                "late duplicate on {session}"
+            );
+        }
+        // Losing that owner returns navigation responsibility to the raw path,
+        // including targets with no currently published renderer endpoints.
+        shared.observe(&CdpEvent {
+            method: "Target.detachedFromTarget".into(),
+            params: Some(json!({"sessionId":"managed-session"})),
+            session_id: None,
+        });
+        assert!(shared.validate(&route).is_err());
+        let raw = shared
+            .issue_handle("dev.consumer", 1, "raw-session", "frame-a".into())
+            .unwrap()["handleId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let raw_route = resolve(&raw).unwrap();
+        shared.observe(&CdpEvent {
+            method: "Page.frameNavigated".into(),
+            params: Some(json!({"frame":{"id":"frame-a"}})),
+            session_id: Some("raw-session".into()),
+        });
+        assert!(shared.validate(&raw_route).is_err());
     }
 
     #[test]

@@ -1,0 +1,110 @@
+/** Optional Desktop semantic API v1. These types belong to the adapter, not Core. */
+import type { RendererContext, RpcOptions } from './renderer';
+
+export interface DesktopCompatibility {
+  api: 1;
+  initializing: boolean;
+  available: boolean;
+  unavailable: { code: string; message: string } | null;
+  build: { appVersion: string; buildNumber: string; appServerVersion: string | null };
+  connection: 'existing-desktop-local' | null;
+  transport: 'existing-app-host-services-and-native-request-client' | null;
+  inputRewrite: true;
+  contextInjection: true;
+  presentationTransform: false;
+  historyMutation: false;
+  hooks: number;
+  pendingSubmits: number;
+}
+export interface Item {
+  id: string;
+  kind: 'user' | 'assistant' | 'reasoning' | 'command' | 'fileChange' | 'tool' | 'plan' | 'other';
+  text: string | null;
+  status: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  exitCode?: number | null;
+  name?: string | null;
+}
+export interface Turn { id: string; status: string; items: Item[]; error: string | null }
+export interface Thread {
+  id: string;
+  title: string | null;
+  cwd: string | null;
+  provider: string | null;
+  /** Unix seconds from the authoritative thread metadata. */
+  createdAt: number | null;
+  updatedAt: number | null;
+  turns: Turn[];
+}
+export interface Page { cursor?: string | null; limit?: number }
+export interface Model { id: string; model: string; name: string | null; description: string | null; isDefault: boolean; reasoningEfforts: string[] }
+export interface Skill { name: string; description: string | null; path: string | null; enabled: boolean }
+export interface ApprovalRequest {
+  /** Opaque adapter-instance handle; never an underlying request id. */
+  token: string;
+  kind: 'command' | 'fileChange' | 'permissions' | 'userInput';
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  reason: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  /** False means only decline is supported; use Desktop to grant these paths. */
+  canApprove?: boolean;
+  permissions?: { network: boolean; read: string[]; write: string[]; hasOtherPaths: boolean };
+  questions?: { id: string; header: string | null; question: string; secret: boolean; options: { label: string; description: string | null }[] }[];
+}
+export interface ReadMethods {
+  'threads.list': { params: Page & { archived?: boolean }; result: { threads: Thread[]; cursor: string | null } };
+  /** Metadata read; use paginated turns/items methods for history. */
+  'threads.get': { params: { threadId: string }; result: Thread };
+  'turns.list': { params: Page & { threadId: string }; result: { turns: Turn[]; cursor: string | null } };
+  'items.list': { params: Page & { threadId: string; turnId?: string }; result: { items: { turnId: string; item: Item }[]; cursor: string | null } };
+  'models.list': { params: Page; result: { models: Model[]; cursor: string | null } };
+  'skills.list': { params: { cwd?: string }; result: { directories: { cwd: string | null; skills: Skill[]; errors: { path: string | null; message: string | null }[] }[] } };
+  'providers.list': { params: Record<string, never>; result: { providers: { id: string; name: string; selected: boolean }[] } };
+  'approvals.list': { params: { threadId: string }; result: { requests: ApprovalRequest[] } };
+}
+export type ApprovalReply = { token: string; decision: 'approve' | 'decline' } | { token: string; answers: Record<string, string[]> };
+export interface WriteMethods {
+  /** Requires a task already open/resumed in the current owner Desktop window. */
+  'turns.start': { params: { threadId: string; text: string; model?: string; effort?: string }; result: { threadId: string; turn: Turn } };
+  'turns.steer': { params: { threadId: string; turnId: string; text: string }; result: { threadId: string; turnId: string } };
+  /** Submitted is a request receipt; wait for turn.completed for the final state. */
+  'turns.interrupt': { params: { threadId: string; turnId: string }; result: { threadId: string; turnId: string; status: 'submitted' } };
+  'approvals.respond': { params: ApprovalReply; result: { token: string; status: 'submitted' } };
+}
+export type DesktopEvent = ({ type: 'adapter.ready'; connection: 'existing-desktop-local' }
+  | { type: 'adapter.drift'; code: string; message: string | null }
+  | { type: 'thread.started'; thread: Thread }
+  | { type: 'turn.started' | 'turn.completed'; threadId: string; turn: Turn }
+  | { type: 'item.started' | 'item.completed'; threadId: string; turnId: string; item: Item }
+  | { type: 'item.text.delta' | 'item.output.delta'; threadId: string; turnId: string; itemId: string; delta: string }
+  | { type: 'approval.requested'; request: ApprovalRequest }
+  | { type: 'approval.retired' | 'approval.resolved'; token: string; threadId: string }
+  | { type: 'submission.blocked'; threadId: string | null; pluginId: string | null; message: string | null }
+) & { readonly cursor: string };
+export interface EventRead { cursor?: string; limit?: number; threadId?: string; waitMs?: number }
+export interface EventBatch { events: DesktopEvent[]; cursor: string; gap: boolean }
+export interface SubmissionDraft { readonly threadId: string; readonly text: string; readonly contextSources: readonly string[]; readonly source: 'turn.start' }
+export interface SubmissionChange { text?: string; context?: { text: string; kind?: 'untrusted' | 'application' }[] }
+export type SubmissionInterceptor = (draft: SubmissionDraft, options: Readonly<{ signal: AbortSignal }>) => void | SubmissionChange | Promise<void | SubmissionChange>;
+export interface InterceptorOptions { id: string; priority?: number; timeoutMs?: number }
+export interface CallbackAccess { api: 1; symbol: string; ticket: string }
+/** Obtain a fresh getApi ticket through the corresponding declared capability.
+ * The ticket can be claimed once, within 15 seconds, by the same live generation.
+ * Callback registration requires main world; all data operations use Core RPC.
+ */
+export interface DesktopCallbackApi {
+  readonly api: 1;
+  registerPreSubmit(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: SubmissionInterceptor): () => void;
+  onEvent(owner: RendererContext, ticket: string, handler: (event: Readonly<DesktopEvent>) => void): () => void;
+}
+/** Convenience typing for an author's own Core RPC wrapper. No private transport. */
+export interface DesktopRead {
+  <M extends keyof ReadMethods>(method: M, params: ReadMethods[M]['params'], options?: RpcOptions): Promise<ReadMethods[M]['result']>;
+}
+export interface DesktopWrite {
+  <M extends keyof WriteMethods>(method: M, params: WriteMethods[M]['params'], options?: RpcOptions): Promise<WriteMethods[M]['result']>;
+}

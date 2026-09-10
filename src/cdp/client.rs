@@ -15,6 +15,7 @@ use super::framing::{FramingError, NulJsonDecoder, encode_json_frame};
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
+mod contexts;
 #[cfg(all(test, windows))]
 mod core_rpc_vm_tests;
 #[cfg(all(test, windows))]
@@ -23,6 +24,8 @@ mod host_attachment_vm_tests;
 mod host_renderer_vm_tests;
 #[cfg(all(test, windows))]
 mod m2_raw_vm_tests;
+#[cfg(all(test, windows))]
+mod main_world_vm_tests;
 mod raw_access;
 pub use raw_access::{BoundedCdpEvents, CdpEventFilter, QueuedCdpRequest};
 use raw_access::{BoundedEventSink, RawWritePermit};
@@ -182,6 +185,7 @@ struct State {
     next_event_registration_id: u64,
     activity_epoch: u64,
     sessions: HashMap<String, (String, Weak<AtomicBool>)>,
+    default_contexts: contexts::DefaultContexts,
 }
 
 struct Shared {
@@ -473,6 +477,7 @@ impl CdpClient {
                 next_event_registration_id: 2,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
@@ -757,11 +762,36 @@ impl CdpClient {
         state
             .sessions
             .retain(|_, (_, live)| live.strong_count() > 0);
+        let retained: Vec<_> = state.sessions.keys().cloned().collect();
+        state
+            .default_contexts
+            .retain(|session| retained.iter().any(|id| id == session));
+        state.default_contexts.forget(session_id);
         state.sessions.insert(
             session_id.to_owned(),
             (target_id.to_owned(), Arc::downgrade(&live)),
         );
         live
+    }
+
+    pub(crate) fn default_context(&self, session_id: &str, frame_id: &str) -> Option<u64> {
+        let state = self
+            .inner
+            .runtime
+            .shared
+            .state
+            .lock()
+            .expect("CDP state poisoned");
+        if state.terminal.is_some()
+            || !state
+                .sessions
+                .get(session_id)
+                .and_then(|(_, live)| live.upgrade())
+                .is_some_and(|live| live.load(Ordering::Acquire))
+        {
+            return None;
+        }
+        state.default_contexts.get(session_id, frame_id)
     }
 
     pub fn shutdown(&self) -> Result<(), ShutdownError> {
@@ -1217,6 +1247,18 @@ fn route_message(shared: &Arc<Shared>, message: Value) -> Result<(), ConnectionE
             }
         })
         .collect();
+    for session in &ended {
+        state.default_contexts.forget(session);
+    }
+    if event.session_id.as_ref().is_some_and(|id| {
+        state
+            .sessions
+            .get(id)
+            .and_then(|(_, live)| live.upgrade())
+            .is_some_and(|live| live.load(Ordering::Acquire))
+    }) {
+        state.default_contexts.observe(&event);
+    }
     state.events.retain(|sink| {
         (sink.session_id != event.session_id
             && !sink
@@ -1593,6 +1635,7 @@ mod tests {
                     next_event_registration_id: 1,
                     activity_epoch: 0,
                     sessions: HashMap::new(),
+                    default_contexts: contexts::DefaultContexts::default(),
                 }),
                 closed: Condvar::new(),
                 activity: Condvar::new(),
@@ -1689,6 +1732,7 @@ mod tests {
                 next_event_registration_id: 4,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
@@ -1741,6 +1785,7 @@ mod tests {
                 next_event_registration_id: 2,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),
@@ -1970,6 +2015,7 @@ mod tests {
                 next_event_registration_id: 1,
                 activity_epoch: 0,
                 sessions: HashMap::new(),
+                default_contexts: contexts::DefaultContexts::default(),
             }),
             closed: Condvar::new(),
             activity: Condvar::new(),

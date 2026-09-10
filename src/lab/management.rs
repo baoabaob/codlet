@@ -296,8 +296,13 @@ fn runtime_error(error: impl std::fmt::Display) -> LabError {
 }
 
 /// LOCALAPPDATA is set only on the launcher child. Verify its resolved identity
-/// before reusing the CLI; launch/status/doctor cannot enter this branch.
-pub(super) fn run_plugin_cli(root: &Path, arguments: &[OsString]) -> Result<(), LabError> {
+/// before reusing the explicitly scoped plugin/doctor CLI. Launch and global
+/// status cannot enter this branch; doctor keeps the same executable peer check.
+pub(super) fn run_scoped_cli(
+    root: &Path,
+    name: &OsStr,
+    arguments: &[OsString],
+) -> Result<(), LabError> {
     let _pins = super::pin_lab_ancestry(root, false)?;
     let _registry_pin = super::pin_plain_directory(&root.join("codlet"))?;
     let file = OpenOptions::new()
@@ -319,10 +324,10 @@ pub(super) fn run_plugin_cli(root: &Path, arguments: &[OsString]) -> Result<(), 
         RegistryScope::for_path(&default_registry_path().map_err(preflight)?).map_err(preflight)?;
     if actual.id() != expected.id() {
         return Err(preflight(
-            "plugin CLI environment does not select this lab registry; use the lab's Test-Plugins launcher",
+            "CLI environment does not select this lab registry; use the matching test-client launcher",
         ));
     }
-    let mut command = vec![OsStr::new("plugin").to_owned()];
+    let mut command = vec![name.to_owned()];
     command.extend_from_slice(arguments);
     crate::probe::run_cli(command.into_iter()).map_err(runtime_error)
 }

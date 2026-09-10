@@ -22,7 +22,21 @@ export interface RendererRpc {
   notify(capability: CapabilityDescriptor, method: string, params?: unknown): void;
   notify(method: string, params?: unknown): void;
   provide<P = unknown, R = unknown>(capability: CapabilityDescriptor & { scope: 'target' }, method: string, handler: (params: P, invocation: RendererInvocation) => R | Promise<R>): Readonly<{ ok: true }>;
+  /** Withdraw this owner's handlers; later provide() publishes it again. */
+  unavailable(capability: CapabilityDescriptor, reason: string): void;
   onNotification(handler: (message: unknown) => void): () => void;
 }
-export interface RendererContext { readonly pluginId: string; readonly version: string; readonly generation: number; readonly rpc: RendererRpc }
-export interface RendererPlugin { activate(context: RendererContext): void | Promise<void>; deactivate(): void | Promise<void> }
+export interface RendererContext {
+  readonly pluginId: string;
+  readonly version: string;
+  readonly generation: number;
+  readonly world: 'isolated' | 'main';
+  readonly rpc: RendererRpc;
+  /** At most 64 synchronous cleanup callbacks; run once before deactivate or forced retirement. */
+  onDeactivate(listener: () => void): () => void;
+  /** Bounded, source-attributed observations for runtime inspection/doctor; no authority change. */
+  reportDiagnostic(diagnostic: { code: string; message: string; level?: 'info' | 'error' }): void;
+}
+/** A plugin that cannot undo a page patch must report this on unload. */
+export interface RendererReloadRequired { readonly reloadRequired: true; readonly reason: string }
+export interface RendererPlugin { activate(context: RendererContext): void | Promise<void>; deactivate(): void | RendererReloadRequired | Promise<void | RendererReloadRequired> }

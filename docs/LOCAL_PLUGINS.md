@@ -45,9 +45,11 @@ permissions are:
 | Bounded system query | `host.system` | None |
 | Public lifecycle management | `runtime.manage` | Declared `codlet.runtime.manage@1` requirement |
 | Isolated renderer DOM | `ui.dom` | Its renderer world |
+| Managed main-world renderer | `ui.mainWorld` | Page default world; explicit manifest and grant |
 
-Combined packages may declare permissions used by either entry. Main-world
-renderer execution and `ui.mainWorld` are outside this implementation. Extra
+Combined packages may declare permissions used by either entry. Managed main-world
+execution uses `renderer.world: "main"`; see [M3/M4 authoring](DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md)
+for shared-page trust, lifecycle and cleanup limits. Extra
 grants are stored only when explicitly provided, and do not become manifest
 declarations. Empty broker policy grants no directory, origin or child program.
 See [OS broker limits and authorization](OS_BROKER_2026-09-10.md).
