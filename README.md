@@ -14,6 +14,12 @@ out of Core. [Focused checks and isolated live acceptance](docs/M3_M4_ACCEPTANCE
 passed on package `26.903.8094.0`; the native task creation/resume configuration
 issue and the existing M0/M1 production gates remain open.
 
+The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) places reusable
+UI helpers and Desktop API extensions in M3.1/M4.1, local/GitHub plugin import and
+simple in-client management in M5, and platform preparation alongside current work.
+GitHub Topics and community directories handle discovery; a separate Codlet Market
+is outside the current plan. These additions are planned, not implemented features.
+
 The current M2 developer contract uses `host.entry: "dist/host.js"`. Both entry kinds export CommonJS
 `activate(context)` and `deactivate()`; TypeScript is compiled to JS before loading.
 Codlet supplies the pinned JS runtime and handles JSONL internally. Arbitrary

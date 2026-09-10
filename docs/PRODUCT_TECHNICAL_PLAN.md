@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.29；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.30；日期：2026-09-11；平台：Windows-first，跨平台准备已纳入后续计划；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,9 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。M2 在统一 JS/TS、公开 host/CDP、watch、执行诊断与组合包生命周期上，继续交付通用双向 RPC、Runtime/Target scope、独立 OS broker、范围授权与撤销、公开运行时管理和单 Host 自建页面通信。完整 M2 的逐条验收和候选核验见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)与第 16.14 节；M3/M4 的 Codex 私有 UI/backend 便利能力仍属后续。
+当前实现已交付运行中管理、watch、完整 M2 公开原语，以及 M3/M4 的托管主世界、可选 Desktop Adapter、同一 Desktop 会话读写/事件/审批和提交拦截。证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)及 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。当前构建的原生新建/冷恢复兼容问题，以及 M0/M1 重复运行、官方入口与 crash 发布门禁仍保留。
+
+下一阶段先收尾日常兼容性，再推进 M3.1/M4.1 的插件 UI 和 Desktop API 扩展，以及 M5 的插件导入与交付。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market；P0 跨平台准备同步纳入设计。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -19,14 +21,14 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 ## 2. 已确认的产品决策
 
 1. 修改 Codex 原生界面是核心需求，不是可选附属功能。
-2. Windows 是首发平台；macOS/Linux 不进入首版范围。
+2. Windows 是当前首发基线；跨平台适配纳入后续计划，先检查平台边界，再按 OS/架构分别移植和验收，不把 Windows 通过记录扩写成其他平台已支持。
 3. Codex 只有通过 Codlet 专用启动器才应进入扩展模式；官方入口启动原版纯净 Codex 是产品目标，但当前受 `DEFECT-001` 的 Electron 单主实例限制。
 4. Codlet 不监视、不提示、不接管通过官方入口启动的 Codex，也不在后台等待或劫持后续启动。
 5. Codlet 安装、升级和卸载均不关闭或重启 Codex，不修改或捆绑官方安装包、快捷方式、协议关联、配置与用户数据。
 6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。同包双入口共享 generation/生命周期，Core RPC 支持 Host↔Host、Host↔renderer 的声明依赖、Runtime/Target scope 与取消。backend-session/thread 的业务映射由后续 adapter 提供，不进入 Core。
    两种入口属于统一的 JS/TS 目录包格式：`codlet.json`、构建后的 JS 入口、资源文件。TS 在构建时编译为 JS；host JS 在 Codlet 统一管理的 JS 进程执行，renderer JS 在页面执行。首版不接受任意 `.exe` 入口，不支持原生 Node 扩展，不提供运行时 TS 转译。
 7. renderer 插件允许分级获得 isolated DOM、main world 和 raw CDP 能力。
-8. 首版只运行用户明确授信的本地插件；不宣称提供安全沙箱。
+8. 插件以用户明确授信的本地内容执行；M5 增加用户主动从 GitHub 发布包导入至本地的流程，不宣称提供安全沙箱。
 9. 不修改 `app.asar`，不修改官方安装目录，不复制或再分发 Codex，不做 DLL 注入。
 10. Codex 内的管理 GUI 由第一方 Codlet 插件提供，不写死在 renderer bootstrap 中。
 11. 第一方插件默认启用但可完全禁用；禁用后不留下按钮、面板或观察器，CLI 始终是可恢复的控制平面。
@@ -35,6 +37,8 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 14. 托管 renderer 运行支持、Codex UI Adapter 和 Codex Backend Adapter 均是可选官方实现。第一方使用的底层接口同样向第三方开放；高权限来自显式 grant，不来自隐藏 provider ID 或特权加载路径。可选性不要求立即拆成独立进程、包或动态插件。
 15. 插件能力分为四层：L1 `renderer.dom`、L2 `renderer.main-world`、L3 `cdp.*` / `host.*`、L4 `codex.backend.*`。层级描述语义和风险，不强制规定 adapter 的内部实现路径。
 16. 官方 backend adapter 及任何声称操作当前 Desktop 会话的实现，必须证明同一连接与 thread/turn/item 事实源；独立 App Server 不能冒充透明 fallback。这是该语义承诺的正确性条件，Core 本身不依赖 App Server，也不把官方 adapter 作为用户插件的唯一 backend 通路。
+17. Codlet 内置简单的插件导入与管理；GitHub 负责源码和版本发布，统一 Topic 与社区目录负责发现。当前不需要独立 Codlet Market。
+18. 社区生态工作补充分发、发现、兼容性说明和维护规则，继续沿用现有内核、授权记录与生命周期设计。
 
 ## 3. 产品定位
 
@@ -47,7 +51,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 ### 3.2 核心场景
 
 1. 用户主动从 Codlet 入口启动 Codex，扩展自动加载。
-2. 开发者将一个本地插件目录加入 Codlet，保存代码后插件热重载。
+2. 开发者将本地插件目录加入 Codlet，并可显式开启 watch；用户也可在后续 M5 中从 GitHub 发布包导入预览、授信和安装。
 3. 插件增加侧栏、状态区、命令入口或修改现有交互。
 4. 高级插件可在用户明确授权的底层原语范围内进入 main world，自行适配 React 或页面实际可达的 `electronBridge` 接口；不要求官方 adapter，也不构成 Electron main/Node 任意执行承诺。
 5. 单个插件崩溃或启动失败时，Runtime Host 和 CDP pipe 保持运行，Codex 本身继续运行，Codlet 给出明确诊断。
@@ -57,7 +61,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 
 - 替换官方 provider 协议、把独立 App Server 冒充为当前 Desktop backend；
 - 会话数据库、备份、导出和同步；
-- 插件市场、评分、自动远程安装；
+- 独立 Codlet Market、评分/交易系统、未经用户确认的远程安装或自动更新；
 - Tauri/Electron 管理器 GUI；
 - Electron main process 任意执行；
 - 修改官方签名包、ASAR patch 或原生进程注入；
@@ -337,6 +341,10 @@ CDP JSON 消息以单个 NUL 字节分帧，不使用换行或 WebSocket。
 
 如果后续受支持的实际 build 无法通过 pipe smoke test，项目暂停该 build 的架构开发并单独评审 transport；不提前实现双路径 fallback。
 
+### 6.5 跨平台准备
+
+P0 立即盘点客户端发现、进程/pipe、authenticated 本地 IPC、Host 资源回收、路径/锁/原子写入、Node 产物与打包中的系统依赖。通用契约与生命周期保持共享，现有 Windows 行为作为平台接口的第一份实现。P1 按官方客户端可用性、启动机制与测试环境逐个平台完成纵切和验收；具体范围见 [跨平台工作包](NEXT_DEVELOPMENT_PLAN_2026-09-11.md#p0--p1跨操作系统适配)。
+
 ## 7. 插件模型
 
 ### 7.1 目录结构
@@ -382,7 +390,7 @@ M2a 的 schema 1 manifest 已支持独立 host JS 入口，不需要 renderer �
 }
 ```
 
-首版有 capability dependency graph，但没有包依赖、包解析、远程来源或 semver 求解。插件不能按另一个插件的发行版本建立依赖，只能要求明确的 capability API。
+当前实现已有 capability dependency graph，本地 loader 不处理远程来源，也没有包依赖或 semver 求解。M5 的 GitHub 导入解析具体发布资产并落为本地安装内容；capability 依赖模型继续沿用。插件包版本与 capability API 版本分别记录，不因新增来源引入另一套依赖求解器。
 
 JS/TS 的统一限定不缩小公开 CDP 请求与事件原语。host JS 可以自行注入、恢复、适配或建设便利层；不要求官方 adapter。语言的图灵完备性与执行器实际开放的系统接口是两个问题，Core 仍需提供可达原语。Node host 的普通用户权限和可直接文件/网络/进程访问不构成安全沙箱；禁用原生 Node 扩展也不是任意副作用可回滚的证明。分发、TS 构建与旧格式迁移见 [统一 JS 运行时合约](JS_PLUGIN_RUNTIME_2026-09-09.md)。
 
@@ -432,25 +440,37 @@ host 半：
 - 自我禁用前明确说明“禁用后只能通过 CLI 重新启用”；确认后先提交配置，再执行 deactivate；
 - deactivate 必须移除按钮、面板、样式、listener 和 observer，不能残留不可见后台逻辑。
 
-第一版面板只承担运行时状态、插件列表、启用/禁用、重载、权限查看和诊断入口，不演变为独立应用商店。
+现有面板承担运行时状态、插件列表、启用/禁用、重载和诊断。M5 在同一第一方 GUI 内提供“插件”页面，补齐本地/GitHub 导入、权限查看/撤销、移除与浏览社区入口。所有动作复用公开管理接口和既有生命周期，保持 CLI 可恢复。
 
 ### 7.6 第一方 adapter codlets
 
 `codex.ui.adapter`：
 
-- 持有 build-specific DOM selector、React 和 preload bridge 探测；
+- 持有 L1 的 build-specific DOM selector、挂载与原生外观映射；M3.1 扩展语义外观与经过验证的挂载位置；
 - L1 纵切只提供共享 DOM mount token，不向消费者传递 DOM node 或 JS function；
 - adapter 在共享 DOM 中创建 target/document-local mount marker，consumer 在自己的 isolated world 中按 token 解析；
 - Codex 重建 header 时 adapter 重建 marker，consumer 重新挂载自身 UI；
 - consumer 先停用，adapter 后停用，确保资源回收顺序与 capability graph 一致。
 
-`codex.backend.adapter`：
+`codex.desktop.adapter`（当前承载 L2 / L4 的可选目录包）：
 
-- 通过 Desktop preload 暴露的 app-host `MessagePort` 复用 Desktop 已维护的 App Server connection；
-- 将私有 envelope 映射为版本化的 `codex.backend.thread/turn/item/skill/model/provider/approval` capability；
+- 复用已有 app-host 服务与 Native request client；当前构建的普通 App Server 请求经原 client、preload 和 Electron main 进入同一个 Desktop connection；
+- 将私有 envelope 映射为版本化的 `codex.backend.read/write/events` 方法，以及 `codex.ui.preSubmit` 和兼容性诊断；
 - 官方语义 API 不把 `window.electronBridge`、内部 manager、request id 或 host routing object 当成稳定公开类型；用户仍可经公开底层原语自行适配，不由 Core 设置官方独占通路；
 - Desktop build 未通过 schema、身份、事件流和写入门禁时，该 adapter 拒绝注册相应 L4 provider；不阻断不依赖它的 raw 插件；
 - 不启动独立 App Server 作为静默 fallback。
+
+### 7.7 插件导入、发现与维护
+
+| 部分 | 职责 |
+| --- | --- |
+| Codlet | 导入、显示来源/版本/权限/兼容性、启停、重载、移除及显式更新/回退 |
+| GitHub | 作者维护源码、发布构建包与变更记录，通过统一 Topic 帮助发现 |
+| 社区目录 | 插件介绍、分类、推荐、已测兼容性、维护状态，以及导入链接或 CLI 指令 |
+
+“插件”页面提供“从本地文件夹导入”“从 GitHub 链接导入”“浏览社区插件”。GitHub 来源先定位具体 release/资产，再展示来源、版本、兼容性和权限，确认后导入本地目录，按用户选择进入现有启用流程。社区入口使用同一导入通路；具体 CLI 语法及深链接协议在实施阶段冻结，不把尚未实现的命令当作现有能力。
+
+开发目录引用原路径，移除注册时保留作者文件；托管安装目录独立记录来源、版本、内容摘要与所有权。更新候选准备完成后，沿用授信检查、generation 替换、receipt 查询和失败补偿。发布包规范、兼容性元数据、维护/失效/移交规则见 [后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 
 ## 8. 可选托管 Renderer bridge
 
@@ -760,16 +780,30 @@ L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 th
 - 官方 adapter 区分 input rewrite、context injection、presentation transform 和 authoritative history mutation；未证实的 assistant item rewrite 不作为已支持能力开放；
 - build/schema/身份/事件流任一门禁失败时，该 adapter 的相关 L4 provider 不注册且不回退到独立 App Server；不依赖它的 raw 插件仍可执行自己的探测与激活。
 
+### M3.1 / M4.1：插件 UI 与 Desktop API 扩展
+
+这是 M3/M4 候选后的功能迭代，排在下一轮开发中。M3.1 将已验证的控件、设置 surface、外观角色及少量挂载位置提供给普通插件；M4.1 优先补齐当前选中任务事件、任务定位/打开/恢复和拦截诊断，再按证据扩展更丰富输入及 server-request。
+
+验收采用管理 GUI 和一个独立用户插件，验证相同公开 API、多窗口、主题/缩放/键盘、卸载/重载和缺失能力。私有映射继续留在可选 Adapter；接口扩展不改变既有内核与生命周期。首批范围完成后即可支持 M5 管理页，完整 UI 框架不作为 M5 的前置条件。
+
 ### M5：Private Alpha 门禁
+
+交付顺序分为 M5a 本地插件导入与管理、M5b GitHub 导入与社区发布规范、M5c 安装交付与发布验收；M3.1 的 UI helpers 可与 M5a 的管理页需求交替推进。
 
 验收条件：
 
 - 用户级安装、升级和卸载可重复通过，发布产物带测试签名；
+- “插件”页面的本地/GitHub 导入、来源/版本/权限预览、启停/重载/移除与 CLI 共用现有管理机制；
+- GitHub 发布包、兼容性元数据与社区维护规则可供独立作者使用，社区入口只导向相同的导入流程；
 - 安装包不包含 Codex 文件，不修改官方包、官方入口、协议关联、配置或用户数据；
-- 安装、升级和卸载期间不检测、关闭或重启 Codex；
+- Codlet 运行时安装、升级和卸载期间不检测、关闭或重启 Codex；插件更新仍由当前会话的管理 receipt 与生命周期协调；
 - 关闭 `DEFECT-001`：官方入口与独立 Codlet 入口并存，官方入口连续启动均保持原版纯净行为；
 - 日志、诊断包、safe mode 和故障恢复文档能定位所有已知启动与插件故障；
 - 第 14.3 节实机门禁全部通过。
+
+### 跨平台准备与移植：P0 / P1
+
+P0 与当前开发同步，建立 Windows x64/arm64、macOS、Linux 的平台差异和验收矩阵。P1 在 P0 证据和 Windows M5 交付基础上逐个平台打通启动、Host/renderer、导入/管理、Desktop 语义与退出/回收。支持状态按 OS/架构/官方构建分别发布，未验证的平台不标为已支持；具体先后取决于官方客户端与可用测试环境。
 
 ### M6：Public Beta 门禁
 
@@ -782,6 +816,8 @@ L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 th
 - 公开品牌、包命名空间、域名与商标风险完成核验并冻结。
 
 ## 16. 当前开发工作包
+
+当前执行队列以 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md) 为准；下文保留此前各轮工作包与实现历史。
 
 2026-09-07 的审查与任务拆分见 [REVIEW_AND_EXECUTION_2026-09-07.md](REVIEW_AND_EXECUTION_2026-09-07.md)。保留既有 capability kernel 与 adapter 边界，按以下依赖关系继续推进：
 
@@ -999,7 +1035,7 @@ backend adapter 与完整 M2 仍为后续工作。
 | provider/consumer 卸载顺序错误 | consumer 使用陈旧 endpoint 或残留 DOM | capability graph 决定激活与反向停用；generation/epoch 拒绝旧调用 |
 | main-world/raw CDP 插件冲突 | 页面异常或数据暴露 | 分级授权、明确授信、插件级诊断、可停用启动 |
 | Codlet 被安全软件视为注入工具 | 安装/运行受阻 | 不改二进制、不注入 DLL、使用 pipe、代码签名、公开源码 |
-| 插件生态过早膨胀 | 重演 Codex++ 的复杂度 | 首版仅本地目录、无市场、无远程更新、无独立管理器 GUI |
+| 插件生态过早膨胀 | 运行时承担不必要的社区平台职责 | Codlet 负责显式导入与管理，GitHub/社区负责发现和维护信息；沿用现有内核，当前不建独立 Market 或自动更新服务 |
 | `Codlet` 品牌撞名 | 搜索、包名、域名和法律风险 | 仅作开发阶段暂定名；Public Beta 前完成更名或正式风险决策 |
 
 ## 18. 开源与许可证

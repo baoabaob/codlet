@@ -1,8 +1,11 @@
 # Native UI Adapter Capabilities
 
-Status: proposal, 2026-09-07. This is the follow-on design requested after the
-first GUI revision exposed the limits of matching only menu placement and colors.
-Except where explicitly marked current, the APIs below are not implemented.
+Status: proposal, updated 2026-09-11. The reusable contracts below are scheduled
+for M3.1, alongside the first needs of the M5 plugin-management page. Existing
+GUI/appearance work and the M3/M4 Desktop Adapter candidate are already delivered;
+the proposed helpers and surfaces below remain unimplemented unless marked current.
+See the [next development plan](NEXT_DEVELOPMENT_PLAN_2026-09-11.md) for the
+UI, Desktop API, import, community and platform work packages.
 
 ## Objective
 
@@ -120,6 +123,11 @@ the 14px baseline. No new capability, global theme writer or control factory is 
 
 ## Delivery Sequence
 
+M3.1 starts with the roles needed by the plugin-management page and one ordinary
+UI plugin. First-party and third-party consumers use the same grants, ownership
+and cleanup APIs. M5a can consume that first subset while later UI capabilities
+continue independently; a complete component framework is not a release prerequisite.
+
 1. Correct the current GUI against the installed settings components. Record a
    component-to-owned-implementation comparison, including measurements and
    interaction differences. Preserve existing lifecycle and RPC regressions.
@@ -140,10 +148,10 @@ keyboard-only operation, focus return, theme changes, toolbar rebuild and unload
 Screenshots and manual comparison are required for visual acceptance; VM behavior
 tests do not establish visual agreement.
 
-The current in-app browser policy rejected the local GUI preview URL. That check
-remains incomplete and must not be bypassed or replaced with a claimed pass. The
-static preview is still deliverable for direct user inspection. Testing the live
-client belongs to the existing explicit real-Codex gate.
+The 2026-09-07 browser preview attempt was rejected by the tool policy; that
+individual attempt remains a failed attempt. Later existing-GUI acceptance is
+recorded in the [2026-09-08 repair and retest](GUI_REPAIR_2026-09-08.md). The new
+M3.1 helpers and surfaces still require their own visual and interaction acceptance.
 
 Related: [adapter evidence](CODEX_UI_ADAPTER_EVIDENCE.md),
 [product plan](PRODUCT_TECHNICAL_PLAN.md), and
