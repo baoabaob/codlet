@@ -274,6 +274,33 @@ test('activation mounts before list; opening uses the current Host Active snapsh
     f.plugin.deactivate();
 });
 
+test('GUI self reload submits once and tolerates retiring before the submit reply', async () => {
+    const f = fixture();
+    const operation = { operation_id: 'fixture-self-reload', request: { action: 'reload', plugin_id: 'codlet-gui' } };
+    f.override('prepare', args => {
+        assert.deepEqual(JSON.parse(JSON.stringify(args)), operation.request);
+        return { status: 'prepared', operation };
+    });
+    f.override('submit', args => {
+        assert.equal(args.operationId, operation.operation_id);
+        f.plugin.deactivate();
+        return { status: 'queued', operation };
+    });
+    await f.plugin.activate(f.context);
+    f.setActive(true);
+    await f.open();
+    await f.control('Reload Codlet GUI').emit('click');
+    assert.equal(f.panel(), undefined);
+    assert.equal(f.calls.filter(method => method === 'prepare').length, 1);
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.equal(f.calls.includes('operation'), false);
+    assert.equal(f.calls.includes('disableSelf'), false);
+    await f.plugin.activate({ ...f.context, generation: 2 });
+    await f.open();
+    assert.equal(f.control('Reload Codlet GUI').disabled, false);
+    f.plugin.deactivate();
+});
+
 test('refresh keeps populated rows visible and only replaces changed plugins', async () => {
     const f = fixture();
     let plugins = [

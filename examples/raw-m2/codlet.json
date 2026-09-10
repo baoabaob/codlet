@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "id": "example.raw-m2",
+  "name": "M2 Raw Host Demo",
   "version": "1.0.0",
   "host": {
     "entry": "host.js"

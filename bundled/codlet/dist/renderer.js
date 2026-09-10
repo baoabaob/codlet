@@ -475,6 +475,18 @@ module.exports = (() => {
         focus(actionOrigin?.isConnected ? actionOrigin : refreshButton);
     }
 
+    function addLoadControl(context, plugin, controls, loadAction) {
+        const name = pluginName(plugin);
+        const load = loadAction === 'reload'
+            ? iconButton(controls, 'refresh', `Reload ${name}${plugin.disableDependents?.length ? ' and dependent plugins' : ''}`)
+            : addText(controls, 'button', '', 'Start');
+        load.type = 'button';
+        load.setAttribute('aria-label', `${loadAction === 'reload' ? 'Reload' : 'Start'} ${name}`);
+        load.addEventListener('click', () => managePlugin(context, plugin.id, loadAction));
+        mutationControls.add(load);
+        load.disabled = pendingOperation !== null;
+    }
+
     function createPluginRow(context, plugin) {
         const execution = plugin.execution?.kind === 'host' ? plugin.execution : null;
         const executionState = execution?.state === 'active' && execution.rendererActive === false ? 'Waiting for renderer'
@@ -514,6 +526,7 @@ module.exports = (() => {
         if (plugin.id === context.pluginId && plugin.active === true && plugin.enabled === true) {
             const controls = addText(row, 'div', 'codlet-plugin-actions', '');
             addText(controls, 'div', 'codlet-plugin-state', state);
+            addLoadControl(context, plugin, controls, 'reload');
             const toggle = document.createElement('input');
             toggle.className = 'codlet-toggle';
             toggle.type = 'checkbox';
@@ -542,14 +555,7 @@ module.exports = (() => {
                 }
                 if (plugin.enabled === true) {
                     const loadAction = plugin.loaded === true || Number.isSafeInteger(plugin.generation) ? 'reload' : 'enable';
-                    const load = loadAction === 'reload'
-                        ? iconButton(controls, 'refresh', `Reload ${name}${plugin.disableDependents?.length ? ' and dependent plugins' : ''}`)
-                        : addText(controls, 'button', '', 'Start');
-                    load.type = 'button';
-                    load.setAttribute('aria-label', `${loadAction === 'reload' ? 'Reload' : 'Start'} ${name}`);
-                    load.addEventListener('click', () => managePlugin(context, plugin.id, loadAction));
-                    mutationControls.add(load);
-                    load.disabled = pendingOperation !== null;
+                    addLoadControl(context, plugin, controls, loadAction);
                 }
                 const toggle = document.createElement('input');
                 toggle.className = 'codlet-toggle';
