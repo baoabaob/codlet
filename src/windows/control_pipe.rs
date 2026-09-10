@@ -49,6 +49,15 @@ impl ControlServer {
         Self::bind(lease, Some(&discovery), publisher)
     }
 
+    /// An explicit isolated lab has no production discovery/status listener.
+    /// The normal executable/SID authentication still applies in both directions.
+    pub(crate) fn bind_isolated(
+        lease: RegistryScopeGuard,
+        publisher: StatusPublisher,
+    ) -> Result<Self, ControlPipeError> {
+        Self::bind(lease, None, publisher)
+    }
+
     fn bind(
         lease: RegistryScopeGuard,
         discovery: Option<&OsStr>,

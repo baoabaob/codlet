@@ -55,6 +55,11 @@ English out-of-usage card using `ui.dom`. It restores the card when disabled and
 messages visible. Its [browser preview](scripts/preview-hide-usage-banner.html) uses the actual
 plugin source against a local fixture based on the installed build's markup.
 
+The [independent manual-test client](docs/ISOLATED_CLIENT_UPDATE_2026-09-10.md)
+supports installed build `26.903.8094.0`, reuses the original test login profile,
+and runs the current M2 local-plugin runtime. Its separate start/stop/plugin
+launchers target the test registry and dedicated backend.
+
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
 The authorized [isolated-client follow-up](docs/ISOLATED_CLIENT_REPAIR_2026-09-08.md) fixed the initial Shell timeout and resident-client shutdown failures. Two fresh Dev/WebSocket runs passed automatic startup checks in about 1.9 seconds, activated both bundled renderer plugins, and exited normally in about one second. The [experimental lab harness](docs/ISOLATED_CLIENT_TESTING.md) prepares the official package's Node runtime files in its own fresh cache and checks startup before loading plugins. Those runs did not exercise login or live GUI interactions; ordinary `codlet launch` keeps its conflict refusal.

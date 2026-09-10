@@ -15,8 +15,6 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 
 use crate::cdp::{CdpClient, TargetChange, TargetController, TargetSession};
-use crate::plugins::PluginRegistry;
-use crate::renderer::RendererRuntime;
 use crate::windows::environment::{ChildEnvironment, EnvironmentError};
 use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage,
@@ -39,7 +37,7 @@ const DISCOVERY_BUDGET: Duration = Duration::from_secs(15);
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const EXPERIMENT_FLAG: &str = "--experimental-isolated-client";
 const LAB_SHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
-const AUDITED_PACKAGE_VERSION: &str = "26.901.6511.0";
+const AUDITED_PACKAGE_VERSION: &str = "26.903.8094.0";
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
 const LAB_DIRECTORIES: &[&str] = &[
@@ -62,7 +60,7 @@ const LAB_DIRECTORIES: &[&str] = &[
 #[derive(Debug, Error)]
 pub enum LabError {
     #[error(
-        "use `codlet-lab --experimental-isolated-client --root <absolute-lab-directory> --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:<port> [--resume-from <closed-run-report>] [--startup-trace]`; then stdin start or quit"
+        "use `codlet-lab --experimental-isolated-client --root <absolute-lab-directory> --expected-package-version 26.903.8094.0 --app-server-url ws://127.0.0.1:<port> [--resume-from <closed-run-report>] [--startup-trace]`; then stdin start or quit; the lab launcher also supports `--experimental-isolated-client --root <root> plugin <command>`"
     )]
     Usage,
     #[error("preflightBlocked: {0}")]
@@ -165,7 +163,15 @@ impl LabOptions {
 }
 
 pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError> {
-    let options = LabOptions::parse(arguments)?;
+    let arguments: Vec<_> = arguments.collect();
+    if let [flag, root_flag, root, command, tail @ ..] = arguments.as_slice()
+        && flag == OsStr::new(EXPERIMENT_FLAG)
+        && root_flag == OsStr::new("--root")
+        && command == OsStr::new("plugin")
+    {
+        return management::run_plugin_cli(Path::new(root), tail);
+    }
+    let options = LabOptions::parse(arguments.into_iter())?;
     // Read-only package/version/executable preflight precedes any lab file creation.
     let package = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)
         .map_err(|error| LabError::Preflight(error.to_string()))?;
@@ -197,7 +203,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     let resources = package.install_location.join("app/resources");
     let local_data = root.path.join("home/AppData/Local");
     let runtime_seed = if root.resume_evidence.is_some() {
-        runtime_seed::RuntimeSeed::reuse(&resources, &local_data)?
+        runtime_seed::RuntimeSeed::resume(&resources, &local_data)?
     } else {
         runtime_seed::RuntimeSeed::prepare(&resources, &local_data)?
     };
@@ -205,10 +211,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         "runtime_assets_prepared",
         json!({"runtime": runtime_seed, "child_created": false}),
     );
-    let registry = PluginRegistry::load(root.path.join("codlet/config.json"))
-        .map_err(|error| LabError::Preflight(error.to_string()))?;
-    let renderer = RendererRuntime::bundled(registry)
-        .map_err(|error| LabError::Preflight(error.to_string()))?;
+    let runtime = management::LabRuntime::prepare(root.path.join("codlet/config.json"))?;
     let environment = lab_environment(
         &root,
         options
@@ -226,7 +229,10 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             "experimental": true, "isolation_is_not_a_security_boundary": true,
             "gui_mount_verified": false,
             "control": "start after coordinator verifies the dedicated backend; quit cancels before start or requests the owned application's quit bridge afterward; EOF keeps Host alive",
-            "plugin_control": "after verified startup, stdin accepts plugin enable|disable|reload <bundled-id>; uses the same lifecycle owner without binding production control IPC",
+            "plugin_control": "after verified startup, stdin or the matching codlet-lab executable can manage bundled and trusted local plugins through this lab's registry scope; production discovery/status are not bound",
+            "plugin_registry": runtime.registry_path(),
+            "plugin_registry_scope": runtime.registry_scope(),
+            "plugin_executors": ["renderer", "host"],
             "shell": LAB_SHELL, "shell_profiles_checked_absent": shell_check.profiles_checked_absent,
             "shell_environment_probe": shell_check,
             "requested_app_server_url": options.app_server_url,
@@ -320,7 +326,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     hold_lab_child(
         child,
         client,
-        renderer,
+        runtime,
         input,
         startup,
         options.startup_trace,
@@ -460,7 +466,7 @@ fn require_reviewed_ipc_isolation(
 fn hold_lab_child(
     child: ChildProcess,
     connection: Option<(CdpClient, crate::cdp::CdpEventStream)>,
-    mut renderer: RendererRuntime,
+    mut runtime: management::LabRuntime,
     mut input: ControlInput,
     mut startup: StartupCheck,
     startup_trace: bool,
@@ -511,6 +517,9 @@ fn hold_lab_child(
                 "child_exited",
                 json!({"exit_code": exit_code, "residual_child_possible": false}),
             );
+            if !runtime.stop(reporter) {
+                failure.get_or_insert_with(|| "plugin runtime cleanup failed".into());
+            }
             if let Some(client) = &client {
                 match client.shutdown() {
                     Ok(()) => reporter.emit("cdp_workers_reaped", json!({})),
@@ -535,6 +544,7 @@ fn hold_lab_child(
                     reporter.emit("already_started", json!({"no_second_child": true}))
                 }
                 InputEvent::Quit if !quit.requested() => {
+                    runtime.stop(reporter);
                     request_own_child_quit(&mut quit, &sessions, "stdin", reporter);
                 }
                 InputEvent::Quit => {
@@ -546,7 +556,7 @@ fn hold_lab_child(
                     break;
                 }
                 InputEvent::Invalid => {
-                    reporter.emit("invalid_control", json!({"accepted": ["quit", "plugin enable <bundled-id>", "plugin disable <bundled-id>", "plugin reload <bundled-id>"]}))
+                    reporter.emit("invalid_control", json!({"accepted": ["quit", "plugin enable <id>", "plugin disable <id>", "plugin reload <id>"]}))
                 }
                 InputEvent::Eof => reporter.emit("control_eof", json!({"child_retained": true})),
                 InputEvent::Error(error) => reporter.emit(
@@ -563,6 +573,7 @@ fn hold_lab_child(
                         json!({"reason": reason.to_string(), "child_retained": true}),
                     );
                     cdp_closed_reported = true;
+                    runtime.stop(reporter);
                 }
             } else if !quit.requested() {
                 if let Some(controller) = targets.as_mut() {
@@ -572,7 +583,7 @@ fn hold_lab_child(
                                 let target_id = change.target_id().to_owned();
                                 update_sessions(&mut sessions, &change);
                                 if startup_verified
-                                    && let Err(error) = renderer.apply_target_change(change)
+                                    && let Err(error) = runtime.renderer.apply_target_change(change)
                                 {
                                     reporter.emit(
                                         "target_change_failed",
@@ -592,9 +603,11 @@ fn hold_lab_child(
                 }
                 if startup_verified
                     && !renderer_pump_failed
-                    && let Err(error) = renderer.pump_bindings()
+                    && let Err(error) = runtime.pump(&sessions, reporter)
                 {
                     renderer_pump_failed = true;
+                    failure.get_or_insert_with(|| error.to_string());
+                    runtime.stop(reporter);
                     reporter.emit(
                         "renderer_pump_failed",
                         json!({"error": error.to_string(), "child_retained": true}),
@@ -607,11 +620,18 @@ fn hold_lab_child(
                 Ok(true) => {
                     startup_verified = true;
                     reporter.emit("startup_verified", json!({"evidence": startup.evidence, "elapsed_ms": startup.elapsed_ms(), "gui_mount_verified": false}));
-                    for session in sessions.values().filter(|session| session.is_live()) {
-                        match renderer.attach(session) {
-                            Ok(report) => reporter.emit("renderer_attached", json!({"target_id": report.target_id, "plugin_count": report.plugin_count, "gui_mount_verified": false})),
-                            Err(error) => reporter.emit("renderer_attach_failed", json!({"target_id": session.target_id(), "error": error.to_string(), "child_retained": true})),
-                        }
+                    if let Some(client) = &client
+                        && let Err(error) = runtime.activate(client.clone(), &sessions, reporter)
+                    {
+                        failure = Some(error.to_string());
+                        reporter.emit("plugin_startup_failed", json!({"error": error.to_string()}));
+                        runtime.stop(reporter);
+                        request_own_child_quit(
+                            &mut quit,
+                            &sessions,
+                            "plugin_startup_failed",
+                            reporter,
+                        );
                     }
                 }
                 Ok(false) => {}
@@ -631,16 +651,17 @@ fn hold_lab_child(
                 );
             } else {
                 reporter.emit("plugin_control_requested", json!({"request": request}));
-                match management::execute(&mut renderer, request) {
-                    Ok(result) => reporter.emit(
-                        "plugin_control_result",
-                        json!({"result": result, "gui_mount_verified": false}),
+                match runtime.submit(request) {
+                    Ok(operation_id) => reporter.emit(
+                        "plugin_control_queued",
+                        json!({"operation_id": operation_id}),
                     ),
                     Err(error) => reporter.emit("plugin_control_failed", json!({"error": error})),
                 }
             }
         }
         if startup_trace && !quit.requested() && startup.elapsed_ms() >= 12000 {
+            runtime.stop(reporter);
             request_own_child_quit(&mut quit, &sessions, "startup_trace_complete", reporter);
         }
         if quit.take_timeout() {
@@ -649,7 +670,7 @@ fn hold_lab_child(
             });
             reporter.emit("quit_timed_out", json!({"budget_ms": 15000, "residual_child_possible": true, "child_retained": true, "no_retry": true}));
         }
-        let snapshot = renderer.status_snapshot();
+        let snapshot = runtime.renderer.status_snapshot();
         if previous_renderer.as_ref() != Some(&snapshot) {
             reporter.emit(
                 "renderer_snapshot",
@@ -657,7 +678,7 @@ fn hold_lab_child(
             );
             previous_renderer = Some(snapshot);
         }
-        for diagnostic in renderer.take_diagnostics() {
+        for diagnostic in runtime.renderer.take_diagnostics() {
             reporter.emit("renderer_diagnostic", json!({"target_id": diagnostic.target_id, "plugin_id": diagnostic.plugin_id, "error": diagnostic.message}));
         }
         // The exact ChildProcess handle is the only process lifecycle authority.
@@ -796,13 +817,9 @@ impl LabRoot {
         ];
         let registry: Value = serde_json::from_slice(&snapshots[1])
             .map_err(|_| LabError::Preflight("invalid resumed Codlet registry".into()))?;
-        if registry["schema"] != 2
-            || !registry["localPlugins"]
-                .as_object()
-                .is_some_and(|entries| entries.is_empty())
-        {
+        if registry["schema"] != 2 || !registry["localPlugins"].is_object() {
             return Err(LabError::Preflight(
-                "resumed lab permits only bundled Codlet plugins".into(),
+                "resumed lab requires a schema-2 Codlet registry".into(),
             ));
         }
         resume::check_optional_auth(&path.join("codex-home/auth.json"))?;
@@ -1108,6 +1125,8 @@ impl Drop for Reporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::PluginRegistry;
+    use crate::renderer::RendererRuntime;
     use crate::windows::packages::PackageVersion;
 
     #[test]
@@ -1315,12 +1334,12 @@ mod tests {
             install_location: PathBuf::from(r"C:\fixture"),
             version: PackageVersion {
                 major: 26,
-                minor: 901,
-                build: 6511,
+                minor: 903,
+                build: 8094,
                 revision: 0,
             },
         };
-        assert!(check_package_version(&package, "26.901.6511.0").is_ok());
+        assert!(check_package_version(&package, AUDITED_PACKAGE_VERSION).is_ok());
         assert!(check_package_version(&package, "26.901.6512.0").is_err());
         let error = require_reviewed_ipc_isolation(&package, None)
             .unwrap_err()

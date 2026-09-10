@@ -1,9 +1,24 @@
 # Isolated Client Test Harness
 
 `codlet-lab` is a separate, explicitly experimental binary for the source-audited
-Windows package `26.901.6511.0`. Ordinary `codlet launch` retains its existing
-process-conflict refusal and production status endpoint. The lab has no shared
-Host IPC endpoint, no executable override, and no arbitrary CDP/JavaScript command.
+Windows package `26.903.8094.0`. Ordinary `codlet launch` retains its existing
+process-conflict refusal and production status endpoint. The lab binds only its
+own registry control endpoint, authenticated to the same `codlet-lab.exe` and user.
+It never publishes the production discovery/status endpoint. There is no official
+Desktop executable override or arbitrary stdin CDP/JavaScript command.
+
+The [2026-09-10 update](ISOLATED_CLIENT_UPDATE_2026-09-10.md) adds the current M2
+Host/Renderer runtime, trusted local plugins and a reusable manual-test launcher.
+It reuses the existing test login in place and supports the specifically reviewed
+upgrade from `26.901.6511.0`. The user performs the feature/GUI tests.
+
+For that retained profile, build a separate client directory with
+`scripts/Build-IsolatedClient.ps1`. Its generated `Start-TestClient.cmd` starts a
+hidden coordinator and the visible official development client. `Stop-TestClient.cmd`
+sends the fixed quit request and stops the owned backend after Desktop exit.
+`Test-Plugins.cmd` provides the normal plugin subcommands against the test registry.
+The generated configuration pins the lab executable and official CLI hashes.
+Do not use ordinary `codlet launch` to start this test profile.
 
 The [2026-09-08 follow-up](ISOLATED_CLIENT_REPAIR_2026-09-08.md) repaired the initial
 Shell timeout and windowless resident-client failures. Two fresh official
@@ -30,7 +45,7 @@ root. Without `--resume-from`, the harness does not create missing ancestors or
 reuse a root from an earlier attempt. Example command shape (the port is an illustrative placeholder):
 
 ```text
-codlet-lab --experimental-isolated-client --root C:/Users/cccake/.cache/codlet-lab/new-attempt --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:49233
+codlet-lab --experimental-isolated-client --root C:/Users/cccake/.cache/codlet-lab/new-attempt --expected-package-version 26.903.8094.0 --app-server-url ws://127.0.0.1:49233
 ```
 
 `--app-server-url=ws://127.0.0.1:49233` is also accepted. The URL must use the literal
@@ -96,23 +111,43 @@ that exact helper's handle. EOF disables stdin input while retaining the Host
 and any existing child; it does not send a close request. A helper waiting before
 start after stdin EOF cannot be started through another transport.
 
-## Fixed stdin plugin control
+## Plugin control
 
 After the coordinator has verified startup, the lab accepts one fixed lifecycle
 line at a time:
 
 ```text
-plugin enable <bundled-id>
-plugin disable <bundled-id>
-plugin reload <bundled-id>
+plugin enable <id>
+plugin disable <id>
+plugin reload <id>
 ```
 
 These lines are parsed by the lab's bounded stdin input, with exactly three
 space-separated fields. They do not accept `--json`, extra arguments, paths,
-`eval`, or a local plugin id. `src/lab/management.rs` checks the id against this
-build's bundled catalog before forwarding the request; a local directory or
-arbitrary plugin is rejected. The lab does not bind the production runtime
-control pipe or expose the production CLI control endpoint.
+`eval`, or a directory path. IDs may name bundled or explicitly trusted local
+plugins. The same catalog, grants, Core RPC, OS brokers and `HostControl` used by
+M2 manage Renderer, Host and combined packages in this test instance.
+
+The generated `Test-Plugins` launcher accepts `list`, `add`, `remove`, `permissions`,
+`enable`, `disable`, `reload`, `revoke`, and `operation`, with the normal options.
+For example, from the generated client directory:
+
+```powershell
+.\Test-Plugins.ps1 list
+.\Test-Plugins.ps1 add C:\my-plugins\example --trust --grant ui.dom
+.\Test-Plugins.ps1 enable my.example --json
+.\Test-Plugins.ps1 reload my.example --json
+.\Test-Plugins.ps1 disable my.example --json
+```
+
+Only the CLI child receives `LOCALAPPDATA=<lab root>`, selecting
+`root/Codlet/config.json`; Windows resolves that to the existing lab registry.
+The native lab entrypoint checks the marker, plain ancestry and resolved registry
+identity before dispatch. It rejects a default/different registry. The Desktop,
+backend and Host JS keep their separate `root/home/AppData/Local` environment.
+Use the generated launcher so pipe authentication uses the exact same lab executable.
+Local `add` retains explicit `--trust` and permission/scope grants. A malformed or
+untrusted registration does not become an exception to the M2 permission checks.
 
 Before `start`, a plugin line emits the JSONL event
 `plugin_control_rejected` with `reason: "not_started"` and
@@ -123,11 +158,12 @@ repeated `start` emits `already_started` and never creates another child.
 
 The foreground lab loop selects at most one plugin request per round and defers
 additional input lines for a later round. The selected request is executed by
-the same `RendererRuntime.manage_plugin` lifecycle owner used by the renderer;
-the lab wrapper only restricts the request to bundled ids. A successful request
-emits `plugin_control_requested` followed by `plugin_control_result`; a lifecycle
-or validation error emits `plugin_control_failed`. The result carries the
-normal plugin control report, while failure carries its structured error.
+the same prepare/submit/operation broker used by public `runtime.manage@1` and
+the test CLI. The foreground `HostControl` drives the actual lifecycle. Stdin
+emits `plugin_control_requested`, then `plugin_control_queued` with a receipt,
+then `plugin_control_result` with the completed control report. Submission occurs
+once; later polls query only that receipt. Revoke and external grant changes
+retire the affected authority and dependency closure through the M2 owner.
 
 Every lab control result continues to report `gui_mount_verified: false`.
 `plugin_control_requested`, `plugin_control_result`, and
@@ -138,9 +174,8 @@ manual and one-shot; it does not add a file watcher or extend the lab with a
 `launch --watch` mode.
 
 The completed [2026-09-08 isolated manual-control acceptance](RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md)
-records the dependency rejection, reload closure, cross-window disable/enable,
-serial stdin commands, final generations, and owned-process cleanup. Its
-production-control and watcher exclusions remain in force.
+records the earlier bundled-only implementation. The 2026-09-10 update supersedes
+that local-plugin restriction. The production-control and watcher exclusions remain.
 
 ## Directories and fixed policy
 
@@ -157,7 +192,7 @@ application directories and gives each run its own environment/report subdirecto
 | `APPDATA`, `LOCALAPPDATA` | `root/home/AppData/Roaming`, `root/home/AppData/Local` |
 | `TEMP`, `TMP` | `root/temp` |
 | Working directory | `root/project` |
-| Codlet registry | `root/codlet/config.json`; bundled plugins only |
+| Codlet registry | `root/codlet/config.json`; bundled and trusted local plugins |
 | `BUILD_FLAVOR` | `dev` |
 | `CODEX_APP_SERVER_WS_URL` | The explicit audited loopback URL |
 | `CODEX_APP_SERVER_FORCE_CLI` | Absent, preventing a stdio override |
@@ -225,26 +260,32 @@ reuse a previously created lab profile. It cannot be combined with `--startup-tr
 The root, package version and dedicated backend are still explicit:
 
 ```text
-codlet-lab --experimental-isolated-client --root C:/Users/cccake/.cache/codlet-lab/known-attempt --expected-package-version 26.901.6511.0 --app-server-url ws://127.0.0.1:49233 --resume-from C:/Users/cccake/.cache/codlet-lab/known-attempt/logs/report.jsonl
+codlet-lab --experimental-isolated-client --root C:/Users/cccake/.cache/codlet-lab/known-attempt --expected-package-version 26.903.8094.0 --app-server-url ws://127.0.0.1:49233 --resume-from C:/Users/cccake/.cache/codlet-lab/known-attempt/logs/report.jsonl
 ```
 
 Resume acquires a read/write lease on the existing experimental marker and pins
 the plain root ancestry and lab directories. It accepts only `logs/report.jsonl`
 or `logs/run-*/report.jsonl` under that root. A complete schema-1 report must name
-the same root/package/Host and record either child exit 0 plus CDP worker cleanup,
+the same root/Host and a compatible package, and record either child exit 0 plus CDP worker cleanup,
 or `no_child_created` from a completed preparation-only attempt. The old child's
 PID and creation FILETIME are checked with a read-only process handle; a still-live
 matching process or an inaccessible identity blocks resume. A newer/ambiguous run
 report blocks selecting an older receipt. These are conservative local evidence
 checks, not authentication against another process running as the same user.
+Package compatibility accepts exact identity or the one reviewed x64 package
+transition `26.901.6511.0` to `26.903.8094.0`, with the original family/publisher.
+It is not a general version bypass or a downgrade path. Reports with explicitly
+failed plugin-runtime cleanup cannot authorize resume.
 
 No configuration, login state or history is copied or rewritten by resume.
 The two core configuration files are bounded, read as snapshots and checked again
-before Desktop creation; the Codlet catalog still permits only bundled plugins.
+before Desktop creation; the M2 catalog validates local registrations and grants.
 An optional `auth.json` receives metadata/link checks only, with no credential byte
 read. Plain files must have a single hard link. Runtime cache directories are
 revalidated under the existing size/depth budgets and all three marker hashes are
-compared to the official package; no fresh copy is made.
+compared to the official package. If the reviewed package uses a new cache key,
+only that new version directory is populated from official immutable resources;
+the prior runtime cache and test account files are retained.
 
 Each resumed run writes `logs/run-<time>-<pid>/report.jsonl` and a new
 `child-environment.json`. Use the **exact `environment_manifest` from this run's
@@ -278,6 +319,9 @@ sample time and `detail`. Key events are:
 | `startup_failed` | Startup evidence failed; no plugins loaded and one application-quit request begins. |
 | `target_discovery_failed`, `renderer_attach_failed` | Initial work failed; the same child/connection is retained for observation and quit. |
 | `renderer_snapshot` | Actual owner lifecycle records from the existing renderer manager. |
+| `plugin_runtime_ready` | M2 executors and the private registry control broker are ready. |
+| `host_plugin_diagnostic`, `host_plugin_stopped` | Native Host process lifecycle observations. |
+| `plugin_runtime_stopped` | Managed resources stopped; `clean` is required when present in a resumed report. |
 | `host_waiting` | Foreground Host is servicing this child and fixed control input. |
 | `quit_sent`, `quit_response_unavailable`, `quit_unavailable` | Result of the single fixed application-quit attempt; none proves process exit. |
 | `quit_timed_out` | The child remains alive after 15 seconds; retain its handle and report failed graceful exit. |
@@ -351,6 +395,10 @@ leases, latest receipts, live/recycled PID identities and stale startup logs. Th
 GUI repair's full Rust run passed 255 tests with one external real Codex gate
 ignored; all 63 Node tests passed. These automated tests launch no official Desktop
 or backend; real evidence is recorded separately above.
+
+Current lab-update checks are recorded separately in the
+[2026-09-10 update evidence](ISOLATED_CLIENT_UPDATE_2026-09-10.md). Historical full
+suite counts below describe their original commits, not this update's verification.
 
 The separate manual lifecycle-control batch historically reported 276 Rust tests
 passed with one real-start gate still ignored by default, and all 63 Node tests

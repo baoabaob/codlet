@@ -44,6 +44,28 @@ pub(super) struct RuntimeSeed {
 
 impl RuntimeSeed {
     pub fn prepare(resources: &Path, local_app_data: &Path) -> Result<Self, LabError> {
+        Self::prepare_inner(resources, local_app_data, false)
+    }
+
+    pub fn resume(resources: &Path, local_app_data: &Path) -> Result<Self, LabError> {
+        let key = cache_key(&markers(&resources.join("cua_node"))?)?;
+        let destination = local_app_data
+            .join("OpenAI/Codex/runtimes/cua_node")
+            .join(key);
+        match fs::symlink_metadata(destination) {
+            Ok(_) => Self::reuse(resources, local_app_data),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Self::prepare_inner(resources, local_app_data, true)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn prepare_inner(
+        resources: &Path,
+        local_app_data: &Path,
+        existing_ancestors: bool,
+    ) -> Result<Self, LabError> {
         let source = resources.join("cua_node");
         // Release the package-directory guard when preparation finishes. Only
         // fresh lab directories remain pinned during the Desktop's lifetime.
@@ -54,7 +76,14 @@ impl RuntimeSeed {
         let mut destination = local_app_data.to_owned();
         for part in ["OpenAI", "Codex", "runtimes", "cua_node", &cache_key] {
             destination.push(part);
-            fs::create_dir(&destination)?;
+            match fs::create_dir(&destination) {
+                Ok(()) => {}
+                Err(error)
+                    if existing_ancestors
+                        && part != cache_key
+                        && error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
             pins.push(pin_plain_directory(&destination)?);
         }
         let mut seed = Self {
@@ -425,5 +454,30 @@ mod tests {
             .unwrap();
         let destination = tempfile::tempdir().unwrap();
         assert!(RuntimeSeed::prepare(resources.path(), destination.path()).is_err());
+    }
+
+    #[test]
+    fn reviewed_upgrade_adds_a_new_cache_without_overwriting_the_previous_runtime() {
+        let resources = fixture();
+        let destination = tempfile::tempdir().unwrap();
+        let old = RuntimeSeed::prepare(resources.path(), destination.path()).unwrap();
+        let old_path = old.destination.clone();
+        drop(old);
+        fs::write(
+            resources.path().join("cua_node/bin/node.exe"),
+            b"updated node fixture",
+        )
+        .unwrap();
+        let new = RuntimeSeed::resume(resources.path(), destination.path()).unwrap();
+        assert!(!new.reused_existing);
+        assert_ne!(new.destination, old_path);
+        assert_eq!(
+            fs::read(old_path.join("bin/node.exe")).unwrap(),
+            b"node fixture"
+        );
+        drop(new);
+        let resumed = RuntimeSeed::resume(resources.path(), destination.path()).unwrap();
+        assert!(resumed.reused_existing);
+        assert_eq!(resumed.copied_files, 0);
     }
 }
