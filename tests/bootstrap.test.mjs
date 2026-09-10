@@ -30,7 +30,7 @@ const capability = Object.freeze({
 });
 
 function rpcFixture(timers = { setTimeout, clearTimeout }) {
-    const context = vm.createContext({ ...timers, AbortController, TextEncoder });
+    const context = vm.createContext({ ...timers, MessageChannel, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     const requests = [];
     context.test_binding = (payload) => requests.push(JSON.parse(payload));

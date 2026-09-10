@@ -64,6 +64,7 @@ module.exports = (() => {
     let pendingOperation = null;
     let operationTimer = null;
     const mutationControls = new Set();
+    const renderedPlugins = new Map();
 
     function waitForDocument() {
         if (document.documentElement && document.body) return Promise.resolve();
@@ -507,7 +508,12 @@ module.exports = (() => {
             addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
         }
         row.appendChild(copy);
+        const state = executionState ?? (plugin.active === true ? 'Active'
+            : plugin.validation?.status === 'failed' ? 'Unavailable'
+            : plugin.enabled === true ? 'Not active' : 'Disabled');
         if (plugin.id === context.pluginId && plugin.active === true && plugin.enabled === true) {
+            const controls = addText(row, 'div', 'codlet-plugin-actions', '');
+            addText(controls, 'div', 'codlet-plugin-state', state);
             const toggle = document.createElement('input');
             toggle.className = 'codlet-toggle';
             toggle.type = 'checkbox';
@@ -520,11 +526,8 @@ module.exports = (() => {
             });
             mutationControls.add(toggle);
             toggle.disabled = pendingOperation !== null;
-            row.appendChild(toggle);
+            controls.appendChild(toggle);
         } else {
-            const state = executionState ?? (plugin.active === true ? 'Active'
-                : plugin.validation?.status === 'failed' ? 'Unavailable'
-                : plugin.enabled === true ? 'Not active' : 'Disabled');
             if (plugin.registered !== false || plugin.loaded === true) {
                 const controls = addText(row, 'div', 'codlet-plugin-actions', '');
                 addText(controls, 'div', 'codlet-plugin-state', state);
@@ -569,6 +572,36 @@ module.exports = (() => {
         return row;
     }
 
+    function updatePluginRows(context, plugins) {
+        const focused = document.activeElement;
+        const focusLabel = pluginList.contains(focused) ? focused.getAttribute('aria-label') : null;
+        const ids = new Set(plugins.map(plugin => plugin.id));
+        for (const [id, entry] of renderedPlugins) {
+            if (!ids.has(id)) {
+                entry.row.remove();
+                renderedPlugins.delete(id);
+            }
+        }
+        plugins.forEach((plugin, index) => {
+            const snapshot = JSON.stringify(plugin);
+            let entry = renderedPlugins.get(plugin.id);
+            if (!entry || entry.snapshot !== snapshot) {
+                entry?.row.remove();
+                entry = { snapshot, row: createPluginRow(context, plugin) };
+                renderedPlugins.set(plugin.id, entry);
+            }
+            if (pluginList.children[index] !== entry.row) {
+                pluginList.insertBefore(entry.row, pluginList.children[index] ?? null);
+            }
+        });
+        for (const control of mutationControls) {
+            if (!control.isConnected) mutationControls.delete(control);
+        }
+        if (focusLabel && !focused.isConnected) {
+            focus([...mutationControls].find(control => control.getAttribute('aria-label') === focusLabel) ?? refreshButton);
+        }
+    }
+
     function operationMessage(message) {
         if (!panel?.open || panel.hidden || action !== 'idle') return;
         managementStatus.hidden = false;
@@ -589,7 +622,6 @@ module.exports = (() => {
         if (operationTimer !== null) clearTimeout(operationTimer);
         operationTimer = null;
         if (panel?.open && !panel.hidden) {
-            setMutationBusy(false);
             await refreshPlugins(context);
             if (epoch === lifecycle && pendingOperation === null) operationMessage(message);
         }
@@ -712,19 +744,21 @@ module.exports = (() => {
         const epoch = lifecycle;
         const request = ++panelRequest;
         hideTooltip();
-        if (pluginList.contains(document.activeElement)) focus(refreshButton);
-        pluginList.hidden = true;
+        const initial = pluginList.children.length === 0;
+        pluginList.hidden = initial;
         pluginList.setAttribute('aria-busy', 'true');
+        setMutationBusy(true);
         managementStatus.hidden = false;
-        managementStatus.textContent = 'Loading plugins...';
+        managementStatus.textContent = initial ? 'Loading plugins...' : 'Updating plugins...';
         try {
             const management = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'list', null);
             if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
             if (!Array.isArray(management?.plugins) || management.plugins.some(plugin =>
                 !plugin || typeof plugin.id !== 'string' || !plugin.id.length)) throw new Error('Plugin list unavailable');
-            mutationControls.clear();
+            if (new Set(management.plugins.map(plugin => plugin.id)).size !== management.plugins.length) throw new Error('Plugin list contains duplicate IDs');
             visiblePlugins = management.plugins;
-            pluginList.replaceChildren(...management.plugins.map(plugin => createPluginRow(context, plugin)));
+            setMutationBusy(false);
+            updatePluginRows(context, management.plugins);
             pluginList.hidden = false;
             managementStatus.hidden = management.plugins.length > 0;
             managementStatus.textContent = management.plugins.length ? '' : 'No plugins';
@@ -736,6 +770,7 @@ module.exports = (() => {
         }
         if (epoch === lifecycle && panel === currentPanel && currentPanel.open && !currentPanel.hidden && request === panelRequest) {
             pluginList.setAttribute('aria-busy', 'false');
+            setMutationBusy(pendingOperation !== null);
         }
     }
 
@@ -936,6 +971,7 @@ module.exports = (() => {
         visiblePlugins = [];
         confirmationSelection = null;
         mutationControls.clear();
+        renderedPlugins.clear();
         cancelDocumentWait?.();
         const restore = isOwned(document.activeElement);
         const target = returnFocus?.isConnected && !isOwned(returnFocus) ? returnFocus : outsideFocus;

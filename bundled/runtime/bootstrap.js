@@ -1,4 +1,29 @@
 (() => {
+    const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
+    const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
+    const TaskChannel = globalThis.MessageChannel;
+    let wakeQueued = false;
+
+    function wakeEventLoop() {
+        if (wakeQueued) return;
+        wakeQueued = true;
+        // Inspector evaluation can leave this world's Promise jobs queued until
+        // the next browser task. Post one task so RPC/lifecycle completion does
+        // not depend on keyboard, pointer or other incidental page activity.
+        if (typeof TaskChannel === 'function') {
+            const channel = new TaskChannel();
+            channel.port1.onmessage = () => {
+                channel.port1.close();
+                channel.port2.close();
+                wakeQueued = false;
+            };
+            channel.port2.postMessage(null);
+        } else {
+            scheduleTimeout(() => { wakeQueued = false; }, 0);
+        }
+    }
+
+    wakeEventLoop();
     const key = '__codletRendererV1';
     const existing = globalThis[key];
     if (existing !== undefined) {
@@ -16,8 +41,6 @@
     const MAX_ENDPOINTS = 256;
     const MAX_INVOCATIONS = 4;
     const now = () => globalThis.performance?.now?.() ?? Date.now();
-    const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
-    const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
     let nextRequestId = 1;
 
     const message = (error) => typeof error?.message === 'string' ? error.message : String(error);
@@ -284,6 +307,7 @@
     const runtime = {
         abi: 1,
         async activate(metadata, definition) {
+            wakeEventLoop();
             if (!metadata || typeof metadata.id !== 'string' || metadata.id.length === 0 ||
                 !Number.isSafeInteger(metadata.generation) || metadata.generation < 1) {
                 return { ok: false, error: 'invalid plugin metadata' };
@@ -365,6 +389,7 @@
             });
         },
         async deactivate(id, generation) {
+            wakeEventLoop();
             return runExclusive(id, async () => {
                 const current = plugins.get(id);
                 if (!current) return { ok: true, id, generation, inactive: true };
@@ -381,16 +406,19 @@
             });
         },
         async __rpcInvoke(binding, request) {
+            wakeEventLoop();
             const current = Array.from(plugins.values()).find((record) => record.binding === binding);
             if (!current) return { ok: false, error: 'renderer binding is not active' };
             return invokeProvider(current, request);
         },
         __rpcCancel(binding, token) {
+            wakeEventLoop();
             const current = Array.from(plugins.values()).find(record => record.binding === binding);
             current?.invocations.get(token)?.cancel(rpcError('invocation_cancelled', 'Core retired the caller invocation'));
             return { ok: true };
         },
         __rpcReceive(binding, response) {
+            wakeEventLoop();
             const current = Array.from(plugins.values()).find((record) => record.binding === binding)
                 ?? Array.from(activating.values()).find((record) => record.binding === binding)
                 ?? Array.from(stopping).find((record) => record.binding === binding);
@@ -414,12 +442,14 @@
             return { ok: true };
         },
         __rpcClose(binding) {
+            wakeEventLoop();
             for (const record of [...plugins.values(), ...activating.values(), ...stopping]) {
                 if (record.binding === binding) closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was retired by the host'));
             }
             return { ok: true };
         },
         status() {
+            wakeEventLoop();
             return Array.from(plugins, ([id, value]) => ({ id, generation: value.generation }));
         }
     };

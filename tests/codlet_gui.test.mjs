@@ -95,6 +95,16 @@ function fixture({ mounted = true, ready = true } = {}) {
             this.children.push(child);
             return child;
         }
+        insertBefore(child, reference) {
+            if (reference === null) return this.appendChild(child);
+            assert.ok(this.children.includes(reference));
+            if (child === reference) return child;
+            mutations++;
+            child.remove();
+            child.parentElement = this;
+            this.children.splice(this.children.indexOf(reference), 0, child);
+            return child;
+        }
         replaceChildren(...children) {
             mutations++;
             for (const child of [...this.children]) child.remove();
@@ -246,6 +256,9 @@ test('activation mounts before list; opening uses the current Host Active snapsh
     f.setActive(true);
     await f.open();
     assert.ok(f.toggle());
+    const selfRow = f.byClass('codlet-plugin-list').children[0];
+    assert.equal(selfRow.children[1].className, 'codlet-plugin-actions');
+    assert.equal(selfRow.children[1].children[0].textContent, 'Active');
     assert.doesNotMatch(f.panel().textContent, /undefined|null|Runtime connected/);
     assert.match(f.panel().textContent, /Missing renderer entry/);
     assert.equal(f.panel().getAttribute('role'), 'dialog');
@@ -258,6 +271,44 @@ test('activation mounts before list; opening uses the current Host Active snapsh
     assert.equal(f.button().getAttribute('aria-controls'), f.panel().id);
     assert.equal(f.button().getAttribute('aria-haspopup'), 'dialog');
     assert.equal(f.button().getAttribute('aria-expanded'), 'true');
+    f.plugin.deactivate();
+});
+
+test('refresh keeps populated rows visible and only replaces changed plugins', async () => {
+    const f = fixture();
+    let plugins = [
+        { id: 'codlet-gui', name: 'Codlet GUI', enabled: true, active: true },
+        { id: 'dev.worker', name: 'Usage Banner Hider', enabled: false, active: false }
+    ];
+    f.override('list', () => ({ plugins }));
+    await f.plugin.activate(f.context);
+    await f.open();
+    const list = f.byClass('codlet-plugin-list');
+    const selfRow = list.children[0];
+    const toggle = f.toggle();
+    toggle.focus();
+    const waiting = deferred();
+    f.override('list', () => waiting.promise);
+    const refresh = f.refresh().emit('click');
+    assert.equal(list.hidden, false);
+    assert.equal(list.getAttribute('aria-busy'), 'true');
+    assert.equal(list.children[0], selfRow);
+    assert.equal(toggle.disabled, true);
+    plugins = [plugins[0], { ...plugins[1], enabled: true, active: true }];
+    waiting.resolve({ plugins });
+    await refresh;
+    assert.equal(list.children[0], selfRow);
+    assert.equal(f.toggle(), toggle);
+    assert.equal(f.document.activeElement, toggle);
+    assert.equal(f.control('Enable Usage Banner Hider').checked, true);
+    assert.equal(list.getAttribute('aria-busy'), 'false');
+    assert.equal(toggle.disabled, false);
+    f.override('list', () => { throw new Error('temporary failure'); });
+    await f.refresh().emit('click');
+    assert.equal(list.hidden, false);
+    assert.equal(list.children[0], selfRow);
+    assert.equal(toggle.disabled, false);
+    assert.match(f.byClass('codlet-status').textContent, /temporary failure/);
     f.plugin.deactivate();
 });
 
