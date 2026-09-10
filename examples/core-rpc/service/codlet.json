@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "example.rpc.service",
+  "version": "1.0.0",
+  "host": { "entry": "host.js" },
+  "permissions": ["host.process"],
+  "provides": [
+    { "name": "example.rpc.math", "api": 1, "scope": "runtime" },
+    { "name": "example.rpc.target", "api": 1, "scope": "target" }
+  ]
+}

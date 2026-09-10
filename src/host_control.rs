@@ -23,6 +23,7 @@ use crate::renderer::RendererRuntime;
 use crate::runtime_control::{ControlBroker, ControlJob, ControlRequest, ControlStatus};
 
 mod package;
+mod revocation;
 use package::{PendingControl, Prepared};
 
 const MAX_WATCH_RESULTS: usize = 32;
@@ -46,6 +47,9 @@ pub struct HostControl {
     registry_path: PathBuf,
     generations: BTreeMap<String, u64>,
     pending: Option<Box<PendingControl>>,
+    revoking: Option<revocation::PendingRevocation>,
+    next_authorization_scan: std::time::Instant,
+    authorization_reports: Vec<PluginControlReport>,
     watch_sources: BTreeMap<String, LocalPluginRegistration>,
     watch_receipt: Option<WatchReceipt>,
     watch_results: Vec<HostWatchResult>,
@@ -58,6 +62,9 @@ impl HostControl {
             registry_path,
             generations: BTreeMap::new(),
             pending: None,
+            revoking: None,
+            next_authorization_scan: std::time::Instant::now(),
+            authorization_reports: Vec::new(),
             watch_sources: BTreeMap::new(),
             watch_receipt: None,
             watch_results: Vec::new(),
@@ -66,7 +73,7 @@ impl HostControl {
     }
 
     pub fn is_pending(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() || self.revoking.is_some()
     }
 
     /// Capture initial loader trust without rereading registrations or source.
@@ -92,6 +99,11 @@ impl HostControl {
                     LocalPluginRegistration {
                         path: path.clone(),
                         grants: grants.clone(),
+                        broker_policy: host
+                            .authorization
+                            .as_ref()
+                            .map(|authorization| authorization.broker_policy.clone())
+                            .unwrap_or_default(),
                     },
                 );
             }
@@ -193,6 +205,7 @@ impl HostControl {
                     crate::plugin_control::PluginControlRequest {
                         action: PluginControlAction::Disable,
                         plugin_id: id.clone(),
+                        permission: None,
                     },
                 ));
                 if prepared.status != ControlStatus::Prepared {
@@ -231,6 +244,10 @@ impl HostControl {
         hosts: &HostRuntime,
         broker: &ControlBroker,
     ) -> Option<ControlJob> {
+        if job.request.action == PluginControlAction::Revoke {
+            self.dispatch_revoke(job, renderer, hosts, broker);
+            return None;
+        }
         let watch = self
             .watch_receipt
             .take_if(|receipt| receipt.operation_id == job.operation_id)
@@ -383,6 +400,9 @@ impl HostControl {
         hosts: &HostRuntime,
         broker: &ControlBroker,
     ) {
+        if self.poll_revocation(renderer, hosts, broker) {
+            return;
+        }
         let Some(mut pending) = self.pending.take() else {
             return;
         };

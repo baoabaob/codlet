@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "id": "example.rpc.view",
+  "version": "1.0.0",
+  "renderer": { "entry": "renderer.js", "world": "isolated" },
+  "provides": [{ "name": "example.rpc.view", "api": 1, "scope": "target" }],
+  "requires": [{ "name": "example.rpc.math", "api": 1, "scope": "runtime" }]
+}

@@ -40,6 +40,7 @@ pub struct HostCapabilityClient {
     stopping: Arc<AtomicBool>,
     count: Arc<AtomicUsize>,
     waker: CdpClient,
+    pub(crate) shared: rpc_state::CoreRpcShared,
 }
 
 struct Permit(Arc<AtomicUsize>);
@@ -116,14 +117,17 @@ impl Drop for Completion {
 
 pub(super) struct Command {
     request: HostCapabilityRequest,
+    route: Option<RpcRoute>,
     completion: Completion,
 }
 
 pub(super) struct Invocation {
-    id: u64,
+    pub(super) id: u64,
     deadline: Instant,
     completion: Completion,
     children: Vec<u64>,
+    pub(super) lineage: Option<RpcLineage>,
+    route: Option<RpcRoute>,
 }
 
 impl HostRuntime {
@@ -136,6 +140,40 @@ impl HostCapabilityClient {
     pub fn begin_request(
         &self,
         request: HostCapabilityRequest,
+    ) -> Result<HostCapabilityOperation, HostError> {
+        self.begin(request, None)
+    }
+
+    pub(crate) fn begin_routed(
+        &self,
+        route: RpcRoute,
+        method: String,
+        params: Value,
+    ) -> Result<HostCapabilityOperation, HostError> {
+        self.shared.validate(&route)?;
+        let owner =
+            crate::capabilities::host_provider_plugin_id(&route.provider_id).ok_or_else(|| {
+                HostError::new(
+                    "invalid_provider",
+                    "this route does not name a Host provider",
+                )
+            })?;
+        let request = HostCapabilityRequest {
+            owner_plugin_id: owner.into(),
+            expected_generation: route.generation,
+            capability: route.capability.clone(),
+            method,
+            params,
+            caller: route.caller.clone(),
+            deadline: route.lineage.deadline,
+        };
+        self.begin(request, Some(route))
+    }
+
+    fn begin(
+        &self,
+        request: HostCapabilityRequest,
+        route: Option<RpcRoute>,
     ) -> Result<HostCapabilityOperation, HostError> {
         validate_request(&request)?;
         if self.stopping.load(Ordering::Acquire) {
@@ -166,6 +204,7 @@ impl HostCapabilityClient {
         self.sender
             .try_send(Command {
                 request,
+                route,
                 completion,
             })
             .map_err(|error| match error {
@@ -201,16 +240,18 @@ fn validate_request(request: &HostCapabilityRequest) -> Result<(), HostError> {
             .validate()
             .map_err(|message| HostError::new("invalid_identity", message))?;
     }
-    if request.capability.scope != CapabilityScope::Target
-        || !valid_identifier(&request.method)
+    if !matches!(
+        request.capability.scope,
+        CapabilityScope::Target | CapabilityScope::Runtime
+    ) || !valid_identifier(&request.method)
         || request.method.len() > 256
-        || !valid_identifier(&request.caller.target_id)
-        || request.caller.document_epoch == 0
+        || (request.capability.scope == CapabilityScope::Target
+            && (!valid_identifier(&request.caller.target_id) || request.caller.document_epoch == 0))
         || request.caller.document_epoch > 9_007_199_254_740_991
     {
         return Err(HostError::new(
             "invalid_params",
-            "Host capability calls need a Target descriptor, valid method, and current caller document identity",
+            "Host capability calls need a Runtime or Target descriptor, valid method, and current caller identity",
         ));
     }
     let remaining = request.deadline.saturating_duration_since(Instant::now());
@@ -235,6 +276,7 @@ fn validate_request(request: &HostCapabilityRequest) -> Result<(), HostError> {
 pub(super) fn channel(
     stopping: Arc<AtomicBool>,
     waker: CdpClient,
+    shared: rpc_state::CoreRpcShared,
 ) -> (HostCapabilityClient, mpsc::Receiver<Command>) {
     let (sender, receiver) = mpsc::sync_channel(COMMAND_QUEUE);
     (
@@ -243,6 +285,7 @@ pub(super) fn channel(
             stopping,
             count: Arc::new(AtomicUsize::new(0)),
             waker,
+            shared,
         },
         receiver,
     )
@@ -251,6 +294,7 @@ pub(super) fn channel(
 pub(super) fn apply(command: Command, owners: &mut [HostOwner]) {
     let Command {
         request,
+        route,
         completion,
     } = command;
     let Some(owner) = owners
@@ -263,7 +307,7 @@ pub(super) fn apply(command: Command, owners: &mut [HostOwner]) {
         )));
         return;
     };
-    owner.begin_capability(request, completion);
+    owner.begin_capability(request, route, completion);
 }
 
 pub(super) fn reject_stopped(command: Command) {
@@ -296,12 +340,33 @@ struct ChildRequest {
 }
 
 impl HostOwner {
-    fn begin_capability(&mut self, request: HostCapabilityRequest, completion: Completion) {
+    fn begin_capability(
+        &mut self,
+        request: HostCapabilityRequest,
+        route: Option<RpcRoute>,
+        completion: Completion,
+    ) {
+        let lineage = route.as_ref().map(|route| {
+            let mut lineage = route.lineage.clone();
+            lineage
+                .cancellations
+                .push(Arc::clone(&completion.cancelled));
+            lineage
+        });
         let result = (|| {
             if completion.cancelled.load(Ordering::Acquire) {
                 return Err(cancelled());
             }
             validate_request(&request)?;
+            if !self.authority_is_current() {
+                return Err(HostError::new(
+                    "authorization_revoked",
+                    "the Host provider's complete trust record changed",
+                ));
+            }
+            if let Some(route) = &route {
+                self.services.rpc.validate(route)?;
+            }
             if self.observation.plugin.generation != request.expected_generation {
                 return Err(HostError::new(
                     "stale_generation",
@@ -343,6 +408,8 @@ impl HostOwner {
                 "capability": request.capability, "method": request.method,
                 "params": request.params, "caller": request.caller,
                 "remainingMs": remaining_ms,
+                "scope": lineage.as_ref().map(|lineage| &lineage.scope),
+                "depth": lineage.as_ref().map_or(1, |lineage| lineage.depth),
             });
             self.supervisor
                 .as_mut()
@@ -360,6 +427,8 @@ impl HostOwner {
                 deadline: request.deadline,
                 completion,
                 children: Vec::new(),
+                lineage,
+                route,
             }),
             Err(error) => completion.finish(Err(error)),
         }
@@ -370,7 +439,13 @@ impl HostOwner {
         let mut index = 0;
         while index < self.capabilities.len() {
             let invocation = &self.capabilities[index];
-            let error = if invocation.completion.cancelled.load(Ordering::Acquire) {
+            let error = if let Some(error) = invocation
+                .route
+                .as_ref()
+                .and_then(|route| self.services.rpc.validate(route).err())
+            {
+                error
+            } else if invocation.completion.cancelled.load(Ordering::Acquire) {
                 cancelled()
             } else if now >= invocation.deadline {
                 timeout()
@@ -395,7 +470,18 @@ impl HostOwner {
             return;
         };
         let invocation = &self.capabilities[index];
-        let result = if invocation.completion.cancelled.load(Ordering::Acquire) {
+        let result = if !self.authority_is_current() {
+            Err(HostError::new(
+                "authorization_revoked",
+                "the Host provider's complete trust record changed before delivery",
+            ))
+        } else if let Some(error) = invocation
+            .route
+            .as_ref()
+            .and_then(|route| self.services.rpc.validate(route).err())
+        {
+            Err(error)
+        } else if invocation.completion.cancelled.load(Ordering::Acquire) {
             Err(cancelled())
         } else if Instant::now() >= invocation.deadline {
             Err(timeout())
@@ -414,6 +500,16 @@ impl HostOwner {
                         "host_stopping" => "host_stopping",
                         "request_limit" => "request_limit",
                         "response_too_large" => "response_too_large",
+                        "rpc_depth_limit" => "rpc_depth_limit",
+                        "scope_required" => "scope_required",
+                        "scope_denied" => "scope_denied",
+                        "scope_ended" => "scope_ended",
+                        "permission_denied" => "permission_denied",
+                        "authorization_revoked" => "authorization_revoked",
+                        "capability_denied" => "capability_denied",
+                        "undeclared_capability" => "undeclared_capability",
+                        "host_unavailable" => "host_unavailable",
+                        "provider_unavailable" => "provider_unavailable",
                         _ => "provider_error",
                     };
                     Err(HostError::new(
@@ -446,14 +542,18 @@ impl HostOwner {
         notify: bool,
     ) {
         let invocation = self.capabilities.swap_remove(index);
+        self.cancel_os(Some(invocation.id));
+        self.cancel_rpc(Some(invocation.id));
         if let Some(supervisor) = &mut self.supervisor {
             supervisor.cancel_request(invocation.id);
             for child in &invocation.children {
                 supervisor.abandon_incoming(*child);
             }
         }
-        self.pending
-            .retain(|(_, _, parent)| *parent != Some(invocation.id));
+        self.cancel_raw_requests(Some(invocation.id));
+        for child in &invocation.children {
+            self.finish_raw_reply(*child, false);
+        }
         self.outbox.retain(|outbound| !matches!(outbound, Outbound::Reply(id, _) if invocation.children.contains(id)));
         if notify
             && matches!(

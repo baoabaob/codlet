@@ -1,6 +1,6 @@
 # Runtime Plugin Control
 
-> Status: manual enable/disable/reload are implemented in source commit `5a0be1e`; native fixtures validate the authenticated control IPC, and the manual isolated acceptance validates lifecycle behavior. The watcher and its safety guards are in source commit `851395a`; the final automated regression passed. Ordinary production launch+watch acceptance remains open, as do the production M0/M1 gates and `DEFECT-001` / `DEFECT-002`.
+> Current contract: enable/disable/reload/revoke use one prepared, submitted and queryable receipt. Third-party Host and managed-renderer clients use the public [runtime.manage@1 contract](RUNTIME_MANAGE_2026-09-10.md). Current M2 evidence is tracked in [M2 acceptance](M2_ACCEPTANCE_2026-09-10.md). The commit IDs and test totals at the end of this document describe earlier control/watch acceptance and do not establish M2 or production M0/M1 closure.
 
 This contract covers live plugin lifecycle controls, including [M2b JS host control](M2B_HOST_CONTROL_2026-09-10.md). It is separate from the read-only `codlet status` protocol in [RUNTIME_STATUS.md](RUNTIME_STATUS.md). The foreground Runtime Host owns lifecycle coordination; the CLI only prepares, submits, and reads operation receipts. The renderer executes on that foreground owner, while independent JS process owners complete host operations asynchronously.
 
@@ -54,15 +54,26 @@ The commands are:
 codlet plugin enable <id> [--json]
 codlet plugin disable <id> [--json]
 codlet plugin reload <id> [--json]
+codlet plugin revoke <id> <permission> [--json]
 codlet plugin operation <receipt> [--json]
+codlet plugin permissions <id> [--json]
 ```
 
-`enable`, `disable`, and `reload` address one plugin id. The legacy bundled GUI
+`enable`, `disable`, `reload`, and `revoke` address one plugin id. `revoke` also
+requires exactly one permission. `permissions` reads the saved local registration,
+grants and broker policy without preparing a receipt or asserting runtime state.
+The legacy bundled GUI
 alias is normalized before `prepare`, so receipts identify the canonical plugin
 used by the Host. `operation` accepts the opaque receipt returned by a prepared
 or submitted operation and performs a read-only lookup. A receipt is bound to
 the Host incarnation that issued it; callers must not construct, edit, or reuse
 it as a new mutation request.
+
+The management request is `{action, plugin_id, permission?}`. Only `revoke`
+includes `permission`; `enable`, `disable`, and `reload` must omit it. The receipt
+captures this complete request. Submit and operation inputs use `{operationId}`,
+while control reports preserve their snake_case fields. Public DTOs are in
+[`types/runtime-manage.d.ts`](../types/runtime-manage.d.ts).
 
 Human output reports the control status, operation id, requested action and plugin, lifecycle outcome, affected plugins, remaining generations, target failures, and any diagnostic message. JSON output has schema version `1` and includes `outcome`, `operation_id`, `control`, `offline`, and `error` fields. A completed lifecycle report with `applied` or `unchanged` is successful. `rolled_back` and `degraded` are completed reports that still represent a failed or compensated lifecycle request, so the CLI returns an error while preserving the report for inspection.
 
@@ -70,7 +81,7 @@ Human output reports the control status, operation id, requested action and plug
 
 When a verified Host owns the registry, the CLI performs this sequence:
 
-1. `prepare` validates the action and plugin id and creates an inert, Host-issued receipt. It does not run plugin code or change the registry.
+1. `prepare` validates the action, plugin id and action-specific permission and creates an inert, Host-issued receipt. It does not run plugin code or change the registry.
 2. `submit` is sent exactly once for that receipt. The receipt already binds the action and id, so submission carries no second mutation body.
 3. The Host queues the job. Already allocated owners determine the executor; new host IDs are validated from the explicitly requested current registration. Renderer work calls `manage_plugin`; host work advances through asynchronous start/stop phases under the same running receipt.
 4. The CLI polls `result` only as a read-only query. A separate `codlet plugin operation <receipt>` query is also read-only and can be used after the original command returns.
@@ -83,10 +94,11 @@ The transport uses control schema version `1`, bounded request and response fram
 
 ## Lifecycle semantics
 
-The following dependency-closure details describe renderer plugins. Host-only JS
-plugins have no cross-executor capability declarations in this release. They use
-the same actions, outcomes and receipts with one process owner per plugin; see
-[the host transaction and compensation rules](M2B_HOST_CONTROL_2026-09-10.md).
+Dependency closures include Host and renderer providers and consumers using the
+current [Core RPC declarations](CORE_RPC_2026-09-10.md). Both executors use the same
+actions, outcomes and receipts, with one process owner per Host entry; see
+[the host transaction and compensation rules](M2B_HOST_CONTROL_2026-09-10.md) and
+[combined packages](COMBINED_PACKAGES_2026-09-10.md).
 
 ### Enable
 
@@ -110,6 +122,16 @@ than persisting a partial preference.
 `reload` requires a running target plugin and a Host. It rebuilds the target and its transitive dependents as one affected closure, while preserving unrelated plugins. It retires the old resources, allocates new generations, removes the old providers, and activates the replacement graph in dependency order. Reload does not implicitly alter enablement preferences.
 
 If replacement activation or validation fails, the Host retires candidate resources before compensation. It rechecks the original local registration and grants, restores the previous runtime code under fresh generations and capability epochs, and reports `rolled_back` when restoration is complete. If cleanup or restoration remains incomplete, it reports `degraded` with per-target failure details; affected plugins remain stopped when the prior runtime cannot be safely restored. A rollback never resurrects an old generation, binding, scope, or principal.
+
+### Revoke
+
+`revoke` atomically removes the selected permission and its matching broker scope
+from the complete local registration. Once saved, the foreground invalidates the
+old managed authorization and retires the provider and its transitive dependents.
+It preserves enabled preferences and never compensates by restoring old grants,
+policy, or an earlier authorization token. Cleanup failures remain visible as a
+degraded receipt; the reduced authorization remains authoritative. Running again
+requires an explicit new trust record and enable, with a fresh generation.
 
 ### GUI registry reconciliation
 
@@ -202,9 +224,9 @@ resubmitted. The operation id is logged and supports the ordinary read-only
 `plugin operation` query. Registry reads and writes use one shared **1 MiB**
 bound, preventing a 250 ms observer from reading an unbounded registry document.
 
-## Offline enablement and disablement
+## Offline enablement, disablement and revocation
 
-Only `enable` and `disable` may edit the registry without a running Host, and only after the client proves that this registry has no Host. An absent scoped control pipe by itself is insufficient evidence. The client acquires the registry scope lease and launch mutex, rechecks the endpoint, and accepts offline editing only when the discovery and legacy status evidence cannot identify an active Host for this configuration.
+`enable`, `disable`, and `revoke` may edit the registry without a running Host only after the client proves that this registry has no Host. An absent scoped control pipe by itself is insufficient evidence. The client acquires the registry scope lease and launch mutex, rechecks the endpoint, and accepts offline editing only when the discovery and legacy status evidence cannot identify an active Host for this configuration.
 
 An identified Host for another registry scope may coexist. An older or unverified Host that cannot prove its registry identity causes offline editing to be refused. This prevents an offline writer from racing a Host that might still own the same configuration.
 
@@ -215,6 +237,11 @@ plugin-state: id=<id>; enabled=<true|false>; applies=next-codlet-launch
 ```
 
 JSON reports use `outcome: "offline_saved"` and an `offline` object with the plugin id, the new enabled value, and `applies: "next-codlet-launch"`. Offline enable still validates a registered local plugin's source and grants; offline disable does not require the plugin source to be readable. `reload` always requires the matching running Host and returns `host_required` when it is offline.
+
+Offline revoke instead reports `{plugin_id, revoked, applies: "next-codlet-launch"}`
+and saves only the reduced grants/policy. It requires a registered local ID and
+does not read or run that plugin's entry code. Human output is
+`plugin-permission: id=<id>; revoked=<permission>; applies=next-codlet-launch`.
 
 An online timeout or uncertain result never falls through to this offline path. Query the original receipt instead.
 
@@ -237,7 +264,7 @@ The current implementation is represented by [plugin_cli.rs](../src/plugin_cli.r
 
 The [2026-09-08 isolated manual-control acceptance](RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md) records startup, dependency rejection, reload closure, enable/disable persistence, multi-target generation changes, receipt-free lab stdin sequencing, and clean shutdown. It does not exercise the production control named pipe or a watcher; native fixtures cover the production pipe. Thus the native fixtures validate IPC, while this report validates manual lifecycle behavior; the final watcher/full-suite result is recorded separately and does not close production gates.
 
-Final validation coverage is:
+The earlier control/watch validation coverage was:
 
 - parser and JSON coverage for all four commands, optional `--json`, invalid ids, unknown flags, and opaque receipt handling;
 - one-submit-only behavior, read-only `operation` queries, uncertain timeout recovery, stale/expired/evicted receipts, the eight-job queue limit, and the 128-record retention bound;
@@ -248,7 +275,7 @@ Final validation coverage is:
 - explicit `launch --watch` opt-in, ordinary-launch no-watch behavior, four-source round-robin polling, quiet/two-sample settling, CLI priority, closure coalescing, loaded-generation baselines, paused registration diagnostics, and same-content failure suppression.
 - whole-closure settling, the execution-time loaded-catalog path guard, and the shared bounded registry read/write limit.
 
-The final batch passed `cargo test --locked --all-targets --all-features` with 289
+That historical batch passed `cargo test --locked --all-targets --all-features` with 289
 tests and one explicit real-production-start gate left default-ignored;
 `node --test tests/*.test.mjs` passed 63 tests; Clippy, fmt, diffcheck, and
 `cargo build --locked --release --bins` passed. The 12 watcher regressions were

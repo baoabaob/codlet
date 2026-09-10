@@ -45,15 +45,26 @@ runtime/node-v24.21.0-win-x64/LICENSE
 examples/raw-host/...
 examples/cleanup-host/...
 examples/local-host-renderer-capability/...
+examples/local-echo/...
+examples/raw-m2/...
+examples/hide-usage-banner/...
+examples/host-os-broker/...
+examples/core-rpc/{service,view,coordinator,consumer}/...
 types/host.d.ts
+types/renderer.d.ts
+types/runtime-manage.d.ts
 docs/...
 scripts/Build-Distribution.ps1
+scripts/Test-Distribution.ps1
 scripts/Install-JsRuntime.ps1
 ```
 
 构建脚本只复制明确白名单中的示例入口、manifest、README、类型和契约说明；不递归复制
-源码树，不携带用户 registry、settings、缓存、历史二进制或测试日志。说明文档之间与示例
-中的相对链接保持原目录关系，打包时验证其目标确实存在。随包的历史契约说明用于解释当前
+源码树，不携带用户 registry、运行后生成的 settings/report、缓存、历史二进制或测试日志。
+唯一配置样本是白名单中的 `examples/host-os-broker/approved-data/settings.json`：它指向
+独立的 loopback fixture，并不授权或触发网络请求。说明文档之间与示例中的相对链接保持原
+目录关系，打包时验证目标存在且没有越界；`.d.ts` 的相对 import 同样必须在包内闭合。
+随包的历史契约说明用于解释当前
 接口的演进，不是已验收的运行时产物。
 
 `distribution-manifest.json` 使用 schema 1，包含分发 version、platform、可选来源 commit、
@@ -82,18 +93,44 @@ watch、Inspect/doctor 与 disable 步骤见 [开发闭环指南](HOST_DEVELOPME
 [组合包契约](COMBINED_PACKAGES_2026-09-10.md)。分发同时包含 Host capability 契约及执行
 两侧真实 JavaScript 的验收说明；测试源码和 VM peer 留在源码仓库。
 
+M2 分发还包含 [原始 CDP/导航示例](../examples/raw-m2/README.md)、
+[OS broker 示例](../examples/host-os-broker/README.md)、
+[四个 Core RPC 包](../examples/core-rpc/README.md)，以及
+[RPC](CORE_RPC_2026-09-10.md)、[OS 授权](OS_BROKER_2026-09-10.md)、
+[公开管理](RUNTIME_MANAGE_2026-09-10.md)、[本地作者契约](LOCAL_PLUGINS.md)和
+[M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)。OS 示例附带的 HTTP fixture 服务需由开发者
+单独运行，实际 fetch 还需声明、明确 origin grant 与插件 activation；候选 smoke 不执行它。
+
 便携包内保留了[构建脚本](../scripts/Build-Distribution.ps1)，可把当前二进制与固定 runtime
 重新复制到另一个新目录。它不编译源码；新版本的正式包应由该版本实际构建产物生成。
 
 ## 包装专项验收
 
-源码仓库的 `scripts/Test-Distribution.ps1` 接收同样的现成二进制与 Node 目录，在专用 ignored
-目录检查正常打包、空格/中文路径、重复输出拒绝、错误 Node/LICENSE 拒绝、所有载荷摘要、
-ZIP 条目与重复打包一致性。候选 CLI smoke 使用独立的子进程 `LOCALAPPDATA`，不授信，
-并确认没有创建配置目录；验收保留结果供复核，不删除用户目录。
+随包的 `scripts/Test-Distribution.ps1` 接收现成二进制与 Node 目录，在新建的专用目录检查
+正常打包、空格/中文路径、重复输出拒绝、错误 Node/LICENSE 拒绝、所有载荷摘要、ZIP
+条目与重复打包一致性。它还分别植入缺失 Markdown/type import，确认拒绝发布后恢复
+测试副本的原始字节。
 
-包装脚本验收可以使用旧开发二进制证明文件布局和流程正确。最终交付仍须在本轮正式构建完成
-后，用新二进制重新生成便携包，不能据旧二进制包装成功宣称新功能已经包含其中。
+```powershell
+.\scripts\Test-Distribution.ps1 `
+  -CodletExecutable 'C:\build output\release\codlet.exe' `
+  -NodeDirectory 'C:\build output\release\runtime\node-v24.21.0-win-x64' `
+  -OutputRoot '.\.codlet-artifacts\m2-distribution-acceptance'
+```
+
+`-SourceCommit` 可选，必须由调用者明确提供，并在两次打包间保留。脚本对十一个可注册示例
+逐个执行不带 `--trust` 的候选检查，每个子进程使用独立 `LOCALAPPDATA`，确认没有创建
+registry/config 目录。另有一份脚本自行准备的私有 registry fixture，用来核对
+`plugin permissions --json` 返回完整 grants/policy 且不改变输入字节；这不是向用户环境
+注册插件。最终再次核验包内文件，没有生成插件报告或其他额外载荷。
+
+报告明确标记 `verificationScope: "distribution-layout-and-read-only-cli"` 和
+`runtimeFunctionalAcceptance: "not_run"`。脚本不启动 Codex、插件、fixture server，不执行
+broker 网络/文件/子进程操作或 GUI 交互；运行时闭包证据由 M2 验收记录负责。
+
+候选 smoke 要求输入二进制理解本轮 manifest、permissions 和 CLI；旧二进制缺接口时应
+失败。最终交付须在本轮代码冻结并构建后，用那个确定二进制重新打包与测试，不能据静态
+文件布局或旧候选的只读行为宣称 M2 功能已经包含并通过。
 
 早先 Host 开发包的包装逻辑验收已通过上述五类检查，包含 23 份载荷及 manifest。两次从相同
 便携输入生成的 manifest 和 ZIP 摘要分别完全一致；错误摘要与重复目标均未发布或覆盖内容。
@@ -105,3 +142,7 @@ ZIP 条目与重复打包一致性。候选 CLI smoke 使用独立的子进程 `
 候选检查覆盖 raw-host、cleanup-host 与双入口示例。记录位于
 `.codlet-artifacts/combined-distribution-2026-09-10/packaging-acceptance.json`；
 正式包另记录源码 commit 并核验最终逐文件及 ZIP 内容摘要。
+
+完整 M2 使用新 release 二进制再次通过 7 类包装检查及 11 个只读候选检查。当前白名单包含
+58 份源资料，加上可执行文件、固定 Node/许可证和生成的 README，共 62 份载荷及 manifest。
+运行时验收、编译与最终候选指纹见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)。

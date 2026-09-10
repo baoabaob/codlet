@@ -324,6 +324,7 @@ impl PluginWatcher {
                 request: PluginControlRequest {
                     action: PluginControlAction::Reload,
                     plugin_id: id,
+                    permission: None,
                 },
                 executor: selected.executor().expect("watch source has an executor"),
                 source: WatchSourceGuard {
@@ -522,6 +523,7 @@ mod tests {
                     .register_local(
                         id,
                         LocalPluginRegistration {
+                            broker_policy: Default::default(),
                             path: path.clone(),
                             grants: vec![],
                         },
@@ -666,6 +668,7 @@ mod tests {
             .register_local(
                 "dev.plugin",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: fixture.plugins[0].path.clone(),
                     grants: vec![Permission::UiDom],
                 },
@@ -767,6 +770,7 @@ mod tests {
             .register_local(
                 "dev.consumer",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: replacement.clone(),
                     grants: vec![],
                 },
@@ -776,6 +780,7 @@ mod tests {
             .register_local(
                 "dev.unloaded",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: fixture.directory.path().join("unloaded"),
                     grants: vec![],
                 },
@@ -931,6 +936,7 @@ mod tests {
                 .register_local(
                     &id,
                     LocalPluginRegistration {
+                        broker_policy: Default::default(),
                         path: source.path.clone(),
                         grants: source.grants.clone(),
                     },

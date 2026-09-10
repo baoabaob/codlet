@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::capabilities::CapabilityDescriptor;
+use crate::plugin_permissions::BrokerPolicy;
 
 const MANIFEST_SCHEMA: u32 = 1;
 const REGISTRY_SCHEMA: u32 = 2;
@@ -60,6 +61,9 @@ pub struct HostManifest {
     /// packages retain the existing top-level provides field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides: Vec<CapabilityDescriptor>,
+    /// Host requirements are distinct from a combined package's renderer half.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<CapabilityDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,6 +83,12 @@ pub enum Permission {
     CdpRaw,
     #[serde(rename = "host.process")]
     HostProcess,
+    #[serde(rename = "host.fs")]
+    HostFs,
+    #[serde(rename = "host.network")]
+    HostNetwork,
+    #[serde(rename = "host.system")]
+    HostSystem,
     #[serde(rename = "runtime.manage")]
     RuntimeManage,
 }
@@ -90,22 +100,35 @@ impl Permission {
             Self::UiMainWorld => "ui.mainWorld",
             Self::CdpRaw => "cdp.raw",
             Self::HostProcess => "host.process",
+            Self::HostFs => "host.fs",
+            Self::HostNetwork => "host.network",
+            Self::HostSystem => "host.system",
             Self::RuntimeManage => "runtime.manage",
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LocalPluginRegistration {
     #[serde(deserialize_with = "deserialize_local_path")]
     pub path: PathBuf,
     #[serde(deserialize_with = "deserialize_grants")]
     pub grants: Vec<Permission>,
+    #[serde(
+        default,
+        rename = "brokerPolicy",
+        deserialize_with = "deserialize_broker_policy",
+        skip_serializing_if = "BrokerPolicy::is_empty"
+    )]
+    pub broker_policy: BrokerPolicy,
 }
 
 #[derive(Debug, Clone)]
 pub struct LoadedPlugin {
+    /// Complete trust record captured with both immutable entry sources. None
+    /// is reserved for bundled/embedded snapshots, never a loaded local entry.
+    pub authorization: Option<LocalPluginRegistration>,
     pub manifest: PluginManifest,
     /// The unchanged renderer source, absent for a host-only plugin.
     pub source: Option<String>,
@@ -120,6 +143,9 @@ pub struct LoadedHost {
     /// The validated source snapshot, just like the renderer source. Editing the
     /// original directory does not alter this generation or lock developer files.
     pub source: Arc<str>,
+    /// Complete explicit trust captured with this source. Inspection alone does
+    /// not authorize execution and leaves this field empty.
+    pub authorization: Option<LocalPluginRegistration>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +215,10 @@ pub enum ManifestError {
         "host-only plugins declare provides at the top level; host.provides belongs to combined entries"
     )]
     AmbiguousHostProvides,
+    #[error(
+        "host-only plugins declare requires at the top level; host.requires belongs to combined entries"
+    )]
+    AmbiguousHostRequires,
 }
 
 #[derive(Debug, Error)]
@@ -232,6 +262,18 @@ impl PluginManifest {
             (Some(_), None) => &self.provides,
             _ => &[],
         }
+    }
+
+    pub fn host_requires(&self) -> &[CapabilityDescriptor] {
+        match (&self.host, &self.renderer) {
+            (Some(host), Some(_)) => &host.requires,
+            (Some(_), None) => &self.requires,
+            _ => &[],
+        }
+    }
+
+    pub fn all_requires(&self) -> impl Iterator<Item = &CapabilityDescriptor> {
+        self.renderer_requires().iter().chain(self.host_requires())
     }
 
     pub fn renderer_provides(&self) -> &[CapabilityDescriptor] {
@@ -298,6 +340,9 @@ impl PluginManifest {
             if self.renderer.is_none() && !host.provides.is_empty() {
                 return Err(ManifestError::AmbiguousHostProvides);
             }
+            if self.renderer.is_none() && !host.requires.is_empty() {
+                return Err(ManifestError::AmbiguousHostRequires);
+            }
         }
         Ok(())
     }
@@ -346,6 +391,25 @@ impl PluginRegistry {
     /// Includes staged registrations, grants, and removals. Only `save` persists them.
     pub fn local_plugins(&self) -> &BTreeMap<String, LocalPluginRegistration> {
         &self.local_plugins
+    }
+
+    /// Stage a complete-record permission revocation. save() performs the
+    /// existing atomic comparison against concurrent path/grant/policy edits.
+    pub fn revoke_permission(
+        &mut self,
+        plugin_id: &str,
+        permission: Permission,
+    ) -> Result<bool, PluginRegistryError> {
+        let mut registration = self.local_plugins.get(plugin_id).cloned().ok_or_else(|| {
+            self.local_error(
+                plugin_id,
+                io::ErrorKind::NotFound,
+                "plugin is not locally registered",
+            )
+        })?;
+        let changed = registration.remove_permission(permission);
+        self.register_local(plugin_id, registration)?;
+        Ok(changed)
     }
 
     /// Stage an explicitly trusted registration without reading its directory.
@@ -495,7 +559,13 @@ impl PluginRegistry {
                     (Some(current), Some(expected)) if current.path != expected.path => {
                         (io::ErrorKind::InvalidData, "registered path changed")
                     }
-                    _ => (io::ErrorKind::InvalidData, "registered grants changed"),
+                    (Some(current), Some(expected)) if current.grants != expected.grants => {
+                        (io::ErrorKind::InvalidData, "registered grants changed")
+                    }
+                    _ => (
+                        io::ErrorKind::InvalidData,
+                        "registered broker policy changed",
+                    ),
                 };
                 return Err(self.local_error(
                     id,
@@ -745,6 +815,15 @@ where
     Ok(grants)
 }
 
+fn deserialize_broker_policy<'de, D>(deserializer: D) -> Result<BrokerPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let policy = BrokerPolicy::deserialize(deserializer)?;
+    policy.validate().map_err(serde::de::Error::custom)?;
+    Ok(policy)
+}
+
 fn validate_local_path(path: &Path) -> Result<(), &'static str> {
     let Some(text) = path.to_str() else {
         return Err("path must be Unicode and representable as JSON");
@@ -777,7 +856,13 @@ fn validate_grants(grants: &[Permission]) -> Result<(), &'static str> {
 
 fn validate_local_registration(registration: &LocalPluginRegistration) -> Result<(), &'static str> {
     validate_local_path(&registration.path)?;
-    validate_grants(&registration.grants)
+    validate_grants(&registration.grants)?;
+    registration
+        .broker_policy
+        .validate_grants(&registration.grants)
+        .map_err(
+            |_| "brokerPolicy has invalid scopes or scopes without their explicit permission grant",
+        )
 }
 
 fn reserved_plugin_id(id: &str) -> bool {
@@ -925,6 +1010,7 @@ pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
 
 pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
+        authorization: None,
         manifest: PluginManifest::parse(include_str!("../bundled/codlet/codlet.json"))?,
         source: Some(include_str!("../bundled/codlet/dist/renderer.js").to_owned()),
         host: None,
@@ -934,6 +1020,7 @@ pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
 
 pub fn bundled_codex_ui_adapter() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
+        authorization: None,
         manifest: PluginManifest::parse(include_str!("../bundled/codex-ui-adapter/codlet.json"))?,
         source: Some(include_str!("../bundled/codex-ui-adapter/dist/renderer.js").to_owned()),
         host: None,

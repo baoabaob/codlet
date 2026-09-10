@@ -79,8 +79,7 @@ pub(crate) fn dependent_closure_refs<'a>(
             .filter(|plugin| {
                 plugin
                     .manifest
-                    .requires
-                    .iter()
+                    .all_requires()
                     .any(|requirement| provided.contains(&requirement))
             })
             .map(|plugin| plugin.manifest.id.clone())

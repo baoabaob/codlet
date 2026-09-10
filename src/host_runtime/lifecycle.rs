@@ -149,6 +149,7 @@ pub(super) fn launch(
     plugins: Vec<LoadedPlugin>,
     client: CdpClient,
     runtime: Option<JsRuntime>,
+    services: services::CoreServices,
 ) -> Result<HostRuntime, HostError> {
     if !plugins.is_empty() && runtime.is_none() {
         return Err(HostError::new(
@@ -161,7 +162,16 @@ pub(super) fn launch(
     let operations = Arc::new(AtomicUsize::new(0));
     let (commands, receiver) = mpsc::sync_channel(COMMAND_QUEUE);
     let (capabilities, capability_receiver) =
-        capability::channel(Arc::clone(&stopping), client.clone());
+        capability::channel(Arc::clone(&stopping), client.clone(), services.rpc.clone());
+    services.rpc.register_plugins(&plugins)?;
+    *services
+        .capability_client
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(capabilities.clone());
+    let mut scope_events = client
+        .subscribe_scope_lifecycle()
+        .map_err(|error| HostError::new("cdp_unavailable", error.to_string()))?;
+    let worker_rpc = services.rpc.clone();
     let generations: BTreeMap<_, _> = plugins
         .iter()
         .map(|plugin| (plugin.manifest.id.clone(), plugin.generation))
@@ -169,10 +179,14 @@ pub(super) fn launch(
     let owners: Vec<_> = plugins
         .into_iter()
         .map(|plugin| {
-            HostOwner::start(plugin, runtime.as_ref().expect("validated initial runtime"))
+            HostOwner::start_with_services(
+                plugin,
+                runtime.as_ref().expect("validated initial runtime"),
+                services.clone(),
+            )
         })
         .collect();
-    let launcher = Launcher::new(runtime)?;
+    let launcher = Launcher::new(runtime, services.clone())?;
     publish(&published, &owners);
     let worker_published = Arc::clone(&published);
     let worker_stopping = Arc::clone(&stopping);
@@ -183,6 +197,19 @@ pub(super) fn launch(
             let mut generations = generations;
             let mut launcher = launcher;
             while !worker_stopping.load(Ordering::Acquire) {
+                for _ in 0..128 {
+                    match scope_events.try_event() {
+                        Ok(Some(event)) => worker_rpc.observe(&event),
+                        Ok(None) => break,
+                        Err(_) => {
+                            worker_rpc.invalidate_targets();
+                            if let Ok(events) = client.subscribe_scope_lifecycle() {
+                                scope_events = events;
+                            }
+                            break;
+                        }
+                    }
+                }
                 for owner in &mut owners {
                     owner.expire_capabilities();
                 }
@@ -256,6 +283,9 @@ pub(super) fn launch(
                 thread::sleep(TICK);
             }
             drop(launcher);
+            for owner in &mut owners {
+                owner.finish_attachment_shutdown(&client);
+            }
             let reports = owners.iter_mut().filter_map(HostOwner::stop).collect();
             publish(&worker_published, &owners);
             for owner in &mut owners {
@@ -270,6 +300,7 @@ pub(super) fn launch(
         commands,
         operations,
         capabilities,
+        services,
         worker: Some(worker),
     })
 }
@@ -372,7 +403,18 @@ fn apply(
 
 impl HostOwner {
     fn retired(&self) -> bool {
-        !self.launching && self.supervisor.is_none() && self.invocation.is_none()
+        !self.launching
+            && self.supervisor.is_none()
+            && self.invocation.is_none()
+            && self.retiring_os.is_empty()
+            && self.retiring_attachments.is_empty()
+            && self.scope_cleanup.is_empty()
+            && self.scope_cleanup_queue.is_empty()
+            && !self.cleanup_quarantined
+            && !self.services.rpc.has_cleanup_sessions(
+                &self.observation.plugin.manifest.id,
+                self.observation.plugin.generation,
+            )
     }
 
     fn finish_operations(&mut self) {

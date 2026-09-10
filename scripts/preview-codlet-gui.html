@@ -204,6 +204,9 @@
         let mountTimer;
         let escapeCount = 0;
         let callId = 0;
+        let receiptId = 0;
+        const preferences = new Map();
+        const operations = new Map();
         const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         const log = text => {
             const item = document.createElement('li');
@@ -222,7 +225,7 @@
         });
         function snapshot(long, mode) {
             const plugins = [
-                { id: 'codlet', version: '0.1.0', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
+                { id: 'codlet-gui', version: '0.1.0', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
                 { id: 'codex.ui.adapter', version: '0.1.0', source: 'bundled', enabled: true, active: true, validation: { status: 'ok' } },
                 { id: 'local.notes', version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } }
             ];
@@ -232,6 +235,13 @@
                 id: `local.long-plugin-name-with-unbroken-suffix-${index}-${'x'.repeat(60)}`,
                 version: '0.1.0-preview', source: 'local', enabled: index % 2 === 0, active: false, validation: { status: 'ok' }
             });
+            for (const plugin of plugins) {
+                if (preferences.has(plugin.id)) plugin.enabled = preferences.get(plugin.id);
+                if (plugin.id !== 'codlet-gui') plugin.active = plugin.enabled;
+                plugin.loaded = plugin.active;
+                plugin.registered = true;
+                plugin.generation = plugin.loaded ? 1 : null;
+            }
             return { plugins };
         }
         function unload() {
@@ -249,11 +259,11 @@
             unload();
             const current = ++generation;
             const context = {
-                pluginId: 'codlet', generation: current,
+                pluginId: 'codlet-gui', generation: current,
                 rpc: { async request(capability, method, args) {
                     const id = ++callId;
                     log(`#${id} ${method} requested (generation ${current})`);
-                    if (args !== null) throw new Error('Unexpected RPC arguments');
+                    if (!['prepare', 'submit', 'operation'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
                     if (method === 'ping' && capability.name === 'codlet.runtime.ping') return { pong: true, abi: 1 };
                     if (method === 'getMount' && capability.name === 'codex.ui.titlebar.afterMenu') {
                         return mountProvider ? mountProvider() : { available: false, token };
@@ -268,11 +278,29 @@
                         if (mode === 'malformed') return { plugins: [null] };
                         return mode === 'empty' ? { plugins: [] } : response;
                     }
+                    if (method === 'prepare') {
+                        if (!['enable', 'disable', 'reload'].includes(args?.action) || typeof args?.plugin_id !== 'string') throw new Error('Invalid simulated request');
+                        const operation = { operation_id: `preview-${++receiptId}`, request: { ...args }, completion: null };
+                        operations.set(operation.operation_id, { status: 'prepared', operation });
+                        if (operations.size > 16) operations.delete(operations.keys().next().value);
+                        return { status: 'prepared', operation };
+                    }
+                    if (method === 'submit' || method === 'operation') {
+                        const record = operations.get(args?.operationId);
+                        if (!record) return { status: 'expired', error: 'Simulated receipt expired' };
+                        if (method === 'submit' && record.status === 'prepared') record.status = 'queued';
+                        if (method === 'operation' && record.status === 'queued') {
+                            record.status = 'completed';
+                            preferences.set(record.operation.request.plugin_id, record.operation.request.action !== 'disable');
+                            record.operation.completion = { kind: 'report', report: { outcome: 'applied' } };
+                        }
+                        return record;
+                    }
                     if (method === 'disableSelf') {
                         log(`#${id} disableSelf returned: ${mode}`);
                         if (mode === 'disable-error') throw new Error('Could not save plugin state: simulated write failure');
                         if (current === generation) unload();
-                        return { pluginId: 'codlet', enabled: false };
+                        return { pluginId: 'codlet-gui', enabled: false };
                     }
                     throw new Error(`Unexpected RPC: ${method}`);
                 } }

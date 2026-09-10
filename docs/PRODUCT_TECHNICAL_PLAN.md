@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.28；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.29；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。随后 M2a/M2b 统一 JS/TS、开放 host/CDP 并接入在线生命周期。本轮进一步整合 host watch、带预算的停止清理、真实执行器 Inspect/doctor，以及可重复便携分发和组合开发验收。本轮继续交付同包双入口、renderer→Host Target capability、统一换代/补偿与两侧真实 JS 验收；Host 主动 capability 调用、其他 scope、专门 OS broker 与完整 M2 仍待后续，详见第 16.8–16.13 节。
+当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。M2 在统一 JS/TS、公开 host/CDP、watch、执行诊断与组合包生命周期上，继续交付通用双向 RPC、Runtime/Target scope、独立 OS broker、范围授权与撤销、公开运行时管理和单 Host 自建页面通信。完整 M2 的逐条验收和候选核验见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)与第 16.14 节；M3/M4 的 Codex 私有 UI/backend 便利能力仍属后续。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -23,7 +23,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 3. Codex 只有通过 Codlet 专用启动器才应进入扩展模式；官方入口启动原版纯净 Codex 是产品目标，但当前受 `DEFECT-001` 的 Electron 单主实例限制。
 4. Codlet 不监视、不提示、不接管通过官方入口启动的 Codex，也不在后台等待或劫持后续启动。
 5. Codlet 安装、升级和卸载均不关闭或重启 Codex，不修改或捆绑官方安装包、快捷方式、协议关联、配置与用户数据。
-6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。当前已实现同包双入口、共享 generation/生命周期与 renderer→Host Target capability；Host 主动发起的 capability 调用及其他 scope 仍待后续。
+6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。同包双入口共享 generation/生命周期，Core RPC 支持 Host↔Host、Host↔renderer 的声明依赖、Runtime/Target scope 与取消。backend-session/thread 的业务映射由后续 adapter 提供，不进入 Core。
    两种入口属于统一的 JS/TS 目录包格式：`codlet.json`、构建后的 JS 入口、资源文件。TS 在构建时编译为 JS；host JS 在 Codlet 统一管理的 JS 进程执行，renderer JS 在页面执行。首版不接受任意 `.exe` 入口，不支持原生 Node 扩展，不提供运行时 TS 转译。
 7. renderer 插件允许分级获得 isolated DOM、main world 和 raw CDP 能力。
 8. 首版只运行用户明确授信的本地插件；不宣称提供安全沙箱。
@@ -713,7 +713,7 @@ M1c 验收条件：
 
 先交付并验收开放 Core 原语，再用相同公开接口建设官方便利层。保留现有通用 capability kernel，解除通用插件装载/lifecycle 与 RendererRuntime、renderer 必填入口的耦合。可选性先通过接口、依赖方向和可停用/可替换关系落实，不要求逐层拆包或增加进程。
 
-M2a/M2b 已交付独立 JS host、公开 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe` 与同一 CLI receipt 的在线启停/重载，包含新注册插件、代数高水位和授信约束补偿。本轮进一步交付 host watch、同代清理 CDP 总预算、进程执行器 Inspect/doctor 和便携开发分发。随后进一步交付同包双入口与 renderer→Host Target capability，复用依赖图和共享生命周期。此为下列完整 M2 条件的一个子集；Host 主动 capability 调用、其他 scope、专门 OS broker 与更完整 raw 资源归属仍待后续。现行使用流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)，早期原语与热管理记录见 [M2a](M2A_HOST_RUNTIME_2026-09-09.md) / [M2b](M2B_HOST_CONTROL_2026-09-10.md)。
+M2a/M2b 交付独立 JS host、公开 CDP 请求/事件、同一 CLI receipt 的在线生命周期，以及 watch、有限清理、执行诊断和组合包。本次完整 M2 候选补齐 Host 主动 RPC、Runtime/Target scope、目录/网络/进程/系统独立 broker、完整授信记录与撤销、公开 `runtime.manage@1` 和第一方 GUI 的启停/重载。单一 `raw-m2` Host 示例通过自己的 binding 与新文档脚本维护多窗口消息通路；Core 在旧代退役时归还跟踪的 raw session。逐条证据与验证边界见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)，现行流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)。早期阶段记录保留其当时的范围。
 
 验收条件：
 
@@ -967,6 +967,19 @@ backend adapter 与完整 M2 仍为后续工作。
 重复计数。最终定向 Clippy、fmt、diffcheck 和 locked release 构建通过。最后的 native
 复核覆盖调用取消、cleanup 与执行样本；原 renderer 的重入 RPC、绝对预算、销毁撤权及
 只读注册样本继续通过。没有重跑全量 M0/M1、启动真实 Codex 或修改默认用户 registry。
+
+### 16.14 完整 M2 的公开原语与撤销
+
+本次实现闭合第 15 节列出的 M2 条件，整合验收状态以 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)为准：
+
+- Core SDK 固定 request/response/notification/server-request、错误、generation、scope、绝对父 deadline 和取消链。Host handler 自动继承调用上下文；renderer handler 用 `invocation.rpc` 显式保留上下文。Target handle 由 Core 根据当前 Host 所持有的 raw attach session 签发，插件不能自行拼出 principal。
+- 初始装载与替换按 Host/renderer entry 的真实依赖图协调。先登记全部目标，再按依赖启动，允许 Host 在激活时等待第二个窗口的独立 renderer provider；旧 handle、已退出目标、导航、卸载与授权变化不会被新代接管。
+- `host.fs` 提供获准目录内的 UTF-8 读取、列表和 stat；`host.network` 提供获准 exact origin 的 GET/HEAD；`host.process` 执行获准的具体 `.exe`；`host.system` 提供有限平台信息。各 endpoint 独立检查 declared/granted permission、范围、数据上限、deadline 与撤销。
+- `plugin add` 展示并保存显式授权及范围，`plugin permissions` 只读查询；`plugin revoke` 和公开管理 API 使用同一 receipt。撤销先持久化，再退休依赖闭包，保留 enabled 偏好；外部完整登记变化同样使旧代失效。
+- 第一方 GUI 使用公开 `codlet.runtime.manage@1` 查询、启用、停用和重载。提交回复丢失后只查询原 receipt，面板关闭/卸载清理轮询与晚到回调。
+- `raw-m2` 只使用自身 Host JS 与公开 CDP，不构造托管 renderer、官方 target 筛选或 provider。真实 Node VM 验收覆盖双窗口、导航、动态目标、旧请求、正常停用与故障清理；不把该 peer 的结果扩写成 Chromium/Codex build 兼容保证。
+
+这些结果不关闭仍保留的 M0/M1 正式门禁，也不代表 M3/M4 的私有 UI/backend adapter 已实现。后续便利层继续使用相同公开原语。
 
 ## 17. 主要风险
 

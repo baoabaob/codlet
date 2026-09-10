@@ -16,7 +16,13 @@ use super::framing::{FramingError, NulJsonDecoder, encode_json_frame};
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[cfg(all(test, windows))]
+mod core_rpc_vm_tests;
+#[cfg(all(test, windows))]
+mod host_attachment_vm_tests;
+#[cfg(all(test, windows))]
 mod host_renderer_vm_tests;
+#[cfg(all(test, windows))]
+mod m2_raw_vm_tests;
 mod raw_access;
 pub use raw_access::{BoundedCdpEvents, CdpEventFilter, QueuedCdpRequest};
 use raw_access::{BoundedEventSink, RawWritePermit};
@@ -82,6 +88,10 @@ pub enum ClientError {
     RequestFrameTooLarge { max_bytes: usize },
     #[error("the bounded raw CDP request queue is full")]
     RequestQueueFull,
+    #[error(
+        "CDP event method filter must contain 1..32 distinct nonempty method names of at most 256 bytes"
+    )]
+    InvalidEventFilter,
     #[error("CDP method {method} failed with code {error_code}: {message}")]
     Remote {
         method: String,

@@ -117,6 +117,7 @@ impl DevelopmentSession {
             .register_local(
                 ID,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root.clone(),
                     grants: vec![Permission::HostProcess, Permission::CdpRaw],
                 },
@@ -183,6 +184,7 @@ impl DevelopmentSession {
             .handle(ControlRequest::prepare(PluginControlRequest {
                 action,
                 plugin_id: ID.into(),
+                permission: None,
             }));
         let ticket = prepared.operation_id().unwrap().to_owned();
         assert_eq!(

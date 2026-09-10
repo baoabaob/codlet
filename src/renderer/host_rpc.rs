@@ -9,7 +9,7 @@ use crate::capabilities::host_provider_plugin_id;
 use crate::cdp::CdpRequest;
 #[cfg(windows)]
 use crate::host_runtime::{
-    HostCapabilityCaller, HostCapabilityClient, HostCapabilityOperation, HostCapabilityRequest,
+    HostCapabilityClient, HostCapabilityOperation, RendererCall, RendererEndpoint, RpcRoute,
 };
 #[cfg(windows)]
 use crate::plugin_host::HostError;
@@ -18,10 +18,28 @@ type Admission = Result<(), (&'static str, String)>;
 
 #[derive(Default)]
 pub(super) struct HostRpcBridge {
+    registration_error: Option<String>,
     #[cfg(windows)]
     client: Option<HostCapabilityClient>,
     #[cfg(windows)]
     pending: Vec<PendingCall>,
+    #[cfg(windows)]
+    direct: Vec<DirectInvocation>,
+}
+
+#[derive(Default)]
+pub(super) struct ScopedCall {
+    #[cfg(windows)]
+    inner: Option<RendererCall>,
+}
+
+#[cfg(windows)]
+struct DirectInvocation {
+    endpoint: RendererEndpoint,
+    token: String,
+    route: RpcRoute,
+    cancel: Option<CdpRequest>,
+    cancelled: bool,
 }
 
 #[cfg(windows)]
@@ -42,6 +60,7 @@ struct PendingCall {
     request_id: Option<u64>,
     deadline: Instant,
     phase: Option<Phase>,
+    scope: RendererCall,
 }
 
 #[cfg(windows)]
@@ -55,7 +74,308 @@ impl RendererRuntime {
     pub fn set_host_capability_client(&mut self, client: HostCapabilityClient) {
         // Changing the owned transport cannot transfer pending calls to it.
         self.host_rpc.pending.clear();
+        self.host_rpc.registration_error = client
+            .shared
+            .register_plugins(&self.logical_plugins())
+            .err()
+            .map(|error| error.to_string());
         self.host_rpc.client = Some(client);
+        for target in self.sessions.keys() {
+            self.publish_rpc_target(target);
+            self.publish_rpc_renderers(target);
+        }
+    }
+
+    pub(crate) fn register_rpc_plugins(
+        &self,
+        plugins: &[LoadedPlugin],
+    ) -> Result<(), RendererError> {
+        if let Some(message) = &self.host_rpc.registration_error {
+            return Err(RendererError::PluginRejected {
+                plugin_id: "core-rpc".into(),
+                message: message.clone(),
+            });
+        }
+        #[cfg(windows)]
+        if let Some(client) = &self.host_rpc.client {
+            client.shared.register_plugins(plugins).map_err(|error| {
+                RendererError::PluginRejected {
+                    plugin_id: plugins
+                        .first()
+                        .map_or_else(|| "core-rpc".into(), |plugin| plugin.manifest.id.clone()),
+                    message: error.to_string(),
+                }
+            })?;
+        }
+        #[cfg(not(windows))]
+        let _ = plugins;
+        Ok(())
+    }
+
+    pub(super) fn retire_rpc_plugin(&self, id: &str, generation: u64) {
+        #[cfg(windows)]
+        if let Some(client) = &self.host_rpc.client {
+            client.shared.retire_plugin(id, generation);
+        }
+        #[cfg(not(windows))]
+        let _ = (id, generation);
+    }
+
+    pub(super) fn publish_rpc_target(&self, target: &str) {
+        #[cfg(windows)]
+        if let (Some(client), Some(session)) = (&self.host_rpc.client, self.sessions.get(target)) {
+            let _ = client
+                .shared
+                .publish_target(&session.session, session.document_epoch);
+        }
+        #[cfg(not(windows))]
+        let _ = target;
+    }
+
+    pub(super) fn publish_rpc_renderers(&self, target: &str) {
+        #[cfg(windows)]
+        if let (Some(client), Some(session)) = (&self.host_rpc.client, self.sessions.get(target)) {
+            for plugin in &session.plugins {
+                if matches!(
+                    plugin.state,
+                    RendererPluginState::Ready | RendererPluginState::Active
+                ) && plugin.activation_confirmed
+                    && !session.recovery_pending
+                {
+                    if let Some(endpoint) = self.rpc_endpoint(target, plugin) {
+                        let _ = client.shared.publish_renderer(endpoint);
+                    }
+                } else {
+                    client.shared.retire_renderer(target, Some(&plugin.id));
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = target;
+    }
+
+    pub(super) fn retire_rpc_renderer(&self, target: &str, id: Option<&str>) {
+        #[cfg(windows)]
+        if let Some(client) = &self.host_rpc.client {
+            client.shared.retire_renderer(target, id);
+        }
+        #[cfg(not(windows))]
+        let _ = (target, id);
+    }
+
+    #[cfg(windows)]
+    fn rpc_endpoint(&self, target: &str, plugin: &ActivePlugin) -> Option<RendererEndpoint> {
+        let session = self.sessions.get(target)?;
+        Some(RendererEndpoint {
+            session: session.session.clone(),
+            plugin_id: plugin.id.clone(),
+            generation: plugin.generation,
+            document_epoch: session.document_epoch,
+            context_id: plugin.context_id?,
+            binding: plugin.binding_name.clone(),
+            authorization: plugin.authorization.clone(),
+            registry_path: self.plugin_registry.path().to_owned(),
+        })
+    }
+
+    pub(super) fn renderer_authority_current(&self, plugin: &ActivePlugin) -> bool {
+        self.renderer_authority_status(plugin).is_ok()
+    }
+
+    pub(super) fn renderer_authority_status(
+        &self,
+        plugin: &ActivePlugin,
+    ) -> Result<(), (&'static str, String)> {
+        let Some(expected) = plugin.authorization.as_ref() else {
+            return Ok(());
+        };
+        let registry = PluginRegistry::load(self.plugin_registry.path())
+            .map_err(|error| ("registry_error", error.to_string()))?;
+        if registry.local_plugins().get(&plugin.id) != Some(expected) {
+            return Err((
+                "authorization_revoked",
+                "the caller renderer's complete trust record changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn native_rpc_ready(
+        &self,
+        id: &str,
+        generation: u64,
+    ) -> Option<Result<bool, String>> {
+        #[cfg(windows)]
+        {
+            self.host_rpc.client.as_ref().map(|client| {
+                client
+                    .shared
+                    .host_ready(id, generation)
+                    .map_err(|error| error.to_string())
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (id, generation);
+            None
+        }
+    }
+
+    pub(super) fn prepare_scoped_call(
+        &self,
+        target: &str,
+        consumer: &ActivePlugin,
+        request: &BindingMessage,
+    ) -> Result<ScopedCall, (&'static str, String)> {
+        #[cfg(windows)]
+        if let Some(client) = &self.host_rpc.client {
+            let endpoint = self.rpc_endpoint(target, consumer).ok_or_else(|| {
+                (
+                    "target_ended",
+                    "the caller renderer realm has retired".into(),
+                )
+            })?;
+            let deadline = self
+                .drive_deadline
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(15))
+                .min(Instant::now() + Duration::from_millis(request.timeout_ms.unwrap_or(15_000)));
+            let call = client
+                .shared
+                .begin_renderer_call(
+                    &endpoint,
+                    &request.capability,
+                    request.parent_token.as_deref(),
+                    request.id,
+                    deadline,
+                )
+                .map_err(|error| (error.code, error.message))?;
+            return Ok(ScopedCall { inner: Some(call) });
+        }
+        #[cfg(not(windows))]
+        let _ = (target, consumer, request);
+        if request.parent_token.is_some() {
+            return Err((
+                "invocation_cancelled",
+                "Core RPC lineage is unavailable".into(),
+            ));
+        }
+        Ok(ScopedCall::default())
+    }
+
+    pub(super) fn cancel_scoped_call(&mut self, target: &str, consumer: &ActivePlugin, id: u64) {
+        #[cfg(windows)]
+        {
+            if let (Some(client), Some(endpoint)) =
+                (&self.host_rpc.client, self.rpc_endpoint(target, consumer))
+            {
+                client.shared.cancel_renderer_call(&endpoint, id);
+            }
+            self.host_rpc.pending.retain(|call| {
+                call.target_id != target
+                    || call.consumer.binding_name != consumer.binding_name
+                    || call.request_id != Some(id)
+            });
+        }
+        #[cfg(not(windows))]
+        let _ = (target, consumer, id);
+    }
+
+    pub(super) fn scoped_call_current(
+        &self,
+        scope: &ScopedCall,
+    ) -> Result<(), (&'static str, String)> {
+        #[cfg(windows)]
+        if let (Some(client), Some(call)) = (&self.host_rpc.client, &scope.inner) {
+            return client
+                .shared
+                .validate(&call.route)
+                .map_err(|error| (error.code, error.message));
+        }
+        #[cfg(not(windows))]
+        let _ = scope;
+        Ok(())
+    }
+
+    pub(super) fn invoke_scoped_renderer(
+        &mut self,
+        target: &str,
+        provider: &ActivePlugin,
+        request: &BindingMessage,
+        scope: &ScopedCall,
+    ) -> Result<Value, String> {
+        #[cfg(windows)]
+        if let (Some(client), Some(call)) = (self.host_rpc.client.clone(), &scope.inner) {
+            let endpoint = self
+                .rpc_endpoint(target, provider)
+                .ok_or_else(|| "the original renderer endpoint has retired".to_owned())?;
+            client
+                .shared
+                .validate(&call.route)
+                .map_err(|error| error.to_string())?;
+            if !client.shared.endpoint_is_current(&endpoint) {
+                return Err("the original renderer endpoint is not Ready".into());
+            }
+            if !endpoint.authority_is_current() {
+                return Err(
+                    "authorization_revoked: the renderer provider's complete trust record changed"
+                        .into(),
+                );
+            }
+            let token = client
+                .shared
+                .begin_renderer_invocation(&endpoint, call.route.lineage.clone())
+                .map_err(|error| error.to_string())?;
+            let mut envelope = serde_json::to_value(request).expect("binding request is JSON");
+            envelope["coreInvocation"] = json!({"token":token,"caller":call.route.caller,"scope":call.route.lineage.scope,"depth":call.route.lineage.depth,"remainingMs":call.route.lineage.deadline.saturating_duration_since(Instant::now()).as_millis()});
+            let expression = format!(
+                "globalThis.__codletRendererV1.__rpcInvoke({}, {})",
+                serde_json::to_string(&endpoint.binding).unwrap(),
+                envelope
+            );
+            self.host_rpc.direct.push(DirectInvocation {
+                endpoint: endpoint.clone(),
+                token: token.clone(),
+                route: call.route.clone(),
+                cancel: None,
+                cancelled: false,
+            });
+            let previous = self.drive_deadline;
+            self.drive_deadline = Some(previous.map_or(call.route.lineage.deadline, |end| {
+                end.min(call.route.lineage.deadline)
+            }));
+            let result = self
+                .evaluate_with_binding_pump(target, &expression, endpoint.context_id)
+                .and_then(parse_provider_result);
+            self.drive_deadline = previous;
+            self.host_rpc
+                .direct
+                .retain(|invocation| invocation.token != token);
+            client.shared.end_renderer_invocation(&token);
+            client
+                .shared
+                .validate(&call.route)
+                .map_err(|error| error.to_string())?;
+            if !endpoint.authority_is_current() {
+                return Err("authorization_revoked: the renderer provider's complete trust record changed before delivery".into());
+            }
+            return result;
+        }
+        #[cfg(not(windows))]
+        let _ = scope;
+        if !self.renderer_authority_current(provider) {
+            return Err(
+                "authorization_revoked: the renderer provider's complete trust record changed"
+                    .into(),
+            );
+        }
+        self.evaluate_with_binding_pump(
+            target,
+            &provider_invocation_expression(&provider.binding_name, request),
+            provider
+                .context_id
+                .ok_or_else(|| "renderer context retired".to_owned())?,
+        )
+        .and_then(parse_provider_result)
     }
 
     pub fn pending_host_call_count(&self) -> usize {
@@ -78,6 +398,7 @@ impl RendererRuntime {
         target_id: &str,
         plugin_id: Option<&str>,
     ) {
+        self.retire_rpc_renderer(target_id, plugin_id);
         #[cfg(windows)]
         self.host_rpc.pending.retain(|call| {
             call.target_id != target_id || plugin_id.is_some_and(|id| call.consumer.id != id)
@@ -93,8 +414,8 @@ impl RendererRuntime {
         _consumer: &ActivePlugin,
         _lease: &CapabilityLease,
         provider_id: &str,
-        _capability: &CapabilityDescriptor,
         _request: &BindingMessage,
+        _scope: &mut ScopedCall,
     ) -> Option<Admission> {
         host_provider_plugin_id(provider_id).map(|_| {
             Err((
@@ -111,12 +432,12 @@ impl RendererRuntime {
         consumer: &ActivePlugin,
         lease: &CapabilityLease,
         provider_id: &str,
-        capability: &CapabilityDescriptor,
         request: &BindingMessage,
+        scope: &mut ScopedCall,
     ) -> Option<Admission> {
         host_provider_plugin_id(provider_id)?;
         Some(
-            self.admit_host_call(target_id, consumer, lease, provider_id, capability, request)
+            self.admit_host_call(target_id, consumer, lease, provider_id, request, scope)
                 .map_err(|error| (error.code, error.message)),
         )
     }
@@ -128,8 +449,8 @@ impl RendererRuntime {
         consumer: &ActivePlugin,
         lease: &CapabilityLease,
         provider_id: &str,
-        capability: &CapabilityDescriptor,
         request: &BindingMessage,
+        scope: &mut ScopedCall,
     ) -> Result<(), HostError> {
         if self.host_rpc.pending.len() >= MAX_PENDING
             || self
@@ -176,23 +497,26 @@ impl RendererRuntime {
                 .request_deadline()
                 .map_err(|error| HostError::new("target_ended", error.to_string()))?,
         );
-        let deadline = parent_deadline.min(Instant::now() + Duration::from_secs(15));
-        let operation = client.begin_request(HostCapabilityRequest {
-            owner_plugin_id: host_provider_plugin_id(provider_id)
-                .expect("host provider key was checked")
-                .into(),
-            expected_generation: provider_generation,
-            capability: capability.clone(),
-            method: request.method.clone(),
-            params: request.params.clone(),
-            caller: HostCapabilityCaller {
-                plugin_id: consumer.id.clone(),
-                generation: consumer.generation,
-                target_id: target_id.into(),
-                document_epoch: session.document_epoch,
-            },
-            deadline,
+        let deadline = parent_deadline
+            .min(Instant::now() + Duration::from_millis(request.timeout_ms.unwrap_or(15_000)));
+        let scope = scope.inner.take().ok_or_else(|| {
+            HostError::new(
+                "capability_denied",
+                "Core did not authenticate this renderer call",
+            )
         })?;
+        if scope.route.provider_id != provider_id || scope.route.generation != provider_generation {
+            return Err(HostError::new(
+                "stale_generation",
+                "The Core route no longer matches the renderer's original provider lease.",
+            ));
+        }
+        let deadline = deadline.min(scope.route.lineage.deadline);
+        let operation = client.begin_routed(
+            scope.route.clone(),
+            request.method.clone(),
+            request.params.clone(),
+        )?;
         self.host_rpc.pending.push(PendingCall {
             target_id: target_id.into(),
             session_id: session.session.session_id().into(),
@@ -201,10 +525,11 @@ impl RendererRuntime {
             lease: lease.clone(),
             provider_id: provider_id.into(),
             provider_generation,
-            capability: capability.clone(),
+            capability: request.capability.clone(),
             request_id: request.id,
             deadline,
             phase: Some(Phase::Invoking(operation)),
+            scope,
         });
         Ok(())
     }
@@ -212,6 +537,38 @@ impl RendererRuntime {
     pub(super) fn poll_host_capabilities(&mut self) {
         #[cfg(windows)]
         {
+            if let Some(client) = &self.host_rpc.client {
+                for invocation in &mut self.host_rpc.direct {
+                    if !invocation.cancelled
+                        && (client.shared.validate(&invocation.route).is_err()
+                            || !client.shared.endpoint_is_current(&invocation.endpoint))
+                    {
+                        invocation.cancelled = true;
+                        client.shared.end_renderer_invocation(&invocation.token);
+                        let expression = format!(
+                            "globalThis.__codletRendererV1.__rpcCancel({}, {})",
+                            serde_json::to_string(&invocation.endpoint.binding).unwrap(),
+                            serde_json::to_string(&invocation.token).unwrap()
+                        );
+                        invocation.cancel = invocation
+                            .endpoint
+                            .session
+                            .until(Instant::now() + Duration::from_millis(250))
+                            .start_evaluate_in_context(
+                                &expression,
+                                Some(invocation.endpoint.context_id),
+                            )
+                            .ok();
+                    }
+                    if invocation
+                        .cancel
+                        .as_mut()
+                        .is_some_and(|request| !matches!(request.try_response(), Ok(None)))
+                    {
+                        invocation.cancel = None;
+                    }
+                }
+            }
             // Taking the bounded list avoids borrowing the bridge while issuing
             // CDP deliveries or inspecting current renderer/registry ownership.
             let calls = std::mem::take(&mut self.host_rpc.pending);
@@ -243,7 +600,12 @@ impl RendererRuntime {
 
     #[cfg(windows)]
     fn provider_is_current(&self, call: &PendingCall) -> bool {
-        self.capabilities.provider_generation(&call.provider_id) == Some(call.provider_generation)
+        self.host_rpc
+            .client
+            .as_ref()
+            .is_some_and(|client| client.shared.validate(&call.scope.route).is_ok())
+            && self.capabilities.provider_generation(&call.provider_id)
+                == Some(call.provider_generation)
             && self
                 .capabilities
                 .invoke_endpoint(
@@ -282,7 +644,17 @@ impl RendererRuntime {
                     );
                 }
                 match operation.try_result() {
-                    Some(result) => self.begin_host_reply(call, result),
+                    Some(result) => {
+                        let result = if self.renderer_authority_current(&call.consumer) {
+                            result
+                        } else {
+                            Err(HostError::new(
+                                "authorization_revoked",
+                                "the caller renderer's complete trust record changed before delivery",
+                            ))
+                        };
+                        self.begin_host_reply(call, result)
+                    }
                     None => {
                         call.phase = Some(Phase::Invoking(operation));
                         Some(call)

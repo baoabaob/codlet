@@ -193,6 +193,7 @@ pub(super) struct PendingControl {
     renderer_attempted: bool,
     renderer_error: Option<String>,
     cleanup_confirmed: bool,
+    renderers_started: bool,
 }
 
 impl PendingControl {
@@ -211,6 +212,7 @@ impl PendingControl {
             renderer_attempted: false,
             renderer_error: None,
             cleanup_confirmed: true,
+            renderers_started: false,
         }
     }
 
@@ -247,12 +249,9 @@ impl PendingControl {
             match self.phase {
                 Phase::Disable
                 | Phase::StopPrevious
-                | Phase::StartCandidates
                 | Phase::StopCandidates
-                | Phase::StartRollback
                 | Phase::StopRollback => {
                     let (failures, confirmed) = self.batch.poll(hosts)?;
-                    let failed = !failures.is_empty();
                     self.failures.extend(failures);
                     self.cleanup_confirmed &= confirmed;
                     renderer.set_external_observations(hosts.observations());
@@ -266,22 +265,44 @@ impl PendingControl {
                                 if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
                                 continue;
                             }
+                            if let Err(error) = renderer.register_rpc_plugins(&self.plan.replacements()) {
+                                self.failure("activate_validate", error.to_string());
+                                if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
+                                continue;
+                            }
                             self.phase = Phase::StartCandidates;
                             self.batch = HostBatch::start(&self.plan.replacements(), "activate");
-                        }
-                        Phase::StartCandidates => {
-                            if failed { self.cleanup_candidates(renderer, hosts); } else { self.phase = Phase::RenderCandidates; }
                         }
                         Phase::StopCandidates => {
                             if !confirmed || !self.cleanup_confirmed { return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Candidate native cleanup could not be confirmed; prior code was not restarted.".into()))); }
                             if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
                         }
-                        Phase::StartRollback => {
-                            if failed { self.cleanup_rollback(renderer, hosts); } else { self.phase = Phase::RenderRollback; }
-                        }
                         Phase::StopRollback => return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("The requested change and restoration failed; affected packages remain stopped.".into()))),
                         _ => unreachable!(),
                     }
+                }
+                Phase::StartCandidates | Phase::StartRollback => {
+                    let restoring = matches!(self.phase, Phase::StartRollback);
+                    if let Some((failures, confirmed)) = self.batch.poll(hosts) {
+                        self.cleanup_confirmed &= confirmed;
+                        if !failures.is_empty() {
+                            self.failures.extend(failures);
+                            if restoring {
+                                self.cleanup_rollback(renderer, hosts);
+                            } else {
+                                self.cleanup_candidates(renderer, hosts);
+                            }
+                            continue;
+                        }
+                    }
+                    if !self.batch.queued.is_empty() {
+                        return None;
+                    }
+                    self.phase = if restoring {
+                        Phase::RenderRollback
+                    } else {
+                        Phase::RenderCandidates
+                    };
                 }
                 Phase::RenderCandidates | Phase::RenderRollback => {
                     let restoring = matches!(self.phase, Phase::RenderRollback);
@@ -290,63 +311,76 @@ impl PendingControl {
                     } else {
                         self.plan.replacements()
                     };
-                    if plugins
-                        .iter()
-                        .any(|plugin| plugin.manifest.renderer.is_some())
-                        && !renderer.package_has_live_target()
-                    {
-                        self.request_renderer = true;
-                        if !self.renderer_attempted {
-                            return None;
+                    if !self.renderers_started {
+                        if plugins
+                            .iter()
+                            .any(|plugin| plugin.manifest.renderer.is_some())
+                            && !renderer.package_has_live_target()
+                        {
+                            self.request_renderer = true;
+                            if !self.renderer_attempted {
+                                return None;
+                            }
+                            let error = self.renderer_error.take().unwrap_or_else(|| {
+                                "no live main renderer target is available".into()
+                            });
+                            self.failure(
+                                if restoring {
+                                    "rollback_activate"
+                                } else {
+                                    "activate"
+                                },
+                                error,
+                            );
+                            if restoring {
+                                self.cleanup_rollback(renderer, hosts);
+                            } else {
+                                self.cleanup_candidates(renderer, hosts);
+                            }
+                            continue;
                         }
-                        let error = self
-                            .renderer_error
-                            .take()
-                            .unwrap_or_else(|| "no live main renderer target is available".into());
-                        self.failure(
+                        let validation = if restoring {
+                            self.verify_rollback(renderer)
+                        } else {
+                            self.verify_candidate()
+                        };
+                        if let Err(error) = validation {
+                            self.failure(
+                                if restoring {
+                                    "rollback_validate"
+                                } else {
+                                    "activate_validate"
+                                },
+                                error.to_string(),
+                            );
+                            if restoring {
+                                self.cleanup_rollback(renderer, hosts);
+                            } else {
+                                self.cleanup_candidates(renderer, hosts);
+                            }
+                            continue;
+                        }
+                        let failures = renderer.activate_package_renderers(
+                            &plugins,
                             if restoring {
                                 "rollback_activate"
                             } else {
                                 "activate"
                             },
-                            error,
                         );
-                        if restoring {
-                            self.cleanup_rollback(renderer, hosts);
-                        } else {
-                            self.cleanup_candidates(renderer, hosts);
-                        }
-                        continue;
-                    }
-                    let validation = if restoring {
-                        self.verify_rollback(renderer)
-                    } else {
-                        self.verify_candidate()
-                    };
-                    if let Err(error) = validation {
-                        self.failure(
+                        if !failures.is_empty() {
+                            self.failures.extend(failures);
                             if restoring {
-                                "rollback_validate"
+                                self.cleanup_rollback(renderer, hosts);
                             } else {
-                                "activate_validate"
-                            },
-                            error.to_string(),
-                        );
-                        if restoring {
-                            self.cleanup_rollback(renderer, hosts);
-                        } else {
-                            self.cleanup_candidates(renderer, hosts);
+                                self.cleanup_candidates(renderer, hosts);
+                            }
+                            continue;
                         }
-                        continue;
+                        self.renderers_started = true;
                     }
-                    let failures = renderer.activate_package_renderers(
-                        &plugins,
-                        if restoring {
-                            "rollback_activate"
-                        } else {
-                            "activate"
-                        },
-                    );
+                    let (failures, confirmed) = self.batch.poll(hosts)?;
+                    self.cleanup_confirmed &= confirmed;
                     if !failures.is_empty() {
                         self.failures.extend(failures);
                         if restoring {
@@ -356,6 +390,7 @@ impl PendingControl {
                         }
                         continue;
                     }
+                    renderer.set_external_observations(hosts.observations());
                     let committed = if restoring {
                         self.verify_rollback(renderer)
                     } else {
@@ -476,6 +511,11 @@ impl PendingControl {
                 self.request_renderer = false;
                 self.renderer_attempted = false;
                 self.renderer_error = None;
+                self.renderers_started = false;
+                if let Err(error) = renderer.register_rpc_plugins(&self.rollback) {
+                    self.failure("rollback_validate", error.to_string());
+                    return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Core rejected the restoration registrations; affected packages remain stopped.".into())));
+                }
                 self.batch = HostBatch::start(&self.rollback, "rollback_activate");
                 let _ = hosts;
                 None
@@ -626,14 +666,14 @@ impl HostBatch {
         }
     }
     fn poll(&mut self, hosts: &HostRuntime) -> Option<(Vec<PluginTargetFailure>, bool)> {
-        while self.running.len() < 4 {
+        while self.running.len() < 16 {
             let Some(work) = self.queued.pop_front() else {
                 break;
             };
             let id = work.plugin.manifest.id.clone();
             let generation = work.plugin.generation;
             let result = if work.start {
-                hosts.begin_start(work.plugin)
+                hosts.begin_start(work.plugin.clone())
             } else {
                 hosts.begin_stop(&id, generation)
             };
@@ -644,6 +684,10 @@ impl HostBatch {
                     start: work.start,
                     operation,
                 }),
+                Err(error) if matches!(error.code, "operation_queue_full" | "operation_limit") => {
+                    self.queued.push_front(work);
+                    break;
+                }
                 Err(error) => {
                     self.confirmed &= work.start && error.code != "cleanup_incomplete";
                     self.failures.push(PluginTargetFailure {

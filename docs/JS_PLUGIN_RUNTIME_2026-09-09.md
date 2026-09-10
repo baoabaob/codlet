@@ -1,7 +1,8 @@
 # 统一 JS/TS 插件格式与执行器
 
-日期：2026-09-09。用户确认后替代 `f25b338` 的任意可执行文件 host 入口；仍属于 M2a，
-不代表完整 M2 或 M3/M4 已完成。
+更新：2026-09-10。本页是 M2 当前 JS/TS 开发契约；它继承了 2026-09-09 对统一 JS Host
+入口的决定。运行验证与完成范围单独记录在 [M2 验收](M2_ACCEPTANCE_2026-09-10.md)，本页
+不把源码接口、便携文件清单或旧二进制的 smoke 当作新版本验收。
 
 ## 已确认并实现的约定
 
@@ -23,7 +24,8 @@ Renderer 使用 `renderer: {"entry":"dist/renderer.js","world":"isolated"}`。�
 导出 CommonJS `activate(context)` 和 `deactivate()`，可返回 Promise。host 的 deactivate
 还会收到可选使用的 `cleanup` 上下文，见下述停止契约。2026-09-10 起，同包可同时声明
 host 与 renderer，两入口共享注册、enabled 偏好和 generation。顶层 provides/requires
-归 renderer，Host provider 放在 host.provides；Host-only 的顶层 provides 保持兼容。
+归 renderer，Host 的声明放在 host.provides / host.requires；Host-only 的顶层
+provides / requires 属于 Host。
 完整声明与生命周期见 [组合包契约](COMBINED_PACKAGES_2026-09-10.md)。
 
 不接受 `host.command`、可执行文件入口、插件选择的 runtime/flags/protocol；不支持原生
@@ -66,20 +68,59 @@ module.exports = {
 
 | 接口 | 行为 |
 | --- | --- |
-| `context.cdp.request(method, params?, options?)` | 原始 CDP 调用；options 可选 sessionId、timeoutMs，成功返回原始 CDP result。无官方方法白名单。 |
+| `context.cdp.request(method, params?, options?)` | 原始 CDP 调用；options 可选 sessionId、timeoutMs、signal，成功返回原始 CDP result。无官方方法白名单；Core 校验它管理的 raw session/target 归属。 |
 | `context.cdp.subscribe(filter, onEvent, onEnd?)` | filter 为 root/all，或 session+sessionId；返回 `{id,unsubscribe()}`，onEvent 收到 `{method,params,sessionId}`。每 host 同时一个订阅。 |
-| `context.core.request(method, params, timeoutMs?)` | 通用 Core 请求入口；当前实现 cdp.request/subscribe/unsubscribe，未来原语沿此版本化通道开放。 |
-| `context.rpc.provide(capability, method, handler)` | 注册已声明的 Target capability；接收 Core 验证的 renderer caller 与有限调用预算。 |
+| `context.core.request(method, params, timeoutMs?)` | 通用版本化 Core 请求通道；优先使用对应的 cdp/rpc/OS SDK 包装。 |
+| `context.rpc.provide(capability, method, handler)` | 注册已声明的 Runtime 或 Target capability；handler 接收 Core 验证的 invocation。 |
+| `context.rpc.request(capability, method, params?, options?)` | 调用已声明 requirement；options 可含 scope、timeoutMs、signal。 |
+| `context.rpc.notify(capability, method, params?, options?)` | Host 返回 Promise，等 handler 终态确认后丢弃返回值；失败仍 reject，不是持久消息队列。 |
+| `context.rpc.target({sessionId}, options?)` | 从本 Host/代次拥有的 flatten raw session 签发 opaque Target handle；handle 可 close。 |
+| `context.fs.readText/readDir/stat(params, options?)` | 只读访问显式 readRoots。 |
+| `context.network.fetch(params, options?)` | 对明确 HTTP(S) origin 做受限 GET/HEAD。 |
+| `context.process.run(params, options?)` | 以参数数组运行明确允许的 executable，由独立 Job 回收。 |
+| `context.system.info(options?)` | 返回有界 OS、架构与 CPU 数量。 |
 | `context.plugin` | 本实例的 id、version、generation。 |
 | `context.root` | 原插件根目录；Node cwd 同该目录。 |
 | `context.signal` | 停止时 abort；插件应取消未完成的异步工作。 |
 | `context.log` / `console` | 输出到 stderr，不污染 JSONL stdout。 |
 
-`host.process` 授权运行统一 Node 中的普通用户 JS，`cdp.raw` 授权经 Core 路由的 CDP 调用。
-均需声明且显式获授；多余 grant 不扩展 manifest 的有效权限。错误保留 code/message/data，
+`host.process` 授权运行统一 Node 中的普通用户 JS；其 process.run endpoint 还需明确
+executable 范围。`cdp.raw`、`host.fs`、`host.network`、`host.system` 分别控制对应 endpoint，
+均需声明且显式获授。grants 与 brokerPolicy 一起原子持久化，多余 grant 不扩展 manifest 的
+有效权限；完整记录变化使旧 generation 失效。范围、撤权和资源终态见
+[OS broker](OS_BROKER_2026-09-10.md)。错误保留 code/message/data，
 例如 permission_denied、request_timeout、cdp_error。关闭官方功能插件后，这些接口仍然
 可用；纯 host 启动不执行官方 renderer URL/target 筛选。用户插件自行选择注入、适配和恢复
 机制，官方便利层没有隐藏权限。
+
+### Scope 与嵌套 RPC
+
+Runtime 表示这次 Core 运行。Host provider 支持 Runtime/Target，renderer provider 只支持
+Target；renderer consumer 可调用两者。其他 scope 留给有明确生命周期的 adapter，本版
+不会仅因 descriptor 可解析就伪造其实例。Target Host 调用须使用本代 `rpc.target` handle，
+或继承当前入站 Target；不能自报 targetId/documentEpoch，也不能跨 Host 传 handle。
+
+```js
+const runtimeApi = { name: 'dev.worker.service', api: 1, scope: 'runtime' };
+const reply = await context.rpc.request(runtimeApi, 'inspect', null, { timeoutMs: 2000 });
+```
+
+这个 descriptor 必须在调用方 `requires` 声明，并由其他已就绪 provider 提供。Core 在解析
+租约时固定 provider generation；等待 Ready、旧 target 退出、超时或取消，都不会把调用
+改派给一个较新的 provider。
+
+Host handler 的 immutable invocation 包含 caller、scope、depth、rpc、signal 与
+remainingMs。Host async continuation 的受管理 RPC/CDP/OS 自动继承原绝对 deadline 与
+取消；托管 renderer 没有 Node async context，handler 要使用 `invocation.rpc` 发起嵌套
+调用。renderer 的普通 `context.rpc` 是新 root 调用。最大嵌套深度为 8，预算不逐层续期。
+
+renderer request 支持第四个 `{timeoutMs?, signal?}` 参数，既有单 requirement shorthand
+保留。renderer notify 仍返回同步 void、没有响应 ID或交付 receipt，Core 对失败记有界诊断；
+这与 Host notify 的确认 Promise 不同。完整接口、server-request、错误和验收见
+[Core RPC](CORE_RPC_2026-09-10.md)及 [renderer 类型](../types/renderer.d.ts)。
+
+公开 `codlet.runtime.manage@1` 可在 Runtime 或 Target 使用，提供 list、prepare、submit、
+operation，复用 CLI/GUI 的同一 receipt；详见 [管理契约](RUNTIME_MANAGE_2026-09-10.md)。
 
 ## 开发与生命周期
 
@@ -116,7 +157,9 @@ export = plugin;
 
 构建工具使用 CommonJS 输出并把 JS 放到 manifest 的 entry，例如 TypeScript 配置
 `{"compilerOptions":{"module":"commonjs","target":"es2022","outDir":"dist"}}`。
-[类型声明](../types/host.d.ts)属于开发资料；运行时无需携带编译器。
+[Host 类型](../types/host.d.ts)、[renderer 类型](../types/renderer.d.ts)和
+[管理 DTO](../types/runtime-manage.d.ts)属于开发资料；复制到开发项目或配置 TypeScript
+paths 后使用 type-only import。运行时无需携带编译器。
 
 ## 迁移与仍未交付项
 
@@ -129,9 +172,10 @@ export = plugin;
 在线启停/重载，并支持启动后注册的新 host。后续已接入
 [host watch](HOST_WATCH_2026-09-10.md)、带预算的清理与
 [host execution Inspect](HOST_INSPECTION_2026-09-10.md)。doctor 可读实际进程和清理样本，
-旧 status-v1 / Inspect 保持原契约。现已接入组合入口与 renderer→Host 的 Target capability，
-包括异步交付、调用身份、取消及总预算，见 [Host capability](HOST_CAPABILITY_2026-09-10.md)。
-Host 发起的 capability 调用、其他 scope 与完整 M2 仍待后续。
+旧 status-v1 / Inspect 保持原契约。组合入口、双向 Host/renderer RPC、Runtime/Target、
+独立 OS broker、持久权限撤销和公开 runtime.manage 已纳入当前开发接口。具体执行证据
+按 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)核对。Managed main world、adapter scope、
+Codex 私有映射和 M3/M4 扩展仍按各自后续边界推进。
 
 统一 JS/TS 是开发与分发契约，开放性由 Core 暴露的原语决定。图灵完备本身不能替代缺失
 的系统接口。普通 Node host 仍可直接操作当前用户有权访问的文件、网络或进程；禁用 addon

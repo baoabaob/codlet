@@ -26,6 +26,10 @@ impl HostOwner {
             }),
             pending_requests: if self.observation.state == ExecutionState::Stopping {
                 self.pending.len()
+                    + self.retiring_attachments.len()
+                    + self.retiring_os.len()
+                    + self.scope_cleanup.len()
+                    + self.scope_cleanup_queue.len()
             } else {
                 0
             },
@@ -52,7 +56,7 @@ impl HostOwner {
             if self.cleanup_phase == HostCleanupPhase::Running {
                 self.cleanup_failed(HostCleanupPhase::Failed, error.to_string());
             }
-            self.pending.clear();
+            self.cancel_raw_requests(None);
             self.outbox.clear();
             self.finish_retirement();
             return;
@@ -77,7 +81,7 @@ impl HostOwner {
                             format!("{}: {}", error.code, error.message),
                         ),
                     }
-                    self.pending.clear();
+                    self.cancel_raw_requests(None);
                     self.outbox.clear();
                 }
                 _ => {}
@@ -93,23 +97,11 @@ impl HostOwner {
                 "cleanup_timeout: the total Core cleanup budget expired".into(),
             );
         }
-        let mut index = 0;
-        while index < self.pending.len() {
-            let result = match self.pending[index].1.try_response() {
-                Ok(None) => {
-                    index += 1;
-                    continue;
-                }
-                Ok(Some(response)) => bounded_result(Ok(response.result.unwrap_or(Value::Null))),
-                Err(error) => Err(cdp_error(error)),
-            };
-            let (id, _, _) = self.pending.swap_remove(index);
-            self.queue(Outbound::Reply(id, result));
-        }
+        self.pump_raw_pending();
         // A deadline retires pending CDP waiters instead of letting late replies
         // reach a later generation. Already-applied page effects are not undone.
         if self.cleanup_phase != HostCleanupPhase::Running {
-            self.pending.clear();
+            self.cancel_raw_requests(None);
             self.outbox.clear();
         } else {
             self.flush_outbox();
@@ -159,6 +151,12 @@ impl HostOwner {
             return Some(Err(HostRpcError::new(
                 "cleanup_method_unavailable",
                 "cleanup supports Core cdp.request; new subscriptions are not admitted",
+            )));
+        }
+        if !self.cleanup_raw_is_current() {
+            return Some(Err(HostRpcError::new(
+                "permission_denied",
+                "cdp.raw is not currently authorized for this generation's cleanup",
             )));
         }
         // Reuse the same permission and payload checks as the active generation.

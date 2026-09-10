@@ -66,6 +66,7 @@ struct CliOutput {
     ticket: Option<String>,
     control: Option<ControlReport>,
     offline: Option<(String, bool)>,
+    revoked: Option<(String, crate::plugins::Permission)>,
 }
 
 fn with_output(
@@ -75,7 +76,7 @@ fn with_output(
     let mut output = CliOutput::default();
     let result = work(&mut output);
     if json {
-        let outcome = if output.offline.is_some() {
+        let outcome = if output.offline.is_some() || output.revoked.is_some() {
             "offline_saved"
         } else if matches!(&result, Err(PluginCliError::Uncertain(_))) {
             "uncertain"
@@ -100,11 +101,18 @@ fn with_output(
             serde_json::json!({
                 "plugin_id": plugin_id, "enabled": enabled, "applies": "next-codlet-launch"
             })
-        });
+        }).or_else(|| output.revoked.as_ref().map(|(plugin_id, permission)| {
+            serde_json::json!({"plugin_id":plugin_id, "revoked":permission, "applies":"next-codlet-launch"})
+        }));
         println!(
             "{}",
             serde_json::json!({"schema_version": 1, "outcome": outcome,
             "operation_id": output.ticket, "control": output.control, "offline": offline, "error": error})
+        );
+    } else if let Some((plugin_id, permission)) = &output.revoked {
+        println!(
+            "plugin-permission: id={plugin_id}; revoked={}; applies=next-codlet-launch",
+            permission.as_str()
         );
     } else if let Some((plugin_id, enabled)) = &output.offline {
         println!("plugin-state: id={plugin_id}; enabled={enabled}; applies=next-codlet-launch");
@@ -231,6 +239,16 @@ fn offline_edit(
     let _lease = offline_lease(scope)?;
     let mut registry = PluginRegistry::load(scope.path())?;
     let plugin_id = &request.plugin_id;
+    if request.action == PluginControlAction::Revoke {
+        let permission = request.permission.expect("revoke was validated");
+        if !registry.local_plugins().contains_key(plugin_id) {
+            return Err(PluginCliError::UnknownPlugin(plugin_id.clone()));
+        }
+        registry.revoke_permission(plugin_id, permission)?;
+        registry.save()?;
+        output.revoked = Some((plugin_id.clone(), permission));
+        return Ok(());
+    }
     let enabled = request.action == PluginControlAction::Enable;
     let is_bundled = bundled_plugins()?
         .iter()

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "example.rpc.coordinator",
+  "version": "1.0.0",
+  "host": { "entry": "host.js" },
+  "permissions": ["host.process", "cdp.raw"],
+  "provides": [{ "name": "example.rpc.coordinator", "api": 1, "scope": "runtime" }],
+  "requires": [
+    { "name": "example.rpc.math", "api": 1, "scope": "runtime" },
+    { "name": "example.rpc.target", "api": 1, "scope": "target" },
+    { "name": "example.rpc.view", "api": 1, "scope": "target" }
+  ]
+}

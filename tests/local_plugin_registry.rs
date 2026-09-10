@@ -8,6 +8,7 @@ use tempfile::tempdir;
 
 fn registration(root: &Path, grants: &[Permission]) -> LocalPluginRegistration {
     LocalPluginRegistration {
+        broker_policy: Default::default(),
         path: root.join("plugin"),
         grants: grants.to_vec(),
     }
@@ -246,6 +247,7 @@ fn invalid_api_edits_preserve_staged_registrations_and_preferences() {
                     .register_local(
                         "dev.invalid",
                         LocalPluginRegistration {
+                            broker_policy: Default::default(),
                             path,
                             grants: vec![]
                         }
@@ -309,6 +311,7 @@ fn windows_paths_must_be_unicode_absolute_local_drive_paths() {
         r"\\.\pipe\plugin",
     ] {
         let local = LocalPluginRegistration {
+            broker_policy: Default::default(),
             path: PathBuf::from(invalid),
             grants: vec![],
         };
@@ -327,6 +330,7 @@ fn windows_paths_must_be_unicode_absolute_local_drive_paths() {
     let mut invalid: Vec<u16> = directory.path().as_os_str().encode_wide().collect();
     invalid.extend([b'\\' as u16, 0xD800]);
     let local = LocalPluginRegistration {
+        broker_policy: Default::default(),
         path: PathBuf::from(OsString::from_wide(&invalid)),
         grants: vec![],
     };

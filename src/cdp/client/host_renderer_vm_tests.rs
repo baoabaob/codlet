@@ -44,17 +44,17 @@ impl Drop for ChildGuard {
     }
 }
 
-struct VmPeer {
-    client: CdpClient,
+pub(super) struct VmPeer {
+    pub(super) client: CdpClient,
     child: ChildGuard,
-    runtime: JsRuntime,
+    pub(super) runtime: JsRuntime,
     log: PathBuf,
     _directory: TempDir,
     closed: bool,
 }
 
 impl VmPeer {
-    fn start() -> (Self, CdpEventStream) {
+    pub(super) fn start() -> (Self, CdpEventStream) {
         // discover verifies the checked-in executable digest and holds the pin
         // against replacement. Derive exactly the same distribution path; never
         // invoke a PATH Node or expose a production transport constructor.
@@ -124,7 +124,7 @@ impl VmPeer {
         )
     }
 
-    fn request(&self, method: &str, params: Value) -> Value {
+    pub(super) fn request(&self, method: &str, params: Value) -> Value {
         self.client
             .request(method, Some(params), None, Duration::from_secs(3))
             .unwrap_or_else(|error| {
@@ -137,7 +137,7 @@ impl VmPeer {
             .unwrap()
     }
 
-    fn close(&mut self) {
+    pub(super) fn close(&mut self) {
         if self.closed {
             return;
         }
@@ -204,6 +204,7 @@ impl Fixture {
             .register_local(
                 PLUGIN,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: std::fs::canonicalize(&root).unwrap(),
                     grants: vec![Permission::HostProcess, Permission::CdpRaw],
                 },
@@ -273,14 +274,12 @@ impl Fixture {
         }
         if !self.control.is_pending()
             && let Some(job) = self.broker.take_next()
-        {
-            if let Some(job) =
+            && let Some(job) =
                 self.control
                     .dispatch(job, &mut self.renderer, &self.hosts, &self.broker)
-            {
-                self.broker
-                    .complete(&job.operation_id, self.renderer.manage_plugin(job.request));
-            }
+        {
+            self.broker
+                .complete(&job.operation_id, self.renderer.manage_plugin(job.request));
         }
     }
 
@@ -290,6 +289,7 @@ impl Fixture {
             .handle(ControlRequest::prepare(PluginControlRequest {
                 action,
                 plugin_id: PLUGIN.into(),
+                permission: None,
             }));
         let id = prepared.operation_id().unwrap().to_owned();
         assert_eq!(

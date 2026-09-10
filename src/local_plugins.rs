@@ -388,6 +388,7 @@ pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPl
             root: root.clone(),
             entry: root.join(entry),
             source: Arc::from(source),
+            authorization: None,
         })
     } else {
         None
@@ -459,7 +460,25 @@ pub fn load_local_plugin(
     grants: &[Permission],
     generation: u64,
 ) -> Result<LoadedPlugin, LocalPluginError> {
-    let candidate = inspect_local_plugin(root)?;
+    load_local_plugin_with_registration(
+        expected_id,
+        &crate::plugins::LocalPluginRegistration {
+            path: root.to_owned(),
+            grants: grants.to_vec(),
+            broker_policy: Default::default(),
+        },
+        generation,
+    )
+}
+
+pub fn load_local_plugin_with_registration(
+    expected_id: &str,
+    registration: &crate::plugins::LocalPluginRegistration,
+    generation: u64,
+) -> Result<LoadedPlugin, LocalPluginError> {
+    let root = &registration.path;
+    let grants = &registration.grants;
+    let mut candidate = inspect_local_plugin(root)?;
     let manifest_path = candidate.root.join(MANIFEST_NAME);
     if candidate.manifest.id != expected_id {
         return Err(reject(
@@ -472,6 +491,16 @@ pub fn load_local_plugin(
         ));
     }
     candidate.validate_grants(grants)?;
+    registration
+        .broker_policy
+        .validate_grants(grants)
+        .map_err(|error| {
+            reject(
+                &manifest_path,
+                "broker policy validation",
+                error.to_string(),
+            )
+        })?;
     if !(1..=MAX_JAVASCRIPT_SAFE_INTEGER).contains(&generation) {
         return Err(reject(
             &manifest_path,
@@ -481,7 +510,15 @@ pub fn load_local_plugin(
             ),
         ));
     }
+    // Retain the exact trusted record for later comparisons. The independently
+    // validated source root may have a canonical Windows namespace spelling;
+    // rewriting the record would make an unchanged registration look revoked.
+    let authorization = registration.clone();
+    if let Some(host) = &mut candidate.host {
+        host.authorization = Some(authorization.clone());
+    }
     Ok(LoadedPlugin {
+        authorization: Some(authorization),
         manifest: candidate.manifest,
         source: candidate.source,
         host: candidate.host,
@@ -490,22 +527,22 @@ pub fn load_local_plugin(
 }
 
 fn validate_local_manifest(manifest: &PluginManifest, path: &Path) -> Result<(), LocalPluginError> {
-    if manifest.renderer.is_none() && !manifest.requires.is_empty() {
-        return Err(reject(
-            path,
-            "host capability routing",
-            "host-side requirements are not implemented",
-        ));
-    }
     if manifest
         .host_provides()
         .iter()
-        .any(|capability| capability.scope != crate::capabilities::CapabilityScope::Target)
+        .chain(manifest.host_requires())
+        .any(|capability| {
+            !matches!(
+                capability.scope,
+                crate::capabilities::CapabilityScope::Runtime
+                    | crate::capabilities::CapabilityScope::Target
+            )
+        })
     {
         return Err(reject(
             path,
             "host capability routing",
-            "host capabilities currently support target scope only",
+            "Core host capabilities support Runtime and Target scopes; adapter scopes need an explicit lifecycle provider",
         ));
     }
     if manifest
@@ -534,7 +571,15 @@ fn require_supported_permission(
     // This is the current loader's implementation boundary. Capability names,
     // API versions, scopes, and runtime authorization stay in the existing kernel.
     let supported = (manifest.host.is_some()
-        && matches!(permission, Permission::HostProcess | Permission::CdpRaw))
+        && matches!(
+            permission,
+            Permission::HostProcess
+                | Permission::CdpRaw
+                | Permission::HostFs
+                | Permission::HostNetwork
+                | Permission::HostSystem
+                | Permission::RuntimeManage
+        ))
         || (manifest.renderer.is_some()
             && matches!(permission, Permission::UiDom | Permission::RuntimeManage));
     if supported {

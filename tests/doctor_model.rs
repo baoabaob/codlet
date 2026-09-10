@@ -236,6 +236,7 @@ fn descriptor(name: &str, api: u32, scope: &str) -> Value {
 
 fn declared_plugin(id: &str, provides: Vec<Value>, requires: Vec<Value>) -> LoadedPlugin {
     LoadedPlugin {
+        authorization: None,
         manifest: PluginManifest::parse(&json!({
             "schema": 1, "id": id, "version": "1", "renderer": {"entry": "renderer.js", "world": "isolated"},
             "provides": provides, "requires": requires,
@@ -348,6 +349,7 @@ fn register_local_fixture(
         .register_local(
             id,
             codlet::plugins::LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: root.clone(),
                 grants,
             },
@@ -421,6 +423,7 @@ fn disabled_broken_local_is_visible_but_only_enabled_failure_blocks_launch() {
         .register_local(
             "dev.missing",
             codlet::plugins::LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: directory.path().join("missing"),
                 grants: vec![],
             },
@@ -448,6 +451,7 @@ fn disabled_broken_local_is_visible_but_only_enabled_failure_blocks_launch() {
         .register_local(
             "dev.missing",
             codlet::plugins::LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: directory.path().join("missing"),
                 grants: vec![],
             },
@@ -497,6 +501,7 @@ fn missing_local_grant_and_permission_upgrade_fail_before_runtime_construction()
         .register_local(
             "dev.trusted",
             codlet::plugins::LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: root.clone(),
                 grants: vec![codlet::plugins::Permission::UiDom],
             },
@@ -544,40 +549,36 @@ fn registration_operation_error_preserves_its_plugin_context() {
 
 #[cfg(windows)]
 #[test]
-fn non_target_local_requirements_fail_preflight_even_when_the_generic_graph_resolves() {
+fn deferred_local_scopes_fail_preflight_even_when_the_generic_graph_resolves() {
     use codlet::capabilities::CapabilityRegistry;
     use codlet::local_plugins::inspect_local_plugin;
     use codlet::renderer::{RendererError, RendererRuntime};
 
-    for scope in ["runtime", "backend-session", "thread"] {
+    for scope in ["backend-session", "thread"] {
         let directory = tempdir().unwrap();
         let path = directory.path().join("config.json");
         let mut inputs = fixture(&path);
         let registry = inputs.registry.as_mut().unwrap();
         let capability = descriptor("fixture.cross-scope", 1, scope);
-        let provider = register_local_fixture(
-            registry,
-            directory.path(),
-            "dev.provider",
-            &[],
-            vec![capability.clone()],
-            vec![],
-            vec![],
-        );
         let consumer = register_local_fixture(
             registry,
             directory.path(),
             "dev.consumer",
             &[],
             vec![],
-            vec![capability],
+            vec![capability.clone()],
             vec![],
         );
-        let provider = inspect_local_plugin(&provider).unwrap();
         let consumer = inspect_local_plugin(&consumer).unwrap();
         let mut graph = CapabilityRegistry::new();
         graph
-            .register_provider("dev.provider", 1, &provider.manifest.provides, &[], &[])
+            .register_provider(
+                "dev.provider",
+                1,
+                &[serde_json::from_value(capability).unwrap()],
+                &[],
+                &[],
+            )
             .unwrap();
         graph
             .register_provider("dev.consumer", 1, &[], &consumer.manifest.requires, &[])
@@ -592,7 +593,7 @@ fn non_target_local_requirements_fail_preflight_even_when_the_generic_graph_reso
         assert!(
             error
                 .to_string()
-                .contains("only supports target-scoped requirements")
+                .contains("Core supports Runtime and Target requirements")
         );
         assert!(matches!(
             RendererRuntime::from_catalog(PluginCatalog::load(registry).unwrap(), registry.clone()),
@@ -612,7 +613,7 @@ fn non_target_local_requirements_fail_preflight_even_when_the_generic_graph_reso
             plugin(&report, "dev.consumer")["validation"]["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("target-scoped")
+                .contains("Core supports Runtime and Target requirements")
         );
         assert!(!path.exists());
     }

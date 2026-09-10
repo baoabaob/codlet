@@ -4,7 +4,7 @@ export interface CdpEvent {
   params: Record<string, unknown> | null;
   sessionId: string | null;
 }
-export type CdpFilter = { scope: 'root' | 'all' } | { scope: 'session'; sessionId: string };
+export type CdpFilter = ({ scope: 'root' | 'all' } | { scope: 'session'; sessionId: string }) & { methods?: string[] };
 export interface CdpSubscription {
   readonly id: number;
   unsubscribe(): Promise<{ unsubscribed: boolean }>;
@@ -12,7 +12,22 @@ export interface CdpSubscription {
 export interface CapabilityDescriptor {
   readonly name: string;
   readonly api: number;
-  readonly scope: 'target';
+  readonly scope: 'runtime' | 'target';
+}
+export interface ManagedOptions { timeoutMs?: number; signal?: AbortSignal }
+/** Opaque and local to one Host generation. Obtain with rpc.target; never construct. */
+export interface HostTargetScope {
+  readonly kind: 'target';
+  close(): Promise<{ closed: boolean }>;
+}
+export type InvocationScope = Readonly<{ kind: 'runtime' } | { kind: 'target'; targetId: string; epoch: number }>;
+export interface HostRpc {
+  request<T = unknown>(capability: CapabilityDescriptor, method: string, params?: unknown, options?: ManagedOptions & { scope?: HostTargetScope }): Promise<T>;
+  /** Resolves after the selected handler finishes; its result is discarded. */
+  notify(capability: CapabilityDescriptor, method: string, params?: unknown, options?: ManagedOptions & { scope?: HostTargetScope }): Promise<void>;
+  /** sessionId must be obtained by this generation through Core raw attachToTarget(flatten:true). */
+  target(input: { sessionId: string }, options?: ManagedOptions): Promise<HostTargetScope>;
+  provide<P = unknown, R = unknown>(capability: CapabilityDescriptor, method: string, handler: (params: P, invocation: HostCapabilityInvocation) => R | Promise<R>): Readonly<{ ok: true }>;
 }
 export interface HostCapabilityInvocation {
   readonly pluginId: string;
@@ -22,6 +37,10 @@ export interface HostCapabilityInvocation {
   /** Authenticated by Core; renderer params cannot replace these fields. */
   readonly caller: Readonly<{ pluginId: string; generation: number; targetId: string; documentEpoch: number }>;
   readonly signal: AbortSignal;
+  readonly scope: InvocationScope;
+  readonly depth: number;
+  /** Host async continuations also inherit this lineage through AsyncLocalStorage. */
+  readonly rpc: HostRpc;
   remainingMs(): number;
 }
 export interface HostContext {
@@ -30,18 +49,25 @@ export interface HostContext {
   readonly signal: AbortSignal;
   readonly log: Pick<Console, 'log' | 'info' | 'warn' | 'error' | 'debug'>;
   readonly cdp: {
-    request<T = unknown>(method: string, params?: Record<string, unknown>, options?: { sessionId?: string; timeoutMs?: number }): Promise<T>;
+    request<T = unknown>(method: string, params?: Record<string, unknown>, options?: ManagedOptions & { sessionId?: string }): Promise<T>;
     subscribe(filter: CdpFilter, onEvent: (event: CdpEvent) => void | Promise<void>, onEnd?: (reason: string) => void | Promise<void>): Promise<CdpSubscription>;
   };
   readonly core: {
     request<T = unknown>(method: string, params: unknown, timeoutMs?: number): Promise<T>;
   };
-  readonly rpc: {
-    /** Host provides only. Calls require a declared Target descriptor and an
-     * active provider generation. Managed child CDP calls inherit this
-     * invocation's deadline/cancellation across async continuations. */
-    provide<P = unknown, R = unknown>(capability: CapabilityDescriptor, method: string, handler: (params: P, invocation: HostCapabilityInvocation) => R | Promise<R>): Readonly<{ ok: true }>;
+  readonly rpc: HostRpc;
+  readonly fs: {
+    readText(params: { path: string; maxBytes?: number }, options?: ManagedOptions): Promise<{ text: string; bytes: number }>;
+    readDir(params: { path: string; maxEntries?: number }, options?: ManagedOptions): Promise<{ entries: { name: string; kind: string }[]; truncated: boolean }>;
+    stat(params: { path: string }, options?: ManagedOptions): Promise<{ kind: string; bytes: number; modifiedUnixMs: number | null }>;
   };
+  readonly network: {
+    fetch(params: { url: string; method?: 'GET' | 'HEAD'; headers?: Record<string, string>; maxBytes?: number }, options?: ManagedOptions): Promise<{ status: number; url: string; headers: Record<string, string>; body: string; bytes: number }>;
+  };
+  readonly process: {
+    run(params: { executable: string; args: string[]; maxOutputBytes?: number }, options?: ManagedOptions): Promise<{ processId: number; exitCode: number; stdout: string; stderr: string; stdoutBytes: number; stderrBytes: number; jobReaped: boolean }>;
+  };
+  readonly system: { info(options?: ManagedOptions): Promise<{ os: string; architecture: string; logicalCpus: number }> };
 }
 export interface HostPlugin {
   activate(context: HostContext): void | Promise<void>;

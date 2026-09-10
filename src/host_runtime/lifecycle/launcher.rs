@@ -11,7 +11,10 @@ pub(super) struct Launcher {
 }
 
 impl Launcher {
-    pub(super) fn new(runtime: Option<JsRuntime>) -> Result<Self, HostError> {
+    pub(super) fn new(
+        runtime: Option<JsRuntime>,
+        services: services::CoreServices,
+    ) -> Result<Self, HostError> {
         let mut runtime = runtime;
         Self::with_prepare(move |plugin| {
             let ready = if runtime.is_none() {
@@ -20,7 +23,11 @@ impl Launcher {
                 Ok(())
             };
             match ready {
-                Ok(()) => HostOwner::start(plugin, runtime.as_ref().unwrap()),
+                Ok(()) => HostOwner::start_with_services(
+                    plugin,
+                    runtime.as_ref().unwrap(),
+                    services.clone(),
+                ),
                 Err(error) => {
                     let mut owner = HostOwner::new(plugin);
                     owner.fail(error);
@@ -33,7 +40,7 @@ impl Launcher {
     fn with_prepare(
         mut prepare: impl FnMut(LoadedPlugin) -> HostOwner + Send + 'static,
     ) -> Result<Self, HostError> {
-        let (requests, receiver) = mpsc::sync_channel(COMMAND_QUEUE);
+        let (requests, receiver) = mpsc::sync_channel(MAX_HOSTS);
         let (sender, results) = mpsc::sync_channel(1);
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);

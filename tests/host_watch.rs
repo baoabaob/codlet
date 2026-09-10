@@ -102,6 +102,7 @@ impl Fixture {
             .register_local(
                 id,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root.clone(),
                     grants,
                 },
@@ -125,6 +126,7 @@ impl Fixture {
             .handle(ControlRequest::prepare(PluginControlRequest {
                 action,
                 plugin_id: id.into(),
+                permission: None,
             }));
         let ticket = prepared.operation_id().unwrap().to_owned();
         assert_eq!(
@@ -493,6 +495,7 @@ fn host_watch_pins_full_grants_and_root_and_stops_observing_removed_or_disabled_
         .register_local(
             id,
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: root.clone(),
                 grants: vec![Permission::HostProcess, Permission::CdpRaw],
             },
@@ -539,6 +542,7 @@ fn host_watch_pins_full_grants_and_root_and_stops_observing_removed_or_disabled_
         .register_local(
             id,
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: replacement.clone(),
                 grants: vec![Permission::HostProcess, Permission::CdpRaw],
             },
@@ -548,6 +552,7 @@ fn host_watch_pins_full_grants_and_root_and_stops_observing_removed_or_disabled_
         .register_local(
             "dev.never-loaded",
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: fixture.directory.path().join("must-not-be-read"),
                 grants: vec![Permission::HostProcess],
             },
@@ -668,6 +673,7 @@ fn queued_cli_precedes_watch_and_generation_or_grant_changes_reject_the_stale_re
         .register_local(
             id,
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: root.clone(),
                 grants: vec![Permission::CdpRaw, Permission::HostProcess],
             },

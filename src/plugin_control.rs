@@ -9,6 +9,7 @@ pub enum PluginControlAction {
     Enable,
     Disable,
     Reload,
+    Revoke,
 }
 
 impl PluginControlAction {
@@ -17,6 +18,7 @@ impl PluginControlAction {
             Self::Enable => "enable",
             Self::Disable => "disable",
             Self::Reload => "reload",
+            Self::Revoke => "revoke",
         }
     }
 }
@@ -26,6 +28,8 @@ impl PluginControlAction {
 pub struct PluginControlRequest {
     pub action: PluginControlAction,
     pub plugin_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<crate::plugins::Permission>,
 }
 
 impl PluginControlRequest {
@@ -34,6 +38,12 @@ impl PluginControlRequest {
             return Err(PluginControlError::new(
                 "invalid_plugin_id",
                 "plugin id is invalid",
+            ));
+        }
+        if (self.action == PluginControlAction::Revoke) != self.permission.is_some() {
+            return Err(PluginControlError::new(
+                "invalid_permission",
+                "Only revoke requires one explicit permission.",
             ));
         }
         Ok(())

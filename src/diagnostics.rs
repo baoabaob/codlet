@@ -617,15 +617,19 @@ fn dependency_issue(
             consumer,
             requirement,
         } => {
+            let logical_consumer =
+                crate::capabilities::host_provider_plugin_id(&consumer).unwrap_or(&consumer);
             let disabled: Vec<_> = catalog
                 .entries()
                 .iter()
                 .filter(|entry| {
                     !registry.is_enabled(&entry.id)
-                        && entry
-                            .plugin
-                            .as_ref()
-                            .is_ok_and(|plugin| plugin.manifest.provides.contains(&requirement))
+                        && entry.plugin.as_ref().is_ok_and(|plugin| {
+                            plugin
+                                .manifest
+                                .all_provides()
+                                .any(|provided| provided == &requirement)
+                        })
                 })
                 .map(|entry| entry.id.clone())
                 .collect();
@@ -636,11 +640,11 @@ fn dependency_issue(
             };
             issue.remediation = if disabled.is_empty() {
                 format!(
-                    "Restore an enabled provider for {requirement}, or run `codlet plugin disable {consumer}`; rerun doctor."
+                    "Restore an enabled provider for {requirement}, or run `codlet plugin disable {logical_consumer}`; rerun doctor."
                 )
             } else {
                 format!(
-                    "Run `codlet plugin enable {}` to restore the required provider, or `codlet plugin disable {consumer}`; changes apply to the next codlet launch.",
+                    "Run `codlet plugin enable {}` to restore the required provider, or `codlet plugin disable {logical_consumer}`; query the lifecycle receipt when a Host is running.",
                     disabled[0]
                 )
             };
@@ -670,6 +674,11 @@ fn dependency_issue(
         }
         CapabilityRegistryError::ProviderConflict { provider_id } => {
             issue.code = "dependency_provider_conflict";
+            issue.details = json!({"provider": provider_id});
+        }
+        CapabilityRegistryError::UnknownProvider { provider_id } => {
+            issue.code = "dependency_entry_missing";
+            issue.remediation = "Restore the package entry required by the execution dependency, or disable its dependents; rerun doctor before enabling the package.".into();
             issue.details = json!({"provider": provider_id});
         }
         CapabilityRegistryError::InvalidProviderId(provider_id) => {

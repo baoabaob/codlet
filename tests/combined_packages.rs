@@ -145,6 +145,7 @@ impl Fixture {
             .register_local(
                 id,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root.clone(),
                     grants,
                 },
@@ -168,6 +169,7 @@ impl Fixture {
             .handle(ControlRequest::prepare(PluginControlRequest {
                 action,
                 plugin_id: id.into(),
+                permission: None,
             }));
         assert_eq!(prepared.status, ControlStatus::Prepared);
         let receipt = prepared.operation_id().unwrap().to_owned();
@@ -429,6 +431,22 @@ fn combined_enable_receipt_waits_for_a_real_renderer_target_after_native_ready()
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
+    // The coordinator requests a renderer as soon as Host startup is queued;
+    // Host activation may itself await a renderer provider. This independent
+    // Host becomes ready while the same receipt still waits for a live target.
+    while !fixture
+        .hosts
+        .observations()
+        .iter()
+        .any(|observation| observation.state == ExecutionState::Active)
+    {
+        fixture.tick();
+        assert!(
+            Instant::now() < end,
+            "native entry did not become ready while waiting for its renderer"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(
         fixture
             .broker
@@ -463,6 +481,7 @@ fn combined_disable_self_preserves_response_and_retries_a_full_receipt_queue() {
                 .broker
                 .handle(ControlRequest::prepare(PluginControlRequest {
                     action: Action::Disable,
+                    permission: None,
                     plugin_id: format!("dev.absent{index}"),
                 }))
                 .operation_id()

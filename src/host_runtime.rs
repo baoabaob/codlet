@@ -25,7 +25,13 @@ mod capability;
 pub use capability::{
     HostCapabilityCaller, HostCapabilityClient, HostCapabilityOperation, HostCapabilityRequest,
 };
+mod attachments;
 mod cleanup;
+mod rpc;
+mod rpc_state;
+mod services;
+pub(crate) use rpc_state::{RendererCall, RendererEndpoint, RpcLineage, RpcRoute};
+pub use services::HostCoreServices;
 mod snapshot;
 pub use snapshot::{
     HostCleanupPhase, HostCleanupSnapshot, HostPluginSnapshot, HostProcessExitSnapshot,
@@ -70,6 +76,7 @@ pub struct HostRuntime {
     commands: mpsc::SyncSender<lifecycle::Command>,
     operations: Arc<AtomicUsize>,
     capabilities: HostCapabilityClient,
+    services: services::CoreServices,
     worker: Option<JoinHandle<Vec<HostStopReport>>>,
 }
 
@@ -89,18 +96,23 @@ impl HostRuntime {
                     .manifest
                     .permissions
                     .contains(&Permission::HostProcess)
-                || (plugin.manifest.renderer.is_none() && !plugin.manifest.requires.is_empty())
                 || plugin
                     .manifest
                     .host_provides()
                     .iter()
-                    .any(|capability| capability.scope != CapabilityScope::Target)
+                    .chain(plugin.manifest.host_requires())
+                    .any(|capability| {
+                        !matches!(
+                            capability.scope,
+                            CapabilityScope::Target | CapabilityScope::Runtime
+                        )
+                    })
                 || !ids.insert(&plugin.manifest.id)
             {
                 return Err(HostError::new(
                     "host_entry_required",
                     format!(
-                        "{} must have a distinct loaded Host entry, host.process, only Target host provides, and no host-side requires",
+                        "{} must have a distinct loaded Host entry, host.process, and only Runtime or Target host capabilities",
                         plugin.manifest.id
                     ),
                 ));
@@ -131,7 +143,7 @@ impl HostRuntime {
         runtime: Option<JsRuntime>,
     ) -> Result<Self, HostError> {
         Self::validate_plugins(&plugins)?;
-        lifecycle::launch(plugins, client, runtime)
+        lifecycle::launch(plugins, client, runtime, services::CoreServices::default())
     }
 
     pub fn observations(&self) -> Vec<PluginExecutionObservation> {
@@ -200,6 +212,12 @@ fn publish(published: &Mutex<Published>, owners: &[HostOwner]) {
     let mut current = published.lock().unwrap_or_else(|p| p.into_inner());
     snapshot::update(&mut current, owners);
     for owner in owners {
+        owner.services.rpc.host_state(
+            &owner.observation.plugin.manifest.id,
+            owner.observation.plugin.generation,
+            owner.observation.state,
+            owner.observation.error.as_deref(),
+        );
         if current
             .observations
             .iter()
@@ -243,7 +261,22 @@ struct HostOwner {
     initialize_id: u64,
     initialize_deadline: Instant,
     pending: Vec<(u64, QueuedCdpRequest, Option<u64>)>,
+    raw_metadata: std::collections::BTreeMap<u64, rpc::RawMetadata>,
+    retiring_attachments: Vec<attachments::RetiringAttachment>,
+    attachment_failure: Option<String>,
+    undelivered_attachments: std::collections::BTreeMap<u64, String>,
+    rpc_pending: Vec<rpc::Pending>,
+    rpc_cancel_deliveries: Vec<crate::cdp::CdpRequest>,
     capabilities: Vec<capability::Invocation>,
+    services: services::CoreServices,
+    services_active: bool,
+    authorization: Option<crate::os_broker::OsAuthorization>,
+    os_pending: Vec<services::OsPending>,
+    retiring_os: Vec<crate::os_broker::OsBrokerOperation>,
+    scope_cleanup: Vec<services::ScopeCleanup>,
+    scope_cleanup_queue: VecDeque<(String, Instant)>,
+    cleanup_quarantined: bool,
+    defer_scope_cleanup: bool,
     subscription: Option<(u64, BoundedCdpEvents)>,
     subscription_id: u64,
     outbox: VecDeque<Outbound>,
@@ -272,7 +305,22 @@ impl HostOwner {
             initialize_id: 0,
             initialize_deadline: Instant::now() + INITIALIZE_TIMEOUT,
             pending: Vec::new(),
+            raw_metadata: std::collections::BTreeMap::new(),
+            retiring_attachments: Vec::new(),
+            attachment_failure: None,
+            undelivered_attachments: std::collections::BTreeMap::new(),
+            rpc_pending: Vec::new(),
+            rpc_cancel_deliveries: Vec::new(),
             capabilities: Vec::new(),
+            services: services::CoreServices::default(),
+            services_active: false,
+            authorization: None,
+            os_pending: Vec::new(),
+            retiring_os: Vec::new(),
+            scope_cleanup: Vec::new(),
+            scope_cleanup_queue: VecDeque::new(),
+            cleanup_quarantined: false,
+            defer_scope_cleanup: false,
             subscription: None,
             subscription_id: 0,
             outbox: VecDeque::new(),
@@ -287,9 +335,19 @@ impl HostOwner {
         }
     }
 
+    #[cfg(test)]
     fn start(plugin: LoadedPlugin, runtime: &JsRuntime) -> Self {
+        Self::start_with_services(plugin, runtime, services::CoreServices::default())
+    }
+
+    fn start_with_services(
+        plugin: LoadedPlugin,
+        runtime: &JsRuntime,
+        services: services::CoreServices,
+    ) -> Self {
         let mut owner = Self::new(plugin);
         let result = (|| {
+            owner.authorize_services(services)?;
             let plugin = &owner.observation.plugin;
             let host = plugin.host.as_ref().expect("validated host entry");
             let invocation = runtime.prepare(host)?;
@@ -313,6 +371,7 @@ impl HostOwner {
                     "protocolVersion":1, "coreVersion":env!("CARGO_PKG_VERSION"), "pluginVersion":plugin.manifest.version,
                     "permissions":plugin.manifest.permissions,
                     "provides":plugin.manifest.host_provides(),
+                    "requires":plugin.manifest.host_requires(),
                     "methods":["cdp.request","cdp.subscribe","cdp.unsubscribe"],
                 }),
                 INITIALIZE_TIMEOUT,
@@ -326,6 +385,20 @@ impl HostOwner {
     }
 
     fn pump(&mut self, client: &CdpClient) {
+        if matches!(
+            self.observation.state,
+            ExecutionState::Starting | ExecutionState::Active
+        ) && !self.authority_is_live()
+        {
+            self.fail(HostError::new(
+                "authorization_revoked",
+                "the complete trust record of this Host generation changed",
+            ));
+        }
+        self.pump_scope_cleanup(client);
+        self.pump_attachment_retirement(client);
+        self.pump_os();
+        self.pump_rpc(client);
         self.expire_capabilities();
         if matches!(
             self.observation.state,
@@ -382,6 +455,11 @@ impl HostOwner {
                 ),
                 HostEvent::Response { id, result } => self.finish_capability_response(id, result),
                 HostEvent::RequestTimedOut { id } => self.finish_capability_timeout(id),
+                HostEvent::Notification { method, params } if method == "request.cancel" => {
+                    if let Some(id) = params.get("id").and_then(Value::as_u64) {
+                        self.cancel_managed_request(id);
+                    }
+                }
                 // Notifications never authorize Core actions; RPC requires a reply id.
                 _ => {}
             }
@@ -392,21 +470,9 @@ impl HostOwner {
                 return;
             }
         }
-        let mut index = 0;
-        while index < self.pending.len() {
-            let outcome = match self.pending[index].1.try_response() {
-                Ok(None) => {
-                    index += 1;
-                    continue;
-                }
-                Ok(Some(response)) => bounded_result(Ok(response.result.unwrap_or(Value::Null))),
-                Err(error) => Err(cdp_error(error)),
-            };
-            let (id, _, _) = self.pending.swap_remove(index);
-            self.queue(Outbound::Reply(id, outcome));
-            if self.observation.state == ExecutionState::Stopping {
-                return;
-            }
+        self.pump_raw_pending();
+        if self.observation.state == ExecutionState::Stopping {
+            return;
         }
         // Reserve queue space for replies. Pull at most one event per owner tick.
         if self.outbox.len() < MAX_OUTBOX - 1
@@ -447,6 +513,7 @@ impl HostOwner {
                 }
             };
             if let Some(id) = reply_id {
+                self.finish_raw_reply(id, result.is_ok());
                 self.child_reply_finished(id);
             }
             if let Err(error) = result
@@ -478,6 +545,18 @@ impl HostOwner {
         params: Value,
         parent: Option<(u64, Instant)>,
     ) -> Option<Result<Value, HostRpcError>> {
+        if self.observation.state != ExecutionState::Stopping && !self.authority_is_current() {
+            return Some(Err(HostRpcError::new(
+                "authorization_revoked",
+                "this Host generation no longer has current authority",
+            )));
+        }
+        if method.starts_with("host.") && self.observation.state != ExecutionState::Stopping {
+            return self.dispatch_os(id, method, params, parent);
+        }
+        if method.starts_with("rpc.") && self.observation.state != ExecutionState::Stopping {
+            return self.dispatch_rpc(client, id, method, params, parent);
+        }
         if !matches!(method, "cdp.request" | "cdp.subscribe" | "cdp.unsubscribe") {
             return Some(Err(HostRpcError::new(
                 "method_not_found",
@@ -500,7 +579,7 @@ impl HostOwner {
             "cdp.request" => {
                 let input: RawRequest = decode_params(params)?;
                 input.validate()?;
-                if self.pending.len() >= MAX_PENDING {
+                if self.pending.len() + self.retiring_attachments.len() >= MAX_PENDING {
                     return Err(HostRpcError::new(
                         "request_limit",
                         "this plugin has four pending CDP requests",
@@ -528,15 +607,42 @@ impl HostOwner {
                         )
                     })?);
                 }
+                let attachment = if input.method == "Target.attachToTarget"
+                    && input.session_id.is_none()
+                    && input
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("flatten"))
+                        == Some(&Value::Bool(true))
+                {
+                    Some(
+                        self.services
+                            .rpc
+                            .reserve_raw_attach()
+                            .map_err(|error| HostRpcError::new(error.code, error.message))?,
+                    )
+                } else {
+                    None
+                };
                 let request = client
                     .begin_raw_request(
                         &input.method,
-                        input.params,
+                        input.params.clone(),
                         input.session_id.as_deref(),
                         deadline,
                     )
                     .map_err(cdp_error)?;
                 self.pending.push((id, request, parent.map(|(id, _)| id)));
+                self.raw_metadata.insert(
+                    id,
+                    rpc::RawMetadata {
+                        method: input.method,
+                        params: input.params,
+                        session: input.session_id,
+                        attachment,
+                        deadline,
+                    },
+                );
                 Ok(None)
             }
             "cdp.subscribe" => {
@@ -560,7 +666,11 @@ impl HostOwner {
                         ));
                     }
                 };
-                let events = client.subscribe_bounded(filter).map_err(cdp_error)?;
+                let events = match input.methods {
+                    Some(methods) => client.subscribe_bounded_methods(filter, methods),
+                    None => client.subscribe_bounded(filter),
+                }
+                .map_err(cdp_error)?;
                 self.subscription_id = self
                     .subscription_id
                     .checked_add(1)
@@ -621,7 +731,9 @@ impl HostOwner {
         // Faults explicitly cancel both ordinary and cleanup work. A repeated
         // lifecycle stop, in contrast, must preserve an in-progress cleanup.
         self.retire_capabilities(HostError::new("host_unavailable", error.to_string()));
-        self.pending.clear();
+        self.cancel_os(None);
+        self.cancel_rpc(None);
+        self.cancel_raw_requests(None);
         self.subscription.take();
         self.outbox.clear();
         if self.observation.state == ExecutionState::Stopping
@@ -641,11 +753,20 @@ impl HostOwner {
         if self.observation.state == ExecutionState::Stopping {
             return;
         }
+        self.defer_scope_cleanup = self.cleanup_raw_is_current();
+        if self.services_active {
+            self.services.rpc.retire_host_scopes(
+                &self.observation.plugin.manifest.id,
+                self.observation.plugin.generation,
+            );
+        }
         self.retire_capabilities(HostError::new(
             "host_stopping",
             "this provider generation is stopping",
         ));
-        self.pending.clear();
+        self.cancel_os(None);
+        self.cancel_rpc(None);
+        self.cancel_raw_requests(None);
         self.subscription.take();
         self.outbox.clear();
         if let Some(supervisor) = &mut self.supervisor {
@@ -705,7 +826,8 @@ impl HostOwner {
         });
         self.supervisor.take();
         self.invocation.take();
-        self.pending.clear();
+        self.retire_services();
+        self.cancel_raw_requests(None);
         self.subscription.take();
         self.outbox.clear();
         self.observation.state = if self.failure.is_some() {
@@ -720,11 +842,29 @@ impl HostOwner {
             "host_stopping",
             "this provider generation has retired",
         ));
-        self.pending.clear();
+        self.cancel_os(None);
+        self.cancel_rpc(None);
+        self.retire_services();
+        self.cancel_raw_requests(None);
         self.subscription.take();
         self.outbox.clear();
         if let Some(mut supervisor) = self.supervisor.take() {
-            let result = supervisor.stop();
+            let mut result = supervisor.stop();
+            if self.cleanup_quarantined
+                || !self.scope_cleanup.is_empty()
+                || !self.scope_cleanup_queue.is_empty()
+                || !self.retiring_os.is_empty()
+                || !self.retiring_attachments.is_empty()
+                || self.services.rpc.has_cleanup_sessions(
+                    &self.observation.plugin.manifest.id,
+                    self.observation.plugin.generation,
+                )
+            {
+                result = Err(HostError::new(
+                    "cleanup_incomplete",
+                    "Core could not confirm retirement of this Host generation's managed OS or raw-session resources",
+                ));
+            }
             self.observation.state = if result.is_ok() && self.observation.error.is_none() {
                 ExecutionState::Exited
             } else {
@@ -743,7 +883,28 @@ impl HostOwner {
             self.stop_report = Some(report.clone());
             Some(report)
         } else {
-            self.stop_report.clone()
+            if self.cleanup_quarantined
+                || !self.scope_cleanup.is_empty()
+                || !self.scope_cleanup_queue.is_empty()
+                || !self.retiring_os.is_empty()
+                || !self.retiring_attachments.is_empty()
+                || self.services.rpc.has_cleanup_sessions(
+                    &self.observation.plugin.manifest.id,
+                    self.observation.plugin.generation,
+                )
+            {
+                let report = HostStopReport {
+                    plugin_id: self.observation.plugin.manifest.id.clone(),
+                    result: Err(HostError::new(
+                        "cleanup_incomplete",
+                        "managed OS or raw-session retirement remains unconfirmed",
+                    )),
+                };
+                self.stop_report = Some(report.clone());
+                Some(report)
+            } else {
+                self.stop_report.clone()
+            }
         }
     }
 }
@@ -799,6 +960,7 @@ impl RawRequest {
 struct Subscribe {
     scope: String,
     session_id: Option<String>,
+    methods: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -854,6 +1016,7 @@ fn cdp_error(error: ClientError) -> HostRpcError {
             HostRpcError::new("request_timeout", error.to_string())
         }
         ClientError::RequestQueueFull => HostRpcError::new("request_limit", error.to_string()),
+        ClientError::InvalidEventFilter => HostRpcError::new("invalid_params", error.to_string()),
         _ => HostRpcError::new("cdp_unavailable", error.to_string()),
     }
 }

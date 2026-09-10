@@ -166,15 +166,14 @@ fn host_grants_are_explicit_and_do_not_expand_the_declared_core_authority() {
         let mut changed = manifest.clone();
         changed[declaration] = json!([{"name":"dev.host.service","api":1,"scope":"runtime"}]);
         fixture.manifest(&changed);
+        assert!(inspect_local_plugin(&fixture.root).is_ok());
+        changed[declaration][0]["scope"] = json!("thread");
+        fixture.manifest(&changed);
         assert!(
             inspect_local_plugin(&fixture.root)
                 .unwrap_err()
                 .to_string()
-                .contains(if declaration == "provides" {
-                    "target scope"
-                } else {
-                    "host-side requirements"
-                })
+                .contains("Runtime and Target")
         );
     }
     manifest["renderer"] = json!({"entry":"missing.js","world":"isolated"});
@@ -195,6 +194,7 @@ fn catalog_keeps_a_js_host_without_any_official_functional_plugin_or_renderer_en
         .register_local(
             "dev.host",
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: fs::canonicalize(&fixture.root).unwrap(),
                 grants: vec![Permission::HostProcess],
             },

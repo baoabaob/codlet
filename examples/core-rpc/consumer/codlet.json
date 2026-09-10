@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "id": "example.rpc.consumer",
+  "version": "1.0.0",
+  "renderer": { "entry": "renderer.js", "world": "isolated" },
+  "requires": [
+    { "name": "example.rpc.coordinator", "api": 1, "scope": "runtime" },
+    { "name": "example.rpc.math", "api": 1, "scope": "runtime" }
+  ]
+}

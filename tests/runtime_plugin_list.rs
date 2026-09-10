@@ -70,7 +70,14 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
         )
         .unwrap();
         registry
-            .register_local(id, LocalPluginRegistration { path: root, grants })
+            .register_local(
+                id,
+                LocalPluginRegistration {
+                    path: root,
+                    grants,
+                    broker_policy: Default::default(),
+                },
+            )
             .unwrap();
     }
     registry.save().unwrap();
@@ -97,6 +104,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
         .manage_plugin(PluginControlRequest {
             action: PluginControlAction::Disable,
             plugin_id: "dev.list.removed".into(),
+            permission: None,
         })
         .unwrap();
     let mut external = PluginRegistry::load(&registry_path).unwrap();
@@ -108,6 +116,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
         .register_local(
             "dev.list.new",
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: unread_directory.clone(),
                 grants: vec![],
             },
@@ -165,6 +174,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
         .manage_plugin(PluginControlRequest {
             action: PluginControlAction::Disable,
             plugin_id: "dev.list.running".into(),
+            permission: None,
         })
         .unwrap();
     assert!(stopped.is_success());

@@ -58,7 +58,13 @@ pub(super) fn update(published: &mut Published, owners: &[HostOwner]) {
                 .error
                 .as_ref()
                 .map(|error| error.chars().take(4096).collect()),
-            pending_core_requests: owner.pending.len(),
+            pending_core_requests: owner.pending.len()
+                + owner.rpc_pending.len()
+                + owner.os_pending.len()
+                + owner.retiring_attachments.len()
+                + owner.retiring_os.len()
+                + owner.scope_cleanup.len()
+                + owner.scope_cleanup_queue.len(),
             subscriptions: usize::from(owner.subscription.is_some()),
             outbox: owner.outbox.len(),
             launching: owner.launching,
@@ -101,12 +107,14 @@ mod tests {
         for index in 0..100 {
             let manifest = serde_json::from_value(json!({"schema":1,"id":format!("dev.sample-{index}"),"version":"1","host":{"entry":"host.js"},"permissions":["host.process"]})).unwrap();
             let mut owner = HostOwner::new(LoadedPlugin {
+                authorization: None,
                 manifest,
                 source: None,
                 host: Some(crate::plugins::LoadedHost {
                     root: std::path::PathBuf::from("C:/source-not-for-inspection"),
                     entry: std::path::PathBuf::from("C:/source-not-for-inspection/host.js"),
                     source: Arc::from("module.exports = SECRET_EXECUTABLE_SOURCE"),
+                    authorization: None,
                 }),
                 generation: 1,
             });

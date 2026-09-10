@@ -63,6 +63,7 @@ fn alias_updates_share_one_preference_and_merge_with_current_registrations_under
     stale_gui_writer.set_enabled("codlet", true).unwrap();
     other_writer.set_enabled("dev.other", false).unwrap();
     let registration = LocalPluginRegistration {
+        broker_policy: Default::default(),
         path: directory.path().join("trusted-source"),
         grants: vec![Permission::UiDom],
     };
@@ -106,6 +107,7 @@ fn gui_ids_cannot_adopt_a_local_registration_or_silently_rewrite_a_conflict() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("config.json");
     let registration = LocalPluginRegistration {
+        broker_policy: Default::default(),
         path: directory.path().join("unrelated-user-plugin"),
         grants: vec![Permission::UiDom],
     };

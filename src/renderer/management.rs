@@ -79,6 +79,10 @@ impl RendererRuntime {
             return Err(host_executor_required(id));
         }
         match request.action {
+            PluginControlAction::Revoke => Err(PluginControlError::new(
+                "host_executor_required",
+                "Permission revocation uses the foreground package coordinator.",
+            )),
             PluginControlAction::Disable => {
                 plugin_lifecycle::validate_disable(&self.plugins, &self.catalog, &registry, id)
                     .map_err(control_error)?;
@@ -408,6 +412,9 @@ impl RendererRuntime {
 
     pub(super) fn remove_managed_providers(&mut self, affected: &BTreeSet<String>) {
         for id in affected {
+            if let Some(generation) = self.capabilities.provider_generation(id) {
+                self.retire_rpc_plugin(id, generation);
+            }
             let _ = self.capabilities.unregister_provider(id);
         }
     }
@@ -417,6 +424,9 @@ impl RendererRuntime {
         plugins: &[LoadedPlugin],
         stage: &str,
     ) -> Vec<PluginTargetFailure> {
+        if let Err(error) = self.register_rpc_plugins(plugins) {
+            return vec![global_failure("core-rpc", stage, error.to_string())];
+        }
         for plugin in plugins {
             let grants: Vec<_> = plugin
                 .manifest
@@ -441,43 +451,39 @@ impl RendererRuntime {
         let mut target_ids: Vec<_> = self.sessions.keys().cloned().collect();
         target_ids.sort();
         let mut failures = Vec::new();
-        for target_id in target_ids {
-            if self.ensure_live_target(&target_id).is_err() {
-                continue;
-            }
-            let result = if self.sessions[&target_id].recovery_pending {
-                Err(RendererError::PluginRejected {
-                    plugin_id: plugins
-                        .first()
-                        .map(|plugin| plugin.manifest.id.clone())
-                        .unwrap_or_default(),
-                    message: "main document recovery is pending".into(),
-                })
-            } else {
-                self.resolve_plugin_authorizations(
-                    plugins,
-                    &CapabilityScopeInstance::Target(target_id.clone()),
-                )
-                .map_err(RendererError::from)
-                .and_then(|authorizations| {
-                    self.install_plugins(&target_id, plugins.to_vec(), authorizations)
-                })
-            };
-            if let Err(error) = result {
-                let plugin_id = match &error {
-                    RendererError::PluginRejected { plugin_id, .. }
-                    | RendererError::BootstrapRejected { plugin_id, .. } => plugin_id.clone(),
-                    _ => plugins
-                        .first()
-                        .map(|plugin| plugin.manifest.id.clone())
-                        .unwrap_or_default(),
+        // One entry reaches every document before consumers begin. This also
+        // lets a starting Host await a renderer in any attached Target.
+        for plugin in plugins {
+            for target_id in &target_ids {
+                if self.ensure_live_target(target_id).is_err() {
+                    continue;
+                }
+                let result = if self.sessions[target_id].recovery_pending {
+                    Err(RendererError::PluginRejected {
+                        plugin_id: plugin.manifest.id.clone(),
+                        message: "main document recovery is pending".into(),
+                    })
+                } else {
+                    self.resolve_plugin_authorizations(
+                        std::slice::from_ref(plugin),
+                        &CapabilityScopeInstance::Target(target_id.clone()),
+                    )
+                    .map_err(RendererError::from)
+                    .and_then(|authorizations| {
+                        self.install_plugins(target_id, vec![plugin.clone()], authorizations)
+                    })
                 };
-                failures.push(PluginTargetFailure {
-                    target_id,
-                    plugin_id,
-                    stage: stage.into(),
-                    error: error.to_string(),
-                });
+                if let Err(error) = result {
+                    failures.push(PluginTargetFailure {
+                        target_id: target_id.clone(),
+                        plugin_id: plugin.manifest.id.clone(),
+                        stage: stage.into(),
+                        error: error.to_string(),
+                    });
+                }
+            }
+            if !failures.is_empty() {
+                break;
             }
         }
         failures
@@ -565,6 +571,7 @@ mod tests {
             .register_local(
                 "dev.host",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: std::fs::canonicalize(&root).unwrap(),
                     grants: vec![Permission::HostProcess],
                 },
@@ -593,6 +600,7 @@ mod tests {
                     .manage_plugin(PluginControlRequest {
                         action,
                         plugin_id: "dev.host".into(),
+                        permission: None,
                     })
                     .unwrap_err()
                     .code,
@@ -649,6 +657,7 @@ mod tests {
                     .register_local(
                         "dev.local",
                         LocalPluginRegistration {
+                            broker_policy: Default::default(),
                             path: root.clone(),
                             grants: vec![],
                         },
@@ -677,6 +686,7 @@ mod tests {
                 .register_local(
                     "dev.local",
                     LocalPluginRegistration {
+                        broker_policy: Default::default(),
                         path: root,
                         grants: vec![Permission::HostProcess],
                     },
@@ -692,6 +702,7 @@ mod tests {
                         PluginControlAction::Enable
                     },
                     plugin_id: "dev.local".into(),
+                    permission: None,
                 })
                 .unwrap_err();
             assert_eq!(
@@ -738,6 +749,7 @@ mod tests {
                 .register_local(
                     id,
                     LocalPluginRegistration {
+                        broker_policy: Default::default(),
                         path: root,
                         grants: vec![],
                     },
@@ -787,6 +799,7 @@ mod tests {
             .register_local(
                 "dev.consumer",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: replacement.clone(),
                     grants: vec![],
                 },
@@ -832,7 +845,8 @@ mod tests {
             runtime
                 .manage_watched_plugin(PluginControlRequest {
                     action: PluginControlAction::Enable,
-                    plugin_id: "dev.consumer".into()
+                    plugin_id: "dev.consumer".into(),
+                    permission: None,
                 })
                 .unwrap_err()
                 .code,

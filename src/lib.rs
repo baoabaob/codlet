@@ -7,11 +7,13 @@ pub mod plugin_control;
 pub mod plugin_execution;
 pub mod plugin_host;
 mod plugin_lifecycle;
+pub mod plugin_permissions;
 pub mod plugin_watch;
 pub mod plugins;
 pub mod renderer;
 pub mod runtime_control;
 pub mod runtime_inspection;
+pub mod runtime_manage;
 pub mod runtime_status;
 
 #[cfg(windows)]
@@ -22,6 +24,8 @@ pub mod host_runtime;
 pub mod js_runtime;
 #[cfg(windows)]
 pub mod lab;
+#[cfg(windows)]
+pub mod os_broker;
 #[cfg(windows)]
 pub mod plugin_cli;
 #[cfg(windows)]

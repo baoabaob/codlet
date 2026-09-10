@@ -120,6 +120,47 @@ impl QueuedCdpRequest {
         request.try_response()
     }
 
+    /// An attachment creates a connection-owned remote resource. Its Core
+    /// owner applies the caller deadline separately, then keeps this receiver
+    /// exclusively for bounded retirement instead of discarding a late ID.
+    pub(crate) fn try_attachment_response(&mut self) -> Result<Option<CdpResponse>, ClientError> {
+        let request = self.request.as_mut().expect("owned attachment request");
+        request.client.poll_raw_io();
+        if let Some(ack) = &self.write_ack {
+            match ack.try_recv() {
+                Ok(Ok(())) => self.write_ack = None,
+                Ok(Err(error)) => return Err(request_error(error, request.id, &request.method)),
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(ClientError::Connection(request.client.terminal_reason()));
+                }
+            }
+        }
+        match request.receiver.try_recv() {
+            Ok(Ok(response)) => request.complete_response(response).map(Some),
+            Ok(Err(error)) => {
+                request.completed = true;
+                Err(ClientError::Connection(error))
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                request.completed = true;
+                Err(ClientError::Connection(request.client.terminal_reason()))
+            }
+        }
+    }
+
+    /// True proves the writer never began this frame. Otherwise the caller
+    /// must retain its response receiver or close the shared CDP connection.
+    pub(crate) fn cancel_attachment_before_write(&self) -> bool {
+        self.raw_state.as_ref().is_some_and(|state| {
+            match state.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => true,
+                Err(value) => value == 2,
+            }
+        })
+    }
+
     pub(super) fn wait_written(mut self) -> Result<CdpRequest, ClientError> {
         let request = self.request.as_ref().unwrap();
         match self
@@ -168,10 +209,27 @@ pub(super) struct BoundedEventSink {
     filter: CdpEventFilter,
     sender: mpsc::SyncSender<EventItem>,
     overflowed: Arc<AtomicBool>,
+    lifecycle_only: bool,
+    methods: Option<Vec<String>>,
 }
 
 impl BoundedEventSink {
     pub(super) fn publish(&self, event: &CdpEvent, ended: &[String]) -> bool {
+        if self.lifecycle_only
+            && !matches!(
+                event.method.as_str(),
+                "Page.frameNavigated" | "Target.detachedFromTarget" | "Target.targetDestroyed"
+            )
+        {
+            return true;
+        }
+        if self
+            .methods
+            .as_ref()
+            .is_some_and(|methods| !methods.contains(&event.method))
+        {
+            return true;
+        }
         let matches = match &self.filter {
             CdpEventFilter::Root => event.session_id.is_none(),
             CdpEventFilter::Session(id) => {
@@ -184,7 +242,12 @@ impl BoundedEventSink {
         }
         // Bound before cloning into the subscriber's queue. An overflow retires
         // this subscription, without blocking or closing the shared CDP reader.
-        if serde_json::to_vec(event).map_or(true, |bytes| bytes.len() > MAX_RAW_FRAME_BYTES) {
+        let maximum = if self.lifecycle_only {
+            8 * 1024
+        } else {
+            MAX_RAW_FRAME_BYTES
+        };
+        if serde_json::to_vec(event).map_or(true, |bytes| bytes.len() > maximum) {
             self.overflowed.store(true, Ordering::Release);
             return false;
         }
@@ -243,6 +306,14 @@ impl Drop for BoundedCdpEvents {
 }
 
 impl CdpClient {
+    pub(crate) fn close_unconfirmed_attachment(&self, reason: &str) {
+        self.inner
+            .runtime
+            .stop(Arc::new(ConnectionError::Protocol(format!(
+                "Core could not confirm retirement of an owned raw attachment: {}",
+                reason.chars().take(1024).collect::<String>()
+            ))));
+    }
     /// The optional raw owner calls this even after callers have cancelled their
     /// requests. A partially written frame has a transport budget independent of
     /// a plugin's short RPC timeout; only a stuck shared pipe closes the connection.
@@ -274,7 +345,40 @@ impl CdpClient {
         &self,
         filter: CdpEventFilter,
     ) -> Result<BoundedCdpEvents, ClientError> {
-        let (sender, receiver) = mpsc::sync_channel(MAX_RAW_EVENTS);
+        self.subscribe_bounded_inner(filter, MAX_RAW_EVENTS, false, None)
+    }
+
+    pub fn subscribe_bounded_methods(
+        &self,
+        filter: CdpEventFilter,
+        methods: Vec<String>,
+    ) -> Result<BoundedCdpEvents, ClientError> {
+        let unique = methods.iter().collect::<std::collections::BTreeSet<_>>();
+        if !(1..=32).contains(&methods.len())
+            || unique.len() != methods.len()
+            || methods.iter().any(|method| {
+                method.is_empty() || method.len() > 256 || method.chars().any(char::is_control)
+            })
+        {
+            return Err(ClientError::InvalidEventFilter);
+        }
+        self.subscribe_bounded_inner(filter, MAX_RAW_EVENTS, false, Some(methods))
+    }
+
+    /// Core's scope observer ignores traffic unrelated to lifecycle and keeps a
+    /// separate finite queue. Public raw subscriptions retain their four-event bound.
+    pub(crate) fn subscribe_scope_lifecycle(&self) -> Result<BoundedCdpEvents, ClientError> {
+        self.subscribe_bounded_inner(CdpEventFilter::All, 128, true, None)
+    }
+
+    fn subscribe_bounded_inner(
+        &self,
+        filter: CdpEventFilter,
+        capacity: usize,
+        lifecycle_only: bool,
+        methods: Option<Vec<String>>,
+    ) -> Result<BoundedCdpEvents, ClientError> {
+        let (sender, receiver) = mpsc::sync_channel(capacity);
         let overflowed = Arc::new(AtomicBool::new(false));
         let mut state = self
             .inner
@@ -298,6 +402,8 @@ impl CdpClient {
             filter,
             sender,
             overflowed: Arc::clone(&overflowed),
+            lifecycle_only,
+            methods,
         });
         Ok(BoundedCdpEvents {
             receiver,
@@ -312,6 +418,44 @@ impl CdpClient {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn exact_method_filters_reject_invalid_input_and_ignore_noise_before_the_four_event_queue() {
+        let _serial = super::super::tests::SPAWN_TEST_LOCK.lock().unwrap();
+        let (reader, _feed) = super::super::tests::blocking_pipe_reader();
+        let (client, _events) =
+            CdpClient::spawn_io(reader, io::sink(), SpawnConfig::default()).unwrap();
+        for invalid in [
+            vec![],
+            vec!["Runtime.bindingCalled".into(); 2],
+            vec![String::new()],
+            vec!["x".repeat(257)],
+            (0..33).map(|id| format!("Fixture.{id}")).collect(),
+        ] {
+            assert!(matches!(
+                client.subscribe_bounded_methods(CdpEventFilter::All, invalid),
+                Err(ClientError::InvalidEventFilter)
+            ));
+        }
+        let selected = client
+            .subscribe_bounded_methods(CdpEventFilter::All, vec!["Runtime.bindingCalled".into()])
+            .unwrap();
+        for index in 0..64 {
+            route_message(&client.inner.runtime.shared, json!({"method":"Runtime.executionContextCreated","sessionId":"page-a","params":{"index":index}})).unwrap();
+        }
+        for index in 0..4 {
+            route_message(&client.inner.runtime.shared, json!({"method":"Runtime.bindingCalled","sessionId":"page-a","params":{"index":index}})).unwrap();
+        }
+        for index in 0..4 {
+            assert_eq!(
+                selected.try_event().unwrap().unwrap().params.unwrap()["index"],
+                index
+            );
+        }
+        assert!(selected.try_event().unwrap().is_none());
+        assert!(client.closed_reason().is_none());
+        client.shutdown().unwrap();
+    }
 
     #[test]
     fn overflow_retires_only_one_raw_subscription_and_all_includes_session_events() {

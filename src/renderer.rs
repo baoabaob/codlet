@@ -45,6 +45,7 @@ mod combined;
 mod host_rpc;
 mod listing;
 mod management;
+mod rpc_startup;
 
 #[derive(Debug, Error)]
 pub enum RendererError {
@@ -108,6 +109,7 @@ pub struct RendererRuntime {
     entry_shapes: BTreeMap<String, (bool, bool)>,
     external_observations: Vec<PluginExecutionObservation>,
     host_rpc: host_rpc::HostRpcBridge,
+    manage_service: Option<crate::runtime_manage::RuntimeManageService>,
     plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
@@ -134,6 +136,7 @@ struct RendererSession {
 
 #[derive(Clone)]
 struct ActivePlugin {
+    authorization: Option<crate::plugins::LocalPluginRegistration>,
     id: String,
     version: String,
     generation: u64,
@@ -174,6 +177,14 @@ struct BindingMessage {
     capability: CapabilityDescriptor,
     method: String,
     params: Value,
+    #[serde(default, rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+    #[serde(
+        default,
+        rename = "parentToken",
+        skip_serializing_if = "Option::is_none"
+    )]
+    parent_token: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -229,6 +240,7 @@ struct HostEndpointContext<'a> {
     plugins: &'a [LoadedPlugin],
     external_observations: &'a [PluginExecutionObservation],
     active_plugin_ids: BTreeSet<String>,
+    manage_service: Option<&'a crate::runtime_manage::RuntimeManageService>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,6 +331,7 @@ impl RendererRuntime {
             drive_deadline: None,
             drive_depth: 0,
             host_rpc: host_rpc::HostRpcBridge::default(),
+            manage_service: None,
             pending_actions: Vec::new(),
             pending_package_disables: BTreeSet::new(),
             status_publisher: None,
@@ -356,6 +369,7 @@ impl RendererRuntime {
         session: &TargetSession,
         document_epoch: u64,
     ) -> Result<RendererBootstrapReport, RendererError> {
+        self.register_rpc_plugins(&self.logical_plugins())?;
         let target_id = session.target_id().to_owned();
         if self.sessions.contains_key(&target_id) {
             return Err(RendererError::TargetAlreadyAttached(target_id));
@@ -378,6 +392,7 @@ impl RendererRuntime {
             events: session.subscribe_events(),
         };
         self.sessions.insert(target_id.clone(), renderer_session);
+        self.publish_rpc_target(&target_id);
         self.publish_status();
         if let Err(error) = self.install_target_plugins(&target_id, authorizations) {
             let _ = self.deactivate_target(&target_id);
@@ -486,6 +501,7 @@ impl RendererRuntime {
                 .expect("installing renderer session must exist")
                 .plugins
                 .push(ActivePlugin {
+                    authorization: plugin.authorization.clone(),
                     id: plugin.manifest.id.clone(),
                     version: plugin.manifest.version.clone(),
                     generation: plugin.generation,
@@ -546,6 +562,7 @@ impl RendererRuntime {
                 .find(|candidate| candidate.id == plugin.manifest.id)
                 .expect("ready candidate exists");
             candidate.state = RendererPluginState::Active;
+            self.publish_rpc_renderers(target_id);
             self.publish_status();
         }
         assert!(
@@ -853,6 +870,43 @@ impl RendererRuntime {
             let (legacy, inspection) = self.sample_runtime_observation();
             publisher.publish_renderer_observation(legacy, inspection);
         }
+    }
+
+    pub fn set_manage_service(&mut self, service: crate::runtime_manage::RuntimeManageService) {
+        self.manage_service = Some(service);
+        self.refresh_management_list();
+    }
+
+    pub(crate) fn registry_path(&self) -> &std::path::Path {
+        self.plugin_registry.path()
+    }
+
+    /// This explicitly refreshes registration metadata, without reading sources.
+    /// It is separate from the read-only status/inspection owner sampler.
+    pub fn refresh_management_list(&self) {
+        let Some(service) = &self.manage_service else {
+            return;
+        };
+        match PluginRegistry::load(self.plugin_registry.path()) {
+            Ok(registry) => service.publish_list(self.management_list_snapshot(&registry)),
+            Err(error) => service.publish_list_error(error.to_string()),
+        }
+    }
+
+    fn management_list_snapshot(&self, registry: &PluginRegistry) -> Value {
+        let active = self
+            .plugins
+            .iter()
+            .filter(|plugin| self.package_is_active(plugin))
+            .map(|plugin| plugin.manifest.id.clone())
+            .collect();
+        listing::plugin_list(
+            &self.catalog,
+            &self.plugins,
+            registry,
+            &active,
+            &self.external_observations,
+        )
     }
 
     fn record_status_event(&mut self, target_id: &str, code: &str, message: &str) {
@@ -1270,6 +1324,7 @@ impl RendererRuntime {
             _ => Ok(false),
         };
         self.publish_status();
+        self.publish_rpc_renderers(target_id);
         result
     }
 
@@ -1401,6 +1456,26 @@ impl RendererRuntime {
             }
             return Ok(true);
         }
+        if request.message_type == "cancel" {
+            let consumer = consumer.clone();
+            self.cancel_scoped_call(
+                target_id,
+                &consumer,
+                request.id.expect("validated cancellation has an id"),
+            );
+            return Ok(true);
+        }
+        if let Err((code, message)) = self.renderer_authority_status(consumer) {
+            if let Some(id) = request.id {
+                deliver_binding_response(
+                    &target_session,
+                    consumer,
+                    consumer_context_id,
+                    &binding_error(id, code, &message),
+                )?;
+            }
+            return Ok(true);
+        }
         if let Some(id) = request.id {
             let last_request_id = consumer.last_request_id.get();
             if id <= last_request_id {
@@ -1442,16 +1517,30 @@ impl RendererRuntime {
         );
         let lease = lease.clone();
         let consumer = consumer.clone();
+        let mut scoped_call = match self.prepare_scoped_call(target_id, &consumer, &request) {
+            Ok(scope) => scope,
+            Err((code, message)) => {
+                if let Some(id) = request.id {
+                    deliver_binding_response(
+                        &target_session,
+                        &consumer,
+                        consumer_context_id,
+                        &binding_error(id, code, &message),
+                    )?;
+                }
+                return Ok(true);
+            }
+        };
         let mut after_response = None;
-        let outcome = match authorization {
+        let mut outcome = match authorization {
             Ok((provider_id, descriptor)) => {
                 if let Some(queued) = self.queue_host_capability(
                     target_id,
                     &consumer,
                     &lease,
                     &provider_id,
-                    &descriptor,
                     &request,
+                    &mut scoped_call,
                 ) {
                     match queued {
                         Ok(()) => return Ok(true),
@@ -1468,7 +1557,7 @@ impl RendererRuntime {
                         .collect();
                     let host_outcome = if self.management_active
                         && descriptor.name.as_str() == BUILTIN_MANAGE_CAPABILITY_NAME
-                        && request.method != "list"
+                        && request.method == "disableSelf"
                     {
                         Err(host_failure(
                             "runtime_busy",
@@ -1482,6 +1571,7 @@ impl RendererRuntime {
                                 plugins: &self.plugins,
                                 external_observations: &self.external_observations,
                                 active_plugin_ids,
+                                manage_service: self.manage_service.as_ref(),
                             },
                             &consumer.id,
                             consumer.principal.has_grant(RUNTIME_MANAGE_GRANT),
@@ -1510,14 +1600,12 @@ impl RendererRuntime {
                     match provider.and_then(|provider| {
                         provider.context_id.map(|context_id| (provider, context_id))
                     }) {
-                        Some((provider, provider_context_id)) => match self
-                            .evaluate_with_binding_pump(
-                                target_id,
-                                &provider_invocation_expression(&provider.binding_name, &request),
-                                provider_context_id,
-                            )
-                            .and_then(parse_provider_result)
-                        {
+                        Some((provider, _)) => match self.invoke_scoped_renderer(
+                            target_id,
+                            &provider,
+                            &request,
+                            &scoped_call,
+                        ) {
                             Ok(value) => Ok(value),
                             Err(message) => Err(("provider_error", message)),
                         },
@@ -1530,6 +1618,13 @@ impl RendererRuntime {
             }
             Err(error) => Err(("capability_denied", error.to_string())),
         };
+        if outcome.is_ok() {
+            if let Err(error) = self.renderer_authority_status(&consumer) {
+                outcome = Err(error);
+            } else if let Err(error) = self.scoped_call_current(&scoped_call) {
+                outcome = Err(error);
+            }
+        }
         // Nested calls may destroy the target or remove a consumer. Never answer
         // through a snapshot unless its original binding/context still exists.
         if self.ensure_live_target(target_id).is_err()
@@ -1641,6 +1736,7 @@ impl RendererRuntime {
         plugin.state = RendererPluginState::Stopping;
         let mut plugin = plugin.clone();
         let target_session = session.session.clone();
+        self.retire_rpc_renderer(target_id, Some(plugin_id));
         self.publish_status();
         let previous_deadline = self.drive_deadline;
         self.drive_deadline = Some(previous_deadline.unwrap_or(target_session.request_deadline()?));
@@ -1907,6 +2003,13 @@ fn require_renderer_entry(plugin: &LoadedPlugin) -> Result<(), RendererError> {
         "renderer source was not loaded"
     } else if plugin.manifest.host.is_some() && plugin.host.is_none() {
         "combined host source was not loaded"
+    } else if plugin
+        .manifest
+        .renderer_provides()
+        .iter()
+        .any(|capability| capability.scope != crate::capabilities::CapabilityScope::Target)
+    {
+        "renderer instances may provide only Target capabilities"
     } else {
         return Ok(());
     };
@@ -2023,7 +2126,7 @@ fn parse_binding_message(payload: &str) -> Result<BindingMessage, String> {
         ));
     }
     match request.message_type.as_str() {
-        "request" if request.id.is_some_and(|id| id > 0) => {}
+        "request" | "cancel" if request.id.is_some_and(|id| id > 0) => {}
         "notification" if request.id.is_none() => {}
         "request" => return Err("renderer RPC request id must be positive".to_owned()),
         "notification" => {
@@ -2038,6 +2141,16 @@ fn parse_binding_message(payload: &str) -> Result<BindingMessage, String> {
         return Err(format!(
             "renderer RPC method exceeds {MAX_RENDERER_RPC_METHOD_BYTES} bytes"
         ));
+    }
+    if request
+        .timeout_ms
+        .is_some_and(|value| !(1..=15_000).contains(&value))
+        || request
+            .parent_token
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.len() > 128)
+    {
+        return Err("renderer RPC timeout or parent token is invalid".into());
     }
     Ok(request)
 }
@@ -2119,7 +2232,11 @@ fn invoke_builtin_host_endpoint(
     match descriptor.name.as_str() {
         BUILTIN_HOST_CAPABILITY_NAME
             if descriptor.api.get() == BUILTIN_HOST_CAPABILITY_API
-                && descriptor.scope == crate::capabilities::CapabilityScope::Target =>
+                && matches!(
+                    descriptor.scope,
+                    crate::capabilities::CapabilityScope::Target
+                        | crate::capabilities::CapabilityScope::Runtime
+                ) =>
         {
             if request.method != "ping" {
                 return Err(host_failure(
@@ -2140,7 +2257,11 @@ fn invoke_builtin_host_endpoint(
         }
         BUILTIN_MANAGE_CAPABILITY_NAME
             if descriptor.api.get() == BUILTIN_MANAGE_CAPABILITY_API
-                && descriptor.scope == crate::capabilities::CapabilityScope::Target =>
+                && matches!(
+                    descriptor.scope,
+                    crate::capabilities::CapabilityScope::Target
+                        | crate::capabilities::CapabilityScope::Runtime
+                ) =>
         {
             if !has_runtime_manage_grant {
                 return Err(host_failure(
@@ -2149,6 +2270,27 @@ fn invoke_builtin_host_endpoint(
                 ));
             }
             match request.method.as_str() {
+                "prepare" | "submit" | "operation" => {
+                    if request.id.is_none() {
+                        return Err(host_failure(
+                            "request_required",
+                            "Runtime management requires a response receipt.",
+                        ));
+                    }
+                    let service = context.manage_service.ok_or_else(|| {
+                        host_failure(
+                            "runtime_unavailable",
+                            "The runtime control service is unavailable.",
+                        )
+                    })?;
+                    let value = service
+                        .invoke(&request.method, request.params.clone())
+                        .map_err(|error| host_failure(error.code, error.message))?;
+                    Ok(HostEndpointOutcome {
+                        value,
+                        after_response: None,
+                    })
+                }
                 "list" => {
                     if !request.params.is_null() {
                         return Err(host_failure(
@@ -2285,7 +2427,8 @@ fn check_binding_response(binding_name: &str, result: &Value) -> Result<(), Rend
 fn order_plugins(
     plugins: Vec<LoadedPlugin>,
 ) -> Result<(Vec<LoadedPlugin>, CapabilityRegistry), CapabilityRegistryError> {
-    let registry = capability_graph(&plugins)?;
+    let mut registry = capability_graph(&plugins)?;
+    registry.activate_scope(CapabilityScopeInstance::Runtime)?;
     let order = registry.resolve_activation_order()?;
     let mut plugins_by_id: BTreeMap<_, _> = plugins
         .into_iter()
@@ -2319,8 +2462,17 @@ fn builtin_host_capability() -> CapabilityDescriptor {
     .expect("the built-in host capability descriptor is valid")
 }
 
-pub(crate) fn builtin_host_capabilities() -> [CapabilityDescriptor; 2] {
-    [builtin_host_capability(), builtin_manage_capability()]
+pub(crate) fn builtin_host_capabilities() -> [CapabilityDescriptor; 4] {
+    let mut ping = builtin_host_capability();
+    ping.scope = crate::capabilities::CapabilityScope::Runtime;
+    let mut manage = builtin_manage_capability();
+    manage.scope = crate::capabilities::CapabilityScope::Runtime;
+    [
+        builtin_host_capability(),
+        builtin_manage_capability(),
+        ping,
+        manage,
+    ]
 }
 
 fn builtin_manage_capability() -> CapabilityDescriptor {
@@ -2634,6 +2786,7 @@ mod tests {
         )
         .unwrap();
         let plugin = LoadedPlugin {
+            authorization: None,
             manifest,
             source: Some("module.exports = {};".to_owned()),
             host: None,
@@ -2673,6 +2826,7 @@ mod tests {
         combined.manifest.host = Some(crate::plugins::HostManifest {
             entry: "host.js".to_owned(),
             provides: Vec::new(),
+            requires: Vec::new(),
         });
         for plugin in [missing_source, combined] {
             let (_directory, registry) = test_registry();
@@ -2697,6 +2851,8 @@ mod tests {
             capability: descriptor.clone(),
             method: "ping".to_owned(),
             params: Value::Null,
+            timeout_ms: None,
+            parent_token: None,
         };
         let result = invoke_builtin_host_endpoint(
             HostEndpointContext {
@@ -2704,6 +2860,7 @@ mod tests {
                 catalog: &catalog,
                 plugins: &[],
                 external_observations: &[],
+                manage_service: None,
                 active_plugin_ids: BTreeSet::new(),
             },
             "dev.consumer",
@@ -2724,6 +2881,7 @@ mod tests {
                     catalog: &catalog,
                     plugins: &[],
                     external_observations: &[],
+                    manage_service: None,
                     active_plugin_ids: BTreeSet::new(),
                 },
                 "dev.consumer",
@@ -2753,6 +2911,8 @@ mod tests {
             capability: descriptor.clone(),
             method: "disableSelf".to_owned(),
             params: Value::Null,
+            timeout_ms: None,
+            parent_token: None,
         };
 
         let denied = invoke_builtin_host_endpoint(
@@ -2761,6 +2921,7 @@ mod tests {
                 catalog: &catalog,
                 plugins: &plugins,
                 external_observations: &[],
+                manage_service: None,
                 active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
             },
             "codlet-gui",
@@ -2778,6 +2939,7 @@ mod tests {
                 catalog: &catalog,
                 plugins: &plugins,
                 external_observations: &[],
+                manage_service: None,
                 active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
             },
             "codlet-gui",
@@ -2819,6 +2981,7 @@ mod tests {
         )
         .unwrap();
         let (ordered, _) = order_plugins(vec![LoadedPlugin {
+            authorization: None,
             manifest,
             source: Some("module.exports = {};".to_owned()),
             host: None,

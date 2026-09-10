@@ -15,7 +15,7 @@ use crate::diagnostics::{
     ProcessInfo, ProcessSnapshot,
 };
 use crate::host_control::HostControl;
-use crate::host_runtime::HostRuntime;
+use crate::host_runtime::{HostCoreServices, HostRuntime};
 use crate::js_runtime::JsRuntime;
 use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
 use crate::plugin_control::{
@@ -76,6 +76,8 @@ pub enum ProbeError {
     #[error(transparent)]
     PluginHost(#[from] HostError),
     #[error(transparent)]
+    OsBroker(#[from] crate::os_broker::OsBrokerError),
+    #[error(transparent)]
     Manifest(#[from] ManifestError),
     #[error(transparent)]
     PluginRegistry(#[from] PluginRegistryError),
@@ -97,7 +99,7 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch [--watch]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]...`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch [--watch]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--network-origin <origin>]... [--executable <file>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error(
@@ -106,6 +108,8 @@ pub enum ProbeError {
     PluginTrustRequired(String),
     #[error("unrecognized plugin permission {0}")]
     UnknownPermission(String),
+    #[error(transparent)]
+    PermissionPolicy(#[from] crate::plugin_permissions::PermissionPolicyError),
     #[error("bundled plugin {0} cannot be removed; use `codlet plugin disable <id>`")]
     CannotRemoveBundledPlugin(String),
     #[error("Codex exited with nonzero status {exit_code} after CDP workers were reaped")]
@@ -183,10 +187,12 @@ struct CodletRuntime {
     client: CdpClient,
     targets: Option<TargetController>,
     hosts: HostRuntime,
+    _os_broker: crate::os_broker::OsBroker,
     host_control: HostControl,
     renderer: RendererRuntime,
     watcher: Option<PluginWatcher>,
     initial_outcomes: Vec<RendererOutcome>,
+    last_authorization_error: Option<String>,
     // Keep listeners and the registry lease until renderer cleanup has finished.
     _servers: HostServers,
 }
@@ -289,10 +295,42 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                     PluginControlRequest {
                         action,
                         plugin_id: plugin_id.into(),
+                        permission: None,
                     },
                     json,
                 )?;
             }
+            Ok(())
+        }
+        [command, action, plugin_id, options @ ..]
+            if command == OsStr::new("plugin") && action == OsStr::new("permissions") =>
+        {
+            let json = match options {
+                [] => false,
+                [option] if option == OsStr::new("--json") => true,
+                _ => return Err(ProbeError::Usage),
+            };
+            print_plugin_permissions(plugin_id.to_str().ok_or(ProbeError::Usage)?, json)
+        }
+        [command, action, plugin_id, permission, options @ ..]
+            if command == OsStr::new("plugin") && action == OsStr::new("revoke") =>
+        {
+            let json = match options {
+                [] => false,
+                [option] if option == OsStr::new("--json") => true,
+                _ => return Err(ProbeError::Usage),
+            };
+            let permission = permission.to_str().ok_or(ProbeError::Usage)?;
+            let permission = serde_json::from_value(Value::String(permission.to_owned()))
+                .map_err(|_| ProbeError::UnknownPermission(permission.to_owned()))?;
+            crate::plugin_cli::manage(
+                PluginControlRequest {
+                    action: PluginControlAction::Revoke,
+                    plugin_id: plugin_id.to_str().ok_or(ProbeError::Usage)?.into(),
+                    permission: Some(permission),
+                },
+                json,
+            )?;
             Ok(())
         }
         [command, action, directory, options @ ..]
@@ -736,12 +774,26 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         lease,
     }))?;
     let has_hosts = !host_plugins.is_empty();
-    let hosts =
-        HostRuntime::start_with_runtime(host_plugins, connected.client.clone(), js_runtime)?;
+    let servers = servers.expect("runtime launch prepared its IPC servers");
+    let control = servers.control.broker();
+    let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone());
+    renderer.set_manage_service(manage_service.clone());
+    let os_broker = crate::os_broker::OsBroker::for_registry(renderer.registry_path().to_owned())?;
+    let hosts = HostRuntime::start_with_services(
+        renderer.logical_plugins(),
+        connected.client.clone(),
+        js_runtime,
+        HostCoreServices {
+            os_broker: Some(os_broker.client()),
+            runtime_manage: Some(manage_service),
+        },
+    )?;
     renderer.set_host_capability_client(hosts.capability_client());
-    // Native initialization owns its own CDP pump. Renderer activation begins
-    // only after native readiness has been observed at the shared generation.
-    while hosts.is_starting() {
+    // A Host may await an independent renderer provider during activation.
+    // Entry-level dependency readiness is driven by the shared RPC pump.
+    while !renderer.has_renderer_plugins() && hosts.is_starting() {
+        renderer.set_external_observations(hosts.observations());
+        renderer.refresh_management_list();
         std::thread::sleep(Duration::from_millis(10));
     }
     renderer.set_external_observations(hosts.observations());
@@ -764,12 +816,10 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         drop(connected.events);
         (None, Vec::new())
     };
-    let initial_outcomes: Vec<_> = sessions
-        .iter()
-        .map(|session| RendererOutcome {
-            target_id: session.target_id().to_owned(),
-            result: renderer.attach(session),
-        })
+    let initial_outcomes: Vec<_> = renderer
+        .attach_all(&sessions)
+        .into_iter()
+        .map(|(target_id, result)| RendererOutcome { target_id, result })
         .collect();
     if initial_outcomes
         .iter()
@@ -817,8 +867,6 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     renderer.set_external_observations(hosts.observations());
     status.publish_host_observation(hosts.execution_snapshot());
     status.set_ready();
-    let servers = servers.expect("runtime launch prepared its IPC servers");
-    let control = servers.control.broker();
     control.set_ready();
     Ok(CodletRuntime {
         _servers: servers,
@@ -830,10 +878,12 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         client: connected.client,
         targets,
         hosts,
+        _os_broker: os_broker,
         host_control,
         renderer,
         watcher,
         initial_outcomes,
+        last_authorization_error: None,
     })
 }
 
@@ -909,6 +959,9 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
 struct PluginTrustOptions {
     trusted: bool,
     grants: Vec<Permission>,
+    read_roots: Vec<PathBuf>,
+    network_origins: Vec<String>,
+    executables: Vec<PathBuf>,
 }
 
 fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptions, ProbeError> {
@@ -928,6 +981,22 @@ fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptio
                 return Err(ProbeError::Usage);
             }
             options.grants.push(grant);
+        } else if argument == OsStr::new("--read-root") {
+            options
+                .read_roots
+                .push(PathBuf::from(arguments.next().ok_or(ProbeError::Usage)?));
+        } else if argument == OsStr::new("--network-origin") {
+            options.network_origins.push(
+                arguments
+                    .next()
+                    .and_then(|value| value.to_str())
+                    .ok_or(ProbeError::Usage)?
+                    .into(),
+            );
+        } else if argument == OsStr::new("--executable") {
+            options
+                .executables
+                .push(PathBuf::from(arguments.next().ok_or(ProbeError::Usage)?));
         } else {
             return Err(ProbeError::Usage);
         }
@@ -950,25 +1019,42 @@ fn permission_list(permissions: &[Permission]) -> String {
 fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(), ProbeError> {
     let candidate = inspect_local_plugin(directory)?;
     let plugin_id = &candidate.manifest.id;
+    println!(
+        "plugin-candidate: id={plugin_id}; version={}; source=local",
+        candidate.manifest.version
+    );
+    println!("plugin-directory: {}", candidate.root.display());
+    println!(
+        "requested-permissions: {}",
+        permission_list(&candidate.manifest.permissions)
+    );
     if !options.trusted {
-        println!(
-            "plugin-candidate: id={plugin_id}; version={}; source=local",
-            candidate.manifest.version
-        );
-        println!("plugin-directory: {}", candidate.root.display());
-        println!(
-            "requested-permissions: {}",
-            permission_list(&candidate.manifest.permissions)
-        );
         return Err(ProbeError::PluginTrustRequired(plugin_id.clone()));
     }
     candidate.validate_grants(&options.grants)?;
+    let broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
+        &options.read_roots,
+        &options.network_origins,
+        &options.executables,
+    )?;
+    broker_policy.validate_grants(&options.grants)?;
+    println!("granted-permissions: {}", permission_list(&options.grants));
+    println!(
+        "broker-policy: {}",
+        serde_json::to_string(&broker_policy).expect("policy is serializable")
+    );
+    if options.grants.contains(&Permission::HostProcess) {
+        println!(
+            "host-authority: managed Node and approved child processes run with the current user's OS permissions; this grant is not a sandbox"
+        );
+    }
     let mut registry = PluginRegistry::load_default()?;
     registry.register_local(
         plugin_id,
         LocalPluginRegistration {
             path: candidate.root,
             grants: options.grants,
+            broker_policy,
         },
     )?;
     registry.save()?;
@@ -976,6 +1062,38 @@ fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(),
         "plugin-added: id={plugin_id}; enabled={}; applies=next-codlet-launch",
         registry.is_enabled(plugin_id)
     );
+    Ok(())
+}
+
+fn print_plugin_permissions(plugin_id: &str, json: bool) -> Result<(), ProbeError> {
+    let registry = PluginRegistry::load_default()?;
+    let registration = registry
+        .local_plugins()
+        .get(plugin_id)
+        .ok_or_else(|| PluginRegistryError::PluginId(plugin_id.to_owned()))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema":1,"kind":"codlet.plugin-permissions","pluginId":plugin_id,
+                "registration":registration,"enabled":registry.is_enabled(plugin_id)
+            })
+        );
+    } else {
+        println!(
+            "plugin-permissions: id={plugin_id}; directory={}",
+            registration.path.display()
+        );
+        println!(
+            "granted-permissions: {}",
+            permission_list(&registration.grants)
+        );
+        println!(
+            "broker-policy: {}",
+            serde_json::to_string_pretty(&registration.broker_policy)
+                .expect("policy is serializable")
+        );
+    }
     Ok(())
 }
 
@@ -1100,6 +1218,20 @@ impl CodletRuntime {
             self.status
                 .publish_host_observation(self.hosts.execution_snapshot());
             self.print_host_diagnostics();
+            match self.host_control.reconcile_authorization(
+                &mut self.renderer,
+                &self.hosts,
+                Instant::now(),
+            ) {
+                Ok(()) => self.last_authorization_error = None,
+                Err(error) => {
+                    let message = error.to_string();
+                    if self.last_authorization_error.as_ref() != Some(&message) {
+                        eprintln!("plugin-authorization: {message}");
+                        self.last_authorization_error = Some(message);
+                    }
+                }
+            }
             for change in changes {
                 let target_id = change.target_id().to_owned();
                 match self.renderer.apply_target_change(change) {
@@ -1201,6 +1333,15 @@ impl CodletRuntime {
                 print_watch_result(&completed.plugin_id, completed.result);
             }
             self.renderer.publish_status();
+            self.renderer.refresh_management_list();
+            for report in self.host_control.take_authorization_reports() {
+                eprintln!(
+                    "plugin-authorization: id={}; outcome={:?}; message={}",
+                    report.plugin_id,
+                    report.outcome,
+                    report.message.as_deref().unwrap_or("")
+                );
+            }
             for diagnostic in self.renderer.take_diagnostics() {
                 eprintln!(
                     "renderer-plugin: target-id={}; plugin-id={}; state=cleanup-failed; error={}",
@@ -1229,8 +1370,8 @@ impl CodletRuntime {
         self.targets = Some(targets);
         self.renderer.set_status_publisher(self.status.clone());
         let mut first_error = None;
-        for session in sessions {
-            match self.renderer.attach(&session) {
+        for (_target_id, result) in self.renderer.attach_all(&sessions) {
+            match result {
                 Ok(report) => print_renderer_outcome(&RendererOutcome {
                     target_id: report.target_id.clone(),
                     result: Ok(report),
@@ -1572,6 +1713,7 @@ mod tests {
             let prepared = control.handle(ControlRequest::prepare(PluginControlRequest {
                 action: PluginControlAction::Reload,
                 plugin_id: plugin_id.into(),
+                permission: None,
             }));
             let ticket = prepared.operation_id().unwrap().to_owned();
             control.handle(ControlRequest::submit(&ticket));
@@ -1582,6 +1724,7 @@ mod tests {
             .map(|plugin_id| PluginControlRequest {
                 action: PluginControlAction::Reload,
                 plugin_id: plugin_id.into(),
+                permission: None,
             })
             .collect();
         let mut polls = 0;

@@ -547,6 +547,7 @@ mod tests {
         PluginControlRequest {
             action: PluginControlAction::Reload,
             plugin_id: "dev.fixture".into(),
+            permission: None,
         }
     }
     fn report() -> PluginControlReport {
@@ -658,6 +659,39 @@ mod tests {
         let completed = get(&scope, &ControlRequest::result(ticket));
         assert!(completed.is_success(), "{completed:?}");
         assert_eq!(completed, get(&scope, &ControlRequest::submit(ticket)));
+        assert!(broker.take_next().is_none());
+    }
+
+    #[test]
+    fn real_pipe_preserves_permission_revocation_and_submits_it_only_once() {
+        let (_directory, scope, server) = fixture();
+        let broker = server.broker();
+        let request = PluginControlRequest {
+            action: PluginControlAction::Revoke,
+            plugin_id: "dev.fixture".into(),
+            permission: Some(crate::plugins::Permission::HostFs),
+        };
+        let prepared = get(&scope, &ControlRequest::prepare(request.clone()));
+        assert_eq!(prepared.status, ControlStatus::Prepared, "{prepared:?}");
+        assert!(broker.take_next().is_none());
+        let ticket = prepared.operation_id().unwrap();
+        assert_eq!(
+            get(&scope, &ControlRequest::submit(ticket)).status,
+            ControlStatus::Queued
+        );
+        assert_eq!(
+            get(&scope, &ControlRequest::submit(ticket)).status,
+            ControlStatus::Queued
+        );
+        let job = broker.take_next().unwrap();
+        assert_eq!(job.request, request);
+        assert!(broker.take_next().is_none());
+        let mut applied = report();
+        applied.action = PluginControlAction::Revoke;
+        broker.complete(ticket, Ok(applied));
+        let completed = get(&scope, &ControlRequest::result(ticket));
+        assert!(completed.is_success(), "{completed:?}");
+        assert_eq!(get(&scope, &ControlRequest::submit(ticket)), completed);
         assert!(broker.take_next().is_none());
     }
 

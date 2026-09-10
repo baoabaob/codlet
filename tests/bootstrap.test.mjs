@@ -9,7 +9,7 @@ const bootstrapSource = readFileSync(
 );
 
 function createRuntime() {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     const result = vm.runInContext(bootstrapSource, context);
     assert.equal(result.ok, true);
     assert.equal(result.reused, false);
@@ -30,7 +30,7 @@ const capability = Object.freeze({
 });
 
 function rpcFixture(timers = { setTimeout, clearTimeout }) {
-    const context = vm.createContext(timers);
+    const context = vm.createContext({ ...timers, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     const requests = [];
     context.test_binding = (payload) => requests.push(JSON.parse(payload));
@@ -340,7 +340,7 @@ test('deactivation is idempotent for an inactive generation', async () => {
 });
 
 test('bootstrap entry point and lifecycle methods are immutable', () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     const result = vm.runInContext(bootstrapSource, context);
     assert.equal(result.ok, true);
 
@@ -362,7 +362,7 @@ test('bootstrap entry point and lifecycle methods are immutable', () => {
 });
 
 test('activation can await a renderer RPC without publishing active state early', async () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     const envelopes = [];
     context.codlet_rpc_activating = (payload) => envelopes.push(JSON.parse(payload));
@@ -401,7 +401,7 @@ test('activation can await a renderer RPC without publishing active state early'
 });
 
 test('activation RPC rejection cleans the candidate and releases its operation gate', async () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     const envelopes = [];
     context.codlet_rpc_activating_error = (payload) => envelopes.push(JSON.parse(payload));
@@ -442,7 +442,7 @@ test('activation RPC rejection cleans the candidate and releases its operation g
 });
 
 test('renderer request uses the fixed binding envelope and resolves a host response', async () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     const installed = vm.runInContext(bootstrapSource, context);
     assert.equal(installed.ok, true);
     const envelopes = [];
@@ -482,7 +482,7 @@ test('renderer request uses the fixed binding envelope and resolves a host respo
 });
 
 test('renderer provider dispatches only its declared endpoint', async () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     let invocations = 0;
     await context.__codletRendererV1.activate(metadata(1, {
@@ -542,7 +542,7 @@ test('renderer provider dispatches only its declared endpoint', async () => {
 });
 
 test('renderer notification uses the fixed envelope without a request id', async () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     const envelopes = [];
     context.codlet_rpc_notify = (payload) => envelopes.push(JSON.parse(payload));
@@ -570,7 +570,7 @@ test('renderer notification uses the fixed envelope without a request id', async
 });
 
 test('renderer response errors preserve diagnostic code and message', async () => {
-    const context = vm.createContext({ setTimeout, clearTimeout });
+    const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);
     context.codlet_rpc_error = () => {};
     let pluginContext;

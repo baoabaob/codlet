@@ -138,6 +138,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
         let mut plugin = LoadedPlugin {
+            authorization: None,
             manifest: crate::plugins::PluginManifest::parse(&json!({"schema":1,"id":"dev.combined","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js"},"permissions":["host.process"]}).to_string()).unwrap(),
             source: Some("module.exports={};".into()), host: None, generation: 4,
         };
@@ -192,6 +193,7 @@ mod tests {
             .register_local(
                 "dev.list.local",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root.clone(),
                     grants: vec![Permission::UiDom],
                 },
@@ -229,6 +231,7 @@ mod tests {
             .register_local(
                 "dev.list.new",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: missing.clone(),
                     grants: vec![],
                 },
@@ -271,6 +274,7 @@ mod tests {
             .register_local(
                 "dev.list.local",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: original.clone(),
                     grants: vec![],
                 },
@@ -289,6 +293,7 @@ mod tests {
             .register_local(
                 "dev.list.local",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: original.clone(),
                     grants: vec![Permission::UiDom],
                 },
@@ -319,6 +324,7 @@ mod tests {
             .register_local(
                 "dev.list.local",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: replacement.clone(),
                     grants: vec![],
                 },
@@ -363,6 +369,7 @@ mod tests {
             .register_local(
                 "dev.host",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root.clone(),
                     grants: vec![Permission::HostProcess],
                 },
@@ -445,6 +452,7 @@ mod tests {
             .register_local(
                 "dev.host",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: replacement.clone(),
                     grants: vec![Permission::HostProcess],
                 },

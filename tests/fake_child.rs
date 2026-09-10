@@ -73,6 +73,7 @@ fn control_runtime() -> (TempDir, PathBuf, RendererRuntime) {
             .register_local(
                 id,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root,
                     grants: vec![],
                 },
@@ -93,6 +94,7 @@ fn control_request(
     codlet::plugin_control::PluginControlRequest {
         action,
         plugin_id: id.to_owned(),
+        permission: None,
     }
 }
 
@@ -1777,6 +1779,7 @@ fn local_runtime_management_case(has_grant: bool) {
     let registry_path = directory.path().join("config.json");
     let mut registry = PluginRegistry::load(&registry_path).unwrap();
     let registration = LocalPluginRegistration {
+        broker_policy: Default::default(),
         path: root.clone(),
         grants,
     };
@@ -1787,6 +1790,7 @@ fn local_runtime_management_case(has_grant: bool) {
         .register_local(
             "dev.broken",
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: directory.path().join("missing"),
                 grants: vec![],
             },
@@ -1825,6 +1829,7 @@ fn local_runtime_management_case(has_grant: bool) {
             .register_local(
                 "dev.later",
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: directory.path().join("registered-after-launch"),
                     grants: vec![],
                 },

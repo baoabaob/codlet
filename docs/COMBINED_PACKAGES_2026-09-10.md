@@ -21,16 +21,17 @@
 }
 ```
 
-| 包类型 | 顶层 `provides` / `requires` | `host.provides` |
+| 包类型 | 顶层 `provides` / `requires` | `host.provides` / `host.requires` |
 | --- | --- | --- |
 | 只有 renderer | renderer 的声明 | 无 Host 入口 |
-| 只有 Host | `provides` 属于 Host；Host 侧 `requires` 暂不支持 | 必须省略或为空，避免两处声明 |
+| 只有 Host | 两者都属于 Host | 必须省略或为空，避免两处声明 |
 | 两种入口都有 | renderer 的声明 | Host 的声明 |
 
 Host `context.rpc.provide(descriptor, method, handler)` 与 renderer
-`context.rpc.request(descriptor, method, params)` 使用相同的完整 descriptor。当前跨入口路由
-支持 Target scope。Host 侧 capability request / notify / requires 不在本次范围；
-原有 `context.cdp` 原始方法和 session 能力不受此限制。
+`context.rpc.request(descriptor, method, params)` 使用相同的完整 descriptor。最初组合包
+阶段只验收 renderer→Host Target 路由；当前 M2 已支持 Host 主动 request/notify/requires、
+Runtime scope 与 Host 持有的 Target scope，见 [Core RPC 合约](CORE_RPC_2026-09-10.md)。
+原有 `context.cdp` 原始方法和 session 能力保持开放。
 
 Core 为 Host 入口使用内部 owner `包ID:host`，renderer 入口保留包 ID。这个后缀不能成为
 用户包 ID，CLI 和 registry 始终使用逻辑包 ID。这样 renderer 可以依赖本包的 Host，真正的

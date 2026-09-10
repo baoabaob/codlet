@@ -30,6 +30,8 @@ const endpoints = new Map();
 const invocations = new Map();
 const invocationContext = new AsyncLocalStorage();
 let provides = [];
+let requires = [];
+const scopeHandles = new WeakMap();
 let identity;
 let state = 'waiting';
 let nextId = 1;
@@ -82,9 +84,11 @@ function reply(id, result, failure, done) {
   send(fields, done);
 }
 
-function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup = false) {
+function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup = false, signal) {
   if (cleanup ? state !== 'stopping' || !cleanupOpen : state !== 'starting' && state !== 'active') return Promise.reject(error('host_stopping', 'host no longer admits this phase of Core requests'));
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT) return Promise.reject(error('invalid_timeout', 'timeoutMs must be 1..15000'));
+  if (signal !== undefined && (typeof signal?.addEventListener !== 'function' || typeof signal?.removeEventListener !== 'function' || typeof signal?.aborted !== 'boolean')) return Promise.reject(error('invalid_signal', 'signal must be an AbortSignal'));
+  if (signal?.aborted) return Promise.reject(error('invocation_cancelled', 'the caller already cancelled this request'));
   if (cleanup) {
     timeoutMs = Math.min(timeoutMs, Math.floor(cleanupDeadline - performance.now()));
     if (timeoutMs < 1) return Promise.reject(error('cleanup_timeout', 'the total Core cleanup budget expired'));
@@ -101,22 +105,35 @@ function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup
   if (!positive(nextId)) return Promise.reject(error('request_ids_exhausted', 'this generation has exhausted request IDs'));
   const id = nextId++;
   return new Promise((resolve, reject) => {
+    const cancel = failure => {
+      const item = takePending(id);
+      if (!item) return;
+      if (!cleanup) { try { send({ type: 'notification', method: 'request.cancel', params: { id } }); } catch {} }
+      item.reject(failure);
+    };
     const timer = setTimeout(() => {
-      pending.delete(id);
-      reject(error(cleanup ? 'cleanup_timeout' : 'request_timeout', 'Core request deadline expired'));
+      cancel(error(cleanup ? 'cleanup_timeout' : 'request_timeout', 'Core request deadline expired'));
     }, timeoutMs);
-    pending.set(id, { resolve, reject, timer, prepareResult, invocation });
-    try { send({ type: 'request', id, method, params }); }
-    catch (failure) { clearTimeout(timer); pending.delete(id); reject(failure); }
+    const onAbort = () => cancel(error('invocation_cancelled', 'the caller cancelled this request'));
+    pending.set(id, { resolve, reject, timer, prepareResult, invocation, signal, onAbort });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try { send({ type: 'request', id, method, params, timeoutMs }); }
+    catch (failure) { takePending(id); reject(failure); }
   });
+}
+
+function takePending(id) {
+  const item = pending.get(id);
+  if (!item) return;
+  pending.delete(id); clearTimeout(item.timer); item.signal?.removeEventListener('abort', item.onAbort);
+  return item;
 }
 
 function retire() {
   for (const invocation of invocations.values()) closeInvocation(invocation, error('host_stopping', 'Codlet is stopping this generation'));
   endpoints.clear();
   if (!abort.signal.aborted) abort.abort(error('host_stopping', 'Codlet is stopping this generation'));
-  for (const item of pending.values()) { clearTimeout(item.timer); item.reject(error('host_stopping', 'Codlet is stopping this generation')); }
-  pending.clear();
+  for (const id of pending.keys()) takePending(id)?.reject(error('host_stopping', 'Codlet is stopping this generation'));
   subscriptions.clear();
 }
 
@@ -148,8 +165,7 @@ function shutdown(message) {
     if (settled) return;
     settled = true; cleanupOpen = false; clearTimeout(timer);
     signal.abort(failure ?? error('host_stopping', 'cleanup has completed'));
-    for (const item of pending.values()) { clearTimeout(item.timer); item.reject(failure ?? error('host_stopping', 'cleanup has completed')); }
-    pending.clear();
+    for (const id of pending.keys()) takePending(id)?.reject(failure ?? error('host_stopping', 'cleanup has completed'));
     reply(message.id, null, failure, () => { exiting = true; process.exit(failure ? 1 : 0); });
   };
   const timer = setTimeout(() => finish(error('cleanup_timeout', 'the total Core cleanup budget expired')), budget);
@@ -165,9 +181,14 @@ function context(params) {
     if (capabilityKey(capability) === null) throw error('protocol_error', 'invalid Core host capability declaration');
     return Object.freeze({ name: capability.name, api: capability.api, scope: capability.scope });
   });
+  if (!Array.isArray(params.requires ?? [])) throw error('protocol_error', 'Core host requires must be an array');
+  requires = (params.requires ?? []).map(capability => {
+    if (capabilityKey(capability) === null) throw error('protocol_error', 'invalid Core host requirement');
+    return Object.freeze({ name: capability.name, api: capability.api, scope: capability.scope });
+  });
   const cdp = Object.freeze({
     request(method, params = {}, options = {}) {
-      return request('cdp.request', { method, params, ...options }, options.timeoutMs ?? MAX_TIMEOUT);
+      return request('cdp.request', { method, params, ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) }, options.timeoutMs ?? MAX_TIMEOUT, undefined, false, options.signal);
     },
     async subscribe(filter, onEvent, onEnd) {
       if (typeof onEvent !== 'function') throw error('invalid_handler', 'onEvent must be a function');
@@ -195,15 +216,54 @@ function context(params) {
     core: Object.freeze({ request(method, params, timeoutMs = MAX_TIMEOUT) {
       return request(method, params, timeoutMs);
     } }), log: console,
-    rpc: Object.freeze({ provide }),
+    rpc: Object.freeze({ provide, request: rpcRequest, notify: rpcNotify, target: rpcTarget }),
+    fs: Object.freeze({ readText: osMethod('host.fs.readText'), readDir: osMethod('host.fs.readDir'), stat: osMethod('host.fs.stat') }),
+    network: Object.freeze({ fetch: osMethod('host.network.fetch') }),
+    process: Object.freeze({ run: osMethod('host.process.run') }),
+    system: Object.freeze({ info: (options = {}) => osMethod('host.system.info')({}, options) }),
   });
 }
 
 function capabilityKey(capability) {
   if (!object(capability) || Object.keys(capability).some(key => !['name','api','scope'].includes(key))
     || typeof capability.name !== 'string' || !positive(capability.api) || capability.api > 0xffffffff
-    || capability.scope !== 'target') return null;
+    || !['target', 'runtime'].includes(capability.scope)) return null;
   return `${capability.name}@${capability.api}[${capability.scope}]`;
+}
+
+function osMethod(method) {
+  return (params, options = {}) => request(method, params, options.timeoutMs ?? MAX_TIMEOUT, undefined, false, options.signal);
+}
+
+function rpcCall(kind, capability, method, params = null, options = {}) {
+  const key = capabilityKey(capability);
+  if (key === null || !requires.some(requirement => capabilityKey(requirement) === key)) return Promise.reject(error('undeclared_capability', 'this Host entry did not declare that exact requirement'));
+  if (typeof method !== 'string' || method.length === 0 || Buffer.byteLength(method) > 256) return Promise.reject(error('invalid_params', 'RPC method must be a non-empty string of at most 256 bytes'));
+  if (!object(options)) return Promise.reject(error('invalid_params', 'RPC options must be an object'));
+  let scope;
+  if (options.scope !== undefined) {
+    const handle = scopeHandles.get(options.scope);
+    if (!handle || handle.closed) return Promise.reject(error('scope_denied', 'scope must be a live handle returned by context.rpc.target'));
+    scope = handle.id;
+  }
+  return request(kind, { capability, method, params, ...(scope === undefined ? {} : { scope }), timeoutMs: options.timeoutMs ?? MAX_TIMEOUT }, options.timeoutMs ?? MAX_TIMEOUT, undefined, false, options.signal);
+}
+
+function rpcRequest(capability, method, params = null, options = {}) { return rpcCall('rpc.request', capability, method, params, options); }
+function rpcNotify(capability, method, params = null, options = {}) { return rpcCall('rpc.notify', capability, method, params, options).then(() => undefined); }
+
+async function rpcTarget(input, options = {}) {
+  if (!object(input) || Object.keys(input).some(key => key !== 'sessionId') || typeof input.sessionId !== 'string' || input.sessionId.length === 0) throw error('invalid_params', 'rpc.target expects a Core-owned raw sessionId');
+  const result = await request('rpc.target', input, options.timeoutMs ?? MAX_TIMEOUT, undefined, false, options.signal);
+  if (!object(result) || result.kind !== 'target' || typeof result.handleId !== 'string') throw error('protocol_error', 'Core returned an invalid Target scope handle');
+  const state = { id: result.handleId, closed: false };
+  const handle = Object.freeze({ kind: 'target', async close() {
+    if (state.closed) return { closed: false };
+    const result = await request('rpc.close', { handleId: state.id });
+    state.closed = true; return result;
+  } });
+  scopeHandles.set(handle, state);
+  return handle;
 }
 
 function provide(capability, method, handler) {
@@ -229,7 +289,7 @@ function closeInvocation(invocation, reason) {
   invocation.abort.abort(reason);
   for (const [id, item] of pending) {
     if (item.invocation === invocation) {
-      pending.delete(id); clearTimeout(item.timer); item.reject(reason);
+      takePending(id)?.reject(reason);
     }
   }
 }
@@ -237,12 +297,13 @@ function closeInvocation(invocation, reason) {
 function invokeCapability(message) {
   const input = message.params;
   if (state !== 'active') return reply(message.id, null, error('host_stopping', 'this provider generation is not active'));
-  if (!object(input) || Object.keys(input).some(key => !['capability','method','params','caller','remainingMs'].includes(key))
+  if (!object(input) || Object.keys(input).some(key => !['capability','method','params','caller','remainingMs','scope','depth'].includes(key))
     || capabilityKey(input.capability) === null || typeof input.method !== 'string'
     || !Number.isInteger(input.remainingMs) || input.remainingMs < 1 || input.remainingMs > MAX_TIMEOUT
     || !object(input.caller) || Object.keys(input.caller).some(key => !['pluginId','generation','targetId','documentEpoch'].includes(key))
     || typeof input.caller.pluginId !== 'string' || !positive(input.caller.generation)
-    || typeof input.caller.targetId !== 'string' || !positive(input.caller.documentEpoch)) {
+    || typeof input.caller.targetId !== 'string' || !(positive(input.caller.documentEpoch) || (input.caller.targetId === '' && input.caller.documentEpoch === 0 && input.capability.scope === 'runtime'))
+    || (input.depth !== undefined && (!Number.isInteger(input.depth) || input.depth < 1 || input.depth > 8))) {
     throw error('protocol_error', 'invalid Core capability invocation');
   }
   const endpoint = endpoints.get(`${capabilityKey(input.capability)}\u0000${input.method}`);
@@ -254,6 +315,8 @@ function invokeCapability(message) {
   const context = Object.freeze({
     pluginId: identity.pluginId, generation: identity.generation, capability: endpoint.capability,
     method: input.method, caller, signal: invocation.abort.signal,
+    scope: Object.freeze(input.scope ?? (caller.targetId ? { kind: 'target', targetId: caller.targetId, epoch: caller.documentEpoch } : { kind: 'runtime' })), depth: input.depth ?? 1,
+    rpc: pluginContext.rpc,
     remainingMs: () => Math.max(0, Math.floor(invocation.deadline - performance.now())),
   });
   const finish = (result, failure) => {
@@ -311,9 +374,8 @@ function handle(message) {
   if (message.type === 'response') {
     if (!positive(message.id) || message.id >= nextId || typeof message.ok !== 'boolean'
       || (message.ok ? !own(message, 'result') || own(message, 'error') : own(message, 'result') || !object(message.error))) throw error('protocol_error', 'invalid Core response');
-    const item = pending.get(message.id);
+    const item = takePending(message.id);
     if (!item) return; // expired response cannot revive an old request
-    pending.delete(message.id); clearTimeout(item.timer);
     if (message.ok) {
       try { item.prepareResult?.(message.result); item.resolve(message.result); }
       catch (failure) { item.reject(failure); }

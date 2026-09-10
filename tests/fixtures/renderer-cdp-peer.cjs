@@ -9,6 +9,7 @@ const MAX_FRAME = 1024 * 1024;
 const MAX_TARGETS = 4;
 const MAX_CONTEXTS = 64;
 const MAX_SESSIONS = 16;
+let sessionLimit = MAX_SESSIONS;
 const MAX_SCRIPTS = 64;
 const MAX_BINDINGS = 64;
 const MAX_EVALUATIONS = 32;
@@ -19,6 +20,8 @@ const targets = new Map();
 const sessions = new Map();
 const contexts = new Map();
 const evaluations = new Map();
+const heldAttachments = new Map();
+let holdNextAttachment = false;
 const trace = [];
 const methods = new Map();
 let nextContext = 1, nextSession = 1, nextScript = 1;
@@ -219,7 +222,7 @@ function inspect(params) {
       plugins: vm.runInContext('globalThis.__codletRendererV1?.status() ?? []', context.sandbox, { timeout: 1000 }),
       bindings: [...context.bindings.keys()], timers: context.timers.size,
     })),
-    evaluations: evaluations.size, methods: Object.fromEntries(methods), trace,
+    evaluations: evaluations.size, heldAttachments: heldAttachments.size, methods: Object.fromEntries(methods), trace,
   };
 }
 
@@ -236,10 +239,17 @@ function handle(request) {
     case 'Target.setDiscoverTargets': discover = params.discover === true; result = {}; break;
     case 'Target.getTargets': result = { targetInfos: [...targets.values()].map(targetInfo) }; break;
     case 'Target.attachToTarget': {
-      if (params.flatten !== true || sessions.size >= MAX_SESSIONS) throw failure('fixture requires bounded flattened sessions');
+      if (params.flatten !== true || sessions.size >= sessionLimit) throw failure('fixture requires bounded flattened sessions');
       const target = requireTarget(params.targetId), id = `vm-session-${nextSession++}`;
       sessions.set(id, { id, target, runtime: false, bindings: new Map(), scripts: new Map() });
-      result = { sessionId: id }; break;
+      result = { sessionId: id };
+      if (holdNextAttachment) {
+        holdNextAttachment = false;
+        if (heldAttachments.size >= 4) throw failure('fixture delayed attachment limit exceeded');
+        heldAttachments.set(request.id, { request, result });
+        return;
+      }
+      break;
     }
     case 'Target.detachFromTarget': {
       const session = sessions.get(params.sessionId); if (!session) throw failure('unknown detached session');
@@ -278,6 +288,16 @@ function handle(request) {
     case 'Page.removeScriptToEvaluateOnNewDocument': requireSession(request).scripts.delete(params.identifier); result = {}; break;
     case 'Runtime.evaluate': return beginEvaluation(request, requireSession(request), params);
     case 'Fixture.inspect': result = inspect(params); break;
+    case 'Fixture.holdNextAttach': holdNextAttachment = true; result = {}; break;
+    case 'Fixture.sessionLimit': {
+      if (!Number.isInteger(params.value) || params.value < MAX_SESSIONS || params.value > 128) throw failure('invalid fixture session limit');
+      sessionLimit = params.value; result = {}; break;
+    }
+    case 'Fixture.releaseAttaches': {
+      const held = [...heldAttachments.values()]; heldAttachments.clear();
+      for (const { request, result } of held) response(request, result);
+      result = { released: held.length }; break;
+    }
     case 'Fixture.navigate': { const target = requireTarget(params.targetId); navigate(target); result = { epoch: target.epoch }; break; }
     case 'Fixture.destroyTarget': {
       const target = requireTarget(params.targetId);
@@ -297,7 +317,7 @@ function stop() {
   shuttingDown = true;
   for (const context of [...contexts.values()]) retireContext(context);
   for (const evaluation of evaluations.values()) clearTimeout(evaluation.timer);
-  evaluations.clear(); sessions.clear(); targets.clear();
+  evaluations.clear(); heldAttachments.clear(); sessions.clear(); targets.clear();
 }
 function fatal(error) { log(error.stack ?? error); stop(); process.exit(1); }
 

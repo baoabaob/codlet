@@ -1,222 +1,154 @@
-# Registered local plugins
+# Registered local JS/TS plugins
 
-Host JS plugins are supported by the first M2a slice. They use
-`host.process` and optionally `cdp.raw`, use Codlet's managed Node executor, and do not
-require a renderer entry. Both use `codlet.json` and built `.js`/`.cjs` entrypoints;
-TS is compiled before loading. Executable entries and Node native addons are
-unsupported. See the [host contract](JS_PLUGIN_RUNTIME_2026-09-09.md)
-and [raw host example](../examples/raw-host/README.md). M2b adds online host
-enable/disable/reload through the same CLI receipts; see [host lifecycle](M2B_HOST_CONTROL_2026-09-10.md).
-Opt-in file watching now also supports loaded host JS entries; see
-[host watching](HOST_WATCH_2026-09-10.md). Doctor now uses
-[execution inspection](HOST_INSPECTION_2026-09-10.md) for actual host process and
-cleanup facts; legacy status-v1 and Inspect retain their existing field sets.
-One package can now contain both entries and expose a native Host capability to
-its own renderer. See [combined packages](COMBINED_PACKAGES_2026-09-10.md) and the
-[combined example](../examples/local-host-renderer-capability/README.md).
+Codlet loads explicitly registered directory packages containing `codlet.json`,
+built CommonJS `.js`/`.cjs` entries and resources. A package may have a Host entry,
+an isolated renderer entry, or both. Host-only plugins need no renderer stub,
+official GUI or adapter. TypeScript is compiled before loading; the portable
+runtime does not install npm dependencies or transpile source.
 
-Codlet loads explicitly registered local directories at session startup or through
-the running Host's enable/reload commands. Registration, inspection, and removal
-do not launch or attach to Codex. Live management and opt-in file watching share
-the [runtime control contract](RUNTIME_CONTROL.md).
+The [JS runtime contract](JS_PLUGIN_RUNTIME_2026-09-09.md),
+[Core RPC contract](CORE_RPC_2026-09-10.md) and
+[development walkthrough](HOST_DEVELOPMENT_2026-09-10.md) cover the public SDK.
+Execution evidence belongs to the [M2 acceptance record](M2_ACCEPTANCE_2026-09-10.md).
 
-## Register a directory
-
-Inspect a plugin before recording its registration:
+## Inspect, then grant explicitly
 
 ```powershell
-codlet plugin add "C:\my-plugins\example"
+codlet plugin add C:\Plugins\my-tools
 ```
 
-This inspects its manifest and selected entry, displays the directory and requested
-permissions, and exits nonzero without creating registry state. It does not execute
-the plugin source. After reviewing the plugin, explicitly authorize the directory and
-every requested permission:
+Without `--trust`, this reads the manifest and declared JS entry snapshots,
+prints the candidate and requested permissions, and exits without registration
+or code execution. After reviewing them, supply every intended grant and scope:
 
 ```powershell
-codlet plugin add "C:\my-plugins\example" --trust --grant ui.dom
+codlet plugin add C:\Plugins\my-tools --trust --grant host.process --grant host.fs --grant host.network --grant host.system --read-root C:\Fixture\approved-data --network-origin https://example.com
+codlet plugin permissions dev.my-tools --json
 ```
 
-Repeat `--grant` for multiple permissions. Isolated renderer entries support
-`ui.dom` and `runtime.manage`; host JS entries support `host.process` and `cdp.raw`.
-Combined packages may declare the permissions needed by either entry.
-Unsupported worlds, permissions, or missing grants are rejected. Extra grants are
-recorded only when explicitly supplied; the runtime uses permissions declared by
-the manifest that also pass the grant check. The `--trust` flag is user consent, not an OS sandbox: these are
-user-authorized programs. Renderer JS shares the document; host JS has ordinary
-Node filesystem/network/process access as the current user.
+`--grant`, `--read-root`, `--network-origin` and `--executable` are repeatable.
+The CLI displays the complete normalized policy before saving it. Supported
+permissions are:
 
-The canonical local directory, expected plugin ID, and granted permissions are
-persisted in `%LOCALAPPDATA%\Codlet\config.json`. A new registration uses the saved
-enablement preference for that ID, defaulting to enabled. Re-adding the same ID and
-directory can replace grants, but never resets an existing disabled preference.
-A different directory cannot silently replace an existing registration.
+| Entry/API | Declared and explicitly granted permission | Additional scope |
+| --- | --- | --- |
+| Managed Node Host | `host.process` | None for Node activation |
+| Raw Core CDP | `cdp.raw` | Core tracks its managed sessions and resources |
+| Filesystem broker | `host.fs` | `--read-root` directories |
+| HTTP(S) broker | `host.network` | Exact `--network-origin` values |
+| Child-process broker | `host.process` | Explicit `--executable` files |
+| Bounded system query | `host.system` | None |
+| Public lifecycle management | `runtime.manage` | Declared `codlet.runtime.manage@1` requirement |
+| Isolated renderer DOM | `ui.dom` | Its renderer world |
 
-## Manage and diagnose
+Combined packages may declare permissions used by either entry. Main-world
+renderer execution and `ui.mainWorld` are outside this implementation. Extra
+grants are stored only when explicitly provided, and do not become manifest
+declarations. Empty broker policy grants no directory, origin or child program.
+See [OS broker limits and authorization](OS_BROKER_2026-09-10.md).
+
+Host Node is ordinary current-user code, not an OS sandbox. These grants constrain
+managed endpoints; they cannot guarantee code safety or reverse completed
+external effects.
+
+## One complete trust record
+
+The canonical directory, expected logical ID, grants and optional `brokerPolicy`
+are stored together in `%LOCALAPPDATA%\Codlet\config.json`. A new registration
+retains the ID's saved enabled preference, defaulting to enabled. Re-adding the
+same ID/directory explicitly replaces its complete grant and policy selection;
+it does not reset disabled state or silently add permissions.
+
+Each registry save compares the original complete `path + grants + brokerPolicy`
+record under the existing process lock. A concurrent change conflicts instead of
+overwriting another writer. Unrelated enablement edits merge without restoring
+old registrations or grants. Registry documents and candidate saves are limited
+to 1 MiB. Schema 1 reads remain compatible; explicit saves migrate to schema 2.
+Schema 2 records that omit `brokerPolicy` retain the empty-policy behavior.
+
+## Lifecycle, revoke and receipts
 
 ```powershell
-codlet plugin list
-codlet plugin disable dev.example.plugin
-codlet plugin enable dev.example.plugin
-codlet plugin reload dev.example.plugin
+codlet plugin enable dev.my-tools --json
+codlet plugin reload dev.my-tools --json
+codlet plugin disable dev.my-tools --json
+codlet plugin revoke dev.my-tools host.fs --json
+codlet plugin operation '<receipt>' --json
 codlet doctor --json
-codlet plugin remove dev.example.plugin
 ```
 
-With a matching Host, enable/disable/reload execute in that Host. Enable/disable
-may save a preference for the next `codlet launch` only after proving this registry
-has no Host; reload requires a Host. Removal forgets the local registration and
-preserves both the source directory and the ID's enablement preference. Disable a
-running plugin before removing its registration to unload it immediately. Bundled
-plugins can be disabled but cannot be removed.
+With a matching runtime, commands use one prepare/submit/operation receipt in
+that runtime. After a lost submit response or timeout, query the same operation;
+do not create a second mutation or switch to an offline write. Without a runtime,
+enable/disable/revoke may save the next-launch intent only after proving that
+this registry has no Host; reload requires a running runtime.
 
-A JS host registered after launch can be enabled without restarting Codex. Its
-process is retired before a replacement generation starts; startup failure can
-restore the prior JS entry snapshot under fresh generations only while its
-original registration, current grants and enabled preference still allow it.
-`disable` can clean up a loaded host even after removal or source corruption.
-Reloading a disabled host is rejected before execution; use `enable` first.
-An ID that has already been assigned an executor cannot switch between host and
-renderer until Codlet restarts. Host lifecycle manages process/RPC resources;
-arbitrary injected page effects are still the plugin's responsibility.
+Disable rejects enabled or running dependents. Reload replaces the selected
+provider and its transitive dependent closure, including both entries of a
+combined package. Sources and current trust are validated before retirement;
+renderer cleanup precedes Host stop, and replacement Host readiness precedes
+dependent renderer activation. Partial failure cleans both candidate entries and
+can restore prior immutable snapshots at fresh shared generations under current
+trust. See [combined lifecycle](COMBINED_PACKAGES_2026-09-10.md).
 
-Each launch re-reads and validates enabled plugin code, manifest identity, declared
-permissions, and dependencies before discovering or starting Codex. Source edits
-are allowed within the registered directory; newly requested permissions require
-matching explicit grants. Re-register with the intended full grant list to change
-that authorization. There is no automatic grant expansion.
+Revoke removes a permission and its associated broker scopes atomically, then
+invalidates the old managed authorization and retires that provider/dependent
+closure. It preserves enabled preferences and performs no automatic compensation.
+Explicitly grant the intended authority again before enabling code that still
+declares it. Public Host/renderer callers and the optional GUI use the same
+[runtime.manage@1 receipt contract](RUNTIME_MANAGE_2026-09-10.md).
 
-`list` and `doctor` retain invalid local entries so they can be repaired. An invalid
-enabled entry prevents launch; an invalid disabled entry remains visible in
-diagnostics without blocking other plugins. Disable or remove still works when its
-directory or entry has disappeared. `enable` validates it before persisting success.
-Enabling also checks that the validated registration did not change concurrently;
-retry the command from fresh state if its authorization changed or was removed.
+New registrations can be enabled online without restarting Codex. Disable can
+retire an actual owner even if its source is broken, missing or no longer
+registered. Removing a registration preserves source files and the ID's saved
+preference; disable first when immediate unloading is intended. An ID's owned
+entry shape cannot change during the same Codlet run; restart Codlet to add,
+remove or switch its Host/renderer entry kinds.
 
-The GUI management list reads the latest registry and the current loaded plugin set
-on each refresh. A registered loaded plugin uses its actual target active state. A
-plugin that is no longer registered but remains loaded stays visible until the
-runtime unloads it and shows `Registration removed; still loaded`. Once the plugin is both unloaded and
-unregistered, the row disappears. Removal alone does not unload running code. A newly registered `not_loaded`
-plugin contributes metadata only; the GUI does not read its source to invent runtime
-state. A registry read failure is shown as an explicit error and never falls back to
-stale cached registry data. A plugin with an explicitly granted `runtime.manage`
-permission may use the existing authenticated `disableSelf` transaction; this
-persists disablement before unloading it from every attached target. It does not
-remove its registration.
-`doctor` may add a read-only authenticated scoped `Inspect` sample from the
-matching Host; it uses actual kernel registrations and the same owner target,
-generation, and activation publication, never disk declarations as proof of
-loaded state. No Host, another registry, and an unsupported legacy Host remain
-unavailable without adding a failure solely for that reason. Transport or
-identity failures become an explicit runtime issue. Use `codlet status` for the
-unchanged status-v1 sampled snapshot. See [the doctor runtime inspection contract](DOCTOR_RUNTIME.md).
-The current renderer RPC transport supports target-scoped requirements; the
-generic kernel's other scope declarations do not imply a working renderer route.
-
-Use `codlet launch --watch` to observe the manifest and all declared host/renderer
-JS entries of local plugins already loaded by that Host. The observer shares one
-four-source scan budget and waits for two matching samples plus a quiet interval.
-The complete dependency closure, including native providers and their renderer
-consumers, uses one online transaction and queryable receipt. A failed candidate keeps
-its attempted signature across rollback generations, so an unchanged bad version
-does not keep restarting the restored code.
-
-Host watch pins the loaded root and complete grants record. Source reads pause
-when that registration is removed, disabled, moved, or regranted; select changed
-trust explicitly with CLI enable/reload. Registration alone never joins the watch
-set, while an online enable can add a newly loaded host without restarting Codex.
-The execution-time guard also checks generation and the selected stable bytes,
-so a queued watch cannot replace a later CLI generation or run a newer unsettled
-save. Pre-source guard rejections can be selected again after fresh stable
-samples; actual invalid-source or activation failures are attempted only once.
-Resources, dependencies and TS inputs are outside this watch set. See the
-[host watch contract](HOST_WATCH_2026-09-10.md) and [control contract](RUNTIME_CONTROL.md)
-for source guards, bounded diagnostics and receipt-based recovery.
-
-## Plugin format
-
-```text
-example/
-  codlet.json
-  renderer.js
-```
-
-Manifest schema 1 uses the canonical filename `codlet.json`; rename older
-`plugin.json` files explicitly. There is no legacy filename fallback or native
-`host.command` compatibility mode. The CommonJS lifecycle ABI is shared: the entry
-assigns `module.exports` with `activate(context)` and `deactivate()` methods; both
-may return promises. Renderer code is not a Node process and has no general Node
-`require` API. There is no package installation, dependency bundling, or remote
-source loading in this slice.
-
-The loader limits manifests to 128 KiB and each JS entry to 1 MiB, requires
-regular UTF-8 files for both host and renderer, and rejects root network/device paths, entry traversal, Windows
-device names, alternate data streams, and linked/reparse entry paths. The selected
-root may be canonicalized from a local alias, but linked files below it are refused.
-These checks do not claim isolation from a malicious process running as the same
-Windows user.
+## Declarations, snapshots and watch
 
 For combined packages, top-level `provides` / `requires` belong to the renderer;
-`host.provides` declares native endpoints. Host-only packages keep their existing
-top-level `provides` field and reject nonempty `host.provides`. Native endpoints
-currently use Target scope, and Host-side capability requirements remain unsupported.
-The loader keeps both JS entry snapshots at one logical generation.
+`host.provides` / `host.requires` belong to the Host. Host-only packages use the
+top-level declarations. Host providers support Runtime and Target; renderer
+providers support Target and may consume Runtime or Target. Unsupported adapter
+scopes do not acquire fabricated instances. Exact descriptors, duplicate
+providers, missing requirements and actual cycles are checked before activation.
 
-## Runnable example
+Manifests are bounded to 128 KiB and each JS entry to 1 MiB. The loader checks
+UTF-8, ordinary local files, canonical identity, traversal/device/ADS and linked
+entry restrictions. Both main JS entries and the complete trust record are
+captured for a generation. Other resources and imported JS modules are read when
+the plugin accesses them; they are not an atomic snapshot of the entire package.
 
-`examples/local-echo` provides the target-scoped `example.echo@1` capability after
-an awaited Host ping. It requests no extra permission and owns no UI, timer, file,
-or process resources:
+`codlet launch --watch` observes already loaded local packages. It watches the
+manifest and all declared main JS entries, with a four-source scan budget, two
+matching observations and a quiet interval. One stable edit produces one closure
+receipt. The execution guard checks the original generation, selected bytes,
+loaded roots and complete Host trust records again. Another save after stable
+selection returns to observation instead of executing unsettled bytes. Failed
+content is not retried merely because rollback used a new generation.
 
-```powershell
-codlet plugin add .\examples\local-echo
-codlet plugin add .\examples\local-echo --trust
-codlet doctor --json
-```
+Changing a loaded root or full Host trust record pauses that automatic source
+selection; use explicit CLI grant/enable/reload to choose current authority.
+Resources, imported modules and TS inputs are outside the watch set. Details are
+in [host watching](HOST_WATCH_2026-09-10.md).
 
-In a deliberately started Codlet session, another registered plugin that declares
-`example.echo@1` in its requirements can call:
+## Examples and diagnostics
 
-```javascript
-const reply = await context.rpc.request(
-    { name: 'example.echo', api: 1, scope: 'target' },
-    'echo',
-    { text: 'hello' }
-);
-```
+The portable package includes [raw CDP with owned navigation recovery](../examples/raw-m2/README.md),
+[granted filesystem/network access](../examples/host-os-broker/README.md),
+[Runtime/Target Core RPC packages](../examples/core-rpc/README.md),
+[combined Host/renderer](../examples/local-host-renderer-capability/README.md),
+and [bounded cleanup](../examples/cleanup-host/README.md).
+`examples/local-echo` remains a small renderer provider of `example.echo@1`.
 
-Its source is exercised with the actual bootstrap in the Node tests. A passing
-offline test does not establish compatibility with the installed Codex build.
+Listing does not re-execute source to guess metadata. One logical package produces
+one row; enabled intent, loaded snapshots and actual active state remain distinct.
+Host process/cleanup facts and renderer target facts retain their actual executor
+origins. Use [Host inspection](HOST_INSPECTION_2026-09-10.md) and the receipt's
+failure stages when a change is degraded.
 
-## Registry transactions
-
-Registry reads and writes are limited to 1 MiB, including JSON formatting. An
-oversized file or candidate save is rejected without replacing the current file.
-Registry schema 2 adds an explicit `localPlugins` map. Schema 1 enablement files
-remain readable without modification; an explicit successful save migrates them
-atomically. Older Codlet versions that only understand schema 1 cannot read the
-new format.
-
-Writes share the existing cross-process lock. Enablement edits merge independently.
-Registration and grant edits compare the original complete registration with the
-latest record under the lock before applying any changes. Conflicts fail without
-partially committing preferences or authorizations. Reload the current registry
-and explicitly restage the intended operation after a conflict. Unrelated enable
-or disable commands never replay an old registration or grant snapshot.
-
-## Bundled GUI identity
-
-The bundled GUI's canonical plugin ID is `codlet-gui`. Its menu, window, and
-product display name remains `Codlet`, and its capability names remain
-`codlet.runtime.*`. The legacy ID `codlet` is reserved as a CLI compatibility
-alias for `enable`, `disable`, and `reload`; it is normalized to `codlet-gui`
-before control. Both `codlet` and `codlet-gui` are reserved local IDs and cannot
-be claimed by a local plugin.
-
-The explicit `plugins.codlet-gui` preference wins. If it is absent, the legacy
-`plugins.codlet` preference is read as a read-only fallback. `list` and `doctor`
-do not migrate or write either key. An explicit GUI preference update writes the
-new key and removes the old key within the existing registry save lock. A running
-Host's plugin identity and existing receipts are not rewritten in place; the new
-identity applies on the next launch with the updated binary.
+Bundled GUI identity remains `codlet-gui`; legacy `codlet` is a compatibility
+control alias. Bundled/core IDs are reserved for local registrations. Optional
+official plugins can be disabled without granting a third-party package any
+hidden privilege.

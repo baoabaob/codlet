@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::capabilities::{
     CapabilityRegistry, CapabilityRegistryError, CapabilityScope, host_provider_id,
 };
-use crate::local_plugins::{LocalPluginError, load_local_plugin};
+use crate::local_plugins::{LocalPluginError, load_local_plugin_with_registration};
 use crate::plugins::{LoadedPlugin, ManifestError, Permission, PluginRegistry, bundled_plugins};
 use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
 
@@ -83,7 +83,7 @@ impl PluginCatalog {
             let plugin = if bundled_ids.contains(id) || id == BUILTIN_HOST_PROVIDER_ID {
                 Err(LocalPluginError::ReservedId(id.clone()))
             } else {
-                load_local_plugin(id, &registration.path, &registration.grants, 1)
+                load_local_plugin_with_registration(id, registration, 1)
                     .and_then(|plugin| validate_renderer_requirements(plugin, &registration.path))
             };
             catalog.entries.push(PluginCatalogEntry {
@@ -147,7 +147,7 @@ impl PluginCatalog {
             .local_plugins()
             .get(id)
             .ok_or_else(|| CatalogError::UnknownPlugin(id.to_owned()))?;
-        let plugin = load_local_plugin(id, &registration.path, &registration.grants, generation)
+        let plugin = load_local_plugin_with_registration(id, registration, generation)
             .and_then(|plugin| validate_renderer_requirements(plugin, &registration.path))
             .map_err(|error| CatalogError::InvalidPlugin {
                 id: id.to_owned(),
@@ -204,20 +204,28 @@ fn validate_renderer_requirements(
     if plugin.manifest.renderer.is_none() {
         return Ok(plugin);
     }
-    if let Some(requirement) = plugin
-        .manifest
-        .requires
-        .iter()
-        .find(|requirement| requirement.scope != CapabilityScope::Target)
-    {
+    if let Some(requirement) = plugin.manifest.requires.iter().find(|requirement| {
+        !matches!(
+            requirement.scope,
+            CapabilityScope::Target | CapabilityScope::Runtime
+        )
+    }) {
         return Err(LocalPluginError::Rejected {
             path: path.join("codlet.json"),
             stage: "renderer capability routing",
             reason: format!(
-                "plugin {} requires {requirement}; this renderer runtime only supports target-scoped requirements",
+                "plugin {} requires {requirement}; Core supports Runtime and Target requirements",
                 plugin.manifest.id
             ),
         });
+    }
+    if plugin
+        .manifest
+        .renderer_provides()
+        .iter()
+        .any(|capability| capability.scope != CapabilityScope::Target)
+    {
+        return Err(LocalPluginError::Rejected { path:path.join("codlet.json"), stage:"renderer capability routing", reason:"renderer instances provide Target capabilities; Runtime singletons belong to Host/Core".into() });
     }
     Ok(plugin)
 }
@@ -246,7 +254,7 @@ pub(crate) fn capability_graph(
                 &host_provider_id(&plugin.manifest.id),
                 plugin.generation,
                 plugin.manifest.host_provides(),
-                &[],
+                plugin.manifest.host_requires(),
                 &grants,
             )?;
         }
@@ -260,6 +268,13 @@ pub(crate) fn capability_graph(
             )?;
         }
     }
+    for plugin in plugins
+        .iter()
+        .filter(|plugin| plugin.manifest.host.is_some() && plugin.manifest.renderer.is_some())
+    {
+        graph
+            .require_provider_before(&plugin.manifest.id, &host_provider_id(&plugin.manifest.id))?;
+    }
     Ok(graph)
 }
 
@@ -271,6 +286,7 @@ mod combined_graph_tests {
 
     fn plugin(manifest: serde_json::Value) -> LoadedPlugin {
         LoadedPlugin {
+            authorization: None,
             manifest: PluginManifest::parse(&manifest.to_string()).unwrap(),
             source: Some("module.exports={};".into()),
             host: None,

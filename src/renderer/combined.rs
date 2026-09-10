@@ -7,6 +7,18 @@ use crate::plugin_control::{PluginControlError, PluginTargetFailure};
 use crate::plugin_execution::ExecutionState;
 
 impl RendererRuntime {
+    pub(crate) fn revoke_package_authority(&mut self, affected: &BTreeSet<String>) {
+        self.remove_managed_providers(affected);
+        for id in affected {
+            let _ = self.capabilities.unregister_provider(&host_provider_id(id));
+        }
+        let targets = self.sessions.keys().cloned().collect::<Vec<_>>();
+        for target in targets {
+            for id in affected {
+                self.cancel_host_capabilities_for(&target, Some(id));
+            }
+        }
+    }
     pub(crate) fn pending_package_disables(&self) -> Vec<String> {
         self.pending_package_disables.iter().cloned().collect()
     }
@@ -150,13 +162,13 @@ impl RendererRuntime {
         plugins: &[LoadedPlugin],
         stage: &str,
     ) -> Vec<PluginTargetFailure> {
+        if let Err(error) = self.register_rpc_plugins(plugins) {
+            return vec![failure("core-rpc", stage, error.to_string())];
+        }
         for plugin in plugins
             .iter()
             .filter(|plugin| plugin.manifest.host.is_some())
         {
-            if let Err(error) = self.require_native_ready(&plugin.manifest.id, plugin.generation) {
-                return vec![failure(&plugin.manifest.id, stage, error.to_string())];
-            }
             let grants = plugin
                 .manifest
                 .permissions
@@ -167,7 +179,7 @@ impl RendererRuntime {
                 &host_provider_id(&plugin.manifest.id),
                 plugin.generation,
                 plugin.manifest.host_provides(),
-                &[],
+                plugin.manifest.host_requires(),
                 &grants,
             ) {
                 return vec![failure(&plugin.manifest.id, stage, error.to_string())];
@@ -201,7 +213,11 @@ impl RendererRuntime {
         self.retire_package_renderers(&affected, "shutdown")
     }
 
-    fn require_native_ready(&self, plugin_id: &str, generation: u64) -> Result<(), RendererError> {
+    pub(super) fn require_native_ready(
+        &self,
+        plugin_id: &str,
+        generation: u64,
+    ) -> Result<(), RendererError> {
         if self.external_observations.iter().any(|observation| {
             observation.plugin.manifest.id == plugin_id
                 && observation.plugin.generation == generation
@@ -218,12 +234,13 @@ impl RendererRuntime {
     }
 
     pub(super) fn require_native_dependencies_ready(
-        &self,
+        &mut self,
         plugin: &LoadedPlugin,
         authorizations: &TargetAuthorizations,
     ) -> Result<(), RendererError> {
+        let mut dependencies = BTreeSet::new();
         if plugin.manifest.host.is_some() {
-            self.require_native_ready(&plugin.manifest.id, plugin.generation)?;
+            dependencies.insert((plugin.manifest.id.clone(), plugin.generation));
         }
         if let Some((principal, leases)) = authorizations.get(&plugin.manifest.id) {
             for lease in leases.values() {
@@ -231,14 +248,17 @@ impl RendererRuntime {
                     self.capabilities
                         .invoke_endpoint(principal, lease, |provider, _| provider.to_owned())?;
                 if let Some(id) = host_provider_plugin_id(&owner) {
-                    self.require_native_ready(
-                        id,
+                    dependencies.insert((
+                        id.to_owned(),
                         self.capabilities
                             .provider_generation(&owner)
                             .expect("authorized provider exists"),
-                    )?;
+                    ));
                 }
             }
+        }
+        for (id, generation) in dependencies {
+            self.wait_native_ready(&id, generation)?;
         }
         Ok(())
     }

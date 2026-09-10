@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hide usage banner plugin preview</title>
+<style>
+    body { margin: 0; padding: 28px; color: #151515; background: #fafafa; font: 14px/1.5 system-ui,sans-serif; }
+    main { max-width: 880px; margin: auto; }
+    h1 { font-size: 20px; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    button { padding: 6px 13px; border: 1px solid #dedede; border-radius: 20px; background: #fff; cursor: pointer; }
+    aside { display: flex; gap: 16px; align-items: center; background: white; padding: 20px; border: 1px solid #e4e4e4; border-radius: 20px; margin: 12px 0; }
+    aside h3 { margin: 0; font-size: 14px; }
+    aside h3 span { display: block; color: #888; font-weight: 400; margin-top: 3px; }
+    .message { flex: 1; }
+    .actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .actions button:first-child { color: white; background: black; border-color: black; }
+    article { margin-top: 25px; padding: 20px; background: #f0f0f0; border-radius: 12px; }
+    article h3 { font-size: 14px; }
+    [role=status] { color: #666; min-height: 22px; }
+    @media(max-width:600px) { body { padding: 16px; } aside { flex-wrap: wrap; } .actions { width: 100%; } }
+</style>
+<main>
+    <h1>Hide usage banner</h1>
+    <p>Local plugin test fixture. No account or usage settings are connected.</p>
+    <div class="controls">
+        <button id="toggle">Enable plugin</button>
+        <button id="replace">Replace usage card</button>
+        <button id="other">Show different warning</button>
+        <button id="quota">Show quota warning</button>
+        <button id="stop-pending">Disable during update</button>
+    </div>
+    <p role="status">Plugin disabled</p>
+    <section id="cards"></section>
+    <aside id="unrelated" class="relative isolate bg-surface">
+        <div class="message"><h3>Connection failed</h3><p>Retry when the connection is available.</p></div><button>Retry</button>
+    </aside>
+    <article id="quoted-content">
+        <h3>You’re out of Codex and Work usage</h3>
+        <p>This is quoted conversation content and must stay visible.</p><button>Add Credits</button>
+    </article>
+</main>
+<script>const module = { exports: {} };</script>
+<script src="../examples/hide-usage-banner/renderer.js"></script>
+<script>
+    const plugin = module.exports;
+    const title = 'You’re out of Codex and Work usage';
+    let enabled = false, generation = 0;
+    function card() {
+        const value = document.createElement('aside');
+        value.className = 'relative isolate flex w-full overflow-hidden border bg-surface';
+        value.id = 'usage-card';
+        value.innerHTML = '<div aria-hidden="true">◴</div><div class="message"><h3><div>' + title + '<span>Your rate limit resets on 9月15日 9:24. Upgrade or use one of your rate limit resets now.</span></div></h3></div><div class="actions"><button>Add Credits</button><button>Reset usage</button></div>';
+        return value;
+    }
+    function replaceCard() { document.getElementById('cards').replaceChildren(card()); }
+    function renderState() {
+        document.getElementById('toggle').textContent = enabled ? 'Disable plugin' : 'Enable plugin';
+        document.querySelector('[role=status]').textContent = enabled ? 'Plugin enabled' : 'Plugin disabled';
+    }
+    document.getElementById('toggle').addEventListener('click', () => {
+        if (enabled) plugin.deactivate(); else plugin.activate({pluginId:'dev.local.hide-usage-banner',generation:++generation});
+        enabled = !enabled; renderState();
+    });
+    document.getElementById('replace').addEventListener('click', replaceCard);
+    document.getElementById('other').addEventListener('click', () => document.querySelector('#usage-card h3').textContent = 'Connection failed');
+    document.getElementById('quota').addEventListener('click', () => document.querySelector('#usage-card h3').textContent = title);
+    document.getElementById('stop-pending').addEventListener('click', () => {
+        replaceCard(); plugin.deactivate(); enabled = false; renderState();
+    });
+    replaceCard();
+</script>
+</html>

@@ -199,6 +199,8 @@ pub enum CapabilityRegistryError {
     },
     #[error("capability dependency cycle detected among providers {providers:?}")]
     DependencyCycle { providers: Vec<String> },
+    #[error("dependency names an unregistered provider {provider_id}")]
+    UnknownProvider { provider_id: String },
 }
 
 /// Qualified entry owners cannot collide with a plugin manifest ID. The base
@@ -310,6 +312,8 @@ struct CapabilityLeaseFacts {
     owner_consumer_registration: u64,
     owner_scope: CapabilityScopeInstance,
     owner_scope_generation: u64,
+    provider_scope: CapabilityScopeInstance,
+    provider_scope_generation: u64,
     provider_id: String,
     provider_generation: u64,
     provider_registration: u64,
@@ -338,6 +342,7 @@ struct ProviderRegistration {
     provides: Vec<CapabilityDescriptor>,
     requires: Vec<CapabilityDescriptor>,
     grants: BTreeSet<String>,
+    dependencies: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -467,8 +472,30 @@ impl CapabilityRegistry {
                 provides: provides.to_vec(),
                 requires: requires.to_vec(),
                 grants: grants.iter().cloned().collect(),
+                dependencies: BTreeSet::new(),
             },
         );
+        Ok(())
+    }
+
+    /// An execution owner may require another owner to be ready even when no
+    /// capability method is consumed. This remains a generic graph edge.
+    pub(crate) fn require_provider_before(
+        &mut self,
+        consumer: &str,
+        provider: &str,
+    ) -> Result<(), CapabilityRegistryError> {
+        if !self.registrations.contains_key(provider) {
+            return Err(CapabilityRegistryError::UnknownProvider {
+                provider_id: provider.into(),
+            });
+        }
+        let registration = self.registrations.get_mut(consumer).ok_or_else(|| {
+            CapabilityRegistryError::UnknownProvider {
+                provider_id: consumer.into(),
+            }
+        })?;
+        registration.dependencies.insert(provider.into());
         Ok(())
     }
 
@@ -565,12 +592,25 @@ impl CapabilityRegistry {
                 requirement: requirement.clone(),
             });
         }
-        if facts.scope.scope() != requirement.scope {
+        if facts.scope.scope() != requirement.scope && requirement.scope != CapabilityScope::Runtime
+        {
             return Err(CapabilityAccessError::ScopeMismatch {
                 requirement: requirement.clone(),
                 scope: facts.scope.clone(),
             });
         }
+        let provider_scope = if requirement.scope == CapabilityScope::Runtime {
+            CapabilityScopeInstance::Runtime
+        } else {
+            facts.scope.clone()
+        };
+        let provider_scope_generation = self
+            .active_scopes
+            .get(&provider_scope)
+            .copied()
+            .ok_or_else(|| CapabilityAccessError::ScopeInactive {
+                scope: provider_scope.clone(),
+            })?;
         let provider = self.provider_for_requirement(&facts.consumer_id, requirement)?;
         Ok(CapabilityLease(CapabilityLeaseFacts {
             registry_id: self.registry_id,
@@ -579,6 +619,8 @@ impl CapabilityRegistry {
             owner_consumer_registration: facts.consumer_registration,
             owner_scope: facts.scope.clone(),
             owner_scope_generation: facts.scope_generation,
+            provider_scope,
+            provider_scope_generation,
             provider_id: provider.provider_id.clone(),
             provider_generation: provider.provider_generation,
             provider_registration: provider.registration_epoch,
@@ -664,6 +706,18 @@ impl CapabilityRegistry {
             .collect();
 
         for (consumer, registration) in &self.registrations {
+            for provider in &registration.dependencies {
+                let consumers = dependents.get_mut(provider).ok_or_else(|| {
+                    CapabilityRegistryError::UnknownProvider {
+                        provider_id: provider.clone(),
+                    }
+                })?;
+                if consumers.insert(consumer.clone()) {
+                    *dependency_count
+                        .get_mut(consumer)
+                        .expect("registered consumer") += 1;
+                }
+            }
             for requirement in &registration.requires {
                 let provider = self.provider_for_requirement(consumer, requirement)?;
                 if dependents
@@ -751,6 +805,8 @@ impl CapabilityRegistry {
         let facts = &lease.0;
         facts.registry_id == self.registry_id
             && self.active_scopes.get(&facts.owner_scope) == Some(&facts.owner_scope_generation)
+            && self.active_scopes.get(&facts.provider_scope)
+                == Some(&facts.provider_scope_generation)
             && self
                 .registrations
                 .get(&facts.owner_consumer_id)

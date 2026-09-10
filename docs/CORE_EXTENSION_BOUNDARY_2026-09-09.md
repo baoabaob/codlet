@@ -1,6 +1,6 @@
 # 已确认的 Core、可选托管运行时与 adapter 边界
 
-状态：2026-09-09 用户已确认，并通过侧边讨论同步到主任务。本文约束 M2–M4 的设计与验收，不代表 L2–L4 已全部实现或验收通过。M0/M1 保留尚未关闭的正式门禁；M2 已交付统一 JS/TS host/CDP、在线生命周期、host watch、带预算的清理与执行诊断，现行流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)。
+状态：2026-09-09 用户已确认，并通过侧边讨论同步到主任务。本文约束 M2–M4 的设计与验收，不代表 L2–L4 已全部实现。2026-09-10 的完整 M2 候选与逐条证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)；M0/M1 保留尚未关闭的正式门禁，M3/M4 私有适配仍属后续。现行开发流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)。
 
 ## 已确认方向
 
@@ -49,10 +49,9 @@ Core 可以检查自己的 RPC 来源、scope/generation、已声明的 provider
 
 讨论前的 M1 是 renderer 优先的实现：manifest 要求 renderer 入口，实际只支持 isolated world 和 target 路由，Rust 内部 CDP 能力没有作为插件 API 开放。M2a 现已允许无 renderer 的本地 host JS 入口，经独立 JSONL 连接使用通用 CDP 请求和事件；纯 host 启动跳过官方 renderer target 筛选。M2b 在同一插件包与 CLI receipt 上增加 host 在线启停/重载和受当前授信约束的换代补偿。示例与原生夹具证明这些路径无需官方插件，尚不代表真实 Codex 中所有层级、导航恢复或完整 M2 验收完成。进程热管理也不意味着任意 raw 注入副作用都能自动撤回。
 
-后续 [组合包](COMBINED_PACKAGES_2026-09-10.md)已把 Host 与 renderer 纳入同一代次和
-生命周期事务；[renderer→Host Target capability](HOST_CAPABILITY_2026-09-10.md)使用
-已有通用授权图与异步桥接。实际 JS 验收覆盖两侧入口，Host 发起 capability 调用、其他
-scope、专门 OS broker 和 backend adapter 仍未交付。raw CDP 继续无需官方 adapter。
+后续 [组合包](COMBINED_PACKAGES_2026-09-10.md)把 Host 与 renderer 纳入同一代次和生命周期事务。完整 M2 的 [Core RPC](CORE_RPC_2026-09-10.md)提供 Host 主动调用、双向 server-request/notification、Runtime/Target scope 与取消链；[OS broker](OS_BROKER_2026-09-10.md)按目录、origin 与 executable 明确范围授权。完整记录变化或显式撤销均使旧 generation 与受管理 endpoint 失效。
+
+[raw-m2](../examples/raw-m2/README.md)用单一 Host 和公开 CDP 自行实现 binding、注入、新文档恢复与消息通路；其真实 JS 夹具不构造 RendererRuntime/TargetController，也不装载官方功能插件。正常清理由示例归还自身页面资源，Core 另行退休跟踪的 raw session；故障清理不会被描述为任意页面副作用回滚。backend adapter 与其私有业务映射仍未交付。
 
 ## M2–M4 的架构验收条目
 

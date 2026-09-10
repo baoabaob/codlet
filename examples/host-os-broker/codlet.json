@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "id": "example.os-broker",
+  "version": "1.0.0",
+  "host": { "entry": "host.js" },
+  "permissions": ["host.process", "host.fs", "host.network", "host.system"],
+  "provides": [{ "name": "example.os-broker.inspect", "api": 1, "scope": "target" }]
+}

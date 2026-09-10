@@ -12,7 +12,7 @@ const capability = { name: 'dev.host-test', api: 1, scope: 'target' };
 const caller = { pluginId: 'dev.renderer-caller', generation: 9, targetId: 'worker-target', documentEpoch: 12 };
 const identity = { v: 1, pluginId: 'dev.host-provider', generation: 8 };
 
-async function host(t, source) {
+async function host(t, source, requirements = []) {
   const root = await mkdtemp(path.join(tmpdir(), 'codlet-host-capability-'));
   const entry = path.join(root, 'host.js');
   const snapshot = path.join(root, 'snapshot.js');
@@ -58,7 +58,7 @@ async function host(t, source) {
       assert.equal((await exited)[0], 0, stderr);
     },
   };
-  fixture.request('initialize', { protocolVersion: 1, pluginVersion: '1', provides: [capability] });
+  fixture.request('initialize', { protocolVersion: 1, pluginVersion: '1', provides: [capability], requires: requirements });
   const ready = await fixture.next();
   assert.equal(ready.id, 1); assert.equal(ready.ok, true, JSON.stringify(ready));
   return fixture;
@@ -160,7 +160,12 @@ test('timeout closes async descendants while method and oversized-result errors 
   const wait = fixture.invoke('wait', null, 100);
   const child = await fixture.next();
   assert.equal(child.params.invocationId, wait);
-  const timedOut = await fixture.next();
+  let timedOut = await fixture.next();
+  if (timedOut.type === 'notification') {
+    assert.equal(timedOut.method, 'request.cancel');
+    assert.equal(timedOut.params.id, child.id);
+    timedOut = await fixture.next();
+  }
   assert.equal(timedOut.id, wait); assert.equal(timedOut.ok, false);
   assert.equal(timedOut.error.code, 'request_timeout');
   for (const [method, code] of [['oversize','response_too_large'], ['missing','method_not_found']]) {
@@ -192,5 +197,48 @@ test('Host invocation and endpoint tables have independent finite bounds', async
   const ping = fixture.invoke('endpoint-1');
   const response = await fixture.next();
   assert.equal(response.id, ping); assert.equal(response.result, 1);
+  await fixture.stop();
+});
+
+test('Host outbound SDK preserves parent tokens, opaque handles, notification receipts and signal cancellation', async t => {
+  const runtime = { name: 'dev.other-host', api: 1, scope: 'runtime' };
+  const fixture = await host(t, `const cap=${JSON.stringify(capability)}, remote=${JSON.stringify(runtime)}; let scope; module.exports={
+    activate(context) {
+      context.rpc.provide(cap,'request',()=>context.rpc.request(remote,'echo',{value:4},{timeoutMs:500}));
+      context.rpc.provide(cap,'notify',()=>context.rpc.notify(remote,'mark',{value:4}));
+      context.rpc.provide(cap,'target',async()=>{scope=await context.rpc.target({sessionId:'owned-session'});return {kind:scope.kind,frozen:Object.isFrozen(scope),keys:Object.keys(scope)};});
+      context.rpc.provide(cap,'use',()=>context.rpc.request(remote,'echo',null,{scope}));
+      context.rpc.provide(cap,'forge',()=>context.rpc.request(remote,'echo',null,{scope:{kind:'target'}}));
+      context.rpc.provide(cap,'close',()=>scope.close());
+      context.rpc.provide(cap,'cancel',()=>{const controller=new AbortController();const result=context.rpc.request(remote,'hold',null,{signal:controller.signal});setTimeout(()=>controller.abort(),20);return result;});
+    }, deactivate(){}
+  };`, [runtime]);
+  const request = fixture.invoke('request');
+  const child = await fixture.next();
+  assert.equal(child.method, 'capability.request');
+  assert.equal(child.params.invocationId, request);
+  assert.equal(child.params.method, 'rpc.request');
+  assert.deepEqual(child.params.params, { capability: runtime, method: 'echo', params: { value: 4 }, timeoutMs: 500 });
+  fixture.send({ type: 'response', id: child.id, ok: true, result: 8 });
+  assert.equal((await fixture.next()).result, 8);
+  const notification = fixture.invoke('notify');
+  const notice = await fixture.next();
+  assert.equal(notice.params.method, 'rpc.notify');
+  fixture.send({ type: 'response', id: notice.id, ok: true, result: { delivered: true } });
+  const notified = await fixture.next(); assert.equal(notified.id, notification); assert.equal(notified.result, null);
+  const target = fixture.invoke('target');
+  const selected = await fixture.next(); assert.equal(selected.params.method, 'rpc.target');
+  fixture.send({ type: 'response', id: selected.id, ok: true, result: { kind: 'target', handleId: 'scope-opaque' } });
+  const created = await fixture.next(); assert.equal(created.id, target); assert.deepEqual(created.result, { kind: 'target', frozen: true, keys: ['kind', 'close'] });
+  fixture.invoke('use'); const scoped = await fixture.next(); assert.equal(scoped.params.params.scope, 'scope-opaque');
+  fixture.send({ type: 'response', id: scoped.id, ok: true, result: true }); assert.equal((await fixture.next()).result, true);
+  fixture.invoke('forge'); assert.equal((await fixture.next()).error.code, 'scope_denied');
+  const cancelled = fixture.invoke('cancel'); const held = await fixture.next();
+  const cancel = await fixture.next(); assert.equal(cancel.method, 'request.cancel'); assert.equal(cancel.params.id, held.id);
+  const rejected = await fixture.next(); assert.equal(rejected.id, cancelled); assert.equal(rejected.error.code, 'invocation_cancelled');
+  fixture.send({ type: 'response', id: held.id, ok: true, result: 'late' });
+  fixture.invoke('close'); const close = await fixture.next(); assert.deepEqual(close.params.params, { handleId: 'scope-opaque' });
+  fixture.send({ type: 'response', id: close.id, ok: true, result: { closed: true } }); assert.equal((await fixture.next()).result.closed, true);
+  fixture.invoke('use'); assert.equal((await fixture.next()).error.code, 'scope_denied');
   await fixture.stop();
 });

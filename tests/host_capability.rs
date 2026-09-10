@@ -78,8 +78,11 @@ fn plugin(
 ) -> LoadedPlugin {
     let root = directory.join(id);
     std::fs::create_dir_all(root.join("dist")).unwrap();
-    std::fs::write(root.join("dist/host.js"), source).unwrap();
-    let capability = json!({"name":CAP,"api":1,"scope":"target"});
+    // Independent providers have distinct declarations in the shared M2
+    // registry; the isolation tests must not create a capability conflict.
+    let name = format!("{CAP}.{id}");
+    std::fs::write(root.join("dist/host.js"), source.replace(CAP, &name)).unwrap();
+    let capability = json!({"name":name,"api":1,"scope":"target"});
     let grants = [Permission::HostProcess, Permission::CdpRaw];
     let mut manifest = json!({"schema":1,"id":id,"version":"1","host":{"entry":"dist/host.js"},"permissions":grants});
     if combined {
@@ -127,7 +130,8 @@ fn request(id: &str, generation: u64, method: &str, budget: Duration) -> HostCap
     HostCapabilityRequest {
         owner_plugin_id: id.into(),
         expected_generation: generation,
-        capability: CapabilityDescriptor::new(CAP, 1, CapabilityScope::Target).unwrap(),
+        capability: CapabilityDescriptor::new(format!("{CAP}.{id}"), 1, CapabilityScope::Target)
+            .unwrap(),
         method: method.into(),
         params: json!({"caller":{"pluginId":"forged"}}),
         caller: HostCapabilityCaller {

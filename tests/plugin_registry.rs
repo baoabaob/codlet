@@ -199,6 +199,7 @@ fn temporary_name_collisions_are_retried_without_removing_existing_files() {
 
 fn local_registration(path: &Path, id: &str, grants: &[Permission]) -> LocalPluginRegistration {
     LocalPluginRegistration {
+        broker_policy: Default::default(),
         path: path.parent().unwrap().join(id),
         grants: grants.to_vec(),
     }

@@ -55,6 +55,8 @@ pub(crate) enum WireMessage {
         id: u64,
         method: String,
         params: Value,
+        #[serde(default, rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
     },
     Response {
         v: u32,
@@ -87,6 +89,7 @@ impl WireMessage {
             id,
             method,
             params,
+            timeout_ms: None,
         }
     }
 
@@ -175,6 +178,14 @@ pub(crate) fn decode_frame(bytes: &[u8], identity: &HostIdentity) -> Result<Wire
     }
     if let Some(method) = method {
         validate_method(method)?;
+    }
+    if let WireMessage::Request {
+        timeout_ms: Some(timeout_ms),
+        ..
+    } = &message
+        && !(1..=15_000).contains(timeout_ms)
+    {
+        return Err("request timeoutMs must be between 1 and 15000".into());
     }
     if let WireMessage::Response { ok, error, .. } = &message {
         let value: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
@@ -293,5 +304,32 @@ mod tests {
                 .push(&vec![b'x'; MAX_HOST_FRAME_BYTES + 1])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn request_budget_is_bounded_and_legacy_requests_keep_their_wire_shape() {
+        let identity = HostIdentity {
+            plugin_id: "dev.host".into(),
+            generation: 1,
+        };
+        let legacy = WireMessage::request(&identity, 1, "host.system.info".into(), json!({}));
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("timeoutMs")
+                .is_none()
+        );
+        for milliseconds in [1, 40, 15_000] {
+            let mut value = serde_json::to_value(&legacy).unwrap();
+            value["timeoutMs"] = json!(milliseconds);
+            assert!(
+                matches!(decode_frame(&serde_json::to_vec(&value).unwrap(), &identity).unwrap(), WireMessage::Request { timeout_ms: Some(found), .. } if found == milliseconds)
+            );
+        }
+        for invalid in [json!(0), json!(15_001), json!(-1), json!(1.5), json!("40")] {
+            let mut value = serde_json::to_value(&legacy).unwrap();
+            value["timeoutMs"] = invalid;
+            assert!(decode_frame(&serde_json::to_vec(&value).unwrap(), &identity).is_err());
+        }
     }
 }

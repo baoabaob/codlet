@@ -91,6 +91,7 @@ impl Fixture {
             .register_local(
                 id,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: root.clone(),
                     grants: vec![Permission::HostProcess, Permission::CdpRaw],
                 },
@@ -107,6 +108,7 @@ impl Fixture {
             .handle(ControlRequest::prepare(PluginControlRequest {
                 action,
                 plugin_id: id.into(),
+                permission: None,
             }));
         let receipt = prepared.operation_id().unwrap().to_owned();
         assert_eq!(
@@ -344,6 +346,7 @@ fn validation_and_executor_switch_preserve_old_owner_then_failed_initialization_
         .register_local(
             id,
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: root.clone(),
                 grants: vec![],
             },
@@ -359,6 +362,7 @@ fn validation_and_executor_switch_preserve_old_owner_then_failed_initialization_
         .register_local(
             id,
             LocalPluginRegistration {
+                broker_policy: Default::default(),
                 path: root.clone(),
                 grants: vec![Permission::HostProcess, Permission::CdpRaw],
             },
@@ -415,6 +419,7 @@ fn revoked_grants_or_disable_during_replacement_prevent_unauthorized_compensatio
                 .register_local(
                     id,
                     LocalPluginRegistration {
+                        broker_policy: Default::default(),
                         path: root.clone(),
                         grants: vec![Permission::HostProcess],
                     },

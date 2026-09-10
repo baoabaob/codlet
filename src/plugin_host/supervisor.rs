@@ -762,7 +762,11 @@ impl HostSupervisor {
     ) -> Result<(), String> {
         match message {
             WireMessage::Request {
-                id, method, params, ..
+                id,
+                method,
+                params,
+                timeout_ms,
+                ..
             } => {
                 if self.exit_code.is_some() {
                     return Ok(());
@@ -791,7 +795,11 @@ impl HostSupervisor {
                     )
                     .map_err(|error| error.to_string())?;
                 } else {
-                    if now >= received_at + REQUEST_TIMEOUT {
+                    let requested_deadline = received_at
+                        + timeout_ms
+                            .map(Duration::from_millis)
+                            .unwrap_or(REQUEST_TIMEOUT);
+                    if now >= requested_deadline {
                         self.enqueue(
                             WireMessage::response(
                                 &self.identity,
@@ -807,12 +815,12 @@ impl HostSupervisor {
                         return Ok(());
                     }
                     let deadline = if self.state == HostState::Stopping {
-                        (received_at + REQUEST_TIMEOUT).min(
+                        requested_deadline.min(
                             self.stop_grace_until
                                 .expect("admitted shutdown request has a deadline"),
                         )
                     } else {
-                        received_at + REQUEST_TIMEOUT
+                        requested_deadline
                     };
                     self.incoming_pending.insert(id, deadline);
                     events.push(HostEvent::Request { id, method, params });

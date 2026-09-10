@@ -316,3 +316,111 @@ fn malformed_consent_options_fail_without_creating_state() {
     }
     assert!(!fixture.marker.exists());
 }
+
+#[test]
+fn scoped_host_grants_are_displayed_and_persisted_then_revoked_without_execution() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.plugin.join("codlet.json"),
+        serde_json::to_vec(&json!({
+            "schema": 1, "id": PLUGIN_ID, "version": "0.1.0",
+            "host": {"entry": "dist/renderer.js"},
+            "permissions": ["host.process", "host.fs", "host.network", "host.system"],
+            "provides": [], "requires": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let approved = fixture.directory.path().join("approved read directory");
+    fs::create_dir(&approved).unwrap();
+    let preview = fixture.add(&fixture.plugin, &[]);
+    assert!(!preview.status.success());
+    let preview = String::from_utf8(preview.stdout).unwrap();
+    assert!(
+        preview.contains("requested-permissions: host.process,host.fs,host.network,host.system"),
+        "{preview}"
+    );
+    assert!(!fixture.config_path().exists());
+
+    let granted = successful(
+        fixture
+            .command()
+            .args([
+                OsStr::new("plugin"),
+                OsStr::new("add"),
+                fixture.plugin.as_os_str(),
+            ])
+            .args([
+                "--trust",
+                "--grant",
+                "host.process",
+                "--grant",
+                "host.fs",
+                "--grant",
+                "host.network",
+                "--grant",
+                "host.system",
+                "--read-root",
+            ])
+            .arg(&approved)
+            .args(["--network-origin", "https://example.test:443"])
+            .output()
+            .unwrap(),
+    );
+    let stdout = String::from_utf8(granted.stdout).unwrap();
+    let committed = stdout.find("plugin-added:").expect("registration result");
+    for prefix in [
+        "requested-permissions:",
+        "granted-permissions:",
+        "broker-policy:",
+        "host-authority:",
+    ] {
+        assert!(
+            stdout
+                .find(prefix)
+                .is_some_and(|position| position < committed),
+            "{stdout}"
+        );
+    }
+    let registration = fixture.config()["localPlugins"][PLUGIN_ID].clone();
+    assert_eq!(
+        registration["brokerPolicy"]["readRoots"],
+        json!([approved.canonicalize().unwrap()])
+    );
+    assert_eq!(
+        registration["brokerPolicy"]["networkOrigins"],
+        json!(["https://example.test"])
+    );
+
+    successful(fixture.run(&["plugin", "disable", PLUGIN_ID]));
+    let before = fs::read(fixture.config_path()).unwrap();
+    let listed = successful(fixture.run(&["plugin", "permissions", PLUGIN_ID, "--json"]));
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed["kind"], "codlet.plugin-permissions");
+    assert_eq!(listed["registration"], registration);
+    assert_eq!(listed["enabled"], false);
+    assert_eq!(fs::read(fixture.config_path()).unwrap(), before);
+
+    let revoked = successful(fixture.run(&["plugin", "revoke", PLUGIN_ID, "host.fs", "--json"]));
+    let revoked: Value = serde_json::from_slice(&revoked.stdout).unwrap();
+    assert_eq!(revoked["offline"]["revoked"], "host.fs");
+    let current = fixture.config();
+    assert_eq!(current["plugins"][PLUGIN_ID]["enabled"], false);
+    assert_eq!(
+        current["localPlugins"][PLUGIN_ID]["grants"],
+        json!(["host.process", "host.network", "host.system"])
+    );
+    assert!(
+        current["localPlugins"][PLUGIN_ID]["brokerPolicy"]
+            .get("readRoots")
+            .is_none()
+    );
+    assert_eq!(
+        current["localPlugins"][PLUGIN_ID]["brokerPolicy"]["networkOrigins"],
+        json!(["https://example.test"])
+    );
+    assert!(
+        !fixture.marker.exists(),
+        "registration and offline revocation must never execute plugin source"
+    );
+}

@@ -1,16 +1,32 @@
 # Codlet
 
-Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. Plugins are JS/TS directory packages with `codlet.json`, built JS entrypoints and resources. Host JS runs in Codlet's managed Node process; renderer JS runs in the page. Official GUI and adapter plugins are optional, and host JS can use public raw CDP requests and events directly. See [the technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) for milestone scope and the [acceptance record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md) for the current build's evidence and remaining repetition/crash gates.
+Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. Plugins are JS/TS directory packages with `codlet.json`, built JS entrypoints and resources. Host JS runs in Codlet's managed Node process; renderer JS runs in the page. Official GUI and adapter plugins are optional. Start with the [M2 development workflow](docs/HOST_DEVELOPMENT_2026-09-10.md); the [M2 acceptance record](docs/M2_ACCEPTANCE_2026-09-10.md) tracks current runtime evidence, and the [technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) keeps later milestone boundaries separate.
 
-It does not modify the Codex package, official shortcuts, protocols, configuration, or user data. It never terminates or restarts an existing Codex process. Normal Codex launches do not run Codlet.
+The launcher does not patch the Codex package, official shortcuts or launch protocols, and never terminates an existing Codex process to make room. Normal Codex launches do not run Codlet. Explicitly trusted plugins and broker operations can have their own effects; ordinary user Node code is not an OS sandbox.
 
 ## Development status
 
-M2a now uses `host.entry: "dist/host.js"`. Both entry kinds export CommonJS
+The current M2 developer contract uses `host.entry: "dist/host.js"`. Both entry kinds export CommonJS
 `activate(context)` and `deactivate()`; TypeScript is compiled to JS before loading.
 Codlet supplies the pinned JS runtime and handles JSONL internally. Arbitrary
 executable entries and native Node addons are not supported. This unifies the
-package format and runtime contract without claiming a sandbox.
+package format and runtime contract.
+
+Public [Core RPC](docs/CORE_RPC_2026-09-10.md) supports Host and managed-renderer
+providers/consumers with Runtime and Target ownership, fixed provider generations,
+bounded nested calls, cancellation and explicit notification semantics. The
+[Core RPC examples](examples/core-rpc/README.md) exercise these interfaces without
+private provider privileges. The [raw-m2 example](examples/raw-m2/README.md) owns
+its injection, navigation recovery and message bridge using public raw CDP alone.
+
+Independent [OS brokers](docs/OS_BROKER_2026-09-10.md) provide bounded file reads,
+HTTP(S), approved child processes and system information. Grants and scope policy
+are explicit, atomically persisted and revocable. The
+[OS example](examples/host-os-broker/README.md) uses only its selected data
+directory and HTTP origin. Public [runtime.manage@1](docs/RUNTIME_MANAGE_2026-09-10.md)
+backs third-party management and GUI/CLI prepare, submit and operation receipts.
+Type-only authoring contracts cover [Host](types/host.d.ts),
+[renderer](types/renderer.d.ts) and [management DTOs](types/runtime-manage.d.ts).
 
 The [standalone JS example](examples/raw-host/README.md) uses `context.cdp` without
 an official plugin or renderer entry. M2b adds online host enable/disable/reload
@@ -20,8 +36,8 @@ the [host lifecycle contract](docs/M2B_HOST_CONTROL_2026-09-10.md) and
 The host development path now also includes [source watching](docs/HOST_WATCH_2026-09-10.md),
 [bounded CDP cleanup](docs/HOST_CLEANUP_2026-09-10.md), and
 [process-aware doctor inspection](docs/HOST_INSPECTION_2026-09-10.md).
-The [development walkthrough](docs/HOST_DEVELOPMENT_2026-09-10.md) uses the actual
-cleanup example through enable, automatic reload, recovery and disable.
+The [development walkthrough](docs/HOST_DEVELOPMENT_2026-09-10.md) covers scoped
+grants, permissions/revoke, public management, automatic reload and cleanup.
 The [portable distribution builder](docs/DISTRIBUTION.md) packages the fixed Node
 runtime, examples, types and documentation together. A directory can now contain
 [both host and renderer entries](docs/COMBINED_PACKAGES_2026-09-10.md), sharing one
@@ -31,6 +47,13 @@ target/document identity and a bounded asynchronous bridge. The
 [combined example](examples/local-host-renderer-capability/README.md) and
 [actual JavaScript acceptance](docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md)
 cover activation, reload, document replacement, cleanup and failed replacements.
+Packaging validates file/link closure and read-only CLI behavior. Its hashes and
+smoke report do not replace the [runtime acceptance evidence](docs/M2_ACCEPTANCE_2026-09-10.md).
+
+The optional [hide usage banner plugin](examples/hide-usage-banner/README.md) hides the specific
+English out-of-usage card using `ui.dom`. It restores the card when disabled and leaves other
+messages visible. Its [browser preview](scripts/preview-hide-usage-banner.html) uses the actual
+plugin source against a local fixture based on the installed build's markup.
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
@@ -85,19 +108,21 @@ codlet plugin list
 codlet plugin disable codlet-gui
 codlet plugin enable codlet-gui
 codlet plugin reload codlet-gui
+codlet plugin permissions dev.my-tools --json
+codlet plugin revoke dev.my-tools host.fs --json
 codlet plugin operation <receipt>
 codlet plugin add .\examples\local-echo
 codlet plugin add .\examples\local-echo --trust
 codlet plugin remove dev.example.local-echo
 ```
 
-`enable`, `disable`, and `reload` accept an optional `--json`. `operation <receipt> [--json]` performs a read-only lookup after a prepared or submitted control request. With a verified Host, enable changes only the requested plugin, disable rejects enabled or running dependents, and reload updates the target plus its transitive dependents while preserving unrelated plugins. A loaded root that needs recovery may restart its currently loaded transitive dependents under one authorization guard; enable still does not implicitly turn on an unloaded dependency. A submitted mutation has one receipt and one submit; an uncertain timeout must be checked with `operation` and is never retried or converted to an offline edit. See the [runtime plugin control contract](docs/RUNTIME_CONTROL.md) and the [isolated manual-control acceptance](docs/RUNTIME_CONTROL_ACCEPTANCE_2026-09-08.md).
+`enable`, `disable`, `reload`, and `revoke` accept an optional `--json`. `permissions` reads saved grants and broker scope policy. `operation <receipt> [--json]` performs a read-only lookup after a prepared or submitted control request. With a verified Host, enable changes only the requested plugin, disable rejects enabled or running dependents, and reload updates the target plus its transitive dependents while preserving unrelated plugins. Revoke saves the reduced grants/policy, invalidates the old managed authority and retires its dependent closure without restoring old authorization. A loaded root that needs recovery may restart its currently loaded transitive dependents under one authorization guard; enable still does not implicitly turn on an unloaded dependency. A submitted mutation has one receipt and one submit; an uncertain timeout must be checked with `operation` and is never retried or converted to an offline edit. See the [public management contract](docs/RUNTIME_MANAGE_2026-09-10.md) and [runtime plugin control](docs/RUNTIME_CONTROL.md).
 
 The legacy ID `codlet` remains accepted as a compatibility alias for `enable`, `disable`, and `reload`; control normalizes it to canonical ID `codlet-gui` before preparing an operation. `list`, `doctor`, `status`, and GUI rows use `codlet-gui`.
 
 `add` without `--trust` only inspects the directory and exits nonzero without registering it. Requested permissions need explicit matching `--grant` arguments; the local-echo example needs none. Removal preserves its files. Registration/grant edits keep existing enablement preferences; the next launch or an explicit enable/reload uses the updated authorization record. Renderer watch validates changed grants at the same path; host watch pauses when its full grant record changes and requires manual selection of the new trust settings. Schema 1 configurations remain readable; explicit saves migrate to schema 2 with the `localPlugins` map.
 
-The registry is stored at `%LOCALAPPDATA%\Codlet\config.json` with atomic replacement. `list` does not create the file. The status IPC remains read-only; runtime lifecycle control uses a separate per-registry authenticated pipe and Host mailbox. Online commands must use the same `codlet.exe` image path and registry as the Host they control; a copied executable is rejected by image authentication. A different registry is a separate scope and cannot control that Host. Only after proving that a registry has no Host may enable/disable save a preference for the next `codlet launch`; reload requires a running Host. The in-Codex GUI uses the authenticated `codlet.runtime.manage@1` endpoint, so its own disable switch takes effect immediately. Manual CLI lifecycle, native control IPC fixtures, and watcher regression are accepted for the candidate; ordinary production launch+watch acceptance remains open. Bundled GUI registry reconciliation and the `codlet` compatibility alias are defined in [the 2026-09-09 registry repair record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md).
+The registry is stored at `%LOCALAPPDATA%\Codlet\config.json` with atomic replacement. `list` does not create the file. The status IPC remains read-only; runtime lifecycle control uses a separate per-registry authenticated pipe and Host mailbox. Online commands must use the same `codlet.exe` image path and registry as the Host they control; a copied executable is rejected by image authentication. A different registry is a separate scope and cannot control that Host. Only after proving that a registry has no Host may enable/disable save a preference or revoke reduce grants/policy for the next `codlet launch`; reload requires a running Host. The in-Codex GUI and third-party plugins use the authenticated `codlet.runtime.manage@1` receipt endpoints. Current isolated M2 checks are recorded separately from production gates. Bundled GUI registry reconciliation and the `codlet` compatibility alias are defined in [the 2026-09-09 registry repair record](docs/GUI_REGISTRY_REPAIR_2026-09-09.md).
 
 The 2026-09-08 validation batch passed 289 Rust tests with one explicit real-production-start gate left default-ignored, 63 Node tests, Clippy, fmt, diffcheck, and the locked release build. That historical result is separate from the isolated manual-control evidence at source commit `5a0be1e`; its renderer watcher source is `851395a`. See the [2026-09-08 verification summary](.codlet-artifacts/runtime-watch-2026-09-08/verification.json). Current host development checks are recorded with their individual contracts above.
 
@@ -189,4 +214,4 @@ The candidate includes inherited CDP pipes, bounded request/event routing, stric
 
 Independent host JS runs in Codlet's pinned Node processes and per-plugin Jobs. CLI enable/disable/reload and opt-in watch use the same serialized lifecycle transactions, fresh generations and current-registration compensation guards. Ordinary requests retire before `deactivate(cleanup)`; explicit cleanup CDP requests share Core's finite stop budget. Process exit, whole-Job retirement and joined IO remain separate from cooperative cleanup acknowledgement. Read-only execution inspection exposes those facts without manufacturing renderer targets or providers.
 
-Combined host+renderer packages share startup, reload, rollback and disable; the Host reaches Ready before renderer activation, and renderer cleanup runs before Host retirement. Renderer-to-Host capability calls currently support Target scope. The broader M2–M4 work remains incomplete: Host-initiated capability calls, additional capability scopes, dedicated filesystem/network/system broker APIs and backend adapters remain pending. The management capability currently provides list/disableSelf, while CLI controls handle general online lifecycle. Detached launch, a permission-consent UI and marketplace are also outside the current delivery. Real Codex acceptance and the remaining M0/M1 production/crash gates are recorded separately from actual JavaScript, fake-CDP and native-process tests.
+Combined host+renderer packages share startup, reload, rollback and disable; the Host reaches Ready before renderer activation, and renderer cleanup runs before Host retirement. Current M2 includes Core RPC with Runtime/Target ownership, independent scoped OS brokers and public management receipts for Host and renderer clients. Adapter-specific scopes, a reusable native UI capability layer and backend adapters remain later work. Detached launch, a permission-consent UI and marketplace are outside the current delivery. Real Codex acceptance and the remaining M0/M1 production/crash gates are recorded separately from actual JavaScript, fake-CDP and native-process tests.

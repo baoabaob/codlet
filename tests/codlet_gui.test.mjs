@@ -30,6 +30,7 @@ function fixture({ mounted = true, ready = true } = {}) {
     const observers = new Set();
     const modalDialogs = new Set();
     const closeEvents = [];
+    const timers = new Set();
     class Target {
         constructor() { this.listeners = new Map(); }
         addEventListener(name, listener, options) {
@@ -161,6 +162,12 @@ function fixture({ mounted = true, ready = true } = {}) {
     const window = new Target();
     const scope = {
         module: { exports: {} }, document, Error, innerHeight: 720,
+        setTimeout(callback, delay) {
+            const timer = globalThis.setTimeout(() => { timers.delete(timer); callback(); }, delay);
+            timers.add(timer);
+            return timer;
+        },
+        clearTimeout(timer) { timers.delete(timer); globalThis.clearTimeout(timer); },
         MutationObserver: class {
             constructor(callback) { this.callback = callback; }
             observe() { observers.add(this); }
@@ -181,9 +188,9 @@ function fixture({ mounted = true, ready = true } = {}) {
             const name = method === 'ping' ? 'codlet.runtime.ping'
                 : method === 'getMount' ? 'codex.ui.titlebar.afterMenu' : 'codlet.runtime.manage';
             assert.deepEqual(JSON.parse(JSON.stringify(capability)), { name, api: 1, scope: 'target' });
-            assert.equal(args, null);
+            if (!['prepare', 'submit', 'operation'].includes(method)) assert.equal(args, null);
             calls.push(method);
-            if (overrides[method]) return overrides[method]();
+            if (overrides[method]) return overrides[method](args);
             if (method === 'ping') return { pong: true, abi: 1 };
             if (method === 'getMount') return { available: mount.isConnected, token };
             if (method === 'list') return { plugins: [
@@ -217,6 +224,7 @@ function fixture({ mounted = true, ready = true } = {}) {
         layoutReads: () => layoutReads,
         observerCount: () => observers.size,
         modalCount: () => modalDialogs.size,
+        timerCount: () => timers.size,
         async flushCloseEvents() { for (const notify of closeEvents.splice(0)) await notify(); },
         flushObserver() { for (const observer of observers) observer.callback(); },
         async ready() { document.body = body; await document.emit('DOMContentLoaded'); },
@@ -321,7 +329,7 @@ test('refresh removes forgotten rows and distinguishes an unregistered loaded pl
     f.plugin.deactivate();
 });
 
-test('host execution observations show lifecycle and errors without adding controls to renderer rows', async () => {
+test('host execution observations retain lifecycle facts alongside public management controls', async () => {
     const f = fixture();
     const rows = [
         { id: 'codlet-gui', enabled: true, active: true, source: 'bundled' },
@@ -348,8 +356,8 @@ test('host execution observations show lifecycle and errors without adding contr
     const pluginRow = id => f.nodes().find(element => element.className === 'codlet-plugin-row'
         && element.children[0].textContent.includes(id));
     for (const [id, state] of [['dev.starting', 'Starting'], ['dev.stopping', 'Stopping'], ['dev.running', 'Active'], ['dev.combined-waiting', 'Waiting for renderer'], ['dev.combined-active', 'Active'], ['dev.failed', 'Failed'], ['dev.exited', 'Exited'], ['dev.renderer', 'Unavailable']]) {
-        assert.equal(pluginRow(id).children.at(-1).textContent, state);
-        assert.equal(pluginRow(id).children.some(element => element.tagName === 'input'), false);
+        assert.equal(f.nodes().find(element => element.className === 'codlet-plugin-state' && pluginRow(id).contains(element)).textContent, state);
+        assert.ok(pluginRow(id).children.some(element => element.className === 'codlet-plugin-actions'));
     }
     assert.match(pluginRow('dev.running').textContent, /Registration removed; still loaded/);
     assert.match(pluginRow('dev.stopping').textContent, /Registration removed; still loaded/);
@@ -841,6 +849,104 @@ test('native cancel returns confirmation to settings, then closes the settings m
     assert.equal(f.panel().hidden, true);
     assert.equal(f.calls.includes('disableSelf'), false);
     f.plugin.deactivate();
+});
+
+test('public management controls enable reload and disable through one receipt per action', async () => {
+    const f = fixture();
+    let enabled = false;
+    let serial = 0;
+    let operation;
+    const submissions = [];
+    f.override('list', () => ({ plugins: [{ id: 'dev.worker', enabled, active: enabled, registered: true, loaded: enabled, generation: enabled ? 1 : null }] }));
+    f.override('prepare', args => {
+        operation = { operation_id: 'fixture-' + ++serial, request: JSON.parse(JSON.stringify(args)), completion: null };
+        return { status: 'prepared', operation };
+    });
+    f.override('submit', args => {
+        submissions.push(args.operationId);
+        return { status: 'queued', operation };
+    });
+    f.override('operation', args => {
+        assert.equal(args.operationId, operation.operation_id);
+        enabled = operation.request.action !== 'disable';
+        return { status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } };
+    });
+    await f.plugin.activate(f.context);
+    await f.open();
+    let toggle = f.control('Enable dev.worker');
+    toggle.checked = true;
+    await toggle.emit('change');
+    assert.equal(operation.request.action, 'enable');
+    assert.equal(f.control('Enable dev.worker').checked, true);
+    await f.control('Reload dev.worker').emit('click');
+    assert.equal(operation.request.action, 'reload');
+    toggle = f.control('Enable dev.worker');
+    toggle.checked = false;
+    await toggle.emit('change');
+    assert.equal(operation.request.action, 'disable');
+    assert.equal(f.control('Enable dev.worker').checked, false);
+    assert.deepEqual(submissions, ['fixture-1', 'fixture-2', 'fixture-3']);
+    assert.equal(f.calls.filter(method => method === 'prepare').length, 3);
+    assert.equal(f.calls.filter(method => method === 'submit').length, 3);
+    assert.equal(f.calls.filter(method => method === 'operation').length, 3);
+    assert.match(f.byClass('codlet-status').textContent, /disabled/);
+    f.plugin.deactivate();
+    assert.equal(f.timerCount(), 0);
+});
+
+test('a lost submit reply keeps its receipt and refresh only checks the original action', async () => {
+    const f = fixture();
+    const operation = { operation_id: 'fixture-lost', request: { action: 'enable', plugin_id: 'dev.worker' } };
+    f.override('list', () => ({ plugins: [{ id: 'dev.worker', enabled: false, active: false }] }));
+    f.override('prepare', () => ({ status: 'prepared', operation }));
+    f.override('submit', () => { throw Object.assign(new Error('lost submit reply'), { code: 'rpc_timeout' }); });
+    f.override('operation', () => { throw new Error('temporary read failure'); });
+    await f.plugin.activate(f.context);
+    await f.open();
+    const toggle = f.control('Enable dev.worker');
+    toggle.checked = true;
+    await toggle.emit('change');
+    assert.equal(f.control('Enable dev.worker').disabled, true);
+    assert.match(f.byClass('codlet-status').textContent, /Refresh to check again/);
+    await toggle.emit('change');
+    f.override('operation', args => {
+        assert.equal(args.operationId, operation.operation_id);
+        return { status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } };
+    });
+    await f.refresh().emit('click');
+    assert.equal(f.calls.filter(method => method === 'prepare').length, 1);
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.equal(f.calls.filter(method => method === 'operation').length, 2);
+    assert.equal(f.control('Enable dev.worker').disabled, false);
+    f.plugin.deactivate();
+});
+
+test('closing pauses receipt polling and unload ignores a late management reply', async () => {
+    const f = fixture();
+    const operation = { operation_id: 'fixture-running', request: { action: 'enable', plugin_id: 'dev.worker' } };
+    f.override('list', () => ({ plugins: [{ id: 'dev.worker', enabled: false }] }));
+    f.override('prepare', () => ({ status: 'prepared', operation }));
+    f.override('submit', () => ({ status: 'queued', operation }));
+    f.override('operation', () => ({ status: 'running', operation }));
+    await f.plugin.activate(f.context);
+    await f.open();
+    const toggle = f.control('Enable dev.worker');
+    toggle.checked = true;
+    await toggle.emit('change');
+    assert.equal(f.timerCount(), 1);
+    await f.close().emit('click');
+    assert.equal(f.timerCount(), 0);
+    const waiting = deferred();
+    f.override('operation', () => waiting.promise);
+    const opening = f.open();
+    f.plugin.deactivate();
+    const mutations = f.mutations();
+    const calls = f.calls.length;
+    waiting.resolve({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } });
+    await opening;
+    assert.equal(f.mutations(), mutations);
+    assert.equal(f.calls.length, calls);
+    assert.equal(f.timerCount(), 0);
 });
 
 test('outside primary pointer cancels confirmation or closes settings without leaking to the host', async () => {

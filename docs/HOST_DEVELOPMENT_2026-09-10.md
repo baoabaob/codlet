@@ -1,6 +1,16 @@
-# Host JS 开发与组合验收
+# M2 插件开发流程
 
-本页把统一 JS 目录包、在线生命周期、watch、带预算的 cleanup 与 doctor 串成一次开发流程。
+本页把明确授信、Host RPC、OS broker、公开 runtime.manage、watch 与清理串成开发流程。
+本页的命令由开发者按需执行；当前构建实际通过哪些运行验收，以
+[M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)为准。
+
+| 目标 | 入口 |
+| --- | --- |
+| 不依赖官方 adapter，自行注入、导航恢复和消息通路 | [raw-m2](../examples/raw-m2/README.md)，只有 Host/cdp.raw |
+| 获准目录读取、HTTP 请求、系统信息与撤权 | [host-os-broker](../examples/host-os-broker/README.md) |
+| Host↔Host、Host↔renderer、Runtime/Target 和嵌套预算 | [四个 Core RPC 包](../examples/core-rpc/README.md) |
+| 同一包的两种入口与统一回滚 | [组合包](../examples/local-host-renderer-capability/README.md) |
+| 观察本代资源的 setup/cleanup/reload 配对 | [cleanup-host](../examples/cleanup-host/README.md) |
 
 需要同一个包同时运行 Host 和 renderer 时，使用
 [双入口示例](../examples/local-host-renderer-capability/README.md)。它在 renderer 激活中
@@ -16,6 +26,63 @@ renderer 或 adapter。
 将发行 ZIP 解压到独立目录，例如 `C:\Tools\codlet-0.1.0-win-x64`。保留 `codlet.exe`、
 `runtime/`、`examples/`、`types/` 和 `docs/` 的相对位置。固定 Node 已随包提供，无需另装
 系统 Node；TS 插件仍应先构建为 JS。构建与文件清单见 [便携发行说明](DISTRIBUTION.md)。
+
+开发项目可复制 `types/` 或为它配置 TypeScript paths，使用 type-only import；设置 CommonJS
+输出，将构建结果写到 manifest 的 `.js`/`.cjs` 主入口。Host/renderer 的接口与嵌套调用要求
+分别见 [JS 契约](JS_PLUGIN_RUNTIME_2026-09-09.md)、[Core RPC](CORE_RPC_2026-09-10.md)。
+
+## OS broker 的明确授信流程
+
+先在单独终端运行示例附带的 loopback HTTP server：
+
+```powershell
+$packageDir = 'C:\Tools\codlet-0.1.0-win-x64'
+& (Join-Path $packageDir 'runtime\node-v24.21.0-win-x64\node.exe') (Join-Path $packageDir 'examples\host-os-broker\serve-fixture.cjs')
+```
+
+这是独立的开发 fixture，不是 Codlet 自动启动的服务。它只绑定 `127.0.0.1:8765`；候选检查
+和打包不会运行它、执行插件或发起 HTTP 请求。真正的示例网络调用只有在以下明确注册并
+enable/launch 后发生：
+
+```powershell
+$codletExe = Join-Path $packageDir 'codlet.exe'
+$pluginRoot = Join-Path $packageDir 'examples\host-os-broker'
+& $codletExe plugin add $pluginRoot
+& $codletExe plugin add $pluginRoot --trust --grant host.process --grant host.fs --grant host.network --grant host.system --read-root (Join-Path $pluginRoot 'approved-data') --network-origin http://127.0.0.1:8765
+& $codletExe plugin permissions example.os-broker --json
+& $codletExe plugin enable example.os-broker --json
+```
+
+如果 Codlet 尚未运行，在正常关闭原 Codex 后执行 `launch --watch`；已运行则 enable 使用
+同一前台 receipt。`broker-report.json` 是示例自己的观察，记录获准读取、HTTP 响应和系统
+信息。CLI permissions 显示的授信记录不是 active 证明；真实状态看 doctor/operation。
+
+```powershell
+& $codletExe plugin revoke example.os-broker host.fs --json
+& $codletExe plugin operation '<receipt>' --json
+& $codletExe plugin permissions example.os-broker --json
+```
+
+revoke 删除对应 grant/readRoots，保留 enabled 偏好；旧 Core token 和相关代次退场，不进行
+授权补偿。要恢复，重新显式提交完整 grant/policy 列表再 enable。`--executable` 为
+process.run 单独选择允许的程序；仅有启动 Host 的 host.process 不会开放任意子程序。
+详见 [OS broker 契约](OS_BROKER_2026-09-10.md)。结束示例后按需 disable，并在 fixture
+终端用 Ctrl+C 结束开发者自己启动的 HTTP server。
+
+## 从插件管理其他插件
+
+声明并获授 `runtime.manage`，以及 `codlet.runtime.manage@1` Runtime 或 Target requirement。
+调用 `prepare({action, plugin_id, permission?})`，保存返回的
+`operation.operation_id`，再用 `submit({operationId})` 提交一次。之后通过
+`operation({operationId})` 查询同一张 receipt；submit 回复丢失时也只查询这个 ID。
+只有 revoke 带 permission，回包保留 ControlReport 的 snake_case 字段。
+
+Host `list` 是带 `sampledAtUnixMs` 的前台样本，renderer 旧 list 保留即时 registry 行为。
+可直接复用的代码和 DTO 见 [公开管理契约](RUNTIME_MANAGE_2026-09-10.md)与
+[runtime-manage.d.ts](../types/runtime-manage.d.ts)。不要在 activate 中无限等待自身 reload
+或 disable 完成；管理 UI 应保存 receipt 并在后续有界刷新中读结果。
+
+## cleanup-host 的在线开发流程
 
 以下实机命令使用当前用户的 Codlet registry，会保存指定插件的启停偏好。正常关闭准备
 测试的 Codex 实例后，在 PowerShell 终端一执行：
@@ -104,7 +171,7 @@ Get-Content -LiteralPath (Join-Path $pluginRoot 'development.cleanup.json')
 之后可正常关闭本次 Codex；若要恢复 GUI 偏好，按 adapter、GUI 的顺序重新 enable。示例
 注册可在 disable 后用 `plugin remove example.cleanup-host` 移除，其目录与报告文件保留。
 
-## 本轮组合证据与限度
+## cleanup-host 既有开发验收与限度
 
 自动组合验收复制仓库真实 cleanup-host 到临时目录，使用固定 Node、既有 raw-host 假 CDP
 对端、实际 HostControl/Watcher/StatusPublisher/ControlBroker 和 doctor 模型。静态包发现
@@ -114,7 +181,7 @@ Get-Content -LiteralPath (Join-Path $pluginRoot 'development.cleanup.json')
 补偿旧快照 → 稳定轮询不重复失败 → disable → 最终退出快照。逐项核对每代 marker 设置/
 删除命令，以及每次 Detach 早于下一次 Attach，防止旧代或坏候选 session 累计。
 
-组合专项 `actual_cleanup_example_completes_enable_watch_inspection_compensation_and_disable_as_one_flow`
+既有组合专项 `actual_cleanup_example_completes_enable_watch_inspection_compensation_and_disable_as_one_flow`
 通过，实际结果如下：
 
 | 阶段 | 最新运行代数 | 保留 session 数 | 回执/事实 |

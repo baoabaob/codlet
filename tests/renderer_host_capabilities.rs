@@ -102,6 +102,7 @@ impl Fixture {
             .register_local(
                 HOST,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: std::fs::canonicalize(&host_root).unwrap(),
                     grants: vec![Permission::HostProcess, Permission::CdpRaw],
                 },
@@ -111,6 +112,7 @@ impl Fixture {
             .register_local(
                 CONSUMER,
                 LocalPluginRegistration {
+                    broker_policy: Default::default(),
                     path: std::fs::canonicalize(&consumer_root).unwrap(),
                     grants: vec![],
                 },

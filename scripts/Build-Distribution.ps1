@@ -135,14 +135,36 @@ function Assert-DocumentLinks([string[]]$RelativePaths) {
     foreach ($relative in $RelativePaths) {
         if (-not $relative.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)) { continue }
         $file = Join-Path $stage $relative
-        foreach ($match in [regex]::Matches([IO.File]::ReadAllText($file), '\]\(([^)]+)\)')) {
-            $link = $match.Groups[1].Value.Trim('<', '>')
+        foreach ($match in [regex]::Matches([IO.File]::ReadAllText($file), '\]\(\s*(?:<(?<angle>[^>]+)>|(?<bare>[^\s)]+))(?:\s+["''][^"'']*["''])?\s*\)')) {
+            $link = if ($match.Groups['angle'].Success) { $match.Groups['angle'].Value } else { $match.Groups['bare'].Value }
             if ($link -match '^[A-Za-z][A-Za-z0-9+.-]*:' -or $link.StartsWith('#')) { continue }
             $link = [Uri]::UnescapeDataString(($link -split '#', 2)[0])
             if (-not $link) { continue }
             $target = Get-AbsolutePath (Join-Path ([IO.Path]::GetDirectoryName($file)) $link)
             Assert-Within $target $stage
+            Assert-NoReparseAncestor $target
             if (-not (Test-Path -LiteralPath $target)) { throw "Unpackaged relative documentation link in ${relative}: $link" }
+        }
+    }
+}
+
+function Assert-DeclarationLinks([string[]]$RelativePaths) {
+    foreach ($relative in $RelativePaths) {
+        if (-not $relative.EndsWith('.d.ts', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $file = Join-Path $stage $relative
+        foreach ($match in [regex]::Matches([IO.File]::ReadAllText($file), '(?:from\s+|import\s*\(\s*)[''"](\.{1,2}/[^''"]+)[''"]')) {
+            $link = $match.Groups[1].Value
+            $target = Get-AbsolutePath (Join-Path ([IO.Path]::GetDirectoryName($file)) $link)
+            Assert-Within $target $stage
+            $candidates = @($target, ($target + '.d.ts'), (Join-Path $target 'index.d.ts'))
+            if ($target.EndsWith('.js', [StringComparison]::OrdinalIgnoreCase)) { $candidates += $target.Substring(0, $target.Length - 3) + '.d.ts' }
+            $found = $false
+            foreach ($candidate in $candidates) {
+                Assert-Within $candidate $stage
+                Assert-NoReparseAncestor $candidate
+                if ([IO.File]::Exists($candidate)) { $found = $true; break }
+            }
+            if (-not $found) { throw "Unpackaged declaration import in ${relative}: $link" }
         }
     }
 }
@@ -189,19 +211,33 @@ $null = [IO.Directory]::CreateDirectory($stage)
 
 # This is the complete source-file allowlist. No recursive source/cache/config copy.
 $sourceFiles = @(
-    'scripts/Build-Distribution.ps1', 'scripts/Install-JsRuntime.ps1',
-    'runtime/node-runtime.json', 'types/host.d.ts',
+    'scripts/Build-Distribution.ps1', 'scripts/Test-Distribution.ps1', 'scripts/Install-JsRuntime.ps1',
+    'runtime/node-runtime.json', 'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
     'examples/raw-host/codlet.json', 'examples/raw-host/dist/host.js', 'examples/raw-host/README.md',
     'examples/cleanup-host/codlet.json', 'examples/cleanup-host/dist/host.js', 'examples/cleanup-host/README.md',
     'examples/local-host-renderer-capability/codlet.json', 'examples/local-host-renderer-capability/host.js',
     'examples/local-host-renderer-capability/renderer.js', 'examples/local-host-renderer-capability/README.md',
+    'examples/local-echo/codlet.json', 'examples/local-echo/renderer.js',
+    'examples/host-os-broker/codlet.json', 'examples/host-os-broker/host.js', 'examples/host-os-broker/README.md',
+    'examples/host-os-broker/approved-data/settings.json', 'examples/host-os-broker/approved-data/message.txt',
+    'examples/host-os-broker/serve-fixture.cjs',
+    'examples/raw-m2/codlet.json', 'examples/raw-m2/host.js', 'examples/raw-m2/README.md',
+    'examples/hide-usage-banner/codlet.json', 'examples/hide-usage-banner/renderer.js', 'examples/hide-usage-banner/README.md',
+    'scripts/preview-hide-usage-banner.html',
+    'examples/core-rpc/README.md',
+    'examples/core-rpc/service/codlet.json', 'examples/core-rpc/service/host.js',
+    'examples/core-rpc/view/codlet.json', 'examples/core-rpc/view/renderer.js',
+    'examples/core-rpc/coordinator/codlet.json', 'examples/core-rpc/coordinator/host.js',
+    'examples/core-rpc/consumer/codlet.json', 'examples/core-rpc/consumer/renderer.js',
     'docs/DISTRIBUTION.md', 'docs/JS_PLUGIN_RUNTIME_2026-09-09.md',
     'docs/M2A_HOST_RUNTIME_2026-09-09.md', 'docs/M2B_HOST_CONTROL_2026-09-10.md',
     'docs/GUI_REGISTRY_REPAIR_2026-09-09.md',
     'docs/HOST_CLEANUP_2026-09-10.md', 'docs/HOST_WATCH_2026-09-10.md',
     'docs/HOST_INSPECTION_2026-09-10.md', 'docs/HOST_DEVELOPMENT_2026-09-10.md',
     'docs/COMBINED_PACKAGES_2026-09-10.md', 'docs/HOST_CAPABILITY_2026-09-10.md',
-    'docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md'
+    'docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md', 'docs/LOCAL_PLUGINS.md',
+    'docs/CORE_RPC_2026-09-10.md', 'docs/OS_BROKER_2026-09-10.md',
+    'docs/RUNTIME_MANAGE_2026-09-10.md', 'docs/M2_ACCEPTANCE_2026-09-10.md'
 )
 $payload = New-Object 'Collections.Generic.List[string]'
 try {
@@ -241,12 +277,26 @@ Keep codlet.exe and runtime/ together. From this directory in PowerShell:
 ```
 
 This command only inspects the candidate because no trust/grants are supplied.
-Use [the development quickstart](docs/HOST_DEVELOPMENT_2026-09-10.md) for explicit
-registration, launch/watch, inspection and disable steps. Packaging alone registers
+Use [the M2 development quickstart](docs/HOST_DEVELOPMENT_2026-09-10.md) for explicit
+registration, scoped grants, launch/watch, inspection and revoke steps. Packaging alone registers
 no plugin and starts neither Codex nor Node. See [distribution details](docs/DISTRIBUTION.md).
+
+The optional [hide usage banner plugin](examples/hide-usage-banner/README.md) hides the specific
+English usage card and can be disabled independently. Its [local preview](scripts/preview-hide-usage-banner.html)
+exercises the actual plugin against a DOM fixture.
 
 For a package with both entries, start with [the combined example](examples/local-host-renderer-capability/README.md).
 Its renderer calls its own Host capability, and both entries share reload and recovery.
+
+[The raw M2 example](examples/raw-m2/README.md) owns its CDP injection and message bridge
+without a managed renderer entry or official adapter. [The OS broker example](examples/host-os-broker/README.md)
+uses an explicitly granted data directory and HTTP origin. Its loopback fixture server is
+a separate developer command; candidate inspection never starts it or makes its requests.
+
+[Core RPC](docs/CORE_RPC_2026-09-10.md) and [runtime.manage@1](docs/RUNTIME_MANAGE_2026-09-10.md)
+are public developer contracts. [Four Core RPC packages](examples/core-rpc/README.md) demonstrate
+Host/renderer Runtime and Target calls. Type declarations live in types/. The [M2 acceptance record](docs/M2_ACCEPTANCE_2026-09-10.md)
+separates runtime evidence from this bundle's file hashes and read-only CLI checks.
 
 The payload list and SHA256 values are in distribution-manifest.json. The packaging
 script performs no signing or publication. Node's license is beside node.exe.
@@ -255,6 +305,7 @@ script performs no signing or publication. Node's license is beside node.exe.
     $payload.Add('README.md')
     $payload.Sort([StringComparer]::Ordinal)
     Assert-DocumentLinks $payload.ToArray()
+    Assert-DeclarationLinks $payload.ToArray()
     $records = foreach ($relative in $payload) {
         $path = Join-Path $stage $relative
         [ordered]@{ path = $relative; bytes = (Get-Item -LiteralPath $path).Length; sha256 = Get-Sha256 $path }

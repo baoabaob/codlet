@@ -1,5 +1,9 @@
 # Managed Host capability providers
 
+本文保留最初 renderer→Host Target provider 阶段的实现与验收记录。当前 M2 合约已加入
+Host `requires`、主动 request/notify、Runtime scope 与 Host 持有的 Target scope；完整声明、
+嵌套调用与双方通知语义以 [Core RPC 合约](CORE_RPC_2026-09-10.md)为准。
+
 Host JS 可以通过 `context.rpc.provide(capability, method, handler)` 提供 Target scope 的 capability endpoint。renderer 的声明、租约、target 和 document 身份由 Core 验证后，才进入 Host executor。Host-only 包使用顶层 `provides`；同时包含 renderer 与 host 的包使用 `host.provides`，顶层 `provides` / `requires` 属于 renderer。
 
 ```js
@@ -17,7 +21,7 @@ module.exports = {
 };
 ```
 
-`provide` 校验完整的 name / api / scope 声明、method 和 handler，拒绝重复注册，返回冻结的 `{ ok: true }`。只允许 Starting 或 Active 阶段注册；最多 256 个方法。未注册方法返回 `method_not_found`，handler 异常只结束这次调用，超大返回值返回 `response_too_large`。本次不提供 Host 侧 capability request / notify / requires；`context.cdp` 的原始方法与 session 能力保持开放。
+`provide` 校验完整的 name / api / scope 声明、method 和 handler，拒绝重复注册，返回冻结的 `{ ok: true }`。只允许 Starting 或 Active 阶段注册；最多 256 个方法。未注册方法返回 `method_not_found`，handler 异常只结束这次调用，超大返回值返回 `response_too_large`。此处记录的先前阶段未提供 Host 侧 capability request / notify / requires；当前接口与权限见上方 Core RPC 合约。`context.cdp` 的原始方法与 session 能力保持开放。
 
 handler 的第二个参数为不可变对象：
 

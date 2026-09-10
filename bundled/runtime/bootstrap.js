@@ -12,6 +12,10 @@
     const stopping = new Set();
     const operations = new Map();
     const RPC_TIMEOUT_MS = 15000;
+    const MAX_PENDING = 16;
+    const MAX_ENDPOINTS = 256;
+    const MAX_INVOCATIONS = 4;
+    const now = () => globalThis.performance?.now?.() ?? Date.now();
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
     const cancelTimeout = globalThis.clearTimeout.bind(globalThis);
     let nextRequestId = 1;
@@ -75,13 +79,27 @@
         if (typeof binding !== 'function') {
             throw rpcError('binding_unavailable', `renderer binding ${record.binding} is unavailable`);
         }
-        binding(JSON.stringify(envelope));
+        const payload = JSON.stringify(envelope);
+        if (new TextEncoder().encode(payload).byteLength > 1024 * 1024) throw rpcError('request_too_large', 'renderer RPC payload exceeds 1 MiB');
+        binding(payload);
     }
 
-    function createRpc(record) {
-        const request = (capabilityOrMethod, methodOrParams, maybeParams) => {
+    function createRpc(record, lineage) {
+        const request = (capabilityOrMethod, methodOrParams, maybeParams, maybeOptions) => {
             let requestData;
+            let options;
+            let timeoutMs;
             try {
+                if (lineage?.closed) throw rpcError('invocation_cancelled', 'the parent renderer invocation has retired');
+                options = (typeof capabilityOrMethod === 'string' ? maybeParams : maybeOptions) ?? {};
+                if (!options || typeof options !== 'object' || Array.isArray(options)) throw rpcError('invalid_request', 'RPC options must be an object');
+                timeoutMs = options.timeoutMs ?? RPC_TIMEOUT_MS;
+                if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > RPC_TIMEOUT_MS) throw rpcError('invalid_timeout', 'timeoutMs must be 1..15000');
+                if (lineage) timeoutMs = Math.min(timeoutMs, Math.floor(lineage.deadline - now()));
+                if (timeoutMs < 1) throw rpcError('request_timeout', 'the original invocation deadline expired');
+                if (options.signal !== undefined && (typeof options.signal?.addEventListener !== 'function' || typeof options.signal?.removeEventListener !== 'function')) throw rpcError('invalid_signal', 'signal must be an AbortSignal');
+                if (options.signal?.aborted) throw rpcError('invocation_cancelled', 'the caller already cancelled this request');
+                if (record.pending.size >= MAX_PENDING) throw rpcError('request_limit', 'this renderer has 16 pending requests');
                 requestData = parseRequestArguments(record, capabilityOrMethod, methodOrParams, maybeParams);
                 if (typeof requestData.method !== 'string' || requestData.method.length === 0) {
                     throw rpcError('invalid_request', 'renderer RPC method must be a non-empty string');
@@ -98,24 +116,28 @@
             }
             const id = nextRequestId;
             nextRequestId += 1;
+            const envelope = {
+                v: 1, type: 'request', pluginId: record.id, generation: record.generation, id,
+                capability: requestData.capability, method: requestData.method, params: requestData.params,
+                ...(options.timeoutMs !== undefined || lineage ? { timeoutMs } : {}),
+                ...(lineage?.token ? { parentToken: lineage.token } : {})
+            };
             const pending = new Promise((resolve, reject) => {
                 const timer = scheduleTimeout(() => {
                     const request = takePending(record, id);
                     request?.reject(rpcError('rpc_timeout', 'Plugin request timed out. Please retry.'));
-                }, RPC_TIMEOUT_MS);
-                record.pending.set(id, { resolve, reject, timer });
+                }, timeoutMs);
+                const onAbort = () => {
+                    const request = takePending(record, id);
+                    if (!request) return;
+                    try { callBinding(record, { ...envelope, type: 'cancel' }); } catch {}
+                    request.reject(rpcError('invocation_cancelled', 'the caller cancelled this request'));
+                };
+                record.pending.set(id, { resolve, reject, timer, signal: options.signal, onAbort, lineage });
+                options.signal?.addEventListener('abort', onAbort, { once: true });
             });
             try {
-                callBinding(record, {
-                    v: 1,
-                    type: 'request',
-                    pluginId: record.id,
-                    generation: record.generation,
-                    id,
-                    capability: requestData.capability,
-                    method: requestData.method,
-                    params: requestData.params
-                });
+                callBinding(record, envelope);
             } catch (error) {
                 const rejection = error instanceof Error ? error : rpcError('binding_error', message(error));
                 takePending(record, id)?.reject(rejection);
@@ -124,6 +146,7 @@
         };
 
         const notify = (capabilityOrMethod, methodOrParams, maybeParams) => {
+            if (lineage?.closed) throw rpcError('invocation_cancelled', 'the parent renderer invocation has retired');
             const requestData = parseRequestArguments(record, capabilityOrMethod, methodOrParams, maybeParams);
             if (typeof requestData.method !== 'string' || requestData.method.length === 0) {
                 throw rpcError('invalid_request', 'renderer RPC method must be a non-empty string');
@@ -138,7 +161,8 @@
                 generation: record.generation,
                 capability: requestData.capability,
                 method: requestData.method,
-                params: requestData.params
+                params: requestData.params,
+                ...(lineage?.token ? { parentToken: lineage.token, timeoutMs: Math.max(1, Math.floor(lineage.deadline - now())) } : {})
             });
         };
 
@@ -153,7 +177,9 @@
             if (record.endpoints.has(key)) {
                 throw rpcError('invalid_provider', `renderer endpoint ${method} is already registered`);
             }
-            record.endpoints.set(key, { capability, handler });
+            if (record.endpoints.size >= MAX_ENDPOINTS) throw rpcError('request_limit', 'renderer endpoint registration limit reached');
+            const declared = record.provides.find(provided => capabilityEquals(provided, capability));
+            record.endpoints.set(key, { capability: Object.freeze({ name: declared.name, api: declared.api, scope: declared.scope }), handler });
             return { ok: true };
         };
 
@@ -161,6 +187,7 @@
             if (typeof handler !== 'function') {
                 throw rpcError('invalid_notification_handler', 'notification handler must be a function');
             }
+            if (record.notifications.size >= 64) throw rpcError('request_limit', 'renderer notification listener limit reached');
             record.notifications.add(handler);
             return () => record.notifications.delete(handler);
         };
@@ -173,19 +200,17 @@
         if (!request) return null;
         record.pending.delete(id);
         cancelTimeout(request.timer);
+        request.signal?.removeEventListener('abort', request.onAbort);
         return request;
     }
 
     function rejectPending(record, error) {
-        for (const { reject, timer } of record.pending.values()) {
-            cancelTimeout(timer);
-            reject(error);
-        }
-        record.pending.clear();
+        for (const id of record.pending.keys()) takePending(record, id)?.reject(error);
     }
 
     function closeRecord(record, error) {
         record.closed = true;
+        for (const invocation of record.invocations.values()) invocation.cancel(error);
         rejectPending(record, error);
         record.endpoints.clear();
         record.notifications.clear();
@@ -218,18 +243,42 @@
         }
         const key = `${capabilityKey(request.capability)}\u0000${request.method}`;
         const endpoint = record.endpoints.get(key);
-        if (!endpoint) return { ok: false, error: 'renderer endpoint is not registered' };
-        try {
-            const value = await endpoint.handler(request.params, Object.freeze({
-                pluginId: record.id,
-                generation: record.generation,
-                capability: endpoint.capability,
-                method: request.method
-            }));
-            return { ok: true, value: value === undefined ? null : value };
-        } catch (error) {
-            return { ok: false, error: message(error) };
-        }
+        if (!endpoint) return { ok: false, code: 'method_not_found', error: 'renderer endpoint is not registered' };
+        if (record.invocations.size >= MAX_INVOCATIONS) return { ok: false, code: 'request_limit', error: 'this renderer has four active invocations' };
+        const core = request.coreInvocation;
+        if (core !== undefined && (!core || typeof core.token !== 'string' || core.token.length > 128 || !Number.isInteger(core.remainingMs) || core.remainingMs < 1 || core.remainingMs > RPC_TIMEOUT_MS || !Number.isInteger(core.depth) || core.depth < 1 || core.depth > 8 || !core.caller || !core.scope)) return { ok: false, code: 'invalid_invocation', error: 'invalid Core invocation metadata' };
+        const controller = new AbortController();
+        const token = core?.token ?? Symbol('legacy-invocation');
+        if (record.invocations.has(token)) return { ok: false, code: 'invalid_invocation', error: 'duplicate Core invocation token' };
+        const lineage = { token: core?.token, deadline: now() + (core?.remainingMs ?? RPC_TIMEOUT_MS), closed: false };
+        return new Promise(resolve => {
+            let timer;
+            const finish = (value, failure) => {
+                if (lineage.closed) return;
+                lineage.closed = true;
+                cancelTimeout(timer);
+                record.invocations.delete(token);
+                const retired = failure ?? rpcError('invocation_cancelled', 'the renderer handler completed');
+                controller.abort(retired);
+                for (const [id, pending] of record.pending) if (pending.lineage === lineage) takePending(record, id)?.reject(retired);
+                if (failure) resolve({ ok: false, code: failure.code ?? 'provider_error', error: message(failure) });
+                else {
+                    try {
+                        const encoded = JSON.stringify(value === undefined ? null : value);
+                        if (encoded === undefined || new TextEncoder().encode(encoded).byteLength > 1024 * 1024 - 4096) throw rpcError('response_too_large', 'renderer result exceeds the payload limit');
+                        resolve({ ok: true, value: value === undefined ? null : value });
+                    } catch (error) { resolve({ ok: false, code: error.code ?? 'provider_error', error: message(error) }); }
+                }
+            };
+            record.invocations.set(token, { cancel: reason => finish(null, reason) });
+            timer = scheduleTimeout(() => finish(null, rpcError('request_timeout', 'the original renderer invocation deadline expired')), core?.remainingMs ?? RPC_TIMEOUT_MS);
+            const invocation = Object.freeze({
+                pluginId: record.id, generation: record.generation, capability: endpoint.capability, method: request.method,
+                ...(core ? { caller: Object.freeze({ ...core.caller }), scope: Object.freeze({ ...core.scope }), depth: core.depth } : {}),
+                signal: controller.signal, remainingMs: () => Math.max(0, Math.floor(lineage.deadline - now())), rpc: createRpc(record, lineage)
+            });
+            Promise.resolve().then(() => endpoint.handler(request.params, invocation)).then(value => finish(value), failure => finish(null, failure));
+        });
     }
 
     const runtime = {
@@ -264,6 +313,7 @@
                     requires: Array.isArray(metadata.requires) ? metadata.requires.slice() : [],
                     pending: new Map(),
                     endpoints: new Map(),
+                    invocations: new Map(),
                     notifications: new Set(),
                     closed: false,
                     definition
@@ -334,6 +384,11 @@
             const current = Array.from(plugins.values()).find((record) => record.binding === binding);
             if (!current) return { ok: false, error: 'renderer binding is not active' };
             return invokeProvider(current, request);
+        },
+        __rpcCancel(binding, token) {
+            const current = Array.from(plugins.values()).find(record => record.binding === binding);
+            current?.invocations.get(token)?.cancel(rpcError('invocation_cancelled', 'Core retired the caller invocation'));
+            return { ok: true };
         },
         __rpcReceive(binding, response) {
             const current = Array.from(plugins.values()).find((record) => record.binding === binding)

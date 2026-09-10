@@ -1,0 +1,1 @@
+This file was read through the explicitly granted Codlet filesystem broker.

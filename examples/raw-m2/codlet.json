@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "example.raw-m2",
+  "version": "1.0.0",
+  "host": {
+    "entry": "host.js"
+  },
+  "permissions": [
+    "host.process",
+    "cdp.raw"
+  ]
+}

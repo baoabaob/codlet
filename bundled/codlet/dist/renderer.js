@@ -58,6 +58,9 @@ module.exports = (() => {
     let panelRequest = 0;
     let action = 'idle';
     let actionError = '';
+    let pendingOperation = null;
+    let operationTimer = null;
+    const mutationControls = new Set();
 
     function waitForDocument() {
         if (document.documentElement && document.body) return Promise.resolve();
@@ -192,6 +195,17 @@ module.exports = (() => {
                 cursor: var(--codlet-ui-cursor, default);
             }
             [${PANEL_ATTRIBUTE}] button:disabled { opacity: 0.4; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-actions {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                flex: 0 0 auto;
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-actions > button {
+                min-width: 28px;
+                min-height: 28px;
+                padding: 4px 8px;
+            }
             [${PANEL_ATTRIBUTE}] .codlet-panel-header {
                 display: flex;
                 align-items: center;
@@ -367,7 +381,7 @@ module.exports = (() => {
         confirmationStatus.textContent = action === 'failed' ? actionError : action === 'done' ? 'Codlet is disabled.' : '';
         if (actionOrigin?.isConnected) {
             actionOrigin.checked = true;
-            actionOrigin.disabled = action !== 'idle';
+            actionOrigin.disabled = action !== 'idle' || pendingOperation !== null;
         }
     }
 
@@ -418,20 +432,166 @@ module.exports = (() => {
             toggle.setAttribute('role', 'switch');
             toggle.setAttribute('aria-label', 'Enable Codlet GUI');
             toggle.addEventListener('change', () => {
-                if (toggle.checked || action !== 'idle' || !row.isConnected || panel.hidden) return;
+                if (toggle.checked || action !== 'idle' || pendingOperation || !row.isConnected || panel.hidden) return;
                 actionOrigin = toggle;
                 action = 'confirm';
                 renderAction();
                 cancelButton.focus();
             });
+            mutationControls.add(toggle);
+            toggle.disabled = pendingOperation !== null;
             row.appendChild(toggle);
         } else {
             const state = executionState ?? (plugin.active === true ? 'Active'
                 : plugin.validation?.status === 'failed' ? 'Unavailable'
                 : plugin.enabled === true ? 'Not active' : 'Disabled');
-            addText(row, 'div', 'codlet-plugin-state', state);
+            if (plugin.registered !== false || plugin.loaded === true) {
+                const controls = addText(row, 'div', 'codlet-plugin-actions', '');
+                addText(controls, 'div', 'codlet-plugin-state', state);
+                if (plugin.registered === false) {
+                    const stop = addText(controls, 'button', '', 'Stop');
+                    stop.type = 'button';
+                    stop.setAttribute('aria-label', `Stop ${plugin.id}`);
+                    stop.addEventListener('click', () => managePlugin(context, plugin.id, 'disable'));
+                    mutationControls.add(stop);
+                    stop.disabled = pendingOperation !== null;
+                    return row;
+                }
+                if (plugin.enabled === true) {
+                    const loadAction = plugin.loaded === true || Number.isSafeInteger(plugin.generation) ? 'reload' : 'enable';
+                    const load = loadAction === 'reload'
+                        ? iconButton(controls, 'refresh', `Reload ${plugin.id}`)
+                        : addText(controls, 'button', '', 'Start');
+                    load.type = 'button';
+                    load.setAttribute('aria-label', `${loadAction === 'reload' ? 'Reload' : 'Start'} ${plugin.id}`);
+                    load.addEventListener('click', () => managePlugin(context, plugin.id, loadAction));
+                    mutationControls.add(load);
+                    load.disabled = pendingOperation !== null;
+                }
+                const toggle = document.createElement('input');
+                toggle.className = 'codlet-toggle';
+                toggle.type = 'checkbox';
+                toggle.checked = plugin.enabled === true;
+                toggle.setAttribute('role', 'switch');
+                toggle.setAttribute('aria-label', `Enable ${plugin.id}`);
+                toggle.addEventListener('change', () => {
+                    const nextAction = toggle.checked ? 'enable' : 'disable';
+                    toggle.checked = plugin.enabled === true;
+                    return managePlugin(context, plugin.id, nextAction);
+                });
+                controls.appendChild(toggle);
+                mutationControls.add(toggle);
+                toggle.disabled = pendingOperation !== null;
+            } else {
+                addText(row, 'div', 'codlet-plugin-state', state);
+            }
         }
         return row;
+    }
+
+    function operationMessage(message) {
+        if (!panel?.open || panel.hidden || action !== 'idle') return;
+        managementStatus.hidden = false;
+        managementStatus.textContent = message;
+    }
+
+    function setMutationBusy(busy) {
+        for (const control of mutationControls) {
+            if (control.isConnected) control.disabled = busy;
+        }
+    }
+
+    async function finishOperation(context, expected, message) {
+        if (pendingOperation !== expected) return;
+        const epoch = lifecycle;
+        pendingOperation = null;
+        if (operationTimer !== null) clearTimeout(operationTimer);
+        operationTimer = null;
+        if (panel?.open && !panel.hidden) {
+            setMutationBusy(false);
+            await refreshPlugins(context);
+            if (epoch === lifecycle && pendingOperation === null) operationMessage(message);
+        }
+    }
+
+    async function checkOperation(context, expected = pendingOperation) {
+        if (!expected?.operationId || pendingOperation !== expected || expected.checking) return;
+        if (operationTimer !== null) clearTimeout(operationTimer);
+        operationTimer = null;
+        const epoch = lifecycle;
+        expected.checking = true;
+        let reply;
+        try {
+            reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'operation', { operationId: expected.operationId });
+        } catch (_) {
+            if (epoch === lifecycle && pendingOperation === expected) {
+                operationMessage('Action status unavailable. Refresh to check again.');
+            }
+            expected.checking = false;
+            return;
+        }
+        expected.checking = false;
+        if (epoch !== lifecycle || pendingOperation !== expected) return;
+        const operation = reply?.operation;
+        if (operation?.operation_id !== expected.operationId ||
+            operation.request?.plugin_id !== expected.pluginId || operation.request?.action !== expected.action) {
+            operationMessage(reply?.error || 'Action status is no longer available. The action has not been repeated.');
+            return;
+        }
+        if (reply.status === 'completed') {
+            const completion = operation.completion;
+            const report = completion?.kind === 'report' ? completion.report : null;
+            const succeeded = report?.outcome === 'applied' || report?.outcome === 'unchanged';
+            const message = succeeded
+                ? `${expected.pluginId}: ${expected.action === 'enable' ? 'enabled' : expected.action === 'disable' ? 'disabled' : 'reloaded'}.`
+                : completion?.error?.message || report?.message || 'The action finished with an error. Refresh for the current state.';
+            await finishOperation(context, expected, message);
+            return;
+        }
+        if (reply.status !== 'queued' && reply.status !== 'running') {
+            operationMessage(reply?.error || 'The action was not confirmed. Refresh checks the same action without repeating it.');
+            return;
+        }
+        operationMessage(`${expected.pluginId}: ${reply.status === 'queued' ? 'waiting' : 'updating'}...`);
+        if (panel?.open && !panel.hidden) {
+            operationTimer = setTimeout(() => { operationTimer = null; void checkOperation(context, expected); }, 250);
+        }
+    }
+
+    async function managePlugin(context, pluginId, nextAction) {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        const epoch = lifecycle;
+        const expected = { pluginId, action: nextAction, operationId: null, checking: false };
+        pendingOperation = expected;
+        setMutationBusy(true);
+        operationMessage(`${pluginId}: preparing...`);
+        let prepared;
+        try {
+            prepared = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'prepare', { action: nextAction, plugin_id: pluginId });
+        } catch (error) {
+            if (epoch === lifecycle) await finishOperation(context, expected, error instanceof Error ? error.message : 'The action could not be prepared.');
+            return;
+        }
+        if (epoch !== lifecycle || pendingOperation !== expected) return;
+        if (prepared?.status !== 'prepared' || typeof prepared.operation?.operation_id !== 'string') {
+            await finishOperation(context, expected, prepared?.error || 'The action could not be prepared.');
+            return;
+        }
+        expected.operationId = prepared.operation.operation_id;
+        let submitted;
+        try {
+            // One submission only. A lost reply is followed exclusively by
+            // read-only queries for this exact server-issued receipt.
+            submitted = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'submit', { operationId: expected.operationId });
+        } catch (_) {
+            submitted = null;
+        }
+        if (epoch !== lifecycle || pendingOperation !== expected) return;
+        if (['busy', 'not_ready', 'stopping', 'expired', 'stale_host', 'invalid_request', 'not_running'].includes(submitted?.status)) {
+            await finishOperation(context, expected, submitted.error || 'The action was not submitted. Try again when the runtime is ready.');
+            return;
+        }
+        await checkOperation(context, expected);
     }
 
     async function disableSelf(context) {
@@ -456,6 +616,10 @@ module.exports = (() => {
 
     async function refreshPlugins(context) {
         if (!panel || panel.hidden || action !== 'idle') return;
+        if (pendingOperation?.operationId) {
+            await checkOperation(context);
+            return;
+        }
         const currentPanel = panel;
         const epoch = lifecycle;
         const request = ++panelRequest;
@@ -469,6 +633,7 @@ module.exports = (() => {
             if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
             if (!Array.isArray(management?.plugins) || management.plugins.some(plugin =>
                 !plugin || typeof plugin.id !== 'string' || !plugin.id.length)) throw new Error('Plugin list unavailable');
+            mutationControls.clear();
             pluginList.replaceChildren(...management.plugins.map(plugin => createPluginRow(context, plugin)));
             pluginList.hidden = false;
             managementStatus.hidden = management.plugins.length > 0;
@@ -588,6 +753,8 @@ module.exports = (() => {
             focus(closeButton);
         } else {
             panelRequest += 1;
+            if (operationTimer !== null) clearTimeout(operationTimer);
+            operationTimer = null;
             const restore = panel.contains(document.activeElement);
             if (action === 'confirm' || action === 'failed') {
                 action = 'idle';
@@ -670,6 +837,10 @@ module.exports = (() => {
     function deactivate() {
         lifecycle += 1;
         panelRequest += 1;
+        if (operationTimer !== null) clearTimeout(operationTimer);
+        operationTimer = null;
+        pendingOperation = null;
+        mutationControls.clear();
         cancelDocumentWait?.();
         const restore = isOwned(document.activeElement);
         const target = returnFocus?.isConnected && !isOwned(returnFocus) ? returnFocus : outsideFocus;
