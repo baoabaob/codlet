@@ -36,18 +36,28 @@ impl HostControl {
             BTreeSet::from([id.clone()])
         };
         if job.request.action == PluginControlAction::Disable {
-            plugin_lifecycle::validate_disable(
+            if !job.request.cascade {
+                plugin_lifecycle::validate_disable(
+                    &current,
+                    renderer.catalog_snapshot(),
+                    &registry,
+                    id,
+                )
+                .map_err(lifecycle_error)?;
+            }
+            let affected = plugin_lifecycle::disable_closure(
                 &current,
                 renderer.catalog_snapshot(),
                 &registry,
                 id,
             )
             .map_err(lifecycle_error)?;
-            let affected = BTreeSet::from([id.clone()]);
-            let was_running = current.iter().any(|plugin| plugin.manifest.id == *id);
-            let was_enabled = registry.is_enabled(id);
+            let was_running = current
+                .iter()
+                .any(|plugin| affected.contains(&plugin.manifest.id));
+            let was_enabled = affected.iter().any(|id| registry.is_enabled(id));
             renderer.begin_package_management(self.generations.clone(), &[])?;
-            let registry = match plugin_lifecycle::persist_preference(&registry, id, false)
+            let registry = match plugin_lifecycle::persist_disabled_closure(&registry, &affected)
                 .map_err(lifecycle_error)
             {
                 Ok(registry) => registry,

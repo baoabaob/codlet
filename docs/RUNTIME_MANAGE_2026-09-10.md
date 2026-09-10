@@ -27,7 +27,7 @@ scope 也可用，Host 通过 Core 签发的 target scope 或当前入站 scope 
 | 方法 | 输入 | 返回 |
 | --- | --- | --- |
 | `list` | `null` | `{plugins, sampledAtUnixMs}`，Host 收到前台发布的样本 |
-| `prepare` | `{action, plugin_id, permission?}` | 原 `ControlReport`，成功状态 `prepared` |
+| `prepare` | `{action, plugin_id, permission?, cascade?}` | 原 `ControlReport`，成功状态 `prepared` |
 | `submit` | `{operationId}` | 原 receipt 的 `queued` / `running` / `completed` 等状态 |
 | `operation` | `{operationId}` | 只读查询原 receipt |
 
@@ -35,6 +35,11 @@ scope 也可用，Host 通过 Core 签发的 target scope 或当前入站 scope 
 其他 action 省略该字段。注意 prepare 的 `plugin_id` 是 snake_case，而 submit/operation
 的输入 `operationId` 是 camelCase。ControlReport 回包继续使用原 snake_case 字段：
 `schema_version`、`host_pid`、`registry_scope`、`status`、`operation`、`error`。
+
+`disable` 可显式携带 `cascade: true`，一次关闭目标及所有已启用或仍在运行的依赖插件。
+省略该字段时继续拒绝有依赖者的关闭；其他 action 不接受 `cascade: true`。
+GUI 使用列表的 `disableDependents` 显示受影响插件，用户确认后只提交一次。
+Core 在清理前原子保存整组关闭状态；这条路径不进行重新激活或回滚到启用状态。
 
 ```js
 const manage = { name: 'codlet.runtime.manage', api: 1, scope: 'runtime' };
@@ -89,6 +94,8 @@ notification 没有交付 receipt。
 Host `list` 明确返回 `sampledAtUnixMs`，不能把旧样本当成即时运行事实。托管 renderer 的
 原 `list` 保留即时读取 registry 的行为，可能没有该时间字段。每个逻辑包只有一行；组合包
 的 active 要求两个入口在相同 generation 真正激活。`enabled` 是持久意图，和 active 不同。
+`name` 是 manifest 的可读名称，缺省时回退到 ID；`disableDependents` 是连带关闭的其他
+插件 ID。显示名称只用于界面，所有管理请求仍使用稳定的 `plugin_id`。
 
 ```powershell
 codlet plugin permissions dev.my-tools --json

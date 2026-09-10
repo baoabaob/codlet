@@ -194,7 +194,7 @@ function fixture({ mounted = true, ready = true } = {}) {
             if (method === 'ping') return { pong: true, abi: 1 };
             if (method === 'getMount') return { available: mount.isConnected, token };
             if (method === 'list') return { plugins: [
-                { id: 'codlet-gui', version: '1', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
+                { id: 'codlet-gui', name: 'Codlet GUI', version: '1', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
                 { id: 'dev.broken', version: null, source: 'local', path: 'C:/fixture/missing', enabled: false, active: false,
                     validation: { status: 'failed', error: { message: 'Missing renderer entry' } } }
             ] };
@@ -240,7 +240,8 @@ test('activation mounts before list; opening uses the current Host Active snapsh
     assert.equal(f.toggle(), undefined);
     await f.open();
     assert.match(f.panel().textContent, /Not active/);
-    assert.equal(f.toggle(), undefined);
+    assert.equal(f.toggle().checked, true);
+    assert.ok(f.control('Start Codlet GUI'));
     await f.close().emit('click');
     f.setActive(true);
     await f.open();
@@ -323,9 +324,9 @@ test('refresh removes forgotten rows and distinguishes an unregistered loaded pl
     assert.match(f.panel().textContent, /Registered, not loaded/);
     assert.doesNotMatch(f.panel().textContent, /Plugin validation failed/);
     const unregisteredRow = f.nodes().find(element => element.className === 'codlet-plugin-row' && element.textContent.includes('dev.still-running'));
-    assert.equal(unregisteredRow.children[0].title, 'C:/fixture/loaded');
+    assert.equal(unregisteredRow.children[0].title, undefined);
     await f.requestDisable();
-    assert.match(f.panel().textContent, /codlet plugin enable codlet-gui/);
+    assert.match(f.panel().textContent, /from the launcher/);
     f.plugin.deactivate();
 });
 
@@ -835,7 +836,7 @@ test('native cancel returns confirmation to settings, then closes the settings m
     await f.open();
     await f.requestDisable();
     assert.equal(f.byClass('codlet-settings-section').hidden, true);
-    assert.equal(f.panel().getAttribute('aria-label'), 'Disable Codlet?');
+    assert.equal(f.panel().getAttribute('aria-label'), 'Disable Codlet GUI?');
     assert.ok(f.panel().getAttribute('aria-describedby'));
     const cancelled = await f.panel().emit('cancel');
     assert.equal(cancelled.defaultPrevented, true);
@@ -892,6 +893,67 @@ test('public management controls enable reload and disable through one receipt p
     assert.match(f.byClass('codlet-status').textContent, /disabled/);
     f.plugin.deactivate();
     assert.equal(f.timerCount(), 0);
+});
+
+test('dependency disable requires confirmation and submits the whole closure once before GUI removal', async () => {
+    const f = fixture();
+    f.override('list', () => ({ plugins: [
+        { id: 'codex.ui.adapter', name: 'Codex UI Adapter', enabled: true, active: true, loaded: true, disableDependents: ['codlet-gui'] },
+        { id: 'codlet-gui', name: 'Codlet GUI', enabled: true, active: true, disableDependents: [] },
+        { id: 'dev.hider', name: 'Usage Banner Hider', enabled: true, active: true, disableDependents: [] },
+        { id: 'dev.legacy', enabled: false, active: false }
+    ] }));
+    let operation;
+    f.override('prepare', args => {
+        assert.deepEqual(JSON.parse(JSON.stringify(args)), { action: 'disable', plugin_id: 'codex.ui.adapter', cascade: true });
+        operation = { operation_id: 'cascade-1', request: args };
+        return { status: 'prepared', operation };
+    });
+    f.override('submit', () => { f.plugin.deactivate(); throw new Error('GUI retired before the reply arrived'); });
+    await f.plugin.activate(f.context);
+    await f.open();
+    assert.deepEqual(f.nodes().filter(node => node.className === 'codlet-plugin-name').map(node => node.textContent), ['Codex UI Adapter', 'Codlet GUI', 'Usage Banner Hider', 'dev.legacy']);
+    const toggle = f.control('Enable Codex UI Adapter');
+    toggle.checked = false;
+    await toggle.emit('change');
+    assert.equal(f.panel().getAttribute('aria-label'), 'Disable Codex UI Adapter?');
+    assert.match(f.byClass('codlet-confirmation-copy').textContent, /also disable: Codlet GUI/);
+    assert.match(f.byClass('codlet-confirmation-copy').textContent, /close in all open windows/);
+    assert.equal(f.calls.includes('prepare'), false);
+    await f.cancel().emit('click');
+    assert.equal(toggle.checked, true);
+    assert.equal(f.calls.includes('prepare'), false);
+    toggle.checked = false;
+    await toggle.emit('change');
+    await f.byClass('codlet-confirm').emit('click');
+    assert.equal(f.calls.filter(method => method === 'prepare').length, 1);
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.equal(operation.request.action, 'disable');
+    assert.equal(f.panel(), undefined);
+    assert.equal(f.timerCount(), 0);
+});
+
+test('refresh uses a nonempty owned tooltip and cancels it on leave close and unload', async () => {
+    const f = fixture();
+    await f.plugin.activate(f.context);
+    await f.open();
+    const refresh = f.refresh();
+    assert.equal(refresh.title, undefined);
+    await refresh.emit('pointerenter');
+    await new Promise(resolve => setTimeout(resolve, 310));
+    assert.equal(f.byClass('codlet-tooltip').textContent, 'Refresh plugins');
+    assert.equal(f.byClass('codlet-tooltip').getAttribute('role'), 'tooltip');
+    await refresh.emit('pointerleave');
+    assert.equal(f.byClass('codlet-tooltip'), undefined);
+    await refresh.emit('pointerenter');
+    await f.close().emit('click');
+    assert.equal(f.timerCount(), 0);
+    await f.open();
+    await f.refresh().emit('pointerenter');
+    f.plugin.deactivate();
+    assert.equal(f.timerCount(), 0);
+    await new Promise(resolve => setTimeout(resolve, 310));
+    assert.equal(f.byClass('codlet-tooltip'), undefined);
 });
 
 test('a lost submit reply keeps its receipt and refresh only checks the original action', async () => {

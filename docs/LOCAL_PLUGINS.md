@@ -6,6 +6,11 @@ an isolated renderer entry, or both. Host-only plugins need no renderer stub,
 official GUI or adapter. TypeScript is compiled before loading; the portable
 runtime does not install npm dependencies or transpile source.
 
+The optional top-level `name` in `codlet.json` is the human-readable display name
+(for example, `"name": "Usage Banner Hider"`). It does not change the stable `id`,
+capability ownership or CLI identity. Names must contain readable, nonempty text
+within 256 UTF-8 bytes. Older manifests fall back to their ID.
+
 The [JS runtime contract](JS_PLUGIN_RUNTIME_2026-09-09.md),
 [Core RPC contract](CORE_RPC_2026-09-10.md) and
 [development walkthrough](HOST_DEVELOPMENT_2026-09-10.md) cover the public SDK.
@@ -83,7 +88,11 @@ do not create a second mutation or switch to an offline write. Without a runtime
 enable/disable/revoke may save the next-launch intent only after proving that
 this registry has no Host; reload requires a running runtime.
 
-Disable rejects enabled or running dependents. Reload replaces the selected
+Ordinary CLI disable rejects enabled or running dependents. The GUI first shows
+the affected plugin names, then submits an explicit `cascade: true` disable when
+the user confirms. Core persists the whole closure as disabled in one save before
+retiring its entries, so disabling an adapter and its GUI does not restart them.
+Reload replaces the selected
 provider and its transitive dependent closure, including both entries of a
 combined package. Sources and current trust are validated before retirement;
 renderer cleanup precedes Host stop, and replacement Host readiness precedes

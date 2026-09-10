@@ -25,7 +25,8 @@ export interface RuntimeManageDescriptor {
 
 /** prepare uses plugin_id, matching the existing control receipt protocol. */
 export type PluginControlRequest =
-  | { action: 'enable' | 'disable' | 'reload'; plugin_id: string; permission?: never }
+  | { action: 'enable' | 'reload'; plugin_id: string; permission?: never; cascade?: false }
+  | { action: 'disable'; plugin_id: string; permission?: never; cascade?: boolean }
   | { action: 'revoke'; plugin_id: string; permission: PluginPermission };
 
 /** submit and operation take camelCase input even though replies are snake_case. */
@@ -87,6 +88,10 @@ export type PluginValidation =
 
 export interface RuntimeManagePlugin {
   id: string;
+  /** Manifest name, with the stable ID as fallback for older packages. */
+  name: string;
+  /** Other enabled/running plugins included by an explicit cascade disable. */
+  disableDependents: string[];
   version: string | null;
   source: 'bundled' | 'local';
   path: string | null;

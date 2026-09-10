@@ -185,6 +185,7 @@ impl DevelopmentSession {
                 action,
                 plugin_id: ID.into(),
                 permission: None,
+                cascade: false,
             }));
         let ticket = prepared.operation_id().unwrap().to_owned();
         assert_eq!(

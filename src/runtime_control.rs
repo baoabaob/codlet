@@ -589,6 +589,7 @@ mod tests {
             action: PluginControlAction::Reload,
             plugin_id: "dev.fixture".into(),
             permission: None,
+            cascade: false,
         }
     }
     fn broker() -> ControlBroker {

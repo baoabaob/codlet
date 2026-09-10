@@ -370,6 +370,7 @@ mod tests {
             plugin_id: "lab.local".into(),
             action: crate::plugin_control::PluginControlAction::Reload,
             permission: None,
+            cascade: false,
         };
         assert_eq!(
             crate::windows::control_pipe::query(

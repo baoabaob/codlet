@@ -48,7 +48,10 @@ module.exports = (() => {
 
     let style, button, panel, pluginList, managementStatus, refreshButton, closeButton;
     let panelTitle, settingsSection;
-    let confirmation, confirmationStatus, confirmButton, cancelButton, actionOrigin;
+    let confirmation, confirmationCopy, confirmationStatus, confirmButton, cancelButton, actionOrigin;
+    let confirmationSelection = null;
+    let visiblePlugins = [];
+    let tooltip = null, tooltipControl = null, tooltipTimer = null;
     let observer, keydown, focusin, resize, cancelDocumentWait;
     let mountToken = null;
     let returnFocus = null;
@@ -86,8 +89,8 @@ module.exports = (() => {
     function iconButton(parent, name, label) {
         const control = addText(parent, 'button', 'codlet-icon-button', '');
         control.type = 'button';
-        control.title = label;
         control.setAttribute('aria-label', label);
+        installTooltip(control, label);
         const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         for (const [key, value] of Object.entries({
             width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
@@ -101,6 +104,63 @@ module.exports = (() => {
         }
         control.appendChild(icon);
         return control;
+    }
+
+    function hideTooltip() {
+        if (tooltipTimer !== null) clearTimeout(tooltipTimer);
+        tooltipTimer = null;
+        tooltipControl?.removeAttribute('aria-describedby');
+        tooltip?.remove();
+        tooltip = tooltipControl = null;
+    }
+
+    function installTooltip(control, text) {
+        const schedule = () => {
+            hideTooltip();
+            tooltipControl = control;
+            const epoch = lifecycle;
+            tooltipTimer = setTimeout(() => {
+                tooltipTimer = null;
+                if (epoch !== lifecycle || !panel?.open || panel.hidden || !control.isConnected || control.disabled) return hideTooltip();
+                tooltip = addText(panel, 'div', 'codlet-tooltip', text);
+                tooltip.id = `${panel.id}-tooltip`;
+                tooltip.setAttribute('role', 'tooltip');
+                control.setAttribute('aria-describedby', tooltip.id);
+                const container = panel.getBoundingClientRect();
+                const anchor = control.getBoundingClientRect();
+                const bounds = tooltip.getBoundingClientRect();
+                const width = bounds.width || 180, height = bounds.height || 28;
+                const x = Math.max(8, Math.min((anchor.left ?? container.left) - container.left, container.right - container.left - width - 8));
+                const below = anchor.bottom - container.top + 8;
+                const y = below + height <= container.bottom - container.top - 8 ? below : Math.max(8, (anchor.top ?? anchor.bottom) - container.top - height - 8);
+                tooltip.style.left = `${x}px`;
+                tooltip.style.top = `${y}px`;
+            }, 280);
+        };
+        const cancel = () => { if (tooltipControl === control) hideTooltip(); };
+        control.addEventListener('pointerenter', schedule);
+        control.addEventListener('pointerleave', cancel);
+        control.addEventListener('pointerdown', cancel);
+        control.addEventListener('focusin', () => { if (control.matches?.(':focus-visible')) schedule(); });
+        control.addEventListener('focusout', cancel);
+    }
+
+    function pluginName(plugin) {
+        return typeof plugin.name === 'string' && plugin.name.trim() ? plugin.name.trim() : plugin.id;
+    }
+
+    function requestDisable(context, plugin, origin) {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        const dependents = Array.isArray(plugin.disableDependents) ? plugin.disableDependents.filter(id => typeof id === 'string' && id !== plugin.id) : [];
+        const closesGui = plugin.id === context.pluginId || dependents.includes(context.pluginId);
+        if (!dependents.length && !closesGui) return managePlugin(context, plugin.id, 'disable');
+        confirmationSelection = { id: plugin.id, name: pluginName(plugin), cascade: dependents.length > 0 };
+        const dependentNames = dependents.map(id => pluginName(visiblePlugins.find(candidate => candidate.id === id) ?? { id }));
+        confirmationCopy.textContent = `${dependentNames.length ? `This will also disable: ${dependentNames.join(', ')}. ` : ''}${closesGui ? 'The Codlet GUI will close in all open windows. Re-enable the plugins from the launcher to restore it.' : 'These plugins will stay disabled until you enable them again.'}`;
+        actionOrigin = origin;
+        action = 'confirm';
+        renderAction();
+        focus(cancelButton);
     }
 
     function findMount() {
@@ -229,6 +289,24 @@ module.exports = (() => {
                 width: 24px;
                 height: 24px;
                 padding: 0;
+            }
+            [${PANEL_ATTRIBUTE}] .codlet-tooltip {
+                position: absolute;
+                z-index: 10;
+                pointer-events: none;
+                max-width: min(360px, calc(100% - 16px));
+                max-height: 140px;
+                overflow: hidden;
+                padding: 6px 9px;
+                border: 1px solid var(--codlet-ui-border, ButtonBorder);
+                border-radius: 6px;
+                background: var(--codlet-ui-surface-raised, Canvas);
+                color: var(--codlet-ui-fg, CanvasText);
+                font-size: var(--codlet-ui-font-small, 13px);
+                font-weight: 400;
+                line-height: 1.4;
+                white-space: pre-line;
+                box-shadow: 0 2px 8px rgb(0 0 0 / 15%);
             }
             [${PANEL_ATTRIBUTE}] .codlet-dialog-close {
                 position: absolute;
@@ -366,11 +444,14 @@ module.exports = (() => {
     }
 
     function renderAction() {
+        hideTooltip();
         settingsSection.hidden = action !== 'idle';
         confirmation.hidden = action === 'idle';
         panel.setAttribute('data-codlet-view', action === 'idle' ? 'settings' : 'confirmation');
-        panelTitle.textContent = action === 'idle' ? 'Codlet' : action === 'done' ? 'Codlet disabled' : 'Disable Codlet?';
+        const selectedName = confirmationSelection?.name || 'Codlet';
+        panelTitle.textContent = action === 'idle' ? 'Codlet' : action === 'done' ? `${selectedName} disabled` : `Disable ${selectedName}?`;
         panel.setAttribute('aria-label', panelTitle.textContent);
+        confirmation.setAttribute('aria-label', panelTitle.textContent);
         if (action === 'idle') panel.removeAttribute('aria-describedby');
         else panel.setAttribute('aria-describedby', `${panel.id}-disable-consequence`);
         refreshButton.disabled = action !== 'idle';
@@ -388,6 +469,7 @@ module.exports = (() => {
     function cancelAction() {
         if (action !== 'confirm' && action !== 'failed') return;
         action = 'idle';
+        confirmationSelection = null;
         renderAction();
         focus(actionOrigin?.isConnected ? actionOrigin : refreshButton);
     }
@@ -406,12 +488,13 @@ module.exports = (() => {
         row.className = 'codlet-plugin-row';
         const copy = document.createElement('div');
         copy.className = 'codlet-plugin-copy';
-        addText(copy, 'div', 'codlet-plugin-name', plugin.id);
+        const name = pluginName(plugin);
+        addText(copy, 'div', 'codlet-plugin-name', name);
         const metadata = [plugin.version, plugin.source === 'local' ? 'Local' : null]
             .filter(value => typeof value === 'string' && value.length > 0);
         if (metadata.length) addText(copy, 'div', 'codlet-plugin-version', metadata.join(' / '));
         const path = typeof plugin.path === 'string' ? plugin.path : plugin.loadedPath;
-        if (typeof path === 'string') copy.title = path;
+        installTooltip(copy, `${plugin.id}${typeof path === 'string' ? `\n${path}` : ''}`);
         if (plugin.registered === false && plugin.loaded === true) {
             addText(copy, 'div', 'codlet-plugin-version', 'Registration removed; still loaded');
         } else if (plugin.validation?.status === 'not_loaded') {
@@ -433,10 +516,7 @@ module.exports = (() => {
             toggle.setAttribute('aria-label', 'Enable Codlet GUI');
             toggle.addEventListener('change', () => {
                 if (toggle.checked || action !== 'idle' || pendingOperation || !row.isConnected || panel.hidden) return;
-                actionOrigin = toggle;
-                action = 'confirm';
-                renderAction();
-                cancelButton.focus();
+                return requestDisable(context, plugin, toggle);
             });
             mutationControls.add(toggle);
             toggle.disabled = pendingOperation !== null;
@@ -451,8 +531,8 @@ module.exports = (() => {
                 if (plugin.registered === false) {
                     const stop = addText(controls, 'button', '', 'Stop');
                     stop.type = 'button';
-                    stop.setAttribute('aria-label', `Stop ${plugin.id}`);
-                    stop.addEventListener('click', () => managePlugin(context, plugin.id, 'disable'));
+                    stop.setAttribute('aria-label', `Stop ${name}`);
+                    stop.addEventListener('click', () => requestDisable(context, plugin, stop));
                     mutationControls.add(stop);
                     stop.disabled = pendingOperation !== null;
                     return row;
@@ -460,10 +540,10 @@ module.exports = (() => {
                 if (plugin.enabled === true) {
                     const loadAction = plugin.loaded === true || Number.isSafeInteger(plugin.generation) ? 'reload' : 'enable';
                     const load = loadAction === 'reload'
-                        ? iconButton(controls, 'refresh', `Reload ${plugin.id}`)
+                        ? iconButton(controls, 'refresh', `Reload ${name}${plugin.disableDependents?.length ? ' and dependent plugins' : ''}`)
                         : addText(controls, 'button', '', 'Start');
                     load.type = 'button';
-                    load.setAttribute('aria-label', `${loadAction === 'reload' ? 'Reload' : 'Start'} ${plugin.id}`);
+                    load.setAttribute('aria-label', `${loadAction === 'reload' ? 'Reload' : 'Start'} ${name}`);
                     load.addEventListener('click', () => managePlugin(context, plugin.id, loadAction));
                     mutationControls.add(load);
                     load.disabled = pendingOperation !== null;
@@ -473,11 +553,11 @@ module.exports = (() => {
                 toggle.type = 'checkbox';
                 toggle.checked = plugin.enabled === true;
                 toggle.setAttribute('role', 'switch');
-                toggle.setAttribute('aria-label', `Enable ${plugin.id}`);
+                toggle.setAttribute('aria-label', `Enable ${name}`);
                 toggle.addEventListener('change', () => {
                     const nextAction = toggle.checked ? 'enable' : 'disable';
                     toggle.checked = plugin.enabled === true;
-                    return managePlugin(context, plugin.id, nextAction);
+                    return nextAction === 'disable' ? requestDisable(context, plugin, toggle) : managePlugin(context, plugin.id, nextAction);
                 });
                 controls.appendChild(toggle);
                 mutationControls.add(toggle);
@@ -496,6 +576,7 @@ module.exports = (() => {
     }
 
     function setMutationBusy(busy) {
+        if (busy) hideTooltip();
         for (const control of mutationControls) {
             if (control.isConnected) control.disabled = busy;
         }
@@ -543,7 +624,7 @@ module.exports = (() => {
             const report = completion?.kind === 'report' ? completion.report : null;
             const succeeded = report?.outcome === 'applied' || report?.outcome === 'unchanged';
             const message = succeeded
-                ? `${expected.pluginId}: ${expected.action === 'enable' ? 'enabled' : expected.action === 'disable' ? 'disabled' : 'reloaded'}.`
+                ? `${expected.name}: ${expected.action === 'enable' ? 'enabled' : expected.action === 'disable' ? 'disabled' : 'reloaded'}.`
                 : completion?.error?.message || report?.message || 'The action finished with an error. Refresh for the current state.';
             await finishOperation(context, expected, message);
             return;
@@ -552,22 +633,22 @@ module.exports = (() => {
             operationMessage(reply?.error || 'The action was not confirmed. Refresh checks the same action without repeating it.');
             return;
         }
-        operationMessage(`${expected.pluginId}: ${reply.status === 'queued' ? 'waiting' : 'updating'}...`);
+        operationMessage(`${expected.name}: ${reply.status === 'queued' ? 'waiting' : 'updating'}...`);
         if (panel?.open && !panel.hidden) {
             operationTimer = setTimeout(() => { operationTimer = null; void checkOperation(context, expected); }, 250);
         }
     }
 
-    async function managePlugin(context, pluginId, nextAction) {
+    async function managePlugin(context, pluginId, nextAction, cascade = false) {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
         const epoch = lifecycle;
-        const expected = { pluginId, action: nextAction, operationId: null, checking: false };
+        const expected = { pluginId, name: pluginName(visiblePlugins.find(plugin => plugin.id === pluginId) ?? { id: pluginId }), action: nextAction, operationId: null, checking: false };
         pendingOperation = expected;
         setMutationBusy(true);
-        operationMessage(`${pluginId}: preparing...`);
+        operationMessage(`${expected.name}: preparing...`);
         let prepared;
         try {
-            prepared = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'prepare', { action: nextAction, plugin_id: pluginId });
+            prepared = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'prepare', { action: nextAction, plugin_id: pluginId, ...(cascade ? { cascade: true } : {}) });
         } catch (error) {
             if (epoch === lifecycle) await finishOperation(context, expected, error instanceof Error ? error.message : 'The action could not be prepared.');
             return;
@@ -596,6 +677,13 @@ module.exports = (() => {
 
     async function disableSelf(context) {
         if (action !== 'confirm' && action !== 'failed') return;
+        if (confirmationSelection && (confirmationSelection.id !== context.pluginId || confirmationSelection.cascade)) {
+            const selection = confirmationSelection;
+            confirmationSelection = null;
+            action = 'idle';
+            renderAction();
+            return managePlugin(context, selection.id, 'disable', selection.cascade);
+        }
         const epoch = lifecycle;
         const moveFocus = confirmation.contains(document.activeElement);
         action = 'pending';
@@ -623,6 +711,7 @@ module.exports = (() => {
         const currentPanel = panel;
         const epoch = lifecycle;
         const request = ++panelRequest;
+        hideTooltip();
         if (pluginList.contains(document.activeElement)) focus(refreshButton);
         pluginList.hidden = true;
         pluginList.setAttribute('aria-busy', 'true');
@@ -634,6 +723,7 @@ module.exports = (() => {
             if (!Array.isArray(management?.plugins) || management.plugins.some(plugin =>
                 !plugin || typeof plugin.id !== 'string' || !plugin.id.length)) throw new Error('Plugin list unavailable');
             mutationControls.clear();
+            visiblePlugins = management.plugins;
             pluginList.replaceChildren(...management.plugins.map(plugin => createPluginRow(context, plugin)));
             pluginList.hidden = false;
             managementStatus.hidden = management.plugins.length > 0;
@@ -678,12 +768,9 @@ module.exports = (() => {
         confirmation.hidden = true;
         confirmation.setAttribute('role', 'group');
         confirmation.setAttribute('aria-label', 'Disable Codlet?');
-        const consequence = addText(confirmation, 'p', 'codlet-confirmation-copy',
-            'The Codlet GUI will close in all open windows. To restore it, run ');
-        addText(consequence, 'code', '', 'codlet plugin enable codlet-gui');
-        consequence.appendChild(document.createTextNode('.'));
-        consequence.id = `${panel.id}-disable-consequence`;
-        confirmation.setAttribute('aria-describedby', consequence.id);
+        confirmationCopy = addText(confirmation, 'p', 'codlet-confirmation-copy', '');
+        confirmationCopy.id = `${panel.id}-disable-consequence`;
+        confirmation.setAttribute('aria-describedby', confirmationCopy.id);
         confirmationStatus = addText(confirmation, 'div', 'codlet-status', '');
         confirmationStatus.setAttribute('role', 'status');
         confirmationStatus.hidden = true;
@@ -695,6 +782,7 @@ module.exports = (() => {
         confirmButton.type = 'button';
         confirmButton.addEventListener('click', () => disableSelf(context));
         const currentPanel = panel;
+        panel.addEventListener('scroll', hideTooltip, true);
         panel.addEventListener('pointerdown', event => {
             if (panel !== currentPanel || !panel.open || event.defaultPrevented) return;
             event.stopPropagation();
@@ -710,6 +798,7 @@ module.exports = (() => {
             if (event.defaultPrevented || panel !== currentPanel) return;
             event.preventDefault();
             event.stopPropagation();
+            if (tooltip) { hideTooltip(); return; }
             if (action === 'confirm' || action === 'failed') cancelAction();
             else setPanelOpen(false);
         });
@@ -752,12 +841,14 @@ module.exports = (() => {
             if (button) button.title = 'Codlet';
             focus(closeButton);
         } else {
+            hideTooltip();
             panelRequest += 1;
             if (operationTimer !== null) clearTimeout(operationTimer);
             operationTimer = null;
             const restore = panel.contains(document.activeElement);
             if (action === 'confirm' || action === 'failed') {
                 action = 'idle';
+                confirmationSelection = null;
                 renderAction();
             }
             if (panel.open) panel.close();
@@ -813,6 +904,7 @@ module.exports = (() => {
                 event.ctrlKey || event.metaKey || event.shiftKey || panel.hidden || !isOwned(event.target)) return;
             event.preventDefault();
             event.stopPropagation();
+            if (tooltip) { hideTooltip(); return; }
             if (action === 'confirm' || action === 'failed') cancelAction();
             else setPanelOpen(false);
         };
@@ -829,7 +921,7 @@ module.exports = (() => {
         focusin = event => {
             if (!isOwned(event.target)) outsideFocus = event.target;
         };
-        resize = layoutPanel;
+        resize = () => { hideTooltip(); layoutPanel(); };
         document.addEventListener('focusin', focusin);
         globalThis.addEventListener('resize', resize);
     }
@@ -840,6 +932,9 @@ module.exports = (() => {
         if (operationTimer !== null) clearTimeout(operationTimer);
         operationTimer = null;
         pendingOperation = null;
+        hideTooltip();
+        visiblePlugins = [];
+        confirmationSelection = null;
         mutationControls.clear();
         cancelDocumentWait?.();
         const restore = isOwned(document.activeElement);
@@ -857,7 +952,7 @@ module.exports = (() => {
         if (restore) focus(target);
         style = button = panel = pluginList = managementStatus = refreshButton = closeButton = null;
         panelTitle = settingsSection = null;
-        confirmation = confirmationStatus = confirmButton = cancelButton = actionOrigin = null;
+        confirmation = confirmationCopy = confirmationStatus = confirmButton = cancelButton = actionOrigin = null;
         observer = keydown = focusin = resize = mountToken = returnFocus = outsideFocus = panelAnchor = null;
         action = 'idle';
         actionError = '';

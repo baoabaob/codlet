@@ -49,6 +49,18 @@ pub(super) fn plugin_list(
             .filter_map(|(id, entry)| matches!(entry.source, PluginSource::Bundled).then_some(*id)),
     );
 
+    let mut logical = plugins.to_vec();
+    logical.extend(
+        external_observations
+            .iter()
+            .filter(|observation| {
+                matches!(
+                    observation.state,
+                    ExecutionState::Starting | ExecutionState::Active | ExecutionState::Stopping
+                )
+            })
+            .map(|observation| observation.plugin.clone()),
+    );
     let rows: Vec<_> = ids.into_iter().map(|id| {
         let entry = entries.get(id).copied();
         let runtime = loaded.get(id).copied();
@@ -86,6 +98,8 @@ pub(super) fn plugin_list(
         };
         let mut row = json!({
             "id":id,
+            "name":metadata.map(|plugin| plugin.manifest.display_name()).unwrap_or(id),
+            "disableDependents":crate::plugin_lifecycle::disable_closure(&logical, catalog, registry, id).unwrap_or_default().into_iter().filter(|dependent| dependent != id).collect::<Vec<_>>(),
             "version":metadata.map(|plugin| &plugin.manifest.version),
             "source":if bundled { "bundled" } else { "local" },
             "path":registration.map(|registration| registration.path.to_string_lossy()),
@@ -131,6 +145,32 @@ mod tests {
             .iter()
             .find(|plugin| plugin["id"] == id)
             .expect("plugin should be listed")
+    }
+
+    #[test]
+    fn names_and_disable_dependents_use_manifest_metadata_and_running_ownership() {
+        let directory = tempdir().unwrap();
+        let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        let plugins = bundled_plugins().unwrap();
+        let catalog = PluginCatalog::from_bundled(plugins.clone());
+        let list = plugin_list(&catalog, &plugins, &registry, &BTreeSet::new(), &[]);
+        assert_eq!(row(&list, "codex.ui.adapter")["name"], "Codex UI Adapter");
+        assert_eq!(row(&list, "codlet-gui")["name"], "Codlet GUI");
+        assert_eq!(
+            row(&list, "codex.ui.adapter")["disableDependents"],
+            json!(["codlet-gui"])
+        );
+        registry.set_enabled("codlet-gui", false).unwrap();
+        let still_running = plugin_list(&catalog, &plugins, &registry, &BTreeSet::new(), &[]);
+        assert_eq!(
+            row(&still_running, "codex.ui.adapter")["disableDependents"],
+            json!(["codlet-gui"])
+        );
+        let stopped = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
+        assert_eq!(
+            row(&stopped, "codex.ui.adapter")["disableDependents"],
+            json!([])
+        );
     }
 
     #[test]

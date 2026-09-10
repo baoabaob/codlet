@@ -30,10 +30,23 @@ pub struct PluginControlRequest {
     pub plugin_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<crate::plugins::Permission>,
+    /// Explicitly confirmed stop of the enabled/running dependent closure.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cascade: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl PluginControlRequest {
     pub fn validate(&self) -> Result<(), PluginControlError> {
+        if self.cascade && self.action != PluginControlAction::Disable {
+            return Err(PluginControlError::new(
+                "invalid_cascade",
+                "cascade is only valid for disable",
+            ));
+        }
         if !crate::plugins::valid_plugin_id(&self.plugin_id) {
             return Err(PluginControlError::new(
                 "invalid_plugin_id",

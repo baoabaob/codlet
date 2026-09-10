@@ -296,6 +296,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                         action,
                         plugin_id: plugin_id.into(),
                         permission: None,
+                        cascade: false,
                     },
                     json,
                 )?;
@@ -328,6 +329,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                     action: PluginControlAction::Revoke,
                     plugin_id: plugin_id.to_str().ok_or(ProbeError::Usage)?.into(),
                     permission: Some(permission),
+                    cascade: false,
                 },
                 json,
             )?;
@@ -1714,6 +1716,7 @@ mod tests {
                 action: PluginControlAction::Reload,
                 plugin_id: plugin_id.into(),
                 permission: None,
+                cascade: false,
             }));
             let ticket = prepared.operation_id().unwrap().to_owned();
             control.handle(ControlRequest::submit(&ticket));
@@ -1725,6 +1728,7 @@ mod tests {
                 action: PluginControlAction::Reload,
                 plugin_id: plugin_id.into(),
                 permission: None,
+                cascade: false,
             })
             .collect();
         let mut polls = 0;

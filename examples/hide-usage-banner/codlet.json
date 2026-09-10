@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "id": "dev.local.hide-usage-banner",
+  "name": "Usage Banner Hider",
   "version": "0.1.0",
   "renderer": { "entry": "renderer.js", "world": "isolated" },
   "permissions": ["ui.dom"],

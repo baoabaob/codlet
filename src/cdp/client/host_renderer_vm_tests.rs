@@ -290,6 +290,7 @@ impl Fixture {
                 action,
                 plugin_id: PLUGIN.into(),
                 permission: None,
+                cascade: false,
             }));
         let id = prepared.operation_id().unwrap().to_owned();
         assert_eq!(

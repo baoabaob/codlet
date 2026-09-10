@@ -31,6 +31,8 @@ static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 pub struct PluginManifest {
     pub schema: u32,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<RendererManifest>,
@@ -256,6 +258,10 @@ pub enum PluginRegistryError {
 }
 
 impl PluginManifest {
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().map(str::trim).unwrap_or(&self.id)
+    }
+
     pub fn host_provides(&self) -> &[CapabilityDescriptor] {
         match (&self.host, &self.renderer) {
             (Some(host), Some(_)) => &host.provides,
@@ -310,6 +316,13 @@ impl PluginManifest {
         if !valid_plugin_id(&self.id) {
             return Err(ManifestError::Id(self.id.clone()));
         }
+        if self.name.as_ref().is_some_and(|name| {
+            name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control)
+        }) {
+            return Err(ManifestError::Json(
+                "name must contain 1–256 bytes of readable text".into(),
+            ));
+        }
         if self.version.is_empty()
             || self.version.len() > MAX_VERSION_BYTES
             || !self.version.is_ascii()
@@ -345,6 +358,31 @@ impl PluginManifest {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn plugin_display_name_is_optional_readable_and_does_not_replace_identity() {
+    let mut value = serde_json::json!({"schema":1,"id":"dev.named","version":"1","renderer":{"entry":"entry.js","world":"isolated"}});
+    assert_eq!(
+        PluginManifest::parse(&value.to_string())
+            .unwrap()
+            .display_name(),
+        "dev.named"
+    );
+    value["name"] = serde_json::json!("Readable 插件");
+    let manifest = PluginManifest::parse(&value.to_string()).unwrap();
+    assert_eq!(manifest.id, "dev.named");
+    assert_eq!(manifest.display_name(), "Readable 插件");
+    for name in [
+        "".to_owned(),
+        "   ".to_owned(),
+        "bad\nname".to_owned(),
+        "x".repeat(257),
+    ] {
+        value["name"] = serde_json::json!(name);
+        assert!(PluginManifest::parse(&value.to_string()).is_err());
     }
 }
 

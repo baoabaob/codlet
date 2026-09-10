@@ -170,6 +170,7 @@ impl Fixture {
                 action,
                 plugin_id: id.into(),
                 permission: None,
+                cascade: false,
             }));
         assert_eq!(prepared.status, ControlStatus::Prepared);
         let receipt = prepared.operation_id().unwrap().to_owned();
@@ -482,6 +483,7 @@ fn combined_disable_self_preserves_response_and_retries_a_full_receipt_queue() {
                 .handle(ControlRequest::prepare(PluginControlRequest {
                     action: Action::Disable,
                     permission: None,
+                    cascade: false,
                     plugin_id: format!("dev.absent{index}"),
                 }))
                 .operation_id()

@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "id": "codex.ui.adapter",
+  "name": "Codex UI Adapter",
   "version": "0.1.0",
   "renderer": {
     "entry": "dist/renderer.js",

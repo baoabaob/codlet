@@ -98,6 +98,23 @@ pub(crate) fn validate_disable(
     registry: &PluginRegistry,
     plugin_id: &str,
 ) -> Result<(), LifecycleError> {
+    let closure = disable_closure(plugins, catalog, registry, plugin_id)?;
+    let dependents: Vec<_> = closure.into_iter().filter(|id| id != plugin_id).collect();
+    if !dependents.is_empty() {
+        return Err(LifecycleError::Dependents {
+            plugin_id: plugin_id.to_owned(),
+            dependents: dependents.join(", "),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn disable_closure(
+    plugins: &[LoadedPlugin],
+    catalog: &PluginCatalog,
+    registry: &PluginRegistry,
+    plugin_id: &str,
+) -> Result<BTreeSet<String>, LifecycleError> {
     if !catalog.entries().iter().any(|entry| entry.id == plugin_id)
         && !registry.local_plugins().contains_key(plugin_id)
     {
@@ -115,15 +132,26 @@ pub(crate) fn validate_disable(
     for plugin in plugins {
         candidates.insert(plugin.manifest.id.clone(), plugin.clone());
     }
-    let closure = dependent_closure(&candidates.into_values().collect::<Vec<_>>(), plugin_id);
-    let dependents: Vec<_> = closure.into_iter().filter(|id| id != plugin_id).collect();
-    if !dependents.is_empty() {
-        return Err(LifecycleError::Dependents {
-            plugin_id: plugin_id.to_owned(),
-            dependents: dependents.join(", "),
-        });
+    Ok(dependent_closure(
+        &candidates.into_values().collect::<Vec<_>>(),
+        plugin_id,
+    ))
+}
+
+/// One durable registry write precedes retirement of every confirmed dependent.
+pub(crate) fn persist_disabled_closure(
+    expected: &PluginRegistry,
+    affected: &BTreeSet<String>,
+) -> Result<PluginRegistry, LifecycleError> {
+    let mut candidate = expected.clone();
+    for id in affected {
+        if let Some(registration) = expected.local_plugins().get(id) {
+            candidate.register_local(id, registration.clone())?;
+        }
+        candidate.set_enabled(id, false)?;
     }
-    Ok(())
+    candidate.save()?;
+    Ok(candidate)
 }
 
 pub(crate) fn next_generation(

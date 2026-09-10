@@ -95,6 +95,7 @@ fn control_request(
         action,
         plugin_id: id.to_owned(),
         permission: None,
+        cascade: false,
     }
 }
 

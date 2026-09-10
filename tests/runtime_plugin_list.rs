@@ -105,6 +105,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             action: PluginControlAction::Disable,
             plugin_id: "dev.list.removed".into(),
             permission: None,
+            cascade: false,
         })
         .unwrap();
     let mut external = PluginRegistry::load(&registry_path).unwrap();
@@ -175,6 +176,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             action: PluginControlAction::Disable,
             plugin_id: "dev.list.running".into(),
             permission: None,
+            cascade: false,
         })
         .unwrap();
     assert!(stopped.is_success());

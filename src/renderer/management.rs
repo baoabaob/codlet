@@ -84,14 +84,25 @@ impl RendererRuntime {
                 "Permission revocation uses the foreground package coordinator.",
             )),
             PluginControlAction::Disable => {
-                plugin_lifecycle::validate_disable(&self.plugins, &self.catalog, &registry, id)
-                    .map_err(control_error)?;
-                let was_enabled = registry.is_enabled(id);
-                let was_running = self.plugins.iter().any(|plugin| plugin.manifest.id == *id);
-                self.plugin_registry = plugin_lifecycle::persist_preference(&registry, id, false)
-                    .map_err(control_error)?;
-                let affected = BTreeSet::from([id.clone()]);
-                let failures = self.disable_committed(id);
+                if !request.cascade {
+                    plugin_lifecycle::validate_disable(&self.plugins, &self.catalog, &registry, id)
+                        .map_err(control_error)?;
+                }
+                let affected =
+                    plugin_lifecycle::disable_closure(&self.plugins, &self.catalog, &registry, id)
+                        .map_err(control_error)?;
+                let was_enabled = affected.iter().any(|id| registry.is_enabled(id));
+                let was_running = self
+                    .plugins
+                    .iter()
+                    .any(|plugin| affected.contains(&plugin.manifest.id));
+                self.plugin_registry =
+                    plugin_lifecycle::persist_disabled_closure(&registry, &affected)
+                        .map_err(control_error)?;
+                let failures = self.retire_managed_plugins(&affected, "deactivate");
+                self.remove_managed_providers(&affected);
+                self.plugins
+                    .retain(|plugin| !affected.contains(&plugin.manifest.id));
                 Ok(self.control_report(
                     request,
                     if !failures.is_empty() {
@@ -601,6 +612,7 @@ mod tests {
                         action,
                         plugin_id: "dev.host".into(),
                         permission: None,
+                        cascade: false,
                     })
                     .unwrap_err()
                     .code,
@@ -703,6 +715,7 @@ mod tests {
                     },
                     plugin_id: "dev.local".into(),
                     permission: None,
+                    cascade: false,
                 })
                 .unwrap_err();
             assert_eq!(
@@ -847,6 +860,7 @@ mod tests {
                     action: PluginControlAction::Enable,
                     plugin_id: "dev.consumer".into(),
                     permission: None,
+                    cascade: false,
                 })
                 .unwrap_err()
                 .code,

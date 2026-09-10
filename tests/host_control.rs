@@ -109,6 +109,7 @@ impl Fixture {
                 action,
                 plugin_id: id.into(),
                 permission: None,
+                cascade: false,
             }));
         let receipt = prepared.operation_id().unwrap().to_owned();
         assert_eq!(
@@ -244,6 +245,51 @@ fn error_code(report: ControlReport) -> String {
         ControlCompletion::Error { error } => error.code,
         other => panic!("expected rejected request, got {other:?}"),
     }
+}
+
+#[test]
+fn confirmed_adapter_disable_persists_the_gui_closure_without_reactivation() {
+    let mut fixture = Fixture::new();
+    let mut registry = fixture.registry();
+    registry.set_enabled("codex.ui.adapter", true).unwrap();
+    registry.set_enabled("codlet-gui", true).unwrap();
+    registry.save().unwrap();
+    fixture.renderer =
+        RendererRuntime::from_catalog(PluginCatalog::load(&registry).unwrap(), registry).unwrap();
+    assert_eq!(fixture.renderer.plugin_count(), 2);
+    // Legacy calls still refuse silent cascading.
+    let ordinary = fixture.submit(PluginControlAction::Disable, "codex.ui.adapter");
+    assert_eq!(error_code(fixture.wait(&ordinary)), "dependency_conflict");
+    assert_eq!(fixture.renderer.plugin_count(), 2);
+    let prepared = fixture
+        .broker
+        .handle(ControlRequest::prepare(PluginControlRequest {
+            action: PluginControlAction::Disable,
+            plugin_id: "codex.ui.adapter".into(),
+            permission: None,
+            cascade: true,
+        }));
+    let receipt = prepared.operation_id().unwrap().to_owned();
+    fixture.broker.handle(ControlRequest::submit(&receipt));
+    let result = lifecycle_report(fixture.wait(&receipt));
+    assert_eq!(result.outcome, PluginControlOutcome::Applied);
+    assert_eq!(
+        result.affected_plugin_ids,
+        ["codex.ui.adapter", "codlet-gui"]
+    );
+    assert!(result.generations.is_empty());
+    assert!(!fixture.registry().is_enabled("codex.ui.adapter"));
+    assert!(!fixture.registry().is_enabled("codlet-gui"));
+    for _ in 0..4 {
+        fixture.tick();
+    }
+    assert_eq!(fixture.renderer.plugin_count(), 0);
+    // New document/launch plans use the persisted disabled state.
+    let registry = fixture.registry();
+    let restarted =
+        RendererRuntime::from_catalog(PluginCatalog::load(&registry).unwrap(), registry).unwrap();
+    assert_eq!(restarted.plugin_count(), 0);
+    fixture.ping();
 }
 
 #[test]

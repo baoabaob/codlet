@@ -206,6 +206,7 @@ impl HostControl {
                         action: PluginControlAction::Disable,
                         plugin_id: id.clone(),
                         permission: None,
+                        cascade: false,
                     },
                 ));
                 if prepared.status != ControlStatus::Prepared {

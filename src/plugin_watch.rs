@@ -325,6 +325,7 @@ impl PluginWatcher {
                     action: PluginControlAction::Reload,
                     plugin_id: id,
                     permission: None,
+                    cascade: false,
                 },
                 executor: selected.executor().expect("watch source has an executor"),
                 source: WatchSourceGuard {

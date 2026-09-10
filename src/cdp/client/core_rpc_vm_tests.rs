@@ -226,6 +226,7 @@ impl Fixture {
                 action: PluginControlAction::Reload,
                 plugin_id: id.into(),
                 permission: None,
+                cascade: false,
             }));
         let id = prepared.operation_id().unwrap().to_owned();
         assert_eq!(

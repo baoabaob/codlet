@@ -232,6 +232,7 @@ impl HostControl {
             action: PluginControlAction::Revoke,
             plugin_id: id,
             permission: None,
+            cascade: false,
         };
         self.revoking = Some(self.retire_authority(
             RevocationPlan {
@@ -426,6 +427,7 @@ mod tests {
             action: PluginControlAction::Reload,
             plugin_id: "dev.fixture".into(),
             permission: None,
+            cascade: false,
         };
         assert_eq!(
             serde_json::to_value(old).unwrap(),
@@ -435,6 +437,7 @@ mod tests {
             action: PluginControlAction::Revoke,
             plugin_id: "dev.fixture".into(),
             permission: Some(crate::plugins::Permission::CdpRaw),
+            cascade: false,
         };
         revoke.validate().unwrap();
         revoke.permission = None;

@@ -557,6 +557,7 @@ mod tests {
             action: PluginControlAction::Reload,
             plugin_id: "dev.fixture".into(),
             permission: None,
+            cascade: false,
         }
     }
     fn report() -> PluginControlReport {
@@ -679,6 +680,7 @@ mod tests {
             action: PluginControlAction::Revoke,
             plugin_id: "dev.fixture".into(),
             permission: Some(crate::plugins::Permission::HostFs),
+            cascade: false,
         };
         let prepared = get(&scope, &ControlRequest::prepare(request.clone()));
         assert_eq!(prepared.status, ControlStatus::Prepared, "{prepared:?}");
