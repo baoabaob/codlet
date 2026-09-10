@@ -9,6 +9,21 @@ export interface CdpSubscription {
   readonly id: number;
   unsubscribe(): Promise<{ unsubscribed: boolean }>;
 }
+export interface CapabilityDescriptor {
+  readonly name: string;
+  readonly api: number;
+  readonly scope: 'target';
+}
+export interface HostCapabilityInvocation {
+  readonly pluginId: string;
+  readonly generation: number;
+  readonly capability: Readonly<CapabilityDescriptor>;
+  readonly method: string;
+  /** Authenticated by Core; renderer params cannot replace these fields. */
+  readonly caller: Readonly<{ pluginId: string; generation: number; targetId: string; documentEpoch: number }>;
+  readonly signal: AbortSignal;
+  remainingMs(): number;
+}
 export interface HostContext {
   readonly plugin: Readonly<{ id: string; version: string; generation: number }>;
   readonly root: string;
@@ -20,6 +35,12 @@ export interface HostContext {
   };
   readonly core: {
     request<T = unknown>(method: string, params: unknown, timeoutMs?: number): Promise<T>;
+  };
+  readonly rpc: {
+    /** Host provides only. Calls require a declared Target descriptor and an
+     * active provider generation. Managed child CDP calls inherit this
+     * invocation's deadline/cancellation across async continuations. */
+    provide<P = unknown, R = unknown>(capability: CapabilityDescriptor, method: string, handler: (params: P, invocation: HostCapabilityInvocation) => R | Promise<R>): Readonly<{ ok: true }>;
   };
 }
 export interface HostPlugin {

@@ -103,7 +103,7 @@ impl HostOwner {
                 Ok(Some(response)) => bounded_result(Ok(response.result.unwrap_or(Value::Null))),
                 Err(error) => Err(cdp_error(error)),
             };
-            let (id, _) = self.pending.swap_remove(index);
+            let (id, _, _) = self.pending.swap_remove(index);
             self.queue(Outbound::Reply(id, result));
         }
         // A deadline retires pending CDP waiters instead of letting late replies

@@ -72,7 +72,7 @@ pub(crate) fn dependent_closure_refs<'a>(
         let provided: Vec<_> = plugins
             .iter()
             .filter(|plugin| affected.contains(&plugin.manifest.id))
-            .flat_map(|plugin| &plugin.manifest.provides)
+            .flat_map(|plugin| plugin.manifest.all_provides())
             .collect();
         let dependents: Vec<_> = plugins
             .iter()
@@ -222,7 +222,19 @@ pub(crate) fn order(plugins: Vec<LoadedPlugin>) -> Result<Vec<LoadedPlugin>, Lif
         .collect();
     Ok(order
         .into_iter()
-        .filter_map(|id| by_id.remove(&id))
+        .filter_map(|id| {
+            if let Some(logical) = crate::capabilities::host_provider_plugin_id(&id) {
+                if by_id
+                    .get(logical)
+                    .is_some_and(|plugin| plugin.manifest.renderer.is_some())
+                {
+                    return None;
+                }
+                by_id.remove(logical)
+            } else {
+                by_id.remove(&id)
+            }
+        })
         .collect())
 }
 

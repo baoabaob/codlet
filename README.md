@@ -23,8 +23,14 @@ The host development path now also includes [source watching](docs/HOST_WATCH_20
 The [development walkthrough](docs/HOST_DEVELOPMENT_2026-09-10.md) uses the actual
 cleanup example through enable, automatic reload, recovery and disable.
 The [portable distribution builder](docs/DISTRIBUTION.md) packages the fixed Node
-runtime, examples, types and documentation together. Combined entries and
-cross-executor capabilities remain future work.
+runtime, examples, types and documentation together. A directory can now contain
+[both host and renderer entries](docs/COMBINED_PACKAGES_2026-09-10.md), sharing one
+generation, lifecycle receipt and recovery transaction. Renderers can call declared
+[Host capability endpoints](docs/HOST_CAPABILITY_2026-09-10.md) with authenticated
+target/document identity and a bounded asynchronous bridge. The
+[combined example](examples/local-host-renderer-capability/README.md) and
+[actual JavaScript acceptance](docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md)
+cover activation, reload, document replacement, cleanup and failed replacements.
 
 The 2026-09-07 review added bounded nested renderer RPC and deactivation, merged concurrent registry edits under a process lock, and introduced versioned read-only diagnostics. See [the review and execution plan](docs/REVIEW_AND_EXECUTION_2026-09-07.md) for evidence, ownership, and the next development sequence. Read-only package discovery found build `26.901.6511.0`; its real M1 gate remains open.
 
@@ -57,7 +63,7 @@ New BrowserWindows receive the same plugin generation automatically. Main-docume
 
 The entry tolerates a late or rebuilt toolbar. Plugin lists load when the dialog opens and can be refreshed after errors, including a 15-second RPC timeout. Escape is handled inside the GUI, and close/unload retires pending work and restores focus. [Open the standalone GUI preview](scripts/preview-codlet-gui.html) to inspect the actual GUI source with simulated toolbar, theme and RPC inputs. It opens the management surface first and keeps test controls folded; it needs no server. Live interaction and 1280/782 px window layouts passed in the isolated-client retest; that evidence does not close the ordinary-launch production gate.
 
-`codlet launch` never watches files. The explicit `codlet launch --watch` mode observes already-loaded local plugins' `codlet.json` and their declared renderer or host JS entry. Both executors share the bounded scanner and stable-save checks; renderer dependency groups reload together, while host reloads use the existing lifecycle receipts. Host watch anchors the selected canonical root and full grants, then checks them again before retiring a generation. Registry reads/writes retain the 1 MiB bound. See [runtime control](docs/RUNTIME_CONTROL.md) and [host watch](docs/HOST_WATCH_2026-09-10.md) for the current scope and targeted evidence.
+`codlet launch` never watches files. The explicit `codlet launch --watch` mode observes already-loaded local plugins' `codlet.json` and every declared renderer/host JS entry. Both executors share the bounded scanner and stable-save checks. Reload follows the loaded capability dependency closure, including cross-executor consumers, through one lifecycle receipt. Packages with a Host anchor the selected canonical root and full grants, then check them again before retiring a generation. Registry reads/writes retain the 1 MiB bound. See [combined packages](docs/COMBINED_PACKAGES_2026-09-10.md) and [host watch](docs/HOST_WATCH_2026-09-10.md) for the current scope and targeted evidence.
 
 The next adapter layer is planned in [native UI capabilities](docs/UI_ADAPTER_CAPABILITIES.md): host slots, semantic appearance roles and local control interactions have separate ownership. Matching colors alone is not native-style acceptance, and a reusable component library is not implemented yet.
 
@@ -183,4 +189,4 @@ The candidate includes inherited CDP pipes, bounded request/event routing, stric
 
 Independent host JS runs in Codlet's pinned Node processes and per-plugin Jobs. CLI enable/disable/reload and opt-in watch use the same serialized lifecycle transactions, fresh generations and current-registration compensation guards. Ordinary requests retire before `deactivate(cleanup)`; explicit cleanup CDP requests share Core's finite stop budget. Process exit, whole-Job retirement and joined IO remain separate from cooperative cleanup acknowledgement. Read-only execution inspection exposes those facts without manufacturing renderer targets or providers.
 
-The broader M2–M4 work remains incomplete: dedicated filesystem/network/system broker APIs, combined host+renderer packages, cross-executor capabilities and backend adapters are still pending. The management capability currently provides list/disableSelf, while CLI controls handle general online lifecycle. Detached launch, a permission-consent UI and marketplace are also outside the current delivery. Real Codex acceptance and the remaining M0/M1 production/crash gates are recorded separately from fake-CDP and native-process tests.
+Combined host+renderer packages share startup, reload, rollback and disable; the Host reaches Ready before renderer activation, and renderer cleanup runs before Host retirement. Renderer-to-Host capability calls currently support Target scope. The broader M2–M4 work remains incomplete: Host-initiated capability calls, additional capability scopes, dedicated filesystem/network/system broker APIs and backend adapters remain pending. The management capability currently provides list/disableSelf, while CLI controls handle general online lifecycle. Detached launch, a permission-consent UI and marketplace are also outside the current delivery. Real Codex acceptance and the remaining M0/M1 production/crash gates are recorded separately from actual JavaScript, fake-CDP and native-process tests.

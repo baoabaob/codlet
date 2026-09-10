@@ -49,6 +49,11 @@ Core 可以检查自己的 RPC 来源、scope/generation、已声明的 provider
 
 讨论前的 M1 是 renderer 优先的实现：manifest 要求 renderer 入口，实际只支持 isolated world 和 target 路由，Rust 内部 CDP 能力没有作为插件 API 开放。M2a 现已允许无 renderer 的本地 host JS 入口，经独立 JSONL 连接使用通用 CDP 请求和事件；纯 host 启动跳过官方 renderer target 筛选。M2b 在同一插件包与 CLI receipt 上增加 host 在线启停/重载和受当前授信约束的换代补偿。示例与原生夹具证明这些路径无需官方插件，尚不代表真实 Codex 中所有层级、导航恢复或完整 M2 验收完成。进程热管理也不意味着任意 raw 注入副作用都能自动撤回。
 
+后续 [组合包](COMBINED_PACKAGES_2026-09-10.md)已把 Host 与 renderer 纳入同一代次和
+生命周期事务；[renderer→Host Target capability](HOST_CAPABILITY_2026-09-10.md)使用
+已有通用授权图与异步桥接。实际 JS 验收覆盖两侧入口，Host 发起 capability 调用、其他
+scope、专门 OS broker 和 backend adapter 仍未交付。raw CDP 继续无需官方 adapter。
+
 ## M2–M4 的架构验收条目
 
 1. 禁用全部可选官方插件，只安装一个第三方插件；它不声明 `codex.ui.adapter` 或 `codex.backend.adapter` 依赖，也能用公开的底层原语完成其需要的跨层功能。

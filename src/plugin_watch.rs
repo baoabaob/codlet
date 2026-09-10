@@ -39,7 +39,10 @@ pub struct WatchedReload {
 
 impl WatchedReload {
     pub fn is_host(&self) -> bool {
-        self.executor == LocalWatchExecutor::Host
+        matches!(
+            self.executor,
+            LocalWatchExecutor::Host | LocalWatchExecutor::Combined
+        )
     }
 }
 
@@ -457,8 +460,10 @@ fn registration_pause(
             ),
         }),
         Some(registration)
-            if source.executor() == Some(LocalWatchExecutor::Host)
-                && registration.grants.as_slice() != source.grants =>
+            if matches!(
+                source.executor(),
+                Some(LocalWatchExecutor::Host | LocalWatchExecutor::Combined)
+            ) && registration.grants.as_slice() != source.grants =>
         {
             Some(Observation::Paused {
                 code: "watch_grants_changed",

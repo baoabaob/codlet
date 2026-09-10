@@ -141,12 +141,13 @@ impl DevelopmentSession {
         self.renderer.pump_bindings().unwrap();
         self.publisher
             .publish_host_observation(self.hosts.execution_snapshot());
-        self.control.poll(&self.hosts, &self.broker);
+        self.control
+            .poll(&mut self.renderer, &self.hosts, &self.broker);
         if !self.control.is_pending() {
             if let Some(job) = self.broker.take_next() {
                 assert!(
                     self.control
-                        .dispatch(job, &self.renderer, &self.hosts, &self.broker)
+                        .dispatch(job, &mut self.renderer, &self.hosts, &self.broker)
                         .is_none(),
                     "the core-only development fixture must not route to a renderer"
                 );

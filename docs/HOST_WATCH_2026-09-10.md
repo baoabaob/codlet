@@ -23,10 +23,11 @@ codlet plugin operation <watch 日志中的 operation-id> --json
 host 正在 Starting/Stopping 或有一项 host 生命周期 pending 时，不启动第二项 watch 换代。
 
 每 250 ms 最多采样四个源，host 和 renderer 共用这一上限并按轮转顺序推进。候选必须有
-两次相同观察，且从内容变化起至少安静 250 ms。renderer 的 provider/consumer 继续按
-整组稳定条件合并；host 目前没有跨执行器 capability 声明，按独立插件换代。
+两次相同观察，且从内容变化起至少安静 250 ms。provider/consumer 按整组稳定条件合并；
+reload 覆盖已加载的传递依赖闭包，包括 Host provider 的 renderer 消费者和组合包两入口。
 
-每个源只包含 `codlet.json` 与同一目录包内当前声明的 JS 主入口。仅改变 JSON 排版不触发
+每个源包含 `codlet.json` 与同一目录包内当前声明的全部 JS 主入口，组合包同时观察
+Host 和 renderer，最多三个受限文件。仅改变 JSON 排版不触发
 换代；在原 root 与授信下，manifest 将 entry 改为另一个合法 JS 文件可随稳定观察生效。
 旧入口在换代后退出观察。资源、`require` 的模块、依赖目录、TS 源码和构建命令不属于本版
 watch 范围；需要自行构建主入口，或在其他文件改变后明确执行 CLI reload。
@@ -51,7 +52,8 @@ junction 根目录的原有装载能力仍然保留；watch 不自动重新解�
 观察后执行前还可能发生变化。内部选择保存 root、完整 grants、generation 和稳定源码
 指纹；执行时与实际 owner、当前 registry、最终载入的源码快照逐一核验。若 CLI 已换代、
 当前授权改变，或载入的内容已是另一份未稳定保存，旧 watch 选择在退休旧代前被拒绝。
-host/renderer 类型切换继续被拒绝，不借 watcher 执行跨执行器迁移。
+某个 ID 的入口集合一旦确定，在线增加、删除或切换入口类型均被拒绝；采用新集合需要重启
+Codlet。组合包的完整约束见 [组合包契约](COMBINED_PACKAGES_2026-09-10.md)。
 
 这里区分“未尝试源”和“源尝试失败”：
 

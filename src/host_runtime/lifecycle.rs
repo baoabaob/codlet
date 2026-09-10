@@ -160,6 +160,8 @@ pub(super) fn launch(
     let stopping = Arc::new(AtomicBool::new(false));
     let operations = Arc::new(AtomicUsize::new(0));
     let (commands, receiver) = mpsc::sync_channel(COMMAND_QUEUE);
+    let (capabilities, capability_receiver) =
+        capability::channel(Arc::clone(&stopping), client.clone());
     let generations: BTreeMap<_, _> = plugins
         .iter()
         .map(|plugin| (plugin.manifest.id.clone(), plugin.generation))
@@ -181,12 +183,18 @@ pub(super) fn launch(
             let mut generations = generations;
             let mut launcher = launcher;
             while !worker_stopping.load(Ordering::Acquire) {
+                for owner in &mut owners {
+                    owner.expire_capabilities();
+                }
                 client.poll_raw_io();
                 launcher.collect(&mut owners);
                 // Commands only transfer ownership here. Snapshot/runtime IO and
                 // process creation run on one separate, bounded launch worker.
                 if let Ok(command) = receiver.try_recv() {
                     apply(command, &mut owners, &mut generations, &launcher);
+                }
+                if let Ok(command) = capability_receiver.try_recv() {
+                    capability::apply(command, &mut owners);
                 }
                 for owner in &mut owners {
                     owner.pump(&client);
@@ -207,6 +215,12 @@ pub(super) fn launch(
                     "the runtime stopped before this command was applied",
                 )));
             }
+            while let Ok(command) = capability_receiver.try_recv() {
+                capability::reject_stopped(command);
+            }
+            // Close admission before cleanup, including a sender that raced the
+            // stopping flag and enqueued just after the last drain attempt.
+            drop(capability_receiver);
             // All children receive shutdown before any cooperative wait. Global
             // runtime teardown preserves the existing finite stop/drop ownership.
             launcher.begin_shutdown();
@@ -255,6 +269,7 @@ pub(super) fn launch(
         stopping,
         commands,
         operations,
+        capabilities,
         worker: Some(worker),
     })
 }

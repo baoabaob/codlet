@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.27；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.28；日期：2026-09-10；平台：Windows-first；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。随后 M2a/M2b 统一 JS/TS、开放 host/CDP 并接入在线生命周期。本轮进一步整合 host watch、带预算的停止清理、真实执行器 Inspect/doctor，以及可重复便携分发和组合开发验收。组合入口、跨执行器 capability、专门 OS broker 与完整 M2 仍待后续，详见第 16.8–16.12 节。
+当前候选已补齐 M1c 的运行中 `enable` / `disable` / `reload`、receipt 控制与显式 `codlet launch --watch`。2026-09-09 正式 M0 和 launch+watch 的正常生命周期已有成功报告，用户确认在线热管理与 GUI 视觉检查符合预期；移除注册后的列表残留已修复，GUI ID 更新为 `codlet-gui`。修复构建的新 M1-watch 复测正常退出；旧普通 launch 的一次退出 1 原因未定，重复冷启动与 crash 门禁保留。随后 M2a/M2b 统一 JS/TS、开放 host/CDP 并接入在线生命周期。本轮进一步整合 host watch、带预算的停止清理、真实执行器 Inspect/doctor，以及可重复便携分发和组合开发验收。本轮继续交付同包双入口、renderer→Host Target capability、统一换代/补偿与两侧真实 JS 验收；Host 主动 capability 调用、其他 scope、专门 OS broker 与完整 M2 仍待后续，详见第 16.8–16.13 节。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -23,7 +23,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 3. Codex 只有通过 Codlet 专用启动器才应进入扩展模式；官方入口启动原版纯净 Codex 是产品目标，但当前受 `DEFECT-001` 的 Electron 单主实例限制。
 4. Codlet 不监视、不提示、不接管通过官方入口启动的 Codex，也不在后台等待或劫持后续启动。
 5. Codlet 安装、升级和卸载均不关闭或重启 Codex，不修改或捆绑官方安装包、快捷方式、协议关联、配置与用户数据。
-6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。M2a 已允许独立 renderer 或 host，首个小包明确拒绝组合入口及 host 的跨执行器 provides/requires，避免部分执行被误报成功。
+6. 插件目标模型允许 host、renderer 或其组合；纯 host 插件不必提供空 renderer 入口。当前已实现同包双入口、共享 generation/生命周期与 renderer→Host Target capability；Host 主动发起的 capability 调用及其他 scope 仍待后续。
    两种入口属于统一的 JS/TS 目录包格式：`codlet.json`、构建后的 JS 入口、资源文件。TS 在构建时编译为 JS；host JS 在 Codlet 统一管理的 JS 进程执行，renderer JS 在页面执行。首版不接受任意 `.exe` 入口，不支持原生 Node 扩展，不提供运行时 TS 转译。
 7. renderer 插件允许分级获得 isolated DOM、main world 和 raw CDP 能力。
 8. 首版只运行用户明确授信的本地插件；不宣称提供安全沙箱。
@@ -372,7 +372,7 @@ example-plugin/
 }
 ```
 
-M2a 的 schema 1 manifest 已支持独立 host JS 入口，不需要 renderer 空壳；必须申请并获授 `host.process`，使用 CDP 还须 `cdp.raw`。`host.entry` 是插件根目录内的 `.js`/`.cjs` 路径，导出与 renderer 一致的 CommonJS `activate(context)` / `deactivate()`。Codlet 持有统一 Node 可执行文件、bootstrap、stdio 与生命周期，插件不选择可执行程序、运行参数或传输协议。组合入口仍待后续交付。当前格式如下：
+M2a 的 schema 1 manifest 已支持独立 host JS 入口，不需要 renderer 空壳；必须申请并获授 `host.process`，使用 CDP 还须 `cdp.raw`。`host.entry` 是插件根目录内的 `.js`/`.cjs` 路径，导出与 renderer 一致的 CommonJS `activate(context)` / `deactivate()`。Codlet 持有统一 Node 可执行文件、bootstrap、stdio 与生命周期，插件不选择可执行程序、运行参数或传输协议。当前也可声明组合入口：顶层 capability 属于 renderer，host.provides 属于 Host；完整示例见第 16.13 节。Host-only 格式如下：
 
 ```json
 {
@@ -713,7 +713,7 @@ M1c 验收条件：
 
 先交付并验收开放 Core 原语，再用相同公开接口建设官方便利层。保留现有通用 capability kernel，解除通用插件装载/lifecycle 与 RendererRuntime、renderer 必填入口的耦合。可选性先通过接口、依赖方向和可停用/可替换关系落实，不要求逐层拆包或增加进程。
 
-M2a/M2b 已交付独立 JS host、公开 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe` 与同一 CLI receipt 的在线启停/重载，包含新注册插件、代数高水位和授信约束补偿。本轮进一步交付 host watch、同代清理 CDP 总预算、进程执行器 Inspect/doctor 和便携开发分发。此为下列完整 M2 条件的一个子集；组合入口、跨执行器 capability、专门 OS broker 与更完整 raw 资源归属仍待后续。现行使用流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)，早期原语与热管理记录见 [M2a](M2A_HOST_RUNTIME_2026-09-09.md) / [M2b](M2B_HOST_CONTROL_2026-09-10.md)。
+M2a/M2b 已交付独立 JS host、公开 `cdp.request` / `cdp.subscribe` / `cdp.unsubscribe` 与同一 CLI receipt 的在线启停/重载，包含新注册插件、代数高水位和授信约束补偿。本轮进一步交付 host watch、同代清理 CDP 总预算、进程执行器 Inspect/doctor 和便携开发分发。随后进一步交付同包双入口与 renderer→Host Target capability，复用依赖图和共享生命周期。此为下列完整 M2 条件的一个子集；Host 主动 capability 调用、其他 scope、专门 OS broker 与更完整 raw 资源归属仍待后续。现行使用流程见 [Host 开发说明](HOST_DEVELOPMENT_2026-09-10.md)，早期原语与热管理记录见 [M2a](M2A_HOST_RUNTIME_2026-09-09.md) / [M2b](M2B_HOST_CONTROL_2026-09-10.md)。
 
 验收条件：
 
@@ -934,6 +934,39 @@ registry，原 Desktop PID 13460 与 backend PID 27176 的 PID/CreationDate 前�
 接口和定向验证分别见 [Host cleanup](HOST_CLEANUP_2026-09-10.md)、[Host watch](HOST_WATCH_2026-09-10.md)、[Host inspection](HOST_INSPECTION_2026-09-10.md)、[开发使用流程](HOST_DEVELOPMENT_2026-09-10.md)和[分发构建](DISTRIBUTION.md)。本轮共通过 59 个不同的 Rust 场景、9 个 Node 场景与五类包装检查；相关复核按测试名运行，不重复计数。最终 fmt、定向 Clippy（warnings 视为错误）、diffcheck 和 locked release 构建通过。包装流程先用既有开发 exe 验证，新交付包使用本轮重新构建的 exe。
 
 本轮保持真实 Codex/用户 registry 不受影响，未重跑全量 M0/M1；正式生产门禁与剩余 M2 能力分别保留。有限清理和进程退休不证明任意页面或 OS 副作用可逆。
+
+### 16.13 组合目录包与 renderer→Host capability
+
+2026-09-10：同一个 `codlet.json` 可以拥有两种 JS 入口。顶层 provides/requires 归
+renderer，Host 通过 `host.provides` 声明；Host-only 顶层 provides 保持兼容。内部以
+`包ID:host` 区分 Host owner，保留真实自循环与重复 provider 检查。
+
+- 双入口共享代次、注册/授信与一张控制 receipt。Host Ready 之后才激活 renderer，先清理
+  renderer 再退休 Host。依赖闭包覆盖跨执行器消费者；失败时两份原源码快照一起以新代次
+  恢复，并再次核对当前授信。watch 同时观察 manifest 和两个 JS 主入口。
+- renderer 可通过现有 SDK 调用 Host Target endpoint。前台验证真实 binding、context、
+  principal、lease、target/document 和精确 provider generation；调用与异步回复共享
+  原始预算，导航/停用取消旧结果。Host 子 CDP 使用 Core 验证的 invocation token，不能
+  靠 JS 自报剩余时间延长父调用。
+- 双侧均使用有界队列与现有 owner，不增加每调用线程。Host 完成本地唤醒前台，renderer
+  在 activate 内等待自身 Host 时仍可推进。GUI 自停用进入同一包协调器，已保存动作在
+  broker 暂满时保留待清理。
+- 独立 VM peer 实际执行 production renderer bootstrap 与组合示例，同时运行固定 Node
+  Host。4 项验收覆盖双窗口调用、共享重载、文档替换、挂起 evaluation 退休、两侧候选
+  分别失败后的真实 cleanup 与快照恢复。它不模拟完整 DOM/Chromium，也不替代真实 Codex
+  界面兼容性验收。
+
+现行开发入口见 [组合示例](../examples/local-host-renderer-capability/README.md)，实现
+边界见 [组合包契约](COMBINED_PACKAGES_2026-09-10.md)、
+[Host capability](HOST_CAPABILITY_2026-09-10.md)与
+[实际 JS 验收](HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md)。便携分发携带示例、契约、
+固定 Node 与类型声明。Host 发起的 capability 调用、其他 scope、专门 OS broker、
+backend adapter 与完整 M2 仍为后续工作。
+
+本轮通过 114 个不同的 Rust 定向场景、14 个 Node 场景与五类包装检查；补测与重跑不
+重复计数。最终定向 Clippy、fmt、diffcheck 和 locked release 构建通过。最后的 native
+复核覆盖调用取消、cleanup 与执行样本；原 renderer 的重入 RPC、绝对预算、销毁撤权及
+只读注册样本继续通过。没有重跑全量 M0/M1、启动真实 Codex 或修改默认用户 registry。
 
 ## 17. 主要风险
 

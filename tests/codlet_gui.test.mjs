@@ -330,6 +330,10 @@ test('host execution observations show lifecycle and errors without adding contr
             execution: { kind: 'host', state: 'stopping', processId: 45, error: 'Stopping after worker failure' } },
         { id: 'dev.running', enabled: false, active: true, loaded: true, registered: false,
             execution: { kind: 'host', state: 'active', processId: 42, error: null } },
+        { id: 'dev.combined-waiting', enabled: true, active: false,
+            execution: { kind: 'host', state: 'active', rendererActive: false, processId: 46, error: null } },
+        { id: 'dev.combined-active', enabled: true, active: true,
+            execution: { kind: 'host', state: 'active', rendererActive: true, processId: 47, error: null } },
         { id: 'dev.failed', enabled: true, active: false, loaded: false,
             validation: { status: 'failed', error: { message: 'Older catalog problem' } },
             execution: { kind: 'host', state: 'failed', processId: 43, error: 'Worker exited with code 12' } },
@@ -343,7 +347,7 @@ test('host execution observations show lifecycle and errors without adding contr
     await f.open();
     const pluginRow = id => f.nodes().find(element => element.className === 'codlet-plugin-row'
         && element.children[0].textContent.includes(id));
-    for (const [id, state] of [['dev.starting', 'Starting'], ['dev.stopping', 'Stopping'], ['dev.running', 'Active'], ['dev.failed', 'Failed'], ['dev.exited', 'Exited'], ['dev.renderer', 'Unavailable']]) {
+    for (const [id, state] of [['dev.starting', 'Starting'], ['dev.stopping', 'Stopping'], ['dev.running', 'Active'], ['dev.combined-waiting', 'Waiting for renderer'], ['dev.combined-active', 'Active'], ['dev.failed', 'Failed'], ['dev.exited', 'Exited'], ['dev.renderer', 'Unavailable']]) {
         assert.equal(pluginRow(id).children.at(-1).textContent, state);
         assert.equal(pluginRow(id).children.some(element => element.tagName === 'input'), false);
     }

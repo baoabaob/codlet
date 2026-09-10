@@ -193,11 +193,15 @@ $sourceFiles = @(
     'runtime/node-runtime.json', 'types/host.d.ts',
     'examples/raw-host/codlet.json', 'examples/raw-host/dist/host.js', 'examples/raw-host/README.md',
     'examples/cleanup-host/codlet.json', 'examples/cleanup-host/dist/host.js', 'examples/cleanup-host/README.md',
+    'examples/local-host-renderer-capability/codlet.json', 'examples/local-host-renderer-capability/host.js',
+    'examples/local-host-renderer-capability/renderer.js', 'examples/local-host-renderer-capability/README.md',
     'docs/DISTRIBUTION.md', 'docs/JS_PLUGIN_RUNTIME_2026-09-09.md',
     'docs/M2A_HOST_RUNTIME_2026-09-09.md', 'docs/M2B_HOST_CONTROL_2026-09-10.md',
     'docs/GUI_REGISTRY_REPAIR_2026-09-09.md',
     'docs/HOST_CLEANUP_2026-09-10.md', 'docs/HOST_WATCH_2026-09-10.md',
-    'docs/HOST_INSPECTION_2026-09-10.md', 'docs/HOST_DEVELOPMENT_2026-09-10.md'
+    'docs/HOST_INSPECTION_2026-09-10.md', 'docs/HOST_DEVELOPMENT_2026-09-10.md',
+    'docs/COMBINED_PACKAGES_2026-09-10.md', 'docs/HOST_CAPABILITY_2026-09-10.md',
+    'docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md'
 )
 $payload = New-Object 'Collections.Generic.List[string]'
 try {
@@ -240,6 +244,9 @@ This command only inspects the candidate because no trust/grants are supplied.
 Use [the development quickstart](docs/HOST_DEVELOPMENT_2026-09-10.md) for explicit
 registration, launch/watch, inspection and disable steps. Packaging alone registers
 no plugin and starts neither Codex nor Node. See [distribution details](docs/DISTRIBUTION.md).
+
+For a package with both entries, start with [the combined example](examples/local-host-renderer-capability/README.md).
+Its renderer calls its own Host capability, and both entries share reload and recovery.
 
 The payload list and SHA256 values are in distribution-manifest.json. The packaging
 script performs no signing or publication. Node's license is beside node.exe.

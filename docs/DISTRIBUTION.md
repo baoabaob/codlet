@@ -44,6 +44,7 @@ runtime/node-v24.21.0-win-x64/node.exe
 runtime/node-v24.21.0-win-x64/LICENSE
 examples/raw-host/...
 examples/cleanup-host/...
+examples/local-host-renderer-capability/...
 types/host.d.ts
 docs/...
 scripts/Build-Distribution.ps1
@@ -76,6 +77,11 @@ watch、Inspect/doctor 与 disable 步骤见 [开发闭环指南](HOST_DEVELOPME
 生命周期边界见 [cleanup](HOST_CLEANUP_2026-09-10.md)、[watch](HOST_WATCH_2026-09-10.md)
 和 [运行观察](HOST_INSPECTION_2026-09-10.md)。
 
+同时运行 Host 与 renderer 的可用入口见
+[组合示例](../examples/local-host-renderer-capability/README.md)与
+[组合包契约](COMBINED_PACKAGES_2026-09-10.md)。分发同时包含 Host capability 契约及执行
+两侧真实 JavaScript 的验收说明；测试源码和 VM peer 留在源码仓库。
+
 便携包内保留了[构建脚本](../scripts/Build-Distribution.ps1)，可把当前二进制与固定 runtime
 重新复制到另一个新目录。它不编译源码；新版本的正式包应由该版本实际构建产物生成。
 
@@ -89,8 +95,13 @@ ZIP 条目与重复打包一致性。候选 CLI smoke 使用独立的子进程 `
 包装脚本验收可以使用旧开发二进制证明文件布局和流程正确。最终交付仍须在本轮正式构建完成
 后，用新二进制重新生成便携包，不能据旧二进制包装成功宣称新功能已经包含其中。
 
-2026-09-10 的包装逻辑验收已通过上述五类检查，包含 23 份载荷及 manifest。两次从相同
+早先 Host 开发包的包装逻辑验收已通过上述五类检查，包含 23 份载荷及 manifest。两次从相同
 便携输入生成的 manifest 和 ZIP 摘要分别完全一致；错误摘要与重复目标均未发布或覆盖内容。
 记录位于源码 ignored 目录的
 `.codlet-artifacts/distribution-packaging-2026-09-10-r2/packaging-acceptance.json`。
 该次输入是 `104c432` 的旧开发二进制，仅用于包装流程验收。
+
+组合入口交付时，使用本轮新 release 二进制再次通过五类检查，载荷增至 30 份及 manifest，
+候选检查覆盖 raw-host、cleanup-host 与双入口示例。记录位于
+`.codlet-artifacts/combined-distribution-2026-09-10/packaging-acceptance.json`；
+正式包另记录源码 commit 并核验最终逐文件及 ZIP 内容摘要。

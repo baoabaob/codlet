@@ -380,7 +380,8 @@ module.exports = (() => {
 
     function createPluginRow(context, plugin) {
         const execution = plugin.execution?.kind === 'host' ? plugin.execution : null;
-        const executionState = execution?.state === 'starting' ? 'Starting'
+        const executionState = execution?.state === 'active' && execution.rendererActive === false ? 'Waiting for renderer'
+            : execution?.state === 'starting' ? 'Starting'
             : execution?.state === 'active' ? 'Active'
             : execution?.state === 'stopping' ? 'Stopping'
             : execution?.state === 'failed' ? 'Failed'

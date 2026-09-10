@@ -22,6 +22,7 @@ impl RendererRuntime {
         self.manage_plugin_with_policy(request, SourcePolicy::CurrentRegistration)
     }
 
+    #[cfg(test)]
     pub(crate) fn manage_watched_plugin(
         &mut self,
         request: PluginControlRequest,
@@ -228,7 +229,7 @@ impl RendererRuntime {
         failures
     }
 
-    fn management_phase_deadline(&self) -> Option<Instant> {
+    pub(super) fn management_phase_deadline(&self) -> Option<Instant> {
         self.sessions
             .values()
             .filter(|session| session.session.is_live())
@@ -374,7 +375,7 @@ impl RendererRuntime {
         )
     }
 
-    fn retire_managed_plugins(
+    pub(super) fn retire_managed_plugins(
         &mut self,
         affected: &BTreeSet<String>,
         stage: &str,
@@ -405,13 +406,13 @@ impl RendererRuntime {
         failures
     }
 
-    fn remove_managed_providers(&mut self, affected: &BTreeSet<String>) {
+    pub(super) fn remove_managed_providers(&mut self, affected: &BTreeSet<String>) {
         for id in affected {
             let _ = self.capabilities.unregister_provider(id);
         }
     }
 
-    fn activate_managed_plugins(
+    pub(super) fn activate_managed_plugins(
         &mut self,
         plugins: &[LoadedPlugin],
         stage: &str,
@@ -598,7 +599,11 @@ mod tests {
                 "host_executor_required"
             );
         }
-        assert!(runtime.generations.is_empty());
+        assert_eq!(
+            runtime.generations,
+            BTreeMap::from([("dev.host".to_owned(), 1)])
+        );
+        assert_eq!(runtime.host_plugins.len(), 1);
         assert_eq!(std::fs::read(registry.path()).unwrap(), before);
 
         for id in ["codlet-gui", "codex.ui.adapter"] {

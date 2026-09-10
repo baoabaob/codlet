@@ -56,6 +56,10 @@ pub struct HostManifest {
     /// Built JavaScript relative to the same directory package as renderer.entry.
     /// Codlet owns the JS executable, bootstrap and transport; plugins choose none.
     pub entry: String,
+    /// A combined package's native half owns these declarations. Host-only
+    /// packages retain the existing top-level provides field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<CapabilityDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,6 +185,10 @@ pub enum ManifestError {
     HostEntry(String),
     #[error("permission host.process is required when a host entry is declared")]
     HostProcessPermissionRequired,
+    #[error(
+        "host-only plugins declare provides at the top level; host.provides belongs to combined entries"
+    )]
+    AmbiguousHostProvides,
 }
 
 #[derive(Debug, Error)]
@@ -218,6 +226,34 @@ pub enum PluginRegistryError {
 }
 
 impl PluginManifest {
+    pub fn host_provides(&self) -> &[CapabilityDescriptor] {
+        match (&self.host, &self.renderer) {
+            (Some(host), Some(_)) => &host.provides,
+            (Some(_), None) => &self.provides,
+            _ => &[],
+        }
+    }
+
+    pub fn renderer_provides(&self) -> &[CapabilityDescriptor] {
+        if self.renderer.is_some() {
+            &self.provides
+        } else {
+            &[]
+        }
+    }
+
+    pub fn renderer_requires(&self) -> &[CapabilityDescriptor] {
+        if self.renderer.is_some() {
+            &self.requires
+        } else {
+            &[]
+        }
+    }
+
+    pub fn all_provides(&self) -> impl Iterator<Item = &CapabilityDescriptor> {
+        self.renderer_provides().iter().chain(self.host_provides())
+    }
+
     pub fn parse(json: &str) -> Result<Self, ManifestError> {
         let manifest: Self =
             serde_json::from_str(json).map_err(|error| ManifestError::Json(error.to_string()))?;
@@ -258,6 +294,9 @@ impl PluginManifest {
             }
             if !self.permissions.contains(&Permission::HostProcess) {
                 return Err(ManifestError::HostProcessPermissionRequired);
+            }
+            if self.renderer.is_none() && !host.provides.is_empty() {
+                return Err(ManifestError::AmbiguousHostProvides);
             }
         }
         Ok(())

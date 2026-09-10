@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::capabilities::CapabilityScope;
 use crate::cdp::{BoundedCdpEvents, CdpClient, CdpEventFilter, ClientError, QueuedCdpRequest};
 use crate::js_runtime::{JsInvocation, JsRuntime};
 use crate::plugin_execution::{ExecutionState, PluginExecutionObservation};
@@ -20,6 +21,10 @@ use crate::plugins::{LoadedPlugin, Permission};
 
 mod lifecycle;
 pub use lifecycle::{HostOperation, HostOperationResult, MAX_HOST_IDENTITIES};
+mod capability;
+pub use capability::{
+    HostCapabilityCaller, HostCapabilityClient, HostCapabilityOperation, HostCapabilityRequest,
+};
 mod cleanup;
 mod snapshot;
 pub use snapshot::{
@@ -64,6 +69,7 @@ pub struct HostRuntime {
     stopping: Arc<AtomicBool>,
     commands: mpsc::SyncSender<lifecycle::Command>,
     operations: Arc<AtomicUsize>,
+    capabilities: HostCapabilityClient,
     worker: Option<JoinHandle<Vec<HostStopReport>>>,
 }
 
@@ -79,20 +85,22 @@ impl HostRuntime {
         for plugin in plugins {
             if plugin.manifest.host.is_none()
                 || plugin.host.is_none()
-                || plugin.manifest.renderer.is_some()
-                || plugin.source.is_some()
                 || !plugin
                     .manifest
                     .permissions
                     .contains(&Permission::HostProcess)
-                || !plugin.manifest.requires.is_empty()
-                || !plugin.manifest.provides.is_empty()
+                || (plugin.manifest.renderer.is_none() && !plugin.manifest.requires.is_empty())
+                || plugin
+                    .manifest
+                    .host_provides()
+                    .iter()
+                    .any(|capability| capability.scope != CapabilityScope::Target)
                 || !ids.insert(&plugin.manifest.id)
             {
                 return Err(HostError::new(
                     "host_entry_required",
                     format!(
-                        "{} must be a distinct, loaded host-only plugin with host.process and no cross-executor declarations",
+                        "{} must have a distinct loaded Host entry, host.process, only Target host provides, and no host-side requires",
                         plugin.manifest.id
                     ),
                 ));
@@ -224,6 +232,7 @@ enum Outbound {
     Reply(u64, Result<Value, HostRpcError>),
     Event(Value),
     SubscriptionEnded(Value),
+    CapabilityCancel(Value),
 }
 
 struct HostOwner {
@@ -233,7 +242,8 @@ struct HostOwner {
     launching: bool,
     initialize_id: u64,
     initialize_deadline: Instant,
-    pending: Vec<(u64, QueuedCdpRequest)>,
+    pending: Vec<(u64, QueuedCdpRequest, Option<u64>)>,
+    capabilities: Vec<capability::Invocation>,
     subscription: Option<(u64, BoundedCdpEvents)>,
     subscription_id: u64,
     outbox: VecDeque<Outbound>,
@@ -262,6 +272,7 @@ impl HostOwner {
             initialize_id: 0,
             initialize_deadline: Instant::now() + INITIALIZE_TIMEOUT,
             pending: Vec::new(),
+            capabilities: Vec::new(),
             subscription: None,
             subscription_id: 0,
             outbox: VecDeque::new(),
@@ -301,6 +312,7 @@ impl HostOwner {
                 json!({
                     "protocolVersion":1, "coreVersion":env!("CARGO_PKG_VERSION"), "pluginVersion":plugin.manifest.version,
                     "permissions":plugin.manifest.permissions,
+                    "provides":plugin.manifest.host_provides(),
                     "methods":["cdp.request","cdp.subscribe","cdp.unsubscribe"],
                 }),
                 INITIALIZE_TIMEOUT,
@@ -314,6 +326,7 @@ impl HostOwner {
     }
 
     fn pump(&mut self, client: &CdpClient) {
+        self.expire_capabilities();
         if matches!(
             self.observation.state,
             ExecutionState::Failed | ExecutionState::Exited
@@ -367,6 +380,8 @@ impl HostOwner {
                 HostEvent::RequestTimedOut { id } if id == self.initialize_id => self.fail(
                     HostError::new("initialize_timeout", "Host initialization request expired"),
                 ),
+                HostEvent::Response { id, result } => self.finish_capability_response(id, result),
+                HostEvent::RequestTimedOut { id } => self.finish_capability_timeout(id),
                 // Notifications never authorize Core actions; RPC requires a reply id.
                 _ => {}
             }
@@ -387,7 +402,7 @@ impl HostOwner {
                 Ok(Some(response)) => bounded_result(Ok(response.result.unwrap_or(Value::Null))),
                 Err(error) => Err(cdp_error(error)),
             };
-            let (id, _) = self.pending.swap_remove(index);
+            let (id, _, _) = self.pending.swap_remove(index);
             self.queue(Outbound::Reply(id, outcome));
             if self.observation.state == ExecutionState::Stopping {
                 return;
@@ -416,6 +431,10 @@ impl HostOwner {
 
     fn flush_outbox(&mut self) {
         if let Some(outbound) = self.outbox.pop_front() {
+            let reply_id = match &outbound {
+                Outbound::Reply(id, _) => Some(*id),
+                _ => None,
+            };
             let supervisor = self.supervisor.as_mut().unwrap();
             let result = match outbound {
                 Outbound::Reply(id, result) => supervisor.respond(id, result),
@@ -423,7 +442,13 @@ impl HostOwner {
                 Outbound::SubscriptionEnded(params) => {
                     supervisor.notify("cdp.subscriptionEnded", params)
                 }
+                Outbound::CapabilityCancel(params) => {
+                    supervisor.notify("capability.cancel", params)
+                }
             };
+            if let Some(id) = reply_id {
+                self.child_reply_finished(id);
+            }
             if let Err(error) = result
                 && !matches!(error.code, "unknown_request" | "request_expired")
             {
@@ -438,6 +463,20 @@ impl HostOwner {
         id: u64,
         method: &str,
         params: Value,
+    ) -> Option<Result<Value, HostRpcError>> {
+        if method == "capability.request" {
+            return self.dispatch_capability_child(client, id, params);
+        }
+        self.dispatch_raw(client, id, method, params, None)
+    }
+
+    fn dispatch_raw(
+        &mut self,
+        client: &CdpClient,
+        id: u64,
+        method: &str,
+        params: Value,
+        parent: Option<(u64, Instant)>,
     ) -> Option<Result<Value, HostRpcError>> {
         if !matches!(method, "cdp.request" | "cdp.subscribe" | "cdp.unsubscribe") {
             return Some(Err(HostRpcError::new(
@@ -476,6 +515,9 @@ impl HostOwner {
                         HostRpcError::new("request_expired", "the Host request has retired")
                     })?;
                 deadline = deadline.min(Instant::now() + Duration::from_millis(input.timeout_ms));
+                if let Some((_, parent_deadline)) = parent {
+                    deadline = deadline.min(parent_deadline);
+                }
                 if self.observation.state == ExecutionState::Starting {
                     deadline = deadline.min(self.initialize_deadline);
                 } else if self.observation.state == ExecutionState::Stopping {
@@ -494,7 +536,7 @@ impl HostOwner {
                         deadline,
                     )
                     .map_err(cdp_error)?;
-                self.pending.push((id, request));
+                self.pending.push((id, request, parent.map(|(id, _)| id)));
                 Ok(None)
             }
             "cdp.subscribe" => {
@@ -578,6 +620,7 @@ impl HostOwner {
     fn fail(&mut self, error: HostError) {
         // Faults explicitly cancel both ordinary and cleanup work. A repeated
         // lifecycle stop, in contrast, must preserve an in-progress cleanup.
+        self.retire_capabilities(HostError::new("host_unavailable", error.to_string()));
         self.pending.clear();
         self.subscription.take();
         self.outbox.clear();
@@ -598,6 +641,10 @@ impl HostOwner {
         if self.observation.state == ExecutionState::Stopping {
             return;
         }
+        self.retire_capabilities(HostError::new(
+            "host_stopping",
+            "this provider generation is stopping",
+        ));
         self.pending.clear();
         self.subscription.take();
         self.outbox.clear();
@@ -669,6 +716,10 @@ impl HostOwner {
     }
 
     fn stop(&mut self) -> Option<HostStopReport> {
+        self.retire_capabilities(HostError::new(
+            "host_stopping",
+            "this provider generation has retired",
+        ));
         self.pending.clear();
         self.subscription.take();
         self.outbox.clear();

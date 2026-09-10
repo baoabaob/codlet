@@ -170,7 +170,11 @@ fn host_grants_are_explicit_and_do_not_expand_the_declared_core_authority() {
             inspect_local_plugin(&fixture.root)
                 .unwrap_err()
                 .to_string()
-                .contains("cross-executor")
+                .contains(if declaration == "provides" {
+                    "target scope"
+                } else {
+                    "host-side requirements"
+                })
         );
     }
     manifest["renderer"] = json!({"entry":"missing.js","world":"isolated"});
@@ -179,7 +183,7 @@ fn host_grants_are_explicit_and_do_not_expand_the_declared_core_authority() {
         inspect_local_plugin(&fixture.root)
             .unwrap_err()
             .to_string()
-            .contains("combined")
+            .contains("missing.js")
     );
 }
 
@@ -205,4 +209,54 @@ fn catalog_keeps_a_js_host_without_any_official_functional_plugin_or_renderer_en
     assert!(enabled[0].manifest.renderer.is_none());
     let runtime = codlet::renderer::RendererRuntime::from_catalog(catalog, registry).unwrap();
     assert!(!runtime.has_renderer_plugins());
+}
+
+#[test]
+fn combined_loader_retains_both_snapshots_and_separates_entry_capability_declarations() {
+    let fixture = Fixture::new();
+    let descriptor = json!({"name":"dev.host.service","api":1,"scope":"target"});
+    fixture.manifest(&json!({"schema":1,"id":"dev.host","version":"1","host":{"entry":"dist/host.js","provides":[descriptor]},"renderer":{"entry":"renderer.js","world":"isolated"},"requires":[descriptor],"permissions":["host.process","ui.dom"]}));
+    let renderer_source = "module.exports={activate(){},deactivate(){}}; // immutable renderer";
+    fs::write(fixture.root.join("renderer.js"), renderer_source).unwrap();
+    let loaded = fixture.load(&[Permission::HostProcess, Permission::UiDom]);
+    assert_eq!(loaded.generation, 7);
+    assert_eq!(loaded.source.as_deref(), Some(renderer_source));
+    assert_eq!(&*loaded.host.as_ref().unwrap().source, SOURCE);
+    assert_eq!(loaded.manifest.host_provides().len(), 1);
+    assert!(loaded.manifest.renderer_provides().is_empty());
+    assert_eq!(
+        loaded.manifest.renderer_requires(),
+        loaded.manifest.host_provides()
+    );
+    fs::write(fixture.entry(), "changed native bytes").unwrap();
+    fs::write(fixture.root.join("renderer.js"), "changed renderer bytes").unwrap();
+    assert_eq!(&*loaded.host.as_ref().unwrap().source, SOURCE);
+    assert_eq!(loaded.source.as_deref(), Some(renderer_source));
+    assert!(load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 8).is_err());
+}
+
+#[test]
+fn standalone_host_manifest_uses_its_existing_top_level_provides_contract() {
+    let fixture = Fixture::new();
+    let descriptor = json!({"name":"dev.host.service","api":1,"scope":"target"});
+    let mut manifest = json!({"schema":1,"id":"dev.host","version":"1","host":{"entry":"dist/host.js"},"provides":[descriptor],"permissions":["host.process"]});
+    fixture.manifest(&manifest);
+    let loaded = fixture.load(&[Permission::HostProcess]);
+    assert_eq!(
+        loaded.manifest.host_provides(),
+        loaded.manifest.provides.as_slice()
+    );
+    assert!(
+        serde_json::to_value(&loaded.manifest).unwrap()["host"]
+            .get("provides")
+            .is_none()
+    );
+    manifest["host"]["provides"] = json!([descriptor]);
+    fixture.manifest(&manifest);
+    assert!(
+        inspect_local_plugin(&fixture.root)
+            .unwrap_err()
+            .to_string()
+            .contains("provides at the top level")
+    );
 }

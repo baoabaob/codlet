@@ -34,6 +34,13 @@ StatusPublisher 在同一次 publication 读取主运行时身份、renderer/ker
 host 样本。JS 执行器是独立 owner，所以还保留自己的 `sequence` 和 `sampledAtUnixMs`；
 新的 renderer publication 不能替旧 host 样本制造 freshness。
 
+组合包的 Host 进程样本使用逻辑包 ID，renderer target 样本使用同一 ID 与共享 generation。
+capability 注册样本中 Host owner 使用 `包ID:host`，其 kind 为现有 `host`；renderer
+owner 保留逻辑 ID。这里只报告已经注册的 provider 与精确代次，不把声明当成活跃 endpoint。
+等待 Host capability 的前台交付计入 lifecycle busy；原 `pendingCoreRequests` 仍只计
+Host 发起的 managed Core 请求，未改为混算传入 invocation。参见
+[调用与取消契约](HOST_CAPABILITY_2026-09-10.md)。
+
 `host_inspection` 使用严格的 camelCase DTO：
 
 | 字段 | 含义 |

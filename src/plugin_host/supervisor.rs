@@ -91,6 +91,7 @@ pub struct HostExitReport {
 struct Outbound {
     frame: Vec<u8>,
     expires_at: Instant,
+    cancelled: Option<Arc<AtomicBool>>,
 }
 
 struct Inbound {
@@ -137,6 +138,7 @@ pub struct HostSupervisor {
     outgoing: Option<mpsc::SyncSender<Outbound>>,
     workers: Vec<JoinHandle<()>>,
     outgoing_pending: BTreeMap<u64, Instant>,
+    outgoing_cancellation: BTreeMap<u64, Arc<AtomicBool>>,
     incoming_pending: BTreeMap<u64, Instant>,
     last_issued_id: u64,
     last_received_id: u64,
@@ -203,6 +205,7 @@ impl HostSupervisor {
             outgoing: Some(outgoing),
             workers: Vec::new(),
             outgoing_pending: BTreeMap::new(),
+            outgoing_cancellation: BTreeMap::new(),
             incoming_pending: BTreeMap::new(),
             last_issued_id: 0,
             last_received_id: 0,
@@ -291,6 +294,28 @@ impl HostSupervisor {
         params: Value,
         timeout: Duration,
     ) -> Result<u64, HostError> {
+        self.send_request_until(method, params, deadline(timeout)?, None)
+    }
+
+    /// Carries the caller's original budget and cancellation through the bounded
+    /// stdin queue. Expired/cancelled frames are skipped before a write starts.
+    pub(crate) fn send_cancellable_request_until(
+        &mut self,
+        method: &str,
+        params: Value,
+        expires_at: Instant,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<u64, HostError> {
+        self.send_request_until(method, params, expires_at, Some(cancelled))
+    }
+
+    fn send_request_until(
+        &mut self,
+        method: &str,
+        params: Value,
+        expires_at: Instant,
+        cancelled: Option<Arc<AtomicBool>>,
+    ) -> Result<u64, HostError> {
         self.ensure_admission()?;
         validate_method(method).map_err(|message| HostError::new("invalid_method", message))?;
         if self.outgoing_pending.len() >= MAX_HOST_PENDING_REQUESTS {
@@ -299,7 +324,22 @@ impl HostSupervisor {
                 "this Host has too many pending requests",
             ));
         }
-        let expires_at = deadline(timeout)?;
+        let remaining = expires_at.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || remaining > REQUEST_TIMEOUT {
+            return Err(HostError::new(
+                "request_expired",
+                "the original Host request budget is unavailable",
+            ));
+        }
+        if cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(HostError::new(
+                "invocation_cancelled",
+                "the Host request was cancelled before dispatch",
+            ));
+        }
         let id = self
             .last_issued_id
             .checked_add(1)
@@ -307,13 +347,35 @@ impl HostSupervisor {
             .ok_or_else(|| {
                 HostError::new("request_ids_exhausted", "this Host exhausted request ids")
             })?;
-        self.enqueue(
+        self.enqueue_cancellable(
             WireMessage::request(&self.identity, id, method.into(), params),
             expires_at,
+            cancelled.clone(),
         )?;
         self.last_issued_id = id;
         self.outgoing_pending.insert(id, expires_at);
+        if let Some(cancelled) = cancelled {
+            self.outgoing_cancellation.insert(id, cancelled);
+        }
         Ok(id)
+    }
+
+    pub(crate) fn cancel_request(&mut self, id: u64) {
+        self.outgoing_pending.remove(&id);
+        if let Some(cancelled) = self.outgoing_cancellation.remove(&id) {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn abandon_incoming(&mut self, id: u64) {
+        self.incoming_pending.remove(&id);
+    }
+
+    fn cancel_outgoing(&mut self) {
+        self.outgoing_pending.clear();
+        for (_, cancelled) in std::mem::take(&mut self.outgoing_cancellation) {
+            cancelled.store(true, Ordering::Release);
+        }
     }
 
     pub fn respond(
@@ -451,7 +513,7 @@ impl HostSupervisor {
                 .filter_map(|(id, expires)| (now >= *expires).then_some(*id))
                 .collect();
             for id in expired {
-                self.outgoing_pending.remove(&id);
+                self.cancel_request(id);
                 events.push(HostEvent::RequestTimedOut { id });
             }
             let unanswered: Vec<_> = self
@@ -529,7 +591,7 @@ impl HostSupervisor {
             && self.job_empty
             && (self.state == HostState::Failed || (input_final && input_exhausted))
         {
-            self.outgoing_pending.clear();
+            self.cancel_outgoing();
             self.exit_reported = true;
             events.push(HostEvent::Exited { exit_code });
         }
@@ -547,7 +609,7 @@ impl HostSupervisor {
             if !self.shutdown_sent {
                 self.shutdown_sent = true;
                 self.incoming_pending.clear();
-                self.outgoing_pending.clear();
+                self.cancel_outgoing();
                 let params = if self.allow_shutdown_requests {
                     serde_json::json!({"cleanupBudgetMs":grace_until.saturating_duration_since(Instant::now()).as_millis()})
                 } else {
@@ -658,13 +720,26 @@ impl HostSupervisor {
     }
 
     fn enqueue(&mut self, message: WireMessage, expires_at: Instant) -> Result<(), HostError> {
+        self.enqueue_cancellable(message, expires_at, None)
+    }
+
+    fn enqueue_cancellable(
+        &mut self,
+        message: WireMessage,
+        expires_at: Instant,
+        cancelled: Option<Arc<AtomicBool>>,
+    ) -> Result<(), HostError> {
         let frame =
             encode_frame(&message).map_err(|message| HostError::new("frame_too_large", message))?;
         let result = self
             .outgoing
             .as_ref()
             .ok_or_else(|| HostError::new("host_unavailable", "Host stdin is closed"))?
-            .try_send(Outbound { frame, expires_at });
+            .try_send(Outbound {
+                frame,
+                expires_at,
+                cancelled,
+            });
         match result {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -754,6 +829,7 @@ impl HostSupervisor {
                     return Err("Host answered a request id that Core never issued".into());
                 }
                 if let Some(expires_at) = self.outgoing_pending.remove(&id) {
+                    self.outgoing_cancellation.remove(&id);
                     if now >= expires_at {
                         events.push(HostEvent::RequestTimedOut { id });
                     } else {
@@ -783,7 +859,7 @@ impl HostSupervisor {
             self.failure = Some(error);
         }
         self.state = HostState::Failed;
-        self.outgoing_pending.clear();
+        self.cancel_outgoing();
         self.incoming_pending.clear();
         self.forced = true;
         let _ = self.process.terminate();
@@ -914,6 +990,14 @@ fn write_stdin(channel: Channel, receiver: mpsc::Receiver<Outbound>, io: Arc<IoS
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        if Instant::now() >= outbound.expires_at
+            || outbound
+                .cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            continue;
+        }
         *io.write_deadline.lock().unwrap_or_else(|p| p.into_inner()) = Some(outbound.expires_at);
         let result = channel.write_all(&outbound.frame, outbound.expires_at);
         *io.write_deadline.lock().unwrap_or_else(|p| p.into_inner()) = None;

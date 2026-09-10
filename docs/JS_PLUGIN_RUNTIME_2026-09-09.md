@@ -21,9 +21,10 @@ schema、registry、授信记录和生命周期命名。
 
 Renderer 使用 `renderer: {"entry":"dist/renderer.js","world":"isolated"}`。两种入口均
 导出 CommonJS `activate(context)` 和 `deactivate()`，可返回 Promise。host 的 deactivate
-还会收到可选使用的 `cleanup` 上下文，见下述停止契约。当前支持独立
-host 或独立 renderer；同包双入口协同与 host 的跨执行器 provides/requires 仍待后续。
-这项实现范围不会把两者拆成不同插件格式。
+还会收到可选使用的 `cleanup` 上下文，见下述停止契约。2026-09-10 起，同包可同时声明
+host 与 renderer，两入口共享注册、enabled 偏好和 generation。顶层 provides/requires
+归 renderer，Host provider 放在 host.provides；Host-only 的顶层 provides 保持兼容。
+完整声明与生命周期见 [组合包契约](COMBINED_PACKAGES_2026-09-10.md)。
 
 不接受 `host.command`、可执行文件入口、插件选择的 runtime/flags/protocol；不支持原生
 Node `.node` 扩展、运行时 TS 转译或自动 npm 安装/安装脚本。纯 JS 依赖与资源可随包提供。
@@ -68,6 +69,7 @@ module.exports = {
 | `context.cdp.request(method, params?, options?)` | 原始 CDP 调用；options 可选 sessionId、timeoutMs，成功返回原始 CDP result。无官方方法白名单。 |
 | `context.cdp.subscribe(filter, onEvent, onEnd?)` | filter 为 root/all，或 session+sessionId；返回 `{id,unsubscribe()}`，onEvent 收到 `{method,params,sessionId}`。每 host 同时一个订阅。 |
 | `context.core.request(method, params, timeoutMs?)` | 通用 Core 请求入口；当前实现 cdp.request/subscribe/unsubscribe，未来原语沿此版本化通道开放。 |
+| `context.rpc.provide(capability, method, handler)` | 注册已声明的 Target capability；接收 Core 验证的 renderer caller 与有限调用预算。 |
 | `context.plugin` | 本实例的 id、version、generation。 |
 | `context.root` | 原插件根目录；Node cwd 同该目录。 |
 | `context.signal` | 停止时 abort；插件应取消未完成的异步工作。 |
@@ -127,7 +129,9 @@ export = plugin;
 在线启停/重载，并支持启动后注册的新 host。后续已接入
 [host watch](HOST_WATCH_2026-09-10.md)、带预算的清理与
 [host execution Inspect](HOST_INSPECTION_2026-09-10.md)。doctor 可读实际进程和清理样本，
-旧 status-v1 / Inspect 保持原契约。组合入口、跨执行器 capability 与完整 M2 仍待后续。
+旧 status-v1 / Inspect 保持原契约。现已接入组合入口与 renderer→Host 的 Target capability，
+包括异步交付、调用身份、取消及总预算，见 [Host capability](HOST_CAPABILITY_2026-09-10.md)。
+Host 发起的 capability 调用、其他 scope 与完整 M2 仍待后续。
 
 统一 JS/TS 是开发与分发契约，开放性由 Core 暴露的原语决定。图灵完备本身不能替代缺失
 的系统接口。普通 Node host 仍可直接操作当前用户有权访问的文件、网络或进程；禁用 addon

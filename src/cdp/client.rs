@@ -15,6 +15,8 @@ use super::framing::{FramingError, NulJsonDecoder, encode_json_frame};
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[cfg(all(test, windows))]
+mod host_renderer_vm_tests;
 mod raw_access;
 pub use raw_access::{BoundedCdpEvents, CdpEventFilter, QueuedCdpRequest};
 use raw_access::{BoundedEventSink, RawWritePermit};
@@ -414,6 +416,20 @@ struct OutgoingRequest<'a> {
 }
 
 impl CdpClient {
+    /// Wake the existing renderer drive when another owned executor has a local
+    /// completion. This publishes no CDP event and does not complete any request.
+    #[cfg(windows)]
+    pub(crate) fn notify_runtime_activity(&self) {
+        let shared = &self.inner.runtime.shared;
+        let mut state = shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.activity_epoch = state.activity_epoch.wrapping_add(1);
+        drop(state);
+        shared.activity.notify_all();
+    }
+
     #[cfg(windows)]
     /// Starts CDP workers for the exact pipe pair created by Codlet's Windows launcher.
     pub fn spawn(

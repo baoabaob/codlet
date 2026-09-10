@@ -7,6 +7,7 @@ use thiserror::Error;
 
 const MAX_CAPABILITY_NAME_BYTES: usize = 128;
 const MAX_PROVIDER_ID_BYTES: usize = 128;
+const HOST_PROVIDER_SUFFIX: &str = ":host";
 static NEXT_REGISTRY_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -200,6 +201,19 @@ pub enum CapabilityRegistryError {
     DependencyCycle { providers: Vec<String> },
 }
 
+/// Qualified entry owners cannot collide with a plugin manifest ID. The base
+/// retains the existing 128-byte identity contract; only this exact suffix is
+/// accepted by the generic registry for the current host entry implementation.
+pub fn host_provider_id(plugin_id: &str) -> String {
+    format!("{plugin_id}{HOST_PROVIDER_SUFFIX}")
+}
+
+pub fn host_provider_plugin_id(provider_id: &str) -> Option<&str> {
+    provider_id
+        .strip_suffix(HOST_PROVIDER_SUFFIX)
+        .filter(|id| valid_unqualified_provider_id(id))
+}
+
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum CapabilityAccessError {
     #[error(transparent)]
@@ -372,6 +386,14 @@ impl CapabilityRegistry {
                 registration.provides.as_slice(),
             )
         })
+    }
+
+    /// Read a generation from this exact registry registration after validating
+    /// a lease. An executor observation must not substitute a newer generation.
+    pub(crate) fn provider_generation(&self, provider_id: &str) -> Option<u64> {
+        self.registrations
+            .get(provider_id)
+            .map(|registration| registration.generation)
     }
 
     pub(crate) fn scope_is_active(&self, scope: &CapabilityScopeInstance) -> bool {
@@ -856,6 +878,10 @@ fn valid_capability_name(name: &str) -> bool {
 }
 
 fn valid_provider_id(provider_id: &str) -> bool {
+    valid_unqualified_provider_id(provider_id) || host_provider_plugin_id(provider_id).is_some()
+}
+
+fn valid_unqualified_provider_id(provider_id: &str) -> bool {
     !provider_id.is_empty()
         && provider_id.len() <= MAX_PROVIDER_ID_BYTES
         && provider_id.is_ascii()
@@ -870,6 +896,43 @@ fn valid_provider_id(provider_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualified_host_owners_keep_the_logical_id_bound_and_exact_generation() {
+        let logical = "a".repeat(MAX_PROVIDER_ID_BYTES);
+        let owner = host_provider_id(&logical);
+        assert_eq!(host_provider_plugin_id(&owner), Some(logical.as_str()));
+        let mut registry = CapabilityRegistry::new();
+        registry
+            .register_provider(&owner, 1, &[], &[], &[])
+            .unwrap();
+        assert!(
+            registry
+                .register_provider(
+                    &host_provider_id(&(logical.clone() + "a")),
+                    1,
+                    &[],
+                    &[],
+                    &[]
+                )
+                .is_err()
+        );
+        assert!(
+            registry
+                .register_provider("dev.plugin:renderer", 1, &[], &[], &[])
+                .is_err()
+        );
+        assert!(
+            registry
+                .register_provider("dev.plugin:host:host", 1, &[], &[], &[])
+                .is_err()
+        );
+        registry.unregister_provider(&owner).unwrap();
+        registry
+            .register_provider(&owner, 2, &[], &[], &[])
+            .unwrap();
+        assert_eq!(registry.provider_generation(&owner), Some(2));
+    }
 
     fn capability(name: &str, api: u32, scope: CapabilityScope) -> CapabilityDescriptor {
         CapabilityDescriptor::new(name, api, scope).unwrap()

@@ -120,12 +120,13 @@ impl Fixture {
         self.renderer
             .set_external_observations(self.hosts.observations());
         self.renderer.pump_bindings().unwrap();
-        self.control.poll(&self.hosts, &self.broker);
+        self.control
+            .poll(&mut self.renderer, &self.hosts, &self.broker);
         if !self.control.is_pending()
             && let Some(job) = self.broker.take_next()
-            && let Some(job) = self
-                .control
-                .dispatch(job, &self.renderer, &self.hosts, &self.broker)
+            && let Some(job) =
+                self.control
+                    .dispatch(job, &mut self.renderer, &self.hosts, &self.broker)
         {
             self.broker
                 .complete(&job.operation_id, self.renderer.manage_plugin(job.request));

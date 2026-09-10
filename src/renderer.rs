@@ -41,6 +41,8 @@ const BUILTIN_MANAGE_CAPABILITY_API: u32 = 1;
 const RUNTIME_MANAGE_GRANT: &str = "runtime.manage";
 const MAX_RENDERER_WAIT_DEPTH: usize = 8;
 
+mod combined;
+mod host_rpc;
 mod listing;
 mod management;
 
@@ -102,7 +104,10 @@ pub struct RendererDiagnostic {
 pub struct RendererRuntime {
     catalog: PluginCatalog,
     plugins: Vec<LoadedPlugin>,
+    host_plugins: Vec<LoadedPlugin>,
+    entry_shapes: BTreeMap<String, (bool, bool)>,
     external_observations: Vec<PluginExecutionObservation>,
+    host_rpc: host_rpc::HostRpcBridge,
     plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
@@ -110,6 +115,7 @@ pub struct RendererRuntime {
     drive_deadline: Option<Instant>,
     drive_depth: usize,
     pending_actions: Vec<HostAction>,
+    pending_package_disables: BTreeSet<String>,
     status_publisher: Option<StatusPublisher>,
     status_events: Vec<StatusEvent>,
     generations: BTreeMap<String, u64>,
@@ -239,6 +245,9 @@ impl RendererRuntime {
         plugins: Vec<LoadedPlugin>,
         plugin_registry: PluginRegistry,
     ) -> Result<Self, RendererError> {
+        for plugin in &plugins {
+            require_renderer_entry(plugin)?;
+        }
         let catalog = PluginCatalog::from_bundled(plugins.clone());
         Self::with_catalog(catalog, plugins, plugin_registry)
     }
@@ -247,11 +256,7 @@ impl RendererRuntime {
         catalog: PluginCatalog,
         plugin_registry: PluginRegistry,
     ) -> Result<Self, RendererError> {
-        let plugins = catalog
-            .enabled_plugins(&plugin_registry)?
-            .into_iter()
-            .filter(|plugin| plugin.manifest.renderer.is_some())
-            .collect();
+        let plugins = catalog.enabled_plugins(&plugin_registry)?;
         Self::with_catalog(catalog, plugins, plugin_registry)
     }
 
@@ -260,7 +265,10 @@ impl RendererRuntime {
         plugins: Vec<LoadedPlugin>,
         plugin_registry: PluginRegistry,
     ) -> Result<Self, RendererError> {
-        for plugin in &plugins {
+        for plugin in plugins
+            .iter()
+            .filter(|plugin| plugin.manifest.renderer.is_some())
+        {
             require_renderer_entry(plugin)?;
         }
         if let Some(plugin) = plugins
@@ -272,14 +280,37 @@ impl RendererRuntime {
                 generation: plugin.generation,
             });
         }
-        let (plugins, capabilities) = order_plugins(plugins)?;
         let generations = plugins
             .iter()
             .map(|plugin| (plugin.manifest.id.clone(), plugin.generation))
             .collect();
+        let entry_shapes = plugins
+            .iter()
+            .map(|plugin| {
+                (
+                    plugin.manifest.id.clone(),
+                    (
+                        plugin.manifest.renderer.is_some(),
+                        plugin.manifest.host.is_some(),
+                    ),
+                )
+            })
+            .collect();
+        let host_plugins = plugins
+            .iter()
+            .filter(|plugin| plugin.manifest.host.is_some())
+            .cloned()
+            .collect();
+        let (plugins, capabilities) = order_plugins(plugins)?;
+        let plugins = plugins
+            .into_iter()
+            .filter(|plugin| plugin.manifest.renderer.is_some())
+            .collect();
         Ok(Self {
             catalog,
             plugins,
+            host_plugins,
+            entry_shapes,
             external_observations: Vec::new(),
             plugin_registry,
             capabilities,
@@ -287,7 +318,9 @@ impl RendererRuntime {
             diagnostics: Vec::new(),
             drive_deadline: None,
             drive_depth: 0,
+            host_rpc: host_rpc::HostRpcBridge::default(),
             pending_actions: Vec::new(),
+            pending_package_disables: BTreeSet::new(),
             status_publisher: None,
             status_events: Vec::new(),
             generations,
@@ -405,6 +438,7 @@ impl RendererRuntime {
         let document_epoch = self.sessions[target_id].document_epoch;
 
         for plugin in catalog {
+            self.require_native_dependencies_ready(&plugin, &authorizations)?;
             let world_name = document_name(renderer_world_name(&plugin), document_epoch);
             let (context_id, frame_id) = current_isolated_context(&session, &world_name)?;
             let owner = self
@@ -532,6 +566,7 @@ impl RendererRuntime {
         self.capabilities
             .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
         self.sessions.remove(target_id);
+        self.cancel_host_capabilities_for(target_id, None);
         self.record_status_event(
             target_id,
             "session_ended",
@@ -609,8 +644,10 @@ impl RendererRuntime {
                 Ok(event) => {
                     self.handle_renderer_event(target_id, event)
                         .map_err(|error| error.to_string())?;
+                    self.poll_host_capabilities();
                 }
                 Err(EventStreamError::Timeout) => {
+                    self.poll_host_capabilities();
                     request.wait_for_activity(observed_activity);
                 }
                 Err(error) => return Err(error.to_string()),
@@ -661,6 +698,7 @@ impl RendererRuntime {
         }
         self.capabilities.deactivate_scope(&scope);
         self.sessions.remove(target_id);
+        self.cancel_host_capabilities_for(target_id, None);
         self.flush_host_actions();
         self.owner_lifecycle_depth -= 1;
         self.publish_status();
@@ -758,6 +796,7 @@ impl RendererRuntime {
                 recent_events: self.status_events.clone(),
                 truncated: truncated || providers_truncated,
                 lifecycle_busy: self.management_active
+                    || self.has_pending_host_capabilities()
                     || self.owner_lifecycle_depth != 0
                     || self.drive_depth != 0
                     || self.drive_deadline.is_some()
@@ -795,7 +834,9 @@ impl RendererRuntime {
             providers.push(RegisteredProvider {
                 id: id.to_owned(),
                 generation,
-                kind: if id == BUILTIN_HOST_PROVIDER_ID {
+                kind: if id == BUILTIN_HOST_PROVIDER_ID
+                    || crate::capabilities::host_provider_plugin_id(id).is_some()
+                {
                     ProviderKind::Host
                 } else {
                     ProviderKind::Renderer
@@ -833,12 +874,6 @@ impl RendererRuntime {
         !self.plugins.is_empty()
     }
 
-    /// Executor affinity survives disable and failed replacements for this
-    /// runtime. A new executor cannot reuse a previously allocated generation.
-    pub(crate) fn allocated_generation(&self, plugin_id: &str) -> Option<u64> {
-        self.generations.get(plugin_id).copied()
-    }
-
     pub(crate) fn catalog_snapshot(&self) -> &PluginCatalog {
         &self.catalog
     }
@@ -854,7 +889,11 @@ impl RendererRuntime {
     pub fn local_watch_sources(&self) -> Vec<crate::local_plugins::LocalWatchSource<'_>> {
         self.plugins
             .iter()
-            .filter(|plugin| plugin.manifest.renderer.is_some() && plugin.source.is_some())
+            .filter(|plugin| {
+                plugin.manifest.renderer.is_some()
+                    && plugin.source.is_some()
+                    && plugin.manifest.host.is_none()
+            })
             .filter_map(|plugin| {
                 let entry = self
                     .catalog
@@ -887,6 +926,11 @@ impl RendererRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<usize, RendererError> {
+        let timeout = if self.has_pending_host_capabilities() {
+            Duration::ZERO
+        } else {
+            timeout
+        };
         let mut handled = 0;
         let expires_at = Instant::now()
             .checked_add(timeout)
@@ -924,6 +968,7 @@ impl RendererRuntime {
             }
         }
         self.recover_documents();
+        self.poll_host_capabilities();
         Ok(handled)
     }
 
@@ -1395,11 +1440,24 @@ impl RendererRuntime {
             lease,
             |provider_id, descriptor| (provider_id.to_owned(), descriptor.clone()),
         );
+        let lease = lease.clone();
         let consumer = consumer.clone();
         let mut after_response = None;
         let outcome = match authorization {
             Ok((provider_id, descriptor)) => {
-                if provider_id == BUILTIN_HOST_PROVIDER_ID {
+                if let Some(queued) = self.queue_host_capability(
+                    target_id,
+                    &consumer,
+                    &lease,
+                    &provider_id,
+                    &descriptor,
+                    &request,
+                ) {
+                    match queued {
+                        Ok(()) => return Ok(true),
+                        Err(error) => Err(error),
+                    }
+                } else if provider_id == BUILTIN_HOST_PROVIDER_ID {
                     let active_plugin_ids = self
                         .sessions
                         .get(target_id)
@@ -1537,6 +1595,16 @@ impl RendererRuntime {
     fn apply_host_action(&mut self, action: HostAction) {
         match action {
             HostAction::DisablePlugin { plugin_id } => {
+                if self
+                    .entry_shapes
+                    .get(&plugin_id)
+                    .is_some_and(|(_, host)| *host)
+                {
+                    // The response was delivered before this action arrived.
+                    // Native ownership must retire through the same coordinator.
+                    self.pending_package_disables.insert(plugin_id);
+                    return;
+                }
                 self.management_active = true;
                 let failures = self.disable_committed(&plugin_id);
                 self.management_active = false;
@@ -1645,6 +1713,7 @@ impl RendererRuntime {
                 .plugins
                 .retain(|p| p.binding_name != plugin.binding_name);
         }
+        self.cancel_host_capabilities_for(target_id, Some(&plugin.id));
         if let Some(error) = &first_error {
             self.record_status_event(target_id, "cleanup_failed", &error.to_string());
         }
@@ -1832,13 +1901,12 @@ fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
 }
 
 fn require_renderer_entry(plugin: &LoadedPlugin) -> Result<(), RendererError> {
-    let message = if plugin.manifest.renderer.is_none()
-        || plugin.manifest.host.is_some()
-        || plugin.host.is_some()
-    {
-        "a renderer-only entry is required; host entries belong to the Host executor"
+    let message = if plugin.manifest.renderer.is_none() {
+        "a renderer entry is required; host-only entries belong to the Host executor"
     } else if plugin.source.is_none() {
         "renderer source was not loaded"
+    } else if plugin.manifest.host.is_some() && plugin.host.is_none() {
+        "combined host source was not loaded"
     } else {
         return Ok(());
     };
@@ -2175,6 +2243,17 @@ fn deliver_raw_binding_response(
     context_id: u64,
     response: &BindingResponse<'_>,
 ) -> Result<(), RendererError> {
+    let expression = binding_response_expression(binding_name, response)?;
+    let result = session
+        .evaluate_in_context(&expression, Some(context_id))
+        .map_err(RendererError::Target)?;
+    check_binding_response(binding_name, &result)
+}
+
+fn binding_response_expression(
+    binding_name: &str,
+    response: &BindingResponse<'_>,
+) -> Result<String, RendererError> {
     let response =
         serde_json::to_string(response).map_err(|error| RendererError::InvalidProviderResult {
             plugin_id: binding_name.to_owned(),
@@ -2182,11 +2261,12 @@ fn deliver_raw_binding_response(
         })?;
     let binding = serde_json::to_string(binding_name).expect("binding name is valid UTF-8");
     let response = serde_json::to_string(&response).expect("response JSON is valid UTF-8");
-    let expression =
-        format!("globalThis.__codletRendererV1.__rpcReceive({binding}, JSON.parse({response}))");
-    let result = session
-        .evaluate_in_context(&expression, Some(context_id))
-        .map_err(RendererError::Target)?;
+    Ok(format!(
+        "globalThis.__codletRendererV1.__rpcReceive({binding}, JSON.parse({response}))"
+    ))
+}
+
+fn check_binding_response(binding_name: &str, result: &Value) -> Result<(), RendererError> {
     if result.get("exceptionDetails").is_some() {
         return Err(RendererError::BindingResponseRejected {
             plugin_id: binding_name.to_owned(),
@@ -2213,7 +2293,19 @@ fn order_plugins(
         .collect();
     let plugins = order
         .into_iter()
-        .filter_map(|plugin_id| plugins_by_id.remove(&plugin_id))
+        .filter_map(|plugin_id| {
+            if let Some(logical) = crate::capabilities::host_provider_plugin_id(&plugin_id) {
+                if plugins_by_id
+                    .get(logical)
+                    .is_some_and(|plugin| plugin.manifest.renderer.is_some())
+                {
+                    return None;
+                }
+                plugins_by_id.remove(logical)
+            } else {
+                plugins_by_id.remove(&plugin_id)
+            }
+        })
         .collect();
     Ok((plugins, registry))
 }
@@ -2573,13 +2665,14 @@ mod tests {
     }
 
     #[test]
-    fn renderer_runtime_rejects_missing_source_and_combined_entries_before_capability_registration()
-    {
+    fn renderer_runtime_rejects_missing_source_and_incomplete_combined_snapshots_before_registration()
+     {
         let mut missing_source = bundled_codex_ui_adapter().unwrap();
         missing_source.source = None;
         let mut combined = bundled_codex_ui_adapter().unwrap();
         combined.manifest.host = Some(crate::plugins::HostManifest {
             entry: "host.js".to_owned(),
+            provides: Vec::new(),
         });
         for plugin in [missing_source, combined] {
             let (_directory, registry) = test_registry();

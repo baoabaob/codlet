@@ -1,6 +1,12 @@
 # Host JS 开发与组合验收
 
 本页把统一 JS 目录包、在线生命周期、watch、带预算的 cleanup 与 doctor 串成一次开发流程。
+
+需要同一个包同时运行 Host 和 renderer 时，使用
+[双入口示例](../examples/local-host-renderer-capability/README.md)。它在 renderer 激活中
+等待自己的 Host capability，并参与双入口共享代次、依赖闭包与失败补偿；
+[实际 JS 验收](HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md)执行两侧真实入口代码。
+下文保留独立 cleanup-host 的开发流程。
 使用便携发行目录中的真实 [cleanup-host 示例](../examples/cleanup-host/README.md)：它保留一个
 CDP session 和属于本代的 JS global，退出时删除该 global 并 detach session，不依赖官方
 renderer 或 adapter。

@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::capabilities::{CapabilityRegistry, CapabilityRegistryError, CapabilityScope};
+use crate::capabilities::{
+    CapabilityRegistry, CapabilityRegistryError, CapabilityScope, host_provider_id,
+};
 use crate::local_plugins::{LocalPluginError, load_local_plugin};
 use crate::plugins::{LoadedPlugin, ManifestError, Permission, PluginRegistry, bundled_plugins};
 use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
@@ -239,13 +241,82 @@ pub(crate) fn capability_graph(
             .iter()
             .map(|permission| permission.as_str().to_owned())
             .collect();
-        graph.register_provider(
-            &plugin.manifest.id,
-            plugin.generation,
-            &plugin.manifest.provides,
-            &plugin.manifest.requires,
-            &grants,
-        )?;
+        if plugin.manifest.host.is_some() {
+            graph.register_provider(
+                &host_provider_id(&plugin.manifest.id),
+                plugin.generation,
+                plugin.manifest.host_provides(),
+                &[],
+                &grants,
+            )?;
+        }
+        if plugin.manifest.renderer.is_some() {
+            graph.register_provider(
+                &plugin.manifest.id,
+                plugin.generation,
+                plugin.manifest.renderer_provides(),
+                plugin.manifest.renderer_requires(),
+                &grants,
+            )?;
+        }
     }
     Ok(graph)
+}
+
+#[cfg(test)]
+mod combined_graph_tests {
+    use super::*;
+    use crate::plugins::PluginManifest;
+    use serde_json::json;
+
+    fn plugin(manifest: serde_json::Value) -> LoadedPlugin {
+        LoadedPlugin {
+            manifest: PluginManifest::parse(&manifest.to_string()).unwrap(),
+            source: Some("module.exports={};".into()),
+            host: None,
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn entry_owners_order_own_native_dependency_without_hiding_a_real_renderer_self_cycle() {
+        let native = json!({"name":"dev.native","api":1,"scope":"target"});
+        let view = json!({"name":"dev.view","api":1,"scope":"target"});
+        let combined = plugin(
+            json!({"schema":1,"id":"dev.combined","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[native]},"provides":[view],"requires":[native],"permissions":["host.process"]}),
+        );
+        let consumer = plugin(
+            json!({"schema":1,"id":"dev.consumer","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"requires":[view]}),
+        );
+        let graph = capability_graph(&[consumer.clone(), combined.clone()]).unwrap();
+        let order = graph.resolve_activation_order().unwrap();
+        let position = |id| order.iter().position(|current| current == id).unwrap();
+        assert!(position("dev.combined:host") < position("dev.combined"));
+        assert!(position("dev.combined") < position("dev.consumer"));
+        let logical = crate::plugin_lifecycle::order(vec![consumer, combined.clone()]).unwrap();
+        assert_eq!(
+            logical
+                .iter()
+                .map(|plugin| plugin.manifest.id.as_str())
+                .collect::<Vec<_>>(),
+            ["dev.combined", "dev.consumer"]
+        );
+        let mut cyclic = combined;
+        cyclic.manifest.requires = cyclic.manifest.provides.clone();
+        assert!(
+            capability_graph(&[cyclic])
+                .unwrap()
+                .resolve_activation_order()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_and_renderer_declarations_still_conflict_when_descriptors_are_identical() {
+        let descriptor = json!({"name":"dev.same","api":1,"scope":"target"});
+        let combined = plugin(
+            json!({"schema":1,"id":"dev.combined","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[descriptor]},"provides":[descriptor],"permissions":["host.process"]}),
+        );
+        assert!(capability_graph(&[combined]).is_err());
+    }
 }

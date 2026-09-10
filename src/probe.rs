@@ -738,6 +738,13 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let has_hosts = !host_plugins.is_empty();
     let hosts =
         HostRuntime::start_with_runtime(host_plugins, connected.client.clone(), js_runtime)?;
+    renderer.set_host_capability_client(hosts.capability_client());
+    // Native initialization owns its own CDP pump. Renderer activation begins
+    // only after native readiness has been observed at the shared generation.
+    while hosts.is_starting() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    renderer.set_external_observations(hosts.observations());
     let (targets, sessions) = if renderer.has_renderer_plugins() {
         match TargetController::discover(
             connected.client.clone(),
@@ -757,17 +764,55 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         drop(connected.events);
         (None, Vec::new())
     };
-    let initial_outcomes = sessions
+    let initial_outcomes: Vec<_> = sessions
         .iter()
         .map(|session| RendererOutcome {
             target_id: session.target_id().to_owned(),
             result: renderer.attach(session),
         })
         .collect();
-    // Host initialization may make nested CDP requests; its independent owner
-    // continues pumping while the foreground waits for the initial observation.
-    while hosts.is_starting() {
-        std::thread::sleep(Duration::from_millis(10));
+    if initial_outcomes
+        .iter()
+        .any(|outcome| outcome.result.is_err())
+        || (renderer.has_renderer_plugins() && sessions.is_empty())
+    {
+        let logical = renderer.logical_plugins();
+        let mut affected = std::collections::BTreeSet::new();
+        for plugin in logical
+            .iter()
+            .filter(|plugin| plugin.manifest.renderer.is_some() && plugin.manifest.host.is_some())
+        {
+            affected.extend(crate::plugin_lifecycle::dependent_closure(
+                &logical,
+                &plugin.manifest.id,
+            ));
+        }
+        for failure in renderer.retire_package_renderers(&affected, "startup_cleanup") {
+            eprintln!(
+                "combined-startup-cleanup: plugin-id={}; error={}",
+                failure.plugin_id, failure.error
+            );
+        }
+        for observation in hosts.observations().into_iter().filter(|observation| {
+            affected.contains(&observation.plugin.manifest.id)
+                && observation.state == crate::plugin_execution::ExecutionState::Active
+        }) {
+            match hosts.begin_stop(
+                &observation.plugin.manifest.id,
+                observation.plugin.generation,
+            ) {
+                Ok(mut operation) => loop {
+                    if let Some(result) = operation.try_result() {
+                        if let Err(error) = result {
+                            eprintln!("combined-startup-cleanup: error={error}");
+                        }
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                },
+                Err(error) => eprintln!("combined-startup-cleanup: error={error}"),
+            }
+        }
     }
     renderer.set_external_observations(hosts.observations());
     status.publish_host_observation(hosts.execution_snapshot());
@@ -1070,7 +1115,16 @@ impl CodletRuntime {
                 }
             }
             let _ = self.renderer.pump_bindings()?;
-            self.host_control.poll(&self.hosts, &self.control);
+            self.host_control
+                .submit_self_disable_requests(&mut self.renderer, &self.control);
+            self.host_control
+                .poll(&mut self.renderer, &self.hosts, &self.control);
+            if self.host_control.needs_renderer_executor() {
+                let result = self
+                    .start_renderer_executor()
+                    .map_err(|error| error.to_string());
+                self.host_control.renderer_executor_result(result);
+            }
             let job = if self.host_control.is_pending() {
                 None
             } else {
@@ -1093,10 +1147,12 @@ impl CodletRuntime {
             };
             match job {
                 Some(ManagementJob::Cli(job)) => {
-                    if let Some(job) =
-                        self.host_control
-                            .dispatch(job, &self.renderer, &self.hosts, &self.control)
-                    {
+                    if let Some(job) = self.host_control.dispatch(
+                        job,
+                        &mut self.renderer,
+                        &self.hosts,
+                        &self.control,
+                    ) {
                         let mut result = self.renderer.manage_plugin(job.request);
                         if let Ok(report) = &mut result
                             && self.targets.is_none()
@@ -1113,7 +1169,7 @@ impl CodletRuntime {
                 }
                 Some(ManagementJob::Watch(selection)) => {
                     let plugin_id = selection.request.plugin_id.clone();
-                    if selection.is_host() {
+                    {
                         match self
                             .host_control
                             .submit_watched(selection.clone(), &self.control)
@@ -1128,12 +1184,6 @@ impl CodletRuntime {
                                 print_watch_result(&plugin_id, Err(error));
                             }
                         }
-                    } else {
-                        println!(
-                            "plugin-watch: plugin-id={plugin_id}; state=requested; action=reload"
-                        );
-                        let result = self.renderer.manage_watched_plugin(selection.request);
-                        print_watch_result(&plugin_id, result);
                     }
                 }
                 None => {}
@@ -1210,6 +1260,12 @@ impl CodletRuntime {
     }
 
     fn stop_hosts(&mut self) -> Result<(), HostError> {
+        for failure in self.renderer.retire_all_package_renderers() {
+            eprintln!(
+                "renderer-cleanup: plugin-id={}; target-id={}; error={}",
+                failure.plugin_id, failure.target_id, failure.error
+            );
+        }
         let mut first_error = None;
         let reports = self.hosts.stop();
         self.status

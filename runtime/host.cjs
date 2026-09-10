@@ -8,12 +8,16 @@ const { Module, createRequire } = require('node:module');
 const { Console } = require('node:console');
 const { TextDecoder } = require('node:util');
 const { performance } = require('node:perf_hooks');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const entry = process.argv[1];
 const snapshot = process.argv[2];
 const MAX_FRAME = 1024 * 1024;
 const MAX_PENDING = 16;
 const MAX_TIMEOUT = 15000;
 const MAX_CLEANUP = 1500;
+const MAX_PAYLOAD = MAX_FRAME - 4096;
+const MAX_INVOCATIONS = 4;
+const MAX_ENDPOINTS = 256;
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const positive = value => Number.isSafeInteger(value) && value > 0;
@@ -22,6 +26,10 @@ const rpcError = value => ({ code: String(value?.code || 'plugin_error').slice(0
 const abort = new AbortController();
 const pending = new Map();
 const subscriptions = new Map();
+const endpoints = new Map();
+const invocations = new Map();
+const invocationContext = new AsyncLocalStorage();
+let provides = [];
 let identity;
 let state = 'waiting';
 let nextId = 1;
@@ -81,6 +89,14 @@ function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup
     timeoutMs = Math.min(timeoutMs, Math.floor(cleanupDeadline - performance.now()));
     if (timeoutMs < 1) return Promise.reject(error('cleanup_timeout', 'the total Core cleanup budget expired'));
   }
+  const invocation = cleanup ? undefined : invocationContext.getStore();
+  if (invocation) {
+    if (invocation.closed) return Promise.reject(error('invocation_cancelled', 'the parent capability invocation has retired'));
+    timeoutMs = Math.min(timeoutMs, Math.floor(invocation.deadline - performance.now()));
+    if (timeoutMs < 1) return Promise.reject(error('request_timeout', 'the original capability invocation deadline expired'));
+    params = { invocationId: invocation.id, method, params };
+    method = 'capability.request';
+  }
   if (pending.size >= MAX_PENDING) return Promise.reject(error('request_limit', 'too many pending Core requests'));
   if (!positive(nextId)) return Promise.reject(error('request_ids_exhausted', 'this generation has exhausted request IDs'));
   const id = nextId++;
@@ -89,13 +105,15 @@ function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup
       pending.delete(id);
       reject(error(cleanup ? 'cleanup_timeout' : 'request_timeout', 'Core request deadline expired'));
     }, timeoutMs);
-    pending.set(id, { resolve, reject, timer, prepareResult });
+    pending.set(id, { resolve, reject, timer, prepareResult, invocation });
     try { send({ type: 'request', id, method, params }); }
     catch (failure) { clearTimeout(timer); pending.delete(id); reject(failure); }
   });
 }
 
 function retire() {
+  for (const invocation of invocations.values()) closeInvocation(invocation, error('host_stopping', 'Codlet is stopping this generation'));
+  endpoints.clear();
   if (!abort.signal.aborted) abort.abort(error('host_stopping', 'Codlet is stopping this generation'));
   for (const item of pending.values()) { clearTimeout(item.timer); item.reject(error('host_stopping', 'Codlet is stopping this generation')); }
   pending.clear();
@@ -103,7 +121,7 @@ function retire() {
 }
 
 function deactivate(cleanup) {
-  if (!deactivation) deactivation = Promise.resolve().then(() => loaded?.deactivate?.(cleanup));
+  if (!deactivation) deactivation = invocationContext.run(undefined, () => Promise.resolve().then(() => loaded?.deactivate?.(cleanup)));
   return deactivation;
 }
 
@@ -142,6 +160,11 @@ function shutdown(message) {
 }
 
 function context(params) {
+  if (!Array.isArray(params.provides ?? [])) throw error('protocol_error', 'Core host provides must be an array');
+  provides = (params.provides ?? []).map(capability => {
+    if (capabilityKey(capability) === null) throw error('protocol_error', 'invalid Core host capability declaration');
+    return Object.freeze({ name: capability.name, api: capability.api, scope: capability.scope });
+  });
   const cdp = Object.freeze({
     request(method, params = {}, options = {}) {
       return request('cdp.request', { method, params, ...options }, options.timeoutMs ?? MAX_TIMEOUT);
@@ -169,8 +192,86 @@ function context(params) {
   return Object.freeze({
     plugin: Object.freeze({ id: identity.pluginId, generation: identity.generation, version: params.pluginVersion }),
     root: process.cwd(), signal: abort.signal, cdp,
-    core: Object.freeze({ request }), log: console,
+    core: Object.freeze({ request(method, params, timeoutMs = MAX_TIMEOUT) {
+      return request(method, params, timeoutMs);
+    } }), log: console,
+    rpc: Object.freeze({ provide }),
   });
+}
+
+function capabilityKey(capability) {
+  if (!object(capability) || Object.keys(capability).some(key => !['name','api','scope'].includes(key))
+    || typeof capability.name !== 'string' || !positive(capability.api) || capability.api > 0xffffffff
+    || capability.scope !== 'target') return null;
+  return `${capability.name}@${capability.api}[${capability.scope}]`;
+}
+
+function provide(capability, method, handler) {
+  if (state !== 'starting' && state !== 'active') throw error('host_stopping', 'this generation no longer accepts capability endpoints');
+  if (typeof method !== 'string' || method.length < 1 || Buffer.byteLength(method) > 256 || /[\u0000-\u001f\u007f-\u009f]/u.test(method) || typeof handler !== 'function') {
+    throw error('invalid_provider', 'Host endpoint requires a valid method and function');
+  }
+  const key = capabilityKey(capability);
+  const declared = provides.find(provided => capabilityKey(provided) === key);
+  if (key === null || !declared) throw error('invalid_provider', 'Host endpoint is not declared by the plugin');
+  const endpointKey = `${key}\u0000${method}`;
+  if (endpoints.has(endpointKey)) throw error('invalid_provider', `Host endpoint ${method} is already registered`);
+  if (endpoints.size >= MAX_ENDPOINTS) throw error('request_limit', 'Host endpoint registration limit reached');
+  endpoints.set(endpointKey, { capability: declared, handler });
+  return Object.freeze({ ok: true });
+}
+
+function closeInvocation(invocation, reason) {
+  if (invocation.closed) return;
+  invocation.closed = true;
+  invocations.delete(invocation.id);
+  clearTimeout(invocation.timer);
+  invocation.abort.abort(reason);
+  for (const [id, item] of pending) {
+    if (item.invocation === invocation) {
+      pending.delete(id); clearTimeout(item.timer); item.reject(reason);
+    }
+  }
+}
+
+function invokeCapability(message) {
+  const input = message.params;
+  if (state !== 'active') return reply(message.id, null, error('host_stopping', 'this provider generation is not active'));
+  if (!object(input) || Object.keys(input).some(key => !['capability','method','params','caller','remainingMs'].includes(key))
+    || capabilityKey(input.capability) === null || typeof input.method !== 'string'
+    || !Number.isInteger(input.remainingMs) || input.remainingMs < 1 || input.remainingMs > MAX_TIMEOUT
+    || !object(input.caller) || Object.keys(input.caller).some(key => !['pluginId','generation','targetId','documentEpoch'].includes(key))
+    || typeof input.caller.pluginId !== 'string' || !positive(input.caller.generation)
+    || typeof input.caller.targetId !== 'string' || !positive(input.caller.documentEpoch)) {
+    throw error('protocol_error', 'invalid Core capability invocation');
+  }
+  const endpoint = endpoints.get(`${capabilityKey(input.capability)}\u0000${input.method}`);
+  if (!endpoint) return reply(message.id, null, error('method_not_found', 'the declared Host capability has no registered method'));
+  if (invocations.size >= MAX_INVOCATIONS) return reply(message.id, null, error('request_limit', 'this Host has four active capability invocations'));
+  const invocation = { id: message.id, deadline: performance.now() + input.remainingMs, abort: new AbortController(), closed: false, timer: undefined };
+  invocations.set(message.id, invocation);
+  const caller = Object.freeze({ pluginId: input.caller.pluginId, generation: input.caller.generation, targetId: input.caller.targetId, documentEpoch: input.caller.documentEpoch });
+  const context = Object.freeze({
+    pluginId: identity.pluginId, generation: identity.generation, capability: endpoint.capability,
+    method: input.method, caller, signal: invocation.abort.signal,
+    remainingMs: () => Math.max(0, Math.floor(invocation.deadline - performance.now())),
+  });
+  const finish = (result, failure) => {
+    if (invocation.closed) return;
+    closeInvocation(invocation, failure ?? error('invocation_cancelled', 'the capability handler has completed'));
+    if (!failure) {
+      try {
+        const encoded = JSON.stringify(result ?? null);
+        if (encoded === undefined || Buffer.byteLength(encoded) > MAX_PAYLOAD) throw error('response_too_large', 'Host capability result exceeds the payload limit');
+      } catch (reason) { failure = reason; }
+    }
+    reply(message.id, result, failure);
+  };
+  invocation.timer = setTimeout(() => finish(null, error('request_timeout', 'the original capability invocation deadline expired')), input.remainingMs);
+  invocationContext.run(invocation, () => Promise.resolve().then(() => {
+    if (invocation.closed) throw error('invocation_cancelled', 'the capability invocation has retired');
+    return endpoint.handler(input.params, context);
+  })).then(result => finish(result), failure => finish(null, failure)).catch(fatal);
 }
 
 function loadPlugin() {
@@ -221,6 +322,12 @@ function handle(message) {
     return;
   }
   if (message.type === 'notification') {
+    if (message.method === 'capability.cancel') {
+      if (!object(message.params) || !positive(message.params.invocationId)) throw error('protocol_error', 'invalid Core capability cancellation');
+      const invocation = invocations.get(message.params.invocationId);
+      if (invocation) closeInvocation(invocation, error(message.params.code, message.params.message));
+      return;
+    }
     const id = message.params?.subscriptionId;
     const subscription = subscriptions.get(id);
     if (!subscription) return;
@@ -258,6 +365,8 @@ function handle(message) {
     }).catch(fatal);
   } else if (message.method === 'shutdown' && state !== 'stopping') {
     shutdown(message);
+  } else if (message.method === 'capability.invoke') {
+    invokeCapability(message);
   } else reply(message.id, null, error('method_not_found', 'unsupported lifecycle request'));
 }
 

@@ -263,6 +263,8 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
     let mut plugin_metadata: BTreeMap<String, Value> = BTreeMap::new();
     let mut management_request_id = 0_u64;
     let mut management_response = Value::Null;
+    let mut capability_responses: Vec<Value> = Vec::new();
+    let mut pending_host_activations: BTreeMap<String, (u64, String)> = BTreeMap::new();
     let mut trace: Vec<Value> = Vec::new();
     let mut sequence = 100_u64;
     let mut command_count = 0_u64;
@@ -373,6 +375,27 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                     if timed_out {
                         continue;
                     }
+                    if !fail && expression.contains("fixture-await-host-capability") {
+                        management_request_id += 1;
+                        let capability = metadata["requires"]
+                            .as_array()
+                            .and_then(|items| items.first())
+                            .ok_or_else(|| {
+                                FakeChildError::InvalidRequest(
+                                    "held activation needs a declared capability".into(),
+                                )
+                            })?;
+                        pending_host_activations.insert(binding.into(), (id, session.clone()));
+                        write_json_frame(
+                            output,
+                            &json!({"method":"Runtime.bindingCalled","sessionId":session,"params":{
+                                "name":binding,"executionContextId":context_id,
+                                "payload":json!({"v":1,"type":"request","pluginId":metadata["id"],"generation":metadata["generation"],"id":management_request_id,
+                                    "capability":capability,"method":"inspect","params":{"heldActivation":true}}).to_string()
+                            }}),
+                        )?;
+                        continue;
+                    }
                     if (fail
                         || (session == "session-second"
                             && expression.contains("fixture-revoke-on-activate")))
@@ -432,6 +455,33 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                         .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
                     management_response = serde_json::from_str(&decoded)
                         .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                    let encoded_binding = expression
+                        .split_once(".__rpcReceive(")
+                        .and_then(|(_, tail)| tail.split_once(", JSON.parse("))
+                        .map(|(binding, _)| binding)
+                        .ok_or_else(|| {
+                            FakeChildError::InvalidRequest(
+                                "response has no binding identity".into(),
+                            )
+                        })?;
+                    let response_binding: String = serde_json::from_str(encoded_binding)
+                        .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                    capability_responses.push(json!({"sessionId":session,"contextId":context_id,"binding":response_binding,"response":management_response}));
+                    if let Some((activation_id, activation_session)) =
+                        pending_host_activations.remove(&response_binding)
+                    {
+                        let ok = management_response["ok"] == true;
+                        write_evaluation_value(
+                            output,
+                            activation_id,
+                            if ok {
+                                json!({"ok":true})
+                            } else {
+                                json!({"ok":false,"error":management_response["error"]["message"]})
+                            },
+                            &activation_session,
+                        )?;
+                    }
                 }
                 result = json!({"result":{"type":"object","value":value}});
             }
@@ -463,6 +513,39 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                 )?;
             }
             "Fake.managementResponse" => result = std::mem::take(&mut management_response),
+            "Fake.emitCapabilityCall" => {
+                let target_session = format!("session-{}", params["targetId"].as_str().unwrap());
+                let (binding, (owner, world)) = bindings
+                    .iter()
+                    .find(|(binding, (owner, _))| {
+                        owner == &target_session
+                            && plugin_metadata
+                                .get(*binding)
+                                .is_some_and(|metadata| metadata["id"] == params["pluginId"])
+                    })
+                    .ok_or_else(|| {
+                        FakeChildError::InvalidRequest("capability caller is not loaded".into())
+                    })?;
+                let metadata = &plugin_metadata[binding];
+                let context_id = contexts[&(owner.clone(), world.clone())];
+                management_request_id += 1;
+                let mut payload = params.get("payload").cloned().unwrap_or_else(|| json!({
+                    "v":1,"type":"request","pluginId":metadata["id"],"generation":metadata["generation"],
+                    "id":params.get("requestId").cloned().unwrap_or(json!(management_request_id)),
+                    "capability":params["capability"],"method":params["method"],"params":params.get("params").cloned().unwrap_or(Value::Null)
+                }));
+                if params["notification"] == true {
+                    payload["type"] = json!("notification");
+                    payload.as_object_mut().unwrap().remove("id");
+                }
+                write_json_frame(
+                    output,
+                    &json!({"method":"Runtime.bindingCalled","sessionId":owner,"params":{
+                        "name":binding,"executionContextId":params.get("contextId").cloned().unwrap_or(json!(context_id)),"payload":payload.to_string()
+                    }}),
+                )?;
+            }
+            "Fake.capabilityResponses" => result = json!(capability_responses),
             "Fake.unconfirmContext" => {
                 let target_session = format!("session-{}", params["targetId"].as_str().unwrap());
                 let world = params["world"].as_str().unwrap().to_owned();

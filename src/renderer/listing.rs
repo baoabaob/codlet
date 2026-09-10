@@ -54,7 +54,7 @@ pub(super) fn plugin_list(
         let runtime = loaded.get(id).copied();
         let observation = external.get(id).copied();
         let observed_plugin = observation.map(|observation| &observation.plugin).or(runtime);
-        let is_loaded = observation.map_or(runtime.is_some(), |observation| {
+        let is_loaded = runtime.is_some() || observation.is_some_and(|observation| {
             matches!(observation.state, ExecutionState::Starting | ExecutionState::Active | ExecutionState::Stopping)
         });
         let registration = registry.local_plugins().get(id);
@@ -93,7 +93,11 @@ pub(super) fn plugin_list(
             "requestedPermissions":metadata.map(|plugin| &plugin.manifest.permissions),
             "validation":validation,
             "enabled":registry.is_enabled(id),
-            "active":observation.map_or(runtime.is_some() && active_plugin_ids.contains(id), |observation| observation.state == ExecutionState::Active),
+            "active":metadata.is_some_and(|plugin| {
+                let renderer_active = plugin.manifest.renderer.is_none() || (active_plugin_ids.contains(id) && runtime.is_some_and(|runtime| runtime.generation == plugin.generation));
+                let host_active = plugin.manifest.host.is_none() || observation.is_some_and(|observation| observation.state == ExecutionState::Active && observation.plugin.generation == plugin.generation);
+                renderer_active && host_active
+            }),
             "registered":bundled || registration.is_some(),
             "loaded":is_loaded,
             "generation":observed_plugin.map(|plugin| plugin.generation),
@@ -105,6 +109,9 @@ pub(super) fn plugin_list(
                 "kind":"host", "state":observation.state,
                 "processId":observation.process_id, "error":observation.error,
             });
+            if observation.plugin.manifest.renderer.is_some() {
+                row["execution"]["rendererActive"] = json!(runtime.is_some_and(|runtime| runtime.generation == observation.plugin.generation) && active_plugin_ids.contains(id));
+            }
         }
         row
     }).collect();
@@ -124,6 +131,49 @@ mod tests {
             .iter()
             .find(|plugin| plugin["id"] == id)
             .expect("plugin should be listed")
+    }
+
+    #[test]
+    fn combined_row_requires_both_entries_at_the_same_generation() {
+        let directory = tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        let mut plugin = LoadedPlugin {
+            manifest: crate::plugins::PluginManifest::parse(&json!({"schema":1,"id":"dev.combined","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js"},"permissions":["host.process"]}).to_string()).unwrap(),
+            source: Some("module.exports={};".into()), host: None, generation: 4,
+        };
+        let catalog = PluginCatalog::from_bundled(vec![plugin.clone()]);
+        let mut observation = PluginExecutionObservation {
+            plugin: plugin.clone(),
+            state: ExecutionState::Active,
+            process_id: Some(123),
+            error: None,
+        };
+        let active = BTreeSet::from(["dev.combined".to_owned()]);
+        let list = |plugin: &LoadedPlugin, observation: &PluginExecutionObservation| {
+            plugin_list(
+                &catalog,
+                std::slice::from_ref(plugin),
+                &registry,
+                &active,
+                std::slice::from_ref(observation),
+            )
+        };
+        let ready = list(&plugin, &observation);
+        assert_eq!(ready["plugins"].as_array().unwrap().len(), 1);
+        assert_eq!(row(&ready, "dev.combined")["active"], true);
+        assert_eq!(row(&ready, "dev.combined")["execution"]["kind"], "host");
+        plugin.generation = 5;
+        let mixed = list(&plugin, &observation);
+        assert_eq!(row(&mixed, "dev.combined")["active"], false);
+        assert_eq!(
+            row(&mixed, "dev.combined")["execution"]["rendererActive"],
+            false
+        );
+        observation.plugin.generation = 5;
+        observation.state = ExecutionState::Failed;
+        let failed = list(&plugin, &observation);
+        assert_eq!(row(&failed, "dev.combined")["loaded"], true);
+        assert_eq!(row(&failed, "dev.combined")["active"], false);
     }
 
     #[test]

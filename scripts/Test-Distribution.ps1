@@ -48,7 +48,9 @@ function Test-Manifest([string]$Directory) {
     }
     $actual = @(Get-ChildItem -LiteralPath $Directory -File -Recurse)
     Assert-Condition ($actual.Count -eq $manifest.files.Count + 1) 'Package contains unlisted files.'
-    Assert-Condition ($listed.Contains('examples/raw-host/codlet.json') -and $listed.Contains('examples/cleanup-host/codlet.json') -and $listed.Contains('types/host.d.ts')) 'Missing required development payload.'
+    foreach ($required in @('examples/raw-host/codlet.json', 'examples/cleanup-host/codlet.json', 'types/host.d.ts', 'examples/local-host-renderer-capability/codlet.json', 'examples/local-host-renderer-capability/host.js', 'examples/local-host-renderer-capability/renderer.js', 'docs/COMBINED_PACKAGES_2026-09-10.md', 'docs/HOST_CAPABILITY_2026-09-10.md')) {
+        Assert-Condition ($listed.Contains($required)) ("Missing required development payload: " + $required)
+    }
     Assert-Condition (-not $listed.Contains('config.json') -and -not $listed.Contains('settings.json')) 'User configuration entered the distribution.'
     $manifest
 }
@@ -134,7 +136,8 @@ $checks.Add('incorrect Node and LICENSE digests rejected before publication')
 
 Test-Candidate $firstPath 'raw-host' 'example.raw-host'
 Test-Candidate $firstPath 'cleanup-host' 'example.cleanup-host'
-$checks.Add('both packaged examples inspect without trust or private registry creation')
+Test-Candidate $firstPath 'local-host-renderer-capability' 'example.combined'
+$checks.Add('all three packaged examples inspect without trust or private registry creation')
 Assert-Condition (@(Get-ChildItem -LiteralPath $OutputRoot -Directory -Force | Where-Object { $_.Name.StartsWith('.codlet-package-') }).Count -eq 0) 'An unsuccessful packaging attempt left staging directories.'
 $report = [ordered]@{ schema = 1; status = 'passed'; executableSha256 = Get-Sha256 $CodletExecutable; checks = $checks.ToArray(); first = $first; repeated = $second }
 $reportPath = Join-Path $OutputRoot 'packaging-acceptance.json'

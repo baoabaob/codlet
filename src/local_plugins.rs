@@ -54,11 +54,18 @@ pub struct LocalWatchSource<'a> {
 pub(crate) enum LocalWatchExecutor {
     Renderer,
     Host,
+    Combined,
 }
 
 impl LocalWatchSource<'_> {
     pub(crate) fn executor(&self) -> Option<LocalWatchExecutor> {
         if self.plugin.manifest.renderer.is_some()
+            && self.plugin.source.is_some()
+            && self.plugin.manifest.host.is_some()
+            && self.plugin.host.is_some()
+        {
+            Some(LocalWatchExecutor::Combined)
+        } else if self.plugin.manifest.renderer.is_some()
             && self.plugin.source.is_some()
             && self.plugin.manifest.host.is_none()
         {
@@ -81,7 +88,7 @@ impl LocalWatchSource<'_> {
                 .renderer
                 .as_ref()
                 .map(|entry| entry.entry.as_str()),
-            LocalWatchExecutor::Host => self
+            LocalWatchExecutor::Host | LocalWatchExecutor::Combined => self
                 .plugin
                 .manifest
                 .host
@@ -131,16 +138,17 @@ pub(crate) fn checked_host_watch_root(expected: &Path) -> Result<PathBuf, HostWa
 }
 
 pub(crate) fn loaded_watch_fingerprint(plugin: &LoadedPlugin) -> LocalWatchFingerprint {
-    let source = plugin
-        .source
-        .as_deref()
-        .or_else(|| plugin.host.as_ref().map(|host| host.source.as_ref()));
-    semantic_watch_fingerprint(&plugin.manifest, source)
+    semantic_watch_fingerprint(
+        &plugin.manifest,
+        plugin.source.as_deref(),
+        plugin.host.as_ref().map(|host| host.source.as_ref()),
+    )
 }
 
 fn semantic_watch_fingerprint(
     manifest: &PluginManifest,
     source: Option<&str>,
+    host_source: Option<&str>,
 ) -> LocalWatchFingerprint {
     let mut hash = DefaultHasher::new();
     0_u8.hash(&mut hash);
@@ -148,6 +156,7 @@ fn semantic_watch_fingerprint(
         .expect("typed manifest serialization cannot fail")
         .hash(&mut hash);
     source.hash(&mut hash);
+    host_source.hash(&mut hash);
     LocalWatchFingerprint(hash.finish())
 }
 
@@ -163,7 +172,7 @@ pub(crate) fn inspect_watch_fingerprint(
     let mut hash = DefaultHasher::new();
     1_u8.hash(&mut hash);
     let root = match executor {
-        LocalWatchExecutor::Host => checked_host_watch_root(root)?,
+        LocalWatchExecutor::Host | LocalWatchExecutor::Combined => checked_host_watch_root(root)?,
         LocalWatchExecutor::Renderer => match canonical_local_root(root) {
             Ok(root) => root,
             Err(error) => {
@@ -188,11 +197,12 @@ pub(crate) fn inspect_watch_fingerprint(
         && match executor {
             LocalWatchExecutor::Renderer => manifest.renderer.is_none() || manifest.host.is_some(),
             LocalWatchExecutor::Host => manifest.host.is_none() || manifest.renderer.is_some(),
+            LocalWatchExecutor::Combined => manifest.host.is_none() || manifest.renderer.is_none(),
         }
     {
         // Observe kind changes without reading the other executor's entry. The
         // lifecycle coordinator rejects migration before retiring current code.
-        return Ok(semantic_watch_fingerprint(manifest, None));
+        return Ok(semantic_watch_fingerprint(manifest, None, None));
     }
     let entry = manifest
         .as_ref()
@@ -201,7 +211,9 @@ pub(crate) fn inspect_watch_fingerprint(
                 .renderer
                 .as_ref()
                 .map(|renderer| renderer.entry.as_str()),
-            LocalWatchExecutor::Host => manifest.host.as_ref().map(|host| host.entry.as_str()),
+            LocalWatchExecutor::Host | LocalWatchExecutor::Combined => {
+                manifest.host.as_ref().map(|host| host.entry.as_str())
+            }
         })
         .unwrap_or(current_entry);
     if let Err(error) = validate_entry(&root, entry) {
@@ -217,7 +229,34 @@ pub(crate) fn inspect_watch_fingerprint(
     };
     source_bytes.hash(&mut hash);
     if let (Some(manifest), Ok(source)) = (manifest, std::str::from_utf8(&source_bytes)) {
-        return Ok(semantic_watch_fingerprint(&manifest, Some(source)));
+        if executor == LocalWatchExecutor::Combined {
+            let entry = &manifest
+                .renderer
+                .as_ref()
+                .expect("combined shape checked")
+                .entry;
+            let renderer_bytes = match validate_entry(&root, entry).and_then(|()| {
+                read_bytes(&root, entry, MAX_SOURCE_BYTES, "watch renderer JS entry")
+            }) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    error.to_string().hash(&mut hash);
+                    return Ok(LocalWatchFingerprint(hash.finish()));
+                }
+            };
+            renderer_bytes.hash(&mut hash);
+            if let Ok(renderer_source) = std::str::from_utf8(&renderer_bytes) {
+                return Ok(semantic_watch_fingerprint(
+                    &manifest,
+                    Some(renderer_source),
+                    Some(source),
+                ));
+            }
+        } else if executor == LocalWatchExecutor::Host {
+            return Ok(semantic_watch_fingerprint(&manifest, None, Some(source)));
+        } else {
+            return Ok(semantic_watch_fingerprint(&manifest, Some(source), None));
+        }
     }
     Ok(LocalWatchFingerprint(hash.finish()))
 }
@@ -451,18 +490,22 @@ pub fn load_local_plugin(
 }
 
 fn validate_local_manifest(manifest: &PluginManifest, path: &Path) -> Result<(), LocalPluginError> {
-    if manifest.renderer.is_some() && manifest.host.is_some() {
-        return Err(reject(
-            path,
-            "entry validation",
-            "combined host and renderer entries are not implemented; use one entry kind",
-        ));
-    }
-    if manifest.host.is_some() && (!manifest.provides.is_empty() || !manifest.requires.is_empty()) {
+    if manifest.renderer.is_none() && !manifest.requires.is_empty() {
         return Err(reject(
             path,
             "host capability routing",
-            "host provides/requires are unsupported until cross-executor capability routing is implemented",
+            "host-side requirements are not implemented",
+        ));
+    }
+    if manifest
+        .host_provides()
+        .iter()
+        .any(|capability| capability.scope != crate::capabilities::CapabilityScope::Target)
+    {
+        return Err(reject(
+            path,
+            "host capability routing",
+            "host capabilities currently support target scope only",
         ));
     }
     if manifest
@@ -490,11 +533,10 @@ fn require_supported_permission(
 ) -> Result<(), LocalPluginError> {
     // This is the current loader's implementation boundary. Capability names,
     // API versions, scopes, and runtime authorization stay in the existing kernel.
-    let supported = if manifest.host.is_some() {
-        matches!(permission, Permission::HostProcess | Permission::CdpRaw)
-    } else {
-        matches!(permission, Permission::UiDom | Permission::RuntimeManage)
-    };
+    let supported = (manifest.host.is_some()
+        && matches!(permission, Permission::HostProcess | Permission::CdpRaw))
+        || (manifest.renderer.is_some()
+            && matches!(permission, Permission::UiDom | Permission::RuntimeManage));
     if supported {
         Ok(())
     } else {

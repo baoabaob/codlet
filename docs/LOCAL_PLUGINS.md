@@ -11,6 +11,9 @@ Opt-in file watching now also supports loaded host JS entries; see
 [host watching](HOST_WATCH_2026-09-10.md). Doctor now uses
 [execution inspection](HOST_INSPECTION_2026-09-10.md) for actual host process and
 cleanup facts; legacy status-v1 and Inspect retain their existing field sets.
+One package can now contain both entries and expose a native Host capability to
+its own renderer. See [combined packages](COMBINED_PACKAGES_2026-09-10.md) and the
+[combined example](../examples/local-host-renderer-capability/README.md).
 
 Codlet loads explicitly registered local directories at session startup or through
 the running Host's enable/reload commands. Registration, inspection, and removal
@@ -36,6 +39,7 @@ codlet plugin add "C:\my-plugins\example" --trust --grant ui.dom
 
 Repeat `--grant` for multiple permissions. Isolated renderer entries support
 `ui.dom` and `runtime.manage`; host JS entries support `host.process` and `cdp.raw`.
+Combined packages may declare the permissions needed by either entry.
 Unsupported worlds, permissions, or missing grants are rejected. Extra grants are
 recorded only when explicitly supplied; the runtime uses permissions declared by
 the manifest that also pass the grant check. The `--trust` flag is user consent, not an OS sandbox: these are
@@ -110,11 +114,11 @@ unchanged status-v1 sampled snapshot. See [the doctor runtime inspection contrac
 The current renderer RPC transport supports target-scoped requirements; the
 generic kernel's other scope declarations do not imply a working renderer route.
 
-Use `codlet launch --watch` to observe the manifest and declared host or renderer
-JS entry of local plugins already loaded by that Host. The observer shares one
+Use `codlet launch --watch` to observe the manifest and all declared host/renderer
+JS entries of local plugins already loaded by that Host. The observer shares one
 four-source scan budget and waits for two matching samples plus a quiet interval.
-Renderer dependency closures remain grouped; each host uses its existing online
-reload transaction and a single queryable receipt. A failed host candidate keeps
+The complete dependency closure, including native providers and their renderer
+consumers, uses one online transaction and queryable receipt. A failed candidate keeps
 its attempted signature across rollback generations, so an unchanged bad version
 does not keep restarting the restored code.
 
@@ -146,12 +150,18 @@ may return promises. Renderer code is not a Node process and has no general Node
 `require` API. There is no package installation, dependency bundling, or remote
 source loading in this slice.
 
-The loader limits manifests to 128 KiB and renderer source to 1 MiB, requires
+The loader limits manifests to 128 KiB and each JS entry to 1 MiB, requires
 regular UTF-8 files for both host and renderer, and rejects root network/device paths, entry traversal, Windows
 device names, alternate data streams, and linked/reparse entry paths. The selected
 root may be canonicalized from a local alias, but linked files below it are refused.
 These checks do not claim isolation from a malicious process running as the same
 Windows user.
+
+For combined packages, top-level `provides` / `requires` belong to the renderer;
+`host.provides` declares native endpoints. Host-only packages keep their existing
+top-level `provides` field and reject nonempty `host.provides`. Native endpoints
+currently use Target scope, and Host-side capability requirements remain unsupported.
+The loader keeps both JS entry snapshots at one logical generation.
 
 ## Runnable example
 

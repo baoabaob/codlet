@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "example.combined",
+  "version": "1.0.0",
+  "renderer": { "entry": "renderer.js", "world": "isolated" },
+  "host": {
+    "entry": "host.js",
+    "provides": [{ "name": "example.combined.host", "api": 1, "scope": "target" }]
+  },
+  "requires": [{ "name": "example.combined.host", "api": 1, "scope": "target" }],
+  "permissions": ["host.process", "cdp.raw"]
+}
