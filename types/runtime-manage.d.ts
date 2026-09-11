@@ -25,9 +25,51 @@ export interface RuntimeManageDescriptor {
 
 /** prepare uses plugin_id, matching the existing control receipt protocol. */
 export type PluginControlRequest =
-  | { action: 'enable' | 'reload'; plugin_id: string; permission?: never; cascade?: false }
-  | { action: 'disable'; plugin_id: string; permission?: never; cascade?: boolean }
-  | { action: 'revoke'; plugin_id: string; permission: PluginPermission };
+  | { action: 'enable' | 'reload'; plugin_id: string; permission?: never; cascade?: false; local_import?: never }
+  | { action: 'disable' | 'remove'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never }
+  | { action: 'revoke'; plugin_id: string; permission: PluginPermission; cascade?: false; local_import?: never }
+  | { action: 'import'; plugin_id: string; local_import: LocalImportRequest; permission?: never; cascade?: false };
+
+export interface LocalImportRequest {
+  /** Exact canonical directory returned by previewLocal. The directory remains author-owned. */
+  path: string;
+  contentDigest: string;
+  registrationDigest: string;
+  trusted: true;
+  grants: PluginPermission[];
+  brokerPolicy?: BrokerPolicy;
+  /** Defaults to false; activation uses the same receipt as registration. */
+  enable?: boolean;
+}
+
+export interface ImportCapability { name: string; api: number; scope: 'runtime' | 'target' | 'backend-session' | 'thread'; }
+export interface LocalImportPreview {
+  schema: 1;
+  kind: 'codlet.local-import-preview';
+  path: string;
+  contentDigest: string;
+  registrationDigest: string;
+  ownership: 'development-directory';
+  existingRegistration: LocalPluginRegistration | null;
+  existingEnabled: boolean;
+  manifest: {
+    schema: 1; id: string; name?: string; version: string;
+    renderer?: { entry: string; world: 'isolated' | 'main' };
+    host?: { entry: string; provides?: ImportCapability[]; requires?: ImportCapability[] };
+    permissions: PluginPermission[]; provides: ImportCapability[]; requires: ImportCapability[];
+  };
+  /** Present on the live public service; CLI preview has no running-session assertion. */
+  watchEnabled?: boolean;
+  dependencyCheck?: {
+    basis: 'runtime_list'; sampledAtUnixMs: number | null;
+    requirements: { entry: 'host' | 'renderer'; capability: ImportCapability; status: 'available' | 'unavailable' | 'declared_by_import' | 'unknown' }[];
+  };
+}
+
+export type FolderSelection =
+  | { selectionId: string; status: 'selecting' | 'cancelled' }
+  | { selectionId: string; status: 'selected'; path: string }
+  | { selectionId: string; status: 'failed'; error: string };
 
 /** submit and operation take camelCase input even though replies are snake_case. */
 export interface RuntimeManageOperationInput { operationId: string; }
@@ -43,7 +85,7 @@ export interface PluginTargetFailure {
 }
 
 export interface PluginControlReport {
-  action: 'enable' | 'disable' | 'reload' | 'revoke';
+  action: 'enable' | 'disable' | 'reload' | 'revoke' | 'import' | 'remove';
   plugin_id: string;
   outcome: 'applied' | 'unchanged' | 'rolled_back' | 'degraded';
   desired_enabled: boolean;
@@ -96,7 +138,10 @@ export interface RuntimeManagePlugin {
   source: 'bundled' | 'local';
   path: string | null;
   grants: PluginPermission[];
+  brokerPolicy?: BrokerPolicy | null;
+  ownership?: 'bundled' | 'development-directory';
   requestedPermissions: PluginPermission[] | null;
+  providedCapabilities?: ImportCapability[] | null;
   validation: PluginValidation;
   enabled: boolean;
   active: boolean;
@@ -116,7 +161,10 @@ export interface RuntimeManagePlugin {
 }
 
 /** Managed renderer list retains immediate registry semantics and may omit time. */
-export interface RuntimeManageList { plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number; }
+export interface RuntimeManageList {
+  plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
+  localManagement?: { available: true; watchEnabled: boolean; folderPicker: boolean };
+}
 /** The Host runtime.manage service always identifies the owner-published sample time. */
 export interface RuntimeManageSnapshot extends RuntimeManageList { sampledAtUnixMs: number; }
 
@@ -125,6 +173,10 @@ export interface RuntimeManageMethods {
   prepare: { params: PluginControlRequest; result: ControlReport };
   submit: { params: RuntimeManageOperationInput; result: ControlReport };
   operation: { params: RuntimeManageOperationInput; result: ControlReport };
+  previewLocal: { params: { path: string }; result: LocalImportPreview };
+  permissions: { params: { pluginId: string }; result: PluginPermissionsReport };
+  chooseLocalFolder: { params: null; result: FolderSelection };
+  folderSelection: { params: { selectionId: string }; result: FolderSelection };
 }
 
 /** Read-only `codlet plugin permissions <id> --json`; no active-state assertion. */

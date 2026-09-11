@@ -106,6 +106,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             plugin_id: "dev.list.removed".into(),
             permission: None,
             cascade: false,
+            local_import: None,
         })
         .unwrap();
     let mut external = PluginRegistry::load(&registry_path).unwrap();
@@ -177,6 +178,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             plugin_id: "dev.list.running".into(),
             permission: None,
             cascade: false,
+            local_import: None,
         })
         .unwrap();
     assert!(stopped.is_success());

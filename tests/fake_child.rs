@@ -96,6 +96,7 @@ fn control_request(
         plugin_id: id.to_owned(),
         permission: None,
         cascade: false,
+        local_import: None,
     }
 }
 

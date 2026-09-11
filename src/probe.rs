@@ -17,15 +17,15 @@ use crate::diagnostics::{
 use crate::host_control::HostControl;
 use crate::host_runtime::{HostCoreServices, HostRuntime};
 use crate::js_runtime::JsRuntime;
-use crate::local_plugins::{LocalPluginError, inspect_local_plugin};
+use crate::local_plugins::LocalPluginError;
 use crate::plugin_control::{
     PluginControlAction, PluginControlError, PluginControlReport, PluginControlRequest,
 };
 use crate::plugin_host::HostError;
 use crate::plugin_watch::PluginWatcher;
 use crate::plugins::{
-    LoadedPlugin, LocalPluginRegistration, ManifestError, Permission, PluginRegistry,
-    PluginRegistryError, bundled_plugins, default_registry_path,
+    LoadedPlugin, ManifestError, Permission, PluginRegistry, PluginRegistryError, bundled_plugins,
+    default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
 use crate::runtime_control::{ControlBroker, ControlJob, ControlReport, ControlStatus};
@@ -273,14 +273,21 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             if command == OsStr::new("plugin")
                 && matches!(
                     action.to_str(),
-                    Some("enable" | "disable" | "reload" | "operation")
+                    Some("enable" | "disable" | "reload" | "remove" | "operation")
                 ) =>
         {
-            let json = match options {
-                [] => false,
-                [option] if option == OsStr::new("--json") => true,
-                _ => return Err(ProbeError::Usage),
-            };
+            let json = options.iter().any(|option| option == OsStr::new("--json"));
+            let cascade = options
+                .iter()
+                .any(|option| option == OsStr::new("--cascade"));
+            if options.len() != usize::from(json) + usize::from(cascade)
+                || options.iter().any(|option| {
+                    option != OsStr::new("--json") && option != OsStr::new("--cascade")
+                })
+                || (cascade && !matches!(action.to_str(), Some("disable" | "remove")))
+            {
+                return Err(ProbeError::Usage);
+            }
             let plugin_id = plugin_id.to_str().ok_or(ProbeError::Usage)?;
             if action == OsStr::new("operation") {
                 crate::plugin_cli::operation(plugin_id, json)?;
@@ -289,6 +296,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                     "enable" => PluginControlAction::Enable,
                     "disable" => PluginControlAction::Disable,
                     "reload" => PluginControlAction::Reload,
+                    "remove" => PluginControlAction::Remove,
                     _ => unreachable!(),
                 };
                 crate::plugin_cli::manage(
@@ -296,7 +304,8 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                         action,
                         plugin_id: plugin_id.into(),
                         permission: None,
-                        cascade: false,
+                        cascade,
+                        local_import: None,
                     },
                     json,
                 )?;
@@ -330,6 +339,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                     plugin_id: plugin_id.to_str().ok_or(ProbeError::Usage)?.into(),
                     permission: Some(permission),
                     cascade: false,
+                    local_import: None,
                 },
                 json,
             )?;
@@ -341,10 +351,29 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             let options = parse_plugin_trust_options(options)?;
             add_local_plugin(Path::new(directory), options)
         }
-        [command, action, plugin_id]
-            if command == OsStr::new("plugin") && action == OsStr::new("remove") =>
+        [command, action, directory, options @ ..]
+            if command == OsStr::new("plugin") && action == OsStr::new("preview") =>
         {
-            remove_local_plugin(plugin_id.to_str().ok_or(ProbeError::Usage)?)
+            let json = match options {
+                [] => false,
+                [option] if option == OsStr::new("--json") => true,
+                _ => return Err(ProbeError::Usage),
+            };
+            let registry = PluginRegistry::load_default()?;
+            let preview = crate::local_import::preview(&registry, Path::new(directory))
+                .map_err(crate::plugin_cli::PluginCliError::from)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&preview).expect("preview is serializable")
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&preview).expect("preview is serializable")
+                );
+            }
+            Ok(())
         }
         [command, confirmation]
             if command == OsStr::new("m0-probe")
@@ -778,7 +807,8 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let has_hosts = !host_plugins.is_empty();
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
-    let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone());
+    let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
+        .with_local_management(renderer.registry_path().to_owned(), options.watch);
     renderer.set_manage_service(manage_service.clone());
     let os_broker = crate::os_broker::OsBroker::for_registry(renderer.registry_path().to_owned())?;
     let hosts = HostRuntime::start_with_services(
@@ -960,6 +990,8 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
 #[derive(Default)]
 struct PluginTrustOptions {
     trusted: bool,
+    enable: bool,
+    json: bool,
     grants: Vec<Permission>,
     read_roots: Vec<PathBuf>,
     network_origins: Vec<String>,
@@ -972,6 +1004,10 @@ fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptio
     while let Some(argument) = arguments.next() {
         if argument == OsStr::new("--trust") && !options.trusted {
             options.trusted = true;
+        } else if argument == OsStr::new("--enable") && !options.enable {
+            options.enable = true;
+        } else if argument == OsStr::new("--json") && !options.json {
+            options.json = true;
         } else if argument == OsStr::new("--grant") {
             let permission = arguments
                 .next()
@@ -1019,51 +1055,53 @@ fn permission_list(permissions: &[Permission]) -> String {
 }
 
 fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(), ProbeError> {
-    let candidate = inspect_local_plugin(directory)?;
+    let registry = PluginRegistry::load_default()?;
+    let candidate = crate::local_import::preview(&registry, directory)
+        .map_err(crate::plugin_cli::PluginCliError::from)?;
     let plugin_id = &candidate.manifest.id;
-    println!(
-        "plugin-candidate: id={plugin_id}; version={}; source=local",
-        candidate.manifest.version
-    );
-    println!("plugin-directory: {}", candidate.root.display());
-    println!(
-        "requested-permissions: {}",
-        permission_list(&candidate.manifest.permissions)
-    );
+    if !options.json {
+        println!(
+            "plugin-candidate: id={plugin_id}; version={}; source=local",
+            candidate.manifest.version
+        );
+        println!("plugin-directory: {}", candidate.path.display());
+        println!(
+            "requested-permissions: {}",
+            permission_list(&candidate.manifest.permissions)
+        );
+    }
     if !options.trusted {
         return Err(ProbeError::PluginTrustRequired(plugin_id.clone()));
     }
-    candidate.validate_grants(&options.grants)?;
+    crate::local_plugins::validate_grants(&candidate.manifest, &options.grants)?;
     let broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
         &options.read_roots,
         &options.network_origins,
         &options.executables,
     )?;
     broker_policy.validate_grants(&options.grants)?;
-    println!("granted-permissions: {}", permission_list(&options.grants));
-    println!(
-        "broker-policy: {}",
-        serde_json::to_string(&broker_policy).expect("policy is serializable")
-    );
-    if options.grants.contains(&Permission::HostProcess) {
+    if !options.json {
+        println!("granted-permissions: {}", permission_list(&options.grants));
         println!(
-            "host-authority: managed Node and approved child processes run with the current user's OS permissions; this grant is not a sandbox"
+            "broker-policy: {}",
+            serde_json::to_string(&broker_policy).expect("policy is serializable")
         );
+        if options.grants.contains(&Permission::HostProcess) {
+            println!(
+                "host-authority: managed Node and approved child processes run with the current user's OS permissions; this grant is not a sandbox"
+            );
+        }
     }
-    let mut registry = PluginRegistry::load_default()?;
-    registry.register_local(
-        plugin_id,
-        LocalPluginRegistration {
-            path: candidate.root,
-            grants: options.grants,
-            broker_policy,
+    crate::plugin_cli::manage(
+        PluginControlRequest {
+            action: PluginControlAction::Import,
+            plugin_id: plugin_id.clone(),
+            permission: None,
+            cascade: false,
+            local_import: Some(candidate.request(options.grants, broker_policy, options.enable)),
         },
+        options.json,
     )?;
-    registry.save()?;
-    println!(
-        "plugin-added: id={plugin_id}; enabled={}; applies=next-codlet-launch",
-        registry.is_enabled(plugin_id)
-    );
     Ok(())
 }
 
@@ -1096,20 +1134,6 @@ fn print_plugin_permissions(plugin_id: &str, json: bool) -> Result<(), ProbeErro
                 .expect("policy is serializable")
         );
     }
-    Ok(())
-}
-
-fn remove_local_plugin(plugin_id: &str) -> Result<(), ProbeError> {
-    if bundled_plugins()?
-        .iter()
-        .any(|plugin| plugin.manifest.id == plugin_id)
-    {
-        return Err(ProbeError::CannotRemoveBundledPlugin(plugin_id.to_owned()));
-    }
-    let mut registry = PluginRegistry::load_default()?;
-    registry.remove_local(plugin_id)?;
-    registry.save()?;
-    println!("plugin-removed: id={plugin_id}; applies=next-codlet-launch; directory=preserved");
     Ok(())
 }
 
@@ -1717,6 +1741,7 @@ mod tests {
                 plugin_id: plugin_id.into(),
                 permission: None,
                 cascade: false,
+                local_import: None,
             }));
             let ticket = prepared.operation_id().unwrap().to_owned();
             control.handle(ControlRequest::submit(&ticket));
@@ -1729,6 +1754,7 @@ mod tests {
                 plugin_id: plugin_id.into(),
                 permission: None,
                 cascade: false,
+                local_import: None,
             })
             .collect();
         let mut polls = 0;

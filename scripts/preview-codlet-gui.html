@@ -208,6 +208,7 @@
         let callId = 0;
         let receiptId = 0;
         const preferences = new Map();
+        const imported = new Map(), removed = new Set(), revoked = new Map();
         const operations = new Map();
         const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         const log = text => {
@@ -242,9 +243,10 @@
                 if (plugin.id !== 'codlet-gui') plugin.active = plugin.enabled;
                 plugin.loaded = plugin.active;
                 plugin.registered = true;
+                plugin.grants = plugin.source === 'local' ? revoked.get(plugin.id) ?? ['ui.dom'] : [];
                 plugin.generation = plugin.loaded ? 1 : null;
             }
-            return { plugins };
+            return { plugins: [...plugins.filter(plugin => !removed.has(plugin.id)), ...imported.values()], localManagement: { available: true, watchEnabled: false, folderPicker: true } };
         }
         function unload() {
             active = false;
@@ -269,7 +271,7 @@
                 rpc: { async request(capability, method, args) {
                     const id = ++callId;
                     log(`#${id} ${method} requested (generation ${current})`);
-                    if (!['prepare', 'submit', 'operation'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
+                    if (!['prepare', 'submit', 'operation', 'permissions', 'previewLocal', 'folderSelection'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
                     if (method === 'ping' && capability.name === 'codlet.runtime.ping') return { pong: true, abi: 1 };
                     if (method === 'describe' && capability.name === 'codex.ui.appearance') return appearanceProvider();
                     if (method === 'getMount' && capability.name === 'codex.ui.titlebar.afterMenu') {
@@ -285,8 +287,19 @@
                         if (mode === 'malformed') return { plugins: [null] };
                         return mode === 'empty' ? { plugins: [] } : response;
                     }
+                    if (method === 'chooseLocalFolder') return { selectionId: 'preview-folder', status: 'selected', path: 'C:/Projects/My local plugin 测试' };
+                    if (method === 'previewLocal') return {
+                        schema: 1, kind: 'codlet.local-import-preview', path: args.path, contentDigest: 'a'.repeat(64), registrationDigest: 'b'.repeat(64),
+                        ownership: 'development-directory', existingRegistration: null, existingEnabled: false, watchEnabled: false,
+                        manifest: { schema: 1, id: 'local.import-preview', name: 'Local Tools', version: '1.0.0', renderer: { entry: 'dist/renderer.js', world: 'isolated' }, host: { entry: 'dist/host.js', provides: [], requires: [] },
+                            permissions: ['ui.dom', 'host.process', 'host.fs', 'host.network'], provides: [], requires: [{ name: 'codex.ui.appearance', api: 1, scope: 'target' }] }
+                    };
+                    if (method === 'permissions') {
+                        const plugin = response.plugins.find(plugin => plugin.id === args.pluginId);
+                        return { pluginId: args.pluginId, registration: { path: plugin.path || 'C:/preview/local-notes', grants: plugin.grants || [], brokerPolicy: {} }, enabled: plugin.enabled };
+                    }
                     if (method === 'prepare') {
-                        if (!['enable', 'disable', 'reload'].includes(args?.action) || typeof args?.plugin_id !== 'string') throw new Error('Invalid simulated request');
+                        if (!['enable', 'disable', 'reload', 'import', 'remove', 'revoke'].includes(args?.action) || typeof args?.plugin_id !== 'string') throw new Error('Invalid simulated request');
                         const operation = { operation_id: `preview-${++receiptId}`, request: { ...args }, completion: null };
                         operations.set(operation.operation_id, { status: 'prepared', operation });
                         if (operations.size > 16) operations.delete(operations.keys().next().value);
@@ -298,8 +311,13 @@
                         if (method === 'submit' && record.status === 'prepared') record.status = 'queued';
                         if (method === 'operation' && record.status === 'queued') {
                             record.status = 'completed';
-                            preferences.set(record.operation.request.plugin_id, record.operation.request.action !== 'disable');
-                            record.operation.completion = { kind: 'report', report: { outcome: 'applied' } };
+                            const request = record.operation.request, id = request.plugin_id;
+                            const enabled = request.action === 'import' ? request.local_import.enable : !['disable', 'remove', 'revoke'].includes(request.action);
+                            preferences.set(id, enabled);
+                            if (request.action === 'import') imported.set(id, { id, name: 'Local Tools', version: '1.0.0', path: request.local_import.path, grants: request.local_import.grants, source: 'local', registered: true, enabled, active: enabled });
+                            if (request.action === 'remove') { removed.add(id); imported.delete(id); }
+                            if (request.action === 'revoke') { revoked.set(id, (response.plugins.find(plugin => plugin.id === id)?.grants ?? []).filter(permission => permission !== request.permission)); if (imported.has(id)) imported.get(id).grants = revoked.get(id); }
+                            record.operation.completion = { kind: 'report', report: { outcome: 'applied', desired_enabled: enabled } };
                         }
                         return record;
                     }

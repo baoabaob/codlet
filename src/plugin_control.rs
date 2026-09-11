@@ -10,15 +10,23 @@ pub enum PluginControlAction {
     Disable,
     Reload,
     Revoke,
+    Import,
+    Remove,
 }
 
 impl PluginControlAction {
+    pub(crate) fn starts_plugin(self) -> bool {
+        matches!(self, Self::Enable | Self::Import)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Enable => "enable",
             Self::Disable => "disable",
             Self::Reload => "reload",
             Self::Revoke => "revoke",
+            Self::Import => "import",
+            Self::Remove => "remove",
         }
     }
 }
@@ -33,6 +41,9 @@ pub struct PluginControlRequest {
     /// Explicitly confirmed stop of the enabled/running dependent closure.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cascade: bool,
+    /// Explicit local selection and grants. Submission still carries only a receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_import: Option<Box<crate::local_import::LocalImportRequest>>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -41,10 +52,15 @@ fn is_false(value: &bool) -> bool {
 
 impl PluginControlRequest {
     pub fn validate(&self) -> Result<(), PluginControlError> {
-        if self.cascade && self.action != PluginControlAction::Disable {
+        if self.cascade
+            && !matches!(
+                self.action,
+                PluginControlAction::Disable | PluginControlAction::Remove
+            )
+        {
             return Err(PluginControlError::new(
                 "invalid_cascade",
-                "cascade is only valid for disable",
+                "cascade is only valid for disable or remove",
             ));
         }
         if !crate::plugins::valid_plugin_id(&self.plugin_id) {
@@ -58,6 +74,15 @@ impl PluginControlRequest {
                 "invalid_permission",
                 "Only revoke requires one explicit permission.",
             ));
+        }
+        if (self.action == PluginControlAction::Import) != self.local_import.is_some() {
+            return Err(PluginControlError::new(
+                "invalid_import",
+                "Only import requires one explicit local selection.",
+            ));
+        }
+        if let Some(selection) = &self.local_import {
+            selection.validate()?;
         }
         Ok(())
     }

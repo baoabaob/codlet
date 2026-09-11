@@ -267,6 +267,18 @@ impl ControlBroker {
     }
 
     pub fn handle(&self, request: ControlRequest) -> ControlReport {
+        if serde_json::to_vec(&request)
+            .map_or(true, |bytes| bytes.len() > MAX_CONTROL_REQUEST_BYTES)
+        {
+            return self
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .failure(
+                    ControlStatus::InvalidRequest,
+                    "Control request exceeds its bounded wire size",
+                );
+        }
         if matches!(
             &request,
             ControlRequest::Inspect { .. } | ControlRequest::InspectExecution { .. }
@@ -590,6 +602,7 @@ mod tests {
             plugin_id: "dev.fixture".into(),
             permission: None,
             cascade: false,
+            local_import: None,
         }
     }
     fn broker() -> ControlBroker {

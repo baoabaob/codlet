@@ -2,6 +2,7 @@ pub mod capabilities;
 pub mod catalog;
 pub mod cdp;
 pub mod diagnostics;
+pub mod local_import;
 pub mod local_plugins;
 pub mod plugin_control;
 pub mod plugin_execution;

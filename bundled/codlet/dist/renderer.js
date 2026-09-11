@@ -67,6 +67,17 @@ module.exports = (() => {
     let operationTimer = null;
     const mutationControls = new Set();
     const renderedPlugins = new Map();
+    let page = 'plugins', localManagement = null;
+    let importButton, importSection, importPath, chooseFolderButton, inspectButton, importStatus, previewBody, importSubmit;
+    let importTrust, importEnable, importPreview = null, importBusy = false, localRequest = 0, pickerTimer = null;
+    let detailsSection, detailsBody, detailsStatus, detailsPlugin = null;
+    const importGrants = new Map(), scopeInputs = new Map();
+    const PERMISSION_COPY = Object.freeze({
+        'ui.dom': 'Read and change the page interface', 'ui.mainWorld': 'Run in the page’s main JavaScript world',
+        'cdp.raw': 'Use raw browser debugging access', 'host.process': 'Run native code with your user account’s OS permissions',
+        'host.fs': 'Read files inside explicitly allowed folders', 'host.network': 'Request explicitly allowed HTTP(S) origins',
+        'host.system': 'Read basic system information', 'runtime.manage': 'Manage other plugins and their permissions'
+    });
 
     function waitForDocument() {
         if (document.documentElement && document.body) return Promise.resolve();
@@ -190,6 +201,21 @@ module.exports = (() => {
             [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width:88px; font-size:var(--codlet-ui-font-small,13px); line-height:calc(var(--codlet-ui-font-small,13px) * 18 / 13); text-align:right; color:var(--codlet-ui-secondary,GrayText); }
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy { margin:0; color:var(--codlet-ui-muted,GrayText); line-height:1.5; }
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy code { font:inherit; color:var(--codlet-ui-fg,CanvasText); }
+            [${PANEL_ATTRIBUTE}] .codlet-local-page { display:flex; flex-direction:column; gap:16px; min-width:0; }
+            [${PANEL_ATTRIBUTE}] .codlet-local-toolbar { display:flex; align-items:center; gap:8px; }
+            [${PANEL_ATTRIBUTE}] .codlet-local-toolbar > :first-child { margin-right:auto; }
+            [${PANEL_ATTRIBUTE}] .codlet-field { display:flex; flex-direction:column; gap:6px; }
+            [${PANEL_ATTRIBUTE}] .codlet-field-label { font-weight:500; }
+            [${PANEL_ATTRIBUTE}] .codlet-field-input { width:100%; min-width:0; padding:8px 10px; border:1px solid var(--codlet-ui-border,ButtonBorder); border-radius:6px; background:var(--codlet-ui-input-bg,var(--codlet-ui-surface,Canvas)); color:inherit; font:inherit; line-height:1.45; }
+            [${PANEL_ATTRIBUTE}] textarea.codlet-field-input { min-height:64px; resize:vertical; }
+            [${PANEL_ATTRIBUTE}] .codlet-field-input:focus-visible { outline:2px solid var(--codlet-ui-accent,Highlight); outline-offset:2px; }
+            [${PANEL_ATTRIBUTE}] .codlet-local-copy { margin:0; color:var(--codlet-ui-secondary,GrayText); font-size:var(--codlet-ui-font-small,13px); line-height:1.5; white-space:pre-line; overflow-wrap:anywhere; }
+            [${PANEL_ATTRIBUTE}] .codlet-local-preview { display:flex; flex-direction:column; gap:14px; }
+            [${PANEL_ATTRIBUTE}] .codlet-permission-choice { display:flex; align-items:flex-start; gap:10px; line-height:1.45; }
+            [${PANEL_ATTRIBUTE}] .codlet-permission-choice input { flex:0 0 auto; margin:4px 0 0; accent-color:var(--codlet-ui-accent,Highlight); }
+            [${PANEL_ATTRIBUTE}] .codlet-permission-line { display:flex; align-items:center; gap:12px; }
+            [${PANEL_ATTRIBUTE}] .codlet-permission-line > :first-child { flex:1; min-width:0; }
+            [${PANEL_ATTRIBUTE}] .codlet-details-button { flex:0 0 auto; }
             [${PANEL_ATTRIBUTE}] .codlet-tooltip { position:absolute; z-index:10; pointer-events:none; max-width:min(360px,calc(100% - 16px)); max-height:140px; overflow:hidden; padding:6px 9px; border:1px solid var(--codlet-ui-border,ButtonBorder); border-radius:6px; background:var(--codlet-ui-surface-raised,Canvas); color:var(--codlet-ui-fg,CanvasText); font-size:var(--codlet-ui-font-small,13px); font-weight:400; line-height:1.4; white-space:pre-line; box-shadow:0 2px 8px rgb(0 0 0 / 15%); }
         `;
         document.documentElement.appendChild(style);
@@ -205,11 +231,15 @@ module.exports = (() => {
 
     function renderAction() {
         hideTooltip();
-        settingsSection.hidden = action !== 'idle';
+        settingsSection.hidden = action !== 'idle' || page !== 'plugins';
+        importSection.hidden = action !== 'idle' || page !== 'import';
+        detailsSection.hidden = action !== 'idle' || page !== 'details';
         confirmation.hidden = action === 'idle';
-        panel.setAttribute('data-codlet-view', action === 'idle' ? 'settings' : 'confirmation');
+        panel.setAttribute('data-codlet-view', action === 'idle' ? page === 'plugins' ? 'settings' : page : 'confirmation');
         const selectedName = confirmationSelection?.name || 'Codlet';
-        panelTitle.textContent = action === 'idle' ? 'Codlet' : action === 'done' ? `${selectedName} disabled` : `Disable ${selectedName}?`;
+        const verb = confirmationSelection?.action === 'remove' ? 'Remove' : confirmationSelection?.action === 'revoke' ? 'Revoke permission for' : 'Disable';
+        panelTitle.textContent = action === 'idle' ? page === 'import' ? 'Import local plugin' : page === 'details' ? pluginName(detailsPlugin ?? { id: 'Plugin details' }) : 'Codlet'
+            : action === 'done' ? `${selectedName} disabled` : `${verb} ${selectedName}?`;
         panel.setAttribute('aria-label', panelTitle.textContent);
         confirmation.setAttribute('aria-label', panelTitle.textContent);
         if (action === 'idle') panel.removeAttribute('aria-describedby');
@@ -217,7 +247,7 @@ module.exports = (() => {
         refreshButton.disabled = action !== 'idle';
         confirmButton.disabled = action === 'pending' || action === 'done';
         cancelButton.disabled = confirmButton.disabled;
-        confirmButton.textContent = action === 'pending' ? 'Disabling...' : 'Disable';
+        confirmButton.textContent = action === 'pending' ? 'Disabling...' : confirmationSelection?.action === 'remove' ? 'Remove' : confirmationSelection?.action === 'revoke' ? 'Revoke' : 'Disable';
         confirmationStatus.hidden = action !== 'failed' && action !== 'done';
         confirmationStatus.textContent = action === 'failed' ? actionError : action === 'done' ? 'Codlet is disabled.' : '';
         if (actionOrigin?.isConnected) {
@@ -276,6 +306,16 @@ module.exports = (() => {
         } else if (plugin.validation?.status === 'failed') {
             const message = plugin.validation.error?.message;
             addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
+        }
+        if (plugin.source === 'local' && Array.isArray(plugin.grants)) {
+            addText(copy, 'div', 'codlet-plugin-version', `Permissions: ${plugin.grants.join(', ') || 'None'}`);
+        }
+        if (plugin.source === 'local' && plugin.registered !== false) {
+            const details = addText(parts.controls, 'button', 'codlet-details-button', 'Details');
+            details.setAttribute('aria-label', `Details for ${name}`);
+            ui.on(details, 'click', () => showDetails(context, plugin));
+            mutationControls.add(details);
+            details.disabled = pendingOperation !== null;
         }
         const state = executionState ?? (plugin.active === true ? 'Active'
             : plugin.validation?.status === 'failed' ? 'Unavailable'
@@ -419,7 +459,7 @@ module.exports = (() => {
             const report = completion?.kind === 'report' ? completion.report : null;
             const succeeded = report?.outcome === 'applied' || report?.outcome === 'unchanged';
             const message = succeeded
-                ? `${expected.name}: ${expected.action === 'enable' ? 'enabled' : expected.action === 'disable' ? 'disabled' : 'reloaded'}.`
+                ? `${expected.name}: ${{ enable: 'enabled', disable: 'disabled', reload: 'reloaded', import: report.desired_enabled ? 'imported and enabled' : 'imported, disabled', remove: 'removed; files kept', revoke: 'permission revoked' }[expected.action]}.`
                 : completion?.error?.message || report?.message || 'The action finished with an error. Refresh for the current state.';
             await finishOperation(context, expected, message);
             return;
@@ -434,16 +474,16 @@ module.exports = (() => {
         }
     }
 
-    async function managePlugin(context, pluginId, nextAction, cascade = false) {
+    async function managePlugin(context, pluginId, nextAction, cascade = false, extra = {}, displayName = null) {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
         const epoch = lifecycle;
-        const expected = { pluginId, name: pluginName(visiblePlugins.find(plugin => plugin.id === pluginId) ?? { id: pluginId }), action: nextAction, operationId: null, checking: false };
+        const expected = { pluginId, name: displayName || pluginName(visiblePlugins.find(plugin => plugin.id === pluginId) ?? { id: pluginId }), action: nextAction, operationId: null, checking: false };
         pendingOperation = expected;
         setMutationBusy(true);
         operationMessage(`${expected.name}: preparing...`);
         let prepared;
         try {
-            prepared = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'prepare', { action: nextAction, plugin_id: pluginId, ...(cascade ? { cascade: true } : {}) });
+            prepared = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'prepare', { action: nextAction, plugin_id: pluginId, ...(cascade ? { cascade: true } : {}), ...extra });
         } catch (error) {
             if (epoch === lifecycle) await finishOperation(context, expected, error instanceof Error ? error.message : 'The action could not be prepared.');
             return;
@@ -472,6 +512,13 @@ module.exports = (() => {
 
     async function disableSelf(context) {
         if (action !== 'confirm' && action !== 'failed') return;
+        if (confirmationSelection?.action === 'remove' || confirmationSelection?.action === 'revoke') {
+            const selected = confirmationSelection;
+            confirmationSelection = null;
+            action = 'idle'; page = 'plugins';
+            renderAction();
+            return managePlugin(context, selected.id, selected.action, selected.cascade ?? false, selected.permission ? { permission: selected.permission } : {});
+        }
         if (confirmationSelection && (confirmationSelection.id !== context.pluginId || confirmationSelection.cascade)) {
             const selection = confirmationSelection;
             confirmationSelection = null;
@@ -520,6 +567,8 @@ module.exports = (() => {
                 !plugin || typeof plugin.id !== 'string' || !plugin.id.length)) throw new Error('Plugin list unavailable');
             if (new Set(management.plugins.map(plugin => plugin.id)).size !== management.plugins.length) throw new Error('Plugin list contains duplicate IDs');
             visiblePlugins = management.plugins;
+            localManagement = management.localManagement ?? null;
+            importButton.hidden = localManagement?.available !== true;
             setMutationBusy(false);
             updatePluginRows(context, management.plugins);
             pluginList.hidden = false;
@@ -555,12 +604,19 @@ module.exports = (() => {
         settingsSection = addText(body, 'section', 'codlet-settings-section', '');
         const sectionHeader = addText(settingsSection, 'div', 'codlet-section-header', '');
         addText(sectionHeader, 'h2', 'codlet-section-title', 'Codlets');
-        refreshButton = iconButton(sectionHeader, 'refresh', 'Refresh plugins');
+        const listActions = addText(sectionHeader, 'div', 'codlet-local-toolbar', '');
+        importButton = addText(listActions, 'button', '', 'Import local');
+        importButton.setAttribute('aria-label', 'Import local plugin');
+        importButton.hidden = true;
+        mutationControls.add(importButton);
+        ui.on(importButton, 'click', () => showImport());
+        refreshButton = iconButton(listActions, 'refresh', 'Refresh plugins');
         ui.on(refreshButton, 'click', () => refreshPlugins(context));
         managementStatus = addText(settingsSection, 'div', 'codlet-status', '');
         managementStatus.setAttribute('role', 'status');
         managementStatus.setAttribute('aria-live', 'polite');
         pluginList = addText(settingsSection, 'div', 'codlet-plugin-list', '');
+        createLocalPages(context, body);
         confirmation = addText(body, 'div', 'codlet-confirmation', '');
         confirmation.hidden = true;
         confirmation.setAttribute('role', 'group');
@@ -605,6 +661,261 @@ module.exports = (() => {
         document.body.appendChild(panel);
     }
 
+    function clearLocalBody(parent) {
+        for (const child of Array.from(parent.children)) ui.remove(child);
+    }
+
+    function localInput(parent, label, multiline = false) {
+        const field = addText(parent, 'div', 'codlet-field', '');
+        const caption = addText(field, 'label', 'codlet-field-label', label);
+        const input = ui.element(multiline ? 'textarea' : 'input');
+        input.className = 'codlet-field-input';
+        input.value = '';
+        if (!multiline) input.type = 'text';
+        input.setAttribute('aria-label', label);
+        input.autocomplete = 'off'; input.spellcheck = false;
+        input.id = `${panel.id}-field-${label.replace(/[^a-zA-Z0-9]/g, '-')}`;
+        caption.setAttribute('for', input.id);
+        field.appendChild(input);
+        return input;
+    }
+
+    function localCheckbox(parent, label, text = label) {
+        const row = addText(parent, 'label', 'codlet-permission-choice', '');
+        const input = ui.element('input');
+        input.type = 'checkbox'; input.checked = false;
+        input.setAttribute('aria-label', label);
+        row.appendChild(input);
+        addText(row, 'span', '', text);
+        return input;
+    }
+
+    function localStatus(message) { importStatus.textContent = message; importStatus.hidden = !message; }
+
+    function invalidatePreview() {
+        localRequest += 1;
+        if (pickerTimer !== null) clearTimeout(pickerTimer);
+        pickerTimer = null;
+        importPreview = null; importBusy = false;
+        importGrants.clear(); scopeInputs.clear();
+        importTrust = importEnable = null;
+        clearLocalBody(previewBody);
+        previewBody.hidden = true;
+        importSubmit.disabled = true;
+        inspectButton.disabled = false;
+        chooseFolderButton.disabled = false;
+    }
+
+    function showImport() {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        invalidatePreview();
+        page = 'import';
+        chooseFolderButton.hidden = localManagement?.folderPicker !== true;
+        localStatus('Choose the folder containing codlet.json, or enter its full path.');
+        renderAction();
+        focus(importPath);
+    }
+
+    function backToPlugins(context) {
+        if (pendingOperation) return;
+        invalidatePreview();
+        page = 'plugins'; detailsPlugin = null;
+        renderAction();
+        focus(importButton.hidden ? refreshButton : importButton);
+        return refreshPlugins(context);
+    }
+
+    function importReady() {
+        importSubmit.disabled = !importPreview || importBusy || pendingOperation !== null
+            || importTrust?.checked !== true || [...importGrants.values()].some(control => !control.checked);
+    }
+
+    function renderImportPreview(preview) {
+        clearLocalBody(previewBody);
+        importGrants.clear(); scopeInputs.clear();
+        const manifest = preview.manifest;
+        addText(previewBody, 'h2', 'codlet-section-title', manifest.name || manifest.id);
+        addText(previewBody, 'p', 'codlet-local-copy', `${manifest.id} · ${manifest.version}\n${preview.path}`);
+        const entries = [manifest.renderer ? `Renderer: ${manifest.renderer.entry} (${manifest.renderer.world})` : null, manifest.host ? `Host: ${manifest.host.entry}` : null].filter(Boolean);
+        addText(previewBody, 'p', 'codlet-local-copy', entries.join('\n'));
+        const requirements = [
+            ...(manifest.renderer ? (manifest.requires ?? []).map(cap => ({ ...cap, entry: 'Renderer' })) : []),
+            ...(manifest.host ? (manifest.renderer ? manifest.host.requires ?? [] : manifest.requires ?? []).map(cap => ({ ...cap, entry: 'Host' })) : [])
+        ];
+        addText(previewBody, 'p', 'codlet-local-copy', requirements.length
+            ? `Dependencies\n${requirements.map(cap => `${cap.entry}: ${cap.name}@${cap.api} (${cap.scope})`).join('\n')}\nAvailability is checked again when enabling.` : 'Dependencies: none');
+        const unavailable = (preview.dependencyCheck?.requirements ?? []).filter(requirement => requirement.status === 'unavailable');
+        if (unavailable.length) addText(previewBody, 'p', 'codlet-local-copy', `Currently unavailable: ${unavailable.map(item => `${item.capability.name}@${item.capability.api}`).join(', ')}. You can import the folder while disabled, then enable its providers first.`);
+        addText(previewBody, 'p', 'codlet-local-copy', `The plugin runs from this development folder. Removing it keeps these files.\nAutomatic reload: ${preview.watchEnabled ? 'on while the plugin is enabled' : 'off in this session; use Reload after editing'}.`);
+        if (preview.existingRegistration) {
+            addText(previewBody, 'p', 'codlet-local-copy', `Already registered at this folder. Confirm all grants again to replace its permission settings.\nCurrent grants: ${preview.existingRegistration.grants.join(', ') || 'None'}. Stop the package before importing it again.`);
+        }
+        addText(previewBody, 'h2', 'codlet-section-title', 'Requested permissions');
+        for (const permission of manifest.permissions ?? []) {
+            const checkbox = localCheckbox(previewBody, `Grant ${permission}`, `${permission} — ${PERMISSION_COPY[permission] || permission}`);
+            importGrants.set(permission, checkbox);
+            ui.on(checkbox, 'change', importReady);
+        }
+        if (!(manifest.permissions ?? []).length) addText(previewBody, 'p', 'codlet-local-copy', 'No permissions requested.');
+        for (const [permission, key, label] of [
+            ['host.fs', 'readRoots', 'Allowed read folders — one full path per line'],
+            ['host.network', 'networkOrigins', 'Allowed network origins — one HTTP(S) origin per line'],
+            ['host.process', 'executables', 'Allowed child programs — one full .exe path per line']
+        ]) {
+            if (importGrants.has(permission)) scopeInputs.set(key, localInput(previewBody, label, true));
+        }
+        if (scopeInputs.size) addText(previewBody, 'p', 'codlet-local-copy', 'Empty lists grant no access through the file, network or child-process broker. Native Host code still runs with your OS user permissions.');
+        importTrust = localCheckbox(previewBody, 'Trust this local plugin', 'I trust this plugin’s author and this local folder.');
+        importEnable = localCheckbox(previewBody, 'Enable after import', 'Enable immediately after importing');
+        ui.on(importTrust, 'change', importReady);
+        previewBody.hidden = false;
+        importReady();
+    }
+
+    async function inspectLocal(context) {
+        if (pendingOperation || importBusy || page !== 'import' || !panel?.open || panel.hidden) return;
+        invalidatePreview();
+        const path = importPath.value.trim();
+        if (!path) { localStatus('Enter the full path to a plugin folder.'); focus(importPath); return; }
+        importBusy = true; inspectButton.disabled = chooseFolderButton.disabled = true;
+        const request = localRequest, epoch = lifecycle;
+        localStatus('Checking the manifest and JavaScript entries...');
+        try {
+            const preview = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'previewLocal', { path });
+            if (epoch !== lifecycle || request !== localRequest || page !== 'import' || !panel?.open || panel.hidden) return;
+            if (preview?.schema !== 1 || preview.kind !== 'codlet.local-import-preview' || typeof preview.path !== 'string'
+                || typeof preview.manifest?.id !== 'string' || typeof preview.manifest?.version !== 'string'
+                || !Array.isArray(preview.manifest.permissions) || preview.manifest.permissions.some(permission => !Object.hasOwn(PERMISSION_COPY, permission))
+                || !/^[0-9a-f]{64}$/.test(preview.contentDigest) || !/^[0-9a-f]{64}$/.test(preview.registrationDigest)) throw new Error('The import preview is incomplete.');
+            importPreview = preview; importBusy = false;
+            renderImportPreview(preview);
+            localStatus('Review the folder and grant each requested permission to continue.');
+            focus(importGrants.values().next().value ?? importTrust);
+        } catch (error) {
+            if (epoch === lifecycle && request === localRequest && page === 'import') localStatus(String(error?.message ?? error));
+        } finally {
+            if (epoch === lifecycle && request === localRequest) {
+                importBusy = false; inspectButton.disabled = chooseFolderButton.disabled = false; importReady();
+            }
+        }
+    }
+
+    async function chooseLocalFolder(context) {
+        if (pendingOperation || importBusy || page !== 'import' || !panel?.open || panel.hidden) return;
+        invalidatePreview(); importBusy = true;
+        chooseFolderButton.disabled = inspectButton.disabled = true;
+        const request = localRequest, epoch = lifecycle;
+        const current = () => epoch === lifecycle && request === localRequest && page === 'import' && panel?.open && !panel.hidden;
+        localStatus('Choose a plugin folder in the Windows dialog.');
+        const accept = async selection => {
+            if (!current()) return;
+            if (selection?.status === 'selecting' && typeof selection.selectionId === 'string') {
+                pickerTimer = setTimeout(async () => {
+                    pickerTimer = null;
+                    if (!current()) return;
+                    try { await accept(await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'folderSelection', { selectionId: selection.selectionId })); }
+                    catch (error) { fail(error); }
+                }, 300);
+            } else if (selection?.status === 'selected' && typeof selection.path === 'string') {
+                importPath.value = selection.path; importBusy = false;
+                await inspectLocal(context);
+            } else {
+                importBusy = false; chooseFolderButton.disabled = inspectButton.disabled = false;
+                localStatus(selection?.status === 'cancelled' ? 'Folder selection cancelled.' : selection?.error || 'Folder selection failed. Enter the full path instead.');
+            }
+        };
+        const fail = error => {
+            if (!current()) return;
+            importBusy = false; chooseFolderButton.disabled = inspectButton.disabled = false;
+            localStatus(String(error?.message ?? error));
+        };
+        try { await accept(await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'chooseLocalFolder', null)); }
+        catch (error) { fail(error); }
+    }
+
+    function submitImport(context) {
+        importReady();
+        if (importSubmit.disabled || !importPreview || page !== 'import') return;
+        const preview = importPreview;
+        const brokerPolicy = Object.fromEntries([...scopeInputs].map(([key, input]) => [key, input.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean)]));
+        const selection = { path: preview.path, contentDigest: preview.contentDigest, registrationDigest: preview.registrationDigest,
+            trusted: true, grants: [...importGrants].filter(([, input]) => input.checked).map(([permission]) => permission), brokerPolicy, enable: importEnable.checked };
+        invalidatePreview(); page = 'plugins'; renderAction();
+        return managePlugin(context, preview.manifest.id, 'import', false, { local_import: selection }, preview.manifest.name || preview.manifest.id);
+    }
+
+    function requestLocalAction(plugin, nextAction, permission, origin) {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        const dependents = (plugin.disableDependents ?? []).filter(id => id !== plugin.id);
+        confirmationSelection = { id: plugin.id, name: pluginName(plugin), action: nextAction, permission, cascade: nextAction === 'remove' && dependents.length > 0 };
+        const dependentNames = dependents.map(id => pluginName(visiblePlugins.find(candidate => candidate.id === id) ?? { id }));
+        confirmationCopy.textContent = nextAction === 'remove'
+            ? `Remove this plugin’s registration and disable it. Its source folder and files will be kept.\n${plugin.path || ''}${dependentNames.length ? `\nAlso disable: ${dependentNames.join(', ')}.` : ''}`
+            : `Revoke ${permission}. This stops the package and its running dependents. To grant it again, import the local folder and confirm its permissions.${dependentNames.length ? `\nDependents: ${dependentNames.join(', ')}.` : ''}`;
+        actionOrigin = origin; action = 'confirm'; renderAction(); focus(cancelButton);
+    }
+
+    async function showDetails(context, plugin) {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        invalidatePreview(); page = 'details'; detailsPlugin = plugin;
+        const request = localRequest, epoch = lifecycle;
+        clearLocalBody(detailsBody); detailsStatus.textContent = 'Loading permissions...'; detailsStatus.hidden = false;
+        renderAction();
+        try {
+            const reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'permissions', { pluginId: plugin.id });
+            if (epoch !== lifecycle || request !== localRequest || page !== 'details' || !panel?.open || panel.hidden) return;
+            if (reply?.pluginId !== plugin.id || !Array.isArray(reply.registration?.grants) || typeof reply.registration.path !== 'string') throw new Error('Permission details are unavailable.');
+            const registration = reply.registration;
+            detailsPlugin = { ...plugin, path: registration.path, grants: registration.grants };
+            addText(detailsBody, 'p', 'codlet-local-copy', `${plugin.id}${plugin.version ? ` · ${plugin.version}` : ''}\nLocal development folder\n${registration.path}\nRemoving the plugin keeps this folder.`);
+            addText(detailsBody, 'h2', 'codlet-section-title', 'Granted permissions');
+            if (!registration.grants.length) addText(detailsBody, 'p', 'codlet-local-copy', 'No permissions granted.');
+            for (const permission of registration.grants) {
+                const row = addText(detailsBody, 'div', 'codlet-permission-line', '');
+                addText(row, 'p', 'codlet-local-copy', `${permission}\n${PERMISSION_COPY[permission] || ''}`);
+                const revoke = addText(row, 'button', '', 'Revoke');
+                revoke.setAttribute('aria-label', `Revoke ${permission}`);
+                ui.on(revoke, 'click', () => requestLocalAction(detailsPlugin, 'revoke', permission, revoke));
+            }
+            for (const [key, label] of [['readRoots', 'Allowed read folders'], ['networkOrigins', 'Allowed network origins'], ['executables', 'Allowed child programs']]) {
+                const values = registration.brokerPolicy?.[key] ?? [];
+                addText(detailsBody, 'p', 'codlet-local-copy', `${label}\n${values.length ? values.join('\n') : 'None'}`);
+            }
+            const remove = ui.button({ text: 'Remove plugin', label: `Remove ${pluginName(plugin)}`, variant: 'danger' });
+            detailsBody.appendChild(remove);
+            ui.on(remove, 'click', () => requestLocalAction(detailsPlugin, 'remove', null, remove));
+            detailsStatus.hidden = true;
+        } catch (error) {
+            if (epoch === lifecycle && request === localRequest && page === 'details') detailsStatus.textContent = String(error?.message ?? error);
+        }
+    }
+
+    function createLocalPages(context, parent) {
+        importSection = addText(parent, 'section', 'codlet-local-page', '');
+        importSection.hidden = true;
+        const toolbar = addText(importSection, 'div', 'codlet-local-toolbar', '');
+        const back = addText(toolbar, 'button', '', 'Back to plugins');
+        ui.on(back, 'click', () => backToPlugins(context));
+        chooseFolderButton = addText(toolbar, 'button', '', 'Choose folder');
+        chooseFolderButton.setAttribute('aria-label', 'Choose plugin folder');
+        ui.on(chooseFolderButton, 'click', () => chooseLocalFolder(context));
+        importPath = localInput(importSection, 'Plugin folder');
+        ui.on(importPath, 'input', () => { invalidatePreview(); localStatus('Inspect this folder before importing.'); });
+        inspectButton = addText(importSection, 'button', '', 'Inspect folder');
+        ui.on(inspectButton, 'click', () => inspectLocal(context));
+        importStatus = addText(importSection, 'div', 'codlet-local-copy', '');
+        importStatus.setAttribute('role', 'status'); importStatus.setAttribute('aria-live', 'polite');
+        previewBody = addText(importSection, 'div', 'codlet-local-preview', ''); previewBody.hidden = true;
+        importSubmit = ui.button({ text: 'Import plugin', label: 'Confirm local import', variant: 'primary', disabled: true });
+        importSection.appendChild(importSubmit);
+        ui.on(importSubmit, 'click', () => submitImport(context));
+        detailsSection = addText(parent, 'section', 'codlet-local-page', ''); detailsSection.hidden = true;
+        const detailsBack = addText(detailsSection, 'button', '', 'Back to plugins');
+        ui.on(detailsBack, 'click', () => backToPlugins(context));
+        detailsStatus = addText(detailsSection, 'div', 'codlet-local-copy', ''); detailsStatus.setAttribute('role', 'status');
+        detailsBody = addText(detailsSection, 'div', 'codlet-local-preview', '');
+    }
+
     function layoutPanel() {
         if (!panel) return;
         const mount = findMount();
@@ -639,6 +950,7 @@ module.exports = (() => {
             focus(closeButton);
         } else {
             hideTooltip();
+            invalidatePreview(); page = 'plugins'; detailsPlugin = null;
             panelRequest += 1;
             if (operationTimer !== null) clearTimeout(operationTimer);
             operationTimer = null;
@@ -731,6 +1043,12 @@ module.exports = (() => {
     function deactivate() {
         lifecycle += 1;
         panelRequest += 1;
+        localRequest += 1;
+        if (pickerTimer !== null) clearTimeout(pickerTimer);
+        pickerTimer = null;
+        importPreview = detailsPlugin = localManagement = null;
+        importGrants.clear(); scopeInputs.clear();
+        page = 'plugins'; importBusy = false;
         if (operationTimer !== null) clearTimeout(operationTimer);
         operationTimer = null;
         pendingOperation = null;
@@ -756,6 +1074,8 @@ module.exports = (() => {
         if (restore) focus(target);
         style = button = panel = pluginList = managementStatus = refreshButton = closeButton = null;
         panelTitle = settingsSection = null;
+        importButton = importSection = importPath = chooseFolderButton = inspectButton = importStatus = previewBody = importSubmit = null;
+        importTrust = importEnable = detailsSection = detailsBody = detailsStatus = null;
         confirmation = confirmationCopy = confirmationStatus = confirmButton = cancelButton = actionOrigin = null;
         observer = keydown = focusin = resize = mountToken = returnFocus = outsideFocus = panelAnchor = null;
         action = 'idle';

@@ -2,7 +2,9 @@
 
 第三方 Host 和可选托管 renderer 与 GUI 使用同一项 `codlet.runtime.manage@1` capability。
 调用者必须声明精确 descriptor 和 `runtime.manage` permission，并获得明确 grant。Core
-验证调用者、generation、scope 和授权；params 不能选择另一个 caller、registry 或源码。
+验证调用者、generation、scope 和授权；params 不能选择另一个 caller 或 registry，也不接受源码文本。M5a 导入只接收显式本地目录及其预览摘要。
+
+`runtime.manage` 是管理授权，包含导入和为其他插件选择 grants 的能力；只能授给可信管理插件，不能将它当作只读列表权限。
 
 Host-only 管理插件可使用 Runtime scope：
 
@@ -27,19 +29,55 @@ scope 也可用，Host 通过 Core 签发的 target scope 或当前入站 scope 
 | 方法 | 输入 | 返回 |
 | --- | --- | --- |
 | `list` | `null` | `{plugins, sampledAtUnixMs}`，Host 收到前台发布的样本 |
-| `prepare` | `{action, plugin_id, permission?, cascade?}` | 原 `ControlReport`，成功状态 `prepared` |
+| `prepare` | `{action, plugin_id, permission?, cascade?, local_import?}` | 原 `ControlReport`，成功状态 `prepared` |
 | `submit` | `{operationId}` | 原 receipt 的 `queued` / `running` / `completed` 等状态 |
 | `operation` | `{operationId}` | 只读查询原 receipt |
+| `previewLocal` | `{path}`，完整本地路径 | 校验后的 manifest、规范路径、内容/注册摘要和会话 watch 信息；不执行入口 |
+| `permissions` | `{pluginId}` | 最新本地注册记录，格式与 CLI permissions 相同 |
+| `chooseLocalFolder` | `null` | Windows 文件夹选择状态及 `selectionId`，立即返回 |
+| `folderSelection` | `{selectionId}` | `selecting` / `selected` / `cancelled` / `failed`；成功才包含目录 |
 
-`action` 是 `enable`、`disable`、`reload` 或 `revoke`；仅 `revoke` 必须携带一个 permission，
+`action` 是 `enable`、`disable`、`reload`、`revoke`、`import` 或 `remove`；仅 `revoke` 必须携带一个 permission，
 其他 action 省略该字段。注意 prepare 的 `plugin_id` 是 snake_case，而 submit/operation
 的输入 `operationId` 是 camelCase。ControlReport 回包继续使用原 snake_case 字段：
 `schema_version`、`host_pid`、`registry_scope`、`status`、`operation`、`error`。
 
-`disable` 可显式携带 `cascade: true`，一次关闭目标及所有已启用或仍在运行的依赖插件。
+`disable` 和 `remove` 可显式携带 `cascade: true`，一次关闭目标及所有已启用或仍在运行的依赖插件。
 省略该字段时继续拒绝有依赖者的关闭；其他 action 不接受 `cascade: true`。
 GUI 使用列表的 `disableDependents` 显示受影响插件，用户确认后只提交一次。
 Core 在清理前原子保存整组关闭状态；这条路径不进行重新激活或回滚到启用状态。
+
+## M5a 本地预览、导入与移除
+
+`list.localManagement` 标识本地管理是否可用、当前会话是否开启 watch，以及是否支持系统选择器。选择器在专用 STA 线程运行，不阻塞 CDP/RPC；从已存在的注册目录或程序目录打开，避免隔离环境缺少 Desktop 的默认路径问题。路径输入和系统选择最终使用相同的 `previewLocal`。
+
+预览经既有检查器读取选中目录的 manifest 和已构建 JS，返回 `codlet.local-import-preview`。它不创建注册、不复制源码、不执行 JS、构建或安装脚本。`dependencyCheck` 根据已发布运行样本列出依赖的可用状态，正式启用时仍由生命周期依赖图重新校验。
+
+确认后的请求示例：
+
+```js
+const manage = { name: 'codlet.runtime.manage', api: 1, scope: 'runtime' };
+const prepared = await context.rpc.request(manage, 'prepare', {
+  action: 'import', plugin_id: preview.manifest.id,
+  local_import: {
+    path: preview.path,
+    contentDigest: preview.contentDigest,
+    registrationDigest: preview.registrationDigest,
+    trusted: true,
+    grants: explicitlySelectedPermissions,
+    brokerPolicy: explicitlySelectedScopes,
+    enable: false,
+  },
+});
+```
+
+仅 import 接受 `local_import`。摘要覆盖规范根目录、manifest 语义、入口文本以及预览时的完整注册记录/启用偏好；它用于拒绝过期预览，不能代替信任作者。执行前再次检查，同 ID 不同路径直接冲突；路径变化需要显式移除后重新授信。运行中的同 ID 包必须先停用，再更改授权。
+
+导入先将注册与停用偏好原子保存；`enable: true` 随后在同一 receipt 中使用既有激活事务，保留检查过的源码快照。激活失败不会留下默认启用的新注册；结果会指出失败或 degraded 状态。依赖预检失败时不会保存注册。传输丢失后仍只查询原 receipt。
+
+Remove 取消本地注册、停用已确认的依赖闭包，并撤回运行权限后清理；作者目录、文件和插件自有数据不删除。内置安装不能移除。每次 prepare 的完整序列化请求仍受 4 KiB 限制，预览/结果受 256 KiB 限制。
+
+`plugin preview <directory> --json` 提供 CLI 只读预览。`plugin add --trust --grant ... [--enable] [--json]` 和 `plugin remove <id> [--cascade] [--json]` 使用同一注册与生命周期服务。Add 默认停用；离线修改仍必须先证明该注册表没有 Host。手测步骤见 [M5a 手测指南](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)。
 
 ```js
 const manage = { name: 'codlet.runtime.manage', api: 1, scope: 'runtime' };
@@ -96,6 +134,8 @@ Host `list` 明确返回 `sampledAtUnixMs`，不能把旧样本当成即时运�
 的 active 要求两个入口在相同 generation 真正激活。`enabled` 是持久意图，和 active 不同。
 `name` 是 manifest 的可读名称，缺省时回退到 ID；`disableDependents` 是连带关闭的其他
 插件 ID。显示名称只用于界面，所有管理请求仍使用稳定的 `plugin_id`。
+
+M5a 行数据增加 `brokerPolicy`、`ownership` 和 `providedCapabilities`。本地目录 ownership 为 `development-directory`；GUI 的 Details 展示最新授权，并提供撤销与移除。
 
 ```powershell
 codlet plugin permissions dev.my-tools --json

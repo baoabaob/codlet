@@ -67,6 +67,7 @@ struct CliOutput {
     control: Option<ControlReport>,
     offline: Option<(String, bool)>,
     revoked: Option<(String, crate::plugins::Permission)>,
+    registration: Option<serde_json::Value>,
 }
 
 fn with_output(
@@ -76,7 +77,10 @@ fn with_output(
     let mut output = CliOutput::default();
     let result = work(&mut output);
     if json {
-        let outcome = if output.offline.is_some() || output.revoked.is_some() {
+        let outcome = if output.offline.is_some()
+            || output.revoked.is_some()
+            || output.registration.is_some()
+        {
             "offline_saved"
         } else if matches!(&result, Err(PluginCliError::Uncertain(_))) {
             "uncertain"
@@ -103,12 +107,14 @@ fn with_output(
             })
         }).or_else(|| output.revoked.as_ref().map(|(plugin_id, permission)| {
             serde_json::json!({"plugin_id":plugin_id, "revoked":permission, "applies":"next-codlet-launch"})
-        }));
+        })).or_else(|| output.registration.clone());
         println!(
             "{}",
             serde_json::json!({"schema_version": 1, "outcome": outcome,
             "operation_id": output.ticket, "control": output.control, "offline": offline, "error": error})
         );
+    } else if let Some(registration) = &output.registration {
+        println!("plugin-registration: {registration}");
     } else if let Some((plugin_id, permission)) = &output.revoked {
         println!(
             "plugin-permission: id={plugin_id}; revoked={}; applies=next-codlet-launch",
@@ -239,6 +245,48 @@ fn offline_edit(
     let _lease = offline_lease(scope)?;
     let mut registry = PluginRegistry::load(scope.path())?;
     let plugin_id = &request.plugin_id;
+    if request.action == PluginControlAction::Import {
+        let selection = request.local_import.as_ref().expect("validated import");
+        let (mut next, _) = crate::local_import::stage(&registry, plugin_id, selection)?;
+        next.set_enabled(plugin_id, selection.enable)?;
+        next.save()?;
+        output.registration = Some(
+            serde_json::json!({"plugin_id":plugin_id,"action":"import","enabled":selection.enable,"applies":"next-codlet-launch","directory":"preserved"}),
+        );
+        return Ok(());
+    }
+    if matches!(
+        request.action,
+        PluginControlAction::Remove | PluginControlAction::Disable
+    ) {
+        if request.action == PluginControlAction::Remove
+            && !registry.local_plugins().contains_key(plugin_id)
+        {
+            return Err(PluginCliError::UnknownPlugin(plugin_id.clone()));
+        }
+        let catalog = crate::catalog::PluginCatalog::load(&registry)?;
+        if !request.cascade {
+            crate::plugin_lifecycle::validate_disable(&[], &catalog, &registry, plugin_id)
+                .map_err(|error| PluginControlError::new(error.code(), error.to_string()))?;
+        }
+        let affected =
+            crate::plugin_lifecycle::disable_closure(&[], &catalog, &registry, plugin_id)
+                .map_err(|error| PluginControlError::new(error.code(), error.to_string()))?;
+        for id in &affected {
+            if let Some(registration) = registry.local_plugins().get(id).cloned() {
+                registry.register_local(id, registration)?;
+            }
+            registry.set_enabled(id, false)?;
+        }
+        if request.action == PluginControlAction::Remove {
+            registry.remove_local(plugin_id)?;
+        }
+        registry.save()?;
+        output.registration = Some(
+            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":false,"affected_plugin_ids":affected,"applies":"next-codlet-launch","directory":"preserved"}),
+        );
+        return Ok(());
+    }
     if request.action == PluginControlAction::Revoke {
         let permission = request.permission.expect("revoke was validated");
         if !registry.local_plugins().contains_key(plugin_id) {

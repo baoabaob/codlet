@@ -28,6 +28,7 @@ pub(super) struct LabRuntime {
     os_broker: Option<OsBroker>,
     host_control: HostControl,
     control: ControlBroker,
+    manage_service: crate::runtime_manage::RuntimeManageService,
     status: StatusPublisher,
     js_runtime: Option<JsRuntime>,
     stdin_receipts: BTreeSet<String>,
@@ -57,15 +58,16 @@ impl LabRuntime {
         renderer.set_status_publisher(status.clone());
         let server = ControlServer::bind_isolated(lease, status.clone()).map_err(preflight)?;
         let control = server.broker();
-        renderer.set_manage_service(crate::runtime_manage::RuntimeManageService::new(
-            control.clone(),
-        ));
+        let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
+            .with_local_management(renderer.registry_path().to_owned(), false);
+        renderer.set_manage_service(manage_service.clone());
         Ok(Self {
             renderer,
             hosts: None,
             os_broker: None,
             host_control,
             control,
+            manage_service,
             status,
             js_runtime,
             stdin_receipts: BTreeSet::new(),
@@ -95,9 +97,7 @@ impl LabRuntime {
             self.js_runtime.take(),
             HostCoreServices {
                 os_broker: Some(os_broker.client()),
-                runtime_manage: Some(crate::runtime_manage::RuntimeManageService::new(
-                    self.control.clone(),
-                )),
+                runtime_manage: Some(self.manage_service.clone()),
             },
         )
         .map_err(runtime_error)?;
@@ -376,6 +376,7 @@ mod tests {
             action: crate::plugin_control::PluginControlAction::Reload,
             permission: None,
             cascade: false,
+            local_import: None,
         };
         assert_eq!(
             crate::windows::control_pipe::query(

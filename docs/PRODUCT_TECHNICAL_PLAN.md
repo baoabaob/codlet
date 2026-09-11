@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.32；日期：2026-09-11；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.33；日期：2026-09-11；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -10,7 +10,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 
 当前实现已交付运行中管理、watch、完整 M2 公开原语，以及 M3/M4 的托管主世界、可选 Desktop Adapter、同一 Desktop 会话读写/事件/审批和提交拦截。证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)及 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。[2026-09-11 兼容补验](DESKTOP_COMPATIBILITY_2026-09-11.md)已修复测试客户端原生新建/冷恢复，并适配新构建；M0/M1 重复运行、官方入口与 crash 发布门禁仍保留。[P0 盘点](PLATFORM_P0_AUDIT_2026-09-11.md)已记录系统绑定与接口草案，尚未实现非 Windows 移植。
 
-首批 [M3.1/M4.1 扩展](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)已交付共享 UI helpers、语义外观、当前任务/运行回合事件、原生任务打开及拦截诊断。下一阶段推进 M5 的插件导入与交付；独立 fileChange 审批继续按实机适用条件补验。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
+首批 [M3.1/M4.1 扩展](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)已交付共享 UI helpers、语义外观、当前任务/运行回合事件、原生任务打开及拦截诊断。M5a 本地导入、授权预览、GUI 权限管理与移除已实现并完成自动回归，真实界面剩余流程按 [M5 手测指南](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)由用户验收。后续 M5b 扩展 GitHub 来源；独立 fileChange 审批继续按实机适用条件补验。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 

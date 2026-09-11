@@ -62,12 +62,54 @@ impl HostControl {
                 .any(|entry| entry.id == *id && matches!(entry.source, PluginSource::Bundled))
             {
                 return Err(PluginControlError::new(
-                    "bundled_permission",
-                    "Bundled installation permissions are fixed; disable the bundled package instead.",
+                    "bundled_registration",
+                    "Bundled installations cannot be removed or have permissions revoked; disable the package instead.",
                 ));
             }
+            let removing = request.action == PluginControlAction::Remove;
+            let affected = if removing {
+                if !request.cascade {
+                    plugin_lifecycle::validate_disable(
+                        &current,
+                        renderer.catalog_snapshot(),
+                        &registry,
+                        id,
+                    )
+                    .map_err(lifecycle_error)?;
+                }
+                plugin_lifecycle::disable_closure(
+                    &current,
+                    renderer.catalog_snapshot(),
+                    &registry,
+                    id,
+                )
+                .map_err(lifecycle_error)?
+            } else {
+                plugin_lifecycle::dependent_closure(&current, id)
+            };
             self.prepare_authority_retirement(renderer)?;
-            let changed = if registry.local_plugins().contains_key(id) {
+            let changed = if removing {
+                let changed = registry.local_plugins().contains_key(id) || registry.is_enabled(id);
+                let saved = (|| {
+                    for affected_id in &affected {
+                        if let Some(registration) =
+                            registry.local_plugins().get(affected_id).cloned()
+                        {
+                            registry.register_local(affected_id, registration)?;
+                        }
+                        registry.set_enabled(affected_id, false)?;
+                    }
+                    if registry.local_plugins().contains_key(id) {
+                        registry.remove_local(id)?;
+                    }
+                    registry.save()
+                })();
+                if let Err(error) = saved {
+                    renderer.finish_package_management(registry, self.generations.clone());
+                    return Err(registry_error(error));
+                }
+                changed
+            } else if registry.local_plugins().contains_key(id) {
                 match registry
                     .revoke_permission(id, request.permission.expect("validated revoke"))
                     .and_then(|changed| registry.save().map(|()| changed))
@@ -81,7 +123,6 @@ impl HostControl {
             } else {
                 false
             };
-            let affected = plugin_lifecycle::dependent_closure(&current, id);
             let unchanged = !changed
                 && !current
                     .iter()
@@ -233,6 +274,7 @@ impl HostControl {
             plugin_id: id,
             permission: None,
             cascade: false,
+            local_import: None,
         };
         self.revoking = Some(self.retire_authority(
             RevocationPlan {
@@ -380,13 +422,14 @@ impl PendingRevocation {
         if let Ok(registry) = PluginRegistry::load(self.registry.path()) {
             self.registry = registry;
         }
+        let removing = self.request.action == PluginControlAction::Remove;
         let reason = self
             .request
             .permission
             .map(|permission| format!("{} is revoked.", permission.as_str()))
             .unwrap_or_else(|| "The selected authorization record changed.".into());
         let report = PluginControlReport {
-            action: PluginControlAction::Revoke,
+            action: self.request.action,
             plugin_id: self.request.plugin_id.clone(),
             outcome: if self.failures.is_empty() {
                 if self.unchanged {
@@ -401,9 +444,13 @@ impl PendingRevocation {
             affected_plugin_ids: self.affected.iter().cloned().collect(),
             generations: Vec::new(),
             target_failures: std::mem::take(&mut self.failures),
-            message: Some(format!(
-                "{reason} Old managed authority is invalid; enabled preferences are retained, and source restoration was not attempted."
-            )),
+            message: Some(if removing {
+                "Local registration removed and affected packages disabled. Author files are preserved.".into()
+            } else {
+                format!(
+                    "{reason} Old managed authority is invalid; enabled preferences are retained, and source restoration was not attempted."
+                )
+            }),
         };
         renderer.finish_package_management(self.registry.clone(), generations.clone());
         Some(report)
@@ -428,6 +475,7 @@ mod tests {
             plugin_id: "dev.fixture".into(),
             permission: None,
             cascade: false,
+            local_import: None,
         };
         assert_eq!(
             serde_json::to_value(old).unwrap(),
@@ -438,6 +486,7 @@ mod tests {
             plugin_id: "dev.fixture".into(),
             permission: Some(crate::plugins::Permission::CdpRaw),
             cascade: false,
+            local_import: None,
         };
         revoke.validate().unwrap();
         revoke.permission = None;

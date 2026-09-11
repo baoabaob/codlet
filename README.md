@@ -17,10 +17,13 @@ cold resume. The existing M0/M1 production gates remain open.
 The [M3.1/M4.1 increment](docs/UI_HELPERS_AND_NAVIGATION_2026-09-11.md) adds shared UI
 controls used by the management GUI and an [ordinary plugin](examples/ui-controls/README.md),
 current-task events, Native task opening/cold resume and interceptor diagnostics.
-The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) places local/GitHub
-plugin import and simple in-client management in M5.
+M5a adds local-folder preview/import, explicit permission confirmation, permission
+details/revocation and removal through the same GUI/CLI receipts. The
+[manual acceptance guide](docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md) and
+[small test plugin](examples/local-management-check/README.md) cover the remaining native UI checks.
+The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) keeps GitHub import in M5b.
 GitHub Topics and community directories handle discovery; a separate Codlet Market
-is outside the current plan. Import and non-Windows ports remain planned work.
+is outside the current plan. GitHub import and non-Windows ports remain planned work.
 The [P0 platform audit](docs/PLATFORM_P0_AUDIT_2026-09-11.md) now records Windows dependencies,
 proposed internal interfaces and the per-platform evidence required before a port.
 

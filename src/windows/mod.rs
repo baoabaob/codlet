@@ -2,6 +2,7 @@ pub mod control_pipe;
 mod control_scope;
 pub mod environment;
 pub mod fake_child;
+pub(crate) mod folder_dialog;
 pub mod launch_mutex;
 pub(crate) mod local_ipc;
 pub mod packages;

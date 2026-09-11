@@ -215,6 +215,8 @@ $sourceFiles = @(
     'runtime/node-runtime.json', 'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
     'types/codex-desktop.d.ts', 'types/renderer-ui.d.ts',
     'examples/ui-controls/codlet.json', 'examples/ui-controls/renderer.js', 'examples/ui-controls/README.md',
+    'examples/local-management-check/codlet.json', 'examples/local-management-check/renderer.js', 'examples/local-management-check/README.md',
+    'docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md',
     'docs/UI_HELPERS_AND_NAVIGATION_2026-09-11.md',
     'bundled/codex-desktop-adapter/codlet.json', 'bundled/codex-desktop-adapter/renderer.js',
     'examples/desktop-m3-m4/codlet.json', 'examples/desktop-m3-m4/renderer.js', 'examples/desktop-m3-m4/README.md',

@@ -33,6 +33,7 @@ foreach ($codletFile in @('node.exe', 'LICENSE')) {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $codletSource 'docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md') -Destination (Join-Path $codletOutput 'M5-ManualTest.md')
 $codletConfiguration = [ordered]@{
     schema = 1; labRoot = $codletLabRoot; labBinary = 'codlet-lab.exe'
     labBinarySha256 = (Get-FileHash -LiteralPath (Join-Path $codletOutput 'codlet-lab.exe') -Algorithm SHA256).Hash
@@ -86,5 +87,10 @@ $codletPluginOutput = Join-Path $codletOutput 'plugins/hide-usage-banner'
 $null = New-Item -ItemType Directory -Path $codletPluginOutput
 foreach ($codletFile in @('codlet.json', 'renderer.js', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $codletSource ('examples/hide-usage-banner/' + $codletFile)) -Destination $codletPluginOutput
+}
+$codletCheckOutput = Join-Path $codletOutput 'plugins/local-management-check'
+$null = New-Item -ItemType Directory -Path $codletCheckOutput
+foreach ($codletFile in @('codlet.json', 'renderer.js', 'README.md')) {
+    Copy-Item -LiteralPath (Join-Path $codletSource ('examples/local-management-check/' + $codletFile)) -Destination $codletCheckOutput
 }
 [pscustomobject]@{ destination=$codletOutput; labRoot=$codletLabRoot; packageVersion=$ExpectedPackageVersion; executableSha256=$codletConfiguration.labBinarySha256 } | ConvertTo-Json -Compress

@@ -103,14 +103,17 @@ impl Fixture {
     }
 
     fn submit(&self, action: PluginControlAction, id: &str) -> String {
-        let prepared = self
-            .broker
-            .handle(ControlRequest::prepare(PluginControlRequest {
-                action,
-                plugin_id: id.into(),
-                permission: None,
-                cascade: false,
-            }));
+        self.submit_request(PluginControlRequest {
+            action,
+            plugin_id: id.into(),
+            permission: None,
+            cascade: false,
+            local_import: None,
+        })
+    }
+
+    fn submit_request(&self, request: PluginControlRequest) -> String {
+        let prepared = self.broker.handle(ControlRequest::prepare(request));
         let receipt = prepared.operation_id().unwrap().to_owned();
         assert_eq!(
             self.broker.handle(ControlRequest::submit(&receipt)).status,
@@ -268,6 +271,7 @@ fn confirmed_adapter_disable_persists_the_gui_closure_without_reactivation() {
             plugin_id: "codex.ui.adapter".into(),
             permission: None,
             cascade: true,
+            local_import: None,
         }));
     let receipt = prepared.operation_id().unwrap().to_owned();
     fixture.broker.handle(ControlRequest::submit(&receipt));
@@ -647,4 +651,173 @@ fn enabled_host_can_reload_after_its_retired_observation_is_evicted() {
     assert_eq!(report.outcome, PluginControlOutcome::Applied);
     assert_eq!(report.generations[0].generation, 2);
     assert_eq!(fixture.observation(id).state, ExecutionState::Active);
+}
+
+fn import_request(fixture: &Fixture, root: &Path, enable: bool) -> PluginControlRequest {
+    let preview = codlet::local_import::preview(&fixture.registry(), root).unwrap();
+    PluginControlRequest {
+        action: PluginControlAction::Import,
+        plugin_id: preview.manifest.id.clone(),
+        permission: None,
+        cascade: false,
+        local_import: Some(preview.request(
+            vec![Permission::HostProcess, Permission::CdpRaw],
+            Default::default(),
+            enable,
+        )),
+    }
+}
+
+#[test]
+fn local_import_then_enable_and_remove_use_receipts_and_preserve_author_files() {
+    let mut fixture = Fixture::new();
+    let id = "dev.local-import";
+    let root = fixture.register(id, &source("imported", ""));
+    let mut registry = fixture.registry();
+    registry.remove_local(id).unwrap();
+    registry.save().unwrap();
+    let original_source = std::fs::read(root.join("dist/host.js")).unwrap();
+    let original_manifest = std::fs::read(root.join("codlet.json")).unwrap();
+    let receipt = fixture.submit_request(import_request(&fixture, &root, false));
+    let imported = fixture.wait(&receipt);
+    assert_eq!(
+        lifecycle_report(imported.clone()).action,
+        PluginControlAction::Import
+    );
+    assert!(imported.is_success());
+    assert!(!fixture.registry().is_enabled(id));
+    assert!(fixture.hosts.observations().is_empty());
+    assert!(events(&root).is_empty());
+    assert_eq!(
+        fixture.broker.handle(ControlRequest::submit(&receipt)),
+        imported
+    );
+    let receipt = fixture.submit_request(import_request(&fixture, &root, true));
+    let enabled = fixture.wait(&receipt);
+    assert!(enabled.is_success(), "{enabled:?}");
+    assert!(fixture.registry().is_enabled(id));
+    assert_eq!(fixture.observation(id).state, ExecutionState::Active);
+    assert_eq!(
+        fixture.broker.handle(ControlRequest::submit(&receipt)),
+        enabled
+    );
+    let running_import = fixture.submit_request(import_request(&fixture, &root, true));
+    assert_eq!(error_code(fixture.wait(&running_import)), "plugin_active");
+    let receipt = fixture.submit(PluginControlAction::Remove, id);
+    let removed = fixture.wait(&receipt);
+    assert!(removed.is_success(), "{removed:?}");
+    assert_eq!(
+        lifecycle_report(removed.clone()).action,
+        PluginControlAction::Remove
+    );
+    assert!(!fixture.registry().local_plugins().contains_key(id));
+    assert!(!fixture.registry().is_enabled(id));
+    assert!(matches!(
+        fixture.observation(id).state,
+        ExecutionState::Exited | ExecutionState::Failed
+    ));
+    assert_eq!(
+        fixture.broker.handle(ControlRequest::submit(&receipt)),
+        removed
+    );
+    assert_eq!(
+        std::fs::read(root.join("dist/host.js")).unwrap(),
+        original_source
+    );
+    assert_eq!(
+        std::fs::read(root.join("codlet.json")).unwrap(),
+        original_manifest
+    );
+    assert_eq!(
+        events(&root)
+            .iter()
+            .filter(|event| event["event"] == "active")
+            .count(),
+        1
+    );
+    fixture.ping();
+}
+
+#[test]
+fn changed_import_and_failed_initial_activation_leave_no_running_authority() {
+    let mut fixture = Fixture::new();
+    let id = "dev.import-failure";
+    let root = fixture.register(id, &source("old", ""));
+    let mut registry = fixture.registry();
+    registry.remove_local(id).unwrap();
+    registry.save().unwrap();
+    let receipt = fixture.submit_request(import_request(&fixture, &root, true));
+    std::fs::write(
+        root.join("dist/host.js"),
+        source("bad", "throw new Error('import activation failed');"),
+    )
+    .unwrap();
+    assert_eq!(error_code(fixture.wait(&receipt)), "import_content_changed");
+    assert!(!fixture.registry().local_plugins().contains_key(id));
+    assert!(fixture.hosts.observations().is_empty());
+    let receipt = fixture.submit_request(import_request(&fixture, &root, true));
+    let failed = lifecycle_report(fixture.wait(&receipt));
+    assert_eq!(failed.action, PluginControlAction::Import);
+    assert_eq!(failed.outcome, PluginControlOutcome::Degraded);
+    assert!(!failed.desired_enabled);
+    assert!(fixture.registry().local_plugins().contains_key(id));
+    assert!(!fixture.registry().is_enabled(id));
+    assert!(matches!(
+        fixture.observation(id).state,
+        ExecutionState::Failed | ExecutionState::Exited
+    ));
+    fixture.ping();
+}
+
+#[test]
+fn remove_requires_confirmation_for_dependents_and_disables_the_closure_atomically() {
+    let mut fixture = Fixture::new();
+    let provider = "dev.remove-provider";
+    let consumer = "dev.remove-consumer";
+    let provider_root = fixture.register(provider, &source("provider", ""));
+    let consumer_root = fixture.register(consumer, &source("consumer", ""));
+    let cap = json!({"name":"dev.remove-service","api":1,"scope":"runtime"});
+    for (id, root, key) in [
+        (provider, &provider_root, "provides"),
+        (consumer, &consumer_root, "requires"),
+    ] {
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(root.join("codlet.json")).unwrap()).unwrap();
+        manifest[key] = json!([cap]);
+        std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
+        assert_eq!(
+            fixture.command(PluginControlAction::Enable, id).outcome,
+            PluginControlOutcome::Applied
+        );
+    }
+    let refused = fixture.submit(PluginControlAction::Remove, provider);
+    assert_eq!(error_code(fixture.wait(&refused)), "dependency_conflict");
+    assert!(fixture.registry().is_enabled(provider) && fixture.registry().is_enabled(consumer));
+    let receipt = fixture.submit_request(PluginControlRequest {
+        action: PluginControlAction::Remove,
+        plugin_id: provider.into(),
+        permission: None,
+        cascade: true,
+        local_import: None,
+    });
+    let removed = lifecycle_report(fixture.wait(&receipt));
+    assert_eq!(removed.outcome, PluginControlOutcome::Applied);
+    assert_eq!(removed.affected_plugin_ids.len(), 2);
+    let registry = fixture.registry();
+    assert!(!registry.is_enabled(provider) && !registry.is_enabled(consumer));
+    assert!(!registry.local_plugins().contains_key(provider));
+    assert!(registry.local_plugins().contains_key(consumer));
+    // Withdrawing a provider lease may retire its dependent as Failed; both
+    // terminal states require confirmed process exit and supervisor cleanup.
+    for id in [provider, consumer] {
+        assert!(matches!(
+            fixture.observation(id).state,
+            ExecutionState::Exited | ExecutionState::Failed
+        ));
+    }
+    assert!(
+        provider_root.join("dist/host.js").is_file()
+            && consumer_root.join("dist/host.js").is_file()
+    );
+    fixture.ping();
 }

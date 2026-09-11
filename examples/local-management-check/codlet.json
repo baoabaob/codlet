@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "id": "dev.example.local-management-check",
+  "name": "Local Management Check",
+  "version": "1.0.0",
+  "renderer": { "entry": "renderer.js", "world": "isolated" },
+  "permissions": ["ui.dom"]
+}

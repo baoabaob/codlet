@@ -23,6 +23,7 @@ use crate::renderer::RendererRuntime;
 use crate::runtime_control::{ControlBroker, ControlJob, ControlRequest, ControlStatus};
 
 mod package;
+mod registration;
 mod revocation;
 use package::{PendingControl, Prepared};
 
@@ -207,6 +208,7 @@ impl HostControl {
                         plugin_id: id.clone(),
                         permission: None,
                         cascade: false,
+                        local_import: None,
                     },
                 ));
                 if prepared.status != ControlStatus::Prepared {
@@ -245,7 +247,10 @@ impl HostControl {
         hosts: &HostRuntime,
         broker: &ControlBroker,
     ) -> Option<ControlJob> {
-        if job.request.action == PluginControlAction::Revoke {
+        if matches!(
+            job.request.action,
+            PluginControlAction::Revoke | PluginControlAction::Remove
+        ) {
             self.dispatch_revoke(job, renderer, hosts, broker);
             return None;
         }
@@ -283,6 +288,10 @@ impl HostControl {
                     *generation = (*generation).max(observation.plugin.generation)
                 })
                 .or_insert(observation.plugin.generation);
+        }
+        if job.request.action == PluginControlAction::Import {
+            self.dispatch_import(job, renderer, hosts, broker);
+            return None;
         }
         let observed = observations
             .into_iter()

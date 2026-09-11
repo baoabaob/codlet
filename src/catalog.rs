@@ -197,7 +197,7 @@ impl PluginCatalog {
     }
 }
 
-fn validate_renderer_requirements(
+pub(crate) fn validate_renderer_requirements(
     plugin: LoadedPlugin,
     path: &Path,
 ) -> Result<LoadedPlugin, LocalPluginError> {

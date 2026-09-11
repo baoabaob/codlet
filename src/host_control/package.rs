@@ -84,7 +84,7 @@ impl HostControl {
             return Ok(Prepared::Pending(Box::new(pending)));
         }
 
-        if job.request.action == PluginControlAction::Enable
+        if job.request.action.starts_plugin()
             && let Some(plugin) = current.iter().find(|plugin| plugin.manifest.id == *id)
             && renderer.package_is_active(plugin)
         {
@@ -405,7 +405,7 @@ impl PendingControl {
                         self.verify_rollback(renderer)
                     } else {
                         self.verify_candidate().and_then(|()| {
-                            if self.job.request.action == PluginControlAction::Enable {
+                            if self.job.request.action.starts_plugin() {
                                 self.registry = plugin_lifecycle::persist_preference_with_guards(
                                     &self.registry,
                                     &self.job.request.plugin_id,
@@ -454,8 +454,7 @@ impl PendingControl {
             .map_err(lifecycle_error)?;
         for id in &self.plan.affected {
             if !self.registry.is_enabled(id)
-                && !(id == &self.job.request.plugin_id
-                    && self.job.request.action == PluginControlAction::Enable)
+                && !(id == &self.job.request.plugin_id && self.job.request.action.starts_plugin())
             {
                 return Err(PluginControlError::new(
                     "plugin_disabled",

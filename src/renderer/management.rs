@@ -79,9 +79,11 @@ impl RendererRuntime {
             return Err(host_executor_required(id));
         }
         match request.action {
-            PluginControlAction::Revoke => Err(PluginControlError::new(
+            PluginControlAction::Revoke
+            | PluginControlAction::Import
+            | PluginControlAction::Remove => Err(PluginControlError::new(
                 "host_executor_required",
-                "Permission revocation uses the foreground package coordinator.",
+                "Registration and permission changes use the foreground package coordinator.",
             )),
             PluginControlAction::Disable => {
                 if !request.cascade {
@@ -613,6 +615,7 @@ mod tests {
                         plugin_id: "dev.host".into(),
                         permission: None,
                         cascade: false,
+                        local_import: None,
                     })
                     .unwrap_err()
                     .code,
@@ -716,6 +719,7 @@ mod tests {
                     plugin_id: "dev.local".into(),
                     permission: None,
                     cascade: false,
+                    local_import: None,
                 })
                 .unwrap_err();
             assert_eq!(
@@ -861,6 +865,7 @@ mod tests {
                     plugin_id: "dev.consumer".into(),
                     permission: None,
                     cascade: false,
+                    local_import: None,
                 })
                 .unwrap_err()
                 .code,

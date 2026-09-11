@@ -2380,7 +2380,8 @@ fn invoke_builtin_host_endpoint(
                 ));
             }
             match request.method.as_str() {
-                "prepare" | "submit" | "operation" => {
+                "prepare" | "submit" | "operation" | "previewLocal" | "permissions"
+                | "chooseLocalFolder" | "folderSelection" => {
                     if request.id.is_none() {
                         return Err(host_failure(
                             "request_required",
@@ -2410,14 +2411,18 @@ fn invoke_builtin_host_endpoint(
                     }
                     let latest = PluginRegistry::load(context.registry.path())
                         .map_err(|error| host_failure("registry_error", error.to_string()))?;
+                    let mut value = listing::plugin_list(
+                        context.catalog,
+                        context.plugins,
+                        &latest,
+                        &context.active_plugin_ids,
+                        context.external_observations,
+                    );
+                    if let Some(service) = context.manage_service {
+                        service.decorate_list(&mut value);
+                    }
                     Ok(HostEndpointOutcome {
-                        value: listing::plugin_list(
-                            context.catalog,
-                            context.plugins,
-                            &latest,
-                            &context.active_plugin_ids,
-                            context.external_observations,
-                        ),
+                        value,
                         after_response: None,
                     })
                 }

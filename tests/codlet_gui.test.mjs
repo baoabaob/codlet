@@ -13,6 +13,138 @@ const deferred = () => {
     return { promise, resolve, reject };
 };
 
+const localPreview = () => ({
+    schema: 1, kind: 'codlet.local-import-preview', path: 'C:/author 测试/plugin', contentDigest: 'a'.repeat(64), registrationDigest: 'b'.repeat(64),
+    ownership: 'development-directory', existingRegistration: null, existingEnabled: true, watchEnabled: false,
+    manifest: { schema: 1, id: 'dev.import', name: 'Local Import', version: '1', renderer: { entry: 'renderer.js', world: 'isolated' }, permissions: ['ui.dom'], requires: [], provides: [] }
+});
+
+function localManagement(f, plugins = []) {
+    f.override('list', () => ({ plugins, localManagement: { available: true, watchEnabled: false, folderPicker: true } }));
+}
+
+test('local import requires a current preview, explicit trust and every permission, then submits once', async () => {
+    const f = fixture(); localManagement(f);
+    const preview = localPreview();
+    f.override('previewLocal', args => { assert.equal(args.path, 'C:/author input'); return preview; });
+    let operation, request;
+    f.override('prepare', args => { request = JSON.parse(JSON.stringify(args)); operation = { operation_id: 'import-one', request }; return { status: 'prepared', operation }; });
+    f.override('submit', () => { throw new Error('Lost response'); });
+    f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { action: 'import', outcome: 'applied', desired_enabled: false } } } }));
+    await f.plugin.activate(f.context); await f.open();
+    await f.control('Import local plugin').emit('click');
+    const confirm = f.control('Confirm local import');
+    assert.equal(confirm.disabled, true);
+    f.control('Plugin folder').value = 'C:/author input';
+    await f.nodes().find(node => node.textContent === 'Inspect folder' && node.tagName === 'button').emit('click');
+    assert.match(f.panel().textContent, /Automatic reload: off/);
+    assert.equal(confirm.disabled, true);
+    f.control('Trust this local plugin').checked = true;
+    await f.control('Trust this local plugin').emit('change');
+    assert.equal(confirm.disabled, true);
+    f.control('Grant ui.dom').checked = true;
+    await f.control('Grant ui.dom').emit('change');
+    assert.equal(confirm.disabled, false);
+    await confirm.emit('click'); await confirm.emit('click');
+    assert.deepEqual(request, { action: 'import', plugin_id: 'dev.import', local_import: { path: preview.path, contentDigest: preview.contentDigest, registrationDigest: preview.registrationDigest, trusted: true, grants: ['ui.dom'], brokerPolicy: {}, enable: false } });
+    assert.equal(f.calls.filter(method => method === 'prepare').length, 1);
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.match(f.byClass('codlet-status').textContent, /imported, disabled/);
+    f.plugin.deactivate();
+});
+
+test('editing the selected path invalidates grants and ignores a late preview', async () => {
+    const f = fixture(); localManagement(f);
+    const pending = deferred(); f.override('previewLocal', () => pending.promise);
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import local plugin').emit('click');
+    const path = f.control('Plugin folder'); path.value = 'C:/first';
+    const inspect = f.nodes().find(node => node.textContent === 'Inspect folder' && node.tagName === 'button');
+    const waiting = inspect.emit('click');
+    path.value = 'C:/second'; await path.emit('input');
+    pending.resolve(localPreview()); await waiting;
+    assert.equal(f.control('Grant ui.dom'), undefined);
+    assert.equal(f.control('Confirm local import').disabled, true);
+    assert.equal(f.calls.includes('prepare'), false);
+    f.override('previewLocal', () => localPreview()); await inspect.emit('click');
+    f.control('Grant ui.dom').checked = true; f.control('Trust this local plugin').checked = true;
+    await path.emit('input');
+    assert.equal(f.control('Grant ui.dom'), undefined);
+    assert.equal(f.control('Confirm local import').disabled, true);
+    f.plugin.deactivate();
+});
+
+test('native folder cancellation and a late result after closing never import or inspect a directory', async () => {
+    const f = fixture(); localManagement(f);
+    f.override('chooseLocalFolder', () => ({ selectionId: 'folder-1', status: 'cancelled' }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import local plugin').emit('click');
+    await f.control('Choose plugin folder').emit('click');
+    assert.match(f.panel().textContent, /Folder selection cancelled/);
+    assert.equal(f.calls.includes('previewLocal'), false);
+    const pending = deferred(); f.override('chooseLocalFolder', () => pending.promise);
+    const waiting = f.control('Choose plugin folder').emit('click');
+    await f.close().emit('click');
+    pending.resolve({ selectionId: 'folder-2', status: 'selected', path: 'C:/late' }); await waiting;
+    assert.equal(f.calls.includes('previewLocal'), false);
+    assert.equal(f.calls.includes('prepare'), false);
+    f.plugin.deactivate();
+});
+
+test('a selected native folder is inspected before any grant or mutation', async () => {
+    const f = fixture(); localManagement(f);
+    f.override('chooseLocalFolder', () => ({ selectionId: 'folder-3', status: 'selected', path: 'C:/chosen' }));
+    f.override('previewLocal', args => { assert.equal(args.path, 'C:/chosen'); return localPreview(); });
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import local plugin').emit('click');
+    await f.control('Choose plugin folder').emit('click');
+    assert.equal(f.control('Grant ui.dom').checked, false);
+    assert.equal(f.control('Trust this local plugin').checked, false);
+    assert.equal(f.control('Enable after import').checked, false);
+    assert.equal(f.control('Confirm local import').disabled, true);
+    assert.equal(f.calls.includes('prepare'), false);
+    f.plugin.deactivate();
+});
+
+test('permissions are read fresh and revoke requires confirmation before using the common receipt', async () => {
+    const f = fixture();
+    const plugin = { id: 'dev.local', name: 'Local', source: 'local', enabled: true, registered: true, active: true, grants: ['ui.dom'], disableDependents: [] };
+    localManagement(f, [plugin]);
+    f.override('permissions', args => { assert.equal(args.pluginId, plugin.id); return { pluginId: plugin.id, registration: { path: 'C:/confirmed folder', grants: ['ui.dom'], brokerPolicy: {} }, enabled: true }; });
+    let operation;
+    f.override('prepare', request => { assert.deepEqual(JSON.parse(JSON.stringify(request)), { action: 'revoke', plugin_id: plugin.id, permission: 'ui.dom' }); operation = { operation_id: 'revoke-one', request }; return { status: 'prepared', operation }; });
+    f.override('submit', () => ({ status: 'queued', operation }));
+    f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Local').emit('click');
+    assert.match(f.panel().textContent, /C:\/confirmed folder/);
+    await f.control('Revoke ui.dom').emit('click');
+    assert.match(f.panel().getAttribute('aria-label'), /Revoke permission/);
+    assert.equal(f.calls.includes('prepare'), false);
+    await f.cancel().emit('click');
+    assert.equal(f.panel().getAttribute('data-codlet-view'), 'details');
+    await f.control('Revoke ui.dom').emit('click'); await f.confirm().emit('click');
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.match(f.byClass('codlet-status').textContent, /permission revoked/);
+    f.plugin.deactivate();
+});
+
+test('remove explains preserved files and confirms dependent disable as one operation', async () => {
+    const f = fixture();
+    const plugin = { id: 'dev.local', name: 'Local', source: 'local', enabled: true, registered: true, grants: [], disableDependents: ['dev.consumer'] };
+    localManagement(f, [plugin, { id: 'dev.consumer', name: 'Consumer', enabled: true }]);
+    f.override('permissions', () => ({ pluginId: plugin.id, registration: { path: 'C:/author files', grants: [] } }));
+    let operation;
+    f.override('prepare', request => { assert.deepEqual(JSON.parse(JSON.stringify(request)), { action: 'remove', plugin_id: plugin.id, cascade: true }); operation = { operation_id: 'remove-one', request }; return { status: 'prepared', operation }; });
+    f.override('submit', () => ({ status: 'queued', operation }));
+    f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Local').emit('click');
+    await f.control('Remove Local').emit('click');
+    assert.match(f.byClass('codlet-confirmation-copy').textContent, /files will be kept/);
+    assert.match(f.byClass('codlet-confirmation-copy').textContent, /Also disable: Consumer/);
+    assert.equal(f.calls.includes('prepare'), false);
+    await f.confirm().emit('click');
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.match(f.byClass('codlet-status').textContent, /removed; files kept/);
+    f.plugin.deactivate();
+});
+
 test('a timed-out plugin list shows a retry action and a later refresh can succeed', async () => {
     const f = fixture();
     await f.plugin.activate(f.context);
@@ -40,7 +172,7 @@ function fixture({ mounted = true, ready = true } = {}) {
             const name = method === 'ping' ? 'codlet.runtime.ping'
                 : method === 'getMount' ? 'codex.ui.titlebar.afterMenu' : method === 'describe' ? 'codex.ui.appearance' : 'codlet.runtime.manage';
             assert.deepEqual(JSON.parse(JSON.stringify(capability)), { name, api: 1, scope: 'target' });
-            if (!['prepare', 'submit', 'operation'].includes(method)) assert.equal(args, null);
+            if (!['prepare', 'submit', 'operation', 'previewLocal', 'permissions', 'folderSelection'].includes(method)) assert.equal(args, null);
             calls.push(method);
             if (overrides[method]) return overrides[method](args);
             if (method === 'ping') return { pong: true, abi: 1 };

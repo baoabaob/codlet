@@ -1160,19 +1160,15 @@ mod tests {
             plugin.manifest.permissions,
             [Permission::UiDom, Permission::RuntimeManage]
         );
-        assert_eq!(plugin.manifest.requires.len(), 3);
         assert_eq!(
-            plugin.manifest.requires[0],
-            CapabilityDescriptor::new("codex.ui.titlebar.afterMenu", 1, CapabilityScope::Target)
-                .unwrap()
-        );
-        assert_eq!(
-            plugin.manifest.requires[1],
-            CapabilityDescriptor::new("codlet.runtime.ping", 1, CapabilityScope::Target).unwrap()
-        );
-        assert_eq!(
-            plugin.manifest.requires[2],
-            CapabilityDescriptor::new("codlet.runtime.manage", 1, CapabilityScope::Target).unwrap()
+            plugin.manifest.requires,
+            [
+                "codex.ui.appearance",
+                "codex.ui.titlebar.afterMenu",
+                "codlet.runtime.ping",
+                "codlet.runtime.manage"
+            ]
+            .map(|name| CapabilityDescriptor::new(name, 1, CapabilityScope::Target).unwrap())
         );
         assert!(plugin.source.as_deref().unwrap().contains("module.exports"));
         assert!(
@@ -1229,11 +1225,10 @@ mod tests {
             RendererWorld::Isolated
         );
         assert_eq!(plugin.manifest.permissions, [Permission::UiDom]);
-        assert_eq!(plugin.manifest.provides.len(), 1);
         assert_eq!(
-            plugin.manifest.provides[0],
-            CapabilityDescriptor::new("codex.ui.titlebar.afterMenu", 1, CapabilityScope::Target)
-                .unwrap()
+            plugin.manifest.provides,
+            ["codex.ui.appearance", "codex.ui.titlebar.afterMenu"]
+                .map(|name| CapabilityDescriptor::new(name, 1, CapabilityScope::Target).unwrap())
         );
         assert!(plugin.manifest.requires.is_empty());
         assert!(

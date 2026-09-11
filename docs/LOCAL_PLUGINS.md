@@ -20,6 +20,7 @@ Execution evidence belongs to the [M2 acceptance record](M2_ACCEPTANCE_2026-09-1
 
 ```powershell
 codlet plugin add C:\Plugins\my-tools
+codlet plugin preview C:\Plugins\my-tools --json
 ```
 
 Without `--trust`, this reads the manifest and declared JS entry snapshots,
@@ -61,10 +62,11 @@ external effects.
 ## One complete trust record
 
 The canonical directory, expected logical ID, grants and optional `brokerPolicy`
-are stored together in `%LOCALAPPDATA%\Codlet\config.json`. A new registration
-retains the ID's saved enabled preference, defaulting to enabled. Re-adding the
-same ID/directory explicitly replaces its complete grant and policy selection;
-it does not reset disabled state or silently add permissions.
+are stored together in `%LOCALAPPDATA%\Codlet\config.json`. M5a `plugin add` and
+GUI import register the directory disabled by default; choose `--enable` or the
+GUI's enable checkbox to activate it. Re-importing the same ID/directory replaces
+the complete explicitly confirmed grants/policy and requires the old package to
+be stopped. A different path must be explicitly removed and trusted again.
 
 Each registry save compares the original complete `path + grants + brokerPolicy`
 record under the existing process lock. A concurrent change conflicts instead of
@@ -80,6 +82,7 @@ codlet plugin enable dev.my-tools --json
 codlet plugin reload dev.my-tools --json
 codlet plugin disable dev.my-tools --json
 codlet plugin revoke dev.my-tools host.fs --json
+codlet plugin remove dev.my-tools --json
 codlet plugin operation '<receipt>' --json
 codlet doctor --json
 ```
@@ -87,7 +90,7 @@ codlet doctor --json
 With a matching runtime, commands use one prepare/submit/operation receipt in
 that runtime. After a lost submit response or timeout, query the same operation;
 do not create a second mutation or switch to an offline write. Without a runtime,
-enable/disable/revoke may save the next-launch intent only after proving that
+add/enable/disable/revoke/remove may save the next-launch intent only after proving that
 this registry has no Host; reload requires a running runtime.
 
 Ordinary CLI disable rejects enabled or running dependents. The GUI first shows
@@ -111,8 +114,9 @@ declares it. Public Host/renderer callers and the optional GUI use the same
 
 New registrations can be enabled online without restarting Codex. Disable can
 retire an actual owner even if its source is broken, missing or no longer
-registered. Removing a registration preserves source files and the ID's saved
-preference; disable first when immediate unloading is intended. An ID's owned
+registered. M5a removal preserves source files, disables the affected closure,
+and retires running authority under one receipt. Use `--cascade` to confirm
+dependent disable; bundled packages cannot be removed. An ID's owned
 entry shape cannot change during the same Codlet run; restart Codlet to add,
 remove or switch its Host/renderer entry kinds.
 

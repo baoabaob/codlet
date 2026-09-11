@@ -104,7 +104,10 @@ pub(super) fn plugin_list(
             "source":if bundled { "bundled" } else { "local" },
             "path":registration.map(|registration| registration.path.to_string_lossy()),
             "grants":grants,
+            "brokerPolicy":registration.map(|registration| &registration.broker_policy),
+            "ownership":if bundled { "bundled" } else { "development-directory" },
             "requestedPermissions":metadata.map(|plugin| &plugin.manifest.permissions),
+            "providedCapabilities":metadata.map(|plugin| plugin.manifest.all_provides().collect::<Vec<_>>()),
             "validation":validation,
             "enabled":registry.is_enabled(id),
             "active":metadata.is_some_and(|plugin| {

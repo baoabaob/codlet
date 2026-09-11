@@ -2,7 +2,9 @@
 
 适配 Codex Windows `{{packageVersion}}`，使用当前插件运行时，支持可选的 M3 主世界 ABI。
 
-新运行时提供共享 UI 控件。`examples/ui-controls` 可作为普通 `ui.dom` 插件注册，在菜单栏显示 **UI** 示例；M3/M4 面板新增当前任务同步、原生任务打开和拦截器诊断。导航仅在已经审核的主窗口构建上开放。
+新运行时提供共享 UI 控件。`examples/ui-controls` 可作为普通 `ui.dom` 插件注册，在菜单栏显示 **UI** 示例；M3/M4 面板提供当前任务同步、原生任务打开和拦截器诊断。Codlet 菜单支持从本地文件夹导入：检查后逐项授权，默认停用，可选择立即启用；Details 中可查看权限、撤销和移除。移除保留作者文件，测试入口不启用自动监听。
+
+本轮手测请按 `M5-ManualTest.md` 操作。随附 `plugins/local-management-check` 测试样例；它尚未注册，启用后仅显示一个可清理的状态标记。
 
 - 启动：双击 `Start-TestClient.cmd`。首次启动需要准备新版运行时缓存，稍等片刻。
 - 停止：双击 `Stop-TestClient.cmd`，或在测试窗口菜单中选择退出。仅关闭窗口可能让客户端继续驻留。
@@ -11,17 +13,18 @@
 
 若上次测试被中断，普通启动会保留缺少关闭证明的报错。确认旧测试进程已退出后，可在本目录运行 `Start-TestClient.cmd -RecoverInterrupted`。它会核对最新原始日志、匹配的协调器状态及全部已记录进程；活动或无法确认的进程会阻止恢复。旧日志和账号历史保持原样，新日志明确记录上一轮清理结果未知。
 
-在这个目录打开终端，使用 `Test-Plugins.cmd` 管理本地插件：
+在这个目录打开终端，使用 `Test-Plugins.cmd` 管理本地插件。`add` 默认注册为停用，加入 `--enable` 可立即启用；移除带有依赖的插件时使用 `--cascade` 确认同时停用这些依赖：
 
 ```powershell
 .\Test-Plugins.cmd list
+.\Test-Plugins.cmd preview "C:\你的插件目录" --json
 .\Test-Plugins.cmd add "C:\你的插件目录" --trust --grant ui.dom
 .\Test-Plugins.cmd enable 插件ID --json
 .\Test-Plugins.cmd reload 插件ID --json
 .\Test-Plugins.cmd disable 插件ID --json
 .\Test-Plugins.cmd permissions 插件ID --json
 .\Test-Plugins.cmd revoke 插件ID ui.dom --json
-.\Test-Plugins.cmd remove 插件ID
+.\Test-Plugins.cmd remove 插件ID --json
 ```
 
 “隐藏额度提示”的 ID 是 `dev.local.hide-usage-banner`。源码在 `plugins/hide-usage-banner`；修改后用上面的 `reload` 命令重载。支持本地 Renderer、Host 和组合插件；Host 使用随附的固定 Node 运行时，权限和 OS 访问范围沿用 M2 的显式授权。此测试入口不自动监听源文件。

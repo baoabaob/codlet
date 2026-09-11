@@ -33,6 +33,7 @@ $exampleCandidates = @(
     @{ Directory = 'hide-usage-banner'; Id = 'dev.local.hide-usage-banner' },
     @{ Directory = 'desktop-m3-m4'; Id = 'example.desktop.m3m4' },
     @{ Directory = 'ui-controls'; Id = 'example.ui.controls' },
+    @{ Directory = 'local-management-check'; Id = 'dev.example.local-management-check' },
     @{ Directory = 'core-rpc/service'; Id = 'example.rpc.service' },
     @{ Directory = 'core-rpc/view'; Id = 'example.rpc.view' },
     @{ Directory = 'core-rpc/coordinator'; Id = 'example.rpc.coordinator' },
