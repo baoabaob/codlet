@@ -12,6 +12,7 @@ function fixture({ ready = true, chrome = 'application-menu' } = {}) {
     const jobs = [];
     const observers = new Set();
     const endpoints = [];
+    const appearanceEndpoints = [];
     let mutations = 0;
     let queries = 0;
     function mutate(record) {
@@ -131,14 +132,15 @@ function fixture({ ready = true, chrome = 'application-menu' } = {}) {
             await plugin.activate({ generation, rpc: {
                 provide(capability, method, handler) {
                     assert.deepEqual(JSON.parse(JSON.stringify(capability)), {
-                        name: 'codex.ui.titlebar.afterMenu', api: 1, scope: 'target',
+                        name: method === 'getMount' ? 'codex.ui.titlebar.afterMenu' : 'codex.ui.appearance', api: 1, scope: 'target',
                     });
-                    assert.equal(method, 'getMount');
-                    endpoints.push(handler);
+                    assert.ok(['getMount', 'describe'].includes(method));
+                    (method === 'getMount' ? endpoints : appearanceEndpoints).push(handler);
                 },
             } });
         },
         getMount() { return JSON.parse(JSON.stringify(endpoints.at(-1)())); },
+        appearance(args) { return JSON.parse(JSON.stringify(appearanceEndpoints.at(-1)(args))); },
         mount() { return document.querySelectorAll(mountSelector)[0] ?? null; },
         style() { return document.querySelectorAll(styleSelector)[0] ?? null; },
         nodes(selector) { return document.querySelectorAll(selector); },
@@ -405,8 +407,9 @@ test('theme contract is scoped to owned mounts and opted-in portals with native 
     f.flush();
     const css = f.style().textContent;
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
-    assert.equal(rules.length, 5);
-    assert.equal(rules[0][1].trim(), `${mountSelector}, [data-codlet-ui-theme="${token}"]`);
+    const themes = `:is([data-codlet-ui-theme="${token}"], [data-codlet-ui-theme="codex.ui.appearance@1"])`;
+    assert.ok(rules.length > 5);
+    assert.equal(rules[0][1].trim(), `${mountSelector}, ${themes}`);
     const variables = [...rules[0][2].matchAll(/--codlet-ui-([\w-]+):\s*([^;]+);/g)];
     assert.deepEqual(variables.map(([, name]) => name).sort(),
         ['bg', 'fg', 'muted', 'border', 'hover', 'active', 'focus', 'font', 'font-size', 'menu-height', 'radius',
@@ -433,15 +436,30 @@ test('theme contract is scoped to owned mounts and opted-in portals with native 
     assert.equal(rules[1][1].trim(), mountSelector);
     assert.match(rules[1][2], /-webkit-app-region:\s*no-drag/);
     assert.match(rules[1][2], /pointer-events:\s*auto/);
-    assert.equal(rules[2][1].trim(), `[data-codlet-ui-theme="${token}"]::backdrop`);
+    assert.equal(rules[2][1].trim(), `${themes}::backdrop`);
     assert.equal(rules[2][2].trim(), '--codlet-ui-backdrop: #00000022;');
-    const ownedTheme = `:is(${mountSelector}, [data-codlet-ui-theme="${token}"])`;
+    const ownedTheme = `:is(${mountSelector}, ${themes})`;
     assert.equal(rules[3][1].trim(), `:root[data-reduced-motion="true"] ${ownedTheme}`);
     assert.equal(rules[4][1].trim(), `:root:not([data-reduced-motion]) ${ownedTheme}`);
     assert.match(css, /@media\s*\(prefers-reduced-motion: reduce\)/);
-    for (const rule of rules.slice(3)) assert.equal(rule[2].trim(), '--codlet-ui-motion-duration: 0ms;');
+    for (const rule of rules.slice(3, 5)) assert.equal(rule[2].trim(), '--codlet-ui-motion-duration: 0ms;');
+    for (const rule of rules.slice(5)) assert.match(rule[1], /data-codlet-ui-theme="codex.ui.appearance@1"/);
     assert.deepEqual(f.document.documentElement.style, { userSetting: 'untouched' });
     assert.deepEqual(f.document.body.style, { userSetting: 'untouched' });
     f.plugin.deactivate();
     assert.equal(f.style(), null);
+});
+
+test('appearance is useful without a titlebar mount and reports style loss without publishing Native details', async () => {
+    const f = fixture(); await f.activate(); f.flush();
+    const description = f.appearance();
+    assert.equal(description.api, 1); assert.equal(description.available, true);
+    assert.equal(description.nativeLayout, null); assert.equal(description.nativeTokensAvailable, false);
+    assert.deepEqual(description.roles.button, ['default', 'primary', 'danger', 'icon', 'close', 'menu']);
+    assert.deepEqual(Object.keys(description).sort(), ['api', 'available', 'nativeLayout', 'nativeTokensAvailable', 'roles', 'themeToken']);
+    description.roles.button.length = 0; assert.ok(f.appearance().roles.button.length);
+    assert.throws(() => f.appearance({ selector: 'private' }), { code: 'invalid_argument' });
+    f.style().remove(); assert.equal(f.appearance().available, false);
+    f.flush(); assert.equal(f.appearance().available, true);
+    f.plugin.deactivate(); assert.equal(f.appearance().available, false);
 });

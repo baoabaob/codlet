@@ -190,15 +190,17 @@
         window.module = { exports: {} };
     </script>
     <script src="../bundled/codlet/dist/renderer.js"></script>
-    <script>
+    <script type="module">
         const gui = window.module.exports;
+        const createUi = Function('return ' + await (await fetch('../bundled/runtime/ui.js')).text())();
         delete window.module;
         const token = 'codex.ui.titlebar.afterMenu@1';
         const byId = id => document.getElementById(id);
         let menu = document.querySelector('[role="menubar"]');
         const menuLine = document.querySelector('.preview-menu-line');
         const lowerHeader = document.querySelector('.preview-header');
-        let mountProvider;
+        let mountProvider, appearanceProvider;
+        const cleanups = new Set();
         let generation = 0;
         let active = false;
         let mountTimer;
@@ -247,6 +249,8 @@
         function unload() {
             active = false;
             gui.deactivate();
+            for (const cleanup of [...cleanups]) cleanup();
+            cleanups.clear();
             state(`GUI unloaded (generation ${generation})`);
         }
         function openGUI() {
@@ -260,11 +264,14 @@
             const current = ++generation;
             const context = {
                 pluginId: 'codlet-gui', generation: current,
+                onDeactivate(cleanup) { cleanups.add(cleanup); return () => cleanups.delete(cleanup); },
+                ui: { api: 1, create: appearance => createUi(context, appearance) },
                 rpc: { async request(capability, method, args) {
                     const id = ++callId;
                     log(`#${id} ${method} requested (generation ${current})`);
                     if (!['prepare', 'submit', 'operation'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
                     if (method === 'ping' && capability.name === 'codlet.runtime.ping') return { pong: true, abi: 1 };
+                    if (method === 'describe' && capability.name === 'codex.ui.appearance') return appearanceProvider();
                     if (method === 'getMount' && capability.name === 'codex.ui.titlebar.afterMenu') {
                         return mountProvider ? mountProvider() : { available: false, token };
                     }
@@ -353,8 +360,9 @@
         adapter.activate({
             generation: 1,
             rpc: { provide(capability, method, handler) {
-                if (capability.name !== 'codex.ui.titlebar.afterMenu' || method !== 'getMount') throw new Error('Unexpected adapter endpoint');
-                mountProvider = handler;
+                if (capability.name === 'codex.ui.titlebar.afterMenu' && method === 'getMount') mountProvider = handler;
+                else if (capability.name === 'codex.ui.appearance' && method === 'describe') appearanceProvider = handler;
+                else throw new Error('Unexpected adapter endpoint');
             } }
         }).then(() => activate(true)).catch(error => state(error.message));
     </script>

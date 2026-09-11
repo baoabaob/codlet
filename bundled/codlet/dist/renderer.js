@@ -5,6 +5,7 @@ module.exports = (() => {
     const BUTTON_ATTRIBUTE = 'data-codlet-titlebar-button';
     const PANEL_ATTRIBUTE = 'data-codlet-panel';
     const MOUNT_CAPABILITY = Object.freeze({ name: 'codex.ui.titlebar.afterMenu', api: 1, scope: 'target' });
+    const APPEARANCE_CAPABILITY = Object.freeze({ name: 'codex.ui.appearance', api: 1, scope: 'target' });
     const RUNTIME_PING_CAPABILITY = Object.freeze({ name: 'codlet.runtime.ping', api: 1, scope: 'target' });
     const RUNTIME_MANAGE_CAPABILITY = Object.freeze({ name: 'codlet.runtime.manage', api: 1, scope: 'target' });
 
@@ -46,7 +47,8 @@ module.exports = (() => {
             'M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16', 'M8 16H3v5']
     };
 
-    let style, button, panel, pluginList, managementStatus, refreshButton, closeButton;
+    let ui, style, button, panel, pluginList, managementStatus, refreshButton, closeButton;
+    const ROLE_BY_CLASS = Object.freeze({ 'codlet-panel-header': 'dialogHeader', 'codlet-panel-title': 'heading', 'codlet-panel-body': 'dialogBody', 'codlet-plugin-list': 'section', 'codlet-plugin-actions': 'actions', 'codlet-plugin-name': 'label', 'codlet-plugin-version': 'description', 'codlet-confirmation-actions': 'dialogActions', 'codlet-status': 'status' });
     let panelTitle, settingsSection;
     let confirmation, confirmationCopy, confirmationStatus, confirmButton, cancelButton, actionOrigin;
     let confirmationSelection = null;
@@ -80,7 +82,8 @@ module.exports = (() => {
     }
 
     function addText(parent, tag, className, text) {
-        const element = document.createElement(tag);
+        const element = tag === 'button' ? ui.button({ text, variant: className === 'codlet-confirm' ? 'danger' : 'default' })
+            : ui.element(tag, { role: ROLE_BY_CLASS[className], text });
         element.className = className;
         element.textContent = text;
         parent.appendChild(element);
@@ -88,9 +91,9 @@ module.exports = (() => {
     }
 
     function iconButton(parent, name, label) {
-        const control = addText(parent, 'button', 'codlet-icon-button', '');
-        control.type = 'button';
-        control.setAttribute('aria-label', label);
+        const control = ui.button({ label, variant: name === 'close' ? 'close' : 'icon' });
+        control.className = 'codlet-icon-button';
+        parent.appendChild(control);
         installTooltip(control, label);
         const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         for (const [key, value] of Object.entries({
@@ -111,7 +114,7 @@ module.exports = (() => {
         if (tooltipTimer !== null) clearTimeout(tooltipTimer);
         tooltipTimer = null;
         tooltipControl?.removeAttribute('aria-describedby');
-        tooltip?.remove();
+        if (tooltip && ui) ui.remove(tooltip);
         tooltip = tooltipControl = null;
     }
 
@@ -139,11 +142,11 @@ module.exports = (() => {
             }, 280);
         };
         const cancel = () => { if (tooltipControl === control) hideTooltip(); };
-        control.addEventListener('pointerenter', schedule);
-        control.addEventListener('pointerleave', cancel);
-        control.addEventListener('pointerdown', cancel);
-        control.addEventListener('focusin', () => { if (control.matches?.(':focus-visible')) schedule(); });
-        control.addEventListener('focusout', cancel);
+        ui.on(control, 'pointerenter', schedule);
+        ui.on(control, 'pointerleave', cancel);
+        ui.on(control, 'pointerdown', cancel);
+        ui.on(control, 'focusin', () => { if (control.matches?.(':focus-visible')) schedule(); });
+        ui.on(control, 'focusout', cancel);
     }
 
     function pluginName(plugin) {
@@ -173,265 +176,21 @@ module.exports = (() => {
     function installStyle() {
         style = document.createElement('style');
         style.setAttribute(STYLE_ATTRIBUTE, 'codlet');
-        // Use the documented dialog/setting-row geometry; viewport clamping belongs to this GUI.
+        // Shared control geometry and theme recipes belong to codex.ui.appearance.
+        // This consumer owns its viewport anchor, business layout and tooltips.
         style.textContent = `
-            [${BUTTON_ATTRIBUTE}], [${PANEL_ATTRIBUTE}] {
-                color: var(--codlet-ui-fg, CanvasText);
-                font-family: var(--codlet-ui-font, system-ui, sans-serif);
-                font-size: var(--codlet-ui-font-size, 14px);
-                letter-spacing: 0;
-                line-height: 1.45;
-            }
-            [${BUTTON_ATTRIBUTE}] {
-                appearance: none;
-                -webkit-app-region: no-drag;
-                pointer-events: auto;
-                flex: 0 0 auto;
-                box-sizing: border-box;
-                height: auto;
-                padding: 4px 10px;
-                border: 1px solid transparent;
-                border-radius: var(--codlet-ui-radius, 4px);
-                background: transparent;
-                color: var(--codlet-ui-menu-fg, var(--codlet-ui-muted, GrayText));
-                font-weight: var(--codlet-ui-font-weight-normal, 400);
-                line-height: 1;
-                white-space: nowrap;
-                cursor: default;
-            }
-            [${BUTTON_ATTRIBUTE}]:hover, [${BUTTON_ATTRIBUTE}]:focus-visible {
-                color: var(--codlet-ui-menu-hover-fg, var(--codlet-ui-muted, GrayText));
-                background: var(--codlet-ui-menu-hover-bg, color-mix(in oklab, CanvasText 5%, transparent));
-            }
-            [${PANEL_ATTRIBUTE}] button:hover:not(:disabled) {
-                background: var(--codlet-ui-hover, color-mix(in srgb, CanvasText 8%, Canvas));
-            }
-            [${BUTTON_ATTRIBUTE}][aria-expanded="true"] {
-                color: var(--codlet-ui-menu-active-fg, var(--codlet-ui-fg, CanvasText));
-                background: var(--codlet-ui-active, color-mix(in srgb, CanvasText 12%, Canvas));
-            }
-            [${PANEL_ATTRIBUTE}] button:active:not(:disabled) {
-                background: var(--codlet-ui-active, color-mix(in srgb, CanvasText 12%, Canvas));
-            }
-            [${BUTTON_ATTRIBUTE}]:focus-visible, [${PANEL_ATTRIBUTE}] :focus-visible {
-                outline: 2px solid var(--codlet-ui-focus, Highlight);
-                outline-offset: 2px;
-            }
-            [${PANEL_ATTRIBUTE}] {
-                position: fixed;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                display: flex;
-                flex-direction: column;
-                width: 600px;
-                max-width: 92vw;
-                max-height: calc(100dvh - var(--codlet-available-top, 36px) - 32px);
-                min-height: 0;
-                margin: auto;
-                padding: 0;
-                box-sizing: border-box;
-                border: 0;
-                border-radius: var(--codlet-ui-dialog-radius, 20px);
-                background: color-mix(in srgb, var(--codlet-ui-surface-raised, Canvas) 90%, transparent);
-                box-shadow: 0 0 0 0.5px var(--codlet-ui-border, ButtonBorder), var(--codlet-ui-dialog-shadow, 0 4px 8px -2px rgb(0 0 0 / 10%));
-                backdrop-filter: blur(24px);
-                overflow-wrap: anywhere;
-                overflow: hidden;
-                -webkit-app-region: no-drag;
-            }
-            [${PANEL_ATTRIBUTE}]::backdrop { background: var(--codlet-ui-backdrop, #00000022); }
-            [${PANEL_ATTRIBUTE}][data-codlet-view="confirmation"] { width: 420px; }
-            [${PANEL_ATTRIBUTE}] *, [${PANEL_ATTRIBUTE}] *::before, [${PANEL_ATTRIBUTE}] *::after { box-sizing: border-box; }
-            [${PANEL_ATTRIBUTE}]:not([open]), [${PANEL_ATTRIBUTE}][hidden], [${PANEL_ATTRIBUTE}] [hidden] { display: none; }
-            [${PANEL_ATTRIBUTE}] button {
-                appearance: none;
-                margin: 0;
-                border: 0;
-                border-radius: 999px;
-                background: transparent;
-                color: inherit;
-                font: inherit;
-                letter-spacing: 0;
-                cursor: var(--codlet-ui-cursor, default);
-            }
-            [${PANEL_ATTRIBUTE}] button:disabled { opacity: 0.4; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-actions {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                flex: 0 0 auto;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-actions > button {
-                min-width: 28px;
-                min-height: 28px;
-                padding: 4px 8px;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-panel-header {
-                display: flex;
-                align-items: center;
-                gap: 16px;
-                flex: 0 0 auto;
-                padding: 20px 56px 0 20px;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-panel-title {
-                flex: 1;
-                min-width: 0;
-                margin: 0;
-                font-size: var(--codlet-ui-font-heading, 20px);
-                line-height: 28px;
-                font-weight: var(--codlet-ui-font-weight-medium, 500);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-icon-button {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                flex: 0 0 24px;
-                width: 24px;
-                height: 24px;
-                padding: 0;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-tooltip {
-                position: absolute;
-                z-index: 10;
-                pointer-events: none;
-                max-width: min(360px, calc(100% - 16px));
-                max-height: 140px;
-                overflow: hidden;
-                padding: 6px 9px;
-                border: 1px solid var(--codlet-ui-border, ButtonBorder);
-                border-radius: 6px;
-                background: var(--codlet-ui-surface-raised, Canvas);
-                color: var(--codlet-ui-fg, CanvasText);
-                font-size: var(--codlet-ui-font-small, 13px);
-                font-weight: 400;
-                line-height: 1.4;
-                white-space: pre-line;
-                box-shadow: 0 2px 8px rgb(0 0 0 / 15%);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-dialog-close {
-                position: absolute;
-                top: 16px;
-                right: 16px;
-                border-radius: 4px;
-                color: color-mix(in srgb, var(--codlet-ui-fg, CanvasText) 80%, transparent);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-panel-body {
-                min-height: 0;
-                overflow: auto;
-                overscroll-behavior: contain;
-                padding: 12px 20px 20px;
-                scrollbar-gutter: stable;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-section-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 16px;
-                min-height: 46px;
-                padding-bottom: 6px;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-section-title {
-                margin: 0;
-                font-size: inherit;
-                font-weight: var(--codlet-ui-font-weight-medium, 500);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-status,
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-version,
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-state,
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy {
-                color: var(--codlet-ui-secondary, GrayText);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-status { margin: 8px 0; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-list {
-                overflow: hidden;
-                border: 1px solid var(--codlet-ui-border, ButtonBorder);
-                border-radius: var(--codlet-ui-group-radius, 16px);
-                background: var(--codlet-ui-surface-group, var(--codlet-ui-surface, Canvas));
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-list:empty { display: none; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-row {
-                position: relative;
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                align-items: center;
-                column-gap: 24px;
-                padding: 12px 16px;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-row:not(:last-child)::after {
-                content: '';
-                position: absolute;
-                pointer-events: none;
-                left: 16px;
-                right: 16px;
-                bottom: 0;
-                height: 0.5px;
-                background: var(--codlet-ui-border, ButtonBorder);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-copy { min-width: 0; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-name { font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; font-weight: var(--codlet-ui-font-weight-medium, 500); }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-version { margin-top: 2px; font-size: var(--codlet-ui-font-caption, 12px); line-height: 16px; }
-            [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width: 88px; font-size: var(--codlet-ui-font-small, 13px); line-height: 18px; text-align: right; }
-            [${PANEL_ATTRIBUTE}] .codlet-toggle {
-                appearance: none;
-                position: relative;
-                width: 32px;
-                height: 20px;
-                padding: 0;
-                margin: 0;
-                border: 0;
-                border-radius: 999px;
-                background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 10%, transparent);
-                color: var(--codlet-ui-on-accent, HighlightText);
-                cursor: var(--codlet-ui-cursor, default);
-                transition: background-color var(--codlet-ui-motion-duration, var(--codlet-fallback-motion-duration, 150ms)) ease-out;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-toggle::before {
-                content: '';
-                position: absolute;
-                top: 2px;
-                left: 2px;
-                width: 16px;
-                height: 16px;
-                border-radius: 50%;
-                background: currentColor;
-                transition: left var(--codlet-ui-motion-duration, var(--codlet-fallback-motion-duration, 150ms)) ease-out;
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-toggle:checked {
-                background: var(--codlet-ui-accent, Highlight);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-toggle:checked::before { left: 14px; }
-            [${PANEL_ATTRIBUTE}] .codlet-toggle:disabled { opacity: 0.4; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy { margin: 0; color: var(--codlet-ui-muted, GrayText); line-height: 1.5; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy code { font: inherit; color: var(--codlet-ui-fg, CanvasText); }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: end; padding-top: 12px; }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions button {
-                min-height: 36px;
-                padding: 6px 16px;
-                border: 1px solid transparent;
-                border-radius: 999px;
-                font-size: var(--codlet-ui-font-small, 13px);
-                line-height: 18px;
-                font-weight: var(--codlet-ui-font-weight-medium, 500);
-                background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 5%, transparent);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions button:hover:not(:disabled) {
-                background: color-mix(in oklab, var(--codlet-ui-fg, CanvasText) 10%, transparent);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions .codlet-confirm {
-                color: var(--codlet-ui-danger-fg, HighlightText);
-                background: var(--codlet-ui-danger-bg, Highlight);
-            }
-            [${PANEL_ATTRIBUTE}] .codlet-confirmation-actions .codlet-confirm:hover:not(:disabled) {
-                background: var(--codlet-ui-danger-hover, Highlight);
-            }
-            @media (prefers-reduced-motion: reduce) {
-                [${PANEL_ATTRIBUTE}] { --codlet-fallback-motion-duration: 0ms; }
-            }
-            @media (forced-colors: active) {
-                [${PANEL_ATTRIBUTE}] .codlet-toggle { appearance: auto; }
-                [${PANEL_ATTRIBUTE}] .codlet-toggle::before { display: none; }
-            }
+            [${BUTTON_ATTRIBUTE}] { pointer-events:auto; }
+            [${PANEL_ATTRIBUTE}] { max-height:calc(100dvh - var(--codlet-available-top,36px) - 32px); }
+            [${PANEL_ATTRIBUTE}][data-codlet-view="confirmation"] { width:420px; }
+            [${PANEL_ATTRIBUTE}] *, [${PANEL_ATTRIBUTE}] *::before, [${PANEL_ATTRIBUTE}] *::after { box-sizing:border-box; }
+            [${PANEL_ATTRIBUTE}] [hidden] { display:none; }
+            [${PANEL_ATTRIBUTE}] .codlet-section-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:46px; padding-bottom:6px; }
+            [${PANEL_ATTRIBUTE}] .codlet-section-title { margin:0; font-size:inherit; font-weight:var(--codlet-ui-font-weight-medium,500); }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-list:empty { display:none; }
+            [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width:88px; font-size:var(--codlet-ui-font-small,13px); line-height:calc(var(--codlet-ui-font-small,13px) * 18 / 13); text-align:right; color:var(--codlet-ui-secondary,GrayText); }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy { margin:0; color:var(--codlet-ui-muted,GrayText); line-height:1.5; }
+            [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy code { font:inherit; color:var(--codlet-ui-fg,CanvasText); }
+            [${PANEL_ATTRIBUTE}] .codlet-tooltip { position:absolute; z-index:10; pointer-events:none; max-width:min(360px,calc(100% - 16px)); max-height:140px; overflow:hidden; padding:6px 9px; border:1px solid var(--codlet-ui-border,ButtonBorder); border-radius:6px; background:var(--codlet-ui-surface-raised,Canvas); color:var(--codlet-ui-fg,CanvasText); font-size:var(--codlet-ui-font-small,13px); font-weight:400; line-height:1.4; white-space:pre-line; box-shadow:0 2px 8px rgb(0 0 0 / 15%); }
         `;
         document.documentElement.appendChild(style);
     }
@@ -497,15 +256,14 @@ module.exports = (() => {
             : execution?.state === 'exited' ? 'Exited' : null;
         const executionError = typeof execution?.error === 'string' && execution.error.length > 0
             ? execution.error : execution?.state === 'failed' ? 'Host process failed' : null;
-        const row = document.createElement('div');
-        row.className = 'codlet-plugin-row';
-        const copy = document.createElement('div');
-        copy.className = 'codlet-plugin-copy';
         const name = pluginName(plugin);
-        addText(copy, 'div', 'codlet-plugin-name', name);
         const metadata = [plugin.version, plugin.source === 'local' ? 'Local' : null]
             .filter(value => typeof value === 'string' && value.length > 0);
-        if (metadata.length) addText(copy, 'div', 'codlet-plugin-version', metadata.join(' / '));
+        const parts = ui.row({ label: name, description: metadata.join(' / ') });
+        const row = parts.element, copy = parts.copy;
+        row.className = 'codlet-plugin-row'; copy.className = 'codlet-plugin-copy';
+        parts.label.className = 'codlet-plugin-name'; parts.description.className = 'codlet-plugin-version';
+        parts.controls.className = 'codlet-plugin-actions';
         const path = typeof plugin.path === 'string' ? plugin.path : plugin.loadedPath;
         installTooltip(copy, `${plugin.id}${typeof path === 'string' ? `\n${path}` : ''}`);
         if (plugin.registered === false && plugin.loaded === true) {
@@ -519,21 +277,20 @@ module.exports = (() => {
             const message = plugin.validation.error?.message;
             addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
         }
-        row.appendChild(copy);
         const state = executionState ?? (plugin.active === true ? 'Active'
             : plugin.validation?.status === 'failed' ? 'Unavailable'
             : plugin.enabled === true ? 'Not active' : 'Disabled');
         if (plugin.id === context.pluginId && plugin.active === true && plugin.enabled === true) {
-            const controls = addText(row, 'div', 'codlet-plugin-actions', '');
+            const controls = parts.controls;
             addText(controls, 'div', 'codlet-plugin-state', state);
             addLoadControl(context, plugin, controls, 'reload');
-            const toggle = document.createElement('input');
+            const toggle = ui.switch({ label: 'Enable Codlet GUI', checked: true });
             toggle.className = 'codlet-toggle';
             toggle.type = 'checkbox';
             toggle.checked = true;
             toggle.setAttribute('role', 'switch');
             toggle.setAttribute('aria-label', 'Enable Codlet GUI');
-            toggle.addEventListener('change', () => {
+            ui.on(toggle, 'change', () => {
                 if (toggle.checked || action !== 'idle' || pendingOperation || !row.isConnected || panel.hidden) return;
                 return requestDisable(context, plugin, toggle);
             });
@@ -542,13 +299,13 @@ module.exports = (() => {
             controls.appendChild(toggle);
         } else {
             if (plugin.registered !== false || plugin.loaded === true) {
-                const controls = addText(row, 'div', 'codlet-plugin-actions', '');
+                const controls = parts.controls;
                 addText(controls, 'div', 'codlet-plugin-state', state);
                 if (plugin.registered === false) {
                     const stop = addText(controls, 'button', '', 'Stop');
                     stop.type = 'button';
                     stop.setAttribute('aria-label', `Stop ${name}`);
-                    stop.addEventListener('click', () => requestDisable(context, plugin, stop));
+                    ui.on(stop, 'click', () => requestDisable(context, plugin, stop));
                     mutationControls.add(stop);
                     stop.disabled = pendingOperation !== null;
                     return row;
@@ -557,13 +314,13 @@ module.exports = (() => {
                     const loadAction = plugin.loaded === true || Number.isSafeInteger(plugin.generation) ? 'reload' : 'enable';
                     addLoadControl(context, plugin, controls, loadAction);
                 }
-                const toggle = document.createElement('input');
+                const toggle = ui.switch({ label: `Enable ${name}`, checked: plugin.enabled === true });
                 toggle.className = 'codlet-toggle';
                 toggle.type = 'checkbox';
                 toggle.checked = plugin.enabled === true;
                 toggle.setAttribute('role', 'switch');
                 toggle.setAttribute('aria-label', `Enable ${name}`);
-                toggle.addEventListener('change', () => {
+                ui.on(toggle, 'change', () => {
                     const nextAction = toggle.checked ? 'enable' : 'disable';
                     toggle.checked = plugin.enabled === true;
                     return nextAction === 'disable' ? requestDisable(context, plugin, toggle) : managePlugin(context, plugin.id, nextAction);
@@ -572,7 +329,7 @@ module.exports = (() => {
                 mutationControls.add(toggle);
                 toggle.disabled = pendingOperation !== null;
             } else {
-                addText(row, 'div', 'codlet-plugin-state', state);
+                addText(parts.controls, 'div', 'codlet-plugin-state', state);
             }
         }
         return row;
@@ -584,7 +341,7 @@ module.exports = (() => {
         const ids = new Set(plugins.map(plugin => plugin.id));
         for (const [id, entry] of renderedPlugins) {
             if (!ids.has(id)) {
-                entry.row.remove();
+                ui.remove(entry.row);
                 renderedPlugins.delete(id);
             }
         }
@@ -592,7 +349,7 @@ module.exports = (() => {
             const snapshot = JSON.stringify(plugin);
             let entry = renderedPlugins.get(plugin.id);
             if (!entry || entry.snapshot !== snapshot) {
-                entry?.row.remove();
+                if (entry) ui.remove(entry.row);
                 entry = { snapshot, row: createPluginRow(context, plugin) };
                 renderedPlugins.set(plugin.id, entry);
             }
@@ -781,10 +538,9 @@ module.exports = (() => {
     }
 
     function createPanel(context) {
-        panel = document.createElement('dialog');
+        panel = ui.element('dialog', { role: 'dialog', variant: 'settings' });
         panel.id = `codlet-panel-${context.generation}`;
         panel.setAttribute(PANEL_ATTRIBUTE, 'codlet');
-        panel.setAttribute('data-codlet-ui-theme', CAPABILITY_TOKEN);
         panel.setAttribute('data-codlet-generation', String(context.generation));
         panel.setAttribute('role', 'dialog');
         panel.setAttribute('aria-modal', 'true');
@@ -794,13 +550,13 @@ module.exports = (() => {
         panelTitle = addText(header, 'h1', 'codlet-panel-title', 'Codlet');
         closeButton = iconButton(header, 'close', 'Close Codlet');
         closeButton.className += ' codlet-dialog-close';
-        closeButton.addEventListener('click', () => setPanelOpen(false));
+        ui.on(closeButton, 'click', () => setPanelOpen(false));
         const body = addText(panel, 'div', 'codlet-panel-body', '');
         settingsSection = addText(body, 'section', 'codlet-settings-section', '');
         const sectionHeader = addText(settingsSection, 'div', 'codlet-section-header', '');
         addText(sectionHeader, 'h2', 'codlet-section-title', 'Codlets');
         refreshButton = iconButton(sectionHeader, 'refresh', 'Refresh plugins');
-        refreshButton.addEventListener('click', () => refreshPlugins(context));
+        ui.on(refreshButton, 'click', () => refreshPlugins(context));
         managementStatus = addText(settingsSection, 'div', 'codlet-status', '');
         managementStatus.setAttribute('role', 'status');
         managementStatus.setAttribute('aria-live', 'polite');
@@ -818,13 +574,13 @@ module.exports = (() => {
         const actions = addText(confirmation, 'div', 'codlet-confirmation-actions', '');
         cancelButton = addText(actions, 'button', '', 'Cancel');
         cancelButton.type = 'button';
-        cancelButton.addEventListener('click', cancelAction);
+        ui.on(cancelButton, 'click', cancelAction);
         confirmButton = addText(actions, 'button', 'codlet-confirm', 'Disable');
         confirmButton.type = 'button';
-        confirmButton.addEventListener('click', () => disableSelf(context));
+        ui.on(confirmButton, 'click', () => disableSelf(context));
         const currentPanel = panel;
-        panel.addEventListener('scroll', hideTooltip, true);
-        panel.addEventListener('pointerdown', event => {
+        ui.on(panel, 'scroll', hideTooltip, true);
+        ui.on(panel, 'pointerdown', event => {
             if (panel !== currentPanel || !panel.open || event.defaultPrevented) return;
             event.stopPropagation();
             if (event.target !== panel || event.button !== 0 || event.ctrlKey || event.isPrimary === false) return;
@@ -835,7 +591,7 @@ module.exports = (() => {
             if (action === 'confirm' || action === 'failed') cancelAction();
             else setPanelOpen(false);
         });
-        panel.addEventListener('cancel', event => {
+        ui.on(panel, 'cancel', event => {
             if (event.defaultPrevented || panel !== currentPanel) return;
             event.preventDefault();
             event.stopPropagation();
@@ -843,7 +599,7 @@ module.exports = (() => {
             if (action === 'confirm' || action === 'failed') cancelAction();
             else setPanelOpen(false);
         });
-        panel.addEventListener('close', () => {
+        ui.on(panel, 'close', () => {
             if (panel === currentPanel && !panel.open && !panel.hidden) setPanelOpen(false);
         });
         document.body.appendChild(panel);
@@ -908,16 +664,14 @@ module.exports = (() => {
             return;
         }
         if (!button) {
-            button = document.createElement('button');
-            button.type = 'button';
-            button.textContent = 'Codlet';
+            button = ui.button({ text: 'Codlet', label: 'Codlet', variant: 'menu' });
             button.setAttribute(BUTTON_ATTRIBUTE, 'codlet');
             button.setAttribute('aria-label', 'Codlet');
             button.setAttribute('aria-haspopup', 'dialog');
             button.setAttribute('aria-controls', panel.id);
             button.setAttribute('aria-expanded', 'false');
-            button.addEventListener('keydown', keydown);
-            button.addEventListener('click', () => {
+            ui.on(button, 'keydown', keydown);
+            ui.on(button, 'click', () => {
                 if (panel.hidden === false) return setPanelOpen(false);
                 if (setPanelOpen(true)) return refreshPlugins(context);
             });
@@ -934,10 +688,17 @@ module.exports = (() => {
             runtime = await context.rpc.request(RUNTIME_PING_CAPABILITY, 'ping', null);
             if (epoch !== lifecycle || runtime?.pong !== true || runtime?.abi !== 1) return;
             capability = await context.rpc.request(MOUNT_CAPABILITY, 'getMount', null);
-        } catch (_) {
+            if (epoch !== lifecycle) return;
+            if (typeof capability?.available !== 'boolean' || capability.token !== CAPABILITY_TOKEN) throw new Error('Unsupported UI mount contract');
+            const appearance = await context.rpc.request(APPEARANCE_CAPABILITY, 'describe', null);
+            if (epoch !== lifecycle) return;
+            if (context.ui?.api !== 1) throw new Error('Update the managed renderer runtime for UI helpers');
+            ui = context.ui.create(appearance);
+        } catch (error) {
+            if (epoch === lifecycle) context.reportDiagnostic?.({ code: 'gui_ui_unavailable', message: String(error?.message ?? error) });
             return;
         }
-        if (epoch !== lifecycle || typeof capability?.available !== 'boolean' || capability.token !== CAPABILITY_TOKEN) return;
+        if (epoch !== lifecycle) return;
         mountToken = capability.token;
         outsideFocus = document.activeElement;
         keydown = event => {
@@ -951,7 +712,7 @@ module.exports = (() => {
         };
         installStyle();
         createPanel(context);
-        panel.addEventListener('keydown', keydown);
+        ui.on(panel, 'keydown', keydown);
         mountButton(context);
         observer = new MutationObserver(() => {
             const mount = findMount();
@@ -988,6 +749,7 @@ module.exports = (() => {
         globalThis.removeEventListener('resize', resize);
         if (panel?.open) panel.close();
         if (panel) panel.hidden = true;
+        ui?.dispose(); ui = null;
         button?.remove();
         panel?.remove();
         style?.remove();
@@ -1003,6 +765,7 @@ module.exports = (() => {
     return {
         activate(context) {
             deactivate();
+            context.onDeactivate(deactivate);
             return start(context, lifecycle);
         },
         deactivate

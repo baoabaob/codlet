@@ -14,11 +14,13 @@ out of Core. [The compatibility follow-up](docs/DESKTOP_COMPATIBILITY_2026-09-11
 supports package `26.903.9818.0` and fixes isolated-client native task creation and
 cold resume. The existing M0/M1 production gates remain open.
 
-The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) places reusable
-UI helpers and Desktop API extensions in M3.1/M4.1, local/GitHub plugin import and
-simple in-client management in M5, and platform preparation alongside current work.
+The [M3.1/M4.1 increment](docs/UI_HELPERS_AND_NAVIGATION_2026-09-11.md) adds shared UI
+controls used by the management GUI and an [ordinary plugin](examples/ui-controls/README.md),
+current-task events, Native task opening/cold resume and interceptor diagnostics.
+The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) places local/GitHub
+plugin import and simple in-client management in M5.
 GitHub Topics and community directories handle discovery; a separate Codlet Market
-is outside the current plan. These additions are planned, not implemented features.
+is outside the current plan. Import and non-Windows ports remain planned work.
 The [P0 platform audit](docs/PLATFORM_P0_AUDIT_2026-09-11.md) now records Windows dependencies,
 proposed internal interfaces and the per-platform evidence required before a port.
 

@@ -15,6 +15,8 @@ export interface DesktopCompatibility {
   historyMutation: false;
   hooks: number;
   pendingSubmits: number;
+  /** Independently probed; failure does not disable existing backend or submit APIs. */
+  navigation: { available: boolean; unavailable: { code: string; message: string | null } | null };
 }
 export interface Item {
   id: string;
@@ -38,6 +40,17 @@ export interface Thread {
   turns: Turn[];
 }
 export interface Page { cursor?: string | null; limit?: number }
+export interface DesktopSelection {
+  /** Selected local task in this window; null on home, settings or other routes. */
+  threadId: string | null;
+  /** Running turn, never the most recently completed turn or a historical UI selection. */
+  activeTurnId: string | null;
+  /** False when history is unloaded, unsupported or exceeds the projection bound. */
+  activeTurnKnown: boolean;
+  resumeState: 'resumed' | 'loading' | 'unloaded';
+  /** Native manager value; multiple Desktop windows can report owner. */
+  streamRole: 'owner' | 'follower' | 'none';
+}
 export interface Model { id: string; model: string; name: string | null; description: string | null; isDefault: boolean; reasoningEfforts: string[] }
 export interface Skill { name: string; description: string | null; path: string | null; enabled: boolean }
 export interface ApprovalRequest {
@@ -56,6 +69,7 @@ export interface ApprovalRequest {
   questions?: { id: string; header: string | null; question: string; secret: boolean; options: { label: string; description: string | null }[] }[];
 }
 export interface ReadMethods {
+  'selection.get': { params: Record<string, never>; result: DesktopSelection };
   'threads.list': { params: Page & { archived?: boolean }; result: { threads: Thread[]; cursor: string | null } };
   /** Metadata read; use paginated turns/items methods for history. */
   'threads.get': { params: { threadId: string }; result: Thread };
@@ -68,6 +82,10 @@ export interface ReadMethods {
 }
 export type ApprovalReply = { token: string; decision: 'approve' | 'decline' } | { token: string; answers: Record<string, string[]> };
 export interface WriteMethods {
+  /** Opens the existing Native task route. Native performs cold resume; opening
+   * is a navigation receipt, not proof that loading or stream ownership finished.
+   * Observe selection.changed or read selection.get before starting a turn. */
+  'threads.open': { params: { threadId: string }; result: DesktopSelection & { status: 'opened' | 'opening'; alreadySelected: boolean } };
   /** Requires a task already open/resumed in the current owner Desktop window. */
   'turns.start': { params: { threadId: string; text: string; model?: string; effort?: string }; result: { threadId: string; turn: Turn } };
   'turns.steer': { params: { threadId: string; turnId: string; text: string }; result: { threadId: string; turnId: string } };
@@ -77,6 +95,8 @@ export interface WriteMethods {
 }
 export type DesktopEvent = ({ type: 'adapter.ready'; connection: 'existing-desktop-local' }
   | { type: 'adapter.drift'; code: string; message: string | null }
+  | ({ type: 'selection.changed' } & DesktopSelection)
+  | { type: 'selection.unavailable'; code: string; message: string | null }
   | { type: 'thread.started'; thread: Thread }
   | { type: 'turn.started' | 'turn.completed'; threadId: string; turn: Turn }
   | { type: 'item.started' | 'item.completed'; threadId: string; turnId: string; item: Item }
@@ -90,7 +110,22 @@ export interface EventBatch { events: DesktopEvent[]; cursor: string; gap: boole
 export interface SubmissionDraft { readonly threadId: string; readonly text: string; readonly contextSources: readonly string[]; readonly source: 'turn.start' }
 export interface SubmissionChange { text?: string; context?: { text: string; kind?: 'untrusted' | 'application' }[] }
 export type SubmissionInterceptor = (draft: SubmissionDraft, options: Readonly<{ signal: AbortSignal }>) => void | SubmissionChange | Promise<void | SubmissionChange>;
-export interface InterceptorOptions { id: string; priority?: number; timeoutMs?: number }
+export interface InterceptorOptions { id: string; priority?: number; timeoutMs?: number; enabled?: boolean }
+export interface InterceptorInfo {
+  pluginId: string; generation: number; id: string; priority: number; timeoutMs: number; enabled: boolean;
+  calls: number; failures: number; lastDurationMs: number | null; totalDurationMs: number;
+  /** Bounded SDK failure code and Unix milliseconds; no draft, context or error text. */
+  lastFailure: { code: string; at: number } | null;
+}
+/** Returned only to the registering owner. The callable form preserves v1 disposal. */
+export interface InterceptorHandle {
+  (): void;
+  /** Disabling also cancels submissions that already captured this interceptor. */
+  setEnabled(enabled: boolean): void;
+  inspect(): InterceptorInfo;
+}
+/** codex.ui.preSubmit@1 RPC also supports interceptors.list with empty arguments. */
+export interface InterceptorList { interceptors: InterceptorInfo[] }
 export interface CallbackAccess { api: 1; symbol: string; ticket: string }
 /** Obtain a fresh getApi ticket through the corresponding declared capability.
  * The ticket can be claimed once, within 15 seconds, by the same live generation.
@@ -98,7 +133,7 @@ export interface CallbackAccess { api: 1; symbol: string; ticket: string }
  */
 export interface DesktopCallbackApi {
   readonly api: 1;
-  registerPreSubmit(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: SubmissionInterceptor): () => void;
+  registerPreSubmit(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: SubmissionInterceptor): InterceptorHandle;
   onEvent(owner: RendererContext, ticket: string, handler: (event: Readonly<DesktopEvent>) => void): () => void;
 }
 /** Convenience typing for an author's own Core RPC wrapper. No private transport. */

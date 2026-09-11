@@ -1,4 +1,5 @@
 /** Official renderer ABI v1. Renderer instances provide Target capabilities. */
+import type { RendererUiFactory } from './renderer-ui';
 export interface CapabilityDescriptor { readonly name: string; readonly api: number; readonly scope: 'runtime' | 'target' }
 export interface RpcOptions { timeoutMs?: number; signal?: AbortSignal }
 export interface RendererInvocation {
@@ -32,6 +33,8 @@ export interface RendererContext {
   readonly generation: number;
   readonly world: 'isolated' | 'main';
   readonly rpc: RendererRpc;
+  /** Optional convenience library. Rendering controls does not grant runtime management. */
+  readonly ui?: RendererUiFactory;
   /** At most 64 synchronous cleanup callbacks; run once before deactivate or forced retirement. */
   onDeactivate(listener: () => void): () => void;
   /** Bounded, source-attributed observations for runtime inspection/doctor; no authority change. */

@@ -36,13 +36,15 @@ Adapter 复用页面已经建立的 `connect-app-host` 服务对象及 Native Ap
 | Target capability @1 | 方法 | 语义 |
 | --- | --- | --- |
 | `codex.desktop.compatibility` | `probe`, `waitReady` | 当前连接身份、初始化进度、可用性与失效原因 |
-| `codex.ui.preSubmit` | `getApi` | 获取主世界回调注册凭据 |
+| `codex.ui.preSubmit` | `getApi`, `interceptors.list` | 主世界回调凭据与有序拦截诊断 |
+| `codex.backend.read` | `selection.get` | 当前本地任务、运行回合、加载状态和流归属 |
 | `codex.backend.read` | `threads.list`, `threads.get` | 分页目录、线程元数据 |
 | 同上 | `turns.list`, `items.list` | 分页 Turn / Item 历史，保留原标识 |
 | 同上 | `models.list`, `skills.list`, `providers.list` | 模型、技能、provider 名称；不返回凭据或原配置 |
 | 同上 | `approvals.list` | 当前 Desktop 缓存里的待回复请求 |
 | `codex.backend.write` | `turns.start`, `turns.steer`, `turns.interrupt` | 在当前窗口已经加载的 owner 任务上操作 |
 | 同上 | `approvals.respond` | 按不透明句柄回复当前待处理请求 |
+| 同上 | `threads.open` | 校验已有任务并进入原生页面，由 Native 冷恢复 |
 | `codex.backend.events` | `read`, `getApi` | 有界事件读取或主世界事件回调 |
 
 插件依赖 capability 描述符，不依赖 `codex.desktop.adapter` 这个实现 ID。替代实现可以声明相同的版本化能力。
@@ -57,7 +59,9 @@ const items = await ctx.rpc.request(read, 'items.list', { threadId, limit: 20 })
 
 Host 使用相同方法，通过自己的 raw attachment 调用 `ctx.rpc.target({ sessionId })` 获得 Target scope 后传入 `scope`。这个 scope 仍由 Core 在导航、卸载或旧 generation 退役时撤销。
 
-不接受任意 backend method、hostId、request id、Electron IPC 或 manager object。当前写接口支持文本输入，并要求任务已在当前 Desktop 窗口加载且该窗口拥有事件流。跨 host、后台打开任务、创建任务以及任意历史修改不属于 v1 接口。
+不接受任意 backend method、hostId、request id、Electron IPC 或 manager object。回合写入支持文本输入，并要求任务已在当前 Desktop 窗口加载且该窗口拥有事件流。`threads.open` 只打开当前窗口的原生任务页面；返回 opening 后应观察 selection.changed，不能据导航回执断言任务已可写。跨 host、无界面预热、任务创建以及任意历史修改不属于 v1 接口。
+
+新增导航仅审核页面 `26.903.71938 / 8576`，在兼容诊断的 navigation 字段单独报告；旧构建、头像浮层或路由不匹配不影响其余后端 API。完整契约与实机记录见 [M3.1/M4.1 说明](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)。
 
 ## 提交拦截
 
@@ -74,6 +78,8 @@ const dispose = globalThis[Symbol.for(access.symbol)].registerPreSubmit(
 ```
 
 凭据由 Core 已认证的调用者取得，15 秒内可使用一次，绑定插件 generation 和具体 capability。页面上的稳定对象只提供回调注册；数据读写走 Core RPC。注册自动绑定 `ctx.onDeactivate`，插件也可提前调用返回的 disposer。
+
+返回值同时是 InterceptorHandle，可 `setEnabled(false)` 取消捕获此处理器但尚未发出的提交，再用 `setEnabled(true)` 恢复。`inspect()` 只读取该句柄的统计；`interceptors.list` 通过声明过的 RPC capability 读取完整有序清单。诊断保存有限失败代码，不保存草稿、上下文或插件错误文字。
 
 执行顺序为 priority 升序、插件 ID 字典序、同插件注册顺序。单个处理器最多两秒，整条流水线最多五秒且不能超过 Desktop 原提交时限；最多 32 个处理器和 16 条待提交流水线。空流水线保持同步转发。
 

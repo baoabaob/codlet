@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.31；日期：2026-09-11；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.32；日期：2026-09-11；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -10,7 +10,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 
 当前实现已交付运行中管理、watch、完整 M2 公开原语，以及 M3/M4 的托管主世界、可选 Desktop Adapter、同一 Desktop 会话读写/事件/审批和提交拦截。证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)及 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。[2026-09-11 兼容补验](DESKTOP_COMPATIBILITY_2026-09-11.md)已修复测试客户端原生新建/冷恢复，并适配新构建；M0/M1 重复运行、官方入口与 crash 发布门禁仍保留。[P0 盘点](PLATFORM_P0_AUDIT_2026-09-11.md)已记录系统绑定与接口草案，尚未实现非 Windows 移植。
 
-下一阶段先收尾日常兼容性，再推进 M3.1/M4.1 的插件 UI 和 Desktop API 扩展，以及 M5 的插件导入与交付。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market；P0 跨平台准备同步纳入设计。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
+首批 [M3.1/M4.1 扩展](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)已交付共享 UI helpers、语义外观、当前任务/运行回合事件、原生任务打开及拦截诊断。下一阶段推进 M5 的插件导入与交付；独立 fileChange 审批继续按实机适用条件补验。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -434,7 +434,7 @@ host 半：
 第一方 GUI 的插件 ID 与列表名称为 `codlet-gui`。它随 Runtime 发布并默认启用，在内核看来仍是普通插件；旧 ID `codlet` 的偏好仅作兼容读取，显式更新 GUI 偏好时才在 registry 合并锁内保存新 key 并移除旧 key：
 
 - 使用相同的 manifest、activate/deactivate、generation、权限和错误模型；
-- 顶栏按钮只消费 Codex UI Adapter 提供的 `codex.ui.titlebar.afterMenu@1` target-scoped capability；
+- 顶栏位置消费 `codex.ui.titlebar.afterMenu@1`，共享控件消费 `codex.ui.appearance@1` 与可选 `context.ui`；私有主题和布局映射仍由 UI Adapter 提供；
 - 管理面板通过公开、版本化的 `runtime.manage` API 工作，不调用隐藏 IPC；
 - 发布清单记录该第一方插件的内容摘要与权限授予，第三方插件请求同一权限时仍需用户明确授权；
 - 自我禁用前明确说明“禁用后只能通过 CLI 重新启用”；确认后先提交配置，再执行 deactivate；
@@ -782,7 +782,7 @@ L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 th
 
 ### M3.1 / M4.1：插件 UI 与 Desktop API 扩展
 
-这是 M3/M4 候选后的功能迭代，排在下一轮开发中。M3.1 将已验证的控件、设置 surface、外观角色及少量挂载位置提供给普通插件；M4.1 优先补齐当前选中任务事件、任务定位/打开/恢复和拦截诊断，再按证据扩展更丰富输入及 server-request。
+这是 M3/M4 候选后的功能迭代。2026-09-11 首批已实现：M3.1 提供按钮、开关、设置行、状态、设置/确认弹窗、焦点与资源清理，管理 GUI 和普通 UI 示例复用；M4.1 提供 selection.get/selection.changed、threads.open 原生冷恢复，以及拦截器启停、顺序与耗时/失败代码诊断。新增导航仅在页面 26.903.71938 / 8576 验证，不替旧构建宣称支持。更多宿主挂载位置、展示变换和 richer input/server-request 继续按证据扩展。
 
 验收采用管理 GUI 和一个独立用户插件，验证相同公开 API、多窗口、主题/缩放/键盘、卸载/重载和缺失能力。私有映射继续留在可选 Adapter；接口扩展不改变既有内核与生命周期。首批范围完成后即可支持 M5 管理页，完整 UI 框架不作为 M5 的前置条件。
 

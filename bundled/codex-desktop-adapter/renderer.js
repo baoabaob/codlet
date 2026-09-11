@@ -4,7 +4,7 @@
 // knows only its declared capabilities, principal and renderer lifecycle.
 const BUILDS = Object.freeze([
     Object.freeze({ appVersion: '26.903.61454', buildNumber: '8378', appServerVersion: '0.153.4', entry: 'app://-/assets/index-71057a3aecef.js', module: 'app://-/assets/app-initial-92cbfeba4f7c.js', exports: Object.freeze({ scope: 't3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Smn' }) }),
-    Object.freeze({ appVersion: '26.903.71938', buildNumber: '8576', appServerVersion: '0.153.4', entry: 'app://-/assets/index-5232d4cce9a2.js', module: 'app://-/assets/app-initial-f094ef01c64d.js', exports: Object.freeze({ scope: 'a3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Emn' }) }),
+    Object.freeze({ appVersion: '26.903.71938', buildNumber: '8576', appServerVersion: '0.153.4', navigation: true, entry: 'app://-/assets/index-5232d4cce9a2.js', module: 'app://-/assets/app-initial-f094ef01c64d.js', exports: Object.freeze({ scope: 'a3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Emn' }) }),
 ]);
 const publicBuild = build => ({ appVersion: build.appVersion, buildNumber: build.buildNumber, appServerVersion: build.appServerVersion });
 const API_SYMBOL = 'codlet.codex.desktop.v1';
@@ -167,6 +167,93 @@ function permissionsDto(params) {
     return { canApprove: !!canApprove, permissions: { network: profile.network?.enabled === true, read: [...read], write: [...write], hasOtherPaths } };
 }
 
+function locateNavigator() {
+    const root = document.getElementById('root');
+    const key = root && Object.keys(root).find(key => key.startsWith('__reactContainer$'));
+    const container = key ? root[key] : null;
+    const pending = [container?.stateNode?.current ?? container], seen = new Set(), candidates = new Set();
+    while (pending.length && seen.size < 4096) {
+        const fiber = pending.pop();
+        if (!fiber || seen.has(fiber)) continue;
+        seen.add(fiber);
+        for (const value of [fiber.memoizedProps, fiber.memoizedProps?.value]) if (value?.navigator) candidates.add(value.navigator);
+        if (fiber.sibling) pending.push(fiber.sibling);
+        if (fiber.child) pending.push(fiber.child);
+    }
+    if (pending.length || candidates.size !== 1) throw fail('desktop_navigation_unavailable', 'A unique Desktop memory router is required');
+    const navigator = [...candidates][0];
+    if (typeof navigator.location?.pathname !== 'string' || !navigator.location.pathname.startsWith('/') || navigator.location.pathname.startsWith('/avatar-overlay') || typeof navigator.listen !== 'function') throw fail('desktop_navigation_unavailable', 'Task navigation is unavailable in this Desktop window');
+    return navigator;
+}
+
+// Project only turn identity/status from Native's canonical history and live tail.
+// Items, messages and automation policy functions never enter this projection.
+function activeTurnState(thread) {
+    const unknown = { activeTurnId: null, activeTurnKnown: false };
+    if (!thread || thread.resumeState !== 'resumed' || !Array.isArray(thread.turns)) return unknown;
+    let history = [];
+    if (thread.turnHistory?.kind === 'canonical') {
+        const source = thread.turnHistory.history;
+        if (!Array.isArray(source?.islands) || !source.entitiesByKey || typeof source.entitiesByKey !== 'object') return unknown;
+        for (const island of source.islands) {
+            if (!Array.isArray(island.entries) || history.length + island.entries.length > 4096) return unknown;
+            for (const entry of island.entries) { const turn = source.entitiesByKey[entry.value]; if (!turn) return unknown; history.push(turn); }
+        }
+    } else if (thread.turnHistory != null && thread.turnHistory.kind !== 'legacy') return unknown;
+    if (thread.turns.length > 4096) return unknown;
+    const valid = turn => turn && (turn.turnId == null || typeof turn.turnId === 'string' && turn.turnId.length > 0 && turn.turnId.length <= 256) && ['inProgress', 'completed', 'interrupted', 'failed'].includes(turn.status);
+    if (!history.every(valid) || !thread.turns.every(valid)) return unknown;
+    const canonical = new Map(history.filter(turn => turn.turnId != null).map(turn => [turn.turnId, turn]));
+    const live = new Map(thread.turns.filter(turn => turn.turnId != null).map(turn => [turn.turnId, turn]));
+    const ordered = history.filter(turn => turn.turnId != null).map(turn => ({ id: turn.turnId, status: live.has(turn.turnId) ?
+        turn.status !== 'inProgress' && live.get(turn.turnId).status === 'inProgress' && (turn.itemsPagination || live.get(turn.turnId).itemsPagination) ? turn.status : live.get(turn.turnId).status : turn.status }));
+    let pending = [];
+    for (const turn of thread.turns) {
+        if (turn.turnId == null) continue;
+        if (canonical.has(turn.turnId)) {
+            const index = ordered.findIndex(value => value.id === turn.turnId);
+            if (pending.length) { ordered.splice(index, 0, ...pending); pending = []; }
+        } else pending.push({ id: turn.turnId, status: turn.status });
+    }
+    ordered.push(...pending);
+    const current = ordered.at(-1);
+    return { activeTurnId: current?.status === 'inProgress' ? current.id : null, activeTurnKnown: true };
+}
+
+function createNavigation(manager, changed, locate = locateNavigator) {
+    const navigator = locate(), originals = new Map(), wrappers = new Map();
+    let alive = true;
+    const check = () => {
+        if (!alive) throw fail('desktop_navigation_unavailable', 'Desktop navigation has retired');
+        if (locate() !== navigator || [...wrappers].some(([method, wrapper]) => navigator[method] !== wrapper)) throw fail('desktop_navigation_drift', 'Desktop navigation ownership changed; reload the adapter');
+    };
+    const snapshot = () => {
+        check();
+        const path = navigator.location.pathname;
+        const match = /^\/local\/([a-zA-Z0-9_-]{1,256})\/?$/.exec(path);
+        const threadId = match?.[1] ?? null, thread = threadId ? manager.getConversation(threadId) : null;
+        const role = threadId ? manager.getStreamRole(threadId)?.role : null;
+        return { threadId, ...(threadId ? activeTurnState(thread) : { activeTurnId: null, activeTurnKnown: true }),
+            resumeState: thread?.resumeState === 'resumed' ? 'resumed' : thread ? 'loading' : 'unloaded', streamRole: role === 'owner' || role === 'follower' ? role : 'none' };
+    };
+    const dispose = () => {
+        if (!alive) return;
+        alive = false; let lost = false;
+        for (const [method, wrapper] of wrappers) { if (navigator[method] === wrapper) navigator[method] = originals.get(method); else lost = true; }
+        if (lost) throw fail('desktop_navigation_drift', 'Another page patch replaced Desktop navigation');
+    };
+    try {
+        for (const method of ['push', 'replace', 'go']) {
+            if (typeof navigator[method] !== 'function' || Object.getOwnPropertyDescriptor(navigator, method)?.writable !== true) throw fail('desktop_navigation_unavailable', 'Desktop memory router cannot be observed safely');
+            const original = navigator[method]; originals.set(method, original);
+            const wrapper = function (...args) { const result = original.apply(this, args); if (alive) changed(); return result; };
+            wrappers.set(method, wrapper); navigator[method] = wrapper;
+        }
+        snapshot();
+        return { snapshot, stamp: () => { check(); return JSON.stringify(navigator.location); }, open: threadId => { check(); navigator.push(`/local/${threadId}`); }, dispose };
+    } catch (error) { dispose(); throw error; }
+}
+
 function createAdapter(connection, context, { compatibilityProvided = false } = {}) {
     const { manager, client, postbox, build } = connection;
     if (!BUILDS.includes(build)) throw fail('desktop_build_drift', 'Connection has no verified Desktop build profile');
@@ -176,13 +263,14 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     const instance = crypto.randomUUID();
     let alive = true, sequence = 0, eventBytes = 0, hookSequence = 0, reloadReason = null, unavailable = null;
     const hooks = new Map(), pendingSubmits = new Set(), events = [], waiters = new Set(), listeners = new Set(), cleanups = [], approvals = new Map(), retiredApprovals = new Map(), tickets = new Map(), submissions = new Map();
+    let navigation = null, navigationFailure = null, lastSelection = null, opening = false;
     const check = () => {
         if (!alive) throw fail('adapter_deactivated', 'Desktop adapter was deactivated');
         if (unavailable) throw fail('capability_unavailable', `${unavailable.code}: ${unavailable.message}`);
         try { connection.check(); if (postbox.postMessage !== intercept) throw fail('desktop_patch_drift', 'Desktop request patch ownership changed; renderer reload required'); }
         catch (error) { markUnavailable(error); throw error; }
     };
-    const status = () => ({ api: 1, initializing: false, available: unavailable === null, unavailable: unavailable ? { ...unavailable } : null, build: publicBuild(build), connection: 'existing-desktop-local', transport: 'existing-app-host-services-and-native-request-client', inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: hooks.size, pendingSubmits: pendingSubmits.size });
+    const status = () => ({ api: 1, initializing: false, available: unavailable === null, unavailable: unavailable ? { ...unavailable } : null, build: publicBuild(build), connection: 'existing-desktop-local', transport: 'existing-app-host-services-and-native-request-client', inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: hooks.size, pendingSubmits: pendingSubmits.size, navigation: { available: navigation !== null && navigationFailure === null, unavailable: navigationFailure } });
     const emit = event => {
         if (!alive) return;
         const value = freeze({ ...copy(event), cursor: `${instance}:${++sequence}` });
@@ -232,20 +320,72 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         return { pluginId: ctx.pluginId, generation: ctx.generation, capability };
     };
 
+    function navigationUnavailable(error) {
+        if (navigationFailure) return;
+        navigationFailure = { code: error.code ?? 'desktop_navigation_unavailable', message: optionalText(error.message) ?? 'Desktop navigation is unavailable' };
+        emit({ type: 'selection.unavailable', ...navigationFailure });
+    }
+    function selection() {
+        if (!navigation || navigationFailure) throw fail(navigationFailure?.code ?? 'desktop_navigation_unavailable', navigationFailure?.message ?? 'Desktop navigation is unavailable');
+        try { return navigation.snapshot(); } catch (error) { navigationUnavailable(error); throw error; }
+    }
+    function refreshSelection(threadId) {
+        if (!alive || !navigation || navigationFailure || threadId != null && threadId !== lastSelection?.threadId) return;
+        try {
+            const current = selection();
+            if (JSON.stringify(current) !== JSON.stringify(lastSelection)) { lastSelection = current; emit({ type: 'selection.changed', ...current }); }
+        } catch (error) { navigationUnavailable(error); }
+    }
+    async function openThread(args, signal) {
+        fields(args, ['threadId']);
+        const threadId = identity(args.threadId, 'threadId');
+        if (!/^[a-zA-Z0-9_-]+$/.test(threadId)) throw fail('invalid_argument', 'threadId must be a local task identity');
+        const before = selection();
+        if (signal?.aborted) throw fail('invocation_cancelled', 'Task navigation was cancelled before dispatch');
+        if (before.threadId === threadId) return { ...before, status: before.resumeState === 'resumed' ? 'opened' : 'opening', alreadySelected: true };
+        if (opening) throw fail('desktop_navigation_busy', 'Another task open request is still being validated');
+        opening = true;
+        try {
+            const stamp = navigation.stamp();
+            const metadata = await nativeRequest('thread/read', { threadId, includeTurns: false }, signal);
+            if (metadata?.thread?.id !== threadId) throw fail('desktop_navigation_unavailable', 'Desktop did not confirm the requested task identity');
+            selection();
+            if (navigation.stamp() !== stamp) throw fail('desktop_navigation_superseded', 'The user navigated while this task was being checked');
+            navigation.open(threadId);
+            const current = selection();
+            if (current.threadId !== threadId) throw fail('desktop_navigation_superseded', 'Desktop selected a different task during navigation');
+            // Native's mounted task route owns cold resume, settings and stream ownership.
+            return { ...current, status: current.resumeState === 'resumed' ? 'opened' : 'opening', alreadySelected: false };
+        } finally { opening = false; }
+    }
+
+    const orderedHooks = () => [...hooks.values()].sort((a, b) => a.priority - b.priority || (a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0) || a.order - b.order);
+    const hookInfo = hook => ({ pluginId: hook.pluginId, generation: hook.generation, id: hook.name, priority: hook.priority, timeoutMs: hook.timeoutMs, enabled: hook.enabled, calls: hook.calls, failures: hook.failures, lastDurationMs: hook.lastDurationMs, totalDurationMs: hook.totalDurationMs, lastFailure: hook.lastFailure && { ...hook.lastFailure } });
+    const listInterceptors = args => { check(); fields(args ?? {}, []); return { interceptors: orderedHooks().map(hookInfo) }; };
+
     function registerPreSubmit(ctx, options, handler) {
-        check(); fields(options, ['id', 'priority', 'timeoutMs']);
+        check(); fields(options, ['id', 'priority', 'timeoutMs', 'enabled']);
         const principal = owner(ctx, CAPS.submit);
         const name = str(options.id, 'interceptor id', 128), key = `${principal.pluginId}:${principal.generation}:${name}`;
         if (hooks.has(key)) throw fail('duplicate_interceptor', 'Interceptor is already registered');
         if (hooks.size >= 32 || typeof handler !== 'function') throw fail('interceptor_limit', 'Expected a function and at most 32 interceptors');
         const priority = options.priority ?? 0;
         if (!Number.isSafeInteger(priority) || Math.abs(priority) > 1000) throw fail('invalid_argument', 'priority must be -1000..1000');
-        const hook = { ...principal, key, name, handler, priority, order: ++hookSequence, timeoutMs: bounded(options.timeoutMs, 1000, 2000), active: true };
+        if (options.enabled != null && typeof options.enabled !== 'boolean') throw fail('invalid_argument', 'enabled must be a boolean');
+        const hook = { ...principal, key, name, handler, priority, order: ++hookSequence, timeoutMs: bounded(options.timeoutMs, 1000, 2000), active: true, enabled: options.enabled !== false, calls: 0, failures: 0, totalDurationMs: 0, lastDurationMs: null, lastFailure: null };
         hooks.set(key, hook);
         let release;
         const dispose = () => { if (!hook.active) return; hook.active = false; hooks.delete(key); release?.(); for (const pending of pendingSubmits) if (pending.hooks.includes(hook)) pending.controller.abort(fail('interceptor_deactivated', `${hook.pluginId}: interceptor was deactivated`)); };
         try { release = ctx.onDeactivate(dispose); } catch (error) { dispose(); throw error; }
-        return dispose;
+        return Object.freeze(Object.assign(dispose, {
+            setEnabled(enabled) {
+                check(); if (!hook.active) throw fail('interceptor_retired', 'Interceptor has retired');
+                if (typeof enabled !== 'boolean') throw fail('invalid_argument', 'enabled must be a boolean');
+                hook.enabled = enabled;
+                if (!enabled) for (const pending of pendingSubmits) if (pending.hooks.includes(hook)) pending.controller.abort(Object.assign(fail('interceptor_disabled', 'Interceptor was disabled before dispatch'), { pluginId: hook.pluginId, interceptorId: hook.name }));
+            },
+            inspect() { check(); if (!hook.active) throw fail('interceptor_retired', 'Interceptor has retired'); return hookInfo(hook); }
+        }));
     }
 
     function intercept(message, ...rest) {
@@ -255,9 +395,9 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             client.onError(message.request.id, fail('submission_rejected', submission?.signal?.aborted ? 'Codlet submission was cancelled before dispatch' : 'Codlet has 16 pending submission interceptors'));
             return;
         }
-        if (hooks.size === 0) return originalPost.call(this, message, ...rest);
+        const selected = orderedHooks().filter(hook => hook.enabled);
+        if (selected.length === 0) return originalPost.call(this, message, ...rest);
         const receiver = this;
-        const selected = [...hooks.values()].sort((a, b) => a.priority - b.priority || (a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0) || a.order - b.order);
         const pending = { hooks: selected, controller: new AbortController() };
         pendingSubmits.add(pending);
         const cancelSubmission = () => pending.controller.abort(fail('submission_cancelled', 'The calling plugin retired before dispatch'));
@@ -281,6 +421,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         const next = { ...message, request: { ...message.request, params: { ...params, input: copy(params.input), additionalContext: { ...(params.additionalContext ?? {}) } } } };
         const deadline = Math.min(Date.now() + 5000, Number.isFinite(message.expiresAtMs) ? message.expiresAtMs : Infinity);
         for (const hook of pending.hooks) {
+            let started = null;
             try {
                 check();
                 if (!hook.active || pending.controller.signal.aborted) throw pending.controller.signal.reason ?? fail('interceptor_deactivated', 'Interceptor was deactivated');
@@ -290,6 +431,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
                 const draft = freeze({ threadId: identity(params.threadId, 'threadId'), text: texts.join('\n'), contextSources: Object.keys(next.request.params.additionalContext), source: 'turn.start' });
                 let timer, onAbort;
                 const signal = pending.controller.signal;
+                started = Date.now(); hook.calls += 1;
                 const result = await new Promise((resolve, reject) => {
                     onAbort = () => reject(signal.reason ?? fail('interceptor_deactivated', 'Interceptor was deactivated'));
                     signal.addEventListener('abort', onAbort, { once: true });
@@ -316,8 +458,11 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
                 }
                 if (JSON.stringify(next.request.params).length > 524288) throw fail('submission_too_large', 'Transformed submission exceeds the adapter limit');
             } catch (error) {
+                if (started !== null) { hook.failures += 1; hook.lastFailure = { code: ['interceptor_timeout', 'interceptor_disabled', 'interceptor_deactivated', 'adapter_deactivated', 'submission_cancelled', 'invocation_cancelled', 'invalid_argument', 'desktop_input_drift', 'submission_too_large', 'desktop_build_drift', 'desktop_connection_replaced', 'capability_unavailable'].includes(error.code) ? error.code : 'interceptor_failed', at: Date.now() }; }
                 pending.controller.abort(error);
-                throw Object.assign(fail(error.code ?? 'interceptor_failed', `${hook.pluginId}/${hook.name}: ${error.message ?? String(error)}`), { pluginId: hook.pluginId });
+                throw Object.assign(fail(error.code ?? 'interceptor_failed', `${error.pluginId ?? hook.pluginId}/${error.interceptorId ?? hook.name}: ${error.message ?? String(error)}`), { pluginId: error.pluginId ?? hook.pluginId });
+            } finally {
+                if (started !== null) { hook.lastDurationMs = Math.max(0, Date.now() - started); hook.totalDurationMs += hook.lastDurationMs; }
             }
         }
         return next;
@@ -327,6 +472,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         check(); obj(args);
         const pagination = () => ({ limit: bounded(args.limit, 20, 100), ...(args.cursor == null ? {} : { cursor: str(args.cursor, 'cursor', 4096) }) });
         switch (method) {
+            case 'selection.get': fields(args, []); return selection();
             case 'threads.list': {
                 fields(args, ['cursor', 'limit', 'archived']);
                 if (args.archived !== undefined && typeof args.archived !== 'boolean') throw fail('invalid_argument', 'archived must be boolean');
@@ -381,6 +527,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     const write = async (method, args = {}, signal) => {
         check(); obj(args);
         if (method === 'approvals.respond') return respondApproval(args, signal);
+        if (method === 'threads.open') return openThread(args, signal);
         fields(args, method === 'turns.start' ? ['threadId', 'text', 'model', 'effort'] : method === 'turns.steer' ? ['threadId', 'turnId', 'text'] : ['threadId', 'turnId']);
         loadedThread(args.threadId);
         if (method === 'turns.start') {
@@ -558,7 +705,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         registerPreSubmit(ctx, ticket, options, handler) { claimTicket(ctx, ticket, CAPS.submit); return registerPreSubmit(ctx, options, handler); },
         onEvent(ctx, ticket, handler) { claimTicket(ctx, ticket, CAPS.events); return onEvent(ctx, handler); }
     });
-    const api = Object.freeze({ api: 1, status: () => { check(); return status(); }, read, write, readEvents, onEvent, registerPreSubmit });
+    const api = Object.freeze({ api: 1, status: () => { check(); return status(); }, read, write, readEvents, onEvent, registerPreSubmit, listInterceptors });
     function dispose() {
         if (!alive) return reloadReason ? { reloadRequired: true, reason: reloadReason } : undefined;
         alive = false;
@@ -577,16 +724,23 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         postbox.postMessage = intercept;
         Object.defineProperty(globalThis, symbol, { value: publicApi, configurable: true });
         cleanups.push(manager.addNotificationCallback(['thread/started', 'turn/started', 'turn/completed', 'item/started', 'item/completed', 'item/agentMessage/delta', 'item/commandExecution/outputDelta', 'serverRequest/resolved'], receive));
-        cleanups.push(manager.addConversationStateCallback(threadId => { try { check(); syncApprovals(threadId); } catch (error) { markUnavailable(fail(error.code ?? 'desktop_approval_schema_drift', error.message)); } }));
+        cleanups.push(manager.addConversationStateCallback(threadId => { try { check(); syncApprovals(threadId); refreshSelection(threadId); } catch (error) { markUnavailable(fail(error.code ?? 'desktop_approval_schema_drift', error.message)); } }));
+        try {
+            if (!build.navigation) throw fail('desktop_navigation_unavailable', 'Task navigation has not been verified for this Desktop build');
+            navigation = createNavigation(manager, () => refreshSelection(), connection.locateNavigator); cleanups.push(() => navigation.dispose());
+        }
+        catch (error) { navigationUnavailable(error); }
         cleanups.push(context.onDeactivate(dispose));
         const inspect = () => { if (!alive) throw fail('adapter_deactivated', 'Desktop adapter was deactivated'); try { check(); } catch {} return status(); };
         if (!compatibilityProvided) context.rpc.provide(CAPS.compatibility, 'probe', inspect);
         context.rpc.provide(CAPS.submit, 'getApi', (_args, invocation) => issueTicket(CAPS.submit, invocation));
-        for (const method of ['threads.list', 'threads.get', 'turns.list', 'items.list', 'models.list', 'skills.list', 'providers.list', 'approvals.list']) context.rpc.provide(CAPS.read, method, (args, invocation) => read(method, args ?? {}, invocation.signal));
-        for (const method of ['turns.start', 'turns.steer', 'turns.interrupt', 'approvals.respond']) context.rpc.provide(CAPS.write, method, (args, invocation) => write(method, args ?? {}, invocation.signal));
+        context.rpc.provide(CAPS.submit, 'interceptors.list', args => listInterceptors(args));
+        for (const method of ['selection.get', 'threads.list', 'threads.get', 'turns.list', 'items.list', 'models.list', 'skills.list', 'providers.list', 'approvals.list']) context.rpc.provide(CAPS.read, method, (args, invocation) => read(method, args ?? {}, invocation.signal));
+        for (const method of ['threads.open', 'turns.start', 'turns.steer', 'turns.interrupt', 'approvals.respond']) context.rpc.provide(CAPS.write, method, (args, invocation) => write(method, args ?? {}, invocation.signal));
         context.rpc.provide(CAPS.events, 'read', (args, invocation) => readEvents(args ?? {}, invocation.signal));
         context.rpc.provide(CAPS.events, 'getApi', (_args, invocation) => issueTicket(CAPS.events, invocation));
         emit({ type: 'adapter.ready', connection: 'existing-desktop-local' });
+        refreshSelection();
         return { api, dispose, probe: inspect };
     } catch (error) { dispose(); throw error; }
 }
@@ -599,7 +753,7 @@ function startAdapter(context, probe = signal => probeDesktop(undefined, 30000, 
         if (!alive) throw fail('adapter_deactivated', 'Desktop adapter was deactivated');
         if (inner) return inner.probe();
         const detected = globalThis.electronBridge?.getSentryInitOptions?.();
-        return { api: 1, initializing: !settled, available: false, unavailable: failure ?? { code: 'desktop_initializing', message: 'Waiting for the existing Desktop app-host services' }, build: { appVersion: optionalText(detected?.appVersion), buildNumber: optionalText(String(detected?.buildNumber ?? '')), appServerVersion: null }, connection: null, transport: null, inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: 0, pendingSubmits: 0 };
+        return { api: 1, initializing: !settled, available: false, unavailable: failure ?? { code: 'desktop_initializing', message: 'Waiting for the existing Desktop app-host services' }, build: { appVersion: optionalText(detected?.appVersion), buildNumber: optionalText(String(detected?.buildNumber ?? '')), appServerVersion: null }, connection: null, transport: null, inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: 0, pendingSubmits: 0, navigation: { available: false, unavailable: failure } };
     };
     context.rpc.provide(CAPS.compatibility, 'probe', status);
     context.rpc.provide(CAPS.compatibility, 'waitReady', async (args, invocation) => {

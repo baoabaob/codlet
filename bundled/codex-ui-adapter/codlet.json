@@ -9,6 +9,7 @@
   },
   "permissions": ["ui.dom"],
   "provides": [
+    { "name": "codex.ui.appearance", "api": 1, "scope": "target" },
     {
       "name": "codex.ui.titlebar.afterMenu",
       "api": 1,

@@ -29,6 +29,7 @@ use crate::runtime_status::{
 };
 
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
+const UI_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/ui.js");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_RENDERER_RPC_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_RENDERER_RPC_METHOD_BYTES: usize = 256;
@@ -2059,7 +2060,7 @@ fn parse_lifecycle_result(result: Value) -> Result<(), String> {
 
 fn bootstrap_expression(world: RendererWorld) -> String {
     let options = json!({"world": world});
-    format!("({BOOTSTRAP_SOURCE})({options})")
+    format!("({BOOTSTRAP_SOURCE})({options}, {UI_HELPERS_SOURCE})")
 }
 
 fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {

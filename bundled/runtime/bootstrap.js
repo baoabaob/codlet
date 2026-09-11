@@ -1,4 +1,4 @@
-((options = {}) => {
+((options = {}, createUI = null) => {
     const world = options.world ?? 'isolated';
     if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -407,7 +407,8 @@
                         record.disposers.add(listener);
                         return () => record.disposers.delete(listener);
                     },
-                    rpc: createRpc(record)
+                    rpc: createRpc(record),
+                    ...(typeof createUI === 'function' ? { ui: Object.freeze({ api: 1, create: appearance => createUI(context, appearance) }) } : {})
                 });
                 activating.set(metadata.id, record);
                 try {

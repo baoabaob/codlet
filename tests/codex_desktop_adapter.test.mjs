@@ -8,18 +8,18 @@ const source = readFileSync(new URL('../bundled/codex-desktop-adapter/renderer.j
 const plain = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture(buildIndex = 0) {
+function fixture(buildIndex = 0, withNavigation = false) {
     const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, AbortController, crypto: { randomUUID } });
     const create = vm.runInContext(source + '\ncreateAdapter', scope);
     const build = vm.runInContext('BUILDS', scope)[buildIndex];
     const endpoints = new Map(), cleanup = new Set(), sent = [], failures = [], callbacks = new Map(), approvals = [], requestCalls = [];
-    const thread = { resumeState: 'resumed', requests: [] };
+    const thread = { resumeState: 'resumed', requests: [], turns: [] }, threads = new Map([['thread-a', thread]]);
     const client = { requestPromises: new Map(), onError(id, error) { failures.push({ id, error }); this.requestPromises.delete(id); } };
     const original = message => { sent.push(message); };
     const postbox = { postMessage: original };
     const responses = new Map();
     const manager = {
-        getConversation: id => id === 'thread-a' ? thread : null,
+        getConversation: id => threads.get(id) ?? null,
         getStreamRole: () => ({ role: 'owner' }),
         sendRequest: async (method, params) => { requestCalls.push({ method, params }); const result = responses.get(method); if (result instanceof Error) throw result; return typeof result === 'function' ? result(params) : result; },
         addNotificationCallback(methods, handler) { callbacks.set('notification', handler); return () => callbacks.delete('notification'); },
@@ -31,7 +31,17 @@ function fixture(buildIndex = 0) {
     };
     const context = { world: 'main', pluginId: 'adapter', generation: 1, reportDiagnostic() {}, onDeactivate(fn) { cleanup.add(fn); return () => cleanup.delete(fn); }, rpc: { provide(cap, method, handler) { endpoints.set(cap.name + ':' + method, handler); }, unavailable(cap) { for (const key of endpoints.keys()) if (key.startsWith(cap.name + ':')) endpoints.delete(key); } } };
     let replaced = false;
-    const adapter = create({ manager, client, postbox, build, check() { if (replaced) throw Object.assign(new Error('connection replaced'), { code: 'desktop_connection_replaced' }); } }, context);
+    const navigationCalls = [];
+    const navigator = {
+        location: { pathname: '/local/thread-a', key: 'initial' },
+        push(...args) { assert.equal(this, navigator); navigationCalls.push(['push', ...args]); this.location = { pathname: args[0], key: randomUUID() }; return 'native-push-result'; },
+        replace(...args) { assert.equal(this, navigator); navigationCalls.push(['replace', ...args]); this.location = { pathname: args[0], key: randomUUID() }; return 'native-replace-result'; },
+        go(...args) { assert.equal(this, navigator); navigationCalls.push(['go', ...args]); return 'native-go-result'; },
+        listen() { assert.fail('Native router listener must not be replaced'); }
+    };
+    const nativeNavigation = { push: navigator.push, replace: navigator.replace, go: navigator.go, listen: navigator.listen };
+    let currentNavigator = navigator;
+    const adapter = create({ manager, client, postbox, build, ...(withNavigation ? { locateNavigator: () => currentNavigator } : {}), check() { if (replaced) throw Object.assign(new Error('connection replaced'), { code: 'desktop_connection_replaced' }); } }, context);
     const owners = [];
     function owner(id, generation = 1) {
         const disposers = new Set();
@@ -45,7 +55,7 @@ function fixture(buildIndex = 0) {
         postbox.postMessage(message);
         return message;
     }
-    return { ...adapter, context, scope, endpoints, cleanup, sent, failures, callbacks, approvals, requestCalls, client, postbox, original, thread, responses, owner, submit, connection: { manager, client, postbox, build, check() {} }, drift() { replaced = true; } };
+    return { ...adapter, context, scope, endpoints, cleanup, sent, failures, callbacks, approvals, requestCalls, client, postbox, original, thread, threads, navigator, nativeNavigation, navigationCalls, replaceNavigator(value) { currentNavigator = value; }, responses, owner, submit, connection: { manager, client, postbox, build, check() {} }, drift() { replaced = true; } };
 }
 
 test('ordered pre-submit rewrite/context preserves identities, attachment and Desktop options before dispatch', async () => {
@@ -367,4 +377,104 @@ test('each reviewed profile waits for live exports, reuses its initialized conne
         scope.electronBridge.getSentryInitOptions = () => ({ appVersion: build.appVersion, buildNumber: 'changed' });
         assert.throws(() => connection.check(), { code: 'desktop_build_drift' });
     }
+});
+
+test('selection follows Native router operations and projects canonical history plus the live turn', async () => {
+    const f = fixture(1, true), changes = [];
+    f.api.onEvent(f.owner('observer').ctx, event => { if (event.type === 'selection.changed') changes.push(event); });
+    assert.deepEqual(plain(await f.api.read('selection.get')), { threadId: 'thread-a', activeTurnId: null, activeTurnKnown: true, resumeState: 'resumed', streamRole: 'owner' });
+    f.thread.turnHistory = { kind: 'canonical', history: { islands: [{ entries: [{ value: 'old' }] }], entitiesByKey: { old: { turnId: 'turn-old', status: 'completed' } } } };
+    f.thread.turns = [{ turnId: 'turn-live', status: 'inProgress' }];
+    f.callbacks.get('conversation')('thread-a');
+    assert.equal(changes.at(-1).activeTurnId, 'turn-live');
+    const count = changes.length; f.callbacks.get('conversation')('thread-a'); assert.equal(changes.length, count);
+    f.thread.turns[0].status = 'completed'; f.callbacks.get('conversation')('thread-a');
+    assert.equal(changes.at(-1).activeTurnId, null);
+    assert.equal(f.navigator.replace('/settings', { native: 'state' }), 'native-replace-result');
+    assert.equal(changes.at(-1).threadId, null);
+    assert.equal(f.navigator.go(-1), 'native-go-result');
+    assert.deepEqual(f.navigationCalls, [['replace', '/settings', { native: 'state' }], ['go', -1]]);
+    assert.equal(f.navigator.listen, f.nativeNavigation.listen);
+    f.dispose(); for (const key of Object.keys(f.nativeNavigation)) assert.equal(f.navigator[key], f.nativeNavigation[key]);
+});
+
+test('opening a cold task navigates once and lets Native publish resume and follower ownership', async () => {
+    const f = fixture(1, true);
+    f.responses.set('thread/read', { thread: { id: 'thread-cold' } });
+    const result = await f.api.write('threads.open', { threadId: 'thread-cold' });
+    assert.equal(result.status, 'opening'); assert.equal(result.activeTurnKnown, false);
+    assert.deepEqual(f.navigationCalls, [['push', '/local/thread-cold']]);
+    assert.deepEqual(plain(f.requestCalls), [{ method: 'thread/read', params: { threadId: 'thread-cold', includeTurns: false } }]);
+    await assert.rejects(f.api.write('turns.start', { threadId: 'thread-cold', text: 'wait' }), { code: 'desktop_thread_not_loaded' });
+    f.threads.set('thread-cold', { resumeState: 'resumed', requests: [], turns: [] });
+    f.connection.manager.getStreamRole = () => ({ role: 'follower' }); f.callbacks.get('conversation')('thread-cold');
+    const selected = await f.api.read('selection.get'); assert.equal(selected.resumeState, 'resumed'); assert.equal(selected.streamRole, 'follower');
+    const again = await f.api.write('threads.open', { threadId: 'thread-cold' });
+    assert.equal(again.status, 'opened'); assert.equal(again.alreadySelected, true); assert.equal(f.navigationCalls.length, 1);
+    await assert.rejects(f.api.write('turns.start', { threadId: 'thread-cold', text: 'wait' }), { code: 'desktop_thread_follower' });
+    f.dispose();
+});
+
+test('invalid, cancelled, concurrent and superseded open requests never replace a newer user route', async () => {
+    const f = fixture(1, true);
+    await assert.rejects(f.api.write('threads.open', { threadId: '../escape' }), { code: 'invalid_argument' });
+    const signal = new AbortController(); signal.abort();
+    await assert.rejects(f.api.write('threads.open', { threadId: 'cold' }, signal.signal), { code: 'invocation_cancelled' });
+    let release; f.responses.set('thread/read', () => new Promise(resolve => { release = resolve; }));
+    const pending = f.api.write('threads.open', { threadId: 'cold' });
+    await assert.rejects(f.api.write('threads.open', { threadId: 'other' }), { code: 'desktop_navigation_busy' });
+    f.navigator.push('/local/user-selected'); release({ thread: { id: 'cold' } });
+    await assert.rejects(pending, { code: 'desktop_navigation_superseded' });
+    assert.equal(f.navigator.location.pathname, '/local/user-selected'); assert.equal(f.navigationCalls.length, 1);
+    f.responses.set('thread/read', { thread: { id: 'different' } });
+    await assert.rejects(f.api.write('threads.open', { threadId: 'cold' }), { code: 'desktop_navigation_unavailable' });
+    assert.equal(f.navigationCalls.length, 1); f.dispose();
+});
+
+test('navigation drift only disables selection and open, and preserves another patch on retirement', async () => {
+    const f = fixture(1, true), replacement = () => {};
+    f.navigator.push = replacement;
+    await assert.rejects(f.api.read('selection.get'), { code: 'desktop_navigation_drift' });
+    assert.equal(f.probe().available, true); assert.equal(f.probe().navigation.available, false);
+    f.responses.set('thread/read', { thread: { id: 'thread-a' } });
+    assert.equal((await f.api.read('threads.get', { threadId: 'thread-a' })).id, 'thread-a');
+    assert.equal(f.dispose().reloadRequired, true); assert.equal(f.navigator.push, replacement);
+    assert.equal(f.navigator.replace, f.nativeNavigation.replace);
+    const old = fixture(0, true); assert.equal(old.probe().available, true); assert.equal(old.probe().navigation.available, false);
+    await assert.rejects(old.api.read('selection.get'), { code: 'desktop_navigation_unavailable' }); old.dispose();
+});
+
+test('active turn projection preserves terminal snapshots and reports unsupported history as unknown', () => {
+    const f = fixture(), project = vm.runInContext('activeTurnState', f.scope);
+    const terminal = { turnId: 'turn-a', status: 'completed', itemsPagination: {} };
+    const thread = { resumeState: 'resumed', turns: [{ turnId: 'turn-a', status: 'inProgress' }], turnHistory: { kind: 'canonical', history: { islands: [{ entries: [{ value: 'a' }] }], entitiesByKey: { a: terminal } } } };
+    assert.deepEqual(plain(project(thread)), { activeTurnId: null, activeTurnKnown: true });
+    delete terminal.itemsPagination; assert.equal(project(thread).activeTurnId, 'turn-a');
+    terminal.status = 'future-status'; assert.equal(project(thread).activeTurnKnown, false);
+    delete thread.turnHistory; thread.turns = []; assert.equal(project(thread).activeTurnKnown, true);
+    thread.resumeState = 'loading'; assert.equal(project(thread).activeTurnKnown, false); f.dispose();
+});
+
+test('interceptor diagnostics preserve execution order and omit input, context and failure text', async () => {
+    const f = fixture();
+    const disabled = f.api.registerPreSubmit(f.owner('a').ctx, { id: 'off', enabled: false }, () => assert.fail('disabled hook ran'));
+    const bad = f.api.registerPreSubmit(f.owner('b').ctx, { id: 'bad', priority: 1 }, () => { throw Object.assign(new Error('secret draft content'), { code: 'private_secret' }); });
+    f.submit('sensitive input'); await tick();
+    const list = f.endpoints.get('codex.ui.preSubmit:interceptors.list')({});
+    assert.deepEqual(plain(list.interceptors).map(hook => hook.id), ['off', 'bad']);
+    assert.equal(disabled.inspect().calls, 0); assert.equal(bad.inspect().calls, 1); assert.equal(bad.inspect().failures, 1);
+    assert.equal(bad.inspect().lastFailure.code, 'interceptor_failed'); assert.ok(bad.inspect().lastDurationMs >= 0);
+    assert.doesNotMatch(JSON.stringify(list), /sensitive|secret|draft|handler|context/);
+    bad.setEnabled(false); f.submit(); assert.equal(f.sent.length, 1, 'all-disabled pipeline remains synchronous');
+    bad(); assert.throws(() => bad.setEnabled(true), { code: 'interceptor_retired' }); f.dispose();
+});
+
+test('disabling a captured interceptor cancels pending dispatch and later reenabling retains its counters', async () => {
+    const f = fixture(); let release;
+    const handle = f.api.registerPreSubmit(f.owner('owner').ctx, { id: 'pending' }, () => new Promise(resolve => { release = resolve; }));
+    f.submit(); await tick(); handle.setEnabled(false); await tick();
+    assert.equal(f.sent.length, 0); assert.equal(f.failures[0].error.code, 'interceptor_disabled');
+    assert.equal(handle.inspect().failures, 1); assert.equal(handle.inspect().lastFailure.code, 'interceptor_disabled');
+    release({ text: 'late' }); await tick(); assert.equal(f.sent.length, 0);
+    handle.setEnabled(true); assert.equal(handle.inspect().calls, 1); assert.equal(handle.inspect().enabled, true); f.dispose();
 });

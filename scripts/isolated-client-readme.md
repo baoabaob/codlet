@@ -2,6 +2,8 @@
 
 适配 Codex Windows `{{packageVersion}}`，使用当前插件运行时，支持可选的 M3 主世界 ABI。
 
+新运行时提供共享 UI 控件。`examples/ui-controls` 可作为普通 `ui.dom` 插件注册，在菜单栏显示 **UI** 示例；M3/M4 面板新增当前任务同步、原生任务打开和拦截器诊断。导航仅在已经审核的主窗口构建上开放。
+
 - 启动：双击 `Start-TestClient.cmd`。首次启动需要准备新版运行时缓存，稍等片刻。
 - 停止：双击 `Stop-TestClient.cmd`，或在测试窗口菜单中选择退出。仅关闭窗口可能让客户端继续驻留。
 - 登录资料：继续使用 `{{labRoot}}` 中原有的测试登录、历史和设置。

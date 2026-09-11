@@ -1,9 +1,9 @@
 # Native UI Adapter Capabilities
 
-Status: proposal, updated 2026-09-11. The reusable contracts below are scheduled
-for M3.1, alongside the first needs of the M5 plugin-management page. Existing
-GUI/appearance work and the M3/M4 Desktop Adapter candidate are already delivered;
-the proposed helpers and surfaces below remain unimplemented unless marked current.
+Status: first M3.1 subset implemented and verified on 2026-09-11. Managed local UI
+helpers and `codex.ui.appearance@1` are used by the GUI and an ordinary plugin.
+Additional Native slots and settings integration remain proposals. See the
+[implemented contract and acceptance](UI_HELPERS_AND_NAVIGATION_2026-09-11.md).
 See the [next development plan](NEXT_DEVELOPMENT_PLAN_2026-09-11.md) for the
 UI, Desktop API, import, community and platform work packages.
 
@@ -40,15 +40,14 @@ not every hover, focus or switch animation.
 | Area | Current | Proposed next contract |
 | --- | --- | --- |
 | Slots | `codex.ui.titlebar.afterMenu@1` returns a stable mount token, availability and placement | Named target-scoped slots with explicit availability and reversible ownership |
-| Appearance | Adapter-owned stylesheet supplies `--codlet-ui-*` aliases to its mount and opted-in portal | Versioned semantic roles and variants, including geometry, typography, state colors and surface layout |
-| Controls | Management GUI constructs its own buttons, switch, rows and confirmation UI | Small renderer helpers consuming the appearance contract; ordinary DOM events and explicit dispose |
-| Surfaces | GUI owns its management panel | A settings surface/dialog contract only after actual host settings behavior is verified |
-| Diagnostics | Mount RPC reports current availability and placement | Report supported roles, missing structure/tokens and matched build evidence independently of Host readiness |
+| Appearance | `codex.ui.appearance@1` describes finite semantic roles and variants backed by scoped Native aliases | Extend only for independently verified needs |
+| Controls | `context.ui.create` owns buttons, switches, rows, status, modal dialogs, local events and cleanup | Additional small controls after consumer acceptance |
+| Surfaces | Owned 600px settings and 420px confirmation dialogs; GUI retains its receipt/confirmation business logic | Integration into Native settings and additional host slots |
+| Diagnostics | Appearance reports stylesheet availability, roles, native layout and token availability | More detailed per-build evidence and changed-host fixtures |
 
-`codex.ui.appearance@1` is a proposed capability name. Before freezing it, use the
-first-party GUI and one small local UI plugin to prove the required roles and
-failure behavior. Do not add a separate raw-CSS or arbitrary-selector RPC escape
-route to this interface.
+`codex.ui.appearance@1` is now the implemented first contract. The management GUI
+and `example.ui.controls` consume the same roles and helpers. There is no raw-CSS
+or arbitrary-selector RPC method in this interface.
 
 An appearance response should describe the supported contract version, theme
 marker and finite role/variant set. A consumer applies its own data attributes to
@@ -90,16 +89,18 @@ close/confirmation handlers and lifecycle cleanup. Modal state must follow
 `dialog.open`; background inertness, tab scope and focus return need real browser
 verification in addition to tests of the plugin's handlers.
 
-The current appearance increment adds 16 aliases used by that GUI, for 27 total.
-It remains a scoped stylesheet contract; it does not yet expose component factories
-or a general settings-surface API. Keep this distinction when documenting support
-for third-party codlets.
+The earlier appearance increment added 16 aliases used by that GUI, for 27 total.
+It was a scoped stylesheet contract without component factories. The M3.1 increment
+adds factories as an optional managed-runtime convenience, separate from the adapter.
 
 The [2026-09-08 follow-up](APPEARANCE_FOLLOWUP_2026-09-08.md) extends that baseline to
 35 aliases for menu states, font weights, control cursor and reduced-motion
 preferences. These references resolve from the current host settings. The GUI's
 menu trigger grows with its effective font size instead of fixing its height to
-the 14px baseline. No new capability, global theme writer or control factory is added.
+the 14px baseline. That follow-up did not add factories. M3.1 now adds the appearance
+capability and local helpers; it retains 35 aliases and adds no global theme writer.
+Role line heights scale with the corresponding Native font size, preserving the
+13px/18px label and 12px/16px description baselines.
 
 ## Ownership And Compatibility
 
@@ -151,7 +152,8 @@ tests do not establish visual agreement.
 The 2026-09-07 browser preview attempt was rejected by the tool policy; that
 individual attempt remains a failed attempt. Later existing-GUI acceptance is
 recorded in the [2026-09-08 repair and retest](GUI_REPAIR_2026-09-08.md). The new
-M3.1 helpers and surfaces still require their own visual and interaction acceptance.
+M3.1 subset now has separate Native light/dark, narrow/font-scale, keyboard, nested
+modal and unload results in the [2026-09-11 record](UI_HELPERS_AND_NAVIGATION_2026-09-11.md).
 
 Related: [adapter evidence](CODEX_UI_ADAPTER_EVIDENCE.md),
 [product plan](PRODUCT_TECHNICAL_PLAN.md), and
