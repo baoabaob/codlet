@@ -8,9 +8,10 @@ const source = readFileSync(new URL('../bundled/codex-desktop-adapter/renderer.j
 const plain = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture() {
+function fixture(buildIndex = 0) {
     const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, AbortController, crypto: { randomUUID } });
     const create = vm.runInContext(source + '\ncreateAdapter', scope);
+    const build = vm.runInContext('BUILDS', scope)[buildIndex];
     const endpoints = new Map(), cleanup = new Set(), sent = [], failures = [], callbacks = new Map(), approvals = [], requestCalls = [];
     const thread = { resumeState: 'resumed', requests: [] };
     const client = { requestPromises: new Map(), onError(id, error) { failures.push({ id, error }); this.requestPromises.delete(id); } };
@@ -30,7 +31,7 @@ function fixture() {
     };
     const context = { world: 'main', pluginId: 'adapter', generation: 1, reportDiagnostic() {}, onDeactivate(fn) { cleanup.add(fn); return () => cleanup.delete(fn); }, rpc: { provide(cap, method, handler) { endpoints.set(cap.name + ':' + method, handler); }, unavailable(cap) { for (const key of endpoints.keys()) if (key.startsWith(cap.name + ':')) endpoints.delete(key); } } };
     let replaced = false;
-    const adapter = create({ manager, client, postbox, check() { if (replaced) throw Object.assign(new Error('connection replaced'), { code: 'desktop_connection_replaced' }); } }, context);
+    const adapter = create({ manager, client, postbox, build, check() { if (replaced) throw Object.assign(new Error('connection replaced'), { code: 'desktop_connection_replaced' }); } }, context);
     const owners = [];
     function owner(id, generation = 1) {
         const disposers = new Set();
@@ -44,7 +45,7 @@ function fixture() {
         postbox.postMessage(message);
         return message;
     }
-    return { ...adapter, context, scope, endpoints, cleanup, sent, failures, callbacks, approvals, requestCalls, client, postbox, original, thread, responses, owner, submit, connection: { manager, client, postbox, check() {} }, drift() { replaced = true; } };
+    return { ...adapter, context, scope, endpoints, cleanup, sent, failures, callbacks, approvals, requestCalls, client, postbox, original, thread, responses, owner, submit, connection: { manager, client, postbox, build, check() {} }, drift() { replaced = true; } };
 }
 
 test('ordered pre-submit rewrite/context preserves identities, attachment and Desktop options before dispatch', async () => {
@@ -227,6 +228,31 @@ test('permission approval with unmapped path kinds can only be declined through 
     f.dispose();
 });
 
+test('local literal-path permission entries expose every requested path and preserve the exact approved profile', async () => {
+    for (const legacy of [false, true]) {
+        const f = fixture();
+        const permissions = { network: null, fileSystem: { entries: [{ access: 'write', path: { type: 'path', path: 'C:/lab/temp' } }], read: null, write: legacy ? ['C:/lab/temp'] : null } };
+        f.thread.requests.push({ id: 'permission-id', method: 'item/permissions/requestApproval', params: { threadId: 'thread-a', turnId: 'turn-a', itemId: 'permission-item', environmentId: 'local', permissions } });
+        const request = (await f.api.read('approvals.list', { threadId: 'thread-a' })).requests[0];
+        assert.equal(request.canApprove, true);
+        assert.deepEqual(plain(request.permissions), { network: false, read: [], write: ['C:/lab/temp'], hasOtherPaths: false });
+        await f.api.write('approvals.respond', { token: request.token, decision: 'approve' });
+        assert.deepEqual(plain(f.approvals[0]), ['permissions', 'thread-a', 'permission-id', { permissions, scope: 'turn' }]);
+        f.dispose();
+    }
+    const scope = vm.createContext({ module: { exports: {} } });
+    const project = vm.runInContext(source + '\npermissionsDto', scope);
+    for (const params of [
+        { environmentId: 'remote', permissions: {} },
+        { permissions: { fileSystem: { entries: [{ access: 'deny', path: { type: 'path', path: 'C:/lab' } }] } } },
+        { permissions: { fileSystem: { entries: [{ access: 'write', path: { type: 'glob_pattern', pattern: '**' } }] } } },
+        { permissions: { fileSystem: { entries: 'changed' } } },
+        { permissions: { fileSystem: { read: 'changed' } } },
+        { permissions: { fileSystem: { globScanMaxDepth: 0 } } },
+        { permissions: { network: { enabled: 'changed' } } },
+    ]) assert.equal(project(params).canApprove, false);
+});
+
 test('schema or event identity drift closes semantic operations while diagnostics remain readable', async () => {
     for (const source of ['response', 'event']) {
         const f = fixture(), cursor = (await f.api.readEvents()).cursor;
@@ -303,4 +329,42 @@ test('probing a family descriptor never constructs a missing local manager or re
         return { t3t: token, Mwt: manager, Nwt: client };
     })()`, scope);
     await assert.rejects(vm.runInContext('probeDesktop', scope)(async () => module, 0), { code: 'desktop_connection_not_ready' });
+});
+
+test('each reviewed profile waits for live exports, reuses its initialized connection and rejects build replacement', async () => {
+    for (const buildIndex of [0, 1]) {
+        const f = fixture(buildIndex);
+        assert.deepEqual(Object.keys(plain(f.api.status().build)).sort(), ['appServerVersion', 'appVersion', 'buildNumber']);
+        assert.equal(f.api.status().build.appVersion, buildIndex === 0 ? '26.903.61454' : '26.903.71938');
+        f.dispose();
+        const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, location: { origin: 'app://-', pathname: '/index.html' } });
+        vm.runInContext(source, scope);
+        scope.buildIndex = buildIndex;
+        const module = vm.runInContext(`(() => {
+            const build = BUILDS[buildIndex], token = { id: 'AppScope' };
+            const client = { requestPromises: new Map(), getAppServerVersion: () => build.appServerVersion, onError() {} };
+            const manager = { requestClient: client, getHostId: () => 'local' };
+            for (const name of ['sendRequest', 'getConversation', 'getStreamRole', 'addNotificationCallback', 'addConversationStateCallback', 'replyWithCommandExecutionApprovalDecision', 'replyWithFileChangeApprovalDecision', 'replyWithPermissionsRequestApprovalResponse', 'replyWithUserInputResponse']) manager[name] = () => {};
+            const managerFamily = { read: () => manager }, clientFamily = { read: () => client };
+            const node = { token, store: {}, familyBindings: new Map([[managerFamily, new Map([['local', {}]])], [clientFamily, new Map([['local', {}]])]]) };
+            const root = { __reactContainer$test: { memoizedProps: { value: new Map([[token.id, node]]) } } };
+            globalThis.document = { scripts: [{ src: build.entry }], getElementById: () => root };
+            globalThis.electronBridge = { getSentryInitOptions: () => build, sendMessageFromView() { throw Error('must not open another app-host port'); } };
+            return { [build.exports.scope]: token, [build.exports.manager]: managerFamily, [build.exports.client]: clientFamily, [build.exports.services]: {}, [build.exports.postbox]: { postMessage() {} } };
+        })()`, scope);
+        const build = vm.runInContext('BUILDS[buildIndex]', scope);
+        const delayed = {};
+        const connection = await vm.runInContext('probeDesktop', scope)(async resource => {
+            assert.equal(resource, build.module);
+            setTimeout(() => Object.assign(delayed, module), 1);
+            return delayed;
+        }, 500);
+        connection.check();
+        assert.equal(connection.build, build);
+        scope.document.scripts[0].src = 'app://-/assets/unreviewed.js';
+        assert.throws(() => connection.check(), { code: 'desktop_build_drift' });
+        scope.document.scripts[0].src = build.entry;
+        scope.electronBridge.getSentryInitOptions = () => ({ appVersion: build.appVersion, buildNumber: 'changed' });
+        assert.throws(() => connection.check(), { code: 'desktop_build_drift' });
+    }
 });

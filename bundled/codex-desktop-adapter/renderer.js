@@ -2,7 +2,11 @@
 
 // All Desktop build details stay in this optional directory package. The Core
 // knows only its declared capabilities, principal and renderer lifecycle.
-const BUILD = Object.freeze({ appVersion: '26.903.61454', buildNumber: '8378', appServerVersion: '0.153.4', entry: 'app://-/assets/index-71057a3aecef.js', module: 'app://-/assets/app-initial-92cbfeba4f7c.js' });
+const BUILDS = Object.freeze([
+    Object.freeze({ appVersion: '26.903.61454', buildNumber: '8378', appServerVersion: '0.153.4', entry: 'app://-/assets/index-71057a3aecef.js', module: 'app://-/assets/app-initial-92cbfeba4f7c.js', exports: Object.freeze({ scope: 't3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Smn' }) }),
+    Object.freeze({ appVersion: '26.903.71938', buildNumber: '8576', appServerVersion: '0.153.4', entry: 'app://-/assets/index-5232d4cce9a2.js', module: 'app://-/assets/app-initial-f094ef01c64d.js', exports: Object.freeze({ scope: 'a3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Emn' }) }),
+]);
+const publicBuild = build => ({ appVersion: build.appVersion, buildNumber: build.buildNumber, appServerVersion: build.appServerVersion });
 const API_SYMBOL = 'codlet.codex.desktop.v1';
 const cap = name => Object.freeze({ name, api: 1, scope: 'target' });
 const CAPS = Object.freeze({ compatibility: cap('codex.desktop.compatibility'), submit: cap('codex.ui.preSubmit'), read: cap('codex.backend.read'), write: cap('codex.backend.write'), events: cap('codex.backend.events') });
@@ -33,7 +37,7 @@ const freeze = value => {
     return value;
 };
 
-function locateScope(module) {
+function locateScope(token) {
     const root = document.getElementById('root');
     const key = root && Object.keys(root).find(key => key.startsWith('__reactContainer$'));
     const container = key ? root[key] : null;
@@ -44,9 +48,9 @@ function locateScope(module) {
         if (!fiber || seen.has(fiber)) continue;
         seen.add(fiber);
         const chain = fiber.memoizedProps?.value;
-        if (chain instanceof Map && chain.has(module.t3t?.id)) {
-            const node = chain.get(module.t3t.id);
-            if (node?.token === module.t3t && node.store && node.familyBindings instanceof Map) return { chain, node };
+        if (chain instanceof Map && chain.has(token?.id)) {
+            const node = chain.get(token.id);
+            if (node?.token === token && node.store && node.familyBindings instanceof Map) return { chain, node };
         }
         if (fiber.sibling) pending.push(fiber.sibling);
         if (fiber.child) pending.push(fiber.child);
@@ -55,13 +59,14 @@ function locateScope(module) {
 }
 
 function validateDesktopBuild(checkEntry = true) {
-    const build = globalThis.electronBridge?.getSentryInitOptions?.();
+    const detected = globalThis.electronBridge?.getSentryInitOptions?.();
+    const build = BUILDS.find(build => detected?.appVersion === build.appVersion && String(detected?.buildNumber) === build.buildNumber);
     if (location.origin !== 'app://-' || location.pathname !== '/index.html' ||
-        build?.appVersion !== BUILD.appVersion || String(build?.buildNumber) !== BUILD.buildNumber ||
-        (checkEntry && !Array.from(document.scripts).some(script => script.src === BUILD.entry))) {
-        throw fail('desktop_build_drift', `Codex Desktop Adapter supports ${BUILD.appVersion} build ${BUILD.buildNumber}; detected ${optionalText(build?.appVersion)} / ${optionalText(String(build?.buildNumber))}`);
+        !build || (checkEntry && !Array.from(document.scripts).some(script => script.src === build.entry))) {
+        throw fail('desktop_build_drift', `Codex Desktop Adapter has no verified profile for ${optionalText(detected?.appVersion)} / ${optionalText(String(detected?.buildNumber))}`);
     }
     if (typeof globalThis.electronBridge?.sendMessageFromView !== 'function') throw fail('desktop_preload_missing', 'Desktop preload bridge is unavailable');
+    return build;
 }
 
 function probeTick(signal, delay) {
@@ -75,24 +80,28 @@ function probeTick(signal, delay) {
 }
 
 async function probeDesktop(loadModule = source => import(source), readyTimeoutMs = 3000, signal) {
-    validateDesktopBuild(false);
+    const build = validateDesktopBuild(false);
     const readyDeadline = Date.now() + readyTimeoutMs;
-    while (!Array.from(document.scripts).some(script => script.src === BUILD.entry)) {
+    while (!Array.from(document.scripts).some(script => script.src === build.entry)) {
         if (document.readyState === 'complete' || Date.now() >= readyDeadline) throw fail('desktop_build_drift', 'The Desktop entry resource does not match this adapter');
         await probeTick(signal, Math.min(50, readyDeadline - Date.now()));
     }
     // Import reuses the already loaded module and its existing app-host services.
     // Opening another connect-app-host port would replace the Desktop view.
-    const module = await loadModule(BUILD.module);
-    let scope, manager, client;
+    const module = await loadModule(build.module);
+    let token, managerFamily, clientFamily, services, postbox, scope, manager, client;
     for (;;) {
         if (signal?.aborted) throw fail('adapter_deactivated', 'Desktop adapter was deactivated during initialization');
         try {
-            scope = locateScope(module);
-            if (!scope.node.familyBindings.get(module.Mwt)?.has('local') || !scope.node.familyBindings.get(module.Nwt)?.has('local')) throw fail('desktop_connection_not_ready', 'Desktop has not initialized its own local connection');
-            manager = module.Mwt.read(scope.node, scope.chain, 'local');
-            client = module.Nwt.read(scope.node, scope.chain, 'local');
-            if (!module.mz || !manager || !client || client.getAppServerVersion?.() == null) throw fail('desktop_connection_not_ready', 'Desktop connection is still initializing');
+            // These are live exports initialized by Desktop's lazy bootstrap.
+            // Snapshot them only once Desktop has mounted its own connection.
+            token = module[build.exports.scope]; managerFamily = module[build.exports.manager]; clientFamily = module[build.exports.client];
+            services = module[build.exports.services]; postbox = module[build.exports.postbox];
+            scope = locateScope(token);
+            if (!scope.node.familyBindings.get(managerFamily)?.has('local') || !scope.node.familyBindings.get(clientFamily)?.has('local')) throw fail('desktop_connection_not_ready', 'Desktop has not initialized its own local connection');
+            manager = managerFamily.read(scope.node, scope.chain, 'local');
+            client = clientFamily.read(scope.node, scope.chain, 'local');
+            if (!services || !manager || !client || client.getAppServerVersion?.() == null) throw fail('desktop_connection_not_ready', 'Desktop connection is still initializing');
             break;
         } catch (error) {
             if (!['desktop_scope_missing', 'desktop_connection_not_ready'].includes(error.code) || Date.now() >= readyDeadline) throw error;
@@ -100,17 +109,17 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
             await probeTick(signal, Math.min(50, readyDeadline - Date.now()));
         }
     }
-    if (manager.requestClient !== client || manager.getHostId?.() !== 'local' || client.getAppServerVersion() !== BUILD.appServerVersion) throw fail('desktop_connection_drift', 'Existing Desktop connection identity or App Server schema does not match this adapter');
+    if (manager.requestClient !== client || manager.getHostId?.() !== 'local' || client.getAppServerVersion() !== build.appServerVersion) throw fail('desktop_connection_drift', 'Existing Desktop connection identity or App Server schema does not match this adapter');
     for (const method of ['sendRequest', 'getConversation', 'getStreamRole', 'addNotificationCallback', 'addConversationStateCallback', 'replyWithCommandExecutionApprovalDecision', 'replyWithFileChangeApprovalDecision', 'replyWithPermissionsRequestApprovalResponse', 'replyWithUserInputResponse']) {
         if (typeof manager[method] !== 'function') throw fail('desktop_manager_drift', `Desktop manager lacks ${method}`);
     }
-    if (typeof client.onError !== 'function' || !(client.requestPromises instanceof Map) || Object.getOwnPropertyDescriptor(module.Smn ?? {}, 'postMessage')?.writable !== true) throw fail('desktop_transport_drift', 'Desktop request transport cannot be safely intercepted');
-    const services = module.mz;
+    if (typeof client.onError !== 'function' || !(client.requestPromises instanceof Map) || Object.getOwnPropertyDescriptor(postbox ?? {}, 'postMessage')?.writable !== true) throw fail('desktop_transport_drift', 'Desktop request transport cannot be safely intercepted');
     return {
-        manager, client, postbox: module.Smn,
+        manager, client, postbox, build,
         check() {
-            const current = locateScope(module);
-            if (current.node !== scope.node || module.mz !== services || !current.node.familyBindings.get(module.Mwt)?.has('local') || !current.node.familyBindings.get(module.Nwt)?.has('local') || module.Mwt.read(current.node, current.chain, 'local') !== manager || module.Nwt.read(current.node, current.chain, 'local') !== client || manager.requestClient !== client || client.getAppServerVersion() !== BUILD.appServerVersion) throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
+            if (validateDesktopBuild() !== build) throw fail('desktop_build_drift', 'Desktop build changed after adapter initialization');
+            const current = locateScope(token);
+            if (current.node !== scope.node || module[build.exports.scope] !== token || module[build.exports.manager] !== managerFamily || module[build.exports.client] !== clientFamily || module[build.exports.services] !== services || module[build.exports.postbox] !== postbox || !current.node.familyBindings.get(managerFamily)?.has('local') || !current.node.familyBindings.get(clientFamily)?.has('local') || managerFamily.read(current.node, current.chain, 'local') !== manager || clientFamily.read(current.node, current.chain, 'local') !== client || manager.requestClient !== client || client.getAppServerVersion() !== build.appServerVersion) throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
         }
     };
 }
@@ -135,8 +144,32 @@ function threadDto(thread) {
     return { id: identity(thread.id, 'thread id'), title: optionalText(thread.name ?? thread.title ?? thread.preview), cwd: optionalText(thread.cwd), provider: optionalText(thread.modelProvider, 256), createdAt: Number.isFinite(thread.createdAt) ? thread.createdAt : null, updatedAt: Number.isFinite(thread.updatedAt) ? thread.updatedAt : null, turns: Array.isArray(thread.turns) ? thread.turns.map(turnDto) : [] };
 }
 
+function permissionsDto(params) {
+    const profile = params.permissions ?? {}, fs = profile.fileSystem ?? {};
+    const known = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
+    const path = value => typeof value === 'string' && value.length > 0 && value.length <= 8192 && !value.includes('\0');
+    const paths = key => Array.isArray(fs[key]) ? fs[key].filter(path) : [];
+    const read = new Set(paths('read')), write = new Set(paths('write'));
+    const entries = Array.isArray(fs.entries) ? fs.entries : [];
+    let hasOtherPaths = fs.entries != null && !Array.isArray(fs.entries);
+    for (const entry of entries) {
+        const supported = known(entry, ['access', 'path']) && ['read', 'write'].includes(entry.access) &&
+            known(entry.path, ['type', 'path']) && entry.path.type === 'path' && path(entry.path.path);
+        if (supported) (entry.access === 'read' ? read : write).add(entry.path.path);
+        else hasOtherPaths = true;
+    }
+    const canApprove = known(profile, ['network', 'fileSystem']) && known(profile.network ?? {}, ['enabled']) &&
+        (profile.network?.enabled == null || typeof profile.network.enabled === 'boolean') &&
+        known(fs, ['read', 'write', 'entries', 'globScanMaxDepth']) && !hasOtherPaths &&
+        ['read', 'write'].every(key => fs[key] == null || (Array.isArray(fs[key]) && fs[key].every(path))) &&
+        (fs.globScanMaxDepth == null || (Number.isSafeInteger(fs.globScanMaxDepth) && fs.globScanMaxDepth >= 1)) &&
+        (params.environmentId == null || params.environmentId === 'local');
+    return { canApprove: !!canApprove, permissions: { network: profile.network?.enabled === true, read: [...read], write: [...write], hasOtherPaths } };
+}
+
 function createAdapter(connection, context, { compatibilityProvided = false } = {}) {
-    const { manager, client, postbox } = connection;
+    const { manager, client, postbox, build } = connection;
+    if (!BUILDS.includes(build)) throw fail('desktop_build_drift', 'Connection has no verified Desktop build profile');
     const originalPost = postbox.postMessage;
     const symbol = Symbol.for(API_SYMBOL);
     if (globalThis[symbol] !== undefined) throw fail('desktop_adapter_conflict', 'Another Desktop adapter already owns this API');
@@ -149,7 +182,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         try { connection.check(); if (postbox.postMessage !== intercept) throw fail('desktop_patch_drift', 'Desktop request patch ownership changed; renderer reload required'); }
         catch (error) { markUnavailable(error); throw error; }
     };
-    const status = () => ({ api: 1, initializing: false, available: unavailable === null, unavailable: unavailable ? { ...unavailable } : null, build: { ...BUILD, entry: undefined, module: undefined }, connection: 'existing-desktop-local', transport: 'existing-app-host-services-and-native-request-client', inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: hooks.size, pendingSubmits: pendingSubmits.size });
+    const status = () => ({ api: 1, initializing: false, available: unavailable === null, unavailable: unavailable ? { ...unavailable } : null, build: publicBuild(build), connection: 'existing-desktop-local', transport: 'existing-app-host-services-and-native-request-client', inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: hooks.size, pendingSubmits: pendingSubmits.size });
     const emit = event => {
         if (!alive) return;
         const value = freeze({ ...copy(event), cursor: `${instance}:${++sequence}` });
@@ -373,9 +406,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         const dto = { token, kind, threadId, turnId: identity(params.turnId, 'turnId'), itemId: identity(params.itemId, 'itemId'), reason: optionalText(params.reason) };
         if (kind === 'command') Object.assign(dto, { command: optionalText(params.command), cwd: optionalText(params.cwd), canApprove: !Array.isArray(params.availableDecisions) || params.availableDecisions.includes('accept') });
         if (kind === 'permissions') {
-            const profile = params.permissions ?? {}, fs = profile.fileSystem ?? {};
-            const supported = Object.keys(profile).every(key => ['network', 'fileSystem'].includes(key)) && Object.keys(profile.network ?? {}).every(key => key === 'enabled') && Object.keys(fs).every(key => ['read', 'write', 'entries', 'globScanMaxDepth'].includes(key)) && !fs.entries?.length && (fs.read ?? []).every(path => typeof path === 'string') && (fs.write ?? []).every(path => typeof path === 'string') && params.environmentId == null;
-            Object.assign(dto, { canApprove: supported, permissions: { network: profile.network?.enabled === true, read: (fs.read ?? []).filter(path => typeof path === 'string'), write: (fs.write ?? []).filter(path => typeof path === 'string'), hasOtherPaths: !!fs.entries?.length } });
+            Object.assign(dto, permissionsDto(params));
         }
         if (kind === 'userInput') dto.questions = (params.questions ?? []).map(question => ({ id: identity(question.id, 'question id'), header: optionalText(question.header), question: str(question.question, 'question', 65536), secret: question.isSecret === true, options: question.options == null ? [] : question.options.map(option => ({ label: str(option.label, 'option'), description: optionalText(option.description) })) }));
         return dto;
@@ -567,7 +598,8 @@ function startAdapter(context, probe = signal => probeDesktop(undefined, 30000, 
     const status = () => {
         if (!alive) throw fail('adapter_deactivated', 'Desktop adapter was deactivated');
         if (inner) return inner.probe();
-        return { api: 1, initializing: !settled, available: false, unavailable: failure ?? { code: 'desktop_initializing', message: 'Waiting for the existing Desktop app-host services' }, build: { appVersion: BUILD.appVersion, buildNumber: BUILD.buildNumber, appServerVersion: null }, connection: null, transport: null, inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: 0, pendingSubmits: 0 };
+        const detected = globalThis.electronBridge?.getSentryInitOptions?.();
+        return { api: 1, initializing: !settled, available: false, unavailable: failure ?? { code: 'desktop_initializing', message: 'Waiting for the existing Desktop app-host services' }, build: { appVersion: optionalText(detected?.appVersion), buildNumber: optionalText(String(detected?.buildNumber ?? '')), appServerVersion: null }, connection: null, transport: null, inputRewrite: true, contextInjection: true, presentationTransform: false, historyMutation: false, hooks: 0, pendingSubmits: 0 };
     };
     context.rpc.provide(CAPS.compatibility, 'probe', status);
     context.rpc.provide(CAPS.compatibility, 'waitReady', async (args, invocation) => {

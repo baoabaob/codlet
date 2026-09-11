@@ -10,15 +10,17 @@ The M3/M4 candidate adds explicitly granted managed main worlds and an optional
 Desktop Adapter for submission interception, conversation reads/writes, events,
 and approval replies over the current Desktop connection. Its [semantic SDK](types/codex-desktop.d.ts)
 and [test panel](examples/desktop-m3-m4/README.md) keep private Desktop mappings
-out of Core. [Focused checks and isolated live acceptance](docs/M3_M4_ACCEPTANCE_2026-09-10.md)
-passed on package `26.903.8094.0`; the native task creation/resume configuration
-issue and the existing M0/M1 production gates remain open.
+out of Core. [The compatibility follow-up](docs/DESKTOP_COMPATIBILITY_2026-09-11.md)
+supports package `26.903.9818.0` and fixes isolated-client native task creation and
+cold resume. The existing M0/M1 production gates remain open.
 
 The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) places reusable
 UI helpers and Desktop API extensions in M3.1/M4.1, local/GitHub plugin import and
 simple in-client management in M5, and platform preparation alongside current work.
 GitHub Topics and community directories handle discovery; a separate Codlet Market
 is outside the current plan. These additions are planned, not implemented features.
+The [P0 platform audit](docs/PLATFORM_P0_AUDIT_2026-09-11.md) now records Windows dependencies,
+proposed internal interfaces and the per-platform evidence required before a port.
 
 The current M2 developer contract uses `host.entry: "dist/host.js"`. Both entry kinds export CommonJS
 `activate(context)` and `deactivate()`; TypeScript is compiled to JS before loading.
@@ -69,8 +71,8 @@ English out-of-usage card using `ui.dom`. It restores the card when disabled and
 messages visible. Its [browser preview](scripts/preview-hide-usage-banner.html) uses the actual
 plugin source against a local fixture based on the installed build's markup.
 
-The [independent manual-test client](docs/ISOLATED_CLIENT_UPDATE_2026-09-10.md)
-supports installed build `26.903.8094.0`, reuses the original test login profile,
+The [independent manual-test client](docs/DESKTOP_COMPATIBILITY_2026-09-11.md)
+supports reviewed x64 builds `26.903.8094.0` and `26.903.9818.0`, reuses the original test login profile,
 and runs the current local-plugin runtime with optional M3/M4 adapters. Its
 separate start/stop/plugin/doctor launchers target the test registry and dedicated backend.
 

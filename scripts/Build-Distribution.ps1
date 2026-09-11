@@ -241,7 +241,8 @@ $sourceFiles = @(
     'docs/HOST_RENDERER_VM_ACCEPTANCE_2026-09-10.md', 'docs/LOCAL_PLUGINS.md',
     'docs/CORE_RPC_2026-09-10.md', 'docs/OS_BROKER_2026-09-10.md',
     'docs/RUNTIME_MANAGE_2026-09-10.md', 'docs/M2_ACCEPTANCE_2026-09-10.md',
-    'docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md', 'docs/M3_M4_ACCEPTANCE_2026-09-10.md'
+    'docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md', 'docs/M3_M4_ACCEPTANCE_2026-09-10.md',
+    'docs/DESKTOP_COMPATIBILITY_2026-09-11.md'
 )
 $payload = New-Object 'Collections.Generic.List[string]'
 try {

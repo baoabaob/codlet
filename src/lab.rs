@@ -38,6 +38,7 @@ const WAIT_SLICE: Duration = Duration::from_millis(50);
 const EXPERIMENT_FLAG: &str = "--experimental-isolated-client";
 const LAB_SHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const AUDITED_PACKAGE_VERSION: &str = "26.903.8094.0";
+const AUDITED_PACKAGE_VERSIONS: &[&str] = &[AUDITED_PACKAGE_VERSION, "26.903.9818.0"];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
 const LAB_DIRECTORIES: &[&str] = &[
@@ -60,7 +61,7 @@ const LAB_DIRECTORIES: &[&str] = &[
 #[derive(Debug, Error)]
 pub enum LabError {
     #[error(
-        "use `codlet-lab --experimental-isolated-client --root <absolute-lab-directory> --expected-package-version 26.903.8094.0 --app-server-url ws://127.0.0.1:<port> [--resume-from <closed-run-report>] [--startup-trace]`; then stdin start or quit; the lab launcher also supports `--experimental-isolated-client --root <root> plugin <command>`"
+        "use `codlet-lab --experimental-isolated-client --root <absolute-lab-directory> --expected-package-version <reviewed-version> --app-server-url ws://127.0.0.1:<port> [--resume-from <latest-run-report> [--recover-interrupted]] [--startup-trace]`; then stdin start or quit; the lab launcher also supports `--experimental-isolated-client --root <root> plugin <command>`"
     )]
     Usage,
     #[error("preflightBlocked: {0}")]
@@ -80,6 +81,7 @@ struct LabOptions {
     app_server_url: Option<String>,
     startup_trace: bool,
     resume_from: Option<PathBuf>,
+    recover_interrupted: bool,
 }
 
 impl LabOptions {
@@ -113,6 +115,14 @@ impl LabOptions {
         } else {
             (extra, false)
         };
+        let (extra, recover_interrupted) = if extra
+            .last()
+            .is_some_and(|argument| argument == OsStr::new("--recover-interrupted"))
+        {
+            (&extra[..extra.len() - 1], true)
+        } else {
+            (extra, false)
+        };
         let (extra, resume_from) = match extra {
             [rest @ .., flag, report] if flag == OsStr::new("--resume-from") => {
                 let report = PathBuf::from(report);
@@ -121,6 +131,9 @@ impl LabOptions {
             }
             _ => (extra, None),
         };
+        if recover_interrupted && resume_from.is_none() {
+            return Err(LabError::Usage);
+        }
         if startup_trace && resume_from.is_some() {
             return Err(LabError::Preflight(
                 "startup profiling is only available for a fresh lab run".into(),
@@ -158,6 +171,7 @@ impl LabOptions {
             app_server_url,
             startup_trace,
             resume_from,
+            recover_interrupted,
         })
     }
 }
@@ -181,11 +195,12 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         resolve_package_executable(&package, Path::new(CODEX_EXECUTABLE_RELATIVE_PATH))
             .map_err(|error| LabError::Preflight(error.to_string()))?;
     let root = if let Some(report) = &options.resume_from {
-        LabRoot::resume(
+        LabRoot::resume_with_recovery(
             &options.root,
             report,
             &package.full_name,
             &package.version.to_string(),
+            options.recover_interrupted,
         )?
     } else {
         LabRoot::claim(&options.root)?
@@ -453,10 +468,16 @@ fn require_reviewed_ipc_isolation(
     package: &InstalledPackage,
     url: Option<&str>,
 ) -> Result<(), LabError> {
-    if package.version.to_string() != AUDITED_PACKAGE_VERSION || url.is_none() {
+    let version = package.version.to_string();
+    let identity = format!("OpenAI.Codex_{version}_x64__2p2nqsd0c76g0");
+    if !AUDITED_PACKAGE_VERSIONS.contains(&version.as_str())
+        || package.full_name != identity
+        || url.is_none()
+    {
         return Err(LabError::Preflight(format!(
-            "default stdio is blocked: package {} needs the reviewed {} Dev strategy and a dedicated loopback WS app-server; separate directories do not isolate the production codex-ipc router; no lab files or child were created",
-            package.version, AUDITED_PACKAGE_VERSION
+            "default stdio is blocked: package {} needs a reviewed x64 Dev strategy ({}) and a dedicated loopback WS app-server; separate directories do not isolate the production codex-ipc router; no lab files or child were created",
+            package.version,
+            AUDITED_PACKAGE_VERSIONS.join(", ")
         )));
     }
     validate_loopback_url(OsStr::new(url.unwrap()))?;
@@ -785,7 +806,18 @@ impl LabRoot {
         Ok(root)
     }
 
+    #[cfg(test)]
     fn resume(path: &Path, report: &Path, package: &str, version: &str) -> Result<Self, LabError> {
+        Self::resume_with_recovery(path, report, package, version, false)
+    }
+
+    fn resume_with_recovery(
+        path: &Path,
+        report: &Path,
+        package: &str,
+        version: &str,
+        recover_interrupted: bool,
+    ) -> Result<Self, LabError> {
         let mut pins = pin_lab_ancestry(path, false)?;
         // A read/write handle with no write/delete sharing is the root lease.
         // It cannot be acquired while another fresh or resumed Host holds it.
@@ -804,7 +836,8 @@ impl LabRoot {
         for directory in LAB_DIRECTORIES {
             pins.push(pin_plain_directory(&path.join(directory))?);
         }
-        let evidence = resume::ResumeEvidence::verify(path, report, package, version)?;
+        let evidence =
+            resume::ResumeEvidence::verify(path, report, package, version, recover_interrupted)?;
         let snapshots = [
             resume::bounded_bytes(
                 resume::open_plain(&path.join("codex-home/config.toml"), false)?,
@@ -1280,6 +1313,25 @@ mod tests {
                 .resume_from,
             Some(PathBuf::from("C:/lab/logs/report.jsonl"))
         );
+        assert!(
+            parse(&[
+                "--resume-from",
+                "C:/lab/logs/report.jsonl",
+                "--recover-interrupted"
+            ])
+            .unwrap()
+            .recover_interrupted
+        );
+        assert!(parse(&["--recover-interrupted"]).is_err());
+        assert!(
+            parse(&[
+                "--resume-from",
+                "C:/lab/logs/report.jsonl",
+                "--recover-interrupted",
+                "--startup-trace"
+            ])
+            .is_err()
+        );
         for extra in [
             vec!["--resume-from"],
             vec!["--resume-from", "relative.jsonl"],
@@ -1328,9 +1380,9 @@ mod tests {
 
     #[test]
     fn exact_version_and_ipc_audit_preflight_refuse_before_any_launch() {
-        let package = InstalledPackage {
+        let mut package = InstalledPackage {
             family_name: CODEX_PACKAGE_FAMILY.into(),
-            full_name: "fixture".into(),
+            full_name: "OpenAI.Codex_26.903.8094.0_x64__2p2nqsd0c76g0".into(),
             install_location: PathBuf::from(r"C:\fixture"),
             version: PackageVersion {
                 major: 26,
@@ -1347,6 +1399,33 @@ mod tests {
         assert!(error.contains("preflightBlocked"));
         assert!(error.contains("codex-ipc"));
         require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).unwrap();
+        package.version.build = 9818;
+        package.full_name = "OpenAI.Codex_26.903.9818.0_x64__2p2nqsd0c76g0".into();
+        require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).unwrap();
+        package.full_name = package.full_name.replace("x64", "arm64");
+        assert!(require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).is_err());
+    }
+
+    #[test]
+    fn interrupted_resume_rejects_a_live_recorded_owner_before_creating_run_logs() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("interrupted-profile");
+        let root = LabRoot::claim(&path).unwrap();
+        let report = root.logs.join("report.jsonl");
+        let mut reporter = Reporter::new(&root).unwrap();
+        reporter.emit("lab_opened", json!({"root":path,"package_full_name":"fixture","package_version":"1","experimental":true}));
+        reporter.child_pid = Some(std::process::id());
+        reporter.emit("child_created", json!({"creation_time_windows_100ns":1}));
+        drop(reporter);
+        fs::write(path.join("logs/manual-client.json"), json!({"schema":1,"labRoot":path,"report":report,"hostPid":std::process::id(),"desktopPid":std::process::id(),"desktopCreated":"1","managerPid":std::process::id(),"backendPid":std::process::id()}).to_string()).unwrap();
+        drop(root);
+        let original = fs::read(&report).unwrap();
+        let error = LabRoot::resume_with_recovery(&path, &report, "fixture", "1", true)
+            .err()
+            .expect("live process must block");
+        assert!(error.to_string().contains("recorded process"));
+        assert_eq!(fs::read(&report).unwrap(), original);
+        assert_eq!(fs::read_dir(path.join("logs")).unwrap().count(), 2);
     }
 
     #[test]

@@ -21,7 +21,7 @@
 
 ## 当前构建映射
 
-本适配配置对应安装包 `26.903.8094.0`，页面版本 `26.903.61454` / build `8378`，App Server `0.153.4`。版本、入口资源、preload、已有 AppScope、已经存在的 local manager / request client、已有 app-host services 和可替换的提交方法都要匹配。首次读取和后续身份检查都先检查 local 缓存成员，不能用读取动作创建新客户端。
+适配器包含两个已审核的 x64 构建配置：包 `26.903.8094.0` 对应页面 `26.903.61454` / build `8378`；包 `26.903.9818.0` 对应页面 `26.903.71938` / build `8576`，App Server 均为 `0.153.4`。版本、入口资源、preload、已有 AppScope、已经存在的 local manager / request client、已有 app-host services 和可替换的提交方法都要匹配。初始化按需读取 live export，先检查 local 缓存成员再固定连接引用，不能用探测动作创建客户端。公共 build DTO 只包含三个版本字段。
 
 新窗口的账号或 app-host 初始化可能持续二十多秒。Adapter 先发布诊断端点，在自己内部进行最多 30 秒的可取消探测；Core 及其他插件继续工作。成功后才发布语义端点，失败后不再轮询。`probe.initializing` 表示仍在等待；`waitReady` 可以等待最多十秒并返回最新诊断。Core 的插件激活状态与具体语义端点的可用性分别解释。
 
@@ -112,6 +112,8 @@ UI 输入本身可能经过 Desktop 的 Markdown 序列化；API 返回实际提
 
 ## 当前 Desktop 的任务创建与恢复差异
 
-测试构建的原生新建任务及冷恢复请求可能包含 `features.thread_tools`，同包后端将其判为未知配置。验收使用同一个 Desktop request client，以不携带该字段的最小参数创建/恢复专用测试会话，再通过 Desktop manager 加载；此后在真实界面和 SDK 上分别验证回合。没有修改原生请求、官方文件或日常配置，也没有换用独立 App Server。这个上游问题仍需单独处理，不能把已加载任务上的 M4 验证描述为原生创建/恢复已修复。
+2026-09-11 的对照测试将此前错误定位到测试协调器：额外的 `--strict-config` 拒绝前向兼容字段；专用 WS 后端还缺少官方的禁用 app-tools transport。修复协调器后，原生输入框新建及完整重启后的侧边栏冷恢复均通过，不再使用最小参数预热。详见[兼容修复与补验](DESKTOP_COMPATIBILITY_2026-09-11.md)。
+
+权限请求支持 local 环境的旧 read/write 路径及 `entries` 中普通 `path` 的 read/write 项；DTO 展示其去重并集，批准回复保持 Native 原权限快照。glob、special、deny、未知结构与其他环境不支持 SDK 批准，返回 `canApprove=false`；可以拒绝或使用原生审批 UI。
 
 验收结果与限制记录在 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。

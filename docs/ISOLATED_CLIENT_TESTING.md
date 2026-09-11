@@ -1,7 +1,7 @@
 # Isolated Client Test Harness
 
 `codlet-lab` is a separate, explicitly experimental binary for the source-audited
-Windows package `26.903.8094.0`. Ordinary `codlet launch` retains its existing
+Windows x64 packages `26.903.8094.0` and `26.903.9818.0`. Ordinary `codlet launch` retains its existing
 process-conflict refusal and production status endpoint. The lab binds only its
 own registry control endpoint, authenticated to the same `codlet-lab.exe` and user.
 It never publishes the production discovery/status endpoint. There is no official
@@ -272,8 +272,8 @@ PID and creation FILETIME are checked with a read-only process handle; a still-l
 matching process or an inaccessible identity blocks resume. A newer/ambiguous run
 report blocks selecting an older receipt. These are conservative local evidence
 checks, not authentication against another process running as the same user.
-Package compatibility accepts exact identity or the one reviewed x64 package
-transition `26.901.6511.0` to `26.903.8094.0`, with the original family/publisher.
+Package compatibility accepts exact identity or the reviewed x64 transitions
+`26.901.6511.0` to `26.903.8094.0` and `26.903.8094.0` to `26.903.9818.0`, with the original family/publisher.
 It is not a general version bypass or a downgrade path. Reports with explicitly
 failed plugin-runtime cleanup cannot authorize resume.
 
@@ -301,6 +301,36 @@ Startup evidence must be from a log created no earlier than the new Desktop's
 creation FILETIME, as well as match its PID. This prevents a retained old log from
 satisfying the gate if Windows later reuses a process ID. Process creation still
 happens once, after the same package, environment and shell checks.
+
+## Explicit recovery after an interrupted test run
+
+`Start-TestClient.cmd -RecoverInterrupted` adds `--recover-interrupted` after
+`--resume-from <latest-report>`. Normal startup never enables this fallback.
+This option permits a complete original report with a recorded child but no
+plugin cleanup result; it still rejects an explicitly failed cleanup, incomplete
+JSONL, a different root/package, a later report or profiling flags.
+
+Under the same exclusive root lease, recovery also requires the fixed
+`logs/manual-client.json` to name that exact report, root, Host, Desktop PID and
+creation time. It opens read-only process handles for the recorded Host,
+coordinator, backend, Desktop and every observed Host plugin PID. A live/reused
+PID or inaccessible process blocks recovery. Host plugins belong to the existing
+non-inherited kill-on-close Jobs. Recovery never attaches to or terminates these
+processes and never connects to their old listener.
+
+The new report records `previous_lifecycle_closed=false` and
+`interrupted_recovery.previous_cleanup=not_recorded`, with the retired PID list.
+It does not append closing events to the old report or claim normal cleanup.
+This is a narrowly scoped recovery of an interrupted owned test profile, not a
+production Host-crash gate or a general package/version override.
+
+The coordinator now follows Desktop's default config parsing (without
+`--strict-config`) and supplies the reviewed disabled app-tools transport
+`mcp_servers.codex_app={command="",enabled=false}`. Effective config is read back:
+file credentials, read-only sandbox and disabled app-tools are mandatory, as
+are sandbox readiness, absent Chrome integration and a rejected foreign Origin.
+The disabled transport lets Native per-thread tool filters parse without
+connecting the lab to the daily Desktop IPC router.
 
 ## Observation and shutdown
 

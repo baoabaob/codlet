@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.30；日期：2026-09-11；平台：Windows-first，跨平台准备已纳入后续计划；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.31；日期：2026-09-11；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -8,7 +8,7 @@ Codlet 是一个面向 Codex Desktop 的轻量级运行时扩展内核。只有�
 
 Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider 业务。已确认架构是开放 Core、可选托管运行时与可选 UI/backend adapter：Codex 私有知识可以由用户插件自行实现，也可以使用官方 adapter；管理 GUI 只是这些能力的普通消费者。产品提供可诊断、可热更新的运行时原语，让用户扩展 renderer、host 和 Codex backend；它不为插件安全或任意副作用的可逆性背书。
 
-当前实现已交付运行中管理、watch、完整 M2 公开原语，以及 M3/M4 的托管主世界、可选 Desktop Adapter、同一 Desktop 会话读写/事件/审批和提交拦截。证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)及 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。当前构建的原生新建/冷恢复兼容问题，以及 M0/M1 重复运行、官方入口与 crash 发布门禁仍保留。
+当前实现已交付运行中管理、watch、完整 M2 公开原语，以及 M3/M4 的托管主世界、可选 Desktop Adapter、同一 Desktop 会话读写/事件/审批和提交拦截。证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)及 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。[2026-09-11 兼容补验](DESKTOP_COMPATIBILITY_2026-09-11.md)已修复测试客户端原生新建/冷恢复，并适配新构建；M0/M1 重复运行、官方入口与 crash 发布门禁仍保留。[P0 盘点](PLATFORM_P0_AUDIT_2026-09-11.md)已记录系统绑定与接口草案，尚未实现非 Windows 移植。
 
 下一阶段先收尾日常兼容性，再推进 M3.1/M4.1 的插件 UI 和 Desktop API 扩展，以及 M5 的插件导入与交付。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market；P0 跨平台准备同步纳入设计。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 
@@ -768,7 +768,7 @@ M3 官方实现消费 M2 已向第三方公开的同一组原语；其兼容性�
 
 L4 由用户插件或可选 adapter 基于 Core 原语实现，Core 不引入 thread/turn/approval 私有业务。以下连接/语义兼容性条件约束官方 backend adapter 及其对当前 Desktop 会话的承诺，不是所有插件访问底层连接的前置条件。
 
-当前候选的 v1 写接口限定于本窗口已经加载且拥有事件流的任务。已验证真实 Desktop 发起回合、SDK 写入、相同 Thread/Turn/Item 标识、steer、interrupt、命令拒绝和问答回复。当前包的原生任务创建及冷恢复会携带后端不识别的 `features.thread_tools`，该上游问题保留，不把专用验收任务上的通过扩展为所有原生入口兼容。
+当前候选的 v1 写接口限定于本窗口已经加载且拥有事件流的任务。已验证真实 Desktop 发起回合、SDK 写入、相同 Thread/Turn/Item 标识、steer、interrupt、命令拒绝和问答回复。2026-09-11 已将此前 `features.thread_tools` 拒绝定位到测试协调器的严格配置模式，并补齐专用 WS 后端的禁用 app-tools transport；当前已审核构建的原生新建和完整重启后的冷恢复均通过，不再依赖最小请求预热。
 
 验收条件：
 

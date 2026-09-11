@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -28,6 +29,14 @@ pub(super) struct ResumeEvidence {
     pub previous_child_created: Option<u64>,
     pub previous_package_version: String,
     pub package_upgraded: bool,
+    pub previous_lifecycle_closed: bool,
+    pub interrupted_recovery: Option<InterruptedRecovery>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct InterruptedRecovery {
+    pub checked_retired_pids: Vec<u32>,
+    pub previous_cleanup: &'static str,
 }
 
 impl ResumeEvidence {
@@ -36,6 +45,7 @@ impl ResumeEvidence {
         report: &Path,
         package: &str,
         version: &str,
+        recover_interrupted: bool,
     ) -> Result<Self, LabError> {
         let logs = root.join("logs");
         let relative = report
@@ -90,17 +100,51 @@ impl ResumeEvidence {
             }
         }
         let bytes = bounded_bytes(report_file, 4 * 1024 * 1024)?;
-        let evidence = Self::parse(&bytes, root, package, version)?;
+        let mut evidence =
+            Self::parse_with_policy(&bytes, root, package, version, recover_interrupted)?;
         if let (Some(pid), Some(created)) =
             (evidence.previous_child_pid, evidence.previous_child_created)
             && child_still_running(pid, created)?
         {
             return Err(blocked("the recorded Desktop is still running"));
         }
+        if !evidence.previous_lifecycle_closed {
+            // The root lease is held by LabRoot. Read the matching coordinator
+            // receipt while denying writes; never edit or synthesize old events.
+            let state = bounded_bytes(
+                open_plain(&logs.join("manual-client.json"), false)?,
+                512 * 1024,
+            )?;
+            let pids = interrupted_processes(&bytes, &state, root, report, &evidence)?;
+            for pid in &pids {
+                // Missing creation times deliberately reject a reused live PID.
+                // Recovery never attaches, sends control or terminates a process.
+                if process_still_running(*pid, None)? {
+                    return Err(blocked(&format!(
+                        "interrupted recovery requires recorded process {pid} to be retired; a live or reused PID is not accepted"
+                    )));
+                }
+            }
+            evidence.interrupted_recovery = Some(InterruptedRecovery {
+                checked_retired_pids: pids.into_iter().collect(),
+                previous_cleanup: "not_recorded",
+            });
+        }
         Ok(evidence)
     }
 
+    #[cfg(test)]
     fn parse(bytes: &[u8], root: &Path, package: &str, version: &str) -> Result<Self, LabError> {
+        Self::parse_with_policy(bytes, root, package, version, false)
+    }
+
+    fn parse_with_policy(
+        bytes: &[u8],
+        root: &Path,
+        package: &str,
+        version: &str,
+        recover_interrupted: bool,
+    ) -> Result<Self, LabError> {
         let text = std::str::from_utf8(bytes).map_err(|_| blocked("resume report is not UTF-8"))?;
         if !text.ends_with('\n') {
             return Err(blocked("resume report has an incomplete final record"));
@@ -170,9 +214,10 @@ impl ResumeEvidence {
                 _ => {}
             }
         }
+        let closed = (child.is_some() && exited && reaped) || (child.is_none() && no_child);
         if !header
             || plugin_cleanup == Some(false)
-            || !((child.is_some() && exited && reaped) || (child.is_none() && no_child))
+            || !(closed || (recover_interrupted && child.is_some() && plugin_cleanup.is_none()))
         {
             return Err(blocked(
                 "resume requires a closed run or a recorded preparation-only exit",
@@ -190,8 +235,69 @@ impl ResumeEvidence {
             package_upgraded: previous_package
                 .as_ref()
                 .is_some_and(|(_, previous)| previous != version),
+            previous_lifecycle_closed: closed,
+            interrupted_recovery: None,
         })
     }
+}
+
+fn interrupted_processes(
+    bytes: &[u8],
+    state: &[u8],
+    root: &Path,
+    report: &Path,
+    evidence: &ResumeEvidence,
+) -> Result<BTreeSet<u32>, LabError> {
+    let state: Value = serde_json::from_slice(state)
+        .map_err(|_| blocked("invalid interrupted coordinator receipt"))?;
+    let path_matches = |key: &str, expected: &Path| {
+        state[key]
+            .as_str()
+            .is_some_and(|value| Path::new(value) == expected)
+    };
+    let child_created = state["desktopCreated"]
+        .as_str()
+        .and_then(|value| value.parse::<u64>().ok());
+    if state["schema"] != 1
+        || !path_matches("labRoot", root)
+        || !path_matches("report", report)
+        || state["hostPid"] != evidence.previous_host_pid
+        || state["desktopPid"].as_u64() != evidence.previous_child_pid.map(u64::from)
+        || child_created != evidence.previous_child_created
+    {
+        return Err(blocked(
+            "interrupted recovery requires the coordinator receipt for this exact latest run",
+        ));
+    }
+    let mut pids = BTreeSet::new();
+    for key in ["managerPid", "backendPid", "hostPid", "desktopPid"] {
+        pids.insert(valid_pid(&state[key])?);
+    }
+    // Host plugins run in non-inherited kill-on-close Jobs. Their owning Host
+    // must be retired, and every plugin PID observed in its journal is checked.
+    for line in std::str::from_utf8(bytes)
+        .map_err(|_| blocked("invalid interrupted report"))?
+        .lines()
+    {
+        let row: Value =
+            serde_json::from_str(line).map_err(|_| blocked("invalid interrupted report"))?;
+        if matches!(
+            row["event"].as_str(),
+            Some("host_plugin_diagnostic" | "host_plugin_stopped")
+        ) && !row["detail"]["pid"].is_null()
+        {
+            pids.insert(valid_pid(&row["detail"]["pid"])?);
+        }
+    }
+    Ok(pids)
+}
+
+fn valid_pid(value: &Value) -> Result<u32, LabError> {
+    value
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| blocked("interrupted recovery receipt has an invalid process identity"))
 }
 
 fn compatible_package(
@@ -205,6 +311,10 @@ fn compatible_package(
             && previous_version == "26.901.6511.0"
             && current == "OpenAI.Codex_26.903.8094.0_x64__2p2nqsd0c76g0"
             && current_version == super::AUDITED_PACKAGE_VERSION)
+        || (previous == "OpenAI.Codex_26.903.8094.0_x64__2p2nqsd0c76g0"
+            && previous_version == "26.903.8094.0"
+            && current == "OpenAI.Codex_26.903.9818.0_x64__2p2nqsd0c76g0"
+            && current_version == "26.903.9818.0")
 }
 
 pub(super) fn open_plain(path: &Path, write: bool) -> Result<File, LabError> {
@@ -262,6 +372,10 @@ pub(super) fn check_file(file: &File) -> Result<(), LabError> {
 }
 
 fn child_still_running(pid: u32, created: u64) -> Result<bool, LabError> {
+    process_still_running(pid, Some(created))
+}
+
+fn process_still_running(pid: u32, created: Option<u64>) -> Result<bool, LabError> {
     let handle = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
@@ -282,6 +396,9 @@ fn child_still_running(pid: u32, created: u64) -> Result<bool, LabError> {
         WAIT_TIMEOUT => {}
         _ => return Err(std::io::Error::last_os_error().into()),
     }
+    let Some(created) = created else {
+        return Ok(true);
+    };
     let mut times = [FILETIME::default(); 4];
     let [birth, exit, kernel, user] = &mut times;
     if unsafe { GetProcessTimes(handle.as_raw_handle().cast(), birth, exit, kernel, user) } == 0 {
@@ -408,5 +525,94 @@ mod tests {
         let link = root.path().join("auth.json");
         fs::hard_link(&original, &link).unwrap();
         assert!(check_optional_auth(&link).is_err());
+    }
+
+    #[test]
+    fn interrupted_recovery_is_explicit_and_keeps_failure_and_identity_guards() {
+        let root = Path::new("C:/lab-fixture");
+        let path = root.join("logs/report.jsonl");
+        let bytes = report(root, false);
+        assert!(ResumeEvidence::parse(&bytes, root, "fixture", "1").is_err());
+        let evidence =
+            ResumeEvidence::parse_with_policy(&bytes, root, "fixture", "1", true).unwrap();
+        assert!(!evidence.previous_lifecycle_closed);
+        assert!(evidence.interrupted_recovery.is_none());
+        let state = json!({"schema":1,"labRoot":root,"report":path,"hostPid":9,"desktopPid":10,"desktopCreated":"1","managerPid":11,"backendPid":12});
+        let pids = interrupted_processes(
+            &bytes,
+            &serde_json::to_vec(&state).unwrap(),
+            root,
+            &path,
+            &evidence,
+        )
+        .unwrap();
+        assert_eq!(pids, BTreeSet::from([9, 10, 11, 12]));
+        for key in [
+            "hostPid",
+            "desktopPid",
+            "desktopCreated",
+            "managerPid",
+            "backendPid",
+            "report",
+            "labRoot",
+        ] {
+            let mut wrong = state.clone();
+            wrong[key] = Value::Null;
+            assert!(
+                interrupted_processes(
+                    &bytes,
+                    &serde_json::to_vec(&wrong).unwrap(),
+                    root,
+                    &path,
+                    &evidence
+                )
+                .is_err(),
+                "{key}"
+            );
+        }
+        let mut failed = bytes.clone();
+        failed.extend_from_slice(b"{\"schema_version\":1,\"host_pid\":9,\"event\":\"plugin_runtime_stopped\",\"detail\":{\"clean\":false}}\n");
+        assert!(ResumeEvidence::parse_with_policy(&failed, root, "fixture", "1", true).is_err());
+        assert!(
+            ResumeEvidence::parse_with_policy(
+                &bytes[..bytes.len() - 1],
+                root,
+                "fixture",
+                "1",
+                true
+            )
+            .is_err()
+        );
+        assert!(process_still_running(std::process::id(), None).unwrap());
+    }
+
+    #[test]
+    fn second_reviewed_upgrade_is_exact_and_directional() {
+        let old = "OpenAI.Codex_26.903.8094.0_x64__2p2nqsd0c76g0";
+        let current = "OpenAI.Codex_26.903.9818.0_x64__2p2nqsd0c76g0";
+        assert!(compatible_package(
+            old,
+            "26.903.8094.0",
+            current,
+            "26.903.9818.0"
+        ));
+        assert!(!compatible_package(
+            current,
+            "26.903.9818.0",
+            old,
+            "26.903.8094.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.903.8094.0",
+            &current.replace("x64", "arm64"),
+            "26.903.9818.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.903.8094.0",
+            current,
+            "26.903.9819.0"
+        ));
     }
 }

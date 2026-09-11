@@ -14,6 +14,7 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 const root = path.resolve(config.labRoot);
 const directory = path.dirname(path.resolve(configPath));
 const labBinary = path.resolve(directory, config.labBinary);
+const officialCli = path.resolve(config.officialCli);
 const statePath = path.join(root, 'logs', 'manual-client.json');
 const powershell = path.join(process.env.SYSTEMROOT ?? 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const inherited = /^(SYSTEMROOT|WINDIR|SYSTEMDRIVE|COMSPEC|PATH|PATHEXT|OS|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|PROCESSOR_IDENTIFIER|PROCESSOR_LEVEL|PROCESSOR_REVISION|NUMBER_OF_PROCESSORS|USERNAME|USERDOMAIN|USERDNSDOMAIN|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432)$/i;
@@ -118,7 +119,7 @@ async function verifyListener(port, pid) {
     "$ErrorActionPreference='Stop'; $labDeadline=[DateTime]::UtcNow.AddSeconds(12); do { $labListeners=@(Get-NetTCPConnection -LocalPort ([int]$env:CODLET_CHECK_PORT) -State Listen -ErrorAction SilentlyContinue); if ($labListeners.Count -gt 0) { break }; Start-Sleep -Milliseconds 150 } while ([DateTime]::UtcNow -lt $labDeadline); $labListeners | ForEach-Object { $labOwner=Get-CimInstance Win32_Process -Filter ('ProcessId='+$_.OwningProcess); [pscustomobject]@{pid=$_.OwningProcess;address=$_.LocalAddress;image=$labOwner.ExecutablePath;created=$labOwner.CreationDate.ToUniversalTime().ToString('o')} } | ConvertTo-Json -Compress",
     { CODLET_CHECK_PORT: String(port) });
   const rows = array(facts);
-  if (rows.length !== 1 || rows[0].pid !== pid || rows[0].address !== '127.0.0.1' || rows[0].image?.toLowerCase() !== config.officialCli.toLowerCase()) throw new Error('Dedicated backend listener identity did not match the created process');
+  if (rows.length !== 1 || rows[0].pid !== pid || rows[0].address !== '127.0.0.1' || !rows[0].image || path.resolve(rows[0].image).toLowerCase() !== officialCli.toLowerCase()) throw new Error('Dedicated backend listener identity did not match the created process');
   return rows[0];
 }
 async function originCheck(port) {
@@ -172,13 +173,14 @@ async function probe(endpoint, port) {
     const { config: effective } = await request('config/read', { cwd: path.join(root, 'project'), includeLayers: false });
     const fileCredentialStore = effective?.cli_auth_credentials_store === 'file';
     const readOnlyBackend = effective?.sandbox_mode === 'read-only';
+    const desktopAppToolsDisabled = effective?.mcp_servers?.codex_app?.enabled === false && effective.mcp_servers.codex_app.command === '';
     const readiness = (await request('windowsSandbox/readiness', {}))?.status;
     const plugins = await request('plugin/installed', { cwds: [path.join(root, 'project')], installSuggestionPluginNames: [] });
     if (!Array.isArray(plugins.marketplaces) || plugins.marketplaceLoadErrors?.length) throw new Error('Installed plugin state could not be verified');
     const chromeInstalled = plugins.marketplaces.flatMap(market => market.plugins).some(plugin => plugin.installed && /^chrome(?:-|$)/i.test(plugin.name));
     const originRejected = await originCheck(port);
-    const result = { initialized: true, authenticated, fileCredentialStore, readOnlyBackend, windowsReadiness: readiness, chromeInstalled, originRejected };
-    if (!authenticated || !fileCredentialStore || !readOnlyBackend || readiness !== 'ready' || chromeInstalled || !originRejected) throw new Error('Backend isolation/readiness checks failed: ' + JSON.stringify(result));
+    const result = { initialized: true, authenticated, fileCredentialStore, readOnlyBackend, desktopAppToolsDisabled, windowsReadiness: readiness, chromeInstalled, originRejected };
+    if (!authenticated || !fileCredentialStore || !readOnlyBackend || !desktopAppToolsDisabled || readiness !== 'ready' || chromeInstalled || !originRejected) throw new Error('Backend isolation/readiness checks failed: ' + JSON.stringify(result));
     return result;
   } finally {
     for (const call of pending.values()) clearTimeout(call.timer);
@@ -186,11 +188,11 @@ async function probe(endpoint, port) {
   }
 }
 
-async function start() {
-  verifyHash(config.officialCli, config.officialCliSha256);
+async function start(recoverInterrupted = false) {
+  verifyHash(officialCli, config.officialCliSha256);
   const previous = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
   if (previous?.state === 'ready') {
-    const live = await ps("$labProcess=Get-Process -Id ([int]$env:CODLET_CHECK_PID) -ErrorAction SilentlyContinue; if ($labProcess) { [pscustomobject]@{pid=$labProcess.Id;created=$labProcess.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress }",
+    const live = await ps("$labProcess=Get-Process -Id ([int]$env:CODLET_CHECK_PID) -ErrorAction SilentlyContinue; if ($labProcess) { [pscustomobject]@{pid=$labProcess.Id;created=$labProcess.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress } else { ConvertTo-Json -InputObject $null -Compress }",
       { CODLET_CHECK_PID: String(previous.managerPid) });
     if (live?.created === previous.managerCreated) throw new Error('The test client is already running; use Stop-TestClient before starting another');
   }
@@ -212,7 +214,7 @@ async function start() {
     const port = await freePort();
     const endpoint = 'ws://127.0.0.1:' + port;
     lab = spawn(labBinary, ['--experimental-isolated-client', '--root', root, '--expected-package-version', config.expectedPackageVersion,
-      '--app-server-url', endpoint, '--resume-from', report],
+      '--app-server-url', endpoint, '--resume-from', report, ...(recoverInterrupted ? ['--recover-interrupted'] : [])],
       { cwd: path.join(root, 'project'), env: environment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     labExit = exited(lab);
     lab.stdin.on('error', () => {});
@@ -244,7 +246,13 @@ async function start() {
     if (path.resolve(backendEnvironment.CODEX_HOME).toLowerCase() !== path.join(root, 'codex-home').toLowerCase()) throw new Error('Backend home differs from lab profile');
     const output = fs.openSync(path.join(logs, 'backend-stdout.log'), 'wx');
     const errors = fs.openSync(path.join(logs, 'backend-stderr.log'), 'wx');
-    backend = spawn(config.officialCli, ['app-server', '--strict-config', '--listen', endpoint, '-c', 'sandbox_mode="read-only"', '-c', 'analytics.enabled=false'],
+    // Match Desktop's normal config parsing. --strict-config also rejects
+    // forward-compatible feature overrides sent by the bundled frontend.
+    // Isolation requirements are checked against effective config in probe().
+    // The reviewed Desktop uses this same disabled transport when its app-tools
+    // bridge is unavailable. Per-thread enabled_tools overlays still require a
+    // valid base transport; the lab must never bind the daily Desktop IPC router.
+    backend = spawn(officialCli, ['app-server', '--listen', endpoint, '-c', 'sandbox_mode="read-only"', '-c', 'analytics.enabled=false', '-c', 'mcp_servers.codex_app={command="",enabled=false}'],
       { cwd: path.join(root, 'project'), env: backendEnvironment, windowsHide: true, stdio: ['ignore', output, errors] });
     fs.closeSync(output); fs.closeSync(errors);
     backendExit = exited(backend);
@@ -328,7 +336,8 @@ async function doctor() {
 validateRoot();
 verifyHash(labBinary, config.labBinarySha256);
 if (action === 'start') await start();
+else if (action === 'recover') await start(true);
 else if (action === 'stop') await stop();
 else if (action === 'plugins') await plugins();
 else if (action === 'doctor') await doctor();
-else throw new Error('Expected start, stop, plugins or doctor');
+else throw new Error('Expected start, recover, stop, plugins or doctor');

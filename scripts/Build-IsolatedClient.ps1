@@ -45,6 +45,7 @@ $codletGuide = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'isolated-client-
 [IO.File]::WriteAllText((Join-Path $codletOutput 'README.md'), $codletGuide.Replace('{{labRoot}}', $codletLabRoot).Replace('{{packageVersion}}', $ExpectedPackageVersion), $codletUtf8)
 [IO.File]::WriteAllText((Join-Path $codletOutput 'lab-config.json'), ($codletConfiguration | ConvertTo-Json -Depth 10), $codletUtf8)
 $codletStart = @'
+param([switch]$RecoverInterrupted)
 $ErrorActionPreference = 'Stop'
 $codletConfigPath = Join-Path $PSScriptRoot 'lab-config.json'
 $codletConfig = [IO.File]::ReadAllText($codletConfigPath) | ConvertFrom-Json
@@ -53,7 +54,8 @@ $codletScript = Join-Path $PSScriptRoot 'isolated-client.mjs'
 $codletStamp = [DateTime]::UtcNow.Ticks.ToString()
 $codletOutputLog = Join-Path $PSScriptRoot ('launch-' + $codletStamp + '.stdout.log')
 $codletErrorLog = Join-Path $PSScriptRoot ('launch-' + $codletStamp + '.stderr.log')
-$codletArguments = '"' + $codletScript + '" start "' + $codletConfigPath + '"'
+$codletAction = if ($RecoverInterrupted) { 'recover' } else { 'start' }
+$codletArguments = '"' + $codletScript + '" ' + $codletAction + ' "' + $codletConfigPath + '"'
 $codletProcess = Start-Process -FilePath $codletNode -ArgumentList $codletArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $codletOutputLog -RedirectStandardError $codletErrorLog
 Write-Output ('Test client launcher PID: ' + $codletProcess.Id)
 Write-Output ('Startup log: ' + $codletOutputLog)

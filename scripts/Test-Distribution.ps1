@@ -83,6 +83,7 @@ function Test-Manifest([string]$Directory) {
         'bundled/codex-desktop-adapter/codlet.json', 'bundled/codex-desktop-adapter/renderer.js',
         'examples/desktop-m3-m4/codlet.json', 'examples/desktop-m3-m4/renderer.js', 'examples/desktop-m3-m4/README.md',
         'docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md', 'docs/M3_M4_ACCEPTANCE_2026-09-10.md',
+        'docs/DESKTOP_COMPATIBILITY_2026-09-11.md',
         'docs/COMBINED_PACKAGES_2026-09-10.md', 'docs/HOST_CAPABILITY_2026-09-10.md', 'docs/LOCAL_PLUGINS.md',
         'docs/CORE_RPC_2026-09-10.md', 'docs/OS_BROKER_2026-09-10.md', 'docs/RUNTIME_MANAGE_2026-09-10.md',
         'docs/M2_ACCEPTANCE_2026-09-10.md', 'scripts/Test-Distribution.ps1'
