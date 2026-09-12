@@ -1,0 +1,1 @@
+{"schema":1,"id":"dev.example.github-release-check","name":"GitHub Release Check","version":"1.1.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"]}

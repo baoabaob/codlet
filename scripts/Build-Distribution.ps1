@@ -217,6 +217,14 @@ $sourceFiles = @(
     'examples/ui-controls/codlet.json', 'examples/ui-controls/renderer.js', 'examples/ui-controls/README.md',
     'examples/local-management-check/codlet.json', 'examples/local-management-check/renderer.js', 'examples/local-management-check/README.md',
     'docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md',
+    'docs/GITHUB_PLUGIN_DISTRIBUTION.md', 'docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md',
+    'docs/COMMUNITY_PLUGINS.md', 'docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md',
+    'scripts/Build-PluginPackage.ps1', 'scripts/Invoke-M0Acceptance.ps1', 'scripts/Invoke-M0CrashAcceptance.ps1',
+    'examples/github-release-check/README.md',
+    'examples/github-release-check/v1/codlet.json', 'examples/github-release-check/v1/codlet-package.json',
+    'examples/github-release-check/v1/renderer.js', 'examples/github-release-check/v1/README.md', 'examples/github-release-check/v1/LICENSE.txt',
+    'examples/github-release-check/v2/codlet.json', 'examples/github-release-check/v2/codlet-package.json',
+    'examples/github-release-check/v2/renderer.js', 'examples/github-release-check/v2/README.md', 'examples/github-release-check/v2/LICENSE.txt',
     'docs/UI_HELPERS_AND_NAVIGATION_2026-09-11.md',
     'bundled/codex-desktop-adapter/codlet.json', 'bundled/codex-desktop-adapter/renderer.js',
     'examples/desktop-m3-m4/codlet.json', 'examples/desktop-m3-m4/renderer.js', 'examples/desktop-m3-m4/README.md',
@@ -311,6 +319,12 @@ The optional [M3/M4 Desktop Adapter](docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10
 and [test panel](examples/desktop-m3-m4/README.md) are ordinary directory packages
 with explicit main-world grants. Their [semantic types](types/codex-desktop.d.ts)
 and [acceptance limits](docs/M3_M4_ACCEPTANCE_2026-09-10.md) are included.
+
+[GitHub release imports and managed updates/rollbacks](docs/GITHUB_PLUGIN_DISTRIBUTION.md)
+use explicit previews, permissions and the same management receipts. The
+[release fixtures](examples/github-release-check/README.md) have not been published.
+Native acceptance follows the [M5b manual guide](docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md);
+[remaining approval and production checks](docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md) remain open.
 
 The payload list and SHA256 values are in distribution-manifest.json. The packaging
 script performs no signing or publication. Node's license is beside node.exe.

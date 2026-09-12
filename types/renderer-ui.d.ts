@@ -30,6 +30,8 @@ export interface RendererUi {
   on(target: EventTarget, type: string, handler: (event: Event, signal: AbortSignal) => unknown, options?: boolean | AddEventListenerOptions): () => void;
   remove(node: HTMLElement): void;
   button(options: { text?: string; label?: string; variant?: 'default' | 'primary' | 'danger' | 'icon' | 'close' | 'menu'; disabled?: boolean; onClick?: (event: Event, signal: AbortSignal) => unknown }): HTMLButtonElement;
+  /** Owned standard link, HTTPS only, without credentials; opens with noopener/noreferrer. */
+  externalLink(options: { text: string; href: string; label?: string }): HTMLAnchorElement;
   switch(options: { label: string; checked?: boolean; disabled?: boolean; onChange?: (checked: boolean, event: Event, signal: AbortSignal) => unknown }): HTMLInputElement;
   row(options: { label: string; description?: string }): Readonly<{ element: HTMLDivElement; copy: HTMLDivElement; label: HTMLDivElement; description: HTMLDivElement; controls: HTMLDivElement }>;
   status(options?: { text?: string; tone?: 'default' | 'error' | 'success' }): HTMLDivElement;

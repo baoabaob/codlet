@@ -317,7 +317,7 @@ async function stop() {
   console.log('Test client quit requested.');
 }
 async function plugins() {
-  if (!pluginArguments.length) throw new Error('Use Test-Plugins list, add, enable, disable, reload, permissions, revoke, remove or operation');
+  if (!pluginArguments.length) throw new Error('Use Test-Plugins list, preview, add, github, enable, disable, reload, permissions, revoke, remove or operation');
   const child = spawn(labBinary, ['--experimental-isolated-client', '--root', root, 'plugin', ...pluginArguments], {
     cwd: process.cwd(), env: environment(true), windowsHide: true, stdio: 'inherit',
   });

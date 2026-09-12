@@ -36,10 +36,11 @@ UI/Adapter 的首批扩展与本地导入页面可以交替推进：管理页提
 - [ ] 补齐独立文件修改审批的实机批准/拒绝；权限请求的批准/拒绝、服务端确认及重复 token 拒绝已通过。
 - [x] 交付 `context.ui`、`codex.ui.appearance@1` 和普通 UI 示例，管理 GUI 复用相同控件；保留已有标题栏挂载，不提前增加未经验证的位置。
 - [x] 交付 `selection.get`、选择事件、`threads.open` 原生冷恢复和拦截器启停/诊断；见 [M3.1/M4.1 开发与验收说明](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)。
-- [ ] 明确本地开发目录与托管安装目录的来源/所有权语义。
-- [ ] 写出 GitHub 插件发布包规范、兼容性元数据与导入预览流程。
+- [x] 明确本地开发目录与托管安装目录的来源/所有权语义，移除保留文件与历史。
+- [x] 交付 [GitHub 发布包规范、兼容性元数据、导入/更新/回滚流程](GITHUB_PLUGIN_DISTRIBUTION.md)及[社区目录模板](COMMUNITY_PLUGINS.md)。
 - [x] 完成 [P0 平台依赖清单、最小接口草案和验收矩阵](PLATFORM_P0_AUDIT_2026-09-11.md)；实际接口抽取及 P1 移植尚未开始。
-- [ ] 依上述顺序实现 M5a、M5b，再集中执行 M5c 发布门禁。
+- [x] 实现 M5a、M5b；原生界面按手测指南验收。
+- [ ] M5c 集中实现安装交付并关闭发布门禁；解释与手测条件见[剩余验收指南](REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md)。
 
 ## M3.1：UI renderer 与 UI Adapter
 
@@ -69,7 +70,7 @@ UI/Adapter 的首批扩展与本地导入页面可以交替推进：管理页提
 
 ## M5a / M5b：导入和管理方案
 
-2026-09-11：M5a 本地目录预览/导入、权限详情与撤销、保留作者文件的移除已接通 GUI 和 CLI；自动回归已通过。用户选择将剩余真实界面验收改为手测，步骤与样例见 [M5 手测指南](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)。文件夹选择器初始目录修复仍需在手测中确认。M5b 的 GitHub 下载和社区入口尚未实现。
+2026-09-12：M5a 已交付；M5b 的 GitHub 下载、托管来源与历史、显式更新/回滚、发布规范和社区入口已实现。用户选择将真实界面验收改为手测，分别见 [M5a 手测](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)与 [M5b 手测](GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md)。没有提供公开插件 release，本轮使用固定 HTTP/ZIP 和运行时夹具验证，没有上传远程测试仓库。M0/M1 等发布门禁继续保留。
 
 “插件”页面保留三个直接入口：
 
@@ -97,7 +98,7 @@ UI/Adapter 的首批扩展与本地导入页面可以交替推进：管理页提
 - 声明兼容的 Codex 构建、实际验证过的构建和已知限制；
 - 作者、源码、许可证、反馈入口及维护状态。
 
-这是后续 schema 设计要求，当前 `codlet.json` 不因本文自动接受新字段。新增字段需有向后兼容方案，原有 capability 依赖模型保留。下载器不引入 npm 式依赖解析或静默安装其他插件；缺失依赖需要清楚列出。
+M5b 使用可选的 `codlet-package.json` 声明 runtime API、平台、作者与 opaque adapter 信息；原有 `codlet.json`、capability 依赖模型和非 semver 的插件版本保持兼容。许可证/反馈/维护信息由发布包 README 和社区目录记录；缺少声明显示未知。下载器不引入 npm 式依赖解析或静默安装其他插件；缺失依赖清楚列出。准确字段与边界见[发布格式](GITHUB_PLUGIN_DISTRIBUTION.md)。
 
 GitHub 提供按 release 读取信息和列出资产的 API，可据此解析下载候选；具体版本和资产选择属于 Codlet 的导入规则。[GitHub Releases API](https://docs.github.com/en/rest/releases/releases)
 
@@ -113,7 +114,7 @@ GitHub 提供按 release 读取信息和列出资产的 API，可据此解析下
 - 下架/标记问题影响目录推荐，不在用户机器上自动停用或删除已安装插件。
 - 社区入口可提供导入链接，也可提供复制即用的 CLI 命令；CLI 和 GUI 使用同一解析与授权流程。
 
-具体 GitHub CLI 导入语法和可选的 `codlet://` 链接协议尚未实现、尚未冻结。第一版优先让用户复制 GitHub release URL 到导入框；CLI 支持交付后再给出可执行安装命令。深链接最多带入一个待预览来源，不能跳过授权或自动执行远程脚本。Codlet 不承担社区账户、评分交易或独立 Market 服务。
+GitHub CLI 现提供 `releases`、`preview`、`install`、`update`、`history`、`rollback` 和 `community`；准确参数见[CLI 说明](GITHUB_PLUGIN_DISTRIBUTION.md)。GUI 接收复制的 release URL。可选的 `codlet://` 深链接尚未实现；即使后续加入也不能跳过授权或自动执行远程脚本。Codlet 不承担社区账户、评分交易或独立 Market 服务。
 
 ## P0 / P1：跨操作系统适配
 
@@ -138,4 +139,4 @@ P1 从一个目标平台做完整纵切：启动 → Host/renderer → 插件导
 
 M3/M4 候选与首批 M3.1/M4.1 已交付，不代表 M5 或非 Windows 平台已完成。M0/M1 重复运行、官方入口纯净性和 Runtime Host crash 等历史门禁继续保留，在发布阶段集中处理；日常改动按影响范围验证，不为每个文档或界面小改动重跑全套。
 
-计划最初于 2026-09-11 登记；随后已推进新建/冷恢复兼容修复、P0 盘点及 UI/任务导航首批扩展。下一开发工作包是 M5a 的来源/所有权语义与本地导入管理；独立 fileChange 审批仍按实机适用条件单独补验。
+计划最初于 2026-09-11 登记；现已推进兼容修复、P0 盘点、UI/任务导航首批扩展，以及 M5a/M5b。下一工作包为 M5c；独立 fileChange 审批仍按实机适用条件单独补验，不把未触发的分支算作通过。

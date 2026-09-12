@@ -28,10 +28,12 @@ export type PluginControlRequest =
   | { action: 'enable' | 'reload'; plugin_id: string; permission?: never; cascade?: false; local_import?: never }
   | { action: 'disable' | 'remove'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never }
   | { action: 'revoke'; plugin_id: string; permission: PluginPermission; cascade?: false; local_import?: never }
-  | { action: 'import'; plugin_id: string; local_import: LocalImportRequest; permission?: never; cascade?: false };
+  | { action: 'import'; plugin_id: string; local_import: LocalImportRequest & { managed?: 'install' }; permission?: never; cascade?: false }
+  | { action: 'update'; plugin_id: string; local_import: LocalImportRequest & { managed: 'update' }; permission?: never; cascade?: false }
+  | { action: 'rollback'; plugin_id: string; local_import: LocalImportRequest & { managed: 'rollback' }; permission?: never; cascade?: false };
 
 export interface LocalImportRequest {
-  /** Exact canonical directory returned by previewLocal. The directory remains author-owned. */
+  /** Exact canonical directory returned by the preview. Local development paths remain author-owned; managed paths are Core-owned. */
   path: string;
   contentDigest: string;
   registrationDigest: string;
@@ -40,6 +42,8 @@ export interface LocalImportRequest {
   brokerPolicy?: BrokerPolicy;
   /** Defaults to false; activation uses the same receipt as registration. */
   enable?: boolean;
+  /** Core validates the package receipt; caller-supplied source metadata is never trusted. */
+  managed?: 'install' | 'update' | 'rollback';
 }
 
 export interface ImportCapability { name: string; api: number; scope: 'runtime' | 'target' | 'backend-session' | 'thread'; }
@@ -85,7 +89,7 @@ export interface PluginTargetFailure {
 }
 
 export interface PluginControlReport {
-  action: 'enable' | 'disable' | 'reload' | 'revoke' | 'import' | 'remove';
+  action: 'enable' | 'disable' | 'reload' | 'revoke' | 'import' | 'remove' | 'update' | 'rollback';
   plugin_id: string;
   outcome: 'applied' | 'unchanged' | 'rolled_back' | 'degraded';
   desired_enabled: boolean;
@@ -139,7 +143,10 @@ export interface RuntimeManagePlugin {
   path: string | null;
   grants: PluginPermission[];
   brokerPolicy?: BrokerPolicy | null;
-  ownership?: 'bundled' | 'development-directory';
+  ownership?: 'bundled' | 'development-directory' | 'core-managed-github';
+  managedSource?: GitHubSource;
+  managedVersionKey?: string;
+  metadata?: PackageMetadata | null;
   requestedPermissions: PluginPermission[] | null;
   providedCapabilities?: ImportCapability[] | null;
   validation: PluginValidation;
@@ -164,6 +171,7 @@ export interface RuntimeManagePlugin {
 export interface RuntimeManageList {
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
   localManagement?: { available: true; watchEnabled: boolean; folderPicker: boolean };
+  githubManagement?: { available: true };
 }
 /** The Host runtime.manage service always identifies the owner-published sample time. */
 export interface RuntimeManageSnapshot extends RuntimeManageList { sampledAtUnixMs: number; }
@@ -177,6 +185,12 @@ export interface RuntimeManageMethods {
   permissions: { params: { pluginId: string }; result: PluginPermissionsReport };
   chooseLocalFolder: { params: null; result: FolderSelection };
   folderSelection: { params: { selectionId: string }; result: FolderSelection };
+  githubReleases: { params: { url: string }; result: GitHubJob };
+  githubPrepare: { params: { repositoryUrl: string; releaseId: number; assetId: number } & ({ operation?: 'install'; pluginId?: string } | { operation: 'update'; pluginId: string }); result: GitHubJob };
+  githubJob: { params: { jobId: string }; result: GitHubJob };
+  cancelGitHubJob: { params: { jobId: string }; result: GitHubJob };
+  managedHistory: { params: { pluginId: string; cursor?: number }; result: ManagedHistory };
+  previewRollback: { params: { pluginId: string; versionKey: string }; result: ManagedPreview };
 }
 
 /** Read-only `codlet plugin permissions <id> --json`; no active-state assertion. */
@@ -186,4 +200,65 @@ export interface PluginPermissionsReport {
   pluginId: string;
   registration: LocalPluginRegistration;
   enabled: boolean;
+  ownership?: 'development-directory' | 'core-managed-github';
+  managedSource?: GitHubSource;
+  managedVersionKey?: string;
+  metadata?: PackageMetadata | null;
 }
+
+export interface GitHubRepository { owner: string; name: string; url: string; }
+export interface GitHubReleaseAsset {
+  id: number; name: string; size: number; contentType: string; downloadUrl: string; digest: string | null;
+}
+export interface GitHubRelease {
+  id: number; tag: string; name: string; url: string; prerelease: boolean;
+  publishedAt: string | null; assets: GitHubReleaseAsset[];
+}
+export interface GitHubReleaseCatalog {
+  repository: GitHubRepository; releases: GitHubRelease[]; truncated: boolean;
+  requestedTag: string | null; requestedAsset: string | null;
+}
+export interface GitHubSource {
+  repositoryUrl: string; owner: string; repository: string;
+  releaseId: number; tag: string; assetId: number; assetName: string; assetUrl: string;
+  assetSize: number; sha256: string; upstreamDigestVerified: boolean;
+}
+/** Author declarations. Missing values mean unknown, never a compatibility assertion. */
+export interface PackageMetadata {
+  schema: 1; runtimeApi?: number | null; platforms?: string[] | null;
+  author?: string | null; adapters?: unknown;
+}
+export interface ManagedVersion {
+  versionKey: string; packagePath: string; contentDigest: string;
+  source: GitHubSource; manifest: LocalImportPreview['manifest'];
+  metadata?: PackageMetadata | null;
+}
+/** A bounded page of at most eight retained versions. History entries omit metadata;
+ * previewRollback rereads the selected package and returns its complete metadata. */
+export interface ManagedHistory { pluginId: string; currentVersion: string | null; history: ManagedVersion[]; nextCursor: number | null; }
+export interface ManagedPreview {
+  schema: 1; kind: 'codlet.managed-preview'; operation: 'install' | 'update' | 'rollback';
+  ownership: 'core-managed-github'; path: string; contentDigest: string; registrationDigest: string;
+  manifest: LocalImportPreview['manifest']; source: GitHubSource; metadata: PackageMetadata | null;
+  existingRegistration: LocalPluginRegistration | null; existingEnabled: boolean;
+  currentVersion: ManagedVersion | null;
+  /** Full history remains available in CLI previews and older public replies. */
+  history?: ManagedVersion[];
+  /** Public RPC previews omit full history to stay within the response budget. */
+  historyCount?: number;
+  changes: {
+    permissionsAdded: PluginPermission[]; permissionsRemoved: PluginPermission[];
+    requirementsAdded: ImportCapability[]; requirementsRemoved: ImportCapability[];
+    providesAdded: ImportCapability[]; providesRemoved: ImportCapability[];
+  };
+  dependencyCheck?: LocalImportPreview['dependencyCheck'];
+}
+/** Background preparation only. Completion does not register, trust or enable a plugin.
+ * Poll the same job ID after an uncertain read; do not automatically repeat the start.
+ * Cancellation invalidates delivery and may leave temporary downloaded bytes. */
+export type GitHubJob =
+  | { jobId: string; kind: 'releases' | 'package'; status: 'running'; stage?: string }
+  | { jobId: string; kind: 'releases'; status: 'completed'; stage?: string; result: GitHubReleaseCatalog }
+  | { jobId: string; kind: 'package'; status: 'completed'; stage?: string; result: ManagedPreview }
+  | { jobId: string; kind: 'releases' | 'package'; status: 'cancelled'; stage?: string }
+  | { jobId: string; kind: 'releases' | 'package'; status: 'failed'; stage?: string; error: PluginControlError };

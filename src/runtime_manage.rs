@@ -24,7 +24,7 @@ pub struct RuntimeManageError {
 }
 
 impl RuntimeManageError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -41,6 +41,7 @@ pub struct RuntimeManageService {
     listing: Arc<Mutex<Result<Value, RuntimeManageError>>>,
     local_registry: Option<Arc<PathBuf>>,
     local_watch: bool,
+    github_jobs: Option<crate::runtime_manage_github::GitHubJobs>,
     #[cfg(windows)]
     folder_picker: crate::windows::folder_dialog::FolderPicker,
 }
@@ -55,13 +56,18 @@ impl RuntimeManageService {
             )))),
             local_registry: None,
             local_watch: false,
+            github_jobs: None,
             #[cfg(windows)]
             folder_picker: Default::default(),
         }
     }
 
     pub fn with_local_management(mut self, registry: PathBuf, watch: bool) -> Self {
-        self.local_registry = Some(Arc::new(registry));
+        let registry = Arc::new(registry);
+        self.github_jobs = Some(crate::runtime_manage_github::GitHubJobs::new(
+            registry.clone(),
+        ));
+        self.local_registry = Some(registry);
         self.local_watch = watch;
         self
     }
@@ -69,6 +75,26 @@ impl RuntimeManageService {
     pub(crate) fn decorate_list(&self, list: &mut Value) {
         if self.local_registry.is_some() {
             list["localManagement"] = serde_json::json!({"available":true, "watchEnabled":self.local_watch, "folderPicker":cfg!(windows)});
+            list["githubManagement"] = serde_json::json!({"available":true});
+        }
+        if let Some(path) = &self.local_registry
+            && let Ok(registry) = crate::plugins::PluginRegistry::load(path.as_ref())
+            && let Some(plugins) = list["plugins"].as_array_mut()
+        {
+            for plugin in plugins {
+                if let Some(current) = plugin["id"]
+                    .as_str()
+                    .and_then(|id| registry.managed_plugins().get(id))
+                    .and_then(|record| record.current())
+                {
+                    plugin["ownership"] = Value::from("core-managed-github");
+                    plugin["managedSource"] =
+                        serde_json::to_value(&current.source).expect("source is serializable");
+                    plugin["managedVersionKey"] = Value::from(current.version_key.clone());
+                    plugin["metadata"] =
+                        serde_json::to_value(&current.metadata).expect("metadata is serializable");
+                }
+            }
         }
     }
 
@@ -125,7 +151,28 @@ impl RuntimeManageService {
         }
         if matches!(
             method,
-            "previewLocal" | "permissions" | "chooseLocalFolder" | "folderSelection"
+            "githubReleases" | "githubPrepare" | "githubJob" | "cancelGitHubJob"
+        ) {
+            let jobs = self.github_jobs.as_ref().ok_or_else(|| {
+                RuntimeManageError::new(
+                    "runtime_unavailable",
+                    "GitHub management is unavailable in this runtime.",
+                )
+            })?;
+            let service = self.clone();
+            let value = jobs.invoke(method, params, move |preview| {
+                service.decorate_managed_preview(preview)
+            })?;
+            return bounded_value(value, MAX_CONTROL_RESPONSE_BYTES, "response_too_large");
+        }
+        if matches!(
+            method,
+            "previewLocal"
+                | "permissions"
+                | "chooseLocalFolder"
+                | "folderSelection"
+                | "managedHistory"
+                | "previewRollback"
         ) {
             let path = self.local_registry.as_ref().ok_or_else(|| {
                 RuntimeManageError::new(
@@ -172,15 +219,98 @@ impl RuntimeManageService {
                 value["watchEnabled"] = Value::Bool(self.local_watch);
                 value["dependencyCheck"] = dependency_check;
                 value
-            } else if method == "permissions" {
+            } else if method == "previewRollback" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields, rename_all = "camelCase")]
+                struct RollbackInput {
+                    plugin_id: String,
+                    version_key: String,
+                }
+                let input: RollbackInput = serde_json::from_value(params).map_err(|error| {
+                    RuntimeManageError::new("invalid_params", error.to_string())
+                })?;
+                let preview = crate::managed_plugins::preview_rollback(
+                    &registry,
+                    &input.plugin_id,
+                    &input.version_key,
+                )
+                .map_err(|error| {
+                    RuntimeManageError::new("managed_plugin_error", error.to_string())
+                })?;
+                let mut value =
+                    serde_json::to_value(preview).expect("managed preview is serializable");
+                self.decorate_managed_preview(&mut value)?;
+                value
+            } else if method == "permissions" || method == "managedHistory" {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields, rename_all = "camelCase")]
                 struct PermissionsInput {
                     plugin_id: String,
+                    #[serde(default)]
+                    cursor: Option<usize>,
                 }
                 let input: PermissionsInput = serde_json::from_value(params).map_err(|error| {
                     RuntimeManageError::new("invalid_params", error.to_string())
                 })?;
+                if method == "managedHistory" {
+                    let record = registry
+                        .managed_plugins()
+                        .get(&input.plugin_id)
+                        .ok_or_else(|| {
+                            RuntimeManageError::new(
+                                "managed_plugin_required",
+                                "This plugin has no retained managed versions.",
+                            )
+                        })?;
+                    let start = input.cursor.unwrap_or(0);
+                    if start > record.history.len() {
+                        return Err(RuntimeManageError::new(
+                            "invalid_params",
+                            "History cursor is past the retained versions.",
+                        ));
+                    }
+                    let mut value = serde_json::json!({"pluginId":input.plugin_id,"currentVersion":record.current_version,"history":[],"nextCursor":null});
+                    for (index, version) in record.history.iter().enumerate().skip(start).take(8) {
+                        let mut summary =
+                            serde_json::to_value(version).expect("version is serializable");
+                        summary
+                            .as_object_mut()
+                            .expect("version object")
+                            .remove("metadata");
+                        value["history"]
+                            .as_array_mut()
+                            .expect("history array")
+                            .push(summary);
+                        value["nextCursor"] = if index + 1 < record.history.len() {
+                            Value::from(index + 1)
+                        } else {
+                            Value::Null
+                        };
+                        if serde_json::to_vec(&value).map_or(true, |encoded| {
+                            encoded.len() > MAX_CONTROL_RESPONSE_BYTES - 1024
+                        }) {
+                            value["history"]
+                                .as_array_mut()
+                                .expect("history array")
+                                .pop();
+                            if index == start {
+                                return Err(RuntimeManageError::new(
+                                    "response_too_large",
+                                    "This version record exceeds the management response limit.",
+                                ));
+                            }
+                            value["nextCursor"] = Value::from(index);
+                            break;
+                        }
+                    }
+                    return bounded_value(value, MAX_CONTROL_RESPONSE_BYTES, "response_too_large");
+                }
+                if input.cursor.is_some() {
+                    return Err(RuntimeManageError::new(
+                        "invalid_params",
+                        "permissions does not accept a history cursor.",
+                    ));
+                }
                 let registration =
                     registry
                         .local_plugins()
@@ -191,7 +321,20 @@ impl RuntimeManageService {
                                 "This plugin has no local registration.",
                             )
                         })?;
-                serde_json::json!({"schema":1,"kind":"codlet.plugin-permissions","pluginId":input.plugin_id,"registration":registration,"enabled":registry.is_enabled(&input.plugin_id)})
+                let mut value = serde_json::json!({"schema":1,"kind":"codlet.plugin-permissions","pluginId":input.plugin_id,"registration":registration,"enabled":registry.is_enabled(&input.plugin_id)});
+                if let Some(current) = registry
+                    .managed_plugins()
+                    .get(&input.plugin_id)
+                    .and_then(|record| record.current())
+                {
+                    value["ownership"] = Value::from("core-managed-github");
+                    value["managedSource"] =
+                        serde_json::to_value(&current.source).expect("source is serializable");
+                    value["managedVersionKey"] = Value::from(current.version_key.clone());
+                    value["metadata"] =
+                        serde_json::to_value(&current.metadata).expect("metadata is serializable");
+                }
+                value
             } else {
                 return Err(RuntimeManageError::new(
                     "unsupported_platform",
@@ -242,6 +385,22 @@ impl RuntimeManageService {
         let result = serde_json::to_value(self.broker.handle(request))
             .expect("the control report contains only serializable DTO fields");
         bounded_value(result, MAX_CONTROL_RESPONSE_BYTES, "response_too_large")
+    }
+
+    fn decorate_managed_preview(&self, value: &mut Value) -> Result<(), RuntimeManageError> {
+        let history_count = value
+            .as_object_mut()
+            .and_then(|object| object.remove("history"))
+            .and_then(|history| history.as_array().map(Vec::len));
+        if let Some(count) = history_count {
+            value["historyCount"] = Value::from(count);
+        }
+        let manifest: crate::plugins::PluginManifest =
+            serde_json::from_value(value["manifest"].clone())
+                .map_err(|error| RuntimeManageError::new("invalid_preview", error.to_string()))?;
+        value["watchEnabled"] = Value::Bool(false);
+        value["dependencyCheck"] = self.dependency_check(&manifest);
+        Ok(())
     }
 
     fn dependency_check(&self, manifest: &crate::plugins::PluginManifest) -> Value {
@@ -565,5 +724,87 @@ mod tests {
                 .code,
             "invalid_params"
         );
+    }
+
+    #[test]
+    fn large_retained_metadata_does_not_fill_public_previews_or_history_pages() {
+        use crate::managed_plugins::ManagedOperation;
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("registry.json");
+        let mut registry = crate::plugins::PluginRegistry::load(&path).unwrap();
+        let mut last = None;
+        for index in 0..10 {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for (name, content) in [
+                ("codlet.json", json!({"schema":1,"id":"dev.large-history","version":format!("1.0.{index}"),"renderer":{"entry":"entry.js","world":"isolated"},"permissions":["ui.dom"]}).to_string()),
+                ("entry.js", "throw new Error('previews must not execute this');".into()),
+                ("codlet-package.json", json!({"schema":1,"adapters":{"fixture":"x".repeat(48_000)}}).to_string()),
+            ] {
+                zip.start_file(name, options).unwrap();
+                zip.write_all(content.as_bytes()).unwrap();
+            }
+            let package = crate::github_distribution::test_prepare_archive(
+                &path,
+                &zip.finish().unwrap().into_inner(),
+            )
+            .unwrap();
+            let preview = crate::managed_plugins::preview(
+                &registry,
+                &package.package_path,
+                if index == 0 {
+                    ManagedOperation::Install
+                } else {
+                    ManagedOperation::Update
+                },
+            )
+            .unwrap();
+            let request = preview.request(
+                vec![crate::plugins::Permission::UiDom],
+                Default::default(),
+                false,
+            );
+            let (mut next, _) =
+                crate::managed_plugins::stage(&registry, "dev.large-history", &request).unwrap();
+            next.save().unwrap();
+            registry = next;
+            last = Some(package.package_path);
+        }
+        let service =
+            RuntimeManageService::new(ControlBroker::new([6; 16], "large-history".into()))
+                .with_local_management(path, false);
+        let first = service
+            .invoke("managedHistory", json!({"pluginId":"dev.large-history"}))
+            .unwrap();
+        assert_eq!(first["history"].as_array().unwrap().len(), 8);
+        assert_eq!(first["nextCursor"], 8);
+        assert!(first["history"][0].get("metadata").is_none());
+        let second = service
+            .invoke(
+                "managedHistory",
+                json!({"pluginId":"dev.large-history","cursor":8}),
+            )
+            .unwrap();
+        assert_eq!(second["history"].as_array().unwrap().len(), 2);
+        assert!(second["nextCursor"].is_null());
+        assert!(
+            service
+                .invoke(
+                    "managedHistory",
+                    json!({"pluginId":"dev.large-history","cursor":11})
+                )
+                .is_err()
+        );
+        let preview =
+            crate::managed_plugins::preview(&registry, &last.unwrap(), ManagedOperation::Update)
+                .unwrap();
+        let mut value = serde_json::to_value(preview).unwrap();
+        assert!(serde_json::to_vec(&value).unwrap().len() > MAX_CONTROL_RESPONSE_BYTES);
+        service.decorate_managed_preview(&mut value).unwrap();
+        assert_eq!(value["historyCount"], 10);
+        assert!(value.get("history").is_none());
+        assert!(bounded_value(value, MAX_CONTROL_RESPONSE_BYTES, "response_too_large").is_ok());
     }
 }

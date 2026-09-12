@@ -2,7 +2,7 @@
 
 Codlet is a Windows-first launcher and lightweight extension runtime for Codex Desktop. Plugins are JS/TS directory packages with `codlet.json`, built JS entrypoints and resources. Host JS runs in Codlet's managed Node process; renderer JS runs in the page. Official GUI and adapter plugins are optional. Start with the [Host development workflow](docs/HOST_DEVELOPMENT_2026-09-10.md) or the [M3/M4 Desktop Adapter](docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md). The [technical plan](docs/PRODUCT_TECHNICAL_PLAN.md) keeps implementation evidence and production gates separate.
 
-The launcher does not patch the Codex package, official shortcuts or launch protocols, and never terminates an existing Codex process to make room. Normal Codex launches do not run Codlet. Explicitly trusted plugins and broker operations can have their own effects; ordinary user Node code is not an OS sandbox.
+The launcher does not patch the Codex package, official shortcuts or launch protocols, and never terminates an existing Codex process to make room. An official entry can still reuse an already extended main instance; this known release gate is explained in the [remaining acceptance guide](docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md). Explicitly trusted plugins and broker operations can have their own effects; ordinary user Node code is not an OS sandbox.
 
 ## Development status
 
@@ -21,9 +21,10 @@ M5a adds local-folder preview/import, explicit permission confirmation, permissi
 details/revocation and removal through the same GUI/CLI receipts. The
 [manual acceptance guide](docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md) and
 [small test plugin](examples/local-management-check/README.md) cover the remaining native UI checks.
-The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) keeps GitHub import in M5b.
-GitHub Topics and community directories handle discovery; a separate Codlet Market
-is outside the current plan. GitHub import and non-Windows ports remain planned work.
+M5b adds [GitHub release imports, managed source/version history and explicit updates/rollbacks](docs/GITHUB_PLUGIN_DISTRIBUTION.md), with the same GUI/CLI receipts and explicit grants.
+The [GitHub manual guide](docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md) covers native acceptance; [publishing fixtures](examples/github-release-check/README.md) are local and have not been uploaded.
+GitHub Topics and a [community directory template](docs/COMMUNITY_PLUGINS.md) provide discovery.
+The [next development plan](docs/NEXT_DEVELOPMENT_PLAN_2026-09-11.md) retains M5c release gates and later non-Windows ports.
 The [P0 platform audit](docs/PLATFORM_P0_AUDIT_2026-09-11.md) now records Windows dependencies,
 proposed internal interfaces and the per-platform evidence required before a port.
 

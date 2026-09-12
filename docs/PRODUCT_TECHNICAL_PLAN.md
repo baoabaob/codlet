@@ -1,6 +1,6 @@
 # Codlet（暂定名）产品与技术开发方案
 
-> 状态：Draft 0.33；日期：2026-09-11；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
+> 状态：Draft 0.34；日期：2026-09-12；平台：Windows-first，跨平台 P0 盘点已完成；产品名：开发阶段暂用 `Codlet`，公开发布名必须通过命名与商标门禁。
 
 ## 1. 执行摘要
 
@@ -10,7 +10,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 
 当前实现已交付运行中管理、watch、完整 M2 公开原语，以及 M3/M4 的托管主世界、可选 Desktop Adapter、同一 Desktop 会话读写/事件/审批和提交拦截。证据见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)及 [M3/M4 验收记录](M3_M4_ACCEPTANCE_2026-09-10.md)。[2026-09-11 兼容补验](DESKTOP_COMPATIBILITY_2026-09-11.md)已修复测试客户端原生新建/冷恢复，并适配新构建；M0/M1 重复运行、官方入口与 crash 发布门禁仍保留。[P0 盘点](PLATFORM_P0_AUDIT_2026-09-11.md)已记录系统绑定与接口草案，尚未实现非 Windows 移植。
 
-首批 [M3.1/M4.1 扩展](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)已交付共享 UI helpers、语义外观、当前任务/运行回合事件、原生任务打开及拦截诊断。M5a 本地导入、授权预览、GUI 权限管理与移除已实现并完成自动回归，真实界面剩余流程按 [M5 手测指南](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)由用户验收。后续 M5b 扩展 GitHub 来源；独立 fileChange 审批继续按实机适用条件补验。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
+首批 [M3.1/M4.1 扩展](UI_HELPERS_AND_NAVIGATION_2026-09-11.md)已交付共享 UI helpers、语义外观、当前任务/运行回合事件、原生任务打开及拦截诊断。M5a 本地导入、授权预览、GUI 权限管理与移除已实现并完成自动回归，真实界面剩余流程按 [M5 手测指南](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)由用户验收。M5b 已实现 [GitHub 发布包、来源历史、显式更新/回滚和社区入口](GITHUB_PLUGIN_DISTRIBUTION.md)，原生界面见 [M5b 手测](GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md)。独立 fileChange 审批及 M0/M1 的解释、手测适用条件和已知缺陷见[补充验收指南](REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md)，仍未算作通过。Codlet 负责简单导入和管理，GitHub 与社区目录负责发现和维护信息，当前不建设独立 Codlet Market。具体工作包与完成标准见 [2026-09-11 后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 
 术语约定：底层产品称为 Codlet Runtime；每个插件称为一个 codlet。随运行时发布的管理界面插件 ID 和列表名称均为 `codlet-gui`；工具栏入口与管理窗口标题为“Codlet”。旧 GUI ID `codlet` 保留为 CLI 别名与只读配置兼容名；显式新 ID 偏好优先，不因更名重新启用已禁用 GUI。
 
@@ -51,7 +51,7 @@ Codlet Core 不认识 Codex 的 DOM、React、task、turn、skill 或 provider �
 ### 3.2 核心场景
 
 1. 用户主动从 Codlet 入口启动 Codex，扩展自动加载。
-2. 开发者将本地插件目录加入 Codlet，并可显式开启 watch；用户也可在后续 M5 中从 GitHub 发布包导入预览、授信和安装。
+2. 开发者将本地插件目录加入 Codlet，并可显式开启 watch；用户也可从 GitHub 发布包进行预览、授信和安装，显式选择更新或回滚版本。
 3. 插件增加侧栏、状态区、命令入口或修改现有交互。
 4. 高级插件可在用户明确授权的底层原语范围内进入 main world，自行适配 React 或页面实际可达的 `electronBridge` 接口；不要求官方 adapter，也不构成 Electron main/Node 任意执行承诺。
 5. 单个插件崩溃或启动失败时，Runtime Host 和 CDP pipe 保持运行，Codex 本身继续运行，Codlet 给出明确诊断。
@@ -468,7 +468,7 @@ host 半：
 | GitHub | 作者维护源码、发布构建包与变更记录，通过统一 Topic 帮助发现 |
 | 社区目录 | 插件介绍、分类、推荐、已测兼容性、维护状态，以及导入链接或 CLI 指令 |
 
-“插件”页面提供“从本地文件夹导入”“从 GitHub 链接导入”“浏览社区插件”。GitHub 来源先定位具体 release/资产，再展示来源、版本、兼容性和权限，确认后导入本地目录，按用户选择进入现有启用流程。社区入口使用同一导入通路；具体 CLI 语法及深链接协议在实施阶段冻结，不把尚未实现的命令当作现有能力。
+“插件”页面提供“从本地文件夹导入”“从 GitHub 链接导入”“浏览社区插件”。GitHub 来源先定位具体 release/资产，再展示来源、版本、兼容性和权限，确认后导入本地目录，按用户选择进入现有启用流程。社区入口使用同一导入通路；GitHub CLI 语法已在 [M5b 分发规范](GITHUB_PLUGIN_DISTRIBUTION.md)冻结；可选深链接协议仍未实现。
 
 开发目录引用原路径，移除注册时保留作者文件；托管安装目录独立记录来源、版本、内容摘要与所有权。更新候选准备完成后，沿用授信检查、generation 替换、receipt 查询和失败补偿。发布包规范、兼容性元数据、维护/失效/移交规则见 [后续开发计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md)。
 

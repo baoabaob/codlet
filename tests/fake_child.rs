@@ -15,7 +15,7 @@ use codlet::cdp::{
 };
 use codlet::plugins::PluginRegistry;
 use codlet::probe::{MarkerFailure, ProbeError, hold_cdp_until_child_exit, probe_marker};
-use codlet::renderer::{RendererError, RendererRuntime};
+use codlet::renderer::RendererRuntime;
 use codlet::runtime_status::{PluginLifecycle, StatusPublisher};
 use codlet::windows::process::{ChildProcess, launch_with_cdp_pipes};
 use serde_json::json;
@@ -479,10 +479,56 @@ fn running_control_batches_dependency_order_fresh_generations_validation_and_com
         .result
         .unwrap();
     let changes = &stats["trace"].as_array().unwrap()[before["trace"].as_array().unwrap().len()..];
-    assert_eq!(changes[0]["world"], "codlet.plugin.dev.consumer.g1");
-    assert_eq!(changes[1]["world"], "codlet.plugin.dev.provider.g1");
-    assert_eq!(changes[4]["world"], "codlet.plugin.dev.provider.g2");
-    assert_eq!(changes[5]["world"], "codlet.plugin.dev.consumer.g2");
+    let lifecycle: Vec<_> = changes
+        .iter()
+        .filter(|entry| matches!(entry["operation"].as_str(), Some("activate" | "deactivate")))
+        .map(|entry| {
+            (
+                entry["operation"].as_str().unwrap(),
+                entry["session"].as_str().unwrap(),
+                entry["world"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    // Retirement is consumer-first in each document. A provider then reaches
+    // every document before any consumer starts, including cross-target callers.
+    assert_eq!(
+        lifecycle,
+        [
+            (
+                "deactivate",
+                "session-main",
+                "codlet.plugin.dev.consumer.g1"
+            ),
+            (
+                "deactivate",
+                "session-main",
+                "codlet.plugin.dev.provider.g1"
+            ),
+            (
+                "deactivate",
+                "session-second",
+                "codlet.plugin.dev.consumer.g1"
+            ),
+            (
+                "deactivate",
+                "session-second",
+                "codlet.plugin.dev.provider.g1"
+            ),
+            ("activate", "session-main", "codlet.plugin.dev.provider.g2"),
+            (
+                "activate",
+                "session-second",
+                "codlet.plugin.dev.provider.g2"
+            ),
+            ("activate", "session-main", "codlet.plugin.dev.consumer.g2"),
+            (
+                "activate",
+                "session-second",
+                "codlet.plugin.dev.consumer.g2"
+            ),
+        ]
+    );
     assert!(runtime.status_snapshot().targets.iter().all(|target| {
         target
             .plugins
@@ -1314,14 +1360,23 @@ fn renderer_reentrant_nested_wait_uses_original_absolute_deadline() {
     let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(500));
     let (_directory, mut runtime) = reentrant_runtime();
     let start = Instant::now();
+    assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 1);
     assert!(
         runtime
-            .attach(&sessions[0])
-            .unwrap_err()
-            .to_string()
-            .contains("deadline")
+            .take_diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.plugin_id == "codlet-gui"
+                && diagnostic.message.contains("deadline"))
     );
     assert!(start.elapsed() < Duration::from_millis(750));
+    assert_eq!(runtime.session_count(), 1);
+    let snapshot = runtime.status_snapshot();
+    assert_eq!(snapshot.targets[0].plugins.len(), 1);
+    assert_eq!(snapshot.targets[0].plugins[0].id, "codex.ui.adapter");
+    assert!(snapshot.targets[0].plugins[0].active);
+    // Optional activation failure retires its candidate, retaining the unrelated
+    // ready provider until the owner explicitly closes the live target.
+    runtime.deactivate_target("main").unwrap();
     assert_eq!(runtime.session_count(), 0);
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
@@ -1374,14 +1429,23 @@ fn activating_plugin_cannot_commit_runtime_management_actions() {
     let registry = PluginRegistry::load(&registry_path).unwrap();
     let mut runtime = RendererRuntime::bundled(registry).unwrap();
 
-    let error = runtime.attach(&sessions[0]).unwrap_err();
-    assert!(matches!(
-        error,
-        RendererError::PluginRejected { plugin_id, message }
-            if plugin_id == "codlet-gui" && message == "activation self-disable rejected"
-    ));
-    assert_eq!(runtime.session_count(), 0);
+    assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 1);
+    let diagnostics = runtime.take_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].plugin_id, "codlet-gui");
+    assert!(
+        diagnostics[0]
+            .message
+            .ends_with("activation self-disable rejected")
+    );
+    assert_eq!(runtime.session_count(), 1);
+    let snapshot = runtime.status_snapshot();
+    assert_eq!(snapshot.targets[0].plugins.len(), 1);
+    assert_eq!(snapshot.targets[0].plugins[0].id, "codex.ui.adapter");
+    assert!(snapshot.targets[0].plugins[0].active);
     assert!(!registry_path.exists());
+    runtime.deactivate_target("main").unwrap();
+    assert_eq!(runtime.session_count(), 0);
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
         .unwrap();
@@ -1422,27 +1486,35 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     };
 
     let started = Instant::now();
-    let error = runtime.attach(&sessions[0]).unwrap_err();
-    assert!(matches!(
-        error,
-        RendererError::PluginRejected { plugin_id, message }
-            if plugin_id == "codlet-gui"
-                && message.contains("Runtime.evaluate")
-                && message.contains("exceeded its deadline")
-    ));
+    assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 1);
+    let diagnostics = runtime.take_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].plugin_id, "codlet-gui");
+    assert!(diagnostics[0].message.contains("Runtime.evaluate"));
+    assert!(diagnostics[0].message.contains("exceeded its deadline"));
     assert!(started.elapsed() < Duration::from_secs(2));
-    assert_eq!(runtime.session_count(), 0);
+    assert_eq!(runtime.session_count(), 1);
 
     reader.join().unwrap();
     let snapshot = publisher.snapshot();
-    assert!(snapshot.renderer.targets.is_empty());
+    assert_eq!(snapshot.renderer.targets.len(), 1);
+    assert_eq!(snapshot.renderer.targets[0].plugins.len(), 1);
+    assert_eq!(
+        snapshot.renderer.targets[0].plugins[0].id,
+        "codex.ui.adapter"
+    );
+    assert!(snapshot.renderer.targets[0].plugins[0].active);
     assert!(
         snapshot
             .renderer
             .recent_events
             .iter()
-            .any(|event| event.code == "attach_failed")
+            .any(|event| event.code == "plugin_activation_failed")
     );
+
+    runtime.deactivate_target("main").unwrap();
+    assert_eq!(runtime.session_count(), 0);
+    assert!(publisher.snapshot().renderer.targets.is_empty());
 
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
@@ -1688,14 +1760,29 @@ fn document_recovery_case(timeout_first_recovery: bool) {
         assert!(runtime.status_snapshot().targets[0].plugins.is_empty());
         let failed = publisher.inspection_snapshot().unwrap().renderer.unwrap();
         assert!(!failed.lifecycle_busy);
-        assert!(!failed.targets[0].scope_active);
+        // A failed optional provider and its requirement closure are retired;
+        // the live document scope remains available for a later navigation.
+        assert!(failed.targets[0].scope_active);
         assert_eq!(failed.targets[0].document_epoch, 2);
+        let diagnostics = runtime.take_diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.plugin_id == "codex.ui.adapter"
+                    && diagnostic.message.contains("deadline"))
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.plugin_id == "codlet-gui"
+                && diagnostic
+                    .message
+                    .contains("required renderer provider codex.ui.adapter is unavailable")
+        }));
         assert!(
             runtime
                 .status_snapshot()
                 .recent_events
                 .iter()
-                .any(|event| event.code == "recovery_failed")
+                .any(|event| event.code == "plugin_activation_failed")
         );
         client
             .request("Fake.hostStillAlive", None, None, DEADLINE)

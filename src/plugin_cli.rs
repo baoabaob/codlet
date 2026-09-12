@@ -245,13 +245,20 @@ fn offline_edit(
     let _lease = offline_lease(scope)?;
     let mut registry = PluginRegistry::load(scope.path())?;
     let plugin_id = &request.plugin_id;
-    if request.action == PluginControlAction::Import {
+    if matches!(
+        request.action,
+        PluginControlAction::Import | PluginControlAction::Update | PluginControlAction::Rollback
+    ) {
         let selection = request.local_import.as_ref().expect("validated import");
-        let (mut next, _) = crate::local_import::stage(&registry, plugin_id, selection)?;
+        let (mut next, _) = if selection.managed.is_some() {
+            crate::managed_plugins::stage(&registry, plugin_id, selection)?
+        } else {
+            crate::local_import::stage(&registry, plugin_id, selection)?
+        };
         next.set_enabled(plugin_id, selection.enable)?;
         next.save()?;
         output.registration = Some(
-            serde_json::json!({"plugin_id":plugin_id,"action":"import","enabled":selection.enable,"applies":"next-codlet-launch","directory":"preserved"}),
+            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":selection.enable,"applies":"next-codlet-launch","directory":"preserved"}),
         );
         return Ok(());
     }
@@ -259,8 +266,11 @@ fn offline_edit(
         request.action,
         PluginControlAction::Remove | PluginControlAction::Disable
     ) {
-        if request.action == PluginControlAction::Remove
-            && !registry.local_plugins().contains_key(plugin_id)
+        if !registry.local_plugins().contains_key(plugin_id)
+            && (request.action == PluginControlAction::Remove
+                || !bundled_plugins()?
+                    .iter()
+                    .any(|plugin| plugin.manifest.id == *plugin_id))
         {
             return Err(PluginCliError::UnknownPlugin(plugin_id.clone()));
         }
@@ -308,6 +318,7 @@ fn offline_edit(
             .cloned()
             .ok_or_else(|| PluginCliError::UnknownPlugin(plugin_id.clone()))?;
         if enabled {
+            crate::managed_plugins::validate_current(&registry, plugin_id)?;
             load_local_plugin(plugin_id, &registration.path, &registration.grants, 1)?;
             // Keep the authorization that was validated in the optimistic save check.
             registry.register_local(plugin_id, registration)?;

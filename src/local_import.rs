@@ -26,6 +26,8 @@ pub struct LocalImportRequest {
     pub broker_policy: BrokerPolicy,
     #[serde(default)]
     pub enable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed: Option<crate::managed_plugins::ManagedOperation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,7 +49,7 @@ impl LocalImportRequest {
         if !self.trusted {
             return Err(error(
                 "trust_required",
-                "Explicitly trust the selected local directory before importing.",
+                "Explicitly trust the selected package before registering it.",
             ));
         }
         crate::plugin_permissions::validate_policy_path(&self.path)
@@ -99,6 +101,7 @@ impl LocalImportPreview {
             grants,
             broker_policy,
             enable,
+            managed: None,
         })
     }
 }
@@ -109,6 +112,17 @@ pub fn preview(
 ) -> Result<LocalImportPreview, PluginControlError> {
     let candidate =
         inspect_local_plugin(path).map_err(|e| error("local_plugin_invalid", e.to_string()))?;
+    if registry
+        .managed_plugins()
+        .get(&candidate.manifest.id)
+        .and_then(crate::managed_plugins::ManagedPluginRecord::current)
+        .is_some()
+    {
+        return Err(error(
+            "managed_preview_required",
+            "Use a managed update preview to change a managed registration or its grants.",
+        ));
+    }
     // A dry staged registration checks reserved IDs, source collisions and aliases.
     let mut dry = registry.clone();
     dry.register_local(
@@ -141,14 +155,28 @@ pub(crate) fn stage(
     id: &str,
     request: &LocalImportRequest,
 ) -> Result<(PluginRegistry, PluginCatalogEntry), PluginControlError> {
+    if request.managed.is_some() {
+        return crate::managed_plugins::stage(registry, id, request);
+    }
     request.validate()?;
+    if registry
+        .managed_plugins()
+        .get(id)
+        .and_then(crate::managed_plugins::ManagedPluginRecord::current)
+        .is_some()
+    {
+        return Err(error(
+            "managed_preview_required",
+            "A managed registration requires a managed preview.",
+        ));
+    }
     if registration_digest(registry, id) != request.registration_digest {
         return Err(error(
             "import_registration_changed",
             "The registration or enabled preference changed after preview. Inspect the directory again.",
         ));
     }
-    let mut candidate = inspect_local_plugin(&request.path)
+    let candidate = inspect_local_plugin(&request.path)
         .map_err(|e| error("local_plugin_invalid", e.to_string()))?;
     if candidate.manifest.id != id
         || candidate.root != request.path
@@ -159,6 +187,27 @@ pub(crate) fn stage(
             "The directory, manifest or entry changed after preview. Inspect the directory again.",
         ));
     }
+    let entry = checked_entry(candidate, request)?;
+    let registration = entry
+        .plugin
+        .as_ref()
+        .expect("validated entry")
+        .authorization
+        .clone()
+        .expect("explicit authorization");
+    let mut next = registry.clone();
+    next.register_local(id, registration)
+        .map_err(|e| error("registration_conflict", e.to_string()))?;
+    next.set_enabled(id, false)
+        .map_err(|e| error("registry_error", e.to_string()))?;
+    Ok((next, entry))
+}
+
+pub(crate) fn checked_entry(
+    mut candidate: LocalPluginCandidate,
+    request: &LocalImportRequest,
+) -> Result<PluginCatalogEntry, PluginControlError> {
+    let id = candidate.manifest.id.clone();
     candidate
         .validate_grants(&request.grants)
         .map_err(|e| error("permission_required", e.to_string()))?;
@@ -194,24 +243,18 @@ pub(crate) fn stage(
         &candidate.root,
     )
     .map_err(|e| error("local_plugin_invalid", e.to_string()))?;
-    let mut next = registry.clone();
-    next.register_local(id, registration)
-        .map_err(|e| error("registration_conflict", e.to_string()))?;
-    // A failed activation must leave the new registration safely stopped.
-    next.set_enabled(id, false)
-        .map_err(|e| error("registry_error", e.to_string()))?;
     let entry = PluginCatalogEntry {
-        id: id.into(),
+        id,
         source: PluginSource::Local {
             path: candidate.root,
             grants: request.grants.clone(),
         },
         plugin: Ok(plugin),
     };
-    Ok((next, entry))
+    Ok(entry)
 }
 
-fn content_digest(candidate: &LocalPluginCandidate) -> String {
+pub(crate) fn content_digest(candidate: &LocalPluginCandidate) -> String {
     digest(&(
         candidate.root.as_path(),
         &candidate.manifest,
@@ -219,14 +262,15 @@ fn content_digest(candidate: &LocalPluginCandidate) -> String {
         candidate.host.as_ref().map(|host| host.source.as_ref()),
     ))
 }
-fn registration_digest(registry: &PluginRegistry, id: &str) -> String {
+pub(crate) fn registration_digest(registry: &PluginRegistry, id: &str) -> String {
     digest(&(
         id,
         registry.local_plugins().get(id),
+        registry.managed_plugins().get(id),
         registry.is_enabled(id),
     ))
 }
-fn digest(value: &impl Serialize) -> String {
+pub(crate) fn digest(value: &impl Serialize) -> String {
     let bytes = serde_json::to_vec(value).expect("import snapshot is serializable");
     format!("{:x}", Sha256::digest(bytes))
 }

@@ -6,6 +6,8 @@
 
 本轮手测请按 `M5-ManualTest.md` 操作。随附 `plugins/local-management-check` 测试样例；它尚未注册，启用后仅显示一个可清理的状态标记。
 
+M5b 新增 **Import GitHub**、来源记录、手动更新和历史回滚，步骤在 `M5-GitHubManualTest.md`；`plugins/github-release-check/v1`、`v2` 是未注册、未上传的发布素材。审批补验和 M0/M1 的解释在 `Remaining-Acceptance.md`，正式启动专项另行安排。完整说明位于 `docs`。
+
 - 启动：双击 `Start-TestClient.cmd`。首次启动需要准备新版运行时缓存，稍等片刻。
 - 停止：双击 `Stop-TestClient.cmd`，或在测试窗口菜单中选择退出。仅关闭窗口可能让客户端继续驻留。
 - 登录资料：继续使用 `{{labRoot}}` 中原有的测试登录、历史和设置。

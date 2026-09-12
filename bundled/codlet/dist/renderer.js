@@ -71,6 +71,10 @@ module.exports = (() => {
     let importButton, importSection, importPath, chooseFolderButton, inspectButton, importStatus, previewBody, importSubmit;
     let importTrust, importEnable, importPreview = null, importBusy = false, localRequest = 0, pickerTimer = null;
     let detailsSection, detailsBody, detailsStatus, detailsPlugin = null;
+    let githubButton, githubFields, githubUrl, githubRead, githubRelease, githubAsset, githubDownload, githubCancel, githubRetry;
+    let importMode = 'local', importOperation = 'install', importTarget = null, githubCatalog = null, githubJob = null, githubTimer = null;
+    let runtimeContext = null;
+    const COMMUNITY_URL = 'https://github.com/topics/codlet-plugin';
     const importGrants = new Map(), scopeInputs = new Map();
     const PERMISSION_COPY = Object.freeze({
         'ui.dom': 'Read and change the page interface', 'ui.mainWorld': 'Run in the page’s main JavaScript world',
@@ -202,7 +206,7 @@ module.exports = (() => {
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy { margin:0; color:var(--codlet-ui-muted,GrayText); line-height:1.5; }
             [${PANEL_ATTRIBUTE}] .codlet-confirmation-copy code { font:inherit; color:var(--codlet-ui-fg,CanvasText); }
             [${PANEL_ATTRIBUTE}] .codlet-local-page { display:flex; flex-direction:column; gap:16px; min-width:0; }
-            [${PANEL_ATTRIBUTE}] .codlet-local-toolbar { display:flex; align-items:center; gap:8px; }
+            [${PANEL_ATTRIBUTE}] .codlet-local-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
             [${PANEL_ATTRIBUTE}] .codlet-local-toolbar > :first-child { margin-right:auto; }
             [${PANEL_ATTRIBUTE}] .codlet-field { display:flex; flex-direction:column; gap:6px; }
             [${PANEL_ATTRIBUTE}] .codlet-field-label { font-weight:500; }
@@ -238,7 +242,7 @@ module.exports = (() => {
         panel.setAttribute('data-codlet-view', action === 'idle' ? page === 'plugins' ? 'settings' : page : 'confirmation');
         const selectedName = confirmationSelection?.name || 'Codlet';
         const verb = confirmationSelection?.action === 'remove' ? 'Remove' : confirmationSelection?.action === 'revoke' ? 'Revoke permission for' : 'Disable';
-        panelTitle.textContent = action === 'idle' ? page === 'import' ? 'Import local plugin' : page === 'details' ? pluginName(detailsPlugin ?? { id: 'Plugin details' }) : 'Codlet'
+        panelTitle.textContent = action === 'idle' ? page === 'import' ? importMode === 'local' ? 'Import local plugin' : importOperation === 'update' ? 'Update GitHub plugin' : importOperation === 'rollback' ? 'Roll back plugin' : 'Import from GitHub' : page === 'details' ? pluginName(detailsPlugin ?? { id: 'Plugin details' }) : 'Codlet'
             : action === 'done' ? `${selectedName} disabled` : `${verb} ${selectedName}?`;
         panel.setAttribute('aria-label', panelTitle.textContent);
         confirmation.setAttribute('aria-label', panelTitle.textContent);
@@ -287,7 +291,7 @@ module.exports = (() => {
         const executionError = typeof execution?.error === 'string' && execution.error.length > 0
             ? execution.error : execution?.state === 'failed' ? 'Host process failed' : null;
         const name = pluginName(plugin);
-        const metadata = [plugin.version, plugin.source === 'local' ? 'Local' : null]
+        const metadata = [plugin.version, plugin.ownership === 'core-managed-github' ? `GitHub${plugin.managedSource?.tag ? ` · ${plugin.managedSource.tag}` : ''}` : plugin.source === 'local' ? 'Local' : null]
             .filter(value => typeof value === 'string' && value.length > 0);
         const parts = ui.row({ label: name, description: metadata.join(' / ') });
         const row = parts.element, copy = parts.copy;
@@ -459,7 +463,7 @@ module.exports = (() => {
             const report = completion?.kind === 'report' ? completion.report : null;
             const succeeded = report?.outcome === 'applied' || report?.outcome === 'unchanged';
             const message = succeeded
-                ? `${expected.name}: ${{ enable: 'enabled', disable: 'disabled', reload: 'reloaded', import: report.desired_enabled ? 'imported and enabled' : 'imported, disabled', remove: 'removed; files kept', revoke: 'permission revoked' }[expected.action]}.`
+                ? `${expected.name}: ${{ enable: 'enabled', disable: 'disabled', reload: 'reloaded', import: report.desired_enabled ? 'imported and enabled' : 'imported, disabled', update: report.desired_enabled ? 'updated and enabled' : 'updated, disabled', rollback: report.desired_enabled ? 'rolled back and enabled' : 'rolled back, disabled', remove: 'removed; files kept', revoke: 'permission revoked' }[expected.action]}.`
                 : completion?.error?.message || report?.message || 'The action finished with an error. Refresh for the current state.';
             await finishOperation(context, expected, message);
             return;
@@ -569,6 +573,7 @@ module.exports = (() => {
             visiblePlugins = management.plugins;
             localManagement = management.localManagement ?? null;
             importButton.hidden = localManagement?.available !== true;
+            githubButton.hidden = management.githubManagement?.available !== true;
             setMutationBusy(false);
             updatePluginRows(context, management.plugins);
             pluginList.hidden = false;
@@ -610,12 +615,20 @@ module.exports = (() => {
         importButton.hidden = true;
         mutationControls.add(importButton);
         ui.on(importButton, 'click', () => showImport());
+        githubButton = addText(listActions, 'button', '', 'Import GitHub');
+        githubButton.setAttribute('aria-label', 'Import from GitHub');
+        githubButton.hidden = true;
+        mutationControls.add(githubButton);
+        ui.on(githubButton, 'click', () => showGitHubImport(context));
         refreshButton = iconButton(listActions, 'refresh', 'Refresh plugins');
         ui.on(refreshButton, 'click', () => refreshPlugins(context));
         managementStatus = addText(settingsSection, 'div', 'codlet-status', '');
         managementStatus.setAttribute('role', 'status');
         managementStatus.setAttribute('aria-live', 'polite');
         pluginList = addText(settingsSection, 'div', 'codlet-plugin-list', '');
+        const community = ui.externalLink({ text: 'Browse community plugins', href: COMMUNITY_URL });
+        settingsSection.appendChild(community);
+        addText(settingsSection, 'p', 'codlet-local-copy', `GitHub Topic codlet-plugin is a community discovery convention. Listings are not endorsements or permission grants. Review the repository and release before importing.\n${COMMUNITY_URL}`);
         createLocalPages(context, body);
         confirmation = addText(body, 'div', 'codlet-confirmation', '');
         confirmation.hidden = true;
@@ -706,11 +719,42 @@ module.exports = (() => {
         chooseFolderButton.disabled = false;
     }
 
+    function cancelGitHubWork() {
+        if (githubTimer !== null) clearTimeout(githubTimer);
+        githubTimer = null;
+        const job = githubJob;
+        githubJob = null;
+        if (job?.jobId && runtimeContext) {
+            void runtimeContext.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'cancelGitHubJob', { jobId: job.jobId }).catch(() => {});
+        }
+        if (githubCancel) githubCancel.hidden = true;
+        if (githubRetry) githubRetry.hidden = true;
+    }
+
+    function resetGitHubSelection() {
+        cancelGitHubWork(); invalidatePreview();
+        githubCatalog = null;
+        fillSelect(githubRelease, 'Choose a release', []);
+        fillSelect(githubAsset, 'Choose a ZIP asset', []);
+        githubDownload.disabled = true;
+        githubRead.disabled = false;
+    }
+
+    function configureImportPage() {
+        const local = importMode === 'local';
+        importPath.parentElement.hidden = !local;
+        inspectButton.hidden = !local;
+        chooseFolderButton.hidden = !local || localManagement?.folderPicker !== true;
+        githubFields.hidden = local || importOperation === 'rollback';
+        importSubmit.textContent = local || importOperation === 'install' ? 'Import plugin' : importOperation === 'update' ? 'Update plugin' : 'Roll back plugin';
+        importSubmit.setAttribute('aria-label', local ? 'Confirm local import' : importOperation === 'install' ? 'Confirm GitHub import' : importOperation === 'update' ? 'Confirm managed update' : 'Confirm managed rollback');
+    }
+
     function showImport() {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
-        invalidatePreview();
+        resetGitHubSelection(); importMode = 'local'; importOperation = 'install'; importTarget = null;
         page = 'import';
-        chooseFolderButton.hidden = localManagement?.folderPicker !== true;
+        configureImportPage();
         localStatus('Choose the folder containing codlet.json, or enter its full path.');
         renderAction();
         focus(importPath);
@@ -718,7 +762,7 @@ module.exports = (() => {
 
     function backToPlugins(context) {
         if (pendingOperation) return;
-        invalidatePreview();
+        resetGitHubSelection();
         page = 'plugins'; detailsPlugin = null;
         renderAction();
         focus(importButton.hidden ? refreshButton : importButton);
@@ -746,8 +790,22 @@ module.exports = (() => {
             ? `Dependencies\n${requirements.map(cap => `${cap.entry}: ${cap.name}@${cap.api} (${cap.scope})`).join('\n')}\nAvailability is checked again when enabling.` : 'Dependencies: none');
         const unavailable = (preview.dependencyCheck?.requirements ?? []).filter(requirement => requirement.status === 'unavailable');
         if (unavailable.length) addText(previewBody, 'p', 'codlet-local-copy', `Currently unavailable: ${unavailable.map(item => `${item.capability.name}@${item.capability.api}`).join(', ')}. You can import the folder while disabled, then enable its providers first.`);
-        addText(previewBody, 'p', 'codlet-local-copy', `The plugin runs from this development folder. Removing it keeps these files.\nAutomatic reload: ${preview.watchEnabled ? 'on while the plugin is enabled' : 'off in this session; use Reload after editing'}.`);
-        if (preview.existingRegistration) {
+        if (importMode === 'github') {
+            renderManagedSource(previewBody, preview.source, preview.metadata);
+            addText(previewBody, 'p', 'codlet-local-copy', 'Codlet owns this installed package directory. Removing registration keeps the package and plugin data. The SHA-256 identifies downloaded bytes; it does not establish trust in the author.');
+            if (preview.currentVersion) {
+                addText(previewBody, 'p', 'codlet-local-copy', `Version: ${preview.currentVersion.manifest.version} → ${manifest.version}\nRepository: ${preview.currentVersion.source.repositoryUrl} → ${preview.source.repositoryUrl}\nRelease: ${preview.currentVersion.source.tag} → ${preview.source.tag}`);
+                const runtimeDeclaration = metadata => metadata?.runtimeApi == null ? 'unknown' : `author declared API ${metadata.runtimeApi}`;
+                const platformDeclaration = metadata => metadata?.platforms?.length ? `author declared ${metadata.platforms.join(', ')}` : 'unknown';
+                addText(previewBody, 'p', 'codlet-local-copy', `Runtime declaration: ${runtimeDeclaration(preview.currentVersion.metadata)} → ${runtimeDeclaration(preview.metadata)}\nPlatform declaration: ${platformDeclaration(preview.currentVersion.metadata)} → ${platformDeclaration(preview.metadata)}`);
+                const changes = preview.changes ?? {};
+                for (const [label, key] of [['Permissions added', 'permissionsAdded'], ['Permissions removed', 'permissionsRemoved'], ['Dependencies added', 'requirementsAdded'], ['Dependencies removed', 'requirementsRemoved']]) {
+                    addText(previewBody, 'p', 'codlet-local-copy', `${label}: ${(changes[key] ?? []).map(item => typeof item === 'string' ? item : `${item.name}@${item.api} (${item.scope})`).join(', ') || 'None'}`);
+                }
+                addText(previewBody, 'p', 'codlet-local-copy', `Currently ${preview.existingEnabled ? 'enabled' : 'disabled'}. This ${importOperation} leaves the plugin disabled unless you select “Enable after import”. Confirm the source and every grant again.`);
+            }
+        } else addText(previewBody, 'p', 'codlet-local-copy', `The plugin runs from this development folder. Removing it keeps these files.\nAutomatic reload: ${preview.watchEnabled ? 'on while the plugin is enabled' : 'off in this session; use Reload after editing'}.`);
+        if (preview.existingRegistration && importMode === 'local') {
             addText(previewBody, 'p', 'codlet-local-copy', `Already registered at this folder. Confirm all grants again to replace its permission settings.\nCurrent grants: ${preview.existingRegistration.grants.join(', ') || 'None'}. Stop the package before importing it again.`);
         }
         addText(previewBody, 'h2', 'codlet-section-title', 'Requested permissions');
@@ -765,8 +823,8 @@ module.exports = (() => {
             if (importGrants.has(permission)) scopeInputs.set(key, localInput(previewBody, label, true));
         }
         if (scopeInputs.size) addText(previewBody, 'p', 'codlet-local-copy', 'Empty lists grant no access through the file, network or child-process broker. Native Host code still runs with your OS user permissions.');
-        importTrust = localCheckbox(previewBody, 'Trust this local plugin', 'I trust this plugin’s author and this local folder.');
-        importEnable = localCheckbox(previewBody, 'Enable after import', 'Enable immediately after importing');
+        importTrust = localCheckbox(previewBody, importMode === 'local' ? 'Trust this local plugin' : 'Trust this GitHub source', importMode === 'local' ? 'I trust this plugin’s author and this local folder.' : `I trust the author and this exact source: ${preview.source.repositoryUrl}, release ${preview.source.tag}, asset ${preview.source.assetName}.`);
+        importEnable = localCheckbox(previewBody, 'Enable after import', importMode === 'local' || importOperation === 'install' ? 'Enable immediately after importing' : `Enable after ${importOperation}; otherwise keep disabled`);
         ui.on(importTrust, 'change', importReady);
         previewBody.hidden = false;
         importReady();
@@ -839,9 +897,135 @@ module.exports = (() => {
         const preview = importPreview;
         const brokerPolicy = Object.fromEntries([...scopeInputs].map(([key, input]) => [key, input.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean)]));
         const selection = { path: preview.path, contentDigest: preview.contentDigest, registrationDigest: preview.registrationDigest,
-            trusted: true, grants: [...importGrants].filter(([, input]) => input.checked).map(([permission]) => permission), brokerPolicy, enable: importEnable.checked };
-        invalidatePreview(); page = 'plugins'; renderAction();
-        return managePlugin(context, preview.manifest.id, 'import', false, { local_import: selection }, preview.manifest.name || preview.manifest.id);
+            trusted: true, grants: [...importGrants].filter(([, input]) => input.checked).map(([permission]) => permission), brokerPolicy, enable: importEnable.checked,
+            ...(importMode === 'github' ? { managed: importOperation } : {}) };
+        const nextAction = importMode === 'github' && importOperation !== 'install' ? importOperation : 'import';
+        cancelGitHubWork(); invalidatePreview(); page = 'plugins'; renderAction();
+        return managePlugin(context, preview.manifest.id, nextAction, false, { local_import: selection }, preview.manifest.name || preview.manifest.id);
+    }
+
+    function renderManagedSource(parent, source, metadata) {
+        addText(parent, 'p', 'codlet-local-copy', `Repository: ${source.repositoryUrl}\nRelease/tag: ${source.tag}\nAsset: ${source.assetName}\nSHA-256: ${source.sha256}\nGitHub digest: ${source.upstreamDigestVerified ? 'matched' : 'not available for verification'}`);
+        addText(parent, 'p', 'codlet-local-copy', `Runtime compatibility: ${metadata?.runtimeApi === undefined || metadata.runtimeApi === null ? 'unknown (not declared)' : `author declared API ${metadata.runtimeApi}`}\nPlatforms: ${Array.isArray(metadata?.platforms) && metadata.platforms.length ? `author declared ${metadata.platforms.join(', ')}` : 'unknown (not declared)'}\nCodex builds tested: unknown; no verification claim is made by this importer.${metadata?.author ? `\nAuthor: ${metadata.author}` : ''}`);
+    }
+
+    function fillSelect(select, placeholder, options) {
+        clearLocalBody(select);
+        const blank = addText(select, 'option', '', placeholder); blank.value = '';
+        for (const [value, label] of options) { const option = addText(select, 'option', '', label); option.value = String(value); }
+        select.value = ''; select.disabled = options.length === 0;
+    }
+
+    function showGitHubImport(context, target = null) {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        resetGitHubSelection(); importMode = 'github'; importOperation = target ? 'update' : 'install'; importTarget = target;
+        githubUrl.value = target?.managedSource?.repositoryUrl ?? '';
+        page = 'import'; configureImportPage(); renderAction();
+        localStatus(target ? 'Check releases, then explicitly choose a version and asset. Updating requires fresh source trust and grants.' : 'Enter a GitHub repository, release or release asset URL. Select a published ZIP package; repository source archives are not installable packages.');
+        focus(githubUrl);
+        if (target && githubUrl.value) return readGitHubReleases(context);
+    }
+
+    function githubControls() {
+        githubRead.disabled = importBusy;
+        githubRelease.disabled = importBusy || !githubCatalog?.releases.length;
+        const release = githubCatalog?.releases.find(item => String(item.id) === githubRelease.value);
+        githubAsset.disabled = importBusy || !release?.assets.some(asset => /\.zip$/i.test(asset.name));
+        githubDownload.disabled = importBusy || !release || !release.assets.some(asset => String(asset.id) === githubAsset.value && /\.zip$/i.test(asset.name));
+        githubCancel.hidden = !importBusy;
+        importReady();
+    }
+
+    function acceptManagedPreview(preview, selection = null) {
+        if (preview?.schema !== 1 || preview.kind !== 'codlet.managed-preview' || preview.operation !== importOperation
+            || preview.ownership !== 'core-managed-github' || typeof preview.path !== 'string'
+            || typeof preview.manifest?.id !== 'string' || typeof preview.manifest?.version !== 'string'
+            || !Array.isArray(preview.manifest.permissions) || preview.manifest.permissions.some(permission => !Object.hasOwn(PERMISSION_COPY, permission))
+            || !/^[0-9a-f]{64}$/.test(preview.contentDigest) || !/^[0-9a-f]{64}$/.test(preview.registrationDigest)
+            || !/^[0-9a-f]{64}$/.test(preview.source?.sha256) || typeof preview.source.repositoryUrl !== 'string'
+            || typeof preview.source.tag !== 'string' || typeof preview.source.assetName !== 'string'
+            || (importTarget && preview.manifest.id !== importTarget.id)
+            || (selection && (preview.source.repositoryUrl !== selection.repositoryUrl || preview.source.releaseId !== selection.releaseId || preview.source.assetId !== selection.assetId))) throw new Error('The managed package preview is incomplete or does not match the selected plugin and release asset.');
+        importPreview = preview; importBusy = false;
+        renderImportPreview(preview);
+        localStatus('Review the exact source, compatibility, dependencies and permissions before confirming.');
+        focus(importGrants.values().next().value ?? importTrust);
+    }
+
+    function acceptGitHubCatalog(catalog) {
+        if (typeof catalog?.repository?.url !== 'string' || !Array.isArray(catalog.releases)
+            || catalog.releases.some(release => !Number.isSafeInteger(release.id) || typeof release.tag !== 'string' || !Array.isArray(release.assets)
+                || release.assets.some(asset => !Number.isSafeInteger(asset.id) || typeof asset.name !== 'string' || !Number.isSafeInteger(asset.size)))) throw new Error('The GitHub release list is incomplete.');
+        githubCatalog = catalog;
+        fillSelect(githubRelease, 'Choose a release', catalog.releases.map(release => [release.id, `${release.tag}${release.prerelease ? ' (prerelease)' : ''}${release.name ? ` — ${release.name}` : ''}`]));
+        fillSelect(githubAsset, 'Choose a ZIP asset', []);
+        localStatus(catalog.releases.length ? `Repository: ${catalog.repository.url}\nChoose the exact release and ZIP asset.${catalog.requestedTag ? `\nLink requests tag: ${catalog.requestedTag}${catalog.requestedAsset ? ` / ${catalog.requestedAsset}` : ''}. Confirm that selection below.` : ''}${catalog.truncated ? '\nOnly part of the release history is listed. Use an exact release URL for an older version.' : ''}` : 'No published releases found. Ask the author for a built plugin ZIP, or download and inspect a local plugin folder.');
+    }
+
+    async function runGitHubJob(context, method, params, kind) {
+        if (pendingOperation || importBusy || page !== 'import' || importMode !== 'github' || !panel?.open || panel.hidden) return;
+        invalidatePreview(); cancelGitHubWork();
+        importBusy = true;
+        const request = localRequest, epoch = lifecycle;
+        const expected = { jobId: null, kind, request, epoch, checking: false, selection: kind === 'package' ? params : null };
+        githubJob = expected; githubControls();
+        localStatus(kind === 'releases' ? 'Reading GitHub releases...' : 'Downloading and validating the selected ZIP. No plugin is registered or enabled yet.');
+        try {
+            const reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, method, params);
+            if (githubJob !== expected || epoch !== lifecycle || request !== localRequest) return;
+            if (typeof reply?.jobId !== 'string' || !reply.jobId) throw new Error('GitHub task did not return a job ID. No installation was submitted.');
+            expected.jobId = reply.jobId;
+            await acceptGitHubJob(context, expected, reply);
+        } catch (error) {
+            if (githubJob === expected && epoch === lifecycle && request === localRequest) {
+                githubJob = null; importBusy = false; githubControls(); localStatus(String(error?.message ?? error));
+            }
+        }
+    }
+
+    async function acceptGitHubJob(context, expected, reply) {
+        if (githubJob !== expected || expected.epoch !== lifecycle || expected.request !== localRequest || page !== 'import' || !panel?.open || panel.hidden) return;
+        if (reply?.jobId !== expected.jobId || reply.kind !== expected.kind) throw new Error('GitHub task response did not match the requested job.');
+        if (reply.status === 'running') {
+            localStatus(`${expected.kind === 'releases' ? 'Reading releases' : 'Preparing package'}${reply.stage ? `: ${reply.stage}` : '...'}\nNo installation has been submitted.`);
+            githubTimer = setTimeout(() => { githubTimer = null; void pollGitHubJob(context, expected); }, 300);
+            return;
+        }
+        if (reply.status === 'completed') {
+            if (expected.kind === 'releases') acceptGitHubCatalog(reply.result);
+            else acceptManagedPreview(reply.result, expected.selection);
+        } else if (reply.status === 'cancelled') localStatus('GitHub task cancelled. No installation was submitted; temporary download files may remain.');
+        else if (reply.status === 'failed') localStatus(reply.error?.message || 'GitHub task failed. No installation was submitted.');
+        else throw new Error('GitHub task returned an unknown status.');
+        githubJob = null; importBusy = false; githubRetry.hidden = true; githubControls();
+    }
+
+    async function pollGitHubJob(context, expected = githubJob) {
+        if (!expected?.jobId || githubJob !== expected || expected.checking) return;
+        expected.checking = true; githubRetry.hidden = true;
+        try {
+            const reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'githubJob', { jobId: expected.jobId });
+            await acceptGitHubJob(context, expected, reply);
+        } catch (error) {
+            if (githubJob === expected && expected.epoch === lifecycle && expected.request === localRequest) {
+                localStatus(`Task status unavailable: ${String(error?.message ?? error)}\nCheck the same task again, or cancel. No new download or installation is started by checking.`);
+                githubRetry.hidden = false;
+            }
+        } finally { expected.checking = false; }
+    }
+
+    function readGitHubReleases(context) {
+        if (importBusy) return;
+        const url = githubUrl.value.trim();
+        if (!url) { localStatus('Enter a GitHub URL.'); focus(githubUrl); return; }
+        resetGitHubSelection();
+        return runGitHubJob(context, 'githubReleases', { url }, 'releases');
+    }
+
+    function downloadGitHubAsset(context) {
+        githubControls();
+        if (githubDownload.disabled) return;
+        return runGitHubJob(context, 'githubPrepare', { repositoryUrl: githubCatalog.repository.url, releaseId: Number(githubRelease.value), assetId: Number(githubAsset.value), operation: importOperation, ...(importTarget ? { pluginId: importTarget.id } : {}) }, 'package');
     }
 
     function requestLocalAction(plugin, nextAction, permission, origin) {
@@ -851,13 +1035,13 @@ module.exports = (() => {
         const dependentNames = dependents.map(id => pluginName(visiblePlugins.find(candidate => candidate.id === id) ?? { id }));
         confirmationCopy.textContent = nextAction === 'remove'
             ? `Remove this plugin’s registration and disable it. Its source folder and files will be kept.\n${plugin.path || ''}${dependentNames.length ? `\nAlso disable: ${dependentNames.join(', ')}.` : ''}`
-            : `Revoke ${permission}. This stops the package and its running dependents. To grant it again, import the local folder and confirm its permissions.${dependentNames.length ? `\nDependents: ${dependentNames.join(', ')}.` : ''}`;
+            : `Revoke ${permission}. This stops the package and its running dependents. To grant it again, ${plugin.ownership === 'core-managed-github' ? 'select a managed version and confirm its permissions again' : 'import the local folder and confirm its permissions'}.${dependentNames.length ? `\nDependents: ${dependentNames.join(', ')}.` : ''}`;
         actionOrigin = origin; action = 'confirm'; renderAction(); focus(cancelButton);
     }
 
     async function showDetails(context, plugin) {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
-        invalidatePreview(); page = 'details'; detailsPlugin = plugin;
+        cancelGitHubWork(); invalidatePreview(); page = 'details'; detailsPlugin = plugin;
         const request = localRequest, epoch = lifecycle;
         clearLocalBody(detailsBody); detailsStatus.textContent = 'Loading permissions...'; detailsStatus.hidden = false;
         renderAction();
@@ -866,8 +1050,10 @@ module.exports = (() => {
             if (epoch !== lifecycle || request !== localRequest || page !== 'details' || !panel?.open || panel.hidden) return;
             if (reply?.pluginId !== plugin.id || !Array.isArray(reply.registration?.grants) || typeof reply.registration.path !== 'string') throw new Error('Permission details are unavailable.');
             const registration = reply.registration;
-            detailsPlugin = { ...plugin, path: registration.path, grants: registration.grants };
-            addText(detailsBody, 'p', 'codlet-local-copy', `${plugin.id}${plugin.version ? ` · ${plugin.version}` : ''}\nLocal development folder\n${registration.path}\nRemoving the plugin keeps this folder.`);
+            detailsPlugin = { ...plugin, path: registration.path, grants: registration.grants, ...(reply.ownership ? { ownership: reply.ownership } : {}), ...(reply.managedSource ? { managedSource: reply.managedSource } : {}) };
+            const managed = detailsPlugin.ownership === 'core-managed-github';
+            addText(detailsBody, 'p', 'codlet-local-copy', `${plugin.id}${plugin.version ? ` · ${plugin.version}` : ''}\n${managed ? 'Codlet managed GitHub package' : 'Local development folder'}\n${registration.path}\nRemoving the plugin keeps this folder and plugin data.`);
+            if (managed && detailsPlugin.managedSource) renderManagedSource(detailsBody, detailsPlugin.managedSource, reply.metadata);
             addText(detailsBody, 'h2', 'codlet-section-title', 'Granted permissions');
             if (!registration.grants.length) addText(detailsBody, 'p', 'codlet-local-copy', 'No permissions granted.');
             for (const permission of registration.grants) {
@@ -885,9 +1071,81 @@ module.exports = (() => {
             detailsBody.appendChild(remove);
             ui.on(remove, 'click', () => requestLocalAction(detailsPlugin, 'remove', null, remove));
             detailsStatus.hidden = true;
+            if (managed) {
+                const target = detailsPlugin;
+                const check = addText(detailsBody, 'button', '', 'Check GitHub versions');
+                check.setAttribute('aria-label', 'Check GitHub versions');
+                ui.on(check, 'click', () => showGitHubImport(context, target));
+                addText(detailsBody, 'h2', 'codlet-section-title', 'Installed version history');
+                const historyBody = addText(detailsBody, 'div', 'codlet-local-preview', '');
+                await showManagedHistory(context, target, historyBody, request, epoch);
+            }
         } catch (error) {
             if (epoch === lifecycle && request === localRequest && page === 'details') detailsStatus.textContent = String(error?.message ?? error);
         }
+    }
+
+    async function showManagedHistory(context, plugin, parent, request, epoch) {
+        const current = () => epoch === lifecycle && request === localRequest && page === 'details' && detailsPlugin?.id === plugin.id && parent.isConnected && panel?.open && !panel.hidden;
+        const status = addText(parent, 'p', 'codlet-local-copy', 'Loading retained versions...');
+        const rows = addText(parent, 'div', 'codlet-local-preview', '');
+        const more = addText(parent, 'button', '', 'Load more versions');
+        more.setAttribute('aria-label', 'Load more versions'); more.hidden = true;
+        let nextCursor = 0, currentVersion, busy = false;
+        const seen = new Set();
+        const load = async () => {
+            if (!current() || busy || nextCursor === null) return;
+            busy = true; more.disabled = true;
+            const cursor = nextCursor;
+            status.textContent = seen.size ? 'Loading more retained versions...' : 'Loading retained versions...';
+            try {
+                const report = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'managedHistory', { pluginId: plugin.id, ...(cursor ? { cursor } : {}) });
+                if (!current()) return;
+                const following = report?.nextCursor ?? null;
+                if (report?.pluginId !== plugin.id || !Array.isArray(report.history) || report.history.length > 8
+                    || (report.currentVersion !== null && typeof report.currentVersion !== 'string')
+                    || (following !== null && (!Number.isSafeInteger(following) || following <= cursor || !report.history.length))) throw new Error('Managed version history is unavailable or its cursor is invalid.');
+                if (currentVersion !== undefined && report.currentVersion !== currentVersion) throw new Error('The installed version changed. Reopen details to refresh the history.');
+                if (report.history.some(version => typeof version.versionKey !== 'string' || typeof version.manifest?.version !== 'string' || typeof version.source?.tag !== 'string')) throw new Error('Managed version history is incomplete.');
+                currentVersion = report.currentVersion;
+                for (const version of report.history) {
+                    if (seen.has(version.versionKey)) continue;
+                    seen.add(version.versionKey);
+                    const row = addText(rows, 'div', 'codlet-field', '');
+                    addText(row, 'p', 'codlet-local-copy', `${version.manifest.version} · ${version.source.tag}${currentVersion === version.versionKey ? ' · Current' : ''}\n${version.source.repositoryUrl}\n${version.source.assetName}\nSHA-256: ${version.source.sha256}`);
+                    if (currentVersion !== version.versionKey) {
+                        const rollback = addText(row, 'button', '', 'Review rollback');
+                        rollback.setAttribute('aria-label', `Review rollback ${version.versionKey}`);
+                        ui.on(rollback, 'click', () => inspectRollback(context, plugin, version.versionKey));
+                    }
+                }
+                nextCursor = following;
+                status.textContent = seen.size ? 'Rollback uses an already retained package. Review its source and permissions again before applying.' : 'No retained versions.';
+                more.hidden = nextCursor === null;
+            } catch (error) {
+                if (current()) { status.textContent = String(error?.message ?? error); more.hidden = false; }
+            } finally {
+                busy = false;
+                if (current()) more.disabled = false;
+            }
+        };
+        ui.on(more, 'click', load);
+        await load();
+    }
+
+    async function inspectRollback(context, plugin, versionKey) {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        resetGitHubSelection(); importMode = 'github'; importOperation = 'rollback'; importTarget = plugin;
+        page = 'import'; importBusy = true; configureImportPage(); renderAction();
+        const request = localRequest, epoch = lifecycle;
+        localStatus('Validating the retained package and comparing permissions...');
+        try {
+            const preview = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'previewRollback', { pluginId: plugin.id, versionKey });
+            if (epoch !== lifecycle || request !== localRequest || page !== 'import' || !panel?.open || panel.hidden) return;
+            acceptManagedPreview(preview);
+        } catch (error) {
+            if (epoch === lifecycle && request === localRequest && page === 'import') localStatus(String(error?.message ?? error));
+        } finally { if (epoch === lifecycle && request === localRequest) { importBusy = false; importReady(); } }
     }
 
     function createLocalPages(context, parent) {
@@ -903,6 +1161,41 @@ module.exports = (() => {
         ui.on(importPath, 'input', () => { invalidatePreview(); localStatus('Inspect this folder before importing.'); });
         inspectButton = addText(importSection, 'button', '', 'Inspect folder');
         ui.on(inspectButton, 'click', () => inspectLocal(context));
+        githubFields = addText(importSection, 'div', 'codlet-local-preview', ''); githubFields.hidden = true;
+        githubUrl = localInput(githubFields, 'GitHub repository or release URL');
+        ui.on(githubUrl, 'input', () => { resetGitHubSelection(); localStatus('Read releases for this source before downloading. Trust and grants have been cleared.'); });
+        githubRead = addText(githubFields, 'button', '', 'Read releases');
+        githubRead.setAttribute('aria-label', 'Read GitHub releases');
+        ui.on(githubRead, 'click', () => readGitHubReleases(context));
+        const select = label => {
+            const field = addText(githubFields, 'label', 'codlet-field', '');
+            addText(field, 'span', 'codlet-field-label', label);
+            const control = ui.element('select'); control.className = 'codlet-field-input'; control.setAttribute('aria-label', label);
+            field.appendChild(control); return control;
+        };
+        githubRelease = select('GitHub release'); fillSelect(githubRelease, 'Choose a release', []);
+        githubAsset = select('GitHub ZIP asset'); fillSelect(githubAsset, 'Choose a ZIP asset', []);
+        ui.on(githubRelease, 'change', () => {
+            cancelGitHubWork(); invalidatePreview();
+            const release = githubCatalog?.releases.find(item => String(item.id) === githubRelease.value);
+            const assets = release?.assets.filter(asset => /\.zip$/i.test(asset.name)) ?? [];
+            fillSelect(githubAsset, 'Choose a ZIP asset', assets.map(asset => [asset.id, `${asset.name} (${asset.size.toLocaleString()} bytes)`]));
+            localStatus(release ? assets.length ? `Selected release: ${release.tag}. Choose the exact plugin ZIP asset.` : 'This release has no ZIP assets. Repository source archives are not plugin release packages. Ask the author for a built package or use local folder import.' : 'Choose an exact release.');
+            githubControls();
+        });
+        ui.on(githubAsset, 'change', () => { cancelGitHubWork(); invalidatePreview(); githubControls(); localStatus('Download and validate this asset before granting permissions.'); });
+        githubDownload = addText(githubFields, 'button', '', 'Download and inspect ZIP'); githubDownload.disabled = true;
+        githubDownload.setAttribute('aria-label', 'Download selected GitHub asset');
+        ui.on(githubDownload, 'click', () => downloadGitHubAsset(context));
+        githubCancel = addText(githubFields, 'button', '', 'Cancel GitHub task'); githubCancel.hidden = true;
+        githubCancel.setAttribute('aria-label', 'Cancel GitHub task');
+        ui.on(githubCancel, 'click', () => {
+            cancelGitHubWork(); invalidatePreview(); githubControls();
+            localStatus('GitHub task cancelled. Late results will be ignored. No installation was submitted; temporary download files may remain.');
+        });
+        githubRetry = addText(githubFields, 'button', '', 'Check task status'); githubRetry.hidden = true;
+        githubRetry.setAttribute('aria-label', 'Check GitHub task status');
+        ui.on(githubRetry, 'click', () => pollGitHubJob(context));
         importStatus = addText(importSection, 'div', 'codlet-local-copy', '');
         importStatus.setAttribute('role', 'status'); importStatus.setAttribute('aria-live', 'polite');
         previewBody = addText(importSection, 'div', 'codlet-local-preview', ''); previewBody.hidden = true;
@@ -950,7 +1243,7 @@ module.exports = (() => {
             focus(closeButton);
         } else {
             hideTooltip();
-            invalidatePreview(); page = 'plugins'; detailsPlugin = null;
+            cancelGitHubWork(); invalidatePreview(); page = 'plugins'; detailsPlugin = null;
             panelRequest += 1;
             if (operationTimer !== null) clearTimeout(operationTimer);
             operationTimer = null;
@@ -1012,6 +1305,7 @@ module.exports = (() => {
         }
         if (epoch !== lifecycle) return;
         mountToken = capability.token;
+        runtimeContext = context;
         outsideFocus = document.activeElement;
         keydown = event => {
             if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.altKey ||
@@ -1041,6 +1335,7 @@ module.exports = (() => {
     }
 
     function deactivate() {
+        cancelGitHubWork();
         lifecycle += 1;
         panelRequest += 1;
         localRequest += 1;
@@ -1076,6 +1371,8 @@ module.exports = (() => {
         panelTitle = settingsSection = null;
         importButton = importSection = importPath = chooseFolderButton = inspectButton = importStatus = previewBody = importSubmit = null;
         importTrust = importEnable = detailsSection = detailsBody = detailsStatus = null;
+        githubButton = githubFields = githubUrl = githubRead = githubRelease = githubAsset = githubDownload = githubCancel = githubRetry = null;
+        githubCatalog = importTarget = runtimeContext = null; importMode = 'local'; importOperation = 'install';
         confirmation = confirmationCopy = confirmationStatus = confirmButton = cancelButton = actionOrigin = null;
         observer = keydown = focusin = resize = mountToken = returnFocus = outsideFocus = panelAnchor = null;
         action = 'idle';

@@ -113,7 +113,7 @@ fn inspection_and_incomplete_consent_never_register_or_execute_source() {
     for flags in [vec!["--trust"], vec!["--grant", "ui.dom"]] {
         let output = fixture.add(&fixture.plugin, &flags);
         assert!(!output.status.success());
-        assert!(!String::from_utf8_lossy(&output.stdout).contains("plugin-added:"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("plugin-registration:"));
         assert!(!fixture.local_app_data.exists());
     }
     assert!(!fixture.marker.exists());
@@ -135,6 +135,7 @@ fn trusted_relative_directory_is_persisted_listed_and_preserves_old_preferences(
     let config = fixture.config();
     assert_eq!(config["schema"], 2);
     assert_eq!(config["plugins"]["future.plugin"]["enabled"], false);
+    assert_eq!(config["plugins"][PLUGIN_ID]["enabled"], false);
     assert_eq!(
         PathBuf::from(config["localPlugins"][PLUGIN_ID]["path"].as_str().unwrap()),
         fixture.plugin.canonicalize().unwrap()
@@ -146,7 +147,7 @@ fn trusted_relative_directory_is_persisted_listed_and_preserves_old_preferences(
     let before = fs::read(fixture.config_path()).unwrap();
     let listed = successful(fixture.run(&["plugin", "list"]));
     let stdout = String::from_utf8(listed.stdout).unwrap();
-    assert!(stdout.contains("id=dev.test.local; version=0.1.0; source=local; enabled=true"));
+    assert!(stdout.contains("id=dev.test.local; version=0.1.0; source=local; enabled=false"));
     let doctor = fixture.run(&["doctor", "--json"]);
     let report: Value = serde_json::from_slice(&doctor.stdout).unwrap();
     assert!(
@@ -198,6 +199,7 @@ fn permission_changes_require_an_explicit_grant_update_without_reenabling() {
 fn broken_enabled_plugin_is_rejected_before_launch_and_can_be_disabled_and_removed() {
     let fixture = Fixture::new();
     fixture.register();
+    successful(fixture.run(&["plugin", "enable", PLUGIN_ID]));
     let source = fixture.plugin.join("dist/renderer.js");
     fs::remove_file(&source).unwrap();
     let before = fs::read(fixture.config_path()).unwrap();
@@ -281,6 +283,7 @@ fn registration_cannot_replace_bundled_ids_or_an_existing_directory() {
 fn changing_a_registered_manifest_id_does_not_change_its_trusted_identity() {
     let fixture = Fixture::new();
     fixture.register();
+    successful(fixture.run(&["plugin", "enable", PLUGIN_ID]));
     fixture.write_manifest("dev.test.renamed", &["ui.dom"]);
     let before = fs::read(fixture.config_path()).unwrap();
     let error = prepare_renderer_runtime(PluginRegistry::load(fixture.config_path()).unwrap())
@@ -368,7 +371,20 @@ fn scoped_host_grants_are_displayed_and_persisted_then_revoked_without_execution
             .unwrap(),
     );
     let stdout = String::from_utf8(granted.stdout).unwrap();
-    let committed = stdout.find("plugin-added:").expect("registration result");
+    let committed = stdout
+        .find("plugin-registration:")
+        .expect("registration result");
+    let result: Value = serde_json::from_str(
+        stdout[committed..]
+            .strip_prefix("plugin-registration: ")
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(result["action"], "import");
+    assert_eq!(result["plugin_id"], PLUGIN_ID);
+    assert_eq!(result["enabled"], false);
+    assert_eq!(result["directory"], "preserved");
     for prefix in [
         "requested-permissions:",
         "granted-permissions:",

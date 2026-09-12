@@ -260,7 +260,8 @@ impl HostControl {
                     PluginSource::Bundled => false,
                 })
             };
-            if changed {
+            if changed || self.managed_authorizations.get(id) != registry.managed_plugins().get(id)
+            {
                 first_changed.get_or_insert_with(|| id.clone());
                 affected.extend(plugin_lifecycle::dependent_closure(&plugins, id));
             }

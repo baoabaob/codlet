@@ -1,0 +1,1 @@
+{"schema":1,"runtimeApi":1,"platforms":["windows-x86_64"],"author":"Codlet test fixture","adapters":{"codex.desktop":{"testedBuilds":[],"limitations":["Native UI acceptance is pending.","v2 changes only the visible badge."]}}}

@@ -82,6 +82,12 @@ impl PluginCatalog {
         for (id, registration) in registry.local_plugins() {
             let plugin = if bundled_ids.contains(id) || id == BUILTIN_HOST_PROVIDER_ID {
                 Err(LocalPluginError::ReservedId(id.clone()))
+            } else if let Err(error) = crate::managed_plugins::validate_current(registry, id) {
+                Err(LocalPluginError::Rejected {
+                    path: registration.path.clone(),
+                    stage: "managed package validation",
+                    reason: error.to_string(),
+                })
             } else {
                 load_local_plugin_with_registration(id, registration, 1)
                     .and_then(|plugin| validate_renderer_requirements(plugin, &registration.path))
@@ -147,6 +153,12 @@ impl PluginCatalog {
             .local_plugins()
             .get(id)
             .ok_or_else(|| CatalogError::UnknownPlugin(id.to_owned()))?;
+        crate::managed_plugins::validate_current(registry, id).map_err(|error| {
+            CatalogError::InvalidPlugin {
+                id: id.to_owned(),
+                message: error.to_string(),
+            }
+        })?;
         let plugin = load_local_plugin_with_registration(id, registration, generation)
             .and_then(|plugin| validate_renderer_requirements(plugin, &registration.path))
             .map_err(|error| CatalogError::InvalidPlugin {

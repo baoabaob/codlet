@@ -5,6 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use thiserror::Error;
 
+mod github_cli;
+
 use crate::catalog::{PluginCatalog, PluginSource};
 use crate::cdp::{
     CdpClient, CdpEventStream, ClientSpawnError, ShutdownError, TargetChange, TargetController,
@@ -87,6 +89,8 @@ pub enum ProbeError {
     StatusPipe(#[from] StatusPipeError),
     #[error(transparent)]
     PluginCli(#[from] crate::plugin_cli::PluginCliError),
+    #[error(transparent)]
+    GitHubDistribution(#[from] crate::github_distribution::GitHubDistributionError),
     #[error(
         "runtime registry {path} is already owned by a Codlet Host or offline editor; check status before launching"
     )]
@@ -99,7 +103,7 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch [--watch]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--network-origin <origin>]... [--executable <file>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch [--watch]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin github`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--network-origin <origin>]... [--executable <file>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error(
@@ -350,6 +354,11 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
         {
             let options = parse_plugin_trust_options(options)?;
             add_local_plugin(Path::new(directory), options)
+        }
+        [command, source, arguments @ ..]
+            if command == OsStr::new("plugin") && source == OsStr::new("github") =>
+        {
+            github_cli::run(arguments)
         }
         [command, action, directory, options @ ..]
             if command == OsStr::new("plugin") && action == OsStr::new("preview") =>
@@ -961,6 +970,15 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
     for entry in catalog.entries() {
         let source = match entry.source {
             PluginSource::Bundled => "bundled",
+            PluginSource::Local { .. }
+                if registry
+                    .managed_plugins()
+                    .get(&entry.id)
+                    .and_then(|record| record.current())
+                    .is_some() =>
+            {
+                "github"
+            }
             PluginSource::Local { .. } => "local",
         };
         let version = entry
@@ -1110,15 +1128,25 @@ fn print_plugin_permissions(plugin_id: &str, json: bool) -> Result<(), ProbeErro
     let registration = registry
         .local_plugins()
         .get(plugin_id)
-        .ok_or_else(|| PluginRegistryError::PluginId(plugin_id.to_owned()))?;
+        .ok_or_else(|| crate::plugin_cli::PluginCliError::UnknownPlugin(plugin_id.to_owned()))?;
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "schema":1,"kind":"codlet.plugin-permissions","pluginId":plugin_id,
-                "registration":registration,"enabled":registry.is_enabled(plugin_id)
-            })
-        );
+        let mut value = serde_json::json!({
+            "schema":1,"kind":"codlet.plugin-permissions","pluginId":plugin_id,
+            "registration":registration,"enabled":registry.is_enabled(plugin_id)
+        });
+        if let Some(current) = registry
+            .managed_plugins()
+            .get(plugin_id)
+            .and_then(|record| record.current())
+        {
+            value["ownership"] = Value::from("core-managed-github");
+            value["managedSource"] =
+                serde_json::to_value(&current.source).expect("source is serializable");
+            value["managedVersionKey"] = Value::from(current.version_key.clone());
+            value["metadata"] =
+                serde_json::to_value(&current.metadata).expect("metadata is serializable");
+        }
+        println!("{}", value);
     } else {
         println!(
             "plugin-permissions: id={plugin_id}; directory={}",

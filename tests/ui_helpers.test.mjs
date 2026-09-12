@@ -11,6 +11,20 @@ function fixture() {
     return { ...dom, ...lifecycle, ui: lifecycle.context.ui.create(appearance) };
 }
 
+test('external links accept only credential-free HTTPS and retire with their UI owner', async () => {
+    const f = fixture();
+    for (const href of ['javascript:alert(1)', 'http://github.com', '/relative', 'https://user:secret@github.com', 'file:///C:/plugin']) {
+        assert.throws(() => f.ui.externalLink({ text: 'Open', href }), { code: 'invalid_ui_argument' });
+    }
+    assert.throws(() => f.ui.element('a'), { code: 'invalid_ui_argument' });
+    const link = f.ui.externalLink({ text: '<Open community>', label: 'Community', href: 'https://github.com/topics/codlet-plugin' });
+    f.document.body.appendChild(link); let clicks = 0; f.ui.on(link, 'click', () => clicks++);
+    assert.equal(link.textContent, '<Open community>'); assert.equal(link.getAttribute('aria-label'), 'Community');
+    assert.equal(link.getAttribute('target'), '_blank'); assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+    await link.emit('click'); f.deactivate(); await link.emit('click');
+    assert.equal(clicks, 1); assert.equal(link.isConnected, false); assert.equal(link.listenerCount(), 0);
+});
+
 test('UI owns local controls, IDs, listeners, timers and its deactivation hook', async () => {
     const f = fixture(), ui = f.ui;
     let clicks = 0, delayed = 0;

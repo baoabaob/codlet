@@ -86,6 +86,7 @@ async function initialize(ctx, cancelled) {
         const eventAccess = await call('codex.backend.events', 'getApi');
         disposers.push(globalThis[Symbol.for(eventAccess.symbol)].onEvent(ctx, eventAccess.ticket, event => {
             const summary = { type: event.type, ...(event.threadId ? { threadId: event.threadId } : {}), ...(event.turnId || event.turn?.id ? { turnId: event.turnId ?? event.turn.id } : {}), ...(event.itemId || event.item?.id ? { itemId: event.itemId ?? event.item.id } : {}), ...(event.token ? { token: event.token } : {}) };
+            if (event.type === 'approval.requested') Object.assign(summary, { kind: event.request.kind, threadId: event.request.threadId, turnId: event.request.turnId, itemId: event.request.itemId, token: event.request.token });
             if (!event.type.endsWith('.delta')) remember(summary);
             if (event.type === 'selection.changed') { selectionRevision++; showSelection(event); }
             if (event.type === 'selection.unavailable') $('#selection').textContent = `窗口选择不可用：${event.message}`;

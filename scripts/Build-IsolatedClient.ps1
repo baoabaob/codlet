@@ -33,7 +33,14 @@ foreach ($codletFile in @('node.exe', 'LICENSE')) {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
-Copy-Item -LiteralPath (Join-Path $codletSource 'docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md') -Destination (Join-Path $codletOutput 'M5-ManualTest.md')
+$codletDocsOutput = Join-Path $codletOutput 'docs'
+$null = New-Item -ItemType Directory -Path $codletDocsOutput
+foreach ($codletDocument in (Get-ChildItem -LiteralPath (Join-Path $codletSource 'docs') -Filter '*.md' -File)) {
+    Copy-Item -LiteralPath $codletDocument.FullName -Destination $codletDocsOutput
+}
+[IO.File]::WriteAllText((Join-Path $codletOutput 'M5-ManualTest.md'), '[Open the M5a manual test guide](docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)', (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $codletOutput 'M5-GitHubManualTest.md'), '[Open the M5b GitHub manual test guide](docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md)', (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText((Join-Path $codletOutput 'Remaining-Acceptance.md'), '[Open the remaining approval and release acceptance guide](docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md)', (New-Object Text.UTF8Encoding($false)))
 $codletConfiguration = [ordered]@{
     schema = 1; labRoot = $codletLabRoot; labBinary = 'codlet-lab.exe'
     labBinarySha256 = (Get-FileHash -LiteralPath (Join-Path $codletOutput 'codlet-lab.exe') -Algorithm SHA256).Hash
@@ -92,5 +99,15 @@ $codletCheckOutput = Join-Path $codletOutput 'plugins/local-management-check'
 $null = New-Item -ItemType Directory -Path $codletCheckOutput
 foreach ($codletFile in @('codlet.json', 'renderer.js', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $codletSource ('examples/local-management-check/' + $codletFile)) -Destination $codletCheckOutput
+}
+$codletGitHubOutput = Join-Path $codletOutput 'plugins/github-release-check'
+$null = New-Item -ItemType Directory -Path $codletGitHubOutput
+Copy-Item -LiteralPath (Join-Path $codletSource 'examples/github-release-check/README.md') -Destination $codletGitHubOutput
+foreach ($codletVersion in @('v1', 'v2')) {
+    $codletVersionOutput = Join-Path $codletGitHubOutput $codletVersion
+    $null = New-Item -ItemType Directory -Path $codletVersionOutput
+    foreach ($codletFile in @('codlet.json', 'codlet-package.json', 'renderer.js', 'README.md', 'LICENSE.txt')) {
+        Copy-Item -LiteralPath (Join-Path $codletSource ('examples/github-release-check/' + $codletVersion + '/' + $codletFile)) -Destination $codletVersionOutput
+    }
 }
 [pscustomobject]@{ destination=$codletOutput; labRoot=$codletLabRoot; packageVersion=$ExpectedPackageVersion; executableSha256=$codletConfiguration.labBinarySha256 } | ConvertTo-Json -Compress

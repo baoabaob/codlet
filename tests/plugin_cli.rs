@@ -31,9 +31,17 @@ fn plugin_cli_lists_and_persists_bundled_plugin_state_without_launching_codex() 
 
     let disabled = run(local_app_data.path(), &["plugin", "disable", "codlet-gui"]);
     assert!(disabled.status.success());
+    let disabled_text = String::from_utf8(disabled.stdout).unwrap();
+    let disabled: serde_json::Value = serde_json::from_str(
+        disabled_text
+            .trim()
+            .strip_prefix("plugin-registration: ")
+            .expect("offline registration result"),
+    )
+    .unwrap();
     assert_eq!(
-        String::from_utf8(disabled.stdout).unwrap().trim(),
-        "plugin-state: id=codlet-gui; enabled=false; applies=next-codlet-launch"
+        disabled,
+        serde_json::json!({"action":"disable","affected_plugin_ids":["codlet-gui"],"directory":"preserved","enabled":false,"plugin_id":"codlet-gui","applies":"next-codlet-launch"})
     );
     assert!(registry.exists());
 
@@ -56,18 +64,32 @@ fn plugin_cli_lists_and_persists_bundled_plugin_state_without_launching_codex() 
 #[test]
 fn plugin_cli_rejects_unknown_plugins_without_creating_registry_state() {
     let local_app_data = tempdir().unwrap();
-    let output = run(
-        local_app_data.path(),
-        &["plugin", "disable", "unknown.plugin"],
-    );
-
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("unknown plugin unknown.plugin")
-    );
-    assert!(!local_app_data.path().join("Codlet").exists());
+    for arguments in [
+        vec!["plugin", "disable", "unknown.plugin"],
+        vec!["plugin", "disable", "unknown.plugin", "--cascade"],
+        vec!["plugin", "enable", "unknown.plugin"],
+        vec!["plugin", "remove", "unknown.plugin"],
+        vec!["plugin", "revoke", "unknown.plugin", "host.fs"],
+        vec!["plugin", "permissions", "unknown.plugin"],
+    ] {
+        let output = run(local_app_data.path(), &arguments);
+        assert!(!output.status.success(), "{arguments:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("unknown plugin unknown.plugin"),
+            "{arguments:?}"
+        );
+        assert!(
+            !local_app_data.path().join("Codlet").exists(),
+            "{arguments:?}"
+        );
+    }
 }
 
 #[test]
@@ -185,6 +207,14 @@ fn management_json_has_one_versioned_result_for_success_and_early_failures() {
         ),
         (
             vec!["plugin", "enable", "unknown.plugin", "--json"],
+            "unknown_plugin",
+        ),
+        (
+            vec!["plugin", "disable", "unknown.plugin", "--json"],
+            "unknown_plugin",
+        ),
+        (
+            vec!["plugin", "remove", "unknown.plugin", "--json"],
             "unknown_plugin",
         ),
         (

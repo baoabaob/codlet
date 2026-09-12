@@ -35,8 +35,13 @@ impl HostControl {
         } else {
             BTreeSet::from([id.clone()])
         };
-        if job.request.action == PluginControlAction::Disable {
-            if !job.request.cascade {
+        let managed_stop = job
+            .request
+            .local_import
+            .as_ref()
+            .is_some_and(|selection| selection.managed.is_some() && !selection.enable);
+        if job.request.action == PluginControlAction::Disable || managed_stop {
+            if !job.request.cascade && !managed_stop {
                 plugin_lifecycle::validate_disable(
                     &current,
                     renderer.catalog_snapshot(),
@@ -74,11 +79,15 @@ impl HostControl {
                     affected,
                     previous: Vec::new(),
                     next: Vec::new(),
-                    entries: Vec::new(),
+                    entries: if managed_stop {
+                        selected.into_iter().collect()
+                    } else {
+                        Vec::new()
+                    },
                 },
             );
             pending.failures = failures;
-            pending.unchanged = !was_running && !was_enabled;
+            pending.unchanged = !managed_stop && !was_running && !was_enabled;
             pending.phase = Phase::Disable;
             pending.batch = HostBatch::stop(hosts, &pending.plan.affected, "deactivate");
             return Ok(Prepared::Pending(Box::new(pending)));
@@ -204,6 +213,8 @@ pub(super) struct PendingControl {
     renderer_error: Option<String>,
     cleanup_confirmed: bool,
     renderers_started: bool,
+    managed_previous: Option<PluginRegistry>,
+    managed_restored: bool,
 }
 
 impl PendingControl {
@@ -223,7 +234,13 @@ impl PendingControl {
             renderer_error: None,
             cleanup_confirmed: true,
             renderers_started: false,
+            managed_previous: None,
+            managed_restored: false,
         }
+    }
+
+    pub(super) fn set_managed_previous(&mut self, registry: PluginRegistry) {
+        self.managed_previous = Some(registry);
     }
 
     pub(super) fn needs_renderer_executor(&self) -> bool {
@@ -405,7 +422,7 @@ impl PendingControl {
                         self.verify_rollback(renderer)
                     } else {
                         self.verify_candidate().and_then(|()| {
-                            if self.job.request.action.starts_plugin() {
+                            if self.job.request.activation_requested() {
                                 self.registry = plugin_lifecycle::persist_preference_with_guards(
                                     &self.registry,
                                     &self.job.request.plugin_id,
@@ -454,7 +471,7 @@ impl PendingControl {
             .map_err(lifecycle_error)?;
         for id in &self.plan.affected {
             if !self.registry.is_enabled(id)
-                && !(id == &self.job.request.plugin_id && self.job.request.action.starts_plugin())
+                && !(id == &self.job.request.plugin_id && self.job.request.activation_requested())
             {
                 return Err(PluginControlError::new(
                     "plugin_disabled",
@@ -480,6 +497,11 @@ impl PendingControl {
         hosts: &HostRuntime,
         generations: &mut BTreeMap<String, u64>,
     ) -> Option<PluginControlReport> {
+        if let Err(error) = self.restore_managed_registration() {
+            self.failure("rollback_registration", error.to_string());
+            return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded,
+                Some("The requested change failed and concurrent state prevented registration restoration; affected packages remain stopped.".into())));
+        }
         if self.plan.previous.is_empty() {
             return Some(
                 self.finish(
@@ -556,13 +578,47 @@ impl PendingControl {
             error,
         });
     }
+
+    fn restore_managed_registration(&mut self) -> Result<(), PluginControlError> {
+        if let Some(previous) = &self.managed_previous {
+            self.registry = crate::managed_plugins::restore_previous(
+                &self.registry,
+                previous,
+                &self.job.request.plugin_id,
+            )?;
+            self.managed_previous = None;
+            self.managed_restored = true;
+        }
+        Ok(())
+    }
     fn finish(
         &mut self,
         renderer: &mut RendererRuntime,
         generations: &BTreeMap<String, u64>,
-        outcome: PluginControlOutcome,
+        mut outcome: PluginControlOutcome,
         message: Option<String>,
     ) -> PluginControlReport {
+        if matches!(
+            outcome,
+            PluginControlOutcome::Applied | PluginControlOutcome::Unchanged
+        ) {
+            // Disabled managed selections still commit their new catalog entry.
+            if self.managed_previous.is_some() && !self.plan.entries.is_empty() {
+                renderer.commit_package_entries(std::mem::take(&mut self.plan.entries));
+            }
+            self.managed_previous = None;
+        } else if self.managed_previous.is_some()
+            && let Err(error) = self.restore_managed_registration()
+        {
+            self.failure("rollback_registration", error.to_string());
+            outcome = PluginControlOutcome::Degraded;
+        }
+        if outcome == PluginControlOutcome::Degraded && self.managed_restored {
+            match plugin_lifecycle::persist_disabled_closure(&self.registry, &self.plan.affected) {
+                Ok(registry) => self.registry = registry,
+                Err(error) => self.failure("rollback_disable", error.to_string()),
+            }
+        }
         if let Ok(registry) = PluginRegistry::load(self.registry.path()) {
             self.registry = registry;
         }

@@ -23,6 +23,308 @@ function localManagement(f, plugins = []) {
     f.override('list', () => ({ plugins, localManagement: { available: true, watchEnabled: false, folderPicker: true } }));
 }
 
+const githubSource = (tag = 'v2') => ({
+    repositoryUrl: 'https://github.com/author/plugin', owner: 'author', repository: 'plugin', releaseId: 20,
+    tag, assetId: 30, assetName: 'plugin-win-x64.zip', assetUrl: 'https://github.com/author/plugin/releases/download/v2/plugin-win-x64.zip',
+    assetSize: 2048, sha256: 'c'.repeat(64), upstreamDigestVerified: false
+});
+const githubCatalog = () => ({
+    repository: { owner: 'author', name: 'plugin', url: 'https://github.com/author/plugin' },
+    releases: [{ id: 20, tag: 'v2', name: 'Version 2', url: 'https://github.com/author/plugin/releases/tag/v2', prerelease: false, publishedAt: null,
+        assets: [{ id: 30, name: 'plugin-win-x64.zip', size: 2048, contentType: 'application/zip', downloadUrl: githubSource().assetUrl, digest: null }, { id: 31, name: 'checksums.txt', size: 64 }] }],
+    truncated: false, requestedTag: 'v2', requestedAsset: null
+});
+const managedPreview = (operation = 'install') => ({
+    ...localPreview(), kind: 'codlet.managed-preview', ownership: 'core-managed-github', operation, path: 'C:/Codlet/managed/package',
+    source: githubSource(), metadata: null, currentVersion: null, history: [], existingEnabled: false,
+    changes: { permissionsAdded: ['ui.dom'], permissionsRemoved: [], requirementsAdded: [], requirementsRemoved: [], providesAdded: [], providesRemoved: [] }
+});
+function githubManagement(f, plugins = []) {
+    f.override('list', () => ({ plugins, githubManagement: { available: true }, localManagement: { available: true, folderPicker: true, watchEnabled: false } }));
+    f.override('githubReleases', () => ({ jobId: 'catalog-1', kind: 'releases', status: 'completed', result: githubCatalog() }));
+    f.override('githubPrepare', () => ({ jobId: 'package-1', kind: 'package', status: 'completed', result: managedPreview() }));
+    f.override('cancelGitHubJob', args => ({ jobId: args.jobId, kind: 'package', status: 'cancelled' }));
+}
+async function chooseGitHubAsset(f) {
+    f.control('GitHub release').value = '20'; await f.control('GitHub release').emit('change');
+    f.control('GitHub ZIP asset').value = '30'; await f.control('GitHub ZIP asset').emit('change');
+}
+async function openGitHub(f) {
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import from GitHub').emit('click');
+    f.control('GitHub repository or release URL').value = 'https://github.com/author/plugin/releases/tag/v2';
+    await f.control('Read GitHub releases').emit('click');
+}
+
+test('GitHub import requires an exact release and ZIP, fresh trust and grants, then submits one receipt', async () => {
+    const f = fixture(); githubManagement(f);
+    let operation, request;
+    f.override('prepare', args => { request = JSON.parse(JSON.stringify(args)); operation = { operation_id: 'github-import', request }; return { status: 'prepared', operation }; });
+    f.override('submit', () => { throw new Error('Lost submit reply'); });
+    f.override('operation', args => { assert.equal(args.operationId, 'github-import'); return { status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied', desired_enabled: false } } } }; });
+    await openGitHub(f);
+    assert.equal(f.control('GitHub release').value, '');
+    assert.equal(f.control('Download selected GitHub asset').disabled, true);
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    await chooseGitHubAsset(f);
+    assert.equal(f.control('GitHub ZIP asset').children.some(option => option.value === '31'), false);
+    await f.control('Download selected GitHub asset').emit('click');
+    assert.match(f.panel().textContent, /Runtime compatibility: unknown \(not declared\)/);
+    assert.match(f.panel().textContent, /Platforms: unknown \(not declared\)/);
+    assert.match(f.panel().textContent, /SHA-256: c{64}/);
+    assert.equal(f.control('Trust this GitHub source').checked, false);
+    assert.equal(f.control('Grant ui.dom').checked, false);
+    assert.equal(f.control('Enable after import').checked, false);
+    f.control('Trust this GitHub source').checked = true; await f.control('Trust this GitHub source').emit('change');
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    f.control('Grant ui.dom').checked = true; await f.control('Grant ui.dom').emit('change');
+    const confirm = f.control('Confirm GitHub import'); await confirm.emit('click'); await confirm.emit('click');
+    assert.deepEqual(request, { action: 'import', plugin_id: 'dev.import', local_import: { path: 'C:/Codlet/managed/package', contentDigest: 'a'.repeat(64), registrationDigest: 'b'.repeat(64), trusted: true, grants: ['ui.dom'], brokerPolicy: {}, enable: false, managed: 'install' } });
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1);
+    assert.equal(f.calls.filter(method => method === 'prepare').length, 1);
+    assert.match(f.byClass('codlet-status').textContent, /imported, disabled/);
+    f.plugin.deactivate(); assert.equal(f.timerCount(), 0);
+});
+
+test('GitHub source and asset edits invalidate candidate trust and ignore old downloads', async () => {
+    const f = fixture(); githubManagement(f); await openGitHub(f); await chooseGitHubAsset(f);
+    const pending = deferred(); f.override('githubPrepare', () => pending.promise);
+    const download = f.control('Download selected GitHub asset').emit('click');
+    f.control('GitHub repository or release URL').value = 'https://github.com/new/author';
+    await f.control('GitHub repository or release URL').emit('input');
+    pending.resolve({ jobId: 'old', kind: 'package', status: 'completed', result: managedPreview() }); await download;
+    assert.equal(f.control('Trust this GitHub source'), undefined);
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    assert.equal(f.calls.includes('prepare'), false);
+    await f.control('Read GitHub releases').emit('click'); await chooseGitHubAsset(f);
+    f.override('githubPrepare', () => ({ jobId: 'new', kind: 'package', status: 'completed', result: managedPreview() }));
+    await f.control('Download selected GitHub asset').emit('click');
+    f.control('Trust this GitHub source').checked = true; f.control('Grant ui.dom').checked = true;
+    await f.control('GitHub ZIP asset').emit('change');
+    assert.equal(f.control('Trust this GitHub source'), undefined);
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    f.plugin.deactivate();
+});
+
+test('cancelling a background GitHub task ignores a late poll result without registering', async () => {
+    const f = fixture(); githubManagement(f); await openGitHub(f); await chooseGitHubAsset(f);
+    f.override('githubPrepare', () => ({ jobId: 'cancel-me', kind: 'package', status: 'running', stage: 'download' }));
+    const poll = deferred(); f.override('githubJob', args => { assert.equal(args.jobId, 'cancel-me'); return poll.promise; });
+    await f.control('Download selected GitHub asset').emit('click');
+    await new Promise(resolve => setTimeout(resolve, 330));
+    await f.control('Cancel GitHub task').emit('click');
+    assert.equal(f.calls.filter(method => method === 'cancelGitHubJob').length, 1);
+    poll.resolve({ jobId: 'cancel-me', kind: 'package', status: 'completed', result: managedPreview() });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(f.control('Trust this GitHub source'), undefined);
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    assert.match(f.panel().textContent, /Late results will be ignored/);
+    assert.equal(f.calls.includes('prepare'), false); assert.equal(f.timerCount(), 0);
+    f.plugin.deactivate();
+});
+
+test('a failed GitHub status read checks the same job without repeating download or trusting a mismatched job', async () => {
+    const f = fixture(); githubManagement(f); await openGitHub(f); await chooseGitHubAsset(f);
+    f.override('githubPrepare', () => ({ jobId: 'read-only', kind: 'package', status: 'running' }));
+    f.override('githubJob', () => { throw new Error('Network interrupted'); });
+    await f.control('Download selected GitHub asset').emit('click');
+    await new Promise(resolve => setTimeout(resolve, 330));
+    assert.equal(f.control('Check GitHub task status').hidden, false);
+    f.override('githubJob', () => ({ jobId: 'wrong', kind: 'package', status: 'completed', result: managedPreview() }));
+    await f.control('Check GitHub task status').emit('click');
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    f.override('githubJob', args => { assert.equal(args.jobId, 'read-only'); return { jobId: 'read-only', kind: 'package', status: 'completed', result: managedPreview() }; });
+    await f.control('Check GitHub task status').emit('click');
+    assert.equal(f.control('Trust this GitHub source').checked, false);
+    assert.equal(f.calls.filter(method => method === 'githubPrepare').length, 1);
+    assert.equal(f.calls.includes('prepare'), false);
+    f.plugin.deactivate();
+});
+
+test('GitHub task failures and missing ZIP assets explain recovery without displaying an install success', async () => {
+    const f = fixture(); githubManagement(f);
+    f.override('githubReleases', () => ({ jobId: 'failed', kind: 'releases', status: 'failed', error: { code: 'github_rate_limit', message: 'GitHub rate limit reached' } }));
+    await openGitHub(f);
+    assert.match(f.panel().textContent, /GitHub rate limit reached/);
+    assert.equal(f.control('Confirm GitHub import').disabled, true);
+    const catalog = githubCatalog(); catalog.releases[0].assets = [];
+    f.override('githubReleases', () => ({ jobId: 'empty', kind: 'releases', status: 'completed', result: catalog }));
+    await f.control('Read GitHub releases').emit('click');
+    f.control('GitHub release').value = '20'; await f.control('GitHub release').emit('change');
+    assert.match(f.panel().textContent, /no ZIP assets/);
+    assert.equal(f.control('Download selected GitHub asset').disabled, true);
+    assert.equal(f.calls.includes('prepare'), false);
+    f.plugin.deactivate();
+});
+
+test('closing or disposing GitHub work cancels known jobs and rejects late starts and previews', async () => {
+    const f = fixture(); githubManagement(f); await openGitHub(f); await chooseGitHubAsset(f);
+    f.override('githubPrepare', () => ({ jobId: 'close-me', kind: 'package', status: 'running' }));
+    await f.control('Download selected GitHub asset').emit('click');
+    await f.close().emit('click');
+    assert.equal(f.timerCount(), 0); assert.equal(f.calls.filter(method => method === 'cancelGitHubJob').length, 1);
+    await f.open(); await f.control('Import from GitHub').emit('click');
+    const late = deferred(); f.override('githubReleases', () => late.promise);
+    const start = f.control('Read GitHub releases').emit('click');
+    f.plugin.deactivate(); const mutations = f.mutations(), calls = f.calls.length;
+    late.resolve({ jobId: 'late', kind: 'releases', status: 'completed', result: githubCatalog() }); await start;
+    assert.equal(f.mutations(), mutations); assert.equal(f.calls.length, calls); assert.equal(f.timerCount(), 0);
+});
+
+test('managed update and rollback review version permission changes and require new trust with explicit enable state', async () => {
+    const f = fixture();
+    const plugin = { id: 'dev.import', name: 'Managed Plugin', version: '1', source: 'local', ownership: 'core-managed-github', managedSource: githubSource('v1'), enabled: true, registered: true, active: true, grants: ['ui.dom'], disableDependents: [] };
+    const oldVersion = { versionKey: 'old-key', packagePath: 'C:/Codlet/managed/old', contentDigest: 'e'.repeat(64), source: githubSource('v1'), manifest: { ...localPreview().manifest, version: '1' } };
+    githubManagement(f, [plugin]);
+    f.override('permissions', () => ({ pluginId: plugin.id, registration: { path: 'C:/Codlet/managed/current', grants: ['ui.dom'] }, ownership: 'core-managed-github', managedSource: plugin.managedSource }));
+    f.override('managedHistory', () => ({ pluginId: plugin.id, currentVersion: 'new-key', history: [oldVersion] }));
+    f.override('githubPrepare', args => {
+        assert.deepEqual(JSON.parse(JSON.stringify(args)), { repositoryUrl: 'https://github.com/author/plugin', releaseId: 20, assetId: 30, operation: 'update', pluginId: plugin.id });
+        return { jobId: 'update', kind: 'package', status: 'completed', result: { ...managedPreview('update'), manifest: { ...localPreview().manifest, version: '2', permissions: ['ui.dom', 'host.system'] }, currentVersion: oldVersion, existingEnabled: true, metadata: { schema: 1, runtimeApi: 1, platforms: ['windows-x86_64'] }, changes: { permissionsAdded: ['host.system'], permissionsRemoved: [], requirementsAdded: [], requirementsRemoved: [] } } };
+    });
+    let operation; const requests = [];
+    f.override('prepare', args => { requests.push(JSON.parse(JSON.stringify(args))); operation = { operation_id: `managed-${requests.length}`, request: args }; return { status: 'prepared', operation }; });
+    f.override('submit', () => { throw new Error('Lost reply'); });
+    f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied', desired_enabled: operation.request.local_import.enable } } } }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Managed Plugin').emit('click');
+    assert.match(f.panel().textContent, /Codlet managed GitHub package/);
+    assert.ok(f.control('Review rollback old-key'));
+    await f.control('Check GitHub versions').emit('click'); await chooseGitHubAsset(f); await f.control('Download selected GitHub asset').emit('click');
+    assert.match(f.panel().textContent, /Version: 1 → 2/);
+    assert.match(f.panel().textContent, /Permissions added: host.system/);
+    assert.match(f.panel().textContent, /author declared API 1/);
+    assert.match(f.panel().textContent, /Runtime declaration: unknown → author declared API 1/);
+    assert.match(f.panel().textContent, /Platform declaration: unknown → author declared windows-x86_64/);
+    assert.match(f.panel().textContent, /leaves the plugin disabled/);
+    assert.equal(f.control('Trust this GitHub source').checked, false); assert.equal(f.control('Enable after import').checked, false);
+    for (const label of ['Trust this GitHub source', 'Grant ui.dom', 'Grant host.system']) { f.control(label).checked = true; await f.control(label).emit('change'); }
+    await f.control('Confirm managed update').emit('click');
+    assert.equal(requests[0].action, 'update'); assert.equal(requests[0].local_import.managed, 'update'); assert.equal(requests[0].local_import.enable, false);
+    assert.match(f.byClass('codlet-status').textContent, /updated, disabled/);
+    await f.control('Details for Managed Plugin').emit('click');
+    f.override('previewRollback', args => { assert.deepEqual(JSON.parse(JSON.stringify(args)), { pluginId: plugin.id, versionKey: 'old-key' }); return { ...managedPreview('rollback'), currentVersion: oldVersion }; });
+    await f.control('Review rollback old-key').emit('click');
+    assert.equal(f.control('Trust this GitHub source').checked, false); assert.equal(f.control('Confirm managed rollback').disabled, true);
+    for (const label of ['Trust this GitHub source', 'Grant ui.dom', 'Enable after import']) { f.control(label).checked = true; await f.control(label).emit('change'); }
+    await f.control('Confirm managed rollback').emit('click');
+    assert.equal(requests[1].action, 'rollback'); assert.equal(requests[1].local_import.managed, 'rollback'); assert.equal(requests[1].local_import.enable, true);
+    assert.equal(f.calls.filter(method => method === 'submit').length, 2);
+    assert.match(f.byClass('codlet-status').textContent, /rolled back and enabled/);
+    f.plugin.deactivate();
+});
+
+test('GitHub preview rejects malformed metadata bindings and unknown permissions before showing grants', async () => {
+    for (const change of [{ source: { ...githubSource(), sha256: 'wrong' } }, { source: { ...githubSource(), repositoryUrl: 'https://github.com/other/repository' } }, { source: { ...githubSource(), assetId: 999 } }, { manifest: { ...localPreview().manifest, permissions: ['future.permission'] } }, { operation: 'update' }]) {
+        const f = fixture(); githubManagement(f); await openGitHub(f); await chooseGitHubAsset(f);
+        f.override('githubPrepare', () => ({ jobId: 'invalid', kind: 'package', status: 'completed', result: { ...managedPreview(), ...change } }));
+        await f.control('Download selected GitHub asset').emit('click');
+        assert.equal(f.control('Confirm GitHub import').disabled, true); assert.equal(f.control('Trust this GitHub source'), undefined);
+        assert.match(f.panel().textContent, /preview is incomplete/); assert.equal(f.calls.includes('prepare'), false);
+        f.plugin.deactivate();
+    }
+});
+
+test('managed update exposes backend identity errors and rejects a different plugin ID without inheriting trust', async () => {
+    const f = fixture(), plugin = { id: 'managed.expected', name: 'Expected', ownership: 'core-managed-github', source: 'local', managedSource: githubSource(), registered: true, grants: ['ui.dom'], enabled: true };
+    githubManagement(f, [plugin]);
+    f.override('permissions', () => ({ pluginId: plugin.id, registration: { path: 'C:/managed/expected', grants: ['ui.dom'] } }));
+    f.override('managedHistory', () => ({ pluginId: plugin.id, currentVersion: null, history: [] }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Expected').emit('click');
+    await f.control('Check GitHub versions').emit('click'); await chooseGitHubAsset(f);
+    f.override('githubPrepare', () => ({ jobId: 'wrong-id', kind: 'package', status: 'failed', error: { code: 'plugin_identity_changed', message: 'The selected release contains a different plugin ID.' } }));
+    await f.control('Download selected GitHub asset').emit('click');
+    assert.match(f.panel().textContent, /different plugin ID/); assert.equal(f.control('Confirm managed update').disabled, true);
+    f.override('githubPrepare', () => ({ jobId: 'wrong-preview', kind: 'package', status: 'completed', result: managedPreview('update') }));
+    await f.control('Download selected GitHub asset').emit('click');
+    assert.match(f.panel().textContent, /does not match the selected plugin/); assert.equal(f.control('Trust this GitHub source'), undefined);
+    assert.equal(f.calls.includes('prepare'), false); assert.equal(f.calls.includes('submit'), false);
+    f.plugin.deactivate();
+});
+
+function pagedHistoryFixture() {
+    const f = fixture();
+    const plugin = { id: 'dev.import', name: 'History Plugin', source: 'local', ownership: 'core-managed-github', managedSource: githubSource(), registered: true, grants: [], enabled: false };
+    githubManagement(f, [plugin, { ...plugin, id: 'managed.other', name: 'Other History' }]);
+    f.override('permissions', args => ({ pluginId: args.pluginId, registration: { path: 'C:/managed/history', grants: [] } }));
+    const version = index => ({ versionKey: `version-${index}`, packagePath: `C:/managed/version-${index}`, contentDigest: 'a'.repeat(64), source: githubSource(`v${index}`), manifest: { ...localPreview().manifest, version: String(index) } });
+    const page = (history, nextCursor, pluginId = plugin.id) => ({ pluginId, currentVersion: 'version-3', history: history.map(version), nextCursor });
+    return { f, plugin, page };
+}
+
+test('managed history loads pages explicitly, preserves the current version, and ignores duplicate clicks and entries', async () => {
+    const { f, page } = pagedHistoryFixture(); const calls = [];
+    const later = deferred();
+    f.override('managedHistory', args => { calls.push(JSON.parse(JSON.stringify(args))); return args.cursor ? later.promise : page([3, 2], 2); });
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for History Plugin').emit('click');
+    assert.equal(f.control('Review rollback version-3'), undefined);
+    assert.ok(f.control('Review rollback version-2')); assert.equal(f.control('Load more versions').hidden, false);
+    const more = f.control('Load more versions'), load = more.emit('click'); await more.emit('click');
+    assert.equal(more.disabled, true); assert.equal(calls.length, 2);
+    later.resolve(page([2, 1], null)); await load;
+    assert.deepEqual(calls, [{ pluginId: 'dev.import' }, { pluginId: 'dev.import', cursor: 2 }]);
+    assert.equal(f.control('Load more versions').hidden, true); assert.ok(f.control('Review rollback version-1'));
+    assert.equal(f.nodes().filter(node => node.getAttribute('aria-label') === 'Review rollback version-2').length, 1);
+    assert.match(f.panel().textContent, /3 · v3 · Current/);
+    f.plugin.deactivate();
+});
+
+test('a failed history page retries the same cursor and rejects invalid cursors without losing loaded rows', async () => {
+    const { f, page } = pagedHistoryFixture(); const calls = [];
+    f.override('managedHistory', args => { calls.push(args.cursor ?? 0); if (args.cursor) throw new Error('History read failed'); return page([3], 1); });
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for History Plugin').emit('click');
+    await f.control('Load more versions').emit('click');
+    assert.match(f.panel().textContent, /History read failed/); assert.match(f.panel().textContent, /3 · v3 · Current/);
+    f.override('managedHistory', args => { calls.push(args.cursor); return page([2], 1); });
+    await f.control('Load more versions').emit('click');
+    assert.match(f.panel().textContent, /cursor is invalid/); assert.equal(f.control('Review rollback version-2'), undefined);
+    f.override('managedHistory', args => { calls.push(args.cursor); return page([2], null); });
+    await f.control('Load more versions').emit('click');
+    assert.deepEqual(calls, [0, 1, 1, 1]); assert.ok(f.control('Review rollback version-2'));
+    f.plugin.deactivate();
+});
+
+test('closing or switching details rejects late history pages and each opening restarts at the first page', async () => {
+    const { f, page } = pagedHistoryFixture(); const requests = [];
+    const lateClosed = deferred(), lateSwitched = deferred();
+    let phase = 'closed';
+    f.override('managedHistory', args => {
+        requests.push(JSON.parse(JSON.stringify(args)));
+        if (args.cursor) return phase === 'closed' ? lateClosed.promise : lateSwitched.promise;
+        return page([3], args.pluginId === 'managed.other' ? null : 1, args.pluginId);
+    });
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for History Plugin').emit('click');
+    const closingLoad = f.control('Load more versions').emit('click'); await f.close().emit('click');
+    const mutations = f.mutations(); lateClosed.resolve(page([2], null)); await closingLoad;
+    assert.equal(f.mutations(), mutations);
+    await f.open(); await f.control('Details for History Plugin').emit('click');
+    phase = 'switched'; const switchingLoad = f.control('Load more versions').emit('click');
+    const details = f.nodes().find(node => node.className === 'codlet-local-page' && !node.hidden && node.textContent.includes('Loading more retained versions'));
+    await details.children.find(node => node.tagName === 'button' && node.textContent === 'Back to plugins').emit('click');
+    await f.control('Details for Other History').emit('click');
+    lateSwitched.resolve(page([2], null)); await switchingLoad;
+    assert.equal(f.control('Review rollback version-2'), undefined); assert.equal(f.panel().getAttribute('aria-label'), 'Other History');
+    assert.deepEqual(requests, [{ pluginId: 'dev.import' }, { pluginId: 'dev.import', cursor: 1 }, { pluginId: 'dev.import' }, { pluginId: 'dev.import', cursor: 1 }, { pluginId: 'managed.other' }]);
+    f.plugin.deactivate();
+});
+
+test('compact public managed previews work without a full history payload', async () => {
+    const f = fixture(); githubManagement(f); await openGitHub(f); await chooseGitHubAsset(f);
+    const preview = managedPreview(); delete preview.history; preview.historyCount = 64;
+    f.override('githubPrepare', () => ({ jobId: 'compact', kind: 'package', status: 'completed', result: preview }));
+    await f.control('Download selected GitHub asset').emit('click');
+    assert.equal(f.control('Trust this GitHub source').checked, false);
+    assert.equal(f.control('Confirm GitHub import').disabled, true); assert.equal(f.calls.includes('prepare'), false);
+    f.plugin.deactivate();
+});
+
+test('community discovery uses the fixed public HTTPS topic link and explains its trust status', async () => {
+    const f = fixture(); await f.plugin.activate(f.context); await f.open();
+    const link = f.nodes().find(node => node.tagName === 'a' && node.textContent === 'Browse community plugins');
+    assert.equal(link.getAttribute('href'), 'https://github.com/topics/codlet-plugin');
+    assert.equal(link.getAttribute('target'), '_blank'); assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+    assert.match(f.panel().textContent, /not endorsements or permission grants/);
+    assert.equal(f.calls.includes('prepare'), false); f.plugin.deactivate(); assert.equal(link.isConnected, false);
+});
+
 test('local import requires a current preview, explicit trust and every permission, then submits once', async () => {
     const f = fixture(); localManagement(f);
     const preview = localPreview();
@@ -172,7 +474,7 @@ function fixture({ mounted = true, ready = true } = {}) {
             const name = method === 'ping' ? 'codlet.runtime.ping'
                 : method === 'getMount' ? 'codex.ui.titlebar.afterMenu' : method === 'describe' ? 'codex.ui.appearance' : 'codlet.runtime.manage';
             assert.deepEqual(JSON.parse(JSON.stringify(capability)), { name, api: 1, scope: 'target' });
-            if (!['prepare', 'submit', 'operation', 'previewLocal', 'permissions', 'folderSelection'].includes(method)) assert.equal(args, null);
+            if (['ping', 'getMount', 'describe', 'list', 'disableSelf', 'chooseLocalFolder'].includes(method)) assert.equal(args, null);
             calls.push(method);
             if (overrides[method]) return overrides[method](args);
             if (method === 'ping') return { pong: true, abi: 1 };

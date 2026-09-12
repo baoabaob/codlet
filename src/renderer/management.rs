@@ -81,6 +81,8 @@ impl RendererRuntime {
         match request.action {
             PluginControlAction::Revoke
             | PluginControlAction::Import
+            | PluginControlAction::Update
+            | PluginControlAction::Rollback
             | PluginControlAction::Remove => Err(PluginControlError::new(
                 "host_executor_required",
                 "Registration and permission changes use the foreground package coordinator.",

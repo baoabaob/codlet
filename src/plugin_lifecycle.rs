@@ -271,7 +271,9 @@ pub(crate) fn verify_registrations(
 ) -> Result<PluginRegistry, LifecycleError> {
     let current = PluginRegistry::load(expected.path())?;
     for id in affected {
-        if current.local_plugins().get(id) != expected.local_plugins().get(id) {
+        if current.local_plugins().get(id) != expected.local_plugins().get(id)
+            || current.managed_plugins().get(id) != expected.managed_plugins().get(id)
+        {
             return Err(LifecycleError::RegistrationChanged(id.clone()));
         }
     }

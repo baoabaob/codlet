@@ -52,6 +52,7 @@ pub struct HostControl {
     next_authorization_scan: std::time::Instant,
     authorization_reports: Vec<PluginControlReport>,
     watch_sources: BTreeMap<String, LocalPluginRegistration>,
+    managed_authorizations: BTreeMap<String, crate::managed_plugins::ManagedPluginRecord>,
     watch_receipt: Option<WatchReceipt>,
     watch_results: Vec<HostWatchResult>,
     self_disable_receipts: BTreeMap<String, String>,
@@ -59,6 +60,9 @@ pub struct HostControl {
 
 impl HostControl {
     pub fn new(registry_path: PathBuf) -> Self {
+        let managed_authorizations = PluginRegistry::load(&registry_path)
+            .map(|registry| registry.managed_plugins().clone())
+            .unwrap_or_default();
         Self {
             registry_path,
             generations: BTreeMap::new(),
@@ -67,6 +71,7 @@ impl HostControl {
             next_authorization_scan: std::time::Instant::now(),
             authorization_reports: Vec::new(),
             watch_sources: BTreeMap::new(),
+            managed_authorizations,
             watch_receipt: None,
             watch_results: Vec::new(),
             self_disable_receipts: BTreeMap::new(),
@@ -81,7 +86,17 @@ impl HostControl {
     /// Manual lifecycle selections replace these anchors; automatic watch never
     /// adopts a changed root or full grant record on its own.
     pub fn seed_watch_sources(&mut self, renderer: &RendererRuntime, plugins: &[LoadedPlugin]) {
+        let registry = PluginRegistry::load(&self.registry_path).ok();
         for plugin in plugins {
+            if registry.as_ref().is_some_and(|registry| {
+                registry
+                    .managed_plugins()
+                    .get(&plugin.manifest.id)
+                    .and_then(crate::managed_plugins::ManagedPluginRecord::current)
+                    .is_some()
+            }) {
+                continue;
+            }
             let Some(host) = &plugin.host else { continue };
             let Some(entry) = renderer
                 .catalog_snapshot()
@@ -289,7 +304,12 @@ impl HostControl {
                 })
                 .or_insert(observation.plugin.generation);
         }
-        if job.request.action == PluginControlAction::Import {
+        if matches!(
+            job.request.action,
+            PluginControlAction::Import
+                | PluginControlAction::Update
+                | PluginControlAction::Rollback
+        ) {
             self.dispatch_import(job, renderer, hosts, broker);
             return None;
         }
@@ -326,6 +346,7 @@ impl HostControl {
             if job.request.action == PluginControlAction::Disable {
                 return Ok((registry, None));
             }
+            crate::managed_plugins::validate_current(&registry, &job.request.plugin_id)?;
             // Only this explicitly selected registration is reread. A launch
             // catalog cannot reject a plugin registered after Codlet started.
             source_attempted = true;
@@ -417,6 +438,28 @@ impl HostControl {
             return;
         };
         if let Some(report) = pending.poll(renderer, hosts, &mut self.generations) {
+            if let Ok(registry) = PluginRegistry::load(&self.registry_path) {
+                let id = &pending.job.request.plugin_id;
+                if matches!(
+                    report.outcome,
+                    PluginControlOutcome::Applied
+                        | PluginControlOutcome::Unchanged
+                        | PluginControlOutcome::RolledBack
+                ) {
+                    self.capture_managed_authorization(id, &registry);
+                }
+                self.watch_sources.remove(id);
+                if !registry
+                    .managed_plugins()
+                    .get(id)
+                    .and_then(crate::managed_plugins::ManagedPluginRecord::current)
+                    .is_some()
+                    && registry.is_enabled(id)
+                    && let Some(registration) = registry.local_plugins().get(id)
+                {
+                    self.watch_sources.insert(id.clone(), registration.clone());
+                }
+            }
             self.complete(
                 broker,
                 &pending.job.operation_id,
@@ -449,10 +492,35 @@ impl HostControl {
         registration: Option<LocalPluginRegistration>,
         watched: bool,
     ) {
+        if !watched && let Ok(registry) = PluginRegistry::load(&self.registry_path) {
+            self.capture_managed_authorization(id, &registry);
+        }
         if action == PluginControlAction::Disable {
             self.watch_sources.remove(id);
         } else if !watched && let Some(registration) = registration {
+            if PluginRegistry::load(&self.registry_path)
+                .ok()
+                .is_some_and(|registry| {
+                    registry
+                        .managed_plugins()
+                        .get(id)
+                        .and_then(crate::managed_plugins::ManagedPluginRecord::current)
+                        .is_some()
+                })
+            {
+                self.watch_sources.remove(id);
+                return;
+            }
             self.watch_sources.insert(id.to_owned(), registration);
+        }
+    }
+
+    fn capture_managed_authorization(&mut self, id: &str, registry: &PluginRegistry) {
+        if let Some(record) = registry.managed_plugins().get(id) {
+            self.managed_authorizations
+                .insert(id.to_owned(), record.clone());
+        } else {
+            self.managed_authorizations.remove(id);
         }
     }
 

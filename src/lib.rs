@@ -2,8 +2,10 @@ pub mod capabilities;
 pub mod catalog;
 pub mod cdp;
 pub mod diagnostics;
+pub mod github_distribution;
 pub mod local_import;
 pub mod local_plugins;
+pub mod managed_plugins;
 pub mod plugin_control;
 pub mod plugin_execution;
 pub mod plugin_host;
@@ -15,6 +17,7 @@ pub mod renderer;
 pub mod runtime_control;
 pub mod runtime_inspection;
 pub mod runtime_manage;
+mod runtime_manage_github;
 pub mod runtime_status;
 
 #[cfg(windows)]

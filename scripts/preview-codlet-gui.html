@@ -153,6 +153,8 @@
                         <option value="malformed">Malformed list</option>
                         <option value="empty">Empty list</option>
                         <option value="validation">Plugin validation failure</option>
+                        <option value="github-error">GitHub preparation fails</option>
+                        <option value="github-slow">GitHub preparation stays pending</option>
                     </select>
                     <label>Delay (ms) <input id="rpc-delay" type="number" min="0" max="5000" step="100" value="250"></label>
                     <label><input id="long-list" type="checkbox"> Long list</label>
@@ -210,6 +212,27 @@
         const preferences = new Map();
         const imported = new Map(), removed = new Set(), revoked = new Map();
         const operations = new Map();
+        const githubJobs = new Map(), managedCandidates = new Map();
+        let jobId = 0;
+        // Pure fixtures: no GitHub request or filesystem installation occurs here.
+        const managedSource = tag => ({ repositoryUrl: 'https://github.com/example/codlet-notes', owner: 'example', repository: 'codlet-notes', releaseId: tag === 'v2.0.0' ? 20 : 10,
+            tag, assetId: tag === 'v2.0.0' ? 200 : 100, assetName: 'notes-windows-x86_64.zip', assetUrl: `https://github.com/example/codlet-notes/releases/download/${tag}/notes-windows-x86_64.zip`, assetSize: 12800, sha256: (tag === 'v2.0.0' ? 'c' : 'd').repeat(64), upstreamDigestVerified: false });
+        const managedManifest = version => ({ schema: 1, id: 'managed.notes', name: 'GitHub Notes', version, renderer: { entry: 'dist/renderer.js', world: 'isolated' },
+            permissions: version === '2.0.0' ? ['ui.dom', 'host.system'] : ['ui.dom'], provides: [], requires: [{ name: 'codex.ui.appearance', api: 1, scope: 'target' }] });
+        const retainedVersion = { versionKey: 'preview-v1', packagePath: 'C:/Codlet/managed/notes-v1', contentDigest: 'e'.repeat(64), source: managedSource('v1.0.0'), manifest: managedManifest('1.0.0') };
+        const currentVersion = { versionKey: 'preview-v2', packagePath: 'C:/Codlet/managed/notes-v2', contentDigest: 'a'.repeat(64), source: managedSource('v2.0.0'), manifest: managedManifest('2.0.0'), metadata: { schema: 1, runtimeApi: 1, platforms: ['windows-x86_64'] } };
+        function managedPreview(operation, releaseId = 20) {
+            const version = operation === 'rollback' || releaseId === 10 ? retainedVersion : currentVersion;
+            const preview = { schema: 1, kind: 'codlet.managed-preview', ownership: 'core-managed-github', operation, path: version.packagePath,
+                contentDigest: version.contentDigest, registrationDigest: 'b'.repeat(64), manifest: version.manifest, source: version.source, metadata: version.metadata ?? null,
+                existingRegistration: null, existingEnabled: true, currentVersion: operation === 'install' ? null : operation === 'rollback' ? currentVersion : retainedVersion, historyCount: 2,
+                changes: { permissionsAdded: operation === 'rollback' ? [] : ['host.system'], permissionsRemoved: operation === 'rollback' ? ['host.system'] : [], requirementsAdded: [], requirementsRemoved: [], providesAdded: [], providesRemoved: [] } };
+            managedCandidates.set(preview.path, preview); return preview;
+        }
+        function startGitHubJob(kind, result, mode) {
+            const job = { jobId: `preview-job-${++jobId}`, kind, status: 'running', stage: kind === 'package' ? 'downloading-and-validating' : 'fetching-releases' };
+            githubJobs.set(job.jobId, { job, result, mode, polls: 0 }); return { ...job };
+        }
         const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         const log = text => {
             const item = document.createElement('li');
@@ -230,7 +253,8 @@
             const plugins = [
                 { id: 'codlet-gui', version: '0.1.0', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
                 { id: 'codex.ui.adapter', version: '0.1.0', source: 'bundled', enabled: true, active: true, validation: { status: 'ok' } },
-                { id: 'local.notes', version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } }
+                { id: 'local.notes', version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } },
+                { id: 'managed.notes', name: 'GitHub Notes', version: '1.0.0', source: 'local', ownership: 'core-managed-github', managedSource: retainedVersion.source, path: retainedVersion.packagePath, enabled: true, active: true, validation: { status: 'ok' } }
             ];
             if (mode === 'validation') plugins.push({ id: 'local.broken', version: null, source: 'local', path: 'C:/preview/missing', enabled: true, active: false,
                 validation: { status: 'failed', error: { message: 'Renderer entry is missing: C:/preview/missing/dist/renderer.js' } } });
@@ -246,7 +270,7 @@
                 plugin.grants = plugin.source === 'local' ? revoked.get(plugin.id) ?? ['ui.dom'] : [];
                 plugin.generation = plugin.loaded ? 1 : null;
             }
-            return { plugins: [...plugins.filter(plugin => !removed.has(plugin.id)), ...imported.values()], localManagement: { available: true, watchEnabled: false, folderPicker: true } };
+            return { plugins: [...plugins.filter(plugin => !removed.has(plugin.id) && !imported.has(plugin.id)), ...imported.values()], localManagement: { available: true, watchEnabled: false, folderPicker: true }, githubManagement: { available: true } };
         }
         function unload() {
             active = false;
@@ -271,7 +295,7 @@
                 rpc: { async request(capability, method, args) {
                     const id = ++callId;
                     log(`#${id} ${method} requested (generation ${current})`);
-                    if (!['prepare', 'submit', 'operation', 'permissions', 'previewLocal', 'folderSelection'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
+                    if (['ping', 'getMount', 'describe', 'list', 'disableSelf', 'chooseLocalFolder'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
                     if (method === 'ping' && capability.name === 'codlet.runtime.ping') return { pong: true, abi: 1 };
                     if (method === 'describe' && capability.name === 'codex.ui.appearance') return appearanceProvider();
                     if (method === 'getMount' && capability.name === 'codex.ui.titlebar.afterMenu') {
@@ -296,10 +320,29 @@
                     };
                     if (method === 'permissions') {
                         const plugin = response.plugins.find(plugin => plugin.id === args.pluginId);
-                        return { pluginId: args.pluginId, registration: { path: plugin.path || 'C:/preview/local-notes', grants: plugin.grants || [], brokerPolicy: {} }, enabled: plugin.enabled };
+                        return { pluginId: args.pluginId, registration: { path: plugin.path || 'C:/preview/local-notes', grants: plugin.grants || [], brokerPolicy: {} }, enabled: plugin.enabled, ownership: plugin.ownership, managedSource: plugin.managedSource };
+                    }
+                    if (method === 'githubReleases') return startGitHubJob('releases', { repository: { owner: 'example', name: 'codlet-notes', url: 'https://github.com/example/codlet-notes' }, requestedTag: null, requestedAsset: null, truncated: false,
+                        releases: ['v2.0.0', 'v1.0.0'].map(tag => { const source = managedSource(tag); return { id: source.releaseId, tag, name: `Notes ${tag}`, prerelease: false, publishedAt: null, url: `https://github.com/example/codlet-notes/releases/tag/${tag}`,
+                            assets: [{ id: source.assetId, name: source.assetName, size: source.assetSize, contentType: 'application/zip', downloadUrl: source.assetUrl, digest: null }] }; }) }, mode);
+                    if (method === 'githubPrepare') return startGitHubJob('package', managedPreview(args.operation ?? 'install', args.releaseId), mode);
+                    if (method === 'managedHistory') {
+                        const cursor = args.cursor ?? 0;
+                        const history = [retainedVersion, currentVersion].slice(cursor, cursor + 1).map(({ metadata, ...version }) => version);
+                        return { pluginId: args.pluginId, currentVersion: 'preview-v2', history, nextCursor: cursor + 1 < 2 ? cursor + 1 : null };
+                    }
+                    if (method === 'previewRollback') return managedPreview('rollback');
+                    if (method === 'githubJob' || method === 'cancelGitHubJob') {
+                        const record = githubJobs.get(args.jobId); if (!record) throw new Error('Simulated job expired');
+                        if (method === 'cancelGitHubJob') record.job.status = 'cancelled';
+                        if (record.job.status === 'running' && ++record.polls >= 2 && record.mode !== 'github-slow') {
+                            if (record.mode === 'github-error') { record.job.status = 'failed'; record.job.error = { code: 'github_preview_failure', message: 'Simulated GitHub download failure. No package installed.' }; }
+                            else { record.job.status = 'completed'; record.job.result = record.result; }
+                        }
+                        return { ...record.job };
                     }
                     if (method === 'prepare') {
-                        if (!['enable', 'disable', 'reload', 'import', 'remove', 'revoke'].includes(args?.action) || typeof args?.plugin_id !== 'string') throw new Error('Invalid simulated request');
+                        if (!['enable', 'disable', 'reload', 'import', 'remove', 'revoke', 'update', 'rollback'].includes(args?.action) || typeof args?.plugin_id !== 'string') throw new Error('Invalid simulated request');
                         const operation = { operation_id: `preview-${++receiptId}`, request: { ...args }, completion: null };
                         operations.set(operation.operation_id, { status: 'prepared', operation });
                         if (operations.size > 16) operations.delete(operations.keys().next().value);
@@ -312,9 +355,13 @@
                         if (method === 'operation' && record.status === 'queued') {
                             record.status = 'completed';
                             const request = record.operation.request, id = request.plugin_id;
-                            const enabled = request.action === 'import' ? request.local_import.enable : !['disable', 'remove', 'revoke'].includes(request.action);
+                            const enabled = ['import', 'update', 'rollback'].includes(request.action) ? request.local_import.enable : !['disable', 'remove', 'revoke'].includes(request.action);
                             preferences.set(id, enabled);
-                            if (request.action === 'import') imported.set(id, { id, name: 'Local Tools', version: '1.0.0', path: request.local_import.path, grants: request.local_import.grants, source: 'local', registered: true, enabled, active: enabled });
+                            if (['import', 'update', 'rollback'].includes(request.action)) {
+                                const candidate = managedCandidates.get(request.local_import.path);
+                                imported.set(id, { id, name: candidate?.manifest.name ?? 'Local Tools', version: candidate?.manifest.version ?? '1.0.0', path: request.local_import.path, grants: request.local_import.grants, source: 'local', registered: true, enabled, active: enabled,
+                                    ...(candidate ? { ownership: 'core-managed-github', managedSource: candidate.source } : {}) });
+                            }
                             if (request.action === 'remove') { removed.add(id); imported.delete(id); }
                             if (request.action === 'revoke') { revoked.set(id, (response.plugins.find(plugin => plugin.id === id)?.grants ?? []).filter(permission => permission !== request.permission)); if (imported.has(id)) imported.get(id).grants = revoked.get(id); }
                             record.operation.completion = { kind: 'report', report: { outcome: 'applied', desired_enabled: enabled } };

@@ -11,6 +11,8 @@ pub enum PluginControlAction {
     Reload,
     Revoke,
     Import,
+    Update,
+    Rollback,
     Remove,
 }
 
@@ -26,6 +28,8 @@ impl PluginControlAction {
             Self::Reload => "reload",
             Self::Revoke => "revoke",
             Self::Import => "import",
+            Self::Update => "update",
+            Self::Rollback => "rollback",
             Self::Remove => "remove",
         }
     }
@@ -41,7 +45,7 @@ pub struct PluginControlRequest {
     /// Explicitly confirmed stop of the enabled/running dependent closure.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cascade: bool,
-    /// Explicit local selection and grants. Submission still carries only a receipt.
+    /// Explicit local or managed package selection and grants. Submission carries only a receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_import: Option<Box<crate::local_import::LocalImportRequest>>,
 }
@@ -51,6 +55,17 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl PluginControlRequest {
+    pub(crate) fn activation_requested(&self) -> bool {
+        self.action.starts_plugin()
+            || matches!(
+                self.action,
+                PluginControlAction::Update | PluginControlAction::Rollback
+            ) && self
+                .local_import
+                .as_ref()
+                .is_some_and(|selection| selection.enable)
+    }
+
     pub fn validate(&self) -> Result<(), PluginControlError> {
         if self.cascade
             && !matches!(
@@ -75,14 +90,37 @@ impl PluginControlRequest {
                 "Only revoke requires one explicit permission.",
             ));
         }
-        if (self.action == PluginControlAction::Import) != self.local_import.is_some() {
+        if matches!(
+            self.action,
+            PluginControlAction::Import
+                | PluginControlAction::Update
+                | PluginControlAction::Rollback
+        ) != self.local_import.is_some()
+        {
             return Err(PluginControlError::new(
                 "invalid_import",
-                "Only import requires one explicit local selection.",
+                "Import, update and rollback require one explicit package selection.",
             ));
         }
         if let Some(selection) = &self.local_import {
             selection.validate()?;
+            use crate::managed_plugins::ManagedOperation;
+            let valid = match self.action {
+                PluginControlAction::Import => {
+                    matches!(selection.managed, None | Some(ManagedOperation::Install))
+                }
+                PluginControlAction::Update => selection.managed == Some(ManagedOperation::Update),
+                PluginControlAction::Rollback => {
+                    selection.managed == Some(ManagedOperation::Rollback)
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(PluginControlError::new(
+                    "invalid_managed_operation",
+                    "The action must match the previewed managed operation.",
+                ));
+            }
         }
         Ok(())
     }

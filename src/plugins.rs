@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::capabilities::CapabilityDescriptor;
+use crate::managed_plugins::ManagedPluginRecord;
 use crate::plugin_permissions::BrokerPolicy;
 
 const MANIFEST_SCHEMA: u32 = 1;
@@ -157,6 +158,8 @@ pub struct PluginRegistry {
     pending: BTreeMap<String, PluginPreference>,
     local_plugins: BTreeMap<String, LocalPluginRegistration>,
     pending_local: BTreeMap<String, LocalPluginEdit>,
+    managed_plugins: BTreeMap<String, ManagedPluginRecord>,
+    pending_managed: BTreeMap<String, ManagedPluginEdit>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -165,6 +168,8 @@ struct RegistryDocument {
     schema: u32,
     plugins: BTreeMap<String, PluginPreference>,
     local_plugins: BTreeMap<String, LocalPluginRegistration>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    managed_plugins: BTreeMap<String, ManagedPluginRecord>,
 }
 
 #[derive(Deserialize)]
@@ -175,12 +180,20 @@ struct RegistryInput {
     plugins: BTreeMap<String, PluginPreference>,
     #[serde(default, deserialize_with = "deserialize_local_plugins")]
     local_plugins: Option<BTreeMap<String, LocalPluginRegistration>>,
+    #[serde(default, deserialize_with = "deserialize_unique_ids")]
+    managed_plugins: BTreeMap<String, ManagedPluginRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalPluginEdit {
     expected: Option<LocalPluginRegistration>,
     desired: Option<LocalPluginRegistration>,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedPluginEdit {
+    expected: Option<ManagedPluginRecord>,
+    desired: Option<ManagedPluginRecord>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -401,9 +414,11 @@ impl PluginRegistry {
         Ok(Self {
             path,
             local_plugins: document.local_plugins.clone(),
+            managed_plugins: document.managed_plugins.clone(),
             document,
             pending: BTreeMap::new(),
             pending_local: BTreeMap::new(),
+            pending_managed: BTreeMap::new(),
         })
     }
 
@@ -429,6 +444,67 @@ impl PluginRegistry {
     /// Includes staged registrations, grants, and removals. Only `save` persists them.
     pub fn local_plugins(&self) -> &BTreeMap<String, LocalPluginRegistration> {
         &self.local_plugins
+    }
+
+    /// Source provenance and retained versions survive unregistering a package.
+    pub fn managed_plugins(&self) -> &BTreeMap<String, ManagedPluginRecord> {
+        &self.managed_plugins
+    }
+
+    /// Only the managed staging transaction may replace an identity's directory.
+    pub(crate) fn register_managed(
+        &mut self,
+        plugin_id: &str,
+        registration: LocalPluginRegistration,
+        record: ManagedPluginRecord,
+    ) -> Result<(), PluginRegistryError> {
+        self.validate_local_id(plugin_id)?;
+        validate_local_registration(&registration)
+            .map_err(|message| self.local_error(plugin_id, io::ErrorKind::InvalidInput, message))?;
+        record
+            .validate(plugin_id, Some(&registration))
+            .map_err(|message| {
+                self.local_error(plugin_id, io::ErrorKind::InvalidInput, &message)
+            })?;
+        if self
+            .local_plugins
+            .iter()
+            .any(|(id, existing)| id != plugin_id && existing.path == registration.path)
+        {
+            return Err(self.local_error(
+                plugin_id,
+                io::ErrorKind::AlreadyExists,
+                "path is registered under another id",
+            ));
+        }
+        self.stage_local(plugin_id, Some(registration));
+        self.stage_managed(plugin_id, Some(record));
+        Ok(())
+    }
+
+    pub(crate) fn restore_managed(
+        &mut self,
+        plugin_id: &str,
+        registration: Option<LocalPluginRegistration>,
+        record: Option<ManagedPluginRecord>,
+    ) {
+        self.stage_local(plugin_id, registration);
+        self.stage_managed(plugin_id, record);
+    }
+
+    fn stage_managed(&mut self, plugin_id: &str, desired: Option<ManagedPluginRecord>) {
+        self.pending_managed
+            .entry(plugin_id.to_owned())
+            .or_insert_with(|| ManagedPluginEdit {
+                expected: self.document.managed_plugins.get(plugin_id).cloned(),
+                desired: None,
+            })
+            .desired = desired.clone();
+        if let Some(record) = desired {
+            self.managed_plugins.insert(plugin_id.to_owned(), record);
+        } else {
+            self.managed_plugins.remove(plugin_id);
+        }
     }
 
     /// Stage a complete-record permission revocation. save() performs the
@@ -486,6 +562,8 @@ impl PluginRegistry {
             ));
         }
         self.stage_local(plugin_id, Some(registration));
+        // Every trust edit guards the corresponding provenance under the same lock.
+        self.stage_managed(plugin_id, self.managed_plugins.get(plugin_id).cloned());
         Ok(())
     }
 
@@ -496,6 +574,10 @@ impl PluginRegistry {
             return Err(self.local_error(plugin_id, io::ErrorKind::NotFound, "is not registered"));
         }
         self.stage_local(plugin_id, None);
+        if let Some(mut record) = self.managed_plugins.get(plugin_id).cloned() {
+            record.current_version = None;
+            self.stage_managed(plugin_id, Some(record));
+        }
         Ok(())
     }
 
@@ -585,6 +667,15 @@ impl PluginRegistry {
 
         let _lock = lock_registry(&self.path, REGISTRY_LOCK_TIMEOUT)?;
         let mut latest = RegistryDocument::read(&self.path)?;
+        for (id, edit) in &self.pending_managed {
+            if latest.managed_plugins.get(id) != edit.expected.as_ref() {
+                return Err(self.local_error(
+                    id,
+                    io::ErrorKind::InvalidData,
+                    "managed source or version history changed since loading; preview again",
+                ));
+            }
+        }
         for (id, edit) in &self.pending_local {
             let current = latest.local_plugins.get(id);
             if current != edit.expected.as_ref() {
@@ -612,7 +703,11 @@ impl PluginRegistry {
                 ));
             }
         }
-        if !self.pending.is_empty() || !self.pending_local.is_empty() || latest.schema == 1 {
+        if !self.pending.is_empty()
+            || !self.pending_local.is_empty()
+            || !self.pending_managed.is_empty()
+            || latest.schema == 1
+        {
             latest.plugins.extend(self.pending.clone());
             // Upgrade only an explicitly edited GUI preference, under the same
             // merge lock. Read-only inspection and unrelated writes preserve the
@@ -629,6 +724,13 @@ impl PluginRegistry {
                     latest.local_plugins.remove(id);
                 }
             }
+            for (id, edit) in &self.pending_managed {
+                if let Some(record) = &edit.desired {
+                    latest.managed_plugins.insert(id.clone(), record.clone());
+                } else {
+                    latest.managed_plugins.remove(id);
+                }
+            }
             latest.schema = REGISTRY_SCHEMA;
             latest.validate(&self.path)?;
             let mut bytes = serde_json::to_vec_pretty(&latest)
@@ -642,9 +744,11 @@ impl PluginRegistry {
             TemporaryRegistry::create(&self.path)?.replace(&self.path, &bytes)?;
         }
         self.local_plugins = latest.local_plugins.clone();
+        self.managed_plugins = latest.managed_plugins.clone();
         self.document = latest;
         self.pending.clear();
         self.pending_local.clear();
+        self.pending_managed.clear();
         Ok(())
     }
 }
@@ -926,6 +1030,7 @@ impl Default for RegistryDocument {
             schema: REGISTRY_SCHEMA,
             plugins: BTreeMap::new(),
             local_plugins: BTreeMap::new(),
+            managed_plugins: BTreeMap::new(),
         }
     }
 }
@@ -940,7 +1045,7 @@ impl RegistryDocument {
                         message: error.to_string(),
                     })?;
                 match input.schema {
-                    1 if input.local_plugins.is_some() => {
+                    1 if input.local_plugins.is_some() || !input.managed_plugins.is_empty() => {
                         return Err(PluginRegistryError::Json {
                             path: path.to_owned(),
                             message: "schema 1 does not allow localPlugins".to_owned(),
@@ -959,6 +1064,7 @@ impl RegistryDocument {
                     schema: input.schema,
                     plugins: input.plugins,
                     local_plugins: input.local_plugins.unwrap_or_default(),
+                    managed_plugins: input.managed_plugins,
                 }
             }
             None => Self::default(),
@@ -975,6 +1081,17 @@ impl RegistryDocument {
             return Err(PluginRegistryError::PluginId(plugin_id.clone()));
         }
         let mut paths = BTreeMap::new();
+        for (id, record) in &self.managed_plugins {
+            if !valid_plugin_id(id) || reserved_plugin_id(id) {
+                return Err(PluginRegistryError::PluginId(id.clone()));
+            }
+            record
+                .validate(id, self.local_plugins.get(id))
+                .map_err(|message| PluginRegistryError::Json {
+                    path: path.to_owned(),
+                    message: format!("managed plugin {id}: {message}"),
+                })?;
+        }
         for (id, registration) in &self.local_plugins {
             if !valid_plugin_id(id) {
                 return Err(PluginRegistryError::PluginId(id.clone()));

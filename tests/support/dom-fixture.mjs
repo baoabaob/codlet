@@ -149,7 +149,7 @@ export function domFixture({ mounted = true, ready = true } = {}) {
     editor.focus();
     const window = new Target();
     const scope = {
-        module: { exports: {} }, document, Error, AbortController, crypto: { randomUUID }, innerHeight: 720,
+        module: { exports: {} }, document, Error, URL, AbortController, crypto: { randomUUID }, innerHeight: 720,
         setTimeout(callback, delay) {
             const timer = globalThis.setTimeout(() => { timers.delete(timer); callback(); }, delay);
             timers.add(timer);

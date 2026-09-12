@@ -2,7 +2,7 @@
 
 第三方 Host 和可选托管 renderer 与 GUI 使用同一项 `codlet.runtime.manage@1` capability。
 调用者必须声明精确 descriptor 和 `runtime.manage` permission，并获得明确 grant。Core
-验证调用者、generation、scope 和授权；params 不能选择另一个 caller 或 registry，也不接受源码文本。M5a 导入只接收显式本地目录及其预览摘要。
+验证调用者、generation、scope 和授权；params 不能选择另一个 caller 或 registry，也不接受源码文本。M5a 导入接收显式本地目录及其预览摘要；M5b 新增 Core 校验的 GitHub 发布包准备与托管版本选择。
 
 `runtime.manage` 是管理授权，包含导入和为其他插件选择 grants 的能力；只能授给可信管理插件，不能将它当作只读列表权限。
 
@@ -36,8 +36,13 @@ scope 也可用，Host 通过 Core 签发的 target scope 或当前入站 scope 
 | `permissions` | `{pluginId}` | 最新本地注册记录，格式与 CLI permissions 相同 |
 | `chooseLocalFolder` | `null` | Windows 文件夹选择状态及 `selectionId`，立即返回 |
 | `folderSelection` | `{selectionId}` | `selecting` / `selected` / `cancelled` / `failed`；成功才包含目录 |
+| `githubReleases` | `{url}` | 开始只读发布列表任务，返回 job |
+| `githubPrepare` | `{repositoryUrl,releaseId,assetId,operation?:'install'|'update',pluginId?}` | 下载/校验任务；update 必须指定目标 ID |
+| `githubJob` / `cancelGitHubJob` | `{jobId}` | 读取 / 取消准备任务 |
+| `managedHistory` | `{pluginId,cursor?}` | `{pluginId,currentVersion,history,nextCursor}`，每页最多 8 条并受响应字节预算限制 |
+| `previewRollback` | `{pluginId,versionKey}` | 重新校验的托管候选预览，未提交变更 |
 
-`action` 是 `enable`、`disable`、`reload`、`revoke`、`import` 或 `remove`；仅 `revoke` 必须携带一个 permission，
+`action` 是 `enable`、`disable`、`reload`、`revoke`、`import`、`update`、`rollback` 或 `remove`；仅 `revoke` 必须携带一个 permission，
 其他 action 省略该字段。注意 prepare 的 `plugin_id` 是 snake_case，而 submit/operation
 的输入 `operationId` 是 camelCase。ControlReport 回包继续使用原 snake_case 字段：
 `schema_version`、`host_pid`、`registry_scope`、`status`、`operation`、`error`。
@@ -71,13 +76,23 @@ const prepared = await context.rpc.request(manage, 'prepare', {
 });
 ```
 
-仅 import 接受 `local_import`。摘要覆盖规范根目录、manifest 语义、入口文本以及预览时的完整注册记录/启用偏好；它用于拒绝过期预览，不能代替信任作者。执行前再次检查，同 ID 不同路径直接冲突；路径变化需要显式移除后重新授信。运行中的同 ID 包必须先停用，再更改授权。
+本地 import 的 `local_import` 省略 `managed`。摘要覆盖规范根目录、manifest 语义、入口文本以及预览时的完整注册记录/启用偏好；它用于拒绝过期预览，不能代替信任作者。执行前再次检查，本地开发目录中同 ID 不同路径直接冲突；路径变化需要显式移除后重新授信。运行中的本地同 ID 包必须先停用，再更改授权。托管更新/回滚使用下述显式事务。
 
 导入先将注册与停用偏好原子保存；`enable: true` 随后在同一 receipt 中使用既有激活事务，保留检查过的源码快照。激活失败不会留下默认启用的新注册；结果会指出失败或 degraded 状态。依赖预检失败时不会保存注册。传输丢失后仍只查询原 receipt。
 
 Remove 取消本地注册、停用已确认的依赖闭包，并撤回运行权限后清理；作者目录、文件和插件自有数据不删除。内置安装不能移除。每次 prepare 的完整序列化请求仍受 4 KiB 限制，预览/结果受 256 KiB 限制。
 
 `plugin preview <directory> --json` 提供 CLI 只读预览。`plugin add --trust --grant ... [--enable] [--json]` 和 `plugin remove <id> [--cascade] [--json]` 使用同一注册与生命周期服务。Add 默认停用；离线修改仍必须先证明该注册表没有 Host。手测步骤见 [M5a 手测指南](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)。
+
+## M5b 后台准备与托管选择
+
+`list.githubManagement.available` 表示服务可用。GitHub job 为 `{jobId,kind:'releases'|'package',status:'running'|'completed'|'cancelled'|'failed',stage,result?,error?:{code,message}}`；它不等于管理 mutation receipt。最多 4 个尚未退出的 worker、16 条保留结果，网络准备预算两分钟；取消后不交付迟到结果，不会自动注册。正在做的同步校验可能先完成，再释放 worker。
+
+package job 完成时返回 `codlet.managed-preview`，包含来源、当前/候选版本、权限/依赖差异、兼容声明及一次采样的依赖检查。预览和完整 job 一起受响应预算约束，超限发布明确 failed。公开预览用 `historyCount` 代替完整历史；历史分页不携带大型 metadata，选择回滚后再获取完整候选声明。
+
+托管的最终 prepare 仍使用 `local_import`，额外携带 `managed:'install'|'update'|'rollback'`，分别配对 `action:'import'|'update'|'rollback'`。其余字段与上面的导入确认一致。源记录不由 caller 传入；Core 根据同 registry 的下载回执和整包摘要重新获取。每次显式选择 grants、scope 和 enable。换仓库不继承信任；运行更新复用代次替换和失败补偿。
+
+`permissions` 与 list 中的托管项另有 `ownership:'core-managed-github'`、`managedSource`、`managedVersionKey`、可选 `metadata`。本地开发条目继续原格式。CLI 和发布细节见 [GitHub 分发规范](GITHUB_PLUGIN_DISTRIBUTION.md)。
 
 ```js
 const manage = { name: 'codlet.runtime.manage', api: 1, scope: 'runtime' };

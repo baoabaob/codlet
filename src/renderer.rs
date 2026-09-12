@@ -969,6 +969,12 @@ impl RendererRuntime {
                 plugin.manifest.renderer.is_some()
                     && plugin.source.is_some()
                     && plugin.manifest.host.is_none()
+                    && self
+                        .plugin_registry
+                        .managed_plugins()
+                        .get(&plugin.manifest.id)
+                        .and_then(|record| record.current())
+                        .is_none()
             })
             .filter_map(|plugin| {
                 let entry = self

@@ -113,12 +113,17 @@ fn package_unavailable_still_reports_corrupt_registry_and_declared_capabilities(
             .as_array()
             .unwrap()
             .len(),
-        3
+        4
     );
-    assert_eq!(
-        plugin(&json, "codex.ui.adapter")["provides"][0]["name"],
-        "codex.ui.titlebar.afterMenu"
-    );
+    for name in ["codex.ui.appearance", "codex.ui.titlebar.afterMenu"] {
+        assert!(
+            plugin(&json, "codex.ui.adapter")["provides"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|capability| capability["name"] == name)
+        );
+    }
     let human = report.to_human_readable();
     assert!(human.contains("package: failed [package_not_installed]"));
     assert!(human.contains("registry: failed [registry_json_invalid]"));

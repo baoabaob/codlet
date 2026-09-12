@@ -32,9 +32,8 @@
         node.setAttribute('data-codlet-ui-role', name);
         node.setAttribute('data-codlet-ui-variant', variant);
     };
-    function element(tag, options = {}) {
+    function createElement(tag, options = {}) {
         assertLive();
-        if (!['div', 'span', 'p', 'section', 'h1', 'h2', 'label', 'button', 'input', 'dialog', 'textarea', 'select', 'option'].includes(tag)) throw error('invalid_ui_argument', 'Unsupported UI element');
         if (nodes.size >= 4096) throw error('ui_resource_limit', 'UI element limit reached');
         const node = document.createElement(tag);
         if (options.role) role(node, options.role, options.variant);
@@ -44,6 +43,24 @@
         node.setAttribute('data-codlet-ui-theme', appearance.themeToken);
         nodes.set(node, new Set());
         focusOwners.set(node, () => outsideFocus);
+        return node;
+    }
+    function element(tag, options = {}) {
+        if (!['div', 'span', 'p', 'section', 'h1', 'h2', 'label', 'button', 'input', 'dialog', 'textarea', 'select', 'option'].includes(tag)) throw error('invalid_ui_argument', 'Unsupported UI element');
+        return createElement(tag, options);
+    }
+    function externalLink(options) {
+        let url;
+        try { url = new URL(text(options?.href, 'href')); } catch (_) { throw error('invalid_ui_argument', 'An absolute HTTPS URL is required'); }
+        if (url.protocol !== 'https:' || url.username || url.password) throw error('invalid_ui_argument', 'An HTTPS URL without credentials is required');
+        const caption = text(options?.text);
+        if (!caption.trim()) throw error('invalid_ui_argument', 'A link requires visible text');
+        const label = options?.label === undefined ? null : text(options.label, 'label');
+        const node = createElement('a', { text: caption });
+        node.setAttribute('href', url.href);
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+        if (label !== null) node.setAttribute('aria-label', label);
         return node;
     }
     function on(target, type, handler, options) {
@@ -194,6 +211,6 @@
     const unregister = context.onDeactivate(dispose);
     try { on(document, 'focusin', event => { if (!ownsFocus(event.target)) outsideFocus = externalFocus(event.target); }); }
     catch (failure) { dispose(); throw failure; }
-    return Object.freeze({ api: 1, signal: abort.signal, element, on, remove, button, switch: toggle, row, status, dialog, busy, after, dispose });
+    return Object.freeze({ api: 1, signal: abort.signal, element, on, remove, button, externalLink, switch: toggle, row, status, dialog, busy, after, dispose });
     };
 })()
