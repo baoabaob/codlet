@@ -59,6 +59,9 @@ const LAB_DIRECTORIES: &[&str] = &[
     "home/AppData/Local/Codex/Logs",
     "temp",
 ];
+// The Windows Shell initializes its Desktop namespace even when a file dialog
+// starts at an explicit folder. Older lab profiles did not create this directory.
+const LAB_SHELL_DIRECTORIES: &[&str] = &["home/Desktop"];
 
 #[derive(Debug, Error)]
 pub enum LabError {
@@ -646,7 +649,9 @@ fn hold_lab_child(
             request_own_child_quit(&mut request, &sessions, "runtime_update", reporter);
             update_quit = Some(request);
         }
-        if runtime.take_update_restart_cancelled() { update_quit = None; }
+        if runtime.take_update_restart_cancelled() {
+            update_quit = None;
+        }
         if !quit.requested() && !startup_verified {
             match startup.poll() {
                 Ok(true) => {
@@ -675,7 +680,11 @@ fn hold_lab_child(
             }
         }
         if let Some(request) = plugin_request {
-            if !startup_verified || quit.requested() || runtime.update_installing() || renderer_pump_failed || cdp_closed_reported
+            if !startup_verified
+                || quit.requested()
+                || runtime.update_installing()
+                || renderer_pump_failed
+                || cdp_closed_reported
             {
                 reporter.emit(
                     "plugin_control_rejected",
@@ -703,7 +712,10 @@ fn hold_lab_child(
             reporter.emit("quit_timed_out", json!({"budget_ms": 15000, "residual_child_possible": true, "child_retained": true, "no_retry": true}));
         }
         if update_quit.as_mut().is_some_and(QuitState::take_timeout) {
-            reporter.emit("runtime_update_quit_delayed", json!({"client_retained":true,"helper_waits_for_owned_processes":true}));
+            reporter.emit(
+                "runtime_update_quit_delayed",
+                json!({"client_retained":true,"helper_waits_for_owned_processes":true}),
+            );
         }
         let snapshot = runtime.renderer.status_snapshot();
         if previous_renderer.as_ref() != Some(&snapshot) {
@@ -805,7 +817,7 @@ impl LabRoot {
             _pins: pins,
             _claim: claim,
         };
-        for directory in LAB_DIRECTORIES {
+        for directory in LAB_DIRECTORIES.iter().chain(LAB_SHELL_DIRECTORIES) {
             let directory = root.path.join(directory);
             fs::create_dir(&directory)?;
             root._pins.push(pin_plain_directory(&directory)?);
@@ -870,6 +882,17 @@ impl LabRoot {
             ));
         }
         resume::check_optional_auth(&path.join("codex-home/auth.json"))?;
+        // Upgrade only a marked, exclusively held profile whose previous owner
+        // has finished. `home` is already pinned; existing links/files are refused.
+        for directory in LAB_SHELL_DIRECTORIES {
+            let directory = path.join(directory);
+            match fs::create_dir(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+            pins.push(pin_plain_directory(&directory)?);
+        }
         let run = format!(
             "run-{}-{}",
             SystemTime::now()
@@ -1301,6 +1324,64 @@ mod tests {
         let next = LabRoot::resume(&path, &next_report, "fixture", "1").unwrap();
         drop(next.verify_configuration().unwrap());
         assert!(LabRoot::claim(&path).is_err());
+    }
+
+    #[test]
+    fn resume_adds_shell_desktop_only_after_validating_the_closed_profile() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy-shell-profile");
+        let root = LabRoot::claim(&path).unwrap();
+        let desktop = path.join("home/Desktop");
+        assert!(desktop.is_dir());
+        assert!(fs::read_dir(&desktop).unwrap().next().is_none());
+        let report = root.logs.join("report.jsonl");
+        let mut reporter = Reporter::new(&root).unwrap();
+        reporter.emit("lab_opened", json!({"root":path,"package_full_name":"fixture","package_version":"1","experimental":true}));
+        drop(reporter);
+        drop(root);
+        fs::remove_dir(&desktop).unwrap();
+        let registry_before = fs::read(path.join("codlet/config.json")).unwrap();
+        assert!(LabRoot::resume(&path, &report, "fixture", "2").is_err());
+        assert!(!desktop.exists());
+        let resumed = LabRoot::resume(&path, &report, "fixture", "1").unwrap();
+        assert!(desktop.is_dir());
+        assert!(fs::read_dir(&desktop).unwrap().next().is_none());
+        assert_eq!(
+            fs::read(path.join("codlet/config.json")).unwrap(),
+            registry_before
+        );
+        drop(resumed.verify_configuration().unwrap());
+    }
+
+    #[test]
+    fn resumed_shell_desktop_rejects_files_and_links() {
+        for link in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("shell-profile");
+            let root = LabRoot::claim(&path).unwrap();
+            let report = root.logs.join("report.jsonl");
+            let mut reporter = Reporter::new(&root).unwrap();
+            reporter.emit("lab_opened", json!({"root":path,"package_full_name":"fixture","package_version":"1","experimental":true}));
+            drop(reporter);
+            drop(root);
+            let desktop = path.join("home/Desktop");
+            fs::remove_dir(&desktop).unwrap();
+            let outside = directory.path().join("outside");
+            fs::create_dir(&outside).unwrap();
+            let sentinel = outside.join("keep.txt");
+            fs::write(&sentinel, b"keep").unwrap();
+            if link {
+                std::os::windows::fs::symlink_dir(&outside, &desktop).unwrap();
+            } else {
+                fs::write(&desktop, b"existing file").unwrap();
+            }
+            assert!(LabRoot::resume(&path, &report, "fixture", "1").is_err());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+            assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+            if !link {
+                assert_eq!(fs::read(&desktop).unwrap(), b"existing file");
+            }
+        }
     }
 
     #[test]

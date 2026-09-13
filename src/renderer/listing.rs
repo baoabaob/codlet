@@ -161,8 +161,14 @@ mod tests {
         let list = plugin_list(&catalog, &plugins, &registry, &BTreeSet::new(), &[]);
         assert_eq!(row(&list, "codex.ui.adapter")["name"], "Codex UI Adapter");
         assert_eq!(row(&list, "codlet-gui")["name"], "Codlet GUI");
-        assert_eq!(row(&list, "codlet-gui")["i18n"]["zh"]["name"], "Codlet 管理界面");
-        assert_eq!(row(&list, "codlet-gui")["description"], "Manage plugins, imports, permissions, and Codlet updates.");
+        assert_eq!(
+            row(&list, "codlet-gui")["i18n"]["zh"]["name"],
+            "Codlet 管理界面"
+        );
+        assert_eq!(
+            row(&list, "codlet-gui")["description"],
+            "Manage plugins, imports, permissions, and Codlet updates."
+        );
         assert_eq!(list["runtimeVersion"], env!("CARGO_PKG_VERSION"));
         assert_eq!(
             row(&list, "codex.ui.adapter")["disableDependents"],

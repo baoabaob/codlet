@@ -37,6 +37,6 @@ pub mod plugin_cli;
 #[cfg(windows)]
 pub mod probe;
 #[cfg(windows)]
-pub mod windows;
-#[cfg(windows)]
 pub(crate) mod runtime_update_owner;
+#[cfg(windows)]
+pub mod windows;

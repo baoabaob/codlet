@@ -2387,11 +2387,25 @@ fn invoke_builtin_host_endpoint(
                 ));
             }
             match request.method.as_str() {
-                "prepare" | "submit" | "operation" | "previewLocal" | "permissions"
-                | "chooseLocalFolder" | "folderSelection" | "sourceRemovalPreview" | "openFolder"
-                | "githubReleases" | "githubPrepare" | "githubJob" | "cancelGitHubJob"
-                | "managedHistory" | "previewRollback"
-                | "runtimeUpdateStatus" | "checkRuntimeUpdate" | "downloadRuntimeUpdate" | "installRuntimeUpdate" => {
+                "prepare"
+                | "submit"
+                | "operation"
+                | "previewLocal"
+                | "permissions"
+                | "chooseLocalFolder"
+                | "folderSelection"
+                | "sourceRemovalPreview"
+                | "openFolder"
+                | "githubReleases"
+                | "githubPrepare"
+                | "githubJob"
+                | "cancelGitHubJob"
+                | "managedHistory"
+                | "previewRollback"
+                | "runtimeUpdateStatus"
+                | "checkRuntimeUpdate"
+                | "downloadRuntimeUpdate"
+                | "installRuntimeUpdate" => {
                     if request.id.is_none() {
                         return Err(host_failure(
                             "request_required",

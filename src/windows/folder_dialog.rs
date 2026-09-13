@@ -172,11 +172,10 @@ fn pick_folder(directory: &Path, locale: FolderLocale) -> Result<Option<PathBuf>
                 FolderLocale::En => w!("Choose folder"),
             })
             .map_err(|error| format!("folder_dialog.SetOkButtonLabel: {error}"))?;
-        // Do not depend on ambient Desktop/last-used locations. Isolated profiles
-        // may intentionally lack a Desktop folder, making the default Shell view fail.
         // A preferred location is only a hint. Rejecting its Shell parsing name
         // must not abort the entire dialog; try existing ancestors and finally
-        // let the Shell choose its default without creating a fake Desktop.
+        // let the Shell choose its default. The lab initializer separately supplies
+        // the Desktop namespace directory required by an isolated Windows profile.
         let mut folder_errors = Vec::new();
         for candidate in directory.ancestors().filter(|candidate| candidate.is_dir()) {
             match set_folder(&dialog, candidate) {
