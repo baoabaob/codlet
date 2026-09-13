@@ -5,6 +5,9 @@
 const BUILDS = Object.freeze([
     Object.freeze({ appVersion: '26.903.61454', buildNumber: '8378', appServerVersion: '0.153.4', entry: 'app://-/assets/index-71057a3aecef.js', module: 'app://-/assets/app-initial-92cbfeba4f7c.js', exports: Object.freeze({ scope: 't3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Smn' }) }),
     Object.freeze({ appVersion: '26.903.71938', buildNumber: '8576', appServerVersion: '0.153.4', navigation: true, entry: 'app://-/assets/index-5232d4cce9a2.js', module: 'app://-/assets/app-initial-f094ef01c64d.js', exports: Object.freeze({ scope: 'a3t', manager: 'Mwt', client: 'Nwt', services: 'mz', postbox: 'Emn' }) }),
+    // Appx 26.908.4834.0: the live postbox is no longer re-exported by
+    // app-initial. Its reviewed module is shared by Native's message bus.
+    Object.freeze({ appVersion: '26.908.40834', buildNumber: '8881', appServerVersion: '0.154.0-alpha.6.2', navigation: true, entry: 'app://-/assets/index-cbd874f72008.js', module: 'app://-/assets/app-initial-d9bed9d614d8.js', postboxModule: 'app://-/assets/get-trusted-message-for-view-eee599500f15.js', exports: Object.freeze({ scope: 'e6t', manager: 'cDt', client: 'lDt', services: 'TW', postbox: 'i' }) }),
 ]);
 const publicBuild = build => ({ appVersion: build.appVersion, buildNumber: build.buildNumber, appServerVersion: build.appServerVersion });
 const API_SYMBOL = 'codlet.codex.desktop.v1';
@@ -89,6 +92,7 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
     // Import reuses the already loaded module and its existing app-host services.
     // Opening another connect-app-host port would replace the Desktop view.
     const module = await loadModule(build.module);
+    const transportModule = build.postboxModule ? await loadModule(build.postboxModule) : module;
     let token, managerFamily, clientFamily, services, postbox, scope, manager, client;
     for (;;) {
         if (signal?.aborted) throw fail('adapter_deactivated', 'Desktop adapter was deactivated during initialization');
@@ -96,12 +100,12 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
             // These are live exports initialized by Desktop's lazy bootstrap.
             // Snapshot them only once Desktop has mounted its own connection.
             token = module[build.exports.scope]; managerFamily = module[build.exports.manager]; clientFamily = module[build.exports.client];
-            services = module[build.exports.services]; postbox = module[build.exports.postbox];
+            services = module[build.exports.services]; postbox = transportModule[build.exports.postbox];
             scope = locateScope(token);
             if (!scope.node.familyBindings.get(managerFamily)?.has('local') || !scope.node.familyBindings.get(clientFamily)?.has('local')) throw fail('desktop_connection_not_ready', 'Desktop has not initialized its own local connection');
             manager = managerFamily.read(scope.node, scope.chain, 'local');
             client = clientFamily.read(scope.node, scope.chain, 'local');
-            if (!services || !manager || !client || client.getAppServerVersion?.() == null) throw fail('desktop_connection_not_ready', 'Desktop connection is still initializing');
+            if (!services || !manager || !client || !postbox || client.getAppServerVersion?.() == null) throw fail('desktop_connection_not_ready', 'Desktop connection is still initializing');
             break;
         } catch (error) {
             if (!['desktop_scope_missing', 'desktop_connection_not_ready'].includes(error.code) || Date.now() >= readyDeadline) throw error;
@@ -119,7 +123,7 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
         check() {
             if (validateDesktopBuild() !== build) throw fail('desktop_build_drift', 'Desktop build changed after adapter initialization');
             const current = locateScope(token);
-            if (current.node !== scope.node || module[build.exports.scope] !== token || module[build.exports.manager] !== managerFamily || module[build.exports.client] !== clientFamily || module[build.exports.services] !== services || module[build.exports.postbox] !== postbox || !current.node.familyBindings.get(managerFamily)?.has('local') || !current.node.familyBindings.get(clientFamily)?.has('local') || managerFamily.read(current.node, current.chain, 'local') !== manager || clientFamily.read(current.node, current.chain, 'local') !== client || manager.requestClient !== client || client.getAppServerVersion() !== build.appServerVersion) throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
+            if (current.node !== scope.node || module[build.exports.scope] !== token || module[build.exports.manager] !== managerFamily || module[build.exports.client] !== clientFamily || module[build.exports.services] !== services || transportModule[build.exports.postbox] !== postbox || !current.node.familyBindings.get(managerFamily)?.has('local') || !current.node.familyBindings.get(clientFamily)?.has('local') || managerFamily.read(current.node, current.chain, 'local') !== manager || clientFamily.read(current.node, current.chain, 'local') !== client || manager.requestClient !== client || client.getAppServerVersion() !== build.appServerVersion) throw fail('desktop_connection_replaced', 'Desktop connection changed; reload the adapter');
         }
     };
 }

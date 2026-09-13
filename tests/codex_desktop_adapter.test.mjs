@@ -49,9 +49,9 @@ function fixture(buildIndex = 0, withNavigation = false) {
         owners.push(disposers);
         return { ctx, stop() { for (const fn of [...disposers]) fn(); } };
     }
-    function submit(text = 'original') {
+    function submit(text = 'original', options = {}) {
         const id = randomUUID(); client.requestPromises.set(id, {});
-        const message = { type: 'mcp-request', hostId: 'local', request: { id, method: 'turn/start', params: { threadId: 'thread-a', input: [{ type: 'text', text, text_elements: [] }, { type: 'image', url: 'data:sample' }], additionalContext: { desktop: { kind: 'application', value: 'existing' } }, model: 'chosen-model' } } };
+        const message = { type: 'mcp-request', hostId: 'local', request: { id, method: 'turn/start', params: { threadId: 'thread-a', input: [{ type: 'text', text, text_elements: [] }, { type: 'image', url: 'data:sample' }], additionalContext: { desktop: { kind: 'application', value: 'existing' } }, model: 'chosen-model', ...options } } };
         postbox.postMessage(message);
         return message;
     }
@@ -342,10 +342,11 @@ test('probing a family descriptor never constructs a missing local manager or re
 });
 
 test('each reviewed profile waits for live exports, reuses its initialized connection and rejects build replacement', async () => {
-    for (const buildIndex of [0, 1]) {
+    const versions = ['26.903.61454', '26.903.71938', '26.908.40834'];
+    for (const buildIndex of [0, 1, 2]) {
         const f = fixture(buildIndex);
         assert.deepEqual(Object.keys(plain(f.api.status().build)).sort(), ['appServerVersion', 'appVersion', 'buildNumber']);
-        assert.equal(f.api.status().build.appVersion, buildIndex === 0 ? '26.903.61454' : '26.903.71938');
+        assert.equal(f.api.status().build.appVersion, versions[buildIndex]);
         f.dispose();
         const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, location: { origin: 'app://-', pathname: '/index.html' } });
         vm.runInContext(source, scope);
@@ -363,12 +364,18 @@ test('each reviewed profile waits for live exports, reuses its initialized conne
             return { [build.exports.scope]: token, [build.exports.manager]: managerFamily, [build.exports.client]: clientFamily, [build.exports.services]: {}, [build.exports.postbox]: { postMessage() {} } };
         })()`, scope);
         const build = vm.runInContext('BUILDS[buildIndex]', scope);
-        const delayed = {};
+        const delayed = {}, delayedTransport = {}, imports = [];
         const connection = await vm.runInContext('probeDesktop', scope)(async resource => {
-            assert.equal(resource, build.module);
-            setTimeout(() => Object.assign(delayed, module), 1);
-            return delayed;
+            imports.push(resource);
+            if (resource === build.module) {
+                setTimeout(() => Object.assign(delayed, module), 1);
+                return delayed;
+            }
+            assert.equal(resource, build.postboxModule);
+            setTimeout(() => Object.assign(delayedTransport, { [build.exports.postbox]: module[build.exports.postbox] }), 75);
+            return delayedTransport;
         }, 500);
+        assert.deepEqual(imports, build.postboxModule ? [build.module, build.postboxModule] : [build.module]);
         connection.check();
         assert.equal(connection.build, build);
         scope.document.scripts[0].src = 'app://-/assets/unreviewed.js';
@@ -377,6 +384,95 @@ test('each reviewed profile waits for live exports, reuses its initialized conne
         scope.electronBridge.getSentryInitOptions = () => ({ appVersion: build.appVersion, buildNumber: 'changed' });
         assert.throws(() => connection.check(), { code: 'desktop_build_drift' });
     }
+});
+
+function latestProbeFixture() {
+    const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, location: { origin: 'app://-', pathname: '/index.html' } });
+    vm.runInContext(source, scope);
+    const native = vm.runInContext(`(() => {
+        const build = BUILDS[2], token = { id: 'AppScope' }, accesses = [];
+        const client = { requestPromises: new Map(), getAppServerVersion: () => '0.154.0-alpha.6.2', onError() {} };
+        const manager = { requestClient: client, getHostId: () => 'local' };
+        for (const name of ['sendRequest', 'getConversation', 'getStreamRole', 'addNotificationCallback', 'addConversationStateCallback', 'replyWithCommandExecutionApprovalDecision', 'replyWithFileChangeApprovalDecision', 'replyWithPermissionsRequestApprovalResponse', 'replyWithUserInputResponse']) manager[name] = () => {};
+        const managerFamily = { read(node, chain, key) { accesses.push(['manager', key]); if (!node.familyBindings.get(this)?.has(key) || chain.get(token.id) !== node) throw Error('must reuse initialized AppScope'); return manager; } };
+        const clientFamily = { read(node, chain, key) { accesses.push(['client', key]); if (!node.familyBindings.get(this)?.has(key) || chain.get(token.id) !== node) throw Error('must reuse initialized AppScope'); return client; } };
+        const node = { token, store: {}, familyBindings: new Map([[managerFamily, new Map([['local', {}]])], [clientFamily, new Map([['local', {}]])]]) };
+        const root = { __reactContainer$test: { memoizedProps: { value: new Map([[token.id, node]]) } } };
+        globalThis.document = { scripts: [{ src: 'app://-/assets/index-cbd874f72008.js' }], getElementById: () => root };
+        globalThis.electronBridge = { getSentryInitOptions: () => ({ appVersion: '26.908.40834', buildNumber: '8881' }), sendMessageFromView() { throw Error('probing must not send or create an app-host port'); } };
+        const actualPostbox = { postMessage() {} }, decoyPostbox = { postMessage() { throw Error('retired re-export must not be patched'); } };
+        return { build, manager, client, accesses, node, managerFamily, clientFamily, actualPostbox,
+            appModule: { e6t: token, cDt: managerFamily, lDt: clientFamily, TW: {}, i: decoyPostbox, Emn: decoyPostbox },
+            transportModule: { i: actualPostbox } };
+    })()`, scope);
+    const imports = [];
+    const probe = vm.runInContext('probeDesktop', scope);
+    const load = async resource => {
+        imports.push(resource);
+        if (resource === 'app://-/assets/app-initial-d9bed9d614d8.js') return native.appModule;
+        assert.equal(resource, 'app://-/assets/get-trusted-message-for-view-eee599500f15.js');
+        return native.transportModule;
+    };
+    return { scope, native, imports, probe: () => probe(load, 0) };
+}
+
+test('8881 uses the audited split postbox export and detects replacement without importing another connection', async () => {
+    const f = latestProbeFixture(), connection = await f.probe();
+    assert.equal(connection.postbox, f.native.actualPostbox);
+    assert.deepEqual(f.imports, ['app://-/assets/app-initial-d9bed9d614d8.js', 'app://-/assets/get-trusted-message-for-view-eee599500f15.js']);
+    assert.deepEqual(plain(f.native.accesses), [['manager', 'local'], ['client', 'local']]);
+    f.native.appModule.i = {}; f.native.appModule.Emn = {};
+    connection.check();
+    f.native.transportModule.i = { postMessage() {} };
+    assert.throws(() => connection.check(), { code: 'desktop_connection_replaced' });
+    assert.equal(f.imports.length, 2);
+});
+
+test('8881 rejects unmatched entry, backend schema, manager ABI, and immutable transport before interception', async () => {
+    for (const [change, code] of [
+        [f => { f.scope.document.scripts[0].src = 'app://-/assets/index-5232d4cce9a2.js'; f.scope.document.readyState = 'complete'; }, 'desktop_build_drift'],
+        [f => { f.scope.electronBridge.getSentryInitOptions = () => ({ appVersion: '26.908.40834', buildNumber: '8882' }); }, 'desktop_build_drift'],
+        [f => { f.native.client.getAppServerVersion = () => '0.153.4'; }, 'desktop_connection_drift'],
+        [f => { f.native.manager.sendRequest = undefined; }, 'desktop_manager_drift'],
+        [f => { Object.defineProperty(f.native.actualPostbox, 'postMessage', { writable: false }); }, 'desktop_transport_drift'],
+        [f => { delete f.native.transportModule.i; }, 'desktop_connection_not_ready'],
+        [f => { f.native.node.familyBindings.get(f.native.clientFamily).delete('local'); }, 'desktop_connection_not_ready'],
+    ]) {
+        const f = latestProbeFixture(), original = f.native.actualPostbox.postMessage;
+        change(f);
+        await assert.rejects(f.probe(), { code });
+        assert.equal(f.native.actualPostbox.postMessage, original);
+        if (code === 'desktop_build_drift') assert.equal(f.imports.length, 0);
+        if (code === 'desktop_connection_not_ready' && !f.native.node.familyBindings.get(f.native.clientFamily).has('local')) assert.equal(f.native.accesses.length, 0);
+    }
+});
+
+test('8881 preserves reviewed turn identities, added Desktop options, history selection and one-use approval replies', async () => {
+    const f = fixture(2, true);
+    f.api.registerPreSubmit(f.owner('rewrite').ctx, { id: 'rewrite' }, draft => ({ text: draft.text + ' amended', context: [{ text: 'untrusted supplement' }] }));
+    const submitted = f.submit('original', { serviceTierForTurn: 'default', environments: [{ environmentId: 'local', cwd: 'C:/fixture' }] });
+    await tick();
+    assert.equal(f.sent[0].request.id, submitted.request.id);
+    assert.equal(f.sent[0].request.params.serviceTierForTurn, 'default');
+    assert.deepEqual(plain(f.sent[0].request.params.environments), [{ environmentId: 'local', cwd: 'C:/fixture' }]);
+    assert.equal(f.sent[0].request.params.input[0].text, 'original amended');
+    assert.equal(Object.values(f.sent[0].request.params.additionalContext).at(-1).kind, 'untrusted');
+    f.responses.set('turn/start', { turn: { id: 'turn-new', status: 'inProgress', items: [], itemsView: 'full', startedAt: 10 } });
+    assert.equal((await f.api.write('turns.start', { threadId: 'thread-a', text: 'fixture text', effort: 'high' })).turn.id, 'turn-new');
+    assert.match(f.requestCalls.at(-1).params.clientUserMessageId, /^[a-f0-9-]{36}$/);
+    f.responses.set('turn/steer', { turnId: 'turn-new' });
+    await f.api.write('turns.steer', { threadId: 'thread-a', turnId: 'turn-new', text: 'fixture follow-up' });
+    assert.equal(f.requestCalls.at(-1).params.expectedTurnId, 'turn-new');
+    f.thread.turnHistory = { kind: 'canonical', history: { islands: [{ entries: [{ value: 'old' }] }], entitiesByKey: { old: { turnId: 'turn-old', status: 'completed' } } } };
+    f.thread.turns = [{ turnId: 'turn-new', status: 'inProgress' }];
+    assert.equal((await f.api.read('selection.get')).activeTurnId, 'turn-new');
+    f.thread.requests.push({ id: 71, method: 'item/tool/requestUserInput', params: { threadId: 'thread-a', turnId: 'turn-new', itemId: 'input-a', questions: [{ id: 'q', header: 'Choice', question: 'Choose', options: [] }] } });
+    const request = (await f.api.read('approvals.list', { threadId: 'thread-a' })).requests[0];
+    await f.api.write('approvals.respond', { token: request.token, answers: { q: ['fixture answer'] } });
+    assert.deepEqual(plain(f.approvals[0]), ['input', 'thread-a', 71, { answers: { q: { answers: ['fixture answer'] } } }]);
+    await assert.rejects(f.api.write('approvals.respond', { token: request.token, answers: { q: ['repeat'] } }), { code: 'approval_retired' });
+    f.dispose();
+    assert.equal(f.postbox.postMessage, f.original);
 });
 
 test('selection follows Native router operations and projects canonical history plus the live turn', async () => {

@@ -14,6 +14,10 @@ out of Core. [The compatibility follow-up](docs/DESKTOP_COMPATIBILITY_2026-09-11
 supports package `26.903.9818.0` and fixes isolated-client native task creation and
 cold resume. The existing M0/M1 production gates remain open.
 
+The [2026-09-13 startup repair](docs/TEST_CLIENT_STARTUP_REPAIR_2026-09-13.md)
+supports reviewed package `26.908.4834.0`, refreshes the isolated client's removed
+CLI path and Desktop Adapter mapping, and keeps launch failures visible.
+
 The [M3.1/M4.1 increment](docs/UI_HELPERS_AND_NAVIGATION_2026-09-11.md) adds shared UI
 controls used by the management GUI and an [ordinary plugin](examples/ui-controls/README.md),
 current-task events, Native task opening/cold resume and interceptor diagnostics.

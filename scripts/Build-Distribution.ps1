@@ -217,6 +217,7 @@ $sourceFiles = @(
     'examples/ui-controls/codlet.json', 'examples/ui-controls/renderer.js', 'examples/ui-controls/README.md',
     'examples/local-management-check/codlet.json', 'examples/local-management-check/renderer.js', 'examples/local-management-check/README.md',
     'docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md',
+    'docs/TEST_CLIENT_STARTUP_REPAIR_2026-09-13.md',
     'docs/GITHUB_PLUGIN_DISTRIBUTION.md', 'docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md',
     'docs/COMMUNITY_PLUGINS.md', 'docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md',
     'scripts/Build-PluginPackage.ps1', 'scripts/Invoke-M0Acceptance.ps1', 'scripts/Invoke-M0CrashAcceptance.ps1',

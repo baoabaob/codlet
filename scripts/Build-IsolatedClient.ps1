@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$true)][string]$LabExecutable,
     [Parameter(Mandatory=$true)][string]$RuntimeDirectory,
     [Parameter(Mandatory=$true)][string]$OfficialCli,
-    [string]$ExpectedPackageVersion = '26.903.8094.0'
+    [string]$ExpectedPackageVersion = '26.908.4834.0'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -32,6 +32,8 @@ foreach ($codletFile in @('node.exe', 'LICENSE')) {
     Copy-Item -LiteralPath (Join-Path $codletNodeSource $codletFile) -Destination (Join-Path $codletOutput $codletNodeRelative)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.ps1') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.cmd') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
 $codletDocsOutput = Join-Path $codletOutput 'docs'
 $null = New-Item -ItemType Directory -Path $codletDocsOutput
@@ -52,23 +54,6 @@ $codletUtf8 = New-Object Text.UTF8Encoding($false)
 $codletGuide = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'isolated-client-readme.md'))
 [IO.File]::WriteAllText((Join-Path $codletOutput 'README.md'), $codletGuide.Replace('{{labRoot}}', $codletLabRoot).Replace('{{packageVersion}}', $ExpectedPackageVersion), $codletUtf8)
 [IO.File]::WriteAllText((Join-Path $codletOutput 'lab-config.json'), ($codletConfiguration | ConvertTo-Json -Depth 10), $codletUtf8)
-$codletStart = @'
-param([switch]$RecoverInterrupted)
-$ErrorActionPreference = 'Stop'
-$codletConfigPath = Join-Path $PSScriptRoot 'lab-config.json'
-$codletConfig = [IO.File]::ReadAllText($codletConfigPath) | ConvertFrom-Json
-$codletNode = Join-Path $PSScriptRoot $codletConfig.nodeRelative
-$codletScript = Join-Path $PSScriptRoot 'isolated-client.mjs'
-$codletStamp = [DateTime]::UtcNow.Ticks.ToString()
-$codletOutputLog = Join-Path $PSScriptRoot ('launch-' + $codletStamp + '.stdout.log')
-$codletErrorLog = Join-Path $PSScriptRoot ('launch-' + $codletStamp + '.stderr.log')
-$codletAction = if ($RecoverInterrupted) { 'recover' } else { 'start' }
-$codletArguments = '"' + $codletScript + '" ' + $codletAction + ' "' + $codletConfigPath + '"'
-$codletProcess = Start-Process -FilePath $codletNode -ArgumentList $codletArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $codletOutputLog -RedirectStandardError $codletErrorLog
-Write-Output ('Test client launcher PID: ' + $codletProcess.Id)
-Write-Output ('Startup log: ' + $codletOutputLog)
-Write-Output ('Error log: ' + $codletErrorLog)
-'@
 $codletStop = @'
 $ErrorActionPreference = 'Stop'
 $codletConfigPath = Join-Path $PSScriptRoot 'lab-config.json'
@@ -83,10 +68,10 @@ $codletConfig = [IO.File]::ReadAllText($codletConfigPath) | ConvertFrom-Json
 & (Join-Path $PSScriptRoot $codletConfig.nodeRelative) (Join-Path $PSScriptRoot 'isolated-client.mjs') plugins $codletConfigPath @args
 exit $LASTEXITCODE
 '@
-foreach ($codletEntry in @{ 'Start-TestClient.ps1'=$codletStart; 'Stop-TestClient.ps1'=$codletStop; 'Test-Plugins.ps1'=$codletPlugins }.GetEnumerator()) {
+foreach ($codletEntry in @{ 'Stop-TestClient.ps1'=$codletStop; 'Test-Plugins.ps1'=$codletPlugins }.GetEnumerator()) {
     [IO.File]::WriteAllText((Join-Path $codletOutput $codletEntry.Key), $codletEntry.Value, $codletUtf8)
 }
-foreach ($codletName in @('Start-TestClient', 'Stop-TestClient', 'Test-Plugins', 'Test-Doctor')) {
+foreach ($codletName in @('Stop-TestClient', 'Test-Plugins', 'Test-Doctor')) {
     $codletCommand = '@echo off' + [Environment]::NewLine + 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0' + $codletName + '.ps1" %*' + [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $codletOutput ($codletName + '.cmd')), $codletCommand, [Text.Encoding]::ASCII)
 }

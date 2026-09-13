@@ -38,7 +38,8 @@ const WAIT_SLICE: Duration = Duration::from_millis(50);
 const EXPERIMENT_FLAG: &str = "--experimental-isolated-client";
 const LAB_SHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const AUDITED_PACKAGE_VERSION: &str = "26.903.8094.0";
-const AUDITED_PACKAGE_VERSIONS: &[&str] = &[AUDITED_PACKAGE_VERSION, "26.903.9818.0"];
+const AUDITED_PACKAGE_VERSIONS: &[&str] =
+    &[AUDITED_PACKAGE_VERSION, "26.903.9818.0", "26.908.4834.0"];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
 const LAB_DIRECTORIES: &[&str] = &[
@@ -1402,6 +1403,11 @@ mod tests {
         package.version.build = 9818;
         package.full_name = "OpenAI.Codex_26.903.9818.0_x64__2p2nqsd0c76g0".into();
         require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).unwrap();
+        package.version.minor = 908;
+        package.version.build = 4834;
+        package.full_name = "OpenAI.Codex_26.908.4834.0_x64__2p2nqsd0c76g0".into();
+        require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).unwrap();
+        assert!(require_reviewed_ipc_isolation(&package, None).is_err());
         package.full_name = package.full_name.replace("x64", "arm64");
         assert!(require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).is_err());
     }
