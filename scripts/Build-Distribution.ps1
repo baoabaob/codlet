@@ -212,7 +212,7 @@ $null = [IO.Directory]::CreateDirectory($stage)
 # This is the complete source-file allowlist. No recursive source/cache/config copy.
 $sourceFiles = @(
     'scripts/Build-Distribution.ps1', 'scripts/Test-Distribution.ps1', 'scripts/Install-JsRuntime.ps1',
-    'scripts/Build-RuntimeUpdate.ps1', 'docs/RUNTIME_UPDATES.md',
+    'scripts/Build-RuntimeUpdate.ps1', 'scripts/Restart-Codlet.ps1', 'docs/RUNTIME_UPDATES.md',
     'docs/UI_MANAGEMENT_2026-09-13.md', 'docs/OFFICIAL_UPDATE_FLOW_2026-09-13.md',
     'runtime/node-runtime.json', 'runtime/update-channel.json', 'docs/PLUGIN_I18N.md', 'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
     'types/codex-desktop.d.ts', 'types/renderer-ui.d.ts',
