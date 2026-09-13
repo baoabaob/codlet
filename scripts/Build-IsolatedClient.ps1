@@ -43,6 +43,7 @@ $null = New-Item -ItemType Directory -Path $codletDocsOutput
 foreach ($codletDocument in (Get-ChildItem -LiteralPath (Join-Path $codletSource 'docs') -Filter '*.md' -File)) {
     Copy-Item -LiteralPath $codletDocument.FullName -Destination $codletDocsOutput
 }
+Copy-Item -LiteralPath (Join-Path $codletSource 'docs/THIRD_PARTY_UI_LICENSES.txt') -Destination $codletDocsOutput
 [IO.File]::WriteAllText((Join-Path $codletOutput 'M5-ManualTest.md'), '[Open the M5a manual test guide](docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)', (New-Object Text.UTF8Encoding($false)))
 [IO.File]::WriteAllText((Join-Path $codletOutput 'M5-GitHubManualTest.md'), '[Open the M5b GitHub manual test guide](docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md)', (New-Object Text.UTF8Encoding($false)))
 [IO.File]::WriteAllText((Join-Path $codletOutput 'Remaining-Acceptance.md'), '[Open the remaining approval and release acceptance guide](docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md)', (New-Object Text.UTF8Encoding($false)))

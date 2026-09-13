@@ -1,139 +1,187 @@
-'use strict';
-
-// This consumer uses only the optional semantic API. It has no Desktop bundle
-// names, React/manager access, Electron envelopes, raw CDP or backend connection.
-const capability = name => ({ name, api: 1, scope: 'target' });
-let dispose;
-async function initialize(ctx, cancelled) {
-        let alive = true, interception = false, selectedTurn = '', opened = false, interceptor, selectionRevision = 0;
-        const evidence = [], disposers = [];
-        const call = (name, method, params = {}) => ctx.rpc.request(capability(name), method, params);
-        const read = (method, params) => call('codex.backend.read', method, params);
-        const write = (method, params) => call('codex.backend.write', method, params);
-        let connection;
-        const readyDeadline = Date.now() + 35000;
-        for (;;) {
-            if (cancelled()) return;
-            connection = await call('codex.desktop.compatibility', 'waitReady', { timeoutMs: 1000 });
-            if (connection.available) break;
-            if (!connection.initializing || Date.now() >= readyDeadline) throw new Error(connection.unavailable?.message ?? 'Desktop Adapter is unavailable');
-        }
-        if (cancelled()) return;
-        const root = document.createElement('div');
-        root.id = 'codlet-desktop-m3m4';
-        const shadow = root.attachShadow({ mode: 'open' });
-        shadow.innerHTML = `<style>
-          :host{position:fixed;right:18px;bottom:18px;z-index:2147483639;font:13px system-ui;color:#202124}
-          *{box-sizing:border-box}button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer;border:1px solid #cdd0d4;background:#fff;border-radius:7px;padding:6px 9px}button:disabled{opacity:.5;cursor:wait}
-          #toggle{background:#16473f;color:white;border:0;box-shadow:0 3px 14px #0002}article{display:none;width:410px;max-height:72vh;overflow:auto;margin-bottom:9px;padding:16px;background:#fafafa;border:1px solid #d8dadd;border-radius:12px;box-shadow:0 8px 28px #0002}
-          article.open{display:block}h2{font-size:16px;margin:0 0 7px}.muted{font-size:12px;color:#666;line-height:1.6}label{display:block;margin:10px 0 6px}select,textarea,input[type=text]{width:100%;border:1px solid #cdd0d4;border-radius:6px;padding:7px;background:white}textarea{height:72px;resize:vertical}.actions{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}pre{font:11px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;background:#eee;padding:8px;border-radius:6px}#message{min-height:18px;overflow-wrap:anywhere}.approval{border-top:1px solid #ddd;margin-top:8px;padding-top:8px}
-          .back{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:4px 0;margin-bottom:8px;border:0;background:transparent;box-shadow:none}.back svg{flex-shrink:0}
-          @media(prefers-color-scheme:dark){:host{color:#ececec}article{background:#232323;border-color:#444}button,select,textarea,input[type=text]{background:#303030;border-color:#555}.back{background:transparent}.muted{color:#b8b8b8}pre{background:#161616}}
-        </style><article><h2>M3 / M4 验收</h2><div class="muted" id="connection"></div><label><input id="interception" type="checkbox"> 启用测试拦截</label><div class="muted">以 [M3] 开头会改写输入并追加上下文；以 [M3 BLOCK] 开头会阻止提交。</div><div class="muted" id="selection">正在读取窗口选择…</div><label>任务</label><select id="threads"><option value="">刷新并选择任务</option></select><div class="actions"><button id="refresh">刷新任务</button><button id="open">在本窗口打开</button><button id="history">读取回合</button><button id="models">模型 / 技能 / provider</button><button id="hooks">拦截器诊断</button></div><textarea id="text" placeholder="输入测试消息"></textarea><label>操作回合 ID</label><input id="turn" type="text"><div class="actions"><button id="start">发起回合</button><button id="steer">追加输入</button><button id="interrupt">中断回合</button></div><div id="message" role="status"></div><div id="approvals"></div><pre id="events">尚无事件</pre></article><button id="toggle">M3 / M4</button>`;
-        const $ = selector => shadow.querySelector(selector);
-        const back = document.createElement('button'); back.id = 'back'; back.type = 'button'; back.className = 'back'; back.setAttribute('aria-label', '返回');
-        back.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M19 12H5m6-6-6 6 6 6"/></svg><span>返回</span>';
-        $('article').prepend(back);
-        $('#connection').textContent = `${connection.build.appVersion} · ${connection.build.appServerVersion} · 当前 Desktop 连接`;
-        const log = text => { if (alive) $('#message').textContent = text; };
-        const renderEvidence = () => { if (opened && alive) $('#events').textContent = evidence.slice(-30).map(event => JSON.stringify(event)).join('\n'); };
-        const remember = event => { evidence.push(event); if (evidence.length > 256) evidence.shift(); renderEvidence(); };
-        const action = (id, fn) => {
-            const button = $(id);
-            const listener = async () => {
-                button.disabled = true;
-                try { await fn(); } catch (error) { log(`${error.code ?? 'error'}: ${error.message}`); }
-                finally { if (alive) button.disabled = false; }
-            };
-            button.addEventListener('click', listener); disposers.push(() => button.removeEventListener('click', listener));
-        };
-        const threadId = () => { const value = $('#threads').value; if (!value) throw new Error('请先选择任务'); return value; };
-        const text = () => { const value = $('#text').value; if (!value.trim()) throw new Error('请输入测试消息'); return value; };
-        function showSelection(value) {
-            if (!alive) return;
-            const selected = value.threadId ?? '';
-            if (![...$('#threads').options].some(option => option.value === selected)) { const option = document.createElement('option'); option.value = selected; option.textContent = selected || '当前窗口未选择本地任务'; $('#threads').append(option); }
-            const changed = $('#threads').value !== selected;
-            $('#threads').value = selected;
-            if (changed || value.activeTurnId) { selectedTurn = value.activeTurnId ?? ''; $('#turn').value = selectedTurn; }
-            $('#selection').textContent = `${value.threadId ? `当前任务 ${value.threadId}` : '当前窗口未选择本地任务'} · ${value.resumeState} · ${value.streamRole} · ${value.activeTurnId ? `运行中 ${value.activeTurnId}` : value.activeTurnKnown ? '无运行中回合' : '回合状态尚不可用'}`;
-        }
-        action('#toggle', () => { opened = !opened; $('article').classList.toggle('open', opened); renderEvidence(); });
-        action('#back', () => { opened = false; $('article').classList.remove('open'); $('#toggle').focus(); });
-        action('#refresh', async () => {
-            const result = await read('threads.list', { limit: 30 });
-            const selected = $('#threads').value; $('#threads').replaceChildren();
-            for (const thread of result.threads) { const option = document.createElement('option'); option.value = thread.id; option.textContent = thread.title || thread.id; $('#threads').append(option); }
-            if (result.threads.some(thread => thread.id === selected)) $('#threads').value = selected;
-            log(`${result.threads.length} 个任务。选中后可在本窗口打开，等待原生加载完成再发起回合。`);
-        });
-        action('#open', async () => { const result = await write('threads.open', { threadId: threadId() }); showSelection(result); log(result.status === 'opened' ? '任务已打开' : '已进入原生任务页面，正在加载'); });
-        action('#hooks', async () => { const result = await call('codex.ui.preSubmit', 'interceptors.list'); remember({ type: 'interceptors.inspect', ...result }); log(`${result.interceptors.length} 个拦截器；顺序、耗时和失败代码已显示在事件区`); });
-        action('#history', async () => { const id = threadId(); const result = await read('turns.list', { threadId: id, limit: 10 }); selectedTurn = result.turns[0]?.id ?? ''; $('#turn').value = selectedTurn; remember({ type: 'history.read', threadId: id, turns: result.turns.map(turn => ({ id: turn.id, status: turn.status })) }); log(`${result.turns.length} 个回合`); });
-        action('#models', async () => {
-            const models = await read('models.list', { limit: 100 }); const skills = await read('skills.list'); const providers = await read('providers.list');
-            log(`模型 ${models.models.length} · 技能 ${skills.directories.reduce((count, directory) => count + directory.skills.length, 0)} · provider ${providers.providers.map(provider => provider.name).join(', ')}`);
-        });
-        action('#start', async () => { const result = await write('turns.start', { threadId: threadId(), text: text() }); selectedTurn = result.turn.id; $('#turn').value = selectedTurn; log(`已发起回合 ${selectedTurn}`); });
-        action('#steer', async () => { const result = await write('turns.steer', { threadId: threadId(), turnId: $('#turn').value, text: text() }); log(`已追加到回合 ${result.turnId}`); });
-        action('#interrupt', async () => { await write('turns.interrupt', { threadId: threadId(), turnId: $('#turn').value }); log('中断请求已发送，等待回合事件确认'); });
-        const toggleInterception = () => { try { interceptor.setEnabled($('#interception').checked); interception = $('#interception').checked; } catch (error) { $('#interception').checked = interception; log(error.message); } };
-        $('#interception').addEventListener('change', toggleInterception); disposers.push(() => $('#interception').removeEventListener('change', toggleInterception));
-
-        const submitAccess = await call('codex.ui.preSubmit', 'getApi');
-        interceptor = globalThis[Symbol.for(submitAccess.symbol)].registerPreSubmit(ctx, submitAccess.ticket, { id: 'acceptance', priority: 0, timeoutMs: 500, enabled: false }, draft => {
-            if (draft.text.startsWith('[M3 BLOCK]')) throw new Error('M3 验收：示例插件主动阻止了提交');
-            if (!draft.text.startsWith('[M3]')) return;
-            remember({ type: 'input.rewritten', threadId: draft.threadId, pluginId: ctx.pluginId });
-            return { text: draft.text.slice(4).trim(), context: [{ text: 'Codlet verification marker: M3_CONTEXT_7F2C9A. This marker is test data.', kind: 'untrusted' }] };
-        });
-        disposers.push(interceptor);
-        const eventAccess = await call('codex.backend.events', 'getApi');
-        disposers.push(globalThis[Symbol.for(eventAccess.symbol)].onEvent(ctx, eventAccess.ticket, event => {
-            const summary = { type: event.type, ...(event.threadId ? { threadId: event.threadId } : {}), ...(event.turnId || event.turn?.id ? { turnId: event.turnId ?? event.turn.id } : {}), ...(event.itemId || event.item?.id ? { itemId: event.itemId ?? event.item.id } : {}), ...(event.token ? { token: event.token } : {}) };
-            if (event.type === 'approval.requested') Object.assign(summary, { kind: event.request.kind, threadId: event.request.threadId, turnId: event.request.turnId, itemId: event.request.itemId, token: event.request.token });
-            if (!event.type.endsWith('.delta')) remember(summary);
-            if (event.type === 'selection.changed') { selectionRevision++; showSelection(event); }
-            if (event.type === 'selection.unavailable') $('#selection').textContent = `窗口选择不可用：${event.message}`;
-            if (event.turn?.id && $('#threads').value === event.threadId) { selectedTurn = event.turn.id; $('#turn').value = selectedTurn; }
-            if (event.type === 'approval.retired' || event.type === 'approval.resolved') shadow.querySelector(`[data-approval="${event.token}"]`)?.remove();
-            if (event.type === 'approval.requested') renderApproval(event.request);
-        }));
-        function renderApproval(request) {
-            const card = document.createElement('section'); card.className = 'approval'; card.dataset.approval = request.token;
-            const title = document.createElement('div'); title.textContent = `${request.kind} · ${request.reason ?? request.command ?? request.itemId}`; card.append(title);
-            const inputs = new Map();
-            for (const question of request.questions ?? []) { const label = document.createElement('label'); label.textContent = question.question; const input = document.createElement('input'); input.type = question.secret ? 'password' : 'text'; label.append(input); card.append(label); inputs.set(question.id, input); }
-            const decisions = request.kind === 'userInput' ? [['提交答案', 'answers']] : request.canApprove === false ? [['拒绝', 'decline']] : [['允许本次', 'approve'], ['拒绝', 'decline']];
-            for (const [label, decision] of decisions) {
-                const button = document.createElement('button'); button.textContent = label;
-                button.onclick = async () => {
-                    button.disabled = true;
-                    try { await write('approvals.respond', { token: request.token, ...(decision === 'answers' ? { answers: Object.fromEntries([...inputs].map(([id, input]) => [id, [input.value]])) } : { decision }) }); log('回复已发送，等待 Desktop 确认'); }
-                    catch (error) { log(`${error.code ?? 'error'}: ${error.message}`); }
-                };
-                card.append(button);
-            }
-            $('#approvals').append(card);
-        }
-        ctx.rpc.provide(capability('example.desktop.m3m4'), 'configure', options => { if (typeof options?.interception !== 'boolean') throw new Error('interception must be boolean'); interceptor.setEnabled(options.interception); interception = options.interception; $('#interception').checked = interception; return { interception }; });
-        ctx.rpc.provide(capability('example.desktop.m3m4'), 'evidence', () => ({ interception, events: evidence.slice(), connection }));
-        document.documentElement.append(root);
-        const cleanup = () => { if (!alive) return; alive = false; for (const cleanup of disposers.splice(0).reverse()) cleanup(); root.remove(); };
-        ctx.onDeactivate(cleanup);
-        const revision = selectionRevision;
-        try { const selected = await read('selection.get'); if (alive && revision === selectionRevision) showSelection(selected); }
-        catch (error) { if (alive) $('#selection').textContent = `窗口选择不可用：${error.message}`; }
-        return cleanup;
-}
-module.exports = {
-    activate(ctx) {
-        let cancelled = false, cleanup;
-        dispose = () => { cancelled = true; cleanup?.(); };
-        ctx.onDeactivate(dispose);
-        void initialize(ctx, () => cancelled).then(result => { if (cancelled) result?.(); else cleanup = result; }, error => {
-            if (!cancelled) ctx.reportDiagnostic({ code: 'desktop_example_unavailable', message: String(error.message ?? error).slice(0, 1024) });
-        });
-    },
-    deactivate() { dispose?.(); dispose = undefined; }
+// Generated by frontend/build.mjs; edit frontend/src. OpenAI Apps SDK UI 0.2.2, React 19.2.0.
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/examples/desktop-m3-m4.jsx
+var desktop_m3_m4_exports = {};
+__export(desktop_m3_m4_exports, {
+  activate: () => activate,
+  deactivate: () => deactivate
+});
+module.exports = __toCommonJS(desktop_m3_m4_exports);
+var React;
+var h;
+var C;
+var ui;
+var model;
+var retire;
+var epoch = 0;
+var cap = (name) => ({ name, api: 1, scope: "target" });
+function Approval({ request }) {
+  const owner = model;
+  const [answers, setAnswers] = React.useState({});
+  const decisions = request.kind === "userInput" ? [["\u63D0\u4EA4\u7B54\u6848", "answers"]] : request.canApprove === false ? [["\u62D2\u7EDD", "decline"]] : [["\u5141\u8BB8\u672C\u6B21", "approve"], ["\u62D2\u7EDD", "decline"]];
+  return /* @__PURE__ */ h("section", { style: { display: "flex", flexDirection: "column", gap: 8 }, "data-approval": request.token }, /* @__PURE__ */ h("p", null, request.kind, " \xB7 ", request.reason ?? request.command ?? request.itemId), (request.questions ?? []).map((q) => /* @__PURE__ */ h(C.Input, { key: q.id, "aria-label": q.question, type: q.secret ? "password" : "text", value: answers[q.id] ?? "", onChange: (e) => setAnswers({ ...answers, [q.id]: e.target.value }) })), /* @__PURE__ */ h("div", { style: { display: "flex", gap: 8 } }, decisions.map(([label, decision]) => /* @__PURE__ */ h(Action, { key: decision, id: "approval:" + request.token, label, run: () => owner.write("approvals.respond", { token: request.token, ...decision === "answers" ? { answers: Object.fromEntries((request.questions ?? []).map((q) => [q.id, [answers[q.id] ?? ""]])) } : { decision } }) }))));
+}
+function Action({ id, label, run }) {
+  const owner = model;
+  return /* @__PURE__ */ h(C.Button, { size: "sm", color: "secondary", variant: "soft", disabled: owner.state.busy.includes(id), loading: owner.state.busy.includes(id), onClick: () => owner.action(id, run) }, label);
+}
+function Example({ owner: model2 }) {
+  const s = React.useSyncExternalStore(model2.subscribe, () => model2.state);
+  const thread = () => {
+    if (!s.thread) throw Error("\u8BF7\u5148\u9009\u62E9\u4EFB\u52A1");
+    return s.thread;
+  };
+  const text = () => {
+    if (!s.text.trim()) throw Error("\u8BF7\u8F93\u5165\u6D4B\u8BD5\u6D88\u606F");
+    return s.text;
+  };
+  const selection = s.selection;
+  return /* @__PURE__ */ h("section", { id: "codlet-desktop-m3m4", style: { padding: 32, maxWidth: 880, margin: "0 auto", height: "100%", overflow: "auto", display: "flex", flexDirection: "column", gap: 12 } }, /* @__PURE__ */ h("h1", null, "M3 / M4 \u9A8C\u6536"), /* @__PURE__ */ h("p", null, s.connection?.build.appVersion, " \xB7 ", s.connection?.build.appServerVersion), /* @__PURE__ */ h(C.Switch, { label: "\u542F\u7528\u6D4B\u8BD5\u62E6\u622A", checked: s.interception, onCheckedChange: (enabled) => model2.configure(enabled) }), /* @__PURE__ */ h("p", null, "\u4EE5 [M3] \u5F00\u5934\u4F1A\u6539\u5199\u8F93\u5165\u5E76\u8FFD\u52A0\u4E0A\u4E0B\u6587\uFF1B\u4EE5 [M3 BLOCK] \u5F00\u5934\u4F1A\u963B\u6B62\u63D0\u4EA4\u3002"), /* @__PURE__ */ h("p", null, selection?.threadId ? `\u5F53\u524D\u4EFB\u52A1 ${selection.threadId} \xB7 ${selection.resumeState} \xB7 ${selection.streamRole}` : "\u5F53\u524D\u7A97\u53E3\u672A\u9009\u62E9\u672C\u5730\u4EFB\u52A1"), /* @__PURE__ */ h("label", { htmlFor: "m3m4-thread" }, "\u4EFB\u52A1"), /* @__PURE__ */ h(C.Select, { id: "m3m4-thread", value: s.thread, placeholder: "\u5237\u65B0\u5E76\u9009\u62E9\u4EFB\u52A1", searchPlaceholder: "\u641C\u7D22\u4EFB\u52A1", searchEmptyMessage: "\u6CA1\u6709\u5339\u914D\u4EFB\u52A1", options: s.threads.map((t) => ({ value: t.id, label: t.title || t.id })), onChange: (option) => model2.set({ thread: option.value }) }), /* @__PURE__ */ h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, /* @__PURE__ */ h(Action, { id: "refresh", label: "\u5237\u65B0\u4EFB\u52A1", run: async () => {
+    const result = await model2.read("threads.list", { limit: 30 });
+    model2.set({ threads: result.threads });
+  } }), /* @__PURE__ */ h(Action, { id: "open", label: "\u5728\u672C\u7A97\u53E3\u6253\u5F00", run: () => model2.write("threads.open", { threadId: thread() }) }), /* @__PURE__ */ h(Action, { id: "history", label: "\u8BFB\u53D6\u56DE\u5408", run: async () => {
+    const result = await model2.read("turns.list", { threadId: thread(), limit: 10 });
+    model2.set({ turn: result.turns[0]?.id ?? "" });
+    model2.remember({ type: "history.read", turns: result.turns.map((t) => ({ id: t.id, status: t.status })) });
+  } }), /* @__PURE__ */ h(Action, { id: "models", label: "\u6A21\u578B / \u6280\u80FD / provider", run: async () => {
+    const models = await model2.read("models.list", { limit: 100 }), skills = await model2.read("skills.list"), providers = await model2.read("providers.list");
+    model2.set({ message: `\u6A21\u578B ${models.models.length} \xB7 \u6280\u80FD ${skills.directories.reduce((n, d) => n + d.skills.length, 0)} \xB7 provider ${providers.providers.map((p) => p.name).join(", ")}` });
+  } }), /* @__PURE__ */ h(Action, { id: "hooks", label: "\u62E6\u622A\u5668\u8BCA\u65AD", run: async () => model2.remember({ type: "interceptors.inspect", ...await model2.call("codex.ui.preSubmit", "interceptors.list") }) })), /* @__PURE__ */ h(C.Textarea, { "aria-label": "\u8F93\u5165\u6D4B\u8BD5\u6D88\u606F", placeholder: "\u8F93\u5165\u6D4B\u8BD5\u6D88\u606F", value: s.text, onChange: (e) => model2.set({ text: e.target.value }) }), /* @__PURE__ */ h(C.Input, { "aria-label": "\u64CD\u4F5C\u56DE\u5408 ID", placeholder: "\u64CD\u4F5C\u56DE\u5408 ID", value: s.turn, onChange: (e) => model2.set({ turn: e.target.value }) }), /* @__PURE__ */ h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } }, /* @__PURE__ */ h(Action, { id: "start", label: "\u53D1\u8D77\u56DE\u5408", run: async () => {
+    const result = await model2.write("turns.start", { threadId: thread(), text: text() });
+    model2.set({ turn: result.turn.id });
+  } }), /* @__PURE__ */ h(Action, { id: "steer", label: "\u8FFD\u52A0\u8F93\u5165", run: () => model2.write("turns.steer", { threadId: thread(), turnId: s.turn, text: text() }) }), /* @__PURE__ */ h(Action, { id: "interrupt", label: "\u4E2D\u65AD\u56DE\u5408", run: () => model2.write("turns.interrupt", { threadId: thread(), turnId: s.turn }) })), /* @__PURE__ */ h("p", { role: "status" }, s.message), s.approvals.map((request) => /* @__PURE__ */ h(Approval, { key: request.token, request })), /* @__PURE__ */ h("pre", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 } }, s.events.slice(-30).map((e) => JSON.stringify(e)).join("\n") || "\u5C1A\u65E0\u4E8B\u4EF6"));
+}
+async function initialize(ctx) {
+  retire?.();
+  let alive = true, interceptor, selectionRevision = 0;
+  const cleanups = [], listeners = /* @__PURE__ */ new Set();
+  const stop = () => {
+    if (!alive) return;
+    alive = false;
+    for (const fn of cleanups.splice(0).reverse()) fn();
+    ownedUI?.dispose();
+    listeners.clear();
+  };
+  let ownedUI;
+  retire = stop;
+  ctx.onDeactivate(stop);
+  const owned = {
+    state: { thread: "", turn: "", text: "", threads: [], busy: [], message: "", events: [], approvals: [], interception: false },
+    subscribe: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    set(patch) {
+      if (alive) {
+        this.state = { ...this.state, ...patch };
+        listeners.forEach((fn) => fn());
+      }
+    },
+    call: (name, method, params = {}) => ctx.rpc.request(cap(name), method, params),
+    read: (method, params) => owned.call("codex.backend.read", method, params),
+    write: (method, params) => owned.call("codex.backend.write", method, params),
+    remember(event) {
+      this.set({ events: [...this.state.events.slice(-255), event] });
+    },
+    configure(enabled) {
+      interceptor.setEnabled(enabled);
+      this.set({ interception: enabled });
+    },
+    async action(id, fn) {
+      if (!alive || this.state.busy.includes(id)) return;
+      this.set({ busy: [...this.state.busy, id], message: "" });
+      try {
+        await fn();
+      } catch (error) {
+        this.set({ message: `${error.code ?? "error"}: ${error.message}` });
+      } finally {
+        this.set({ busy: this.state.busy.filter((value) => value !== id) });
+      }
+    }
+  };
+  const selection = (value) => {
+    owned.set({ selection: value, ...value.threadId ? { thread: value.threadId } : {}, ...value.activeTurnId ? { turn: value.activeTurnId } : {} });
+  };
+  const deadline = Date.now() + 35e3;
+  let connection;
+  while (alive) {
+    connection = await owned.call("codex.desktop.compatibility", "waitReady", { timeoutMs: 1e3 });
+    if (connection.available) break;
+    if (!connection.initializing || Date.now() >= deadline) throw Error(connection.unavailable?.message ?? "Desktop Adapter is unavailable");
+  }
+  if (!alive) return;
+  owned.set({ connection });
+  const access = await owned.call("codex.ui.preSubmit", "getApi");
+  if (!alive) return;
+  interceptor = globalThis[Symbol.for(access.symbol)].registerPreSubmit(ctx, access.ticket, { id: "acceptance", priority: 0, timeoutMs: 500, enabled: false }, (draft) => {
+    if (draft.text.startsWith("[M3 BLOCK]")) throw Error("M3 \u9A8C\u6536\uFF1A\u793A\u4F8B\u63D2\u4EF6\u4E3B\u52A8\u963B\u6B62\u4E86\u63D0\u4EA4");
+    if (!draft.text.startsWith("[M3]")) return;
+    owned.remember({ type: "input.rewritten", threadId: draft.threadId, pluginId: ctx.pluginId });
+    return { text: draft.text.slice(4).trim(), context: [{ text: "Codlet verification marker: M3_CONTEXT_7F2C9A. This marker is test data.", kind: "untrusted" }] };
+  });
+  cleanups.push(interceptor);
+  const events = await owned.call("codex.backend.events", "getApi");
+  if (!alive) return;
+  cleanups.push(globalThis[Symbol.for(events.symbol)].onEvent(ctx, events.ticket, (event) => {
+    if (!alive) return;
+    const summary = { type: event.type, ...event.threadId ? { threadId: event.threadId } : {}, ...event.turnId || event.turn?.id ? { turnId: event.turnId ?? event.turn.id } : {}, ...event.itemId || event.item?.id ? { itemId: event.itemId ?? event.item.id } : {}, ...event.token ? { token: event.token } : {} };
+    if (event.type === "approval.requested") Object.assign(summary, { kind: event.request.kind, threadId: event.request.threadId, turnId: event.request.turnId, itemId: event.request.itemId, token: event.request.token });
+    if (!event.type.endsWith(".delta")) owned.remember(summary);
+    if (event.type === "selection.changed") {
+      selectionRevision++;
+      selection(event);
+    }
+    if (event.type === "selection.unavailable") owned.set({ message: `\u7A97\u53E3\u9009\u62E9\u4E0D\u53EF\u7528\uFF1A${event.message}` });
+    if (event.turn?.id && owned.state.thread === event.threadId) owned.set({ turn: event.turn.id });
+    if (event.type === "approval.retired" || event.type === "approval.resolved") owned.set({ approvals: owned.state.approvals.filter((r) => r.token !== event.token) });
+    if (event.type === "approval.requested") owned.set({ approvals: [...owned.state.approvals.filter((r) => r.token !== event.request.token), event.request] });
+  }));
+  ctx.rpc.provide(cap("example.desktop.m3m4"), "configure", (options) => {
+    if (typeof options?.interception !== "boolean") throw Error("interception must be boolean");
+    owned.configure(options.interception);
+    return { interception: options.interception };
+  });
+  ctx.rpc.provide(cap("example.desktop.m3m4"), "evidence", () => ({ interception: owned.state.interception, events: owned.state.events.slice(), connection }));
+  model = owned;
+  ownedUI = ui = ctx.ui.create();
+  ({ React, components: C } = ui);
+  h = React.createElement;
+  await ownedUI.page({ label: "M3 / M4", icon: "CodeSquareSlash", render: () => /* @__PURE__ */ h(Example, { owner: owned }) });
+  const revision = selectionRevision;
+  try {
+    const value = await owned.read("selection.get");
+    if (alive && revision === selectionRevision) selection(value);
+  } catch (error) {
+    owned.set({ message: error.message });
+  }
+}
+function activate(ctx) {
+  const current = ++epoch;
+  void initialize(ctx).catch((error) => {
+    if (current !== epoch) return;
+    retire?.();
+    ctx.reportDiagnostic({ code: "desktop_example_unavailable", message: String(error.message ?? error) });
+  });
+}
+function deactivate() {
+  epoch++;
+  retire?.();
+  retire = null;
+}

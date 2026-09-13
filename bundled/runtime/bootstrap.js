@@ -413,7 +413,10 @@
                         return () => record.disposers.delete(listener);
                     },
                     rpc: createRpc(record),
-                    ...(typeof createUI === 'function' ? { ui: Object.freeze({ api: 1, create: appearance => createUI(context, appearance) }) } : {})
+                    ...(typeof createUI === 'function' ? { ui: Object.freeze({ api: 2, create: () => {
+                        if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+                        return createUI(context);
+                    } }) } : {})
                 });
                 activating.set(metadata.id, record);
                 try {

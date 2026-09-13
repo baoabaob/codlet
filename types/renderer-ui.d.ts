@@ -1,47 +1,50 @@
-/** Optional local UI helpers supplied by the managed renderer runtime. */
-export type UiRole = 'button' | 'switch' | 'section' | 'row' | 'copy' | 'label' | 'description' | 'actions' | 'dialog' | 'dialogHeader' | 'dialogBody' | 'dialogActions' | 'heading' | 'status';
-export interface UiAppearance {
-  api: 1;
-  available: boolean;
-  themeToken: string;
-  roles: Record<UiRole, string[]>;
-  nativeLayout?: string | null;
-  nativeTokensAvailable?: boolean;
+import type * as React from 'react';
+
+/** Direct upstream components. Install the pinned peer packages for type checking. */
+export interface OfficialComponents {
+  readonly Button: typeof import('@openai/apps-sdk-ui/components/Button').Button;
+  readonly ButtonLink: typeof import('@openai/apps-sdk-ui/components/Button').ButtonLink;
+  readonly Input: typeof import('@openai/apps-sdk-ui/components/Input').Input;
+  readonly Textarea: typeof import('@openai/apps-sdk-ui/components/Textarea').Textarea;
+  readonly Switch: typeof import('@openai/apps-sdk-ui/components/Switch').Switch;
+  readonly Checkbox: typeof import('@openai/apps-sdk-ui/components/Checkbox').Checkbox;
+  readonly Popover: typeof import('@openai/apps-sdk-ui/components/Popover').Popover;
+  readonly Tooltip: typeof import('@openai/apps-sdk-ui/components/Tooltip').Tooltip;
+  readonly SegmentedControl: typeof import('@openai/apps-sdk-ui/components/SegmentedControl').SegmentedControl;
+  readonly Select: typeof import('@openai/apps-sdk-ui/components/Select').Select;
+  readonly TextLink: typeof import('@openai/apps-sdk-ui/components/TextLink').TextLink;
+  readonly LoadingIndicator: typeof import('@openai/apps-sdk-ui/components/Indicator').LoadingIndicator;
 }
-export type UiTag = 'div' | 'span' | 'p' | 'section' | 'h1' | 'h2' | 'label' | 'button' | 'input' | 'dialog' | 'textarea' | 'select' | 'option' | 'details' | 'summary';
-export interface UiElementOptions { role?: UiRole; variant?: string; text?: string; className?: string }
-export type UiIconName = 'close' | 'back' | 'refresh' | 'update' | 'restart' | 'spinner' | 'download' | 'import' | 'folder' | 'external' | 'search';
-export interface UiDialog {
-  readonly element: HTMLDialogElement;
-  readonly header: HTMLDivElement;
-  readonly title: HTMLHeadingElement;
-  readonly body: HTMLDivElement;
-  readonly actions: HTMLDivElement;
-  readonly closeButton: HTMLButtonElement;
-  show(options?: { trigger?: HTMLElement | null; initialFocus?: HTMLElement | null }): boolean;
-  close(reason?: string): boolean;
-  dispose(): void;
+export type OfficialIcons = Pick<typeof import('@openai/apps-sdk-ui/components/Icon'),
+  'ArrowLeft' | 'ArrowRotateCw' | 'Download' | 'ExternalLink' | 'FolderOpen' | 'InfoCircle' | 'Regenerate' | 'Search' | 'X'>;
+export interface RendererUiMount {
+  render(content: React.ReactNode): void;
+  /** Synchronously runs React cleanups; a later mount may reuse the container. */
+  unmount(): void;
+}
+export interface RendererUiPageOptions {
+  label: string;
+  icon?: 'Cube' | 'CodeSquareSlash';
+  /** Called on each native route entry; the React tree is unmounted on exit. */
+  render(): React.ReactNode;
+  onActivate?(): void;
+  onDeactivate?(): void;
 }
 export interface RendererUi {
-  readonly api: 1;
-  /** Aborted on dispose; asynchronous consumer work must observe this signal. */
+  readonly api: 2;
+  readonly React: typeof React;
+  readonly components: OfficialComponents;
+  readonly icons: OfficialIcons;
+  readonly PortalContainer: React.Context<Element | null>;
   readonly signal: AbortSignal;
-  element<K extends UiTag>(tag: K, options?: UiElementOptions): HTMLElementTagNameMap[K];
-  /** Listener lifetime belongs to this owner; DOM control listeners also retire on remove(). */
-  on(target: EventTarget, type: string, handler: (event: Event, signal: AbortSignal) => unknown, options?: boolean | AddEventListenerOptions): () => void;
-  remove(node: HTMLElement | SVGElement): void;
-  button(options: { text?: string; label?: string; variant?: 'default' | 'primary' | 'danger' | 'icon' | 'close' | 'menu'; disabled?: boolean; onClick?: (event: Event, signal: AbortSignal) => unknown }): HTMLButtonElement;
-  icon(name: UiIconName, options?: { size?: 16 | 18 }): SVGSVGElement;
-  backButton(options?: { text?: string; label?: string; onClick?: (event: Event, signal: AbortSignal) => unknown }): HTMLButtonElement;
-  /** Owned standard link, HTTPS only, without credentials; opens with noopener/noreferrer. */
-  externalLink(options: { text: string; href: string; label?: string }): HTMLAnchorElement;
-  switch(options: { label: string; checked?: boolean; disabled?: boolean; onChange?: (checked: boolean, event: Event, signal: AbortSignal) => unknown }): HTMLInputElement;
-  row(options: { label: string; description?: string }): Readonly<{ element: HTMLDivElement; copy: HTMLDivElement; label: HTMLDivElement; description: HTMLDivElement; controls: HTMLDivElement }>;
-  status(options?: { text?: string; tone?: 'default' | 'error' | 'success' }): HTMLDivElement;
-  dialog(options: { title: string; variant?: 'settings' | 'confirmation'; closeLabel?: string; onClose?: (reason: string) => void; /** Return false to keep the dialog open. */ onRequestClose?: (reason: string) => boolean | void }): UiDialog;
-  /** Retains the control's prior disabled value across a busy cycle. */
-  busy(node: HTMLElement, value: boolean): void;
-  after(delayMs: number, callback: (signal: AbortSignal) => void): () => void;
+  useEscCloseStack(listening: boolean, callback: () => void): void;
+  createPortal(children: React.ReactNode, container: Element | DocumentFragment, key?: string | null): React.ReactPortal;
+  flushSync(callback: () => void): void;
+  container(parent?: Element): HTMLDivElement;
+  mount(container: HTMLDivElement, content: React.ReactNode): RendererUiMount;
+  /** Requires codex.ui.navigation.page@1. One page per plugin and generation. */
+  page(options: RendererUiPageOptions): Promise<Readonly<{ path: string; dispose(): void }>>;
+  /** Aborts the owner, unregisters pages and synchronously unmounts every root. */
   dispose(): void;
 }
-export interface RendererUiFactory { readonly api: 1; create(appearance: UiAppearance): RendererUi }
+export interface RendererUiFactory { readonly api: 2; create(): RendererUi }

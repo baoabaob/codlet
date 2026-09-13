@@ -216,6 +216,7 @@ $sourceFiles = @(
     'docs/UI_MANAGEMENT_2026-09-13.md', 'docs/OFFICIAL_UPDATE_FLOW_2026-09-13.md',
     'runtime/node-runtime.json', 'runtime/update-channel.json', 'docs/PLUGIN_I18N.md', 'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
     'types/codex-desktop.d.ts', 'types/renderer-ui.d.ts',
+    'docs/THIRD_PARTY_UI.md', 'docs/THIRD_PARTY_UI_LICENSES.txt', 'docs/UI_COMPONENTS_2026-09-13.md', 'docs/UI_ADAPTER_CAPABILITIES.md',
     'examples/ui-controls/codlet.json', 'examples/ui-controls/renderer.js', 'examples/ui-controls/README.md',
     'examples/local-management-check/codlet.json', 'examples/local-management-check/renderer.js', 'examples/local-management-check/README.md',
     'docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md',

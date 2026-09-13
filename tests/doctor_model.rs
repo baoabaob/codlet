@@ -113,9 +113,9 @@ fn package_unavailable_still_reports_corrupt_registry_and_declared_capabilities(
             .as_array()
             .unwrap()
             .len(),
-        4
+        3
     );
-    for name in ["codex.ui.appearance", "codex.ui.titlebar.afterMenu"] {
+    for name in ["codex.ui.navigation.page"] {
         assert!(
             plugin(&json, "codex.ui.adapter")["provides"]
                 .as_array()

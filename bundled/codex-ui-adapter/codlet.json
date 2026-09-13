@@ -2,21 +2,20 @@
   "schema": 1,
   "id": "codex.ui.adapter",
   "name": "Codex UI Adapter",
-  "description": "Connect plugins to the Codex interface and appearance.",
+  "description": "Connect plugin pages to Codex navigation.",
   "i18n": {
-    "zh": { "name": "Codex 界面适配器", "description": "为插件提供 Codex 界面入口和外观适配。" },
-    "en": { "name": "Codex UI Adapter", "description": "Connect plugins to the Codex interface and appearance." }
+    "zh": { "name": "Codex 界面适配器", "description": "将插件页面接入 Codex 主导航。" },
+    "en": { "name": "Codex UI Adapter", "description": "Connect plugin pages to Codex navigation." }
   },
   "version": "0.1.0",
   "renderer": {
     "entry": "dist/renderer.js",
-    "world": "isolated"
+    "world": "main"
   },
-  "permissions": ["ui.dom"],
+  "permissions": ["ui.dom", "ui.mainWorld"],
   "provides": [
-    { "name": "codex.ui.appearance", "api": 1, "scope": "target" },
     {
-      "name": "codex.ui.titlebar.afterMenu",
+      "name": "codex.ui.navigation.page",
       "api": 1,
       "scope": "target"
     }

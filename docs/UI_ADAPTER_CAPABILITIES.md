@@ -1,160 +1,19 @@
-# Native UI Adapter Capabilities
+# Native navigation pages
 
-Status: first M3.1 subset implemented and verified on 2026-09-11. Managed local UI
-helpers and `codex.ui.appearance@1` are used by the GUI and an ordinary plugin.
-Additional Native slots and settings integration remain proposals. See the
-[implemented contract and acceptance](UI_HELPERS_AND_NAVIGATION_2026-09-11.md).
-See the [next development plan](NEXT_DEVELOPMENT_PLAN_2026-09-11.md) for the
-UI, Desktop API, import, community and platform work packages.
+The bundled `codex.ui.adapter` provides `codex.ui.navigation.page@1` in target scope. It runs in the main world with `ui.dom` and `ui.mainWorld` to access the reviewed native router and sidebar component. Codlet's manager runs in the isolated world and uses the public page helper. The retired `codex.ui.appearance` and `codex.ui.titlebar.afterMenu` contracts are removed.
 
-## Objective
+## Registration
 
-A codlet should be able to present controls and settings that belong in Codex
-without inspecting private host DOM, importing host React modules, or reconstructing
-the same styles in each plugin. The first-party management GUI is the initial
-consumer and acceptance case. Its visual agreement with the client must be
-established before its controls become a reusable public interface.
+`register({ label, icon, token })` is a JSON RPC endpoint. The Core-authenticated invocation supplies the caller plugin ID and generation. `icon` is `Cube` or `CodeSquareSlash`. `token` must identify a connected lifetime marker whose plugin ID and generation match that caller. The runtime helper creates the marker; plugins should call `ui.page()` instead of constructing it.
 
-The installed application's compiled frontend is sufficient reference material.
-The adapter evidence document records the build, archive hash, source locations,
-theme variables, and observed structures. Research copies stay outside the
-repository. Implement small owned components from the observed behavior and
-dimensions; do not distribute the proprietary application bundle or its assets.
+The result is `{ api: 1, token, path }`, with one stable `/codlet/<encoded-plugin-id>` route per owner. Registering the same marker again is idempotent. A later generation retires the previous registration. Markers are removed by synchronous UI disposal, so cleanup does not rely on sending RPC after a caller's authority has already been revoked.
 
-## Responsibilities
+## Native ownership
 
-| Layer | Owns | Does not own |
-| --- | --- | --- |
-| Core | Capability declarations, grants, target/generation identity, lifecycle and RPC routing | Codex selectors, theme tokens, React or component geometry |
-| Codex UI adapter | Verified host locations, native theme mapping, semantic style recipes and availability | Plugin business data or registry decisions |
-| Generic renderer UI helpers | Owned DOM controls, keyboard/focus behavior, cleanup and local event handling | Host private modules, hashed classes or undocumented bridges |
-| Consumer plugin | Content, domain state and commands | Private host selectors or duplicated native styling |
+The adapter recognizes only Codex `26.908.40834`, build `8881`, package `26.908.4834.0`, with its exact entry module. It validates a unique native memory router and authenticated route collection. The registered route is appended with a stable explicit ID; existing descriptors and their generated IDs remain unchanged. The audited React Router implementation reparses descriptors on navigation.
 
-Renderer worlds share the DOM, but functions and DOM object references are not
-serialized through the current RPC bridge. Keep per-keystroke interactions local
-to the consumer. Use RPC for capability negotiation and substantive commands,
-not every hover, focus or switch animation.
+Navigation uses the existing navigator's `push` / `replace`. The adapter does not overwrite `listen`, `push`, `replace` or `go`, create a backend connection, manipulate browser history, or hide a conversation behind an overlay. Native route mounting creates the empty page host; departure unmounts it. The renderer helper synchronously unmounts its React tree, then removes its container. Pending business receipts remain in the controller and are queried on re-entry; unsubmitted work and import trust are invalidated.
 
-## Capability Shape
+The native `$R` sidebar component receives `isActive` and owns hover, pressed/focus styling, icon-leading spacing and `aria-current="page"`. The adapter adds a separate native React root after the Scheduled item (or Plugins/Library when Scheduled is hidden). It is outside native drag collections. If the main sidebar is temporarily absent, that navigation root is detached and restored when the sidebar returns. No top-bar fallback or copied control CSS is installed.
 
-| Area | Current | Proposed next contract |
-| --- | --- | --- |
-| Slots | `codex.ui.titlebar.afterMenu@1` returns a stable mount token, availability and placement | Named target-scoped slots with explicit availability and reversible ownership |
-| Appearance | `codex.ui.appearance@1` describes finite semantic roles and variants backed by scoped Native aliases | Extend only for independently verified needs |
-| Controls | `context.ui.create` owns buttons, switches, rows, status, modal dialogs, local events and cleanup | Additional small controls after consumer acceptance |
-| Surfaces | Owned 600px settings and 420px confirmation dialogs; GUI retains its receipt/confirmation business logic | Integration into Native settings and additional host slots |
-| Diagnostics | Appearance reports stylesheet availability, roles, native layout and token availability | More detailed per-build evidence and changed-host fixtures |
-
-`codex.ui.appearance@1` is now the implemented first contract. The management GUI
-and `example.ui.controls` consume the same roles and helpers. There is no raw-CSS
-or arbitrary-selector RPC method in this interface.
-
-An appearance response should describe the supported contract version, theme
-marker and finite role/variant set. A consumer applies its own data attributes to
-owned elements; adapter CSS interprets those attributes. Private class names and
-native token spellings remain in the adapter implementation. This fits the existing
-stable-marker contract without passing React elements or closures across worlds.
-
-## Initial Roles
-
-Start with controls already needed by management. Record each role's actual source
-component and all states before extracting it.
-
-| Role | Evidence and behavior required |
-| --- | --- |
-| Menu entry | Actual trigger spacing, type size, row height, hover/open/focus appearance and drag exclusion |
-| Button and icon button | Variants, icon dimensions, hit area, border, disabled/loading states and focus ring |
-| Switch | Track/thumb geometry, on/off/disabled/focus states, accessible name and keyboard activation |
-| Settings section and row | Label/description typography, alignment, separators, padding and narrow-window behavior |
-| Settings surface | Native navigation/content proportions, maximum width, scroll ownership, heading hierarchy and close behavior |
-| Confirmation | Native action order, button variants, layout, focus entry/return, Escape and pending/error behavior |
-
-A color alias alone does not satisfy a role. Spacing, geometry, density and state
-behavior are part of the contract. Conversely, copying a Radix-generated class or
-`data-state` does not reproduce focus management, dismissal or accessibility.
-Those behaviors need owned controls or a suitable existing library; they must not
-depend on undocumented registration in the host's React/Radix tree.
-
-The current correction uses the public wide-dialog variant (600px) for one settings
-section and the compact variant (420px) for confirmation. The native settings-row
-composition uses 16px horizontal / 12px vertical padding, a 24px control gap,
-13px labels, and 12px descriptions with 16px line height. Do not apply the separate
-64px settings-row token to every row: the observed plugin row does not use it.
-The default switch is 32x20px with a 16px thumb. The dialog radius resolves through
-the host corner scale, with a 20px base. Variant-specific evidence belongs in the
-adapter document; these are not global hardcoded dimensions for every control.
-
-The GUI uses the browser's `dialog` primitive for the modal boundary, with owned
-close/confirmation handlers and lifecycle cleanup. Modal state must follow
-`dialog.open`; background inertness, tab scope and focus return need real browser
-verification in addition to tests of the plugin's handlers.
-
-The earlier appearance increment added 16 aliases used by that GUI, for 27 total.
-It was a scoped stylesheet contract without component factories. The M3.1 increment
-adds factories as an optional managed-runtime convenience, separate from the adapter.
-
-The [2026-09-08 follow-up](APPEARANCE_FOLLOWUP_2026-09-08.md) extends that baseline to
-35 aliases for menu states, font weights, control cursor and reduced-motion
-preferences. These references resolve from the current host settings. The GUI's
-menu trigger grows with its effective font size instead of fixing its height to
-the 14px baseline. That follow-up did not add factories. M3.1 now adds the appearance
-capability and local helpers; it retains 35 aliases and adds no global theme writer.
-Role line heights scale with the corresponding Native font size, preserving the
-13px/18px label and 12px/16px description baselines.
-
-## Ownership And Compatibility
-
-- Scope recipes to adapter-owned mounts and explicitly opted-in plugin surfaces.
-  Never apply broad resets to the host document.
-- Match live theme and typography settings through native CSS variables. Keep
-  geometry tokens semantic so a host update is contained in the adapter.
-- Keep the current menu entry adjacent to the official menubar. It is not part of
-  the host's arrow-key or mnemonic collection; do not advertise those bindings.
-- Capability versions describe the plugin-facing contract. Build evidence describes
-  the private host implementation. Update one without silently changing the other.
-- An unavailable slot must be observable and recover when its exact anchor returns.
-  Reuse owned DOM where practical, clean it on unload, and retire queued work by
-  generation. Do not silently choose unrelated host containers.
-- Unknown style roles fail explicitly. A verified system-color fallback can preserve
-  basic usability, but it is not a claim of native visual compatibility.
-- `runtime.manage` remains a separate grant. Rendering a switch or confirmation
-  must not confer authority to change plugin state.
-- Host status and plugin activation do not prove that a surface mounted or looks
-  correct. Keep renderer availability and visual acceptance separate.
-
-## Delivery Sequence
-
-M3.1 starts with the roles needed by the plugin-management page and one ordinary
-UI plugin. First-party and third-party consumers use the same grants, ownership
-and cleanup APIs. M5a can consume that first subset while later UI capabilities
-continue independently; a complete component framework is not a release prerequisite.
-
-1. Correct the current GUI against the installed settings components. Record a
-   component-to-owned-implementation comparison, including measurements and
-   interaction differences. Preserve existing lifecycle and RPC regressions.
-2. Extract the proven appearance roles and local control helpers. Exercise them in
-   the management GUI and a small trusted local UI example, then freeze the first
-   versioned contract. Avoid a framework migration or complete design-system clone.
-3. Add a settings surface/slot API only after its navigation, scrolling, focus,
-   teardown and missing-host behavior are established. A separate window remains
-   an optional host capability, not a requirement to introduce another GUI runtime.
-4. Add build compatibility reporting and fixtures for changed host structures.
-   A future style mapping update must run the same consumer tests.
-
-## Acceptance
-
-Compare with the installed client at the same theme, font, zoom and window size.
-Verify desktop and narrow layouts, longer labels, disabled/loading/error states,
-keyboard-only operation, focus return, theme changes, toolbar rebuild and unload.
-Screenshots and manual comparison are required for visual acceptance; VM behavior
-tests do not establish visual agreement.
-
-The 2026-09-07 browser preview attempt was rejected by the tool policy; that
-individual attempt remains a failed attempt. Later existing-GUI acceptance is
-recorded in the [2026-09-08 repair and retest](GUI_REPAIR_2026-09-08.md). The new
-M3.1 subset now has separate Native light/dark, narrow/font-scale, keyboard, nested
-modal and unload results in the [2026-09-11 record](UI_HELPERS_AND_NAVIGATION_2026-09-11.md).
-
-Related: [adapter evidence](CODEX_UI_ADAPTER_EVIDENCE.md),
-[product plan](PRODUCT_TECHNICAL_PLAN.md), and
-[execution record](REVIEW_AND_EXECUTION_2026-09-07.md).
+Unregistering the active page returns to the last native destination, or `/` when none survives. It removes only its own route identity. Provider teardown removes all page routes and native roots. Build/tree ambiguity fails closed and reports a diagnostic; a client update needs a reviewed profile.

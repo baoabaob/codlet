@@ -1857,7 +1857,7 @@ fn local_runtime_management_case(has_grant: bool) {
     };
     let manifest = json!({"schema":1,"id":"dev.local","version":"1", "renderer":{"entry":"renderer.js","world":"isolated"},
     "permissions":grants, "requires":[
-        {"name":"codex.ui.titlebar.afterMenu","api":1,"scope":"target"},
+        {"name":"codex.ui.navigation.page","api":1,"scope":"target"},
         {"name":"codlet.runtime.manage","api":1,"scope":"target"}
     ]});
     std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();

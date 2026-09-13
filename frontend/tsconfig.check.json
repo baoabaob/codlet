@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "noEmit": true, "strict": true, "skipLibCheck": true,
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"], "baseUrl": ".",
+    "paths": {"react": ["node_modules/@types/react"], "@openai/apps-sdk-ui/*": ["node_modules/@openai/apps-sdk-ui/dist/types/*"]}
+  },
+  "include": ["typecheck.ts", "../types/*.d.ts"]
+}

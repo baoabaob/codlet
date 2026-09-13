@@ -1343,41 +1343,20 @@ mod tests {
         assert_eq!(
             plugin.manifest.requires,
             [
-                "codex.ui.appearance",
-                "codex.ui.titlebar.afterMenu",
+                "codex.ui.navigation.page",
                 "codlet.runtime.ping",
                 "codlet.runtime.manage"
             ]
             .map(|name| CapabilityDescriptor::new(name, 1, CapabilityScope::Target).unwrap())
         );
         assert!(plugin.source.as_deref().unwrap().contains("module.exports"));
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("codex.ui.titlebar.afterMenu@1")
-        );
+        assert!(plugin.source.as_deref().unwrap().contains("ui.page"));
         assert!(
             plugin
                 .source
                 .as_deref()
                 .unwrap()
                 .contains("context.rpc.request")
-        );
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("capability?.available")
-        );
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("codlet.runtime.ping")
         );
         assert!(plugin.source.as_deref().unwrap().contains("disableSelf"));
         assert!(
@@ -1397,40 +1376,41 @@ mod tests {
     }
 
     #[test]
-    fn bundled_ui_adapter_provides_the_gui_mount_capability() {
+    fn bundled_ui_adapter_provides_native_page_navigation() {
         let plugin = bundled_codex_ui_adapter().unwrap();
         assert_eq!(plugin.manifest.id, "codex.ui.adapter");
         assert_eq!(
             plugin.manifest.renderer.as_ref().unwrap().world,
-            RendererWorld::Isolated
+            RendererWorld::Main
         );
-        assert_eq!(plugin.manifest.permissions, [Permission::UiDom]);
+        assert_eq!(
+            plugin.manifest.permissions,
+            [Permission::UiDom, Permission::UiMainWorld]
+        );
         assert_eq!(
             plugin.manifest.provides,
-            ["codex.ui.appearance", "codex.ui.titlebar.afterMenu"]
-                .map(|name| CapabilityDescriptor::new(name, 1, CapabilityScope::Target).unwrap())
+            ["codex.ui.navigation.page"].map(|name| CapabilityDescriptor::new(
+                name,
+                1,
+                CapabilityScope::Target
+            )
+            .unwrap())
         );
         assert!(plugin.manifest.requires.is_empty());
+        assert!(plugin.source.as_deref().unwrap().contains("locateHost"));
         assert!(
             plugin
                 .source
                 .as_deref()
                 .unwrap()
-                .contains("HEADER_SELECTOR")
+                .contains("data-codlet-page-host")
         );
         assert!(
             plugin
                 .source
                 .as_deref()
                 .unwrap()
-                .contains("data-app-shell-header-layout")
-        );
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("codex.ui.titlebar.afterMenu@1")
+                .contains("codex.ui.navigation.page")
         );
     }
 

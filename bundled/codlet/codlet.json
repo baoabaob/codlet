@@ -14,9 +14,8 @@
   },
   "permissions": ["ui.dom", "runtime.manage"],
   "requires": [
-    { "name": "codex.ui.appearance", "api": 1, "scope": "target" },
     {
-      "name": "codex.ui.titlebar.afterMenu",
+      "name": "codex.ui.navigation.page",
       "api": 1,
       "scope": "target"
     },

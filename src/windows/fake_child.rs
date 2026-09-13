@@ -944,7 +944,7 @@ fn scenario_renderer_runtime(
                 output,
                 &json!({
                     "method": "Runtime.executionContextCreated", "sessionId": session_id,
-                    "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1"), "auxData": {"frameId": "frame-main", "isDefault": false}}}
+                    "params": {"context": {"id": id, "name": format!("codlet.plugin.{plugin}.g1"), "auxData": {"frameId": "frame-main", "isDefault": plugin == "codex.ui.adapter"}}}
                 }),
             )?;
         }
@@ -954,7 +954,7 @@ fn scenario_renderer_runtime(
         for (id, plugin, frame, is_default) in [
             (241, "codex.ui.adapter", "frame-widget", false),
             (242, "codlet-gui", "frame-widget", false),
-            (243, "codlet-gui", "frame-main", true),
+            (243, "unrelated-world", "frame-main", false),
         ] {
             write_json_frame(
                 output,
@@ -1009,7 +1009,7 @@ fn scenario_renderer_document_recovery(
 
     if timeout_first_recovery {
         let world = "codlet.plugin.codex.ui.adapter.g1.d2";
-        complete_isolated_world(&mut reader, output, &session, world, 41)?;
+        complete_renderer_context(&mut reader, output, &session, world, 41)?;
         expect_renderer_binding(&mut reader, output, &session, world)?;
         expect_renderer_script(
             &mut reader,
@@ -1058,7 +1058,7 @@ fn scenario_renderer_document_recovery(
         ("codlet-gui", 42, "recovery-codlet"),
     ] {
         let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
-        complete_isolated_world(&mut reader, output, &session, &world, context)?;
+        complete_renderer_context(&mut reader, output, &session, &world, context)?;
         bindings.push(expect_renderer_binding(
             &mut reader,
             output,
@@ -1128,7 +1128,7 @@ fn scenario_renderer_document_recovery(
         ("codex.ui.adapter", 41, "recovery-adapter"),
     ] {
         let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
-        complete_isolated_world(&mut reader, output, &session, &world, context)?;
+        complete_renderer_context(&mut reader, output, &session, &world, context)?;
         complete_renderer_evaluation(
             &mut reader,
             output,
@@ -1265,8 +1265,8 @@ fn scenario_renderer_reentrant(
             &session,
             &bindings,
             1,
-            "codex.ui.titlebar.afterMenu",
-            "getMount",
+            "codex.ui.navigation.page",
+            "register",
         )?;
         let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
         // Both outer activation and nested provider remain withheld until the
@@ -1303,8 +1303,8 @@ fn scenario_renderer_reentrant(
         &session,
         &bindings,
         1,
-        "codex.ui.titlebar.afterMenu",
-        "getMount",
+        "codex.ui.navigation.page",
+        "register",
     )?;
     let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
     emit_adapter_ping(output, &session, &bindings, 1)?;
@@ -1319,8 +1319,8 @@ fn scenario_renderer_reentrant(
         &session,
         &bindings,
         2,
-        "codex.ui.titlebar.afterMenu",
-        "getMount",
+        "codex.ui.navigation.page",
+        "register",
     )?;
     let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
     if mode == "renderer-reentrant-destroy-provider" {
@@ -1334,8 +1334,8 @@ fn scenario_renderer_reentrant(
                 &session,
                 &bindings,
                 id,
-                "codex.ui.titlebar.afterMenu",
-                "getMount",
+                "codex.ui.navigation.page",
+                "register",
             )?;
             held.push(expect_held_evaluation(
                 &mut reader,
@@ -1349,8 +1349,8 @@ fn scenario_renderer_reentrant(
             &session,
             &bindings,
             10,
-            "codex.ui.titlebar.afterMenu",
-            "getMount",
+            "codex.ui.navigation.page",
+            "register",
         )?;
         expect_consumer_error_response(
             &mut reader,
@@ -1380,7 +1380,7 @@ fn scenario_renderer_reentrant(
         expect_consumer_success_response(&mut reader, output, &session, 202)?;
     }
     expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
-    complete_isolated_world(
+    complete_renderer_context(
         &mut reader,
         output,
         &session,
@@ -1406,8 +1406,8 @@ fn scenario_renderer_reentrant(
         &session,
         &bindings,
         21,
-        "codex.ui.titlebar.afterMenu",
-        "getMount",
+        "codex.ui.navigation.page",
+        "register",
     )?;
     let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
     emit_adapter_ping(output, &session, &bindings, 20)?;
@@ -1612,7 +1612,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         complete_bundled_renderer_install(&mut reader, output, &session_id, "rpc", 91, 92)?;
 
     let capability = json!({
-        "name": "codex.ui.titlebar.afterMenu",
+        "name": "codex.ui.navigation.page",
         "api": 1,
         "scope": "target"
     });
@@ -1660,7 +1660,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         "generation": 1,
         "id": 2,
         "capability": capability.clone(),
-        "method": "getMount",
+        "method": "register",
         "params": null
     });
     write_json_frame(
@@ -1707,7 +1707,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         "generation": 0,
         "id": 3,
         "capability": capability.clone(),
-        "method": "getMount",
+        "method": "register",
         "params": null
     });
     write_json_frame(
@@ -1768,7 +1768,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         }),
     )?;
 
-    complete_isolated_world(
+    complete_renderer_context(
         &mut reader,
         output,
         &session_id,
@@ -1791,7 +1791,7 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
     )?;
     expect_remove_renderer_binding(&mut reader, output, &session_id)?;
 
-    complete_isolated_world(
+    complete_renderer_context(
         &mut reader,
         output,
         &session_id,
@@ -1866,7 +1866,7 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         bindings.codlet_context,
     )?;
 
-    complete_isolated_world(
+    complete_renderer_context(
         &mut reader,
         output,
         &failure_session,
@@ -1897,7 +1897,7 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
     )?;
     expect_remove_renderer_binding(&mut reader, output, &failure_session)?;
 
-    complete_isolated_world(
+    complete_renderer_context(
         &mut reader,
         output,
         &session_id,
@@ -1972,7 +1972,7 @@ fn scenario_renderer_local_manage(
     let session = "session-main";
     complete_bundled_renderer_install(&mut reader, output, session, "local", 301, 302)?;
     let world = "codlet.plugin.dev.local.g1";
-    complete_isolated_world(&mut reader, output, session, world, 303)?;
+    complete_renderer_context(&mut reader, output, session, world, 303)?;
     let binding = expect_renderer_binding(&mut reader, output, session, world)?;
     expect_renderer_script(
         &mut reader,
@@ -2015,7 +2015,7 @@ fn scenario_renderer_local_manage(
         expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
     }
 
-    complete_isolated_world(&mut reader, output, session, world, 303)?;
+    complete_renderer_context(&mut reader, output, session, world, 303)?;
     let deactivate =
         expect_held_evaluation(&mut reader, session, 303, ".deactivate(\"dev.local\", 1)")?;
     emit_local_manage_request(output, session, &binding, 4, "list")?;
@@ -2136,7 +2136,7 @@ fn scenario_renderer_manage_response_failure(
         bindings.codlet_context,
     )?;
 
-    complete_isolated_world(
+    complete_renderer_context(
         &mut reader,
         output,
         &session_id,
@@ -2579,7 +2579,7 @@ fn complete_bundled_renderer_install(
         adapter_context,
     )?;
 
-    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
+    complete_renderer_context(reader, output, session_id, codlet_world, codlet_context)?;
     let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
     expect_renderer_script(
         reader,
@@ -2655,8 +2655,8 @@ fn complete_bundled_renderer_install_with_ready_handshake(
         session_id,
         &bindings,
         3,
-        "codex.ui.titlebar.afterMenu",
-        "getMount",
+        "codex.ui.navigation.page",
+        "register",
     )?;
     complete_provider_invocation(reader, output, session_id, &bindings, false)?;
 
@@ -2686,7 +2686,7 @@ fn begin_bundled_renderer_activation(
     )?;
     let codlet_world = "codlet.plugin.codlet-gui.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
-    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
+    complete_renderer_context(reader, output, session_id, codlet_world, codlet_context)?;
     let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
     expect_renderer_script(
         reader,
@@ -2778,7 +2778,7 @@ fn complete_adapter_renderer_install(
 ) -> Result<String, FakeChildError> {
     let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
+    complete_renderer_context(reader, output, session_id, adapter_world, adapter_context)?;
     let adapter_binding = expect_renderer_binding(reader, output, session_id, adapter_world)?;
     let bootstrap_script = expect_renderer_script(
         reader,
@@ -2830,7 +2830,7 @@ fn complete_bundled_renderer_deactivation(
 ) -> Result<(), FakeChildError> {
     let codlet_world = "codlet.plugin.codlet-gui.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
-    complete_isolated_world(reader, output, session_id, codlet_world, codlet_context)?;
+    complete_renderer_context(reader, output, session_id, codlet_world, codlet_context)?;
     complete_renderer_evaluation(
         reader,
         output,
@@ -2860,7 +2860,7 @@ fn complete_adapter_renderer_deactivation(
 ) -> Result<(), FakeChildError> {
     let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    complete_isolated_world(reader, output, session_id, adapter_world, adapter_context)?;
+    complete_renderer_context(reader, output, session_id, adapter_world, adapter_context)?;
     complete_renderer_evaluation(
         reader,
         output,
@@ -2882,7 +2882,7 @@ fn renderer_identifier(base: &str, suffix: &str) -> String {
     }
 }
 
-fn complete_isolated_world(
+fn complete_renderer_context(
     reader: &mut RequestReader<'_>,
     output: &mut File,
     session_id: &str,
@@ -2890,6 +2890,16 @@ fn complete_isolated_world(
     context_id: u64,
 ) -> Result<(), FakeChildError> {
     let get_frame_tree = expect_method(reader.next()?, "Page.getFrameTree", Some(session_id))?;
+    let main_world = world_name.starts_with("codlet.plugin.codex.ui.adapter.");
+    if main_world {
+        write_json_frame(
+            output,
+            &json!({
+                "method": "Runtime.executionContextCreated", "sessionId": session_id,
+                "params": {"context": {"id": context_id, "name": "", "auxData": {"frameId": "frame-main", "isDefault": true}}}
+            }),
+        )?;
+    }
     write_json_frame(
         output,
         &json!({
@@ -2898,7 +2908,9 @@ fn complete_isolated_world(
             "sessionId": session_id
         }),
     )?;
-
+    if main_world {
+        return Ok(());
+    }
     let create_request = reader.next()?;
     let create_world = expect_method(
         create_request.clone(),
@@ -2937,7 +2949,13 @@ fn expect_renderer_script(
         "Page.addScriptToEvaluateOnNewDocument",
         Some(session_id),
     )?;
-    if request.pointer("/params/worldName") != Some(&json!(world_name))
+    let main_world = world_name.starts_with("codlet.plugin.codex.ui.adapter.");
+    let wrong_world = if main_world {
+        request.pointer("/params/worldName").is_some()
+    } else {
+        request.pointer("/params/worldName") != Some(&json!(world_name))
+    };
+    if wrong_world
         || request
             .pointer("/params/source")
             .and_then(Value::as_str)
@@ -2968,9 +2986,17 @@ fn expect_renderer_binding(
         .ok_or_else(|| {
             FakeChildError::InvalidRequest("Runtime.addBinding name is not a string".to_owned())
         })?;
-    if !name.starts_with("codlet_rpc_v1_")
-        || request.pointer("/params/executionContextName") != Some(&json!(world_name))
-    {
+    let main_world = world_name.starts_with("codlet.plugin.codex.ui.adapter.");
+    let wrong_world = if main_world {
+        request.pointer("/params/executionContextName").is_some()
+            || request
+                .pointer("/params/executionContextId")
+                .and_then(Value::as_u64)
+                .is_none()
+    } else {
+        request.pointer("/params/executionContextName") != Some(&json!(world_name))
+    };
+    if !name.starts_with("codlet_rpc_v1_") || wrong_world {
         return Err(FakeChildError::InvalidRequest(
             "Runtime.addBinding did not use the expected Codlet namespace".to_owned(),
         ));

@@ -7,6 +7,7 @@
   "permissions": ["ui.dom", "ui.mainWorld"],
   "provides": [{ "name": "example.desktop.m3m4", "api": 1, "scope": "target" }],
   "requires": [
+    { "name": "codex.ui.navigation.page", "api": 1, "scope": "target" },
     { "name": "codex.desktop.compatibility", "api": 1, "scope": "target" },
     { "name": "codex.ui.preSubmit", "api": 1, "scope": "target" },
     { "name": "codex.backend.read", "api": 1, "scope": "target" },
