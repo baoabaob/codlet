@@ -5,7 +5,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use thiserror::Error;
 
+pub(crate) mod client_updates;
 mod github_cli;
+mod runtime_update_owner;
 
 use crate::catalog::{PluginCatalog, PluginSource};
 use crate::cdp::{
@@ -197,6 +199,8 @@ struct CodletRuntime {
     watcher: Option<PluginWatcher>,
     initial_outcomes: Vec<RendererOutcome>,
     last_authorization_error: Option<String>,
+    _client_update_monitor: client_updates::ClientUpdateMonitor,
+    runtime_update: runtime_update_owner::RuntimeUpdateOwner,
     // Keep listeners and the registry lease until renderer cleanup has finished.
     _servers: HostServers,
 }
@@ -284,11 +288,18 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             let cascade = options
                 .iter()
                 .any(|option| option == OsStr::new("--cascade"));
-            if options.len() != usize::from(json) + usize::from(cascade)
+            let delete_source = options
+                .iter()
+                .any(|option| option == OsStr::new("--delete-source"));
+            if options.len()
+                != usize::from(json) + usize::from(cascade) + usize::from(delete_source)
                 || options.iter().any(|option| {
-                    option != OsStr::new("--json") && option != OsStr::new("--cascade")
+                    option != OsStr::new("--json")
+                        && option != OsStr::new("--cascade")
+                        && option != OsStr::new("--delete-source")
                 })
                 || (cascade && !matches!(action.to_str(), Some("disable" | "remove")))
+                || (delete_source && action != OsStr::new("remove"))
             {
                 return Err(ProbeError::Usage);
             }
@@ -303,12 +314,22 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                     "remove" => PluginControlAction::Remove,
                     _ => unreachable!(),
                 };
+                let remove_source = if delete_source {
+                    Some(
+                        crate::source_removal::preview(&PluginRegistry::load_default()?, plugin_id)
+                            .map_err(crate::plugin_cli::PluginCliError::from)?
+                            .request(),
+                    )
+                } else {
+                    None
+                };
                 crate::plugin_cli::manage(
                     PluginControlRequest {
                         action,
                         plugin_id: plugin_id.into(),
                         permission: None,
                         cascade,
+                        remove_source,
                         local_import: None,
                     },
                     json,
@@ -343,6 +364,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                     plugin_id: plugin_id.to_str().ok_or(ProbeError::Usage)?.into(),
                     permission: Some(permission),
                     cascade: false,
+                    remove_source: None,
                     local_import: None,
                 },
                 json,
@@ -818,6 +840,10 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let control = servers.control.broker();
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
         .with_local_management(renderer.registry_path().to_owned(), options.watch);
+    let _client_update_monitor = client_updates::ClientUpdateMonitor::start(
+        manage_service.clone(),
+        connected.package.version.to_string(),
+    );
     renderer.set_manage_service(manage_service.clone());
     let os_broker = crate::os_broker::OsBroker::for_registry(renderer.registry_path().to_owned())?;
     let hosts = HostRuntime::start_with_services(
@@ -826,7 +852,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         js_runtime,
         HostCoreServices {
             os_broker: Some(os_broker.client()),
-            runtime_manage: Some(manage_service),
+            runtime_manage: Some(manage_service.clone()),
         },
     )?;
     renderer.set_host_capability_client(hosts.capability_client());
@@ -909,6 +935,14 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     status.publish_host_observation(hosts.execution_snapshot());
     status.set_ready();
     control.set_ready();
+    let runtime_update = runtime_update_owner::RuntimeUpdateOwner::start(
+        &manage_service,
+        renderer.registry_path(),
+        options.watch,
+        &connected.process,
+        &connected.package.version.to_string(),
+        &sessions,
+    );
     Ok(CodletRuntime {
         _servers: servers,
         status,
@@ -925,6 +959,8 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         watcher,
         initial_outcomes,
         last_authorization_error: None,
+        _client_update_monitor,
+        runtime_update,
     })
 }
 
@@ -1116,6 +1152,7 @@ fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(),
             plugin_id: plugin_id.clone(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: Some(candidate.request(options.grants, broker_policy, options.enable)),
         },
         options.json,
@@ -1287,6 +1324,7 @@ impl CodletRuntime {
                 }
             }
             for change in changes {
+                self.runtime_update.observe(&change);
                 let target_id = change.target_id().to_owned();
                 match self.renderer.apply_target_change(change) {
                     Ok(Some(report)) => print_renderer_outcome(&RendererOutcome {
@@ -1305,13 +1343,14 @@ impl CodletRuntime {
                 .submit_self_disable_requests(&mut self.renderer, &self.control);
             self.host_control
                 .poll(&mut self.renderer, &self.hosts, &self.control);
+            self.runtime_update.poll(self.host_control.is_pending());
             if self.host_control.needs_renderer_executor() {
                 let result = self
                     .start_renderer_executor()
                     .map_err(|error| error.to_string());
                 self.host_control.renderer_executor_result(result);
             }
-            let job = if self.host_control.is_pending() {
+            let job = if self.host_control.is_pending() || self.runtime_update.installing() {
                 None
             } else {
                 next_management_job(&self.control, || {
@@ -1422,6 +1461,7 @@ impl CodletRuntime {
         let (targets, sessions) =
             TargetController::discover(self.client.clone(), events, REQUEST_DEADLINE)?;
         self.targets = Some(targets);
+        self.runtime_update.seed_sessions(&sessions);
         self.renderer.set_status_publisher(self.status.clone());
         let mut first_error = None;
         for (_target_id, result) in self.renderer.attach_all(&sessions) {
@@ -1769,6 +1809,7 @@ mod tests {
                 plugin_id: plugin_id.into(),
                 permission: None,
                 cascade: false,
+                remove_source: None,
                 local_import: None,
             }));
             let ticket = prepared.operation_id().unwrap().to_owned();
@@ -1782,6 +1823,7 @@ mod tests {
                 plugin_id: plugin_id.into(),
                 permission: None,
                 cascade: false,
+                remove_source: None,
                 local_import: None,
             })
             .collect();

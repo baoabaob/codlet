@@ -2,6 +2,11 @@
   "schema": 1,
   "id": "codex.ui.adapter",
   "name": "Codex UI Adapter",
+  "description": "Connect plugins to the Codex interface and appearance.",
+  "i18n": {
+    "zh": { "name": "Codex 界面适配器", "description": "为插件提供 Codex 界面入口和外观适配。" },
+    "en": { "name": "Codex UI Adapter", "description": "Connect plugins to the Codex interface and appearance." }
+  },
   "version": "0.1.0",
   "renderer": {
     "entry": "dist/renderer.js",

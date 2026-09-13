@@ -156,6 +156,7 @@ fn apply(preview: ManagedPreview, options: PluginTrustOptions) -> Result<(), Pro
             plugin_id: preview.manifest.id.clone(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: Some(preview.request(options.grants, broker_policy, options.enable)),
         },
         options.json,

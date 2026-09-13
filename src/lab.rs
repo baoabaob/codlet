@@ -26,6 +26,7 @@ mod input;
 mod management;
 mod resume;
 mod runtime_seed;
+mod runtime_updates;
 mod shell;
 mod shutdown;
 mod startup;
@@ -227,7 +228,8 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         "runtime_assets_prepared",
         json!({"runtime": runtime_seed, "child_created": false}),
     );
-    let runtime = management::LabRuntime::prepare(root.path.join("codlet/config.json"))?;
+    let mut runtime = management::LabRuntime::prepare(root.path.join("codlet/config.json"))?;
+    runtime.observe_client_updates(package.version.to_string());
     let environment = lab_environment(
         &root,
         options
@@ -494,6 +496,7 @@ fn hold_lab_child(
     startup_trace: bool,
     reporter: &mut Reporter,
 ) -> Result<(), LabError> {
+    runtime.configure_runtime_updates(&child, reporter);
     let mut sessions = BTreeMap::new();
     let (client, mut targets) = if let Some((client, events)) = connection {
         let targets = match TargetController::discover(client.clone(), events, DISCOVERY_BUDGET) {
@@ -521,6 +524,7 @@ fn hold_lab_child(
         json!({"quit_available": client.is_some() && input.is_open(), "gui_mount_verified": false}),
     );
     let mut quit = QuitState::new();
+    let mut update_quit: Option<QuitState> = None;
     let mut startup_verified = false;
     let mut failure: Option<String> = None;
     let mut cdp_closed_reported = false;
@@ -637,6 +641,12 @@ fn hold_lab_child(
                 }
             }
         }
+        if !quit.requested() && runtime.take_update_restart_requested() {
+            let mut request = QuitState::new();
+            request_own_child_quit(&mut request, &sessions, "runtime_update", reporter);
+            update_quit = Some(request);
+        }
+        if runtime.take_update_restart_cancelled() { update_quit = None; }
         if !quit.requested() && !startup_verified {
             match startup.poll() {
                 Ok(true) => {
@@ -665,7 +675,7 @@ fn hold_lab_child(
             }
         }
         if let Some(request) = plugin_request {
-            if !startup_verified || quit.requested() || renderer_pump_failed || cdp_closed_reported
+            if !startup_verified || quit.requested() || runtime.update_installing() || renderer_pump_failed || cdp_closed_reported
             {
                 reporter.emit(
                     "plugin_control_rejected",
@@ -691,6 +701,9 @@ fn hold_lab_child(
                 "own client did not exit within the 15-second quit budget".into()
             });
             reporter.emit("quit_timed_out", json!({"budget_ms": 15000, "residual_child_possible": true, "child_retained": true, "no_retry": true}));
+        }
+        if update_quit.as_mut().is_some_and(QuitState::take_timeout) {
+            reporter.emit("runtime_update_quit_delayed", json!({"client_retained":true,"helper_waits_for_owned_processes":true}));
         }
         let snapshot = runtime.renderer.status_snapshot();
         if previous_renderer.as_ref() != Some(&snapshot) {

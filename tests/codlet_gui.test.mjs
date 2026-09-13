@@ -298,7 +298,7 @@ test('closing or switching details rejects late history pages and each opening r
     await f.open(); await f.control('Details for History Plugin').emit('click');
     phase = 'switched'; const switchingLoad = f.control('Load more versions').emit('click');
     const details = f.nodes().find(node => node.className === 'codlet-local-page' && !node.hidden && node.textContent.includes('Loading more retained versions'));
-    await details.children.find(node => node.tagName === 'button' && node.textContent === 'Back to plugins').emit('click');
+    await details.children.find(node => node.tagName === 'button' && node.getAttribute('aria-label') === 'Back').emit('click');
     await f.control('Details for Other History').emit('click');
     lateSwitched.resolve(page([2], null)); await switchingLoad;
     assert.equal(f.control('Review rollback version-2'), undefined); assert.equal(f.panel().getAttribute('aria-label'), 'Other History');
@@ -316,12 +316,15 @@ test('compact public managed previews work without a full history payload', asyn
     f.plugin.deactivate();
 });
 
-test('community discovery uses the fixed public HTTPS topic link and explains its trust status', async () => {
-    const f = fixture(); await f.plugin.activate(f.context); await f.open();
-    const link = f.nodes().find(node => node.tagName === 'a' && node.textContent === 'Browse community plugins');
+test('community discovery is one compact link on import only and never grants trust', async () => {
+    const f = fixture(); localManagement(f); await f.plugin.activate(f.context); await f.open();
+    const link = f.nodes().find(node => node.tagName === 'a' && node.textContent.includes('Browse community plugins'));
     assert.equal(link.getAttribute('href'), 'https://github.com/topics/codlet-plugin');
     assert.equal(link.getAttribute('target'), '_blank'); assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
-    assert.match(f.panel().textContent, /not endorsements or permission grants/);
+    assert.equal(f.byClass('codlet-settings-section').contains(link), false);
+    await f.control('Import plugins').emit('click');
+    assert.equal(f.control('Confirm local import').disabled, true);
+    assert.equal(link.children.some(node => node.tagName === 'svg'), true);
     assert.equal(f.calls.includes('prepare'), false); f.plugin.deactivate(); assert.equal(link.isConnected, false);
 });
 
@@ -334,12 +337,13 @@ test('local import requires a current preview, explicit trust and every permissi
     f.override('submit', () => { throw new Error('Lost response'); });
     f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { action: 'import', outcome: 'applied', desired_enabled: false } } } }));
     await f.plugin.activate(f.context); await f.open();
-    await f.control('Import local plugin').emit('click');
+    await f.control('Import plugins').emit('click');
     const confirm = f.control('Confirm local import');
     assert.equal(confirm.disabled, true);
     f.control('Plugin folder').value = 'C:/author input';
-    await f.nodes().find(node => node.textContent === 'Inspect folder' && node.tagName === 'button').emit('click');
-    assert.match(f.panel().textContent, /Automatic reload: off/);
+    await f.control('Plugin folder').emit('input'); await new Promise(resolve => setTimeout(resolve, 430));
+    assert.match(f.panel().textContent, /Plugin recognized/);
+    assert.doesNotMatch(f.panel().textContent, /Automatic reload:/);
     assert.equal(confirm.disabled, true);
     f.control('Trust this local plugin').checked = true;
     await f.control('Trust this local plugin').emit('change');
@@ -358,16 +362,15 @@ test('local import requires a current preview, explicit trust and every permissi
 test('editing the selected path invalidates grants and ignores a late preview', async () => {
     const f = fixture(); localManagement(f);
     const pending = deferred(); f.override('previewLocal', () => pending.promise);
-    await f.plugin.activate(f.context); await f.open(); await f.control('Import local plugin').emit('click');
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import plugins').emit('click');
     const path = f.control('Plugin folder'); path.value = 'C:/first';
-    const inspect = f.nodes().find(node => node.textContent === 'Inspect folder' && node.tagName === 'button');
-    const waiting = inspect.emit('click');
+    await path.emit('input'); await new Promise(resolve => setTimeout(resolve, 430));
     path.value = 'C:/second'; await path.emit('input');
-    pending.resolve(localPreview()); await waiting;
+    pending.resolve(localPreview()); await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(f.control('Grant ui.dom'), undefined);
     assert.equal(f.control('Confirm local import').disabled, true);
     assert.equal(f.calls.includes('prepare'), false);
-    f.override('previewLocal', () => localPreview()); await inspect.emit('click');
+    f.override('previewLocal', () => localPreview()); await path.emit('input'); await new Promise(resolve => setTimeout(resolve, 430));
     f.control('Grant ui.dom').checked = true; f.control('Trust this local plugin').checked = true;
     await path.emit('input');
     assert.equal(f.control('Grant ui.dom'), undefined);
@@ -378,7 +381,7 @@ test('editing the selected path invalidates grants and ignores a late preview', 
 test('native folder cancellation and a late result after closing never import or inspect a directory', async () => {
     const f = fixture(); localManagement(f);
     f.override('chooseLocalFolder', () => ({ selectionId: 'folder-1', status: 'cancelled' }));
-    await f.plugin.activate(f.context); await f.open(); await f.control('Import local plugin').emit('click');
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import plugins').emit('click');
     await f.control('Choose plugin folder').emit('click');
     assert.match(f.panel().textContent, /Folder selection cancelled/);
     assert.equal(f.calls.includes('previewLocal'), false);
@@ -395,7 +398,7 @@ test('a selected native folder is inspected before any grant or mutation', async
     const f = fixture(); localManagement(f);
     f.override('chooseLocalFolder', () => ({ selectionId: 'folder-3', status: 'selected', path: 'C:/chosen' }));
     f.override('previewLocal', args => { assert.equal(args.path, 'C:/chosen'); return localPreview(); });
-    await f.plugin.activate(f.context); await f.open(); await f.control('Import local plugin').emit('click');
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import plugins').emit('click');
     await f.control('Choose plugin folder').emit('click');
     assert.equal(f.control('Grant ui.dom').checked, false);
     assert.equal(f.control('Trust this local plugin').checked, false);
@@ -415,7 +418,8 @@ test('permissions are read fresh and revoke requires confirmation before using t
     f.override('submit', () => ({ status: 'queued', operation }));
     f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } }));
     await f.plugin.activate(f.context); await f.open(); await f.control('Details for Local').emit('click');
-    assert.match(f.panel().textContent, /C:\/confirmed folder/);
+    assert.doesNotMatch(f.panel().textContent, /C:\/confirmed folder/);
+    assert.ok(f.control('Open plugin folder'));
     await f.control('Revoke ui.dom').emit('click');
     assert.match(f.panel().getAttribute('aria-label'), /Revoke permission/);
     assert.equal(f.calls.includes('prepare'), false);
@@ -438,7 +442,7 @@ test('remove explains preserved files and confirms dependent disable as one oper
     f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied' } } } }));
     await f.plugin.activate(f.context); await f.open(); await f.control('Details for Local').emit('click');
     await f.control('Remove Local').emit('click');
-    assert.match(f.byClass('codlet-confirmation-copy').textContent, /files will be kept/);
+    assert.match(f.byClass('codlet-confirmation-copy').textContent, /Source files and plugin data are kept by default/);
     assert.match(f.byClass('codlet-confirmation-copy').textContent, /Also disable: Consumer/);
     assert.equal(f.calls.includes('prepare'), false);
     await f.confirm().emit('click');
@@ -460,7 +464,184 @@ test('a timed-out plugin list shows a retry action and a later refresh can succe
     f.plugin.deactivate();
 });
 
-function fixture({ mounted = true, ready = true } = {}) {
+test('localized metadata is searchable by both languages while list hover shows description only', async () => {
+    const f = fixture({ locale: 'zh' });
+    localManagement(f, [{ id: 'private.id', name: 'Workspace Notes', description: 'Draft notes safely', version: '1.2', source: 'local', path: 'C:/secret/source', enabled: false,
+        i18n: { zh: { name: '工作区笔记', description: '记录工作区里的内容' }, en: { name: 'Workspace Notes', description: 'Draft notes safely' } } }, { id: 'other', name: 'Other', enabled: false }]);
+    await f.plugin.activate(f.context); await f.open();
+    assert.ok(f.control('导入插件')); assert.ok(f.control('搜索插件')); assert.ok(f.control('刷新插件'));
+    const list = f.byClass('codlet-plugin-list'); assert.doesNotMatch(list.textContent, /private\.id|C:\/secret/);
+    const copy = list.children[0].children[0]; await copy.emit('pointerenter'); await new Promise(resolve => setTimeout(resolve, 310));
+    assert.equal(f.byClass('codlet-tooltip').textContent, '记录工作区里的内容'); await copy.emit('pointerleave');
+    const search = f.control('搜索插件'); search.value = 'draft workspace'; await search.emit('input');
+    assert.equal(list.children.length, 1); assert.match(list.textContent, /工作区笔记/);
+    search.value = 'private.id'; await search.emit('input'); assert.equal(list.children.length, 1);
+    f.setLocale('en'); assert.equal(search.value, 'private.id'); assert.ok(f.control('Details for Workspace Notes'));
+    search.value = '工作区 内容'; await search.emit('input'); assert.equal(list.children.length, 1);
+    f.setLocale('ja'); assert.ok(f.control('Search plugins')); assert.equal(f.control('导入插件'), undefined);
+    f.plugin.deactivate(); assert.equal(f.languageListenerCount(), 0);
+});
+
+test('language changes preserve an import preview, text input, trust and grants and translate native folder selection', async () => {
+    const f = fixture({ locale: 'zh' }); localManagement(f);
+    f.override('chooseLocalFolder', args => { assert.deepEqual(JSON.parse(JSON.stringify(args)), { locale: 'zh' }); return { selectionId: 'localized', status: 'selected', path: 'C:/插件目录' }; });
+    f.override('previewLocal', () => ({ ...localPreview(), manifest: { ...localPreview().manifest, i18n: { zh: { name: '本地工具' }, en: { name: 'Local tools' } } } }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('导入插件').emit('click');
+    await f.control('选择插件文件夹').emit('click');
+    const field = f.control('插件文件夹'), trust = f.control('信任这个本地插件'), grant = f.control('授予 ui.dom');
+    trust.checked = true; await trust.emit('change'); grant.checked = true; await grant.emit('change');
+    assert.equal(f.control('确认导入本地插件').disabled, false);
+    assert.match(f.panel().textContent, /本地工具|读取和修改页面界面/);
+    f.setLocale('en');
+    assert.equal(f.control('Plugin folder'), field); assert.equal(field.value, 'C:/插件目录');
+    assert.equal(f.control('Trust this local plugin'), trust); assert.equal(trust.checked, true); assert.equal(grant.checked, true);
+    assert.equal(f.control('Confirm local import').disabled, false);
+    assert.match(f.panel().textContent, /Local tools/); assert.equal(f.calls.filter(method => method === 'previewLocal').length, 1);
+    assert.equal(f.calls.includes('prepare'), false); f.plugin.deactivate();
+});
+
+test('automatic local preview debounces paths, keeps typing focus and cancels before leaving import', async () => {
+    const f = fixture(); localManagement(f); const paths = [];
+    f.override('previewLocal', args => { paths.push(args.path); return localPreview(); });
+    await f.plugin.activate(f.context); await f.open(); await f.control('Import plugins').emit('click');
+    assert.equal(f.nodes().some(node => node.tagName === 'button' && node.textContent === 'Inspect folder'), false);
+    const field = f.control('Plugin folder'); field.focus();
+    field.value = 'relative'; await field.emit('input'); assert.equal(f.timerCount(), 0);
+    field.value = 'C:/first'; await field.emit('input');
+    field.value = 'C:/second'; await field.emit('input');
+    assert.equal(paths.length, 0); await new Promise(resolve => setTimeout(resolve, 440));
+    assert.deepEqual(paths, ['C:/second']); assert.equal(f.document.activeElement, field);
+    field.value = 'C:/late'; await field.emit('input'); await f.close().emit('click');
+    assert.equal(f.timerCount(), 0); await new Promise(resolve => setTimeout(resolve, 430));
+    assert.deepEqual(paths, ['C:/second']); f.plugin.deactivate();
+});
+
+test('invalid local paths use localized guidance and preserve the backend error in collapsed details', async () => {
+    const f = fixture({ locale: 'zh' }); localManagement(f);
+    const original = 'local_import_error: Failed to read C:/missing/codlet.json (os error 3)';
+    f.override('previewLocal', () => { throw Object.assign(new Error(original), { code: 'local_import_error' }); });
+    await f.plugin.activate(f.context); await f.open(); await f.control('导入插件').emit('click');
+    const field = f.control('插件文件夹'); field.value = 'relative'; await field.emit('input');
+    assert.match(f.byClass('codlet-import-error').parentElement.textContent, /请输入插件文件夹的完整路径/);
+    assert.equal(f.calls.includes('previewLocal'), false);
+    field.value = 'C:/missing'; await field.emit('input'); await new Promise(resolve => setTimeout(resolve, 430));
+    const details = f.byClass('codlet-import-error');
+    assert.equal(details.hidden, false); assert.equal(details.open, false);
+    assert.equal(details.children[0].textContent, '错误详情'); assert.equal(details.children[1].textContent, original);
+    assert.match(details.parentElement.textContent, /无法识别此文件夹中的插件，请检查路径和 codlet\.json/);
+    assert.equal(f.control('确认导入本地插件').disabled, true);
+    f.setLocale('en'); assert.equal(details.children[0].textContent, 'Error details'); assert.equal(details.children[1].textContent, original);
+    field.value = ''; await field.emit('input'); assert.equal(details.hidden, true); assert.equal(details.children[1].textContent, '');
+    f.plugin.deactivate(); assert.equal(f.timerCount(), 0);
+});
+
+test('list entry focuses search without refresh stealing focus and source tabs support keyboard navigation', async () => {
+    const f = fixture();
+    f.override('list', () => ({ plugins: [], localManagement: { available: true, folderPicker: true }, githubManagement: { available: true } }));
+    f.override('previewLocal', () => localPreview());
+    f.override('chooseLocalFolder', () => ({ selectionId: 'tabs-folder', status: 'selected', path: 'C:/chosen' }));
+    await f.plugin.activate(f.context); await f.open();
+    const search = f.control('Search plugins'); assert.equal(f.document.activeElement, search);
+    f.refresh().focus(); await f.refresh().emit('click'); assert.equal(f.document.activeElement, f.refresh());
+    await f.control('Import plugins').emit('click'); await f.control('Choose plugin folder').emit('click');
+    const trust = f.control('Trust this local plugin'); trust.checked = true; await trust.emit('change');
+    const local = f.control('Local folder'), github = f.control('Import from GitHub');
+    await local.emit('click'); assert.equal(f.control('Trust this local plugin'), trust); assert.equal(trust.checked, true);
+    local.focus(); const right = await local.emit('keydown', { key: 'ArrowRight' });
+    assert.equal(right.defaultPrevented, true); assert.equal(f.document.activeElement, github);
+    assert.equal(github.getAttribute('aria-selected'), 'true'); assert.equal(github.tabIndex, 0); assert.equal(local.tabIndex, -1);
+    await github.emit('keydown', { key: 'Home' }); assert.equal(f.document.activeElement, local);
+    assert.equal(local.getAttribute('aria-selected'), 'true'); assert.equal(f.control('Plugin folder').value, 'C:/chosen');
+    await new Promise(resolve => setTimeout(resolve, 430));
+    assert.equal(f.control('Trust this local plugin').checked, false); assert.equal(f.document.activeElement, local);
+    const back = f.nodes().find(node => node.getAttribute('aria-label') === 'Back' && !node.parentElement.hidden);
+    await back.emit('click'); assert.equal(f.document.activeElement, search);
+    assert.equal(f.calls.includes('prepare'), false); f.plugin.deactivate(); assert.equal(f.timerCount(), 0);
+});
+
+test('details show only granted permissions and open the registered folder by plugin ID', async () => {
+    const f = fixture(); localManagement(f, [{ id: 'folder.plugin', name: 'Folder plugin', source: 'local', enabled: false, registered: true }]);
+    f.override('permissions', () => ({ pluginId: 'folder.plugin', registration: { path: 'C:/author/secret-folder', grants: [], brokerPolicy: {} } }));
+    f.override('openFolder', args => { assert.deepEqual(JSON.parse(JSON.stringify(args)), { pluginId: 'folder.plugin' }); return { pluginId: 'folder.plugin', opened: true }; });
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Folder plugin').emit('click');
+    const details = f.nodes().find(node => node.className === 'codlet-local-page' && !node.hidden);
+    assert.match(details.textContent, /folder.plugin/);
+    assert.doesNotMatch(details.textContent, /secret-folder|No permissions|None|Removing the plugin keeps/);
+    await f.control('Open plugin folder').emit('click'); assert.equal(f.calls.filter(method => method === 'openFolder').length, 1);
+    f.plugin.deactivate();
+});
+
+test('source deletion is unchecked until explicitly selected and shares the original remove receipt', async () => {
+    const f = fixture(); localManagement(f, [{ id: 'remove.plugin', name: 'Remove plugin', source: 'local', enabled: false, registered: true }]);
+    f.override('permissions', () => ({ pluginId: 'remove.plugin', registration: { path: 'C:/owned/source', grants: [] } }));
+    f.override('sourceRemovalPreview', args => { assert.equal(args.pluginId, 'remove.plugin'); return { pluginId: 'remove.plugin', status: 'available', path: 'C:/owned/source', registrationDigest: 'a'.repeat(64), sourceIdentity: 'identity-token' }; });
+    let operation, request;
+    f.override('prepare', args => { request = JSON.parse(JSON.stringify(args)); operation = { operation_id: 'remove-source', request }; return { status: 'prepared', operation }; });
+    f.override('submit', () => { throw new Error('Lost response'); });
+    f.override('operation', () => ({ status: 'completed', operation: { ...operation, completion: { kind: 'report', report: { outcome: 'applied', message: 'Source folder deleted.' } } } }));
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Remove plugin').emit('click'); await f.control('Remove Remove plugin').emit('click');
+    const choice = f.control('Delete source files'); assert.equal(choice.checked, false); assert.equal(choice.disabled, false);
+    assert.equal(f.calls.includes('prepare'), false); choice.checked = true; await choice.emit('change');
+    await f.confirm().emit('click');
+    assert.deepEqual(request, { action: 'remove', plugin_id: 'remove.plugin', remove_source: { registrationDigest: 'a'.repeat(64), sourceIdentity: 'identity-token' } });
+    assert.equal(f.calls.filter(method => method === 'submit').length, 1); assert.match(f.byClass('codlet-status').textContent, /Source folder deleted/);
+    assert.doesNotMatch(f.byClass('codlet-status').textContent, /files kept/); f.plugin.deactivate();
+});
+
+test('missing source remains removable without deletion and cancelled source previews cannot re-enable deletion', async () => {
+    const f = fixture(); localManagement(f, [{ id: 'missing', name: 'Missing', source: 'local', registered: true }]);
+    f.override('permissions', () => ({ pluginId: 'missing', registration: { path: 'C:/missing', grants: [] } }));
+    const pending = deferred(); f.override('sourceRemovalPreview', () => pending.promise);
+    await f.plugin.activate(f.context); await f.open(); await f.control('Details for Missing').emit('click');
+    const opening = f.control('Remove Missing').emit('click'); assert.equal(f.confirm().disabled, true); await f.cancel().emit('click');
+    pending.resolve({ pluginId: 'missing', status: 'available', path: 'C:/old', registrationDigest: 'a'.repeat(64), sourceIdentity: 'old' }); await opening;
+    assert.equal(f.panel().getAttribute('data-codlet-view'), 'details'); assert.equal(f.control('Delete source files').parentElement.hidden, true);
+    f.override('sourceRemovalPreview', () => ({ pluginId: 'missing', status: 'missing', path: 'C:/missing', sourceIdentity: null }));
+    await f.control('Remove Missing').emit('click');
+    assert.equal(f.control('Delete source files').disabled, true); assert.equal(f.confirm().disabled, false); assert.match(f.byClass('codlet-confirmation-copy').textContent, /missing or moved/);
+    f.plugin.deactivate();
+});
+
+const runtimeUpdate = phase => ({ currentVersion: '0.1.0', phase, configured: phase !== 'development', channel: 'stable', lastCheckedAt: null, nextCheckAt: null,
+    candidate: { id: 'release', version: '0.2.0', platform: 'win-x64', size: 100, sha256: 'a'.repeat(64), releaseUrl: null }, downloadedBytes: 50, totalBytes: 100, installAvailable: true, unavailableReason: null, error: null });
+
+test('unconfigured development hides update actions while the client compatibility line follows verified status', async () => {
+    const f = fixture({ locale: 'zh' });
+    f.override('list', () => ({ plugins: [], runtimeVersion: '0.1.0', clientStatus: { status: 'unmatched', officialUpdateAvailable: true } }));
+    f.override('runtimeUpdateStatus', args => { assert.deepEqual(JSON.parse(JSON.stringify(args)), {}); return runtimeUpdate('development'); });
+    await f.plugin.activate(f.context); await f.open();
+    assert.equal(f.control('检查更新').hidden, true); assert.match(f.panel().textContent, /开发版/);
+    assert.equal(f.byClass('codlet-panel-title').textContent, 'Codlet');
+    assert.match(f.byClass('codlet-client-status').textContent, /官方客户端可更新/);
+    assert.match(f.byClass('codlet-client-status').textContent, /当前Codlet未匹配客户端最新版本/);
+    assert.equal(f.calls.includes('checkRuntimeUpdate'), false); assert.equal(f.calls.includes('downloadRuntimeUpdate'), false);
+    f.plugin.deactivate(); assert.equal(f.timerCount(), 0);
+});
+
+test('update header downloads once, displays progress, and installs only after its separate explicit click', async () => {
+    const f = fixture(); let phase = 'available';
+    f.override('list', () => ({ plugins: [], runtimeVersion: '0.1.0' }));
+    f.override('runtimeUpdateStatus', () => runtimeUpdate(phase));
+    const pending = deferred(); f.override('downloadRuntimeUpdate', args => { assert.deepEqual(JSON.parse(JSON.stringify(args)), {}); return pending.promise; });
+    f.override('installRuntimeUpdate', () => runtimeUpdate('installRequested'));
+    await f.plugin.activate(f.context); await f.open();
+    const download = f.control('Download update'); assert.equal(download.hidden, false);
+    const downloading = download.emit('click'); await download.emit('click');
+    assert.equal(f.calls.filter(method => method === 'downloadRuntimeUpdate').length, 1);
+    phase = 'downloading'; pending.resolve(runtimeUpdate(phase)); await downloading;
+    assert.equal(f.control('Downloading update: 50%').disabled, true); assert.equal(f.calls.includes('installRuntimeUpdate'), false);
+    phase = 'downloaded'; await f.refresh().emit('click');
+    assert.ok(f.control('Install and restart')); await f.control('Install and restart').emit('click');
+    assert.match(f.panel().getAttribute('aria-label'), /Install and restart Codlet/);
+    assert.match(f.byClass('codlet-confirmation-copy').textContent, /running local tasks will be interrupted/);
+    assert.equal(f.calls.includes('installRuntimeUpdate'), false); await f.cancel().emit('click');
+    assert.equal(f.calls.includes('installRuntimeUpdate'), false);
+    await f.control('Install and restart').emit('click'); const confirm = f.confirm(); await confirm.emit('click'); await confirm.emit('click');
+    assert.equal(f.calls.filter(method => method === 'installRuntimeUpdate').length, 1);
+    f.plugin.deactivate(); assert.equal(f.timerCount(), 0);
+});
+
+function fixture({ mounted = true, ready = true, locale = 'en' } = {}) {
     const dom = domFixture({ mounted, ready });
     const { scope, document, body, mount, toolbar, editor, window, descendants, observers, modalDialogs, timers, closeEvents } = dom;
     vm.runInNewContext(source, scope, { filename: 'codlet-renderer.js' });
@@ -468,13 +649,19 @@ function fixture({ mounted = true, ready = true } = {}) {
     let active = false;
     const overrides = {};
     const calls = [];
+    const languageListeners = new Set();
     const context = {
         pluginId: 'codlet-gui', generation: 1,
+        i18n: {
+            get locale() { return locale; },
+            t(messages, key, values = {}) { return (messages[locale]?.[key] ?? messages.en?.[key] ?? key).replace(/\{(\w+)\}/g, (token, name) => Object.hasOwn(values, name) ? String(values[name]) : token); },
+            onChange(callback) { languageListeners.add(callback); return () => languageListeners.delete(callback); }
+        },
         rpc: { async request(capability, method, args) {
             const name = method === 'ping' ? 'codlet.runtime.ping'
                 : method === 'getMount' ? 'codex.ui.titlebar.afterMenu' : method === 'describe' ? 'codex.ui.appearance' : 'codlet.runtime.manage';
             assert.deepEqual(JSON.parse(JSON.stringify(capability)), { name, api: 1, scope: 'target' });
-            if (['ping', 'getMount', 'describe', 'list', 'disableSelf', 'chooseLocalFolder'].includes(method)) assert.equal(args, null);
+            if (['ping', 'getMount', 'describe', 'list', 'disableSelf'].includes(method)) assert.equal(args, null);
             calls.push(method);
             if (overrides[method]) return overrides[method](args);
             if (method === 'ping') return { pong: true, abi: 1 };
@@ -507,6 +694,8 @@ function fixture({ mounted = true, ready = true } = {}) {
         confirm: () => byClass('codlet-confirm'),
         cancel: () => nodes().find(element => element.tagName === 'button' && element.textContent === 'Cancel'),
         setActive(value) { active = value; },
+        setLocale(value) { locale = /^zh(?:-|$)/i.test(value) ? 'zh' : 'en'; for (const callback of languageListeners) callback(locale); },
+        languageListenerCount: () => languageListeners.size,
         override(method, handler) { overrides[method] = handler; },
         mutations: dom.mutations,
         layoutReads: dom.layoutReads,
@@ -536,7 +725,7 @@ test('activation mounts before list; opening uses the current Host Active snapsh
     assert.ok(f.toggle());
     const selfRow = f.byClass('codlet-plugin-list').children[0];
     assert.equal(selfRow.children[1].className, 'codlet-plugin-actions');
-    assert.equal(selfRow.children[1].children[0].textContent, 'Active');
+    assert.equal(selfRow.children[1].children.find(node => node.className === 'codlet-plugin-state').textContent, 'Active');
     assert.doesNotMatch(f.panel().textContent, /undefined|null|Runtime connected/);
     assert.match(f.panel().textContent, /Missing renderer entry/);
     assert.equal(f.panel().getAttribute('role'), 'dialog');
@@ -854,7 +1043,7 @@ test('a connected stale mount is replaced, and reparenting the same mount relayo
     await f.plugin.activate(f.context);
     await f.open();
     const button = f.button();
-    const close = f.close();
+    const search = f.control('Search plugins');
     assert.equal(f.panel().style.top, '84px');
     const menuLine = f.document.body.appendChild(f.document.createElement('div'));
     menuLine.bottom = 36;
@@ -862,7 +1051,7 @@ test('a connected stale mount is replaced, and reparenting the same mount relayo
     f.flushObserver();
     assert.equal(f.panel().style.top, '36px');
     assert.equal(f.panel().hidden, false);
-    assert.equal(f.document.activeElement, close);
+    assert.equal(f.document.activeElement, search);
     const reads = f.layoutReads();
     f.document.body.appendChild(f.document.createElement('div'));
     f.flushObserver();
@@ -874,7 +1063,7 @@ test('a connected stale mount is replaced, and reparenting the same mount relayo
     assert.equal(f.mount.isConnected, true);
     assert.equal(f.button(), button);
     assert.equal(button.parentElement, replacement);
-    assert.equal(f.document.activeElement, close);
+    assert.equal(f.document.activeElement, search);
     f.plugin.deactivate();
 });
 
@@ -901,8 +1090,8 @@ test('Escape is consumed locally before an earlier host document handler, restor
     f.document.addEventListener('keydown', event => { if (event.key === 'Escape') hostEscapes++; });
     await f.plugin.activate(f.context);
     await f.open();
-    assert.equal(f.document.activeElement, f.close());
-    const event = await f.close().emit('keydown', { key: 'Escape' });
+    assert.equal(f.document.activeElement, f.control('Search plugins'));
+    const event = await f.control('Search plugins').emit('keydown', { key: 'Escape' });
     assert.equal(event.defaultPrevented, true);
     assert.equal(hostEscapes, 0);
     assert.equal(f.panel().hidden, true);
@@ -1095,7 +1284,7 @@ test('native modal lifecycle releases its top layer on close and on pending-requ
     assert.equal(f.panel().hidden, true);
     await f.open();
     f.editor.focus();
-    assert.equal(f.document.activeElement, f.close(), 'the browser modal keeps the host inert');
+    assert.equal(f.document.activeElement, f.control('Search plugins'), 'the browser modal keeps the host inert');
     await f.close().emit('click');
     assert.equal(f.modalCount(), 0);
     assert.equal(f.panel().open, false);

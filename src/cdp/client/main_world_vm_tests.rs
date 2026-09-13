@@ -173,6 +173,7 @@ fn main_world_rpc_navigation_reload_and_cleanup_preserve_world_identity() {
             plugin_id: "example.main".into(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: None,
         })
         .unwrap();

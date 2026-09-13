@@ -12,6 +12,9 @@ pub(super) struct PendingRevocation {
     failures: Vec<PluginTargetFailure>,
     unchanged: bool,
     deadline: Instant,
+    source_removal: Option<crate::source_removal::SourceRemovalPlan>,
+    source_worker: Option<std::sync::mpsc::Receiver<crate::source_removal::SourceRemovalResult>>,
+    source_result: Option<crate::source_removal::SourceRemovalResult>,
 }
 struct Retiring {
     id: String,
@@ -24,6 +27,7 @@ struct RevocationPlan {
     registry: PluginRegistry,
     affected: BTreeSet<String>,
     unchanged: bool,
+    source_removal: Option<crate::source_removal::SourceRemovalPlan>,
 }
 
 impl HostControl {
@@ -67,6 +71,11 @@ impl HostControl {
                 ));
             }
             let removing = request.action == PluginControlAction::Remove;
+            let source_removal = request
+                .remove_source
+                .as_ref()
+                .map(|selection| crate::source_removal::prepare(&registry, id, selection))
+                .transpose()?;
             let affected = if removing {
                 if !request.cascade {
                     plugin_lifecycle::validate_disable(
@@ -134,6 +143,7 @@ impl HostControl {
                     registry,
                     affected,
                     unchanged,
+                    source_removal,
                 },
                 renderer,
                 hosts,
@@ -170,6 +180,7 @@ impl HostControl {
             registry,
             affected,
             unchanged,
+            source_removal,
         } = plan;
         let observations = hosts.observations();
         let mut failures = Vec::new();
@@ -212,6 +223,9 @@ impl HostControl {
             failures,
             unchanged,
             deadline: Instant::now() + Duration::from_secs(30),
+            source_removal,
+            source_worker: None,
+            source_result: None,
         }
     }
 
@@ -276,6 +290,7 @@ impl HostControl {
             permission: None,
             cascade: false,
             local_import: None,
+            remove_source: None,
         };
         self.revoking = Some(self.retire_authority(
             RevocationPlan {
@@ -284,6 +299,7 @@ impl HostControl {
                 registry,
                 affected,
                 unchanged: false,
+                source_removal: None,
             },
             renderer,
             hosts,
@@ -423,6 +439,49 @@ impl PendingRevocation {
         if let Ok(registry) = PluginRegistry::load(self.registry.path()) {
             self.registry = registry;
         }
+        if !self.failures.is_empty() && self.source_removal.take().is_some() {
+            self.source_result =
+                Some(crate::source_removal::SourceRemovalResult::retirement_unconfirmed());
+        }
+        if let Some(plan) = self.source_removal.take() {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            match std::thread::Builder::new()
+                .name("codlet-source-removal".into())
+                .spawn(move || {
+                    let _ = sender.send(crate::source_removal::apply(plan));
+                }) {
+                Ok(_) => {
+                    self.source_worker = Some(receiver);
+                    return None;
+                }
+                Err(error) => {
+                    self.source_result = Some(crate::source_removal::SourceRemovalResult {
+                        status: "failed",
+                        code: "source_removal_failed",
+                        message: format!(
+                            "The plugin was unregistered. Source deletion could not start: {error}"
+                        ),
+                    })
+                }
+            }
+        }
+        if let Some(worker) = &self.source_worker {
+            self.source_result = Some(match worker.try_recv() {
+                Ok(result) => result,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => crate::source_removal::SourceRemovalResult { status: "failed", code: "source_removal_failed", message: "The plugin was unregistered. Source deletion ended without a confirmed result; inspect the directory before retrying.".into() },
+            });
+            self.source_worker = None;
+        }
+        if let Some(result) = &self.source_result
+            && result.failed()
+        {
+            self.failures.push(failure(
+                &self.request.plugin_id,
+                "source_removal",
+                result.message.clone(),
+            ));
+        }
         let removing = self.request.action == PluginControlAction::Remove;
         let reason = self
             .request
@@ -445,7 +504,9 @@ impl PendingRevocation {
             affected_plugin_ids: self.affected.iter().cloned().collect(),
             generations: Vec::new(),
             target_failures: std::mem::take(&mut self.failures),
-            message: Some(if removing {
+            message: Some(if let Some(result) = &self.source_result {
+                result.message.clone()
+            } else if removing {
                 "Local registration removed and affected packages disabled. Author files are preserved.".into()
             } else {
                 format!(
@@ -477,6 +538,7 @@ mod tests {
             permission: None,
             cascade: false,
             local_import: None,
+            remove_source: None,
         };
         assert_eq!(
             serde_json::to_value(old).unwrap(),
@@ -488,6 +550,7 @@ mod tests {
             permission: Some(crate::plugins::Permission::CdpRaw),
             cascade: false,
             local_import: None,
+            remove_source: None,
         };
         revoke.validate().unwrap();
         revoke.permission = None;

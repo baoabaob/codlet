@@ -118,6 +118,9 @@
         textarea { width: 100%; height: 70px; resize: vertical; background: var(--preview-bg); border: 1px solid var(--preview-border); border-radius: 4px; padding: 8px; }
         .preview-status { color: var(--preview-muted); overflow-wrap: anywhere; }
         #preview-log { padding-left: 20px; max-height: 180px; overflow: auto; font: 12px/1.5 ui-monospace, monospace; }
+        .preview-live-controls { position:static;display:block;margin-top:12px;padding-top:8px;border-top:1px dashed var(--preview-border);font:12px system-ui;color:var(--preview-muted); }
+        .preview-live-controls summary { cursor:pointer; }
+        .preview-live-controls label { display:inline-flex;gap:5px;margin:8px 10px 0 0; }
     </style>
 </head>
 <body>
@@ -195,6 +198,7 @@
     <script type="module">
         const gui = window.module.exports;
         const createUi = Function('return ' + await (await fetch('../bundled/runtime/ui.js')).text())();
+        const createI18n = Function('return ' + await (await fetch('../bundled/runtime/i18n.js')).text())();
         delete window.module;
         const token = 'codex.ui.titlebar.afterMenu@1';
         const byId = id => document.getElementById(id);
@@ -212,6 +216,9 @@
         const preferences = new Map();
         const imported = new Map(), removed = new Set(), revoked = new Map();
         const operations = new Map();
+        const query = new URLSearchParams(location.search);
+        let previewPhase = query.get('phase') || 'development';
+        document.documentElement.lang = query.get('lang') || 'zh';
         const githubJobs = new Map(), managedCandidates = new Map();
         let jobId = 0;
         // Pure fixtures: no GitHub request or filesystem installation occurs here.
@@ -241,7 +248,7 @@
             while (byId('preview-log').children.length > 16) byId('preview-log').lastChild.remove();
         };
         const state = message => { byId('preview-state').textContent = message; };
-        document.documentElement.dataset.theme = 'light';
+        document.documentElement.dataset.theme = query.get('theme') || 'light';
         for (const input of document.querySelectorAll('[name="theme"]')) {
             input.addEventListener('change', () => { document.documentElement.dataset.theme = input.value; });
         }
@@ -251,9 +258,9 @@
         });
         function snapshot(long, mode) {
             const plugins = [
-                { id: 'codlet-gui', version: '0.1.0', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
-                { id: 'codex.ui.adapter', version: '0.1.0', source: 'bundled', enabled: true, active: true, validation: { status: 'ok' } },
-                { id: 'local.notes', version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } },
+                { id: 'codlet-gui', name: 'Codlet GUI', description: 'Manage and import Codlet plugins.', i18n: { zh: { name: 'Codlet 界面', description: '管理和导入 Codlet 插件。' } }, version: '0.1.0', source: 'bundled', enabled: true, active, validation: { status: 'ok' } },
+                { id: 'codex.ui.adapter', name: 'Codex UI Adapter', description: 'Connects shared controls to the client appearance.', i18n: { zh: { name: 'Codex 界面适配器', description: '为插件提供客户端样式和共享控件。' } }, version: '0.1.0', source: 'bundled', enabled: true, active: true, validation: { status: 'ok' } },
+                { id: 'local.notes', name: 'Local Notes', description: 'Notes for your workspace.', i18n: { zh: { name: '本地笔记', description: '记录工作区中的笔记。' } }, version: '1.2.0', source: 'local', path: 'C:/preview/local-notes', enabled: false, active: false, validation: { status: 'ok' } },
                 { id: 'managed.notes', name: 'GitHub Notes', version: '1.0.0', source: 'local', ownership: 'core-managed-github', managedSource: retainedVersion.source, path: retainedVersion.packagePath, enabled: true, active: true, validation: { status: 'ok' } }
             ];
             if (mode === 'validation') plugins.push({ id: 'local.broken', version: null, source: 'local', path: 'C:/preview/missing', enabled: true, active: false,
@@ -270,7 +277,7 @@
                 plugin.grants = plugin.source === 'local' ? revoked.get(plugin.id) ?? ['ui.dom'] : [];
                 plugin.generation = plugin.loaded ? 1 : null;
             }
-            return { plugins: [...plugins.filter(plugin => !removed.has(plugin.id) && !imported.has(plugin.id)), ...imported.values()], localManagement: { available: true, watchEnabled: false, folderPicker: true }, githubManagement: { available: true } };
+            return { plugins: [...plugins.filter(plugin => !removed.has(plugin.id) && !imported.has(plugin.id)), ...imported.values()], runtimeVersion: '0.1.0', clientStatus: { status: query.get('clientStatus') || 'matched' }, localManagement: { available: true, watchEnabled: false, folderPicker: true }, githubManagement: { available: true } };
         }
         function unload() {
             active = false;
@@ -295,7 +302,7 @@
                 rpc: { async request(capability, method, args) {
                     const id = ++callId;
                     log(`#${id} ${method} requested (generation ${current})`);
-                    if (['ping', 'getMount', 'describe', 'list', 'disableSelf', 'chooseLocalFolder'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
+                    if (['ping', 'getMount', 'describe', 'list', 'disableSelf'].includes(method) && args !== null) throw new Error('Unexpected RPC arguments');
                     if (method === 'ping' && capability.name === 'codlet.runtime.ping') return { pong: true, abi: 1 };
                     if (method === 'describe' && capability.name === 'codex.ui.appearance') return appearanceProvider();
                     if (method === 'getMount' && capability.name === 'codex.ui.titlebar.afterMenu') {
@@ -312,6 +319,15 @@
                         return mode === 'empty' ? { plugins: [] } : response;
                     }
                     if (method === 'chooseLocalFolder') return { selectionId: 'preview-folder', status: 'selected', path: 'C:/Projects/My local plugin 测试' };
+                    if (method === 'openFolder') return { pluginId: args.pluginId, opened: true };
+                    if (method === 'sourceRemovalPreview') return { schema: 1, kind: 'codlet.source-removal-preview', pluginId: args.pluginId, path: 'C:/preview/local-notes', status: 'available', registrationDigest: 'a'.repeat(64), sourceIdentity: 'b'.repeat(64), warning: null };
+                    if (['runtimeUpdateStatus', 'checkRuntimeUpdate', 'downloadRuntimeUpdate', 'installRuntimeUpdate'].includes(method)) {
+                        if (method === 'checkRuntimeUpdate') previewPhase = 'available';
+                        if (method === 'downloadRuntimeUpdate') previewPhase = 'downloaded';
+                        if (method === 'installRuntimeUpdate') previewPhase = 'installRequested';
+                        return { currentVersion: '0.1.0', phase: previewPhase, configured: previewPhase !== 'development', channel: 'stable', lastCheckedAt: null, nextCheckAt: null,
+                            candidate: { id: 'preview-release', version: '0.2.0', platform: 'win-x64', size: 12000000, sha256: 'a'.repeat(64), releaseUrl: null }, downloadedBytes: 6000000, totalBytes: 12000000, installAvailable: true, unavailableReason: null, error: previewPhase === 'failed' ? { code: 'preview_failure', message: 'Simulated network failure' } : null };
+                    }
                     if (method === 'previewLocal') return {
                         schema: 1, kind: 'codlet.local-import-preview', path: args.path, contentDigest: 'a'.repeat(64), registrationDigest: 'b'.repeat(64),
                         ownership: 'development-directory', existingRegistration: null, existingEnabled: false, watchEnabled: false,
@@ -377,11 +393,37 @@
                     throw new Error(`Unexpected RPC: ${method}`);
                 } }
             };
+            context.i18n = createI18n(context);
             await gui.activate(context);
             if (generation !== current) return;
             active = true;
             state(`GUI active (generation ${current}); mount ${mountProvider?.().available ? 'available' : 'pending'}`);
             if (openAfter) openGUI();
+            const fixtureTools = document.createElement('details'); fixtureTools.className = 'preview-live-controls'; fixtureTools.setAttribute('aria-label', 'Preview controls');
+            const fixtureSummary = document.createElement('summary'); fixtureSummary.textContent = 'Preview controls'; fixtureTools.appendChild(fixtureSummary);
+            const choose = (label, values, initial, onChange) => {
+                const caption = document.createElement('label'); caption.textContent = label;
+                const select = document.createElement('select'); select.setAttribute('aria-label', label);
+                for (const value of values) { const option = document.createElement('option'); option.value = value; option.textContent = value; select.appendChild(option); }
+                select.value = initial; select.addEventListener('change', () => onChange(select.value)); caption.appendChild(select); fixtureTools.appendChild(caption);
+            };
+            const clickControl = labels => {
+                const control = [...document.querySelectorAll('[data-codlet-panel] button')].find(node => labels.includes(node.getAttribute('aria-label')));
+                control?.click();
+            };
+            choose('Preview language', ['zh', 'en', 'ja'], document.documentElement.lang, value => { document.documentElement.lang = value; });
+            choose('Preview theme', ['light', 'dark'], document.documentElement.dataset.theme, value => { document.documentElement.dataset.theme = value; });
+            choose('Preview update phase', ['development', 'checking', 'upToDate', 'available', 'downloading', 'downloaded', 'failed'], previewPhase, value => { previewPhase = value; clickControl(['Refresh plugins', '刷新插件']); });
+            document.querySelector('[data-codlet-panel] .codlet-panel-body')?.appendChild(fixtureTools);
+            cleanups.add(() => fixtureTools.remove());
+            if (query.get('page')) setTimeout(() => {
+                const requested = query.get('page');
+                if (requested === 'updates') clickControl(['Check for updates', '检查更新']);
+                else if (requested === 'import' || requested === 'github') {
+                    clickControl(['Import plugins', '导入插件']);
+                    if (requested === 'github') clickControl(['Import from GitHub', '从 GitHub 导入']);
+                } else if (requested === 'details') clickControl(['Details for Local Notes', '本地笔记 的详情']);
+            }, Math.max(0, Number(byId('rpc-delay').value) || 0) + 100);
         }
         function removeMount() {
             clearTimeout(mountTimer);

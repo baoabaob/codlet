@@ -106,6 +106,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             plugin_id: "dev.list.removed".into(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: None,
         })
         .unwrap();
@@ -178,6 +179,7 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
             plugin_id: "dev.list.running".into(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: None,
         })
         .unwrap();

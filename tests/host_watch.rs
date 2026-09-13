@@ -128,6 +128,7 @@ impl Fixture {
                 plugin_id: id.into(),
                 permission: None,
                 cascade: false,
+                remove_source: None,
                 local_import: None,
             }));
         let ticket = prepared.operation_id().unwrap().to_owned();

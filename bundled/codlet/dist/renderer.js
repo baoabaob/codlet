@@ -49,7 +49,8 @@ module.exports = (() => {
 
     let ui, style, button, panel, pluginList, managementStatus, refreshButton, closeButton;
     const ROLE_BY_CLASS = Object.freeze({ 'codlet-panel-header': 'dialogHeader', 'codlet-panel-title': 'heading', 'codlet-panel-body': 'dialogBody', 'codlet-plugin-list': 'section', 'codlet-plugin-actions': 'actions', 'codlet-plugin-name': 'label', 'codlet-plugin-version': 'description', 'codlet-confirmation-actions': 'dialogActions', 'codlet-status': 'status' });
-    let panelTitle, settingsSection;
+    let panelTitle, versionLabel, developmentLabel, clientStatusLine, settingsSection, searchInput, updateButton, updateSection, updateBody, updateStatus, updateTimer = null, updateReply = null, updateBusy = false;
+    let headerUpdateTimer = null, headerUpdateRequest = 0, updateIconName = null;
     let confirmation, confirmationCopy, confirmationStatus, confirmButton, cancelButton, actionOrigin;
     let confirmationSelection = null;
     let visiblePlugins = [];
@@ -64,12 +65,14 @@ module.exports = (() => {
     let action = 'idle';
     let actionError = '';
     let pendingOperation = null;
+    let managementBusy = false;
     let operationTimer = null;
     const mutationControls = new Set();
     const renderedPlugins = new Map();
     let page = 'plugins', localManagement = null;
-    let importButton, importSection, importPath, chooseFolderButton, inspectButton, importStatus, previewBody, importSubmit;
-    let importTrust, importEnable, importPreview = null, importBusy = false, localRequest = 0, pickerTimer = null;
+    let importButton, importSection, importPath, localFields, chooseFolderButton, importStatus, importErrorDetails, importErrorText, previewBody, importSubmit;
+    let importTrust, importEnable, importPreview = null, importBusy = false, localRequest = 0, pickerTimer = null, previewTimer = null;
+    let localTab, githubTab, communityLink, confirmationHeading, removeSourceChoice, removalPreview = null, removalRequest = 0, removalBusy = false;
     let detailsSection, detailsBody, detailsStatus, detailsPlugin = null;
     let githubButton, githubFields, githubUrl, githubRead, githubRelease, githubAsset, githubDownload, githubCancel, githubRetry;
     let importMode = 'local', importOperation = 'install', importTarget = null, githubCatalog = null, githubJob = null, githubTimer = null;
@@ -82,6 +85,189 @@ module.exports = (() => {
         'host.fs': 'Read files inside explicitly allowed folders', 'host.network': 'Request explicitly allowed HTTP(S) origins',
         'host.system': 'Read basic system information', 'runtime.manage': 'Manage other plugins and their permissions'
     });
+    const textBindings = new Map(), buttonCaptions = new WeakMap();
+    let stopLocale = null;
+    const TRANSLATIONS = {
+        'Back': '返回', 'Codlet': 'Codlet', 'Close Codlet': '关闭 Codlet', 'Import': '导入', 'Import plugins': '导入插件', 'Search plugins': '搜索插件',
+        'Refresh plugins': '刷新插件', 'Check for updates': '检查更新', 'Updates': '更新', 'Local folder': '本地文件夹', 'GitHub release': 'GitHub 发布版本',
+        'Plugin folder': '插件文件夹', 'Choose plugin folder': '选择插件文件夹', 'Browse community plugins': '浏览社区插件', 'Details': '详情',
+        'Active': '运行中', 'Starting': '启动中', 'Stopping': '正在停止', 'Failed': '失败', 'Exited': '已退出', 'Waiting for renderer': '等待界面加载',
+        'Unavailable': '不可用', 'Not active': '未运行', 'Disabled': '已停用', 'Start': '启动', 'Stop': '停止', 'Reload': '重新加载',
+        'No plugins': '暂无插件', 'No matching plugins': '没有匹配的插件', 'Loading plugins...': '正在加载插件…', 'Updating plugins...': '正在刷新插件…',
+        'Enable Codlet GUI': '启用 Codlet 界面', 'Requested permissions': '请求的权限', 'Granted permissions': '已授权限',
+        'Remove': '移除', 'Remove plugin': '移除插件', 'Cancel': '取消', 'Disable': '停用', 'Revoke': '撤销授权', 'Disabling...': '正在停用…',
+        'Import local plugin': '导入本地插件', 'Import from GitHub': '从 GitHub 导入', 'Update GitHub plugin': '更新 GitHub 插件', 'Roll back plugin': '回退插件版本',
+        'Import plugin': '导入插件', 'Update plugin': '更新插件', 'Confirm local import': '确认导入本地插件', 'Confirm GitHub import': '确认从 GitHub 导入',
+        'Confirm managed update': '确认更新托管插件', 'Confirm managed rollback': '确认回退托管插件', 'Trust this local plugin': '信任这个本地插件',
+        'Trust this GitHub source': '信任这个 GitHub 来源', 'Enable after import': '导入后启用', 'Enable immediately after importing': '导入完成后立即启用',
+        'I trust this plugin’s author and this local folder.': '我信任这个插件的作者和本地文件夹。', 'Loading permissions...': '正在读取权限…',
+        'Open plugin folder': '打开插件文件夹', 'Delete source files': '同时删除源文件', 'Delete the plugin source folder': '同时删除插件源文件夹',
+        'Checking source folder...': '正在检查源文件夹…', 'Plugin details': '插件详情', 'Local development folder': '本地开发文件夹', 'Codlet managed GitHub package': 'Codlet 托管的 GitHub 插件包', 'Bundled plugin': '内置插件',
+        'Read releases': '读取发布版本', 'Read GitHub releases': '读取 GitHub 发布版本', 'GitHub repository or release URL': 'GitHub 仓库或发布链接',
+        'GitHub ZIP asset': 'GitHub ZIP 资源包', 'Choose a release': '选择发布版本', 'Choose a ZIP asset': '选择 ZIP 资源包', 'Download and inspect ZIP': '下载并检查 ZIP',
+        'Download selected GitHub asset': '下载所选 GitHub 资源包', 'Cancel GitHub task': '取消 GitHub 任务', 'Check task status': '查看任务状态', 'Check GitHub task status': '查看 GitHub 任务状态',
+        'Check GitHub versions': '检查 GitHub 版本', 'Installed version history': '已安装版本历史', 'Review rollback': '预览回退', 'Load more versions': '加载更多版本',
+        'Loading retained versions...': '正在读取保留的版本…', 'Loading more retained versions...': '正在读取更多版本…', 'No retained versions.': '暂无保留的版本。',
+        'Check for Codlet updates': '检查 Codlet 更新', 'Download update': '下载更新', 'Install and restart': '安装并重启', 'Development version': '开发版本',
+        'Install and restart Codlet?': '安装并重启 Codlet？', 'The current client will restart and running local tasks will be interrupted.': '当前客户端将重启，正在运行的本地任务会被中断。',
+        'Development': '开发版', 'This development build has no configured update source.': '当前为开发版本，尚未配置更新源。', 'Checking for updates...': '正在检查更新…', 'Downloading update...': '正在下载更新…', 'Codlet is up to date.': 'Codlet 已是最新版本。',
+        'Installation was requested. Follow the update process to restart Codlet.': '已请求安装，请按更新流程重启 Codlet。', 'Update status is unavailable.': '暂时无法获取更新状态。',
+        'Official client update available. A routine update usually does not affect Codlet, but not every plugin is guaranteed to work.': '官方客户端可更新，简单更新通常不会影响Codlet使用，但不保证所有插件均可正常使用。',
+        'This Codlet version is not matched to the latest client version. This usually does not affect use, but not every plugin is guaranteed to work.': '当前Codlet未匹配客户端最新版本，这通常不影响使用，但不保证所有插件均可正常使用。',
+        'This Codlet version matches the latest client version.': '当前Codlet版本匹配最新客户端版本。',
+        'Details for {name}': '{name} 的详情', 'Enable {name}': '启用 {name}', 'Reload {name}': '重新加载 {name}', 'Start {name}': '启动 {name}', 'Stop {name}': '停止 {name}',
+        'Remove {name}': '移除 {name}', 'Grant {permission}': '授予 {permission}', 'Revoke {permission}': '撤销 {permission}', 'Review rollback {version}': '预览回退 {version}',
+        'Read and change the page interface': '读取和修改页面界面', 'Run in the page’s main JavaScript world': '在页面主 JavaScript 环境中运行', 'Use raw browser debugging access': '使用底层浏览器调试接口',
+        'Run native code with your user account’s OS permissions': '以当前用户的系统权限运行原生代码', 'Read files inside explicitly allowed folders': '读取明确允许的文件夹中的文件',
+        'Request explicitly allowed HTTP(S) origins': '访问明确允许的 HTTP(S) 来源', 'Read basic system information': '读取基本系统信息', 'Manage other plugins and their permissions': '管理其他插件及其权限'
+    };
+    Object.assign(TRANSLATIONS, {
+        'Plugin list timed out. Refresh to try again.': '插件列表请求超时，请刷新重试。', 'Plugin list unavailable': '无法获取插件列表', 'Plugin list contains duplicate IDs': '插件列表包含重复的 ID',
+        'Registration removed; still loaded': '已取消注册，仍在运行', 'Registered, not loaded': '已注册，尚未加载', 'Plugin validation failed': '插件校验失败', 'Host process failed': 'Host 进程失败',
+        'Disable {name}?': '停用 {name}？', 'Remove {name}?': '移除 {name}？', 'Revoke permission for {name}?': '撤销 {name} 的权限？', '{name} disabled': '{name} 已停用', 'Codlet is disabled.': 'Codlet 已停用。',
+        'This will also disable: {names}.': '同时停用：{names}。', 'Also disable: {names}.': '同时停用：{names}。', 'Dependents: {names}.': '依赖此插件：{names}。',
+        'The Codlet GUI will close in all open windows. Re-enable the plugins from the launcher to restore it.': '所有窗口中的 Codlet 界面都会关闭。可通过启动器重新启用插件来恢复。',
+        'These plugins will stay disabled until you enable them again.': '这些插件将保持停用，直到你重新启用。',
+        'Action status unavailable. Refresh to check again.': '暂时无法获取操作状态，请刷新查询。',
+        'Action status is no longer available. The action has not been repeated.': '无法再获取这次操作的状态。操作没有被重复提交。',
+        'The action was not confirmed. Refresh checks the same action without repeating it.': '操作结果尚未确认。刷新只查询原操作，不会重复提交。',
+        'The action could not be prepared.': '无法准备这次操作。', 'The action was not submitted. Try again when the runtime is ready.': '操作没有提交，请在运行时就绪后重试。',
+        'The action finished with an error. Refresh for the current state.': '操作结束时出错，请刷新查看当前状态。', 'Disable was not confirmed': '停用结果尚未确认',
+        '{name}: preparing...': '{name}：正在准备…', '{name}: waiting...': '{name}：正在等待…', '{name}: updating...': '{name}：正在更新…',
+        '{name}: enabled.': '{name}：已启用。', '{name}: disabled.': '{name}：已停用。', '{name}: reloaded.': '{name}：已重新加载。',
+        '{name}: imported and enabled.': '{name}：已导入并启用。', '{name}: imported, disabled.': '{name}：已导入，保持停用。',
+        '{name}: updated and enabled.': '{name}：已更新并启用。', '{name}: updated, disabled.': '{name}：已更新，保持停用。',
+        '{name}: rolled back and enabled.': '{name}：已回退并启用。', '{name}: rolled back, disabled.': '{name}：已回退，保持停用。',
+        '{name}: removed; files kept.': '{name}：已移除，文件保留。', '{name}: removed.': '{name}：已移除。', '{name}: permission revoked.': '{name}：权限已撤销。',
+        'Enter the full path to a plugin folder.': '请输入插件文件夹的完整路径。', 'Checking the selected folder...': '正在检查所选文件夹…',
+        'Checking the manifest and JavaScript entries...': '正在检查清单和 JavaScript 入口…', 'The import preview is incomplete.': '导入预览信息不完整。',
+        'Plugin recognized. Choose permissions to import.': '已识别插件，选择权限后即可导入。', 'Choose a plugin folder in the Windows dialog.': '请在 Windows 对话框中选择插件文件夹。',
+        'Folder selection cancelled.': '已取消选择文件夹。', 'Folder selection failed. Enter the full path instead.': '选择文件夹失败，请输入完整路径。',
+        'Dependencies': '依赖', 'Dependencies: none': '依赖：无', 'Availability is checked again when enabling.': '启用时会再次检查依赖是否可用。',
+        'Renderer: {entry} ({world})': '界面入口：{entry}（{world}）', 'Host: {entry}': 'Host 入口：{entry}',
+        'Renderer dependency: {capability}': '界面依赖：{capability}', 'Host dependency: {capability}': 'Host 依赖：{capability}',
+        'Currently unavailable: {capabilities}. You can import the folder while disabled, then enable its providers first.': '当前不可用：{capabilities}。可以先导入并保持停用，再启用提供这些依赖的插件。',
+        'The plugin runs from this development folder. Removing it keeps these files.': '插件从此开发文件夹运行。移除时默认保留文件。',
+        'Automatic reload: on while the plugin is enabled.': '自动重载：插件启用时开启。', 'Automatic reload: off in this session; use Reload after editing.': '自动重载：此会话中关闭，修改后请重新加载。',
+        'Already registered at this folder. Confirm all grants again to replace its permission settings.': '此文件夹已注册。重新确认全部授权后会替换现有权限设置。',
+        'Current grants: {permissions}. Stop the package before importing it again.': '当前授权：{permissions}。重新导入前请先停用插件。',
+        'No permissions requested.': '未请求权限。', 'Allowed read folders': '允许读取的文件夹', 'Allowed network origins': '允许访问的网络来源', 'Allowed child programs': '允许启动的子程序',
+        'Allowed read folders — one full path per line': '允许读取的文件夹，每行一个完整路径', 'Allowed network origins — one HTTP(S) origin per line': '允许访问的网络来源，每行一个 HTTP(S) 来源',
+        'Allowed child programs — one full .exe path per line': '允许启动的子程序，每行一个完整的 .exe 路径',
+        'Empty lists grant no access through the file, network or child-process broker. Native Host code still runs with your OS user permissions.': '列表留空时，文件、网络和子进程代理不授予访问权限。原生 Host 代码仍以当前用户的系统权限运行。',
+        '{permission} — {description}': '{permission} — {description}', 'None': '无', 'unknown': '未知', 'unknown (not declared)': '未知（未声明）', 'enabled': '已启用', 'disabled': '已停用',
+        'install': '安装', 'update': '更新', 'rollback': '回退', 'matched': '已匹配', 'not available for verification': '无可用摘要进行核验',
+        'author declared API {api}': '作者声明 API {api}', 'author declared {platforms}': '作者声明 {platforms}',
+        'Runtime compatibility: {compatibility}': '运行时兼容性：{compatibility}', 'Platforms: {platforms}': '平台：{platforms}', 'Author: {author}': '作者：{author}',
+        'Codex builds tested: unknown; no verification claim is made by this importer.': '已测试的 Codex 构建：未知；导入器不作兼容性验证承诺。',
+        'Repository: {repository}': '仓库：{repository}', 'Release/tag: {tag}': '发布版本／标签：{tag}', 'Asset: {asset}': '资源包：{asset}', 'GitHub digest: {status}': 'GitHub 摘要：{status}',
+        'Version: {before} → {after}': '版本：{before} → {after}', 'Release: {before} → {after}': '发布版本：{before} → {after}',
+        'Runtime declaration: {before} → {after}': '运行时声明：{before} → {after}', 'Platform declaration: {before} → {after}': '平台声明：{before} → {after}',
+        'Permissions added: {permissions}': '新增权限：{permissions}', 'Permissions removed: {permissions}': '减少权限：{permissions}', 'Dependencies added: {capabilities}': '新增依赖：{capabilities}', 'Dependencies removed: {capabilities}': '减少依赖：{capabilities}',
+        'Codlet owns this installed package directory. Removing registration keeps the package and plugin data. The SHA-256 identifies downloaded bytes; it does not establish trust in the author.': '此插件包由 Codlet 管理。移除注册时默认保留包文件和插件数据。SHA-256 用于识别下载内容，不能代替对作者的信任。',
+        'Currently {state}. This {operation} leaves the plugin disabled unless you select “Enable after import”. Confirm the source and every grant again.': '当前{state}。本次{operation}后默认保持停用，只有勾选“导入后启用”才会启用。请重新确认来源和每项权限。',
+        'Enable after {operation}; otherwise keep disabled': '{operation}后启用，否则保持停用',
+        'I trust the author and this exact source: {repository}, release {tag}, asset {asset}.': '我信任作者及此确切来源：{repository}，发布版本 {tag}，资源包 {asset}。',
+        'Check releases, then explicitly choose a version and asset. Updating requires fresh source trust and grants.': '请检查发布版本并明确选择版本和资源包。更新需要重新信任来源并授权。',
+        'Enter a GitHub repository, release or release asset URL. Select a published ZIP package; repository source archives are not installable packages.': '请输入 GitHub 仓库、发布版本或资源包链接，选择已构建的 ZIP 发布包。仓库源码压缩包不能直接安装。',
+        'Read releases for this source before downloading. Trust and grants have been cleared.': '下载前请读取此来源的发布版本。之前的信任和授权选择已清除。',
+        'The managed package preview is incomplete or does not match the selected plugin and release asset.': '托管包预览不完整，或与所选插件和发布资源包不匹配。',
+        'Review the exact source, compatibility, dependencies and permissions before confirming.': '确认前请检查确切来源、兼容性、依赖和权限。',
+        'The GitHub release list is incomplete.': 'GitHub 发布版本列表不完整。', 'Choose the exact release and ZIP asset.': '请选择确切的发布版本和 ZIP 资源包。',
+        'Link requests tag: {tag}. Confirm that selection below.': '链接指定标签：{tag}。请在下方确认选择。', 'Only part of the release history is listed. Use an exact release URL for an older version.': '这里只列出部分发布历史。较旧版本请使用确切的发布链接。',
+        'No published releases found. Ask the author for a built plugin ZIP, or download and inspect a local plugin folder.': '未找到已发布的版本。请向作者获取构建好的插件 ZIP，或下载后检查本地插件文件夹。',
+        'Reading GitHub releases...': '正在读取 GitHub 发布版本…', 'Downloading and validating the selected ZIP. No plugin is registered or enabled yet.': '正在下载并校验所选 ZIP，尚未注册或启用插件。',
+        'GitHub task did not return a job ID. No installation was submitted.': 'GitHub 任务未返回任务 ID，没有提交安装。', 'GitHub task response did not match the requested job.': 'GitHub 响应与请求的任务不匹配。',
+        'Reading releases: {stage}': '正在读取发布版本：{stage}', 'Preparing package: {stage}': '正在准备插件包：{stage}', 'Reading releases...': '正在读取发布版本…', 'Preparing package...': '正在准备插件包…',
+        'fetching-releases': '读取发布信息', 'downloading-and-validating': '下载并校验', 'No installation has been submitted.': '尚未提交安装。',
+        'GitHub task cancelled. No installation was submitted; temporary download files may remain.': 'GitHub 任务已取消，没有提交安装；可能保留临时下载文件。',
+        'GitHub task cancelled. Late results will be ignored. No installation was submitted; temporary download files may remain.': 'GitHub 任务已取消，迟到结果会被忽略。没有提交安装；可能保留临时下载文件。',
+        'GitHub task failed. No installation was submitted.': 'GitHub 任务失败，没有提交安装。', 'GitHub task returned an unknown status.': 'GitHub 任务返回了未知状态。', 'Task status unavailable: {error}': '无法获取任务状态：{error}',
+        'Check the same task again, or cancel. No new download or installation is started by checking.': '可再次查询原任务或取消。查询不会发起新的下载或安装。', 'Enter a GitHub URL.': '请输入 GitHub 链接。',
+        'Selected release: {tag}. Choose the exact plugin ZIP asset.': '已选发布版本：{tag}。请选择确切的插件 ZIP 资源包。', 'Choose an exact release.': '请选择确切的发布版本。',
+        'This release has no ZIP assets. Repository source archives are not plugin release packages. Ask the author for a built package or use local folder import.': '此版本没有 ZIP 资源包。仓库源码压缩包不是插件发布包。请向作者获取已构建的包，或从本地文件夹导入。',
+        'Download and validate this asset before granting permissions.': '授权前请先下载并校验此资源包。', '{asset} ({bytes} bytes)': '{asset}（{bytes} 字节）', '{tag} (prerelease){name}': '{tag}（预发布）{name}',
+        'Validating the retained package and comparing permissions...': '正在校验保留的插件包并比较权限…', 'Permission details are unavailable.': '无法获取权限详情。',
+        'Managed version history is unavailable or its cursor is invalid.': '无法获取托管版本历史，或分页游标无效。', 'Managed version history is incomplete.': '托管版本历史不完整。',
+        'The installed version changed. Reopen details to refresh the history.': '已安装版本发生变化，请重新打开详情以刷新历史。', 'Rollback uses an already retained package. Review its source and permissions again before applying.': '回退使用已保留的插件包。应用前请重新检查来源和权限。', '{version} · {tag} · Current': '{version} · {tag} · 当前版本',
+        'Remove this plugin’s registration and disable it. Source files and plugin data are kept by default. Selecting deletion below removes the source folder and all its contents.': '取消此插件的注册并停用。默认保留源文件和插件数据；勾选下方选项将删除源文件夹及其全部内容。',
+        'This folder could not be recognized as a plugin. Check the path and codlet.json.': '无法识别此文件夹中的插件，请检查路径和 codlet.json。', 'Error details': '错误详情',
+        'Revoke {permission}. This stops the package and its running dependents. To grant it again, import the local folder and confirm its permissions.': '撤销 {permission}，并停止此插件及运行中的依赖方。重新授权时，请导入本地文件夹并确认权限。',
+        'Revoke {permission}. This stops the package and its running dependents. To grant it again, select a managed version and confirm its permissions again.': '撤销 {permission}，并停止此插件及运行中的依赖方。重新授权时，请选择托管版本并重新确认权限。',
+        'The source folder could not be checked. You can still remove registration and keep files.': '无法检查源文件夹，仍可取消注册并保留文件。',
+        'The source folder is missing or moved. Removing registration is still available.': '源文件夹已缺失或移动，仍可取消注册。', 'Source deletion is unavailable. Removing registration keeps the remaining files.': '无法删除来源目录。取消注册会保留现有文件。',
+        'Source folder: {path}': '源文件夹：{path}', 'The source folder could not be opened.': '无法打开源文件夹。',
+        'Current Codlet version: {version}': '当前 Codlet 版本：{version}', 'Codlet {version} is available.': 'Codlet {version} 可更新。', 'Downloading update: {percent}%': '正在下载更新：{percent}%',
+        'Codlet {version} is ready to install.': 'Codlet {version} 已准备好安装。', 'Update failed.': '更新失败。', 'Automatic installation is unavailable for this launch.': '本次启动无法自动安装更新。'
+    });
+    const messages = { en: Object.fromEntries(Object.keys(TRANSLATIONS).map(key => [key, key])), zh: TRANSLATIONS };
+    const templates = Object.keys(TRANSLATIONS).filter(key => key.includes('{')).map(key => {
+        const names = [];
+        const pattern = key.split(/(\{\w+\})/).map(part => /^\{\w+\}$/.test(part) ? (names.push(part.slice(1, -1)), '([\\s\\S]*?)') : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('');
+        return { key, names, regex: new RegExp('^' + pattern + '$') };
+    }).sort((a, b) => b.key.replace(/\{\w+\}/g, '').length - a.key.replace(/\{\w+\}/g, '').length);
+    const literal = value => ({ literal: value });
+    const resolveText = value => typeof value === 'function' ? value() : value;
+    function translate(value) {
+        value = resolveText(value);
+        if (value && typeof value === 'object' && Object.hasOwn(value, 'literal')) return String(resolveText(value.literal) ?? '');
+        const text = String(value ?? '');
+        const locale = runtimeContext?.i18n?.locale === 'zh' ? 'zh' : 'en';
+        if (locale === 'en' || !text) return text;
+        if (text.includes('\n')) return text.split('\n').map(translate).join('\n');
+        let key = Object.hasOwn(TRANSLATIONS, text) ? text : null, values = {};
+        if (!key) for (const template of templates) {
+            const match = template.regex.exec(text);
+            if (match) { key = template.key; values = Object.fromEntries(template.names.map((name, index) => [name, match[index + 1]])); break; }
+        }
+        if (!key) return text.includes('\n') ? text.split('\n').map(translate).join('\n') : text;
+        for (const name of ['description', 'compatibility', 'platforms', 'status', 'state', 'operation', 'before', 'after', 'permissions', 'capabilities', 'stage']) if (Object.hasOwn(values, name)) values[name] = translate(values[name]);
+        return runtimeContext?.i18n?.t ? runtimeContext.i18n.t(messages, key, values) : TRANSLATIONS[key].replace(/\{(\w+)\}/g, (_, name) => values[name] ?? `{${name}}`);
+    }
+    function bindText(node, slot, source) {
+        if (!textBindings.has(node)) textBindings.set(node, new Map());
+        textBindings.get(node).set(slot, source);
+        const value = translate(source);
+        if (slot === 'text') node.textContent = value; else node.setAttribute(slot, value);
+    }
+    function setText(node, source) {
+        if (['button', 'a'].includes(node.tagName?.toLowerCase())) {
+            let caption = buttonCaptions.get(node);
+            if (!caption) { node.textContent = ''; caption = ui.element('span'); node.appendChild(caption); buttonCaptions.set(node, caption); }
+            bindText(caption, 'text', source);
+        } else bindText(node, 'text', source);
+    }
+    function setLabel(node, source) { bindText(node, 'aria-label', source); }
+    function guiButton(options) {
+        const control = ui.button({ ...options, text: translate(options.text), ...(options.label !== undefined ? { label: translate(options.label) } : {}) });
+        if (options.text !== undefined) setText(control, options.text);
+        if (options.label !== undefined) setLabel(control, options.label);
+        return control;
+    }
+    function guiSwitch(options) { const control = ui.switch({ ...options, label: translate(options.label) }); setLabel(control, options.label); return control; }
+    function backButton(parent, context) {
+        const back = ui.backButton({ text: translate('Back'), label: translate('Back') });
+        setLabel(back, 'Back'); bindText(back.children[1], 'text', 'Back');
+        parent.appendChild(back); ui.on(back, 'click', () => backToPlugins(context)); return back;
+    }
+    function refreshLanguage(context) {
+        hideTooltip();
+        const focused = document.activeElement;
+        let focusedRow = focused;
+        while (focusedRow && !focusedRow.getAttribute?.('data-codlet-plugin')) focusedRow = focusedRow.parentElement;
+        const focusedId = focusedRow?.getAttribute('data-codlet-plugin');
+        const focusedIndex = focusedRow && focused.parentElement === focusedRow.children[1] ? Array.from(focusedRow.children[1].children).indexOf(focused) : -1;
+        if (confirmationSelection?.id) confirmationSelection.name = pluginName(visiblePlugins.find(plugin => plugin.id === confirmationSelection.id) ?? { id: confirmationSelection.id });
+        if (pendingOperation) pendingOperation.name = pluginName(visiblePlugins.find(plugin => plugin.id === pendingOperation.pluginId) ?? { id: pendingOperation.pluginId, name: pendingOperation.name });
+        for (const [node, entries] of textBindings) {
+            if (!node.isConnected) { textBindings.delete(node); continue; }
+            for (const [slot, source] of entries) bindText(node, slot, source);
+        }
+        renderedPlugins.forEach(entry => { entry.snapshot = ''; });
+        if (pluginList && panel?.open) renderFilteredPlugins(context, true);
+        if (focusedId && focusedIndex >= 0) focus(renderedPlugins.get(focusedId)?.row.children[1].children[focusedIndex]);
+        renderAction();
+    }
 
     function waitForDocument() {
         if (document.documentElement && document.body) return Promise.resolve();
@@ -97,31 +283,20 @@ module.exports = (() => {
     }
 
     function addText(parent, tag, className, text) {
-        const element = tag === 'button' ? ui.button({ text, variant: className === 'codlet-confirm' ? 'danger' : 'default' })
-            : ui.element(tag, { role: ROLE_BY_CLASS[className], text });
+        const element = tag === 'button' ? guiButton({ text, variant: className === 'codlet-confirm' ? 'danger' : 'default' })
+            : ui.element(tag, { role: ROLE_BY_CLASS[className] });
         element.className = className;
-        element.textContent = text;
+        if (tag !== 'button' && text !== '') setText(element, text);
         parent.appendChild(element);
         return element;
     }
 
     function iconButton(parent, name, label) {
-        const control = ui.button({ label, variant: name === 'close' ? 'close' : 'icon' });
+        const control = guiButton({ label, variant: name === 'close' ? 'close' : 'icon' });
         control.className = 'codlet-icon-button';
         parent.appendChild(control);
         installTooltip(control, label);
-        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        for (const [key, value] of Object.entries({
-            width: '16', height: '16', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
-            'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-            'aria-hidden': 'true', focusable: 'false'
-        })) icon.setAttribute(key, value);
-        for (const d of ICONS[name]) {
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d', d);
-            icon.appendChild(path);
-        }
-        control.appendChild(icon);
+        control.appendChild(ui.icon(name));
         return control;
     }
 
@@ -129,7 +304,7 @@ module.exports = (() => {
         if (tooltipTimer !== null) clearTimeout(tooltipTimer);
         tooltipTimer = null;
         tooltipControl?.removeAttribute('aria-describedby');
-        if (tooltip && ui) ui.remove(tooltip);
+        if (tooltip && ui) removeOwned(tooltip);
         tooltip = tooltipControl = null;
     }
 
@@ -164,8 +339,15 @@ module.exports = (() => {
         ui.on(control, 'focusout', cancel);
     }
 
+    function removeOwned(node) {
+        for (const target of textBindings.keys()) if (target === node || node.contains(target)) textBindings.delete(target);
+        ui.remove(node);
+    }
+
     function pluginName(plugin) {
-        return typeof plugin.name === 'string' && plugin.name.trim() ? plugin.name.trim() : plugin.id;
+        const locale = runtimeContext?.i18n?.locale === 'zh' ? 'zh' : 'en';
+        const name = plugin.i18n?.[locale]?.name || plugin.name;
+        return typeof name === 'string' && name.trim() ? name.trim() : plugin.id;
     }
 
     function requestDisable(context, plugin, origin) {
@@ -174,8 +356,11 @@ module.exports = (() => {
         const closesGui = plugin.id === context.pluginId || dependents.includes(context.pluginId);
         if (!dependents.length && !closesGui) return managePlugin(context, plugin.id, 'disable');
         confirmationSelection = { id: plugin.id, name: pluginName(plugin), cascade: dependents.length > 0 };
-        const dependentNames = dependents.map(id => pluginName(visiblePlugins.find(candidate => candidate.id === id) ?? { id }));
-        confirmationCopy.textContent = `${dependentNames.length ? `This will also disable: ${dependentNames.join(', ')}. ` : ''}${closesGui ? 'The Codlet GUI will close in all open windows. Re-enable the plugins from the launcher to restore it.' : 'These plugins will stay disabled until you enable them again.'}`;
+        setText(confirmationCopy, () => {
+            const dependentNames = dependents.map(id => pluginName(visiblePlugins.find(candidate => candidate.id === id) ?? { id }));
+            return `${dependentNames.length ? `This will also disable: ${dependentNames.join(', ')}.\n` : ''}${closesGui ? 'The Codlet GUI will close in all open windows. Re-enable the plugins from the launcher to restore it.' : 'These plugins will stay disabled until you enable them again.'}`;
+        });
+        removalPreview = null; removalBusy = false; removeSourceChoice.parentElement.hidden = true;
         actionOrigin = origin;
         action = 'confirm';
         renderAction();
@@ -198,8 +383,27 @@ module.exports = (() => {
             [${PANEL_ATTRIBUTE}] { max-height:calc(100dvh - var(--codlet-available-top,36px) - 32px); }
             [${PANEL_ATTRIBUTE}][data-codlet-view="confirmation"] { width:420px; }
             [${PANEL_ATTRIBUTE}] *, [${PANEL_ATTRIBUTE}] *::before, [${PANEL_ATTRIBUTE}] *::after { box-sizing:border-box; }
-            [${PANEL_ATTRIBUTE}] [hidden] { display:none; }
+            [${PANEL_ATTRIBUTE}][hidden], [${PANEL_ATTRIBUTE}] [hidden], [${BUTTON_ATTRIBUTE}][hidden] { display:none!important; }
             [${PANEL_ATTRIBUTE}] .codlet-section-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:46px; padding-bottom:6px; }
+            [${PANEL_ATTRIBUTE}] .codlet-panel-header { display:flex;align-items:center;gap:8px; }
+            [${PANEL_ATTRIBUTE}] .codlet-header-brand { display:flex;align-items:baseline;gap:8px;min-width:0;margin-right:auto; }
+            [${PANEL_ATTRIBUTE}] .codlet-runtime-version { font-size:12px;color:var(--codlet-ui-secondary,GrayText);font-weight:400; }
+            [${PANEL_ATTRIBUTE}] .codlet-icon-button[aria-busy="true"] svg { animation:codlet-spin 1.2s linear infinite; }
+            @keyframes codlet-spin { to { transform:rotate(360deg); } }
+            @media (prefers-reduced-motion:reduce) { [${PANEL_ATTRIBUTE}] .codlet-icon-button[aria-busy="true"] svg { animation:none; } }
+            [${PANEL_ATTRIBUTE}] .codlet-icon-button { display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;flex:0 0 32px; }
+            [${PANEL_ATTRIBUTE}] .codlet-search-toolbar { display:flex;align-items:center;gap:8px;margin-bottom:10px; }
+            [${PANEL_ATTRIBUTE}] .codlet-search-toolbar input { flex:1;min-width:0; }
+            [${PANEL_ATTRIBUTE}] .codlet-import-button { display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;min-height:32px; }
+            [${PANEL_ATTRIBUTE}] .codlet-source-tabs { display:flex;gap:4px;padding:3px;border-radius:8px;background:var(--codlet-ui-hover,ButtonFace); }
+            [${PANEL_ATTRIBUTE}] .codlet-source-tabs button { flex:1;min-height:32px;border:0;box-shadow:none;background:transparent; }
+            [${PANEL_ATTRIBUTE}] .codlet-source-tabs button[aria-selected="true"] { background:var(--codlet-ui-surface,Canvas);box-shadow:0 1px 3px rgb(0 0 0 / 12%); }
+            [${PANEL_ATTRIBUTE}] .codlet-folder-input { display:flex;align-items:center;gap:6px; }
+            [${PANEL_ATTRIBUTE}] .codlet-folder-input input { flex:1; }
+            [${PANEL_ATTRIBUTE}] .codlet-community-link { display:inline-flex;align-items:center;gap:5px;align-self:flex-start;text-decoration:underline;text-underline-offset:3px;font-size:13px;color:var(--codlet-ui-secondary,GrayText); }
+            [${PANEL_ATTRIBUTE}] .codlet-client-status { margin:8px 0 2px;font-size:12px;line-height:1.5;color:var(--codlet-ui-secondary,GrayText); }
+            [${PANEL_ATTRIBUTE}] .codlet-details-heading { display:flex;align-items:center;gap:8px; }
+            [${PANEL_ATTRIBUTE}] .codlet-details-heading h2 { margin-right:auto; }
             [${PANEL_ATTRIBUTE}] .codlet-section-title { margin:0; font-size:inherit; font-weight:var(--codlet-ui-font-weight-medium,500); }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-list:empty { display:none; }
             [${PANEL_ATTRIBUTE}] .codlet-plugin-state { max-width:88px; font-size:var(--codlet-ui-font-small,13px); line-height:calc(var(--codlet-ui-font-small,13px) * 18 / 13); text-align:right; color:var(--codlet-ui-secondary,GrayText); }
@@ -238,22 +442,24 @@ module.exports = (() => {
         settingsSection.hidden = action !== 'idle' || page !== 'plugins';
         importSection.hidden = action !== 'idle' || page !== 'import';
         detailsSection.hidden = action !== 'idle' || page !== 'details';
+        updateSection.hidden = action !== 'idle' || page !== 'updates';
         confirmation.hidden = action === 'idle';
         panel.setAttribute('data-codlet-view', action === 'idle' ? page === 'plugins' ? 'settings' : page : 'confirmation');
         const selectedName = confirmationSelection?.name || 'Codlet';
         const verb = confirmationSelection?.action === 'remove' ? 'Remove' : confirmationSelection?.action === 'revoke' ? 'Revoke permission for' : 'Disable';
-        panelTitle.textContent = action === 'idle' ? page === 'import' ? importMode === 'local' ? 'Import local plugin' : importOperation === 'update' ? 'Update GitHub plugin' : importOperation === 'rollback' ? 'Roll back plugin' : 'Import from GitHub' : page === 'details' ? pluginName(detailsPlugin ?? { id: 'Plugin details' }) : 'Codlet'
-            : action === 'done' ? `${selectedName} disabled` : `${verb} ${selectedName}?`;
-        panel.setAttribute('aria-label', panelTitle.textContent);
-        confirmation.setAttribute('aria-label', panelTitle.textContent);
+        const accessibleTitle = action === 'idle' ? page === 'import' ? importMode === 'local' ? 'Import local plugin' : importOperation === 'update' ? 'Update GitHub plugin' : importOperation === 'rollback' ? 'Roll back plugin' : 'Import from GitHub' : page === 'details' ? pluginName(detailsPlugin ?? { id: 'Plugin details' }) : page === 'updates' ? 'Updates' : 'Codlet'
+            : confirmationSelection?.action === 'installRuntimeUpdate' ? 'Install and restart Codlet?' : action === 'done' ? `${selectedName} disabled` : `${verb} ${selectedName}?`;
+        setLabel(panel, accessibleTitle);
+        setLabel(confirmation, accessibleTitle);
+        setText(confirmationHeading, accessibleTitle);
         if (action === 'idle') panel.removeAttribute('aria-describedby');
         else panel.setAttribute('aria-describedby', `${panel.id}-disable-consequence`);
         refreshButton.disabled = action !== 'idle';
-        confirmButton.disabled = action === 'pending' || action === 'done';
-        cancelButton.disabled = confirmButton.disabled;
-        confirmButton.textContent = action === 'pending' ? 'Disabling...' : confirmationSelection?.action === 'remove' ? 'Remove' : confirmationSelection?.action === 'revoke' ? 'Revoke' : 'Disable';
+        confirmButton.disabled = action === 'pending' || action === 'done' || removalBusy;
+        cancelButton.disabled = action === 'pending' || action === 'done';
+        setText(confirmButton, action === 'pending' ? 'Disabling...' : confirmationSelection?.action === 'installRuntimeUpdate' ? 'Install and restart' : confirmationSelection?.action === 'remove' ? 'Remove' : confirmationSelection?.action === 'revoke' ? 'Revoke' : 'Disable');
         confirmationStatus.hidden = action !== 'failed' && action !== 'done';
-        confirmationStatus.textContent = action === 'failed' ? actionError : action === 'done' ? 'Codlet is disabled.' : '';
+        setText(confirmationStatus, action === 'failed' ? actionError : action === 'done' ? 'Codlet is disabled.' : '');
         if (actionOrigin?.isConnected) {
             actionOrigin.checked = true;
             actionOrigin.disabled = action !== 'idle' || pendingOperation !== null;
@@ -263,6 +469,8 @@ module.exports = (() => {
     function cancelAction() {
         if (action !== 'confirm' && action !== 'failed') return;
         action = 'idle';
+        removalRequest += 1; removalBusy = false; removalPreview = null;
+        removeSourceChoice.checked = false; removeSourceChoice.parentElement.hidden = true;
         confirmationSelection = null;
         renderAction();
         focus(actionOrigin?.isConnected ? actionOrigin : refreshButton);
@@ -274,7 +482,7 @@ module.exports = (() => {
             ? iconButton(controls, 'refresh', `Reload ${name}${plugin.disableDependents?.length ? ' and dependent plugins' : ''}`)
             : addText(controls, 'button', '', 'Start');
         load.type = 'button';
-        load.setAttribute('aria-label', `${loadAction === 'reload' ? 'Reload' : 'Start'} ${name}`);
+        setLabel(load, `${loadAction === 'reload' ? 'Reload' : 'Start'} ${name}`);
         load.addEventListener('click', () => managePlugin(context, plugin.id, loadAction));
         mutationControls.add(load);
         load.disabled = pendingOperation !== null;
@@ -291,32 +499,31 @@ module.exports = (() => {
         const executionError = typeof execution?.error === 'string' && execution.error.length > 0
             ? execution.error : execution?.state === 'failed' ? 'Host process failed' : null;
         const name = pluginName(plugin);
-        const metadata = [plugin.version, plugin.ownership === 'core-managed-github' ? `GitHub${plugin.managedSource?.tag ? ` · ${plugin.managedSource.tag}` : ''}` : plugin.source === 'local' ? 'Local' : null]
+        const metadata = [plugin.version]
             .filter(value => typeof value === 'string' && value.length > 0);
         const parts = ui.row({ label: name, description: metadata.join(' / ') });
         const row = parts.element, copy = parts.copy;
+        row.setAttribute('data-codlet-plugin', plugin.id);
         row.className = 'codlet-plugin-row'; copy.className = 'codlet-plugin-copy';
         parts.label.className = 'codlet-plugin-name'; parts.description.className = 'codlet-plugin-version';
         parts.controls.className = 'codlet-plugin-actions';
-        const path = typeof plugin.path === 'string' ? plugin.path : plugin.loadedPath;
-        installTooltip(copy, `${plugin.id}${typeof path === 'string' ? `\n${path}` : ''}`);
+        const description = pluginDescription(plugin);
+        if (description) installTooltip(copy, literal(() => pluginDescription(plugin)));
         if (plugin.registered === false && plugin.loaded === true) {
             addText(copy, 'div', 'codlet-plugin-version', 'Registration removed; still loaded');
         } else if (plugin.validation?.status === 'not_loaded') {
             addText(copy, 'div', 'codlet-plugin-version', 'Registered, not loaded');
         }
+        if (updateReply) renderUpdateIndicator(updateReply);
         if (executionError) {
             addText(copy, 'div', 'codlet-plugin-version', executionError);
         } else if (plugin.validation?.status === 'failed') {
             const message = plugin.validation.error?.message;
             addText(copy, 'div', 'codlet-plugin-version', typeof message === 'string' ? message : 'Plugin validation failed');
         }
-        if (plugin.source === 'local' && Array.isArray(plugin.grants)) {
-            addText(copy, 'div', 'codlet-plugin-version', `Permissions: ${plugin.grants.join(', ') || 'None'}`);
-        }
-        if (plugin.source === 'local' && plugin.registered !== false) {
+        if (plugin.registered !== false) {
             const details = addText(parts.controls, 'button', 'codlet-details-button', 'Details');
-            details.setAttribute('aria-label', `Details for ${name}`);
+            setLabel(details, `Details for ${name}`);
             ui.on(details, 'click', () => showDetails(context, plugin));
             mutationControls.add(details);
             details.disabled = pendingOperation !== null;
@@ -328,12 +535,12 @@ module.exports = (() => {
             const controls = parts.controls;
             addText(controls, 'div', 'codlet-plugin-state', state);
             addLoadControl(context, plugin, controls, 'reload');
-            const toggle = ui.switch({ label: 'Enable Codlet GUI', checked: true });
+            const toggle = guiSwitch({ label: 'Enable Codlet GUI', checked: true });
             toggle.className = 'codlet-toggle';
             toggle.type = 'checkbox';
             toggle.checked = true;
             toggle.setAttribute('role', 'switch');
-            toggle.setAttribute('aria-label', 'Enable Codlet GUI');
+            setLabel(toggle, 'Enable Codlet GUI');
             ui.on(toggle, 'change', () => {
                 if (toggle.checked || action !== 'idle' || pendingOperation || !row.isConnected || panel.hidden) return;
                 return requestDisable(context, plugin, toggle);
@@ -348,7 +555,7 @@ module.exports = (() => {
                 if (plugin.registered === false) {
                     const stop = addText(controls, 'button', '', 'Stop');
                     stop.type = 'button';
-                    stop.setAttribute('aria-label', `Stop ${name}`);
+                    setLabel(stop, `Stop ${name}`);
                     ui.on(stop, 'click', () => requestDisable(context, plugin, stop));
                     mutationControls.add(stop);
                     stop.disabled = pendingOperation !== null;
@@ -358,12 +565,12 @@ module.exports = (() => {
                     const loadAction = plugin.loaded === true || Number.isSafeInteger(plugin.generation) ? 'reload' : 'enable';
                     addLoadControl(context, plugin, controls, loadAction);
                 }
-                const toggle = ui.switch({ label: `Enable ${name}`, checked: plugin.enabled === true });
+                const toggle = guiSwitch({ label: `Enable ${name}`, checked: plugin.enabled === true });
                 toggle.className = 'codlet-toggle';
                 toggle.type = 'checkbox';
                 toggle.checked = plugin.enabled === true;
                 toggle.setAttribute('role', 'switch');
-                toggle.setAttribute('aria-label', `Enable ${name}`);
+                setLabel(toggle, `Enable ${name}`);
                 ui.on(toggle, 'change', () => {
                     const nextAction = toggle.checked ? 'enable' : 'disable';
                     toggle.checked = plugin.enabled === true;
@@ -385,7 +592,7 @@ module.exports = (() => {
         const ids = new Set(plugins.map(plugin => plugin.id));
         for (const [id, entry] of renderedPlugins) {
             if (!ids.has(id)) {
-                ui.remove(entry.row);
+                removeOwned(entry.row);
                 renderedPlugins.delete(id);
             }
         }
@@ -393,7 +600,7 @@ module.exports = (() => {
             const snapshot = JSON.stringify(plugin);
             let entry = renderedPlugins.get(plugin.id);
             if (!entry || entry.snapshot !== snapshot) {
-                if (entry) ui.remove(entry.row);
+                if (entry) removeOwned(entry.row);
                 entry = { snapshot, row: createPluginRow(context, plugin) };
                 renderedPlugins.set(plugin.id, entry);
             }
@@ -409,17 +616,143 @@ module.exports = (() => {
         }
     }
 
+    function pluginDescription(plugin) {
+        const locale = runtimeContext?.i18n?.locale === 'zh' ? 'zh' : 'en';
+        return plugin.i18n?.[locale]?.description || plugin.description || '';
+    }
+
+    function renderFilteredPlugins(context, preserveStatus = false) {
+        const query = (searchInput?.value ?? '').trim().toLowerCase();
+        const terms = query.split(/\s+/).filter(Boolean);
+        const plugins = visiblePlugins.filter(plugin => !query || terms.every(term => [plugin.id, plugin.name, plugin.description,
+            plugin.i18n?.zh?.name, plugin.i18n?.zh?.description, plugin.i18n?.en?.name, plugin.i18n?.en?.description]
+            .filter(value => typeof value === 'string').join(' ').toLowerCase().includes(term)));
+        updatePluginRows(context, plugins);
+        if (!pendingOperation && !preserveStatus) {
+            managementStatus.hidden = plugins.length > 0;
+            setText(managementStatus, plugins.length ? '' : query ? 'No matching plugins' : 'No plugins');
+        }
+    }
+
+    function renderClientStatus(status) {
+        const lines = [];
+        if (status?.status === 'officialUpdateAvailable' || status?.officialUpdateAvailable === true) lines.push('Official client update available. A routine update usually does not affect Codlet, but not every plugin is guaranteed to work.');
+        if (status?.status === 'unmatched') lines.push('This Codlet version is not matched to the latest client version. This usually does not affect use, but not every plugin is guaranteed to work.');
+        if (status?.status === 'matched') lines.push('This Codlet version matches the latest client version.');
+        setText(clientStatusLine, lines.join('\n')); clientStatusLine.hidden = lines.length === 0;
+    }
+
+    function cancelUpdatePolling() { if (updateTimer !== null) clearTimeout(updateTimer); updateTimer = null; }
+    function cancelHeaderPolling() { if (headerUpdateTimer !== null) clearTimeout(headerUpdateTimer); headerUpdateTimer = null; headerUpdateRequest += 1; }
+    function updateActionLabel() {
+        return updateReply?.phase === 'available' ? 'Download update' : updateReply?.phase === 'downloaded' && updateReply.installAvailable ? 'Install and restart'
+            : updateReply?.phase === 'downloading' ? updateReply.totalBytes ? `Downloading update: ${Math.min(100, Math.round(updateReply.downloadedBytes / updateReply.totalBytes * 100))}%` : 'Downloading update...'
+            : updateReply?.phase === 'checking' ? 'Checking for updates...' : 'Check for updates';
+    }
+    function renderUpdateIndicator(reply) {
+        if (!updateButton) return;
+        const development = reply?.configured === false || reply?.phase === 'development';
+        developmentLabel.hidden = !development;
+        updateButton.hidden = !reply || development;
+        const busy = ['checking', 'downloading', 'installRequested'].includes(reply?.phase);
+        updateButton.disabled = busy || updateBusy || managementBusy || pendingOperation !== null || action !== 'idle';
+        updateButton.setAttribute('aria-busy', String(busy));
+        setLabel(updateButton, updateActionLabel);
+        const icon = reply?.phase === 'available' ? 'download' : reply?.phase === 'downloaded' ? 'restart' : busy ? 'spinner' : 'refresh';
+        if (updateIconName !== icon) {
+            for (const child of Array.from(updateButton.children)) removeOwned(child);
+            updateButton.appendChild(ui.icon(icon)); updateIconName = icon;
+        }
+    }
+    async function refreshHeaderUpdate(context) {
+        if (!panel?.open || panel.hidden) return;
+        if (headerUpdateTimer !== null) clearTimeout(headerUpdateTimer); headerUpdateTimer = null;
+        const request = ++headerUpdateRequest, epoch = lifecycle;
+        try {
+            const reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'runtimeUpdateStatus', {});
+            if (epoch !== lifecycle || request !== headerUpdateRequest || !panel?.open || panel.hidden || updateBusy) return;
+            if (typeof reply?.currentVersion !== 'string' || typeof reply?.configured !== 'boolean') return;
+            updateReply = reply; renderUpdateIndicator(reply);
+            if (page === 'updates') renderUpdateStatus(context, reply);
+        } catch (_) { /* A missing update service does not block plugin management. */ }
+        finally {
+            if (epoch === lifecycle && request === headerUpdateRequest && panel?.open && !panel.hidden && updateReply?.configured) headerUpdateTimer = setTimeout(() => { headerUpdateTimer = null; void refreshHeaderUpdate(context); }, 5000);
+        }
+    }
+    function createUpdatePage(context, parent) {
+        updateSection = addText(parent, 'section', 'codlet-local-page', ''); updateSection.hidden = true;
+        backButton(updateSection, context);
+        addText(updateSection, 'h2', 'codlet-section-title', 'Updates');
+        updateStatus = addText(updateSection, 'p', 'codlet-local-copy', ''); updateStatus.setAttribute('role', 'status'); updateStatus.setAttribute('aria-live', 'polite');
+        updateBody = addText(updateSection, 'div', 'codlet-local-preview', '');
+    }
+    function showUpdates(context, method = 'runtimeUpdateStatus') {
+        if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
+        cancelGitHubWork(); cancelUpdatePolling(); cancelHeaderPolling(); invalidatePreview();
+        page = 'updates'; updateBusy = false; clearLocalBody(updateBody); renderAction();
+        setText(updateStatus, 'Checking for updates...');
+        return loadUpdateStatus(context, method);
+    }
+    async function loadUpdateStatus(context, method = 'runtimeUpdateStatus') {
+        if (updateBusy || page !== 'updates' || !panel?.open || panel.hidden) return;
+        cancelUpdatePolling(); updateBusy = true;
+        renderUpdateIndicator(updateReply);
+        const request = localRequest, epoch = lifecycle;
+        for (const control of Array.from(updateBody.children).filter(node => node.tagName?.toLowerCase() === 'button')) control.disabled = true;
+        const current = () => request === localRequest && epoch === lifecycle && page === 'updates' && panel?.open && !panel.hidden;
+        try {
+            const reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, method, {});
+            if (!current()) return;
+            if (typeof reply?.currentVersion !== 'string' || !['development', 'checking', 'upToDate', 'available', 'downloading', 'downloaded', 'installRequested', 'failed'].includes(reply.phase)) throw new Error('Update status is unavailable.');
+            updateReply = reply; renderUpdateStatus(context, reply);
+        } catch (error) {
+            if (current()) { updateReply = null; clearLocalBody(updateBody); setText(updateStatus, `Update status is unavailable.\n${String(error?.message ?? error)}`); }
+        } finally {
+            if (current()) {
+                updateBusy = false;
+                renderUpdateIndicator(updateReply);
+                if (!updateReply || ['checking', 'downloading', 'installRequested'].includes(updateReply.phase)) updateTimer = setTimeout(() => { updateTimer = null; void loadUpdateStatus(context); }, 1000);
+            }
+        }
+    }
+    function renderUpdateStatus(context, reply) {
+        renderUpdateIndicator(reply);
+        clearLocalBody(updateBody);
+        const statuses = { development: 'This development build has no configured update source.', checking: 'Checking for updates...', upToDate: 'Codlet is up to date.', available: `Codlet ${reply.candidate?.version || ''} is available.`, downloading: reply.totalBytes ? `Downloading update: ${Math.min(100, Math.round(reply.downloadedBytes / reply.totalBytes * 100))}%` : 'Downloading update...', downloaded: `Codlet ${reply.candidate?.version || ''} is ready to install.`, installRequested: 'Installation was requested. Follow the update process to restart Codlet.', failed: `Update failed.\n${reply.error?.message || ''}` };
+        setText(updateStatus, statuses[reply.phase]);
+        addText(updateBody, 'p', 'codlet-local-copy', `Current Codlet version: ${reply.currentVersion}`);
+        const control = (label, method, iconName) => {
+            const button = guiButton({ text: label, label }); button.className = 'codlet-import-button';
+            button.insertBefore(ui.icon(iconName), button.children[0]); updateBody.appendChild(button);
+            ui.on(button, 'click', () => method === 'installRuntimeUpdate' ? requestInstallUpdate(context, button) : loadUpdateStatus(context, method));
+        };
+        if (reply.configured && !['checking', 'downloading', 'installRequested'].includes(reply.phase)) control('Check for Codlet updates', 'checkRuntimeUpdate', 'refresh');
+        if (reply.phase === 'available') control('Download update', 'downloadRuntimeUpdate', 'download');
+        if (reply.phase === 'downloaded' && reply.installAvailable) control('Install and restart', 'installRuntimeUpdate', 'restart');
+        else if (reply.phase === 'downloaded' && reply.unavailableReason) addText(updateBody, 'p', 'codlet-local-copy', `Automatic installation is unavailable for this launch.\n${reply.unavailableReason}`);
+    }
+    function requestInstallUpdate(context, origin) {
+        if (pendingOperation || updateBusy || action !== 'idle' || updateReply?.phase !== 'downloaded' || !updateReply.installAvailable || !panel?.open || panel.hidden) return;
+        cancelUpdatePolling();
+        confirmationSelection = { action: 'installRuntimeUpdate', name: 'Codlet' };
+        removalRequest += 1; removalBusy = false; removalPreview = null; removeSourceChoice.parentElement.hidden = true;
+        setText(confirmationCopy, 'The current client will restart and running local tasks will be interrupted.');
+        action = 'confirm'; actionOrigin = origin; renderAction(); focus(cancelButton);
+    }
+
     function operationMessage(message) {
         if (!panel?.open || panel.hidden || action !== 'idle') return;
         managementStatus.hidden = false;
-        managementStatus.textContent = message;
+        setText(managementStatus, message);
     }
 
     function setMutationBusy(busy) {
+        managementBusy = busy;
         if (busy) hideTooltip();
         for (const control of mutationControls) {
             if (control.isConnected) control.disabled = busy;
         }
+        if (updateReply) renderUpdateIndicator(updateReply);
     }
 
     async function finishOperation(context, expected, message) {
@@ -463,7 +796,7 @@ module.exports = (() => {
             const report = completion?.kind === 'report' ? completion.report : null;
             const succeeded = report?.outcome === 'applied' || report?.outcome === 'unchanged';
             const message = succeeded
-                ? `${expected.name}: ${{ enable: 'enabled', disable: 'disabled', reload: 'reloaded', import: report.desired_enabled ? 'imported and enabled' : 'imported, disabled', update: report.desired_enabled ? 'updated and enabled' : 'updated, disabled', rollback: report.desired_enabled ? 'rolled back and enabled' : 'rolled back, disabled', remove: 'removed; files kept', revoke: 'permission revoked' }[expected.action]}.`
+                ? `${expected.name}: ${{ enable: 'enabled', disable: 'disabled', reload: 'reloaded', import: report.desired_enabled ? 'imported and enabled' : 'imported, disabled', update: report.desired_enabled ? 'updated and enabled' : 'updated, disabled', rollback: report.desired_enabled ? 'rolled back and enabled' : 'rolled back, disabled', remove: expected.deleteSource ? 'removed' : 'removed; files kept', revoke: 'permission revoked' }[expected.action]}.${expected.action === 'remove' && report.message ? `\n${report.message}` : ''}`
                 : completion?.error?.message || report?.message || 'The action finished with an error. Refresh for the current state.';
             await finishOperation(context, expected, message);
             return;
@@ -481,7 +814,7 @@ module.exports = (() => {
     async function managePlugin(context, pluginId, nextAction, cascade = false, extra = {}, displayName = null) {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
         const epoch = lifecycle;
-        const expected = { pluginId, name: displayName || pluginName(visiblePlugins.find(plugin => plugin.id === pluginId) ?? { id: pluginId }), action: nextAction, operationId: null, checking: false };
+        const expected = { pluginId, name: displayName || pluginName(visiblePlugins.find(plugin => plugin.id === pluginId) ?? { id: pluginId }), action: nextAction, operationId: null, checking: false, deleteSource: !!extra.remove_source };
         pendingOperation = expected;
         setMutationBusy(true);
         operationMessage(`${expected.name}: preparing...`);
@@ -516,12 +849,20 @@ module.exports = (() => {
 
     async function disableSelf(context) {
         if (action !== 'confirm' && action !== 'failed') return;
+        if (removalBusy) return;
+        if (confirmationSelection?.action === 'installRuntimeUpdate') {
+            confirmationSelection = null; action = 'idle'; page = 'updates'; renderAction();
+            return loadUpdateStatus(context, 'installRuntimeUpdate');
+        }
         if (confirmationSelection?.action === 'remove' || confirmationSelection?.action === 'revoke') {
             const selected = confirmationSelection;
+            const extra = selected.permission ? { permission: selected.permission } : selected.action === 'remove' && removeSourceChoice.checked && removalPreview?.status === 'available'
+                ? { remove_source: { registrationDigest: removalPreview.registrationDigest, sourceIdentity: removalPreview.sourceIdentity } } : {};
             confirmationSelection = null;
+            removalRequest += 1; removalPreview = null; removeSourceChoice.checked = false; removeSourceChoice.parentElement.hidden = true;
             action = 'idle'; page = 'plugins';
             renderAction();
-            return managePlugin(context, selected.id, selected.action, selected.cascade ?? false, selected.permission ? { permission: selected.permission } : {});
+            return managePlugin(context, selected.id, selected.action, selected.cascade ?? false, extra);
         }
         if (confirmationSelection && (confirmationSelection.id !== context.pluginId || confirmationSelection.cascade)) {
             const selection = confirmationSelection;
@@ -563,7 +904,7 @@ module.exports = (() => {
         pluginList.setAttribute('aria-busy', 'true');
         setMutationBusy(true);
         managementStatus.hidden = false;
-        managementStatus.textContent = initial ? 'Loading plugins...' : 'Updating plugins...';
+        setText(managementStatus, initial ? 'Loading plugins...' : 'Updating plugins...');
         try {
             const management = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'list', null);
             if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
@@ -573,17 +914,18 @@ module.exports = (() => {
             visiblePlugins = management.plugins;
             localManagement = management.localManagement ?? null;
             importButton.hidden = localManagement?.available !== true;
-            githubButton.hidden = management.githubManagement?.available !== true;
+            githubTab.disabled = management.githubManagement?.available !== true;
+            setText(versionLabel, management.runtimeVersion ? literal(management.runtimeVersion) : '');
+            renderClientStatus(management.clientStatus);
             setMutationBusy(false);
-            updatePluginRows(context, management.plugins);
+            renderFilteredPlugins(context);
             pluginList.hidden = false;
-            managementStatus.hidden = management.plugins.length > 0;
-            managementStatus.textContent = management.plugins.length ? '' : 'No plugins';
+            if (typeof management.runtimeVersion === 'string') await refreshHeaderUpdate(context);
         } catch (error) {
             if (epoch !== lifecycle || panel !== currentPanel || !currentPanel.open || currentPanel.hidden || request !== panelRequest) return;
-            managementStatus.textContent = error?.code === 'rpc_timeout'
+            setText(managementStatus, error?.code === 'rpc_timeout'
                 ? 'Plugin list timed out. Refresh to try again.'
-                : error instanceof Error ? error.message : 'Plugin list unavailable';
+                : error instanceof Error ? error.message : 'Plugin list unavailable');
         }
         if (epoch === lifecycle && panel === currentPanel && currentPanel.open && !currentPanel.hidden && request === panelRequest) {
             pluginList.setAttribute('aria-busy', 'false');
@@ -598,44 +940,53 @@ module.exports = (() => {
         panel.setAttribute('data-codlet-generation', String(context.generation));
         panel.setAttribute('role', 'dialog');
         panel.setAttribute('aria-modal', 'true');
-        panel.setAttribute('aria-label', 'Codlet');
+        setLabel(panel, 'Codlet');
         panel.hidden = true;
         const header = addText(panel, 'div', 'codlet-panel-header', '');
-        panelTitle = addText(header, 'h1', 'codlet-panel-title', 'Codlet');
+        const brand = addText(header, 'div', 'codlet-header-brand', '');
+        panelTitle = addText(brand, 'h1', 'codlet-panel-title', 'Codlet');
+        versionLabel = addText(brand, 'span', 'codlet-runtime-version', '');
+        developmentLabel = addText(brand, 'span', 'codlet-runtime-version', 'Development'); developmentLabel.hidden = true;
+        updateButton = iconButton(header, 'refresh', updateActionLabel); updateButton.hidden = true; updateIconName = 'refresh';
+        mutationControls.add(updateButton);
+        ui.on(updateButton, 'click', () => {
+            if (updateButton.disabled || updateBusy) return;
+            if (updateReply?.phase === 'downloaded' && updateReply.installAvailable) return requestInstallUpdate(context, updateButton);
+            return showUpdates(context, updateReply?.phase === 'available' ? 'downloadRuntimeUpdate' : 'runtimeUpdateStatus');
+        });
         closeButton = iconButton(header, 'close', 'Close Codlet');
         closeButton.className += ' codlet-dialog-close';
         ui.on(closeButton, 'click', () => setPanelOpen(false));
         const body = addText(panel, 'div', 'codlet-panel-body', '');
         settingsSection = addText(body, 'section', 'codlet-settings-section', '');
-        const sectionHeader = addText(settingsSection, 'div', 'codlet-section-header', '');
-        addText(sectionHeader, 'h2', 'codlet-section-title', 'Codlets');
-        const listActions = addText(sectionHeader, 'div', 'codlet-local-toolbar', '');
-        importButton = addText(listActions, 'button', '', 'Import local');
-        importButton.setAttribute('aria-label', 'Import local plugin');
+        const listActions = addText(settingsSection, 'div', 'codlet-search-toolbar', '');
+        searchInput = ui.element('input'); searchInput.type = 'search'; searchInput.value = ''; searchInput.className = 'codlet-field-input';
+        setLabel(searchInput, 'Search plugins'); bindText(searchInput, 'placeholder', 'Search plugins');
+        listActions.appendChild(searchInput); ui.on(searchInput, 'input', () => renderFilteredPlugins(context));
+        importButton = addText(listActions, 'button', 'codlet-import-button', 'Import');
+        importButton.insertBefore(ui.icon('import'), importButton.children[0]);
+        setLabel(importButton, 'Import plugins');
         importButton.hidden = true;
         mutationControls.add(importButton);
         ui.on(importButton, 'click', () => showImport());
-        githubButton = addText(listActions, 'button', '', 'Import GitHub');
-        githubButton.setAttribute('aria-label', 'Import from GitHub');
-        githubButton.hidden = true;
-        mutationControls.add(githubButton);
-        ui.on(githubButton, 'click', () => showGitHubImport(context));
         refreshButton = iconButton(listActions, 'refresh', 'Refresh plugins');
         ui.on(refreshButton, 'click', () => refreshPlugins(context));
         managementStatus = addText(settingsSection, 'div', 'codlet-status', '');
         managementStatus.setAttribute('role', 'status');
         managementStatus.setAttribute('aria-live', 'polite');
         pluginList = addText(settingsSection, 'div', 'codlet-plugin-list', '');
-        const community = ui.externalLink({ text: 'Browse community plugins', href: COMMUNITY_URL });
-        settingsSection.appendChild(community);
-        addText(settingsSection, 'p', 'codlet-local-copy', `GitHub Topic codlet-plugin is a community discovery convention. Listings are not endorsements or permission grants. Review the repository and release before importing.\n${COMMUNITY_URL}`);
+        clientStatusLine = addText(settingsSection, 'p', 'codlet-client-status', ''); clientStatusLine.hidden = true;
         createLocalPages(context, body);
+        createUpdatePage(context, body);
         confirmation = addText(body, 'div', 'codlet-confirmation', '');
         confirmation.hidden = true;
         confirmation.setAttribute('role', 'group');
-        confirmation.setAttribute('aria-label', 'Disable Codlet?');
+        setLabel(confirmation, 'Disable Codlet?');
+        confirmationHeading = addText(confirmation, 'h2', 'codlet-section-title', '');
         confirmationCopy = addText(confirmation, 'p', 'codlet-confirmation-copy', '');
         confirmationCopy.id = `${panel.id}-disable-consequence`;
+        removeSourceChoice = localCheckbox(confirmation, 'Delete source files', 'Delete the plugin source folder');
+        removeSourceChoice.parentElement.hidden = true;
         confirmation.setAttribute('aria-describedby', confirmationCopy.id);
         confirmationStatus = addText(confirmation, 'div', 'codlet-status', '');
         confirmationStatus.setAttribute('role', 'status');
@@ -675,7 +1026,7 @@ module.exports = (() => {
     }
 
     function clearLocalBody(parent) {
-        for (const child of Array.from(parent.children)) ui.remove(child);
+        for (const child of Array.from(parent.children)) removeOwned(child);
     }
 
     function localInput(parent, label, multiline = false) {
@@ -685,7 +1036,7 @@ module.exports = (() => {
         input.className = 'codlet-field-input';
         input.value = '';
         if (!multiline) input.type = 'text';
-        input.setAttribute('aria-label', label);
+        setLabel(input, label);
         input.autocomplete = 'off'; input.spellcheck = false;
         input.id = `${panel.id}-field-${label.replace(/[^a-zA-Z0-9]/g, '-')}`;
         caption.setAttribute('for', input.id);
@@ -697,16 +1048,22 @@ module.exports = (() => {
         const row = addText(parent, 'label', 'codlet-permission-choice', '');
         const input = ui.element('input');
         input.type = 'checkbox'; input.checked = false;
-        input.setAttribute('aria-label', label);
+        setLabel(input, label);
         row.appendChild(input);
         addText(row, 'span', '', text);
         return input;
     }
 
-    function localStatus(message) { importStatus.textContent = message; importStatus.hidden = !message; }
+    function localStatus(message, error = null) {
+        setText(importStatus, message); importStatus.hidden = !message;
+        importErrorDetails.hidden = !error; importErrorDetails.open = false;
+        setText(importErrorText, literal(error ?? ''));
+    }
 
     function invalidatePreview() {
         localRequest += 1;
+        if (previewTimer !== null) clearTimeout(previewTimer);
+        previewTimer = null;
         if (pickerTimer !== null) clearTimeout(pickerTimer);
         pickerTimer = null;
         importPreview = null; importBusy = false;
@@ -715,7 +1072,6 @@ module.exports = (() => {
         clearLocalBody(previewBody);
         previewBody.hidden = true;
         importSubmit.disabled = true;
-        inspectButton.disabled = false;
         chooseFolderButton.disabled = false;
     }
 
@@ -742,12 +1098,13 @@ module.exports = (() => {
 
     function configureImportPage() {
         const local = importMode === 'local';
-        importPath.parentElement.hidden = !local;
-        inspectButton.hidden = !local;
+        localFields.hidden = !local;
         chooseFolderButton.hidden = !local || localManagement?.folderPicker !== true;
         githubFields.hidden = local || importOperation === 'rollback';
-        importSubmit.textContent = local || importOperation === 'install' ? 'Import plugin' : importOperation === 'update' ? 'Update plugin' : 'Roll back plugin';
-        importSubmit.setAttribute('aria-label', local ? 'Confirm local import' : importOperation === 'install' ? 'Confirm GitHub import' : importOperation === 'update' ? 'Confirm managed update' : 'Confirm managed rollback');
+        setText(importSubmit, local || importOperation === 'install' ? 'Import plugin' : importOperation === 'update' ? 'Update plugin' : 'Roll back plugin');
+        setLabel(importSubmit, local ? 'Confirm local import' : importOperation === 'install' ? 'Confirm GitHub import' : importOperation === 'update' ? 'Confirm managed update' : 'Confirm managed rollback');
+        localTab.setAttribute('aria-selected', String(local)); githubTab.setAttribute('aria-selected', String(!local));
+        localTab.tabIndex = local ? 0 : -1; githubTab.tabIndex = local ? -1 : 0;
     }
 
     function showImport() {
@@ -755,17 +1112,30 @@ module.exports = (() => {
         resetGitHubSelection(); importMode = 'local'; importOperation = 'install'; importTarget = null;
         page = 'import';
         configureImportPage();
-        localStatus('Choose the folder containing codlet.json, or enter its full path.');
+        localStatus('');
         renderAction();
         focus(importPath);
+        if (importPath.value.trim()) scheduleLocalPreview(runtimeContext);
+    }
+
+    function scheduleLocalPreview(context) {
+        invalidatePreview();
+        const value = importPath.value.trim();
+        if (!value) { localStatus(''); return; }
+        if (!/^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+|\/)/.test(value)) { localStatus('Enter the full path to a plugin folder.'); return; }
+        localStatus('Checking the selected folder...');
+        const epoch = lifecycle, request = localRequest;
+        previewTimer = setTimeout(() => { previewTimer = null; if (epoch === lifecycle && request === localRequest) void inspectLocal(context); }, 400);
     }
 
     function backToPlugins(context) {
         if (pendingOperation) return;
+        cancelUpdatePolling();
+        updateBusy = false;
         resetGitHubSelection();
         page = 'plugins'; detailsPlugin = null;
         renderAction();
-        focus(importButton.hidden ? refreshButton : importButton);
+        focus(searchInput);
         return refreshPlugins(context);
     }
 
@@ -778,21 +1148,17 @@ module.exports = (() => {
         clearLocalBody(previewBody);
         importGrants.clear(); scopeInputs.clear();
         const manifest = preview.manifest;
-        addText(previewBody, 'h2', 'codlet-section-title', manifest.name || manifest.id);
-        addText(previewBody, 'p', 'codlet-local-copy', `${manifest.id} · ${manifest.version}\n${preview.path}`);
-        const entries = [manifest.renderer ? `Renderer: ${manifest.renderer.entry} (${manifest.renderer.world})` : null, manifest.host ? `Host: ${manifest.host.entry}` : null].filter(Boolean);
-        addText(previewBody, 'p', 'codlet-local-copy', entries.join('\n'));
+        addText(previewBody, 'h2', 'codlet-section-title', literal(() => pluginName(manifest)));
+        addText(previewBody, 'p', 'codlet-local-copy', literal(`${manifest.id} · ${manifest.version}`));
         const requirements = [
             ...(manifest.renderer ? (manifest.requires ?? []).map(cap => ({ ...cap, entry: 'Renderer' })) : []),
             ...(manifest.host ? (manifest.renderer ? manifest.host.requires ?? [] : manifest.requires ?? []).map(cap => ({ ...cap, entry: 'Host' })) : [])
         ];
-        addText(previewBody, 'p', 'codlet-local-copy', requirements.length
-            ? `Dependencies\n${requirements.map(cap => `${cap.entry}: ${cap.name}@${cap.api} (${cap.scope})`).join('\n')}\nAvailability is checked again when enabling.` : 'Dependencies: none');
+        if (requirements.length) addText(previewBody, 'p', 'codlet-local-copy', `Dependencies\n${requirements.map(cap => `${cap.entry} dependency: ${cap.name}@${cap.api} (${cap.scope})`).join('\n')}`);
         const unavailable = (preview.dependencyCheck?.requirements ?? []).filter(requirement => requirement.status === 'unavailable');
         if (unavailable.length) addText(previewBody, 'p', 'codlet-local-copy', `Currently unavailable: ${unavailable.map(item => `${item.capability.name}@${item.capability.api}`).join(', ')}. You can import the folder while disabled, then enable its providers first.`);
         if (importMode === 'github') {
             renderManagedSource(previewBody, preview.source, preview.metadata);
-            addText(previewBody, 'p', 'codlet-local-copy', 'Codlet owns this installed package directory. Removing registration keeps the package and plugin data. The SHA-256 identifies downloaded bytes; it does not establish trust in the author.');
             if (preview.currentVersion) {
                 addText(previewBody, 'p', 'codlet-local-copy', `Version: ${preview.currentVersion.manifest.version} → ${manifest.version}\nRepository: ${preview.currentVersion.source.repositoryUrl} → ${preview.source.repositoryUrl}\nRelease: ${preview.currentVersion.source.tag} → ${preview.source.tag}`);
                 const runtimeDeclaration = metadata => metadata?.runtimeApi == null ? 'unknown' : `author declared API ${metadata.runtimeApi}`;
@@ -804,7 +1170,7 @@ module.exports = (() => {
                 }
                 addText(previewBody, 'p', 'codlet-local-copy', `Currently ${preview.existingEnabled ? 'enabled' : 'disabled'}. This ${importOperation} leaves the plugin disabled unless you select “Enable after import”. Confirm the source and every grant again.`);
             }
-        } else addText(previewBody, 'p', 'codlet-local-copy', `The plugin runs from this development folder. Removing it keeps these files.\nAutomatic reload: ${preview.watchEnabled ? 'on while the plugin is enabled' : 'off in this session; use Reload after editing'}.`);
+        }
         if (preview.existingRegistration && importMode === 'local') {
             addText(previewBody, 'p', 'codlet-local-copy', `Already registered at this folder. Confirm all grants again to replace its permission settings.\nCurrent grants: ${preview.existingRegistration.grants.join(', ') || 'None'}. Stop the package before importing it again.`);
         }
@@ -835,7 +1201,7 @@ module.exports = (() => {
         invalidatePreview();
         const path = importPath.value.trim();
         if (!path) { localStatus('Enter the full path to a plugin folder.'); focus(importPath); return; }
-        importBusy = true; inspectButton.disabled = chooseFolderButton.disabled = true;
+        importBusy = true; chooseFolderButton.disabled = true;
         const request = localRequest, epoch = lifecycle;
         localStatus('Checking the manifest and JavaScript entries...');
         try {
@@ -847,13 +1213,12 @@ module.exports = (() => {
                 || !/^[0-9a-f]{64}$/.test(preview.contentDigest) || !/^[0-9a-f]{64}$/.test(preview.registrationDigest)) throw new Error('The import preview is incomplete.');
             importPreview = preview; importBusy = false;
             renderImportPreview(preview);
-            localStatus('Review the folder and grant each requested permission to continue.');
-            focus(importGrants.values().next().value ?? importTrust);
+            localStatus('Plugin recognized. Choose permissions to import.');
         } catch (error) {
-            if (epoch === lifecycle && request === localRequest && page === 'import') localStatus(String(error?.message ?? error));
+            if (epoch === lifecycle && request === localRequest && page === 'import') localStatus('This folder could not be recognized as a plugin. Check the path and codlet.json.', String(error?.message ?? error));
         } finally {
             if (epoch === lifecycle && request === localRequest) {
-                importBusy = false; inspectButton.disabled = chooseFolderButton.disabled = false; importReady();
+                importBusy = false; chooseFolderButton.disabled = false; importReady();
             }
         }
     }
@@ -861,7 +1226,7 @@ module.exports = (() => {
     async function chooseLocalFolder(context) {
         if (pendingOperation || importBusy || page !== 'import' || !panel?.open || panel.hidden) return;
         invalidatePreview(); importBusy = true;
-        chooseFolderButton.disabled = inspectButton.disabled = true;
+        chooseFolderButton.disabled = true;
         const request = localRequest, epoch = lifecycle;
         const current = () => epoch === lifecycle && request === localRequest && page === 'import' && panel?.open && !panel.hidden;
         localStatus('Choose a plugin folder in the Windows dialog.');
@@ -878,16 +1243,16 @@ module.exports = (() => {
                 importPath.value = selection.path; importBusy = false;
                 await inspectLocal(context);
             } else {
-                importBusy = false; chooseFolderButton.disabled = inspectButton.disabled = false;
+                importBusy = false; chooseFolderButton.disabled = false;
                 localStatus(selection?.status === 'cancelled' ? 'Folder selection cancelled.' : selection?.error || 'Folder selection failed. Enter the full path instead.');
             }
         };
         const fail = error => {
             if (!current()) return;
-            importBusy = false; chooseFolderButton.disabled = inspectButton.disabled = false;
+            importBusy = false; chooseFolderButton.disabled = false;
             localStatus(String(error?.message ?? error));
         };
-        try { await accept(await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'chooseLocalFolder', null)); }
+        try { await accept(await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'chooseLocalFolder', { locale: context.i18n?.locale ?? 'en' })); }
         catch (error) { fail(error); }
     }
 
@@ -1028,60 +1393,97 @@ module.exports = (() => {
         return runGitHubJob(context, 'githubPrepare', { repositoryUrl: githubCatalog.repository.url, releaseId: Number(githubRelease.value), assetId: Number(githubAsset.value), operation: importOperation, ...(importTarget ? { pluginId: importTarget.id } : {}) }, 'package');
     }
 
-    function requestLocalAction(plugin, nextAction, permission, origin) {
+    async function requestLocalAction(plugin, nextAction, permission, origin) {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
         const dependents = (plugin.disableDependents ?? []).filter(id => id !== plugin.id);
         confirmationSelection = { id: plugin.id, name: pluginName(plugin), action: nextAction, permission, cascade: nextAction === 'remove' && dependents.length > 0 };
         const dependentNames = dependents.map(id => pluginName(visiblePlugins.find(candidate => candidate.id === id) ?? { id }));
-        confirmationCopy.textContent = nextAction === 'remove'
-            ? `Remove this plugin’s registration and disable it. Its source folder and files will be kept.\n${plugin.path || ''}${dependentNames.length ? `\nAlso disable: ${dependentNames.join(', ')}.` : ''}`
+        const copy = nextAction === 'remove'
+            ? `Remove this plugin’s registration and disable it. Source files and plugin data are kept by default. Selecting deletion below removes the source folder and all its contents.${dependentNames.length ? `\nAlso disable: ${dependentNames.join(', ')}.` : ''}`
             : `Revoke ${permission}. This stops the package and its running dependents. To grant it again, ${plugin.ownership === 'core-managed-github' ? 'select a managed version and confirm its permissions again' : 'import the local folder and confirm its permissions'}.${dependentNames.length ? `\nDependents: ${dependentNames.join(', ')}.` : ''}`;
+        setText(confirmationCopy, copy);
+        removalPreview = null; removeSourceChoice.checked = false; removeSourceChoice.disabled = true;
+        removeSourceChoice.parentElement.hidden = nextAction !== 'remove';
+        removalBusy = nextAction === 'remove';
+        const request = ++removalRequest, epoch = lifecycle;
         actionOrigin = origin; action = 'confirm'; renderAction(); focus(cancelButton);
+        if (!removalBusy) return;
+        setText(confirmationCopy, `${copy}\nChecking source folder...`);
+        try {
+            const preview = await runtimeContext.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'sourceRemovalPreview', { pluginId: plugin.id });
+            if (request !== removalRequest || epoch !== lifecycle || action !== 'confirm' || !panel?.open || panel.hidden) return;
+            if (preview?.pluginId !== plugin.id || !['available', 'missing', 'blocked'].includes(preview.status)) throw new Error('The source folder could not be checked. You can still remove registration and keep files.');
+            const deletable = preview.status === 'available' && /^[a-f0-9]{64}$/.test(preview.registrationDigest) && typeof preview.sourceIdentity === 'string' && !!preview.sourceIdentity;
+            removalPreview = deletable ? preview : null; removeSourceChoice.disabled = !deletable;
+            const notice = preview.status === 'missing' ? 'The source folder is missing or moved. Removing registration is still available.' : !deletable ? 'Source deletion is unavailable. Removing registration keeps the remaining files.' : `Source folder: ${preview.path}`;
+            setText(confirmationCopy, `${copy}\n${notice}${preview.warning ? `\n${preview.warning}` : ''}`);
+        } catch (error) {
+            if (request === removalRequest && epoch === lifecycle && action === 'confirm') setText(confirmationCopy, `${copy}\nThe source folder could not be checked. You can still remove registration and keep files.\n${String(error?.message ?? error)}`);
+        } finally { if (request === removalRequest && epoch === lifecycle && action === 'confirm') { removalBusy = false; renderAction(); } }
     }
 
     async function showDetails(context, plugin) {
         if (pendingOperation || action !== 'idle' || !panel?.open || panel.hidden) return;
         cancelGitHubWork(); invalidatePreview(); page = 'details'; detailsPlugin = plugin;
         const request = localRequest, epoch = lifecycle;
-        clearLocalBody(detailsBody); detailsStatus.textContent = 'Loading permissions...'; detailsStatus.hidden = false;
+        clearLocalBody(detailsBody); setText(detailsStatus, 'Loading permissions...'); detailsStatus.hidden = false;
         renderAction();
         try {
-            const reply = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'permissions', { pluginId: plugin.id });
+            const bundled = plugin.source === 'bundled';
+            const reply = bundled ? { pluginId: plugin.id, registration: { path: '', grants: plugin.grants ?? [] } } : await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'permissions', { pluginId: plugin.id });
             if (epoch !== lifecycle || request !== localRequest || page !== 'details' || !panel?.open || panel.hidden) return;
             if (reply?.pluginId !== plugin.id || !Array.isArray(reply.registration?.grants) || typeof reply.registration.path !== 'string') throw new Error('Permission details are unavailable.');
             const registration = reply.registration;
             detailsPlugin = { ...plugin, path: registration.path, grants: registration.grants, ...(reply.ownership ? { ownership: reply.ownership } : {}), ...(reply.managedSource ? { managedSource: reply.managedSource } : {}) };
             const managed = detailsPlugin.ownership === 'core-managed-github';
-            addText(detailsBody, 'p', 'codlet-local-copy', `${plugin.id}${plugin.version ? ` · ${plugin.version}` : ''}\n${managed ? 'Codlet managed GitHub package' : 'Local development folder'}\n${registration.path}\nRemoving the plugin keeps this folder and plugin data.`);
+            const heading = addText(detailsBody, 'div', 'codlet-details-heading', '');
+            addText(heading, 'h2', 'codlet-section-title', literal(() => pluginName(plugin)));
+            if (!bundled) {
+                const folder = iconButton(heading, 'folder', 'Open plugin folder');
+                ui.on(folder, 'click', async () => {
+                    if (folder.disabled || pendingOperation) return;
+                    folder.disabled = true;
+                    try {
+                        const opened = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'openFolder', { pluginId: plugin.id });
+                        if (epoch !== lifecycle || request !== localRequest || page !== 'details') return;
+                        if (opened?.pluginId !== plugin.id || opened.opened !== true) throw new Error('The source folder could not be opened.');
+                    } catch (error) { if (epoch === lifecycle && request === localRequest && page === 'details') { setText(detailsStatus, `The source folder could not be opened.\n${String(error?.message ?? error)}`); detailsStatus.hidden = false; } }
+                    finally { if (epoch === lifecycle && request === localRequest) folder.disabled = false; }
+                });
+            }
+            addText(detailsBody, 'p', 'codlet-local-copy', literal(`${plugin.id}${plugin.version ? ` · ${plugin.version}` : ''}`));
+            addText(detailsBody, 'p', 'codlet-local-copy', literal(() => pluginDescription(plugin)));
+            addText(detailsBody, 'p', 'codlet-local-copy', bundled ? 'Bundled plugin' : managed ? 'Codlet managed GitHub package' : 'Local development folder');
             if (managed && detailsPlugin.managedSource) renderManagedSource(detailsBody, detailsPlugin.managedSource, reply.metadata);
-            addText(detailsBody, 'h2', 'codlet-section-title', 'Granted permissions');
-            if (!registration.grants.length) addText(detailsBody, 'p', 'codlet-local-copy', 'No permissions granted.');
+            if (registration.grants.length) addText(detailsBody, 'h2', 'codlet-section-title', 'Granted permissions');
             for (const permission of registration.grants) {
                 const row = addText(detailsBody, 'div', 'codlet-permission-line', '');
                 addText(row, 'p', 'codlet-local-copy', `${permission}\n${PERMISSION_COPY[permission] || ''}`);
-                const revoke = addText(row, 'button', '', 'Revoke');
-                revoke.setAttribute('aria-label', `Revoke ${permission}`);
-                ui.on(revoke, 'click', () => requestLocalAction(detailsPlugin, 'revoke', permission, revoke));
+                if (!bundled) {
+                    const revoke = addText(row, 'button', '', 'Revoke');
+                    setLabel(revoke, `Revoke ${permission}`);
+                    ui.on(revoke, 'click', () => requestLocalAction(detailsPlugin, 'revoke', permission, revoke));
+                }
             }
             for (const [key, label] of [['readRoots', 'Allowed read folders'], ['networkOrigins', 'Allowed network origins'], ['executables', 'Allowed child programs']]) {
                 const values = registration.brokerPolicy?.[key] ?? [];
-                addText(detailsBody, 'p', 'codlet-local-copy', `${label}\n${values.length ? values.join('\n') : 'None'}`);
+                if (values.length) addText(detailsBody, 'p', 'codlet-local-copy', `${label}\n${values.join('\n')}`);
             }
-            const remove = ui.button({ text: 'Remove plugin', label: `Remove ${pluginName(plugin)}`, variant: 'danger' });
-            detailsBody.appendChild(remove);
-            ui.on(remove, 'click', () => requestLocalAction(detailsPlugin, 'remove', null, remove));
+            const remove = guiButton({ text: 'Remove plugin', label: `Remove ${pluginName(plugin)}`, variant: 'danger' });
+            if (!bundled) { detailsBody.appendChild(remove); ui.on(remove, 'click', () => requestLocalAction(detailsPlugin, 'remove', null, remove)); }
+            else removeOwned(remove);
             detailsStatus.hidden = true;
             if (managed) {
                 const target = detailsPlugin;
                 const check = addText(detailsBody, 'button', '', 'Check GitHub versions');
-                check.setAttribute('aria-label', 'Check GitHub versions');
+                setLabel(check, 'Check GitHub versions');
                 ui.on(check, 'click', () => showGitHubImport(context, target));
                 addText(detailsBody, 'h2', 'codlet-section-title', 'Installed version history');
                 const historyBody = addText(detailsBody, 'div', 'codlet-local-preview', '');
                 await showManagedHistory(context, target, historyBody, request, epoch);
             }
         } catch (error) {
-            if (epoch === lifecycle && request === localRequest && page === 'details') detailsStatus.textContent = String(error?.message ?? error);
+            if (epoch === lifecycle && request === localRequest && page === 'details') setText(detailsStatus, String(error?.message ?? error));
         }
     }
 
@@ -1090,14 +1492,14 @@ module.exports = (() => {
         const status = addText(parent, 'p', 'codlet-local-copy', 'Loading retained versions...');
         const rows = addText(parent, 'div', 'codlet-local-preview', '');
         const more = addText(parent, 'button', '', 'Load more versions');
-        more.setAttribute('aria-label', 'Load more versions'); more.hidden = true;
+        setLabel(more, 'Load more versions'); more.hidden = true;
         let nextCursor = 0, currentVersion, busy = false;
         const seen = new Set();
         const load = async () => {
             if (!current() || busy || nextCursor === null) return;
             busy = true; more.disabled = true;
             const cursor = nextCursor;
-            status.textContent = seen.size ? 'Loading more retained versions...' : 'Loading retained versions...';
+            setText(status, seen.size ? 'Loading more retained versions...' : 'Loading retained versions...');
             try {
                 const report = await context.rpc.request(RUNTIME_MANAGE_CAPABILITY, 'managedHistory', { pluginId: plugin.id, ...(cursor ? { cursor } : {}) });
                 if (!current()) return;
@@ -1115,15 +1517,15 @@ module.exports = (() => {
                     addText(row, 'p', 'codlet-local-copy', `${version.manifest.version} · ${version.source.tag}${currentVersion === version.versionKey ? ' · Current' : ''}\n${version.source.repositoryUrl}\n${version.source.assetName}\nSHA-256: ${version.source.sha256}`);
                     if (currentVersion !== version.versionKey) {
                         const rollback = addText(row, 'button', '', 'Review rollback');
-                        rollback.setAttribute('aria-label', `Review rollback ${version.versionKey}`);
+                        setLabel(rollback, `Review rollback ${version.versionKey}`);
                         ui.on(rollback, 'click', () => inspectRollback(context, plugin, version.versionKey));
                     }
                 }
                 nextCursor = following;
-                status.textContent = seen.size ? 'Rollback uses an already retained package. Review its source and permissions again before applying.' : 'No retained versions.';
+                setText(status, seen.size ? 'Rollback uses an already retained package. Review its source and permissions again before applying.' : 'No retained versions.');
                 more.hidden = nextCursor === null;
             } catch (error) {
-                if (current()) { status.textContent = String(error?.message ?? error); more.hidden = false; }
+                if (current()) { setText(status, String(error?.message ?? error)); more.hidden = false; }
             } finally {
                 busy = false;
                 if (current()) more.disabled = false;
@@ -1151,26 +1553,38 @@ module.exports = (() => {
     function createLocalPages(context, parent) {
         importSection = addText(parent, 'section', 'codlet-local-page', '');
         importSection.hidden = true;
-        const toolbar = addText(importSection, 'div', 'codlet-local-toolbar', '');
-        const back = addText(toolbar, 'button', '', 'Back to plugins');
-        ui.on(back, 'click', () => backToPlugins(context));
-        chooseFolderButton = addText(toolbar, 'button', '', 'Choose folder');
-        chooseFolderButton.setAttribute('aria-label', 'Choose plugin folder');
-        ui.on(chooseFolderButton, 'click', () => chooseLocalFolder(context));
+        backButton(importSection, context);
+        const tabs = addText(importSection, 'div', 'codlet-source-tabs', ''); tabs.setAttribute('role', 'tablist');
+        localTab = addText(tabs, 'button', '', 'Local folder'); localTab.setAttribute('role', 'tab'); setLabel(localTab, 'Local folder');
+        githubTab = addText(tabs, 'button', '', 'GitHub'); githubTab.setAttribute('role', 'tab'); setLabel(githubTab, 'Import from GitHub');
+        ui.on(localTab, 'click', () => { if (importMode !== 'local') showImport(); else focus(importPath); });
+        ui.on(githubTab, 'click', () => { if (!githubTab.disabled) { if (importMode !== 'github') return showGitHubImport(context); focus(githubUrl); } });
+        ui.on(tabs, 'keydown', event => {
+            if (event.altKey || event.ctrlKey || event.metaKey || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            const choices = [localTab, githubTab].filter(tab => !tab.disabled), index = choices.indexOf(event.target);
+            if (index < 0) return;
+            event.preventDefault(); event.stopPropagation();
+            const next = event.key === 'Home' ? choices[0] : event.key === 'End' ? choices[choices.length - 1] : choices[(index + (event.key === 'ArrowRight' ? 1 : choices.length - 1)) % choices.length];
+            if (next === event.target) return;
+            if (next === localTab) showImport(); else showGitHubImport(context);
+            focus(next);
+        });
         importPath = localInput(importSection, 'Plugin folder');
-        ui.on(importPath, 'input', () => { invalidatePreview(); localStatus('Inspect this folder before importing.'); });
-        inspectButton = addText(importSection, 'button', '', 'Inspect folder');
-        ui.on(inspectButton, 'click', () => inspectLocal(context));
+        localFields = importPath.parentElement;
+        const pathRow = addText(localFields, 'div', 'codlet-folder-input', ''); pathRow.appendChild(importPath);
+        chooseFolderButton = iconButton(pathRow, 'folder', 'Choose plugin folder');
+        ui.on(chooseFolderButton, 'click', () => chooseLocalFolder(context));
+        ui.on(importPath, 'input', () => scheduleLocalPreview(context));
         githubFields = addText(importSection, 'div', 'codlet-local-preview', ''); githubFields.hidden = true;
         githubUrl = localInput(githubFields, 'GitHub repository or release URL');
         ui.on(githubUrl, 'input', () => { resetGitHubSelection(); localStatus('Read releases for this source before downloading. Trust and grants have been cleared.'); });
         githubRead = addText(githubFields, 'button', '', 'Read releases');
-        githubRead.setAttribute('aria-label', 'Read GitHub releases');
+        setLabel(githubRead, 'Read GitHub releases');
         ui.on(githubRead, 'click', () => readGitHubReleases(context));
         const select = label => {
             const field = addText(githubFields, 'label', 'codlet-field', '');
             addText(field, 'span', 'codlet-field-label', label);
-            const control = ui.element('select'); control.className = 'codlet-field-input'; control.setAttribute('aria-label', label);
+            const control = ui.element('select'); control.className = 'codlet-field-input'; setLabel(control, label);
             field.appendChild(control); return control;
         };
         githubRelease = select('GitHub release'); fillSelect(githubRelease, 'Choose a release', []);
@@ -1185,26 +1599,31 @@ module.exports = (() => {
         });
         ui.on(githubAsset, 'change', () => { cancelGitHubWork(); invalidatePreview(); githubControls(); localStatus('Download and validate this asset before granting permissions.'); });
         githubDownload = addText(githubFields, 'button', '', 'Download and inspect ZIP'); githubDownload.disabled = true;
-        githubDownload.setAttribute('aria-label', 'Download selected GitHub asset');
+        setLabel(githubDownload, 'Download selected GitHub asset');
         ui.on(githubDownload, 'click', () => downloadGitHubAsset(context));
         githubCancel = addText(githubFields, 'button', '', 'Cancel GitHub task'); githubCancel.hidden = true;
-        githubCancel.setAttribute('aria-label', 'Cancel GitHub task');
+        setLabel(githubCancel, 'Cancel GitHub task');
         ui.on(githubCancel, 'click', () => {
             cancelGitHubWork(); invalidatePreview(); githubControls();
             localStatus('GitHub task cancelled. Late results will be ignored. No installation was submitted; temporary download files may remain.');
         });
         githubRetry = addText(githubFields, 'button', '', 'Check task status'); githubRetry.hidden = true;
-        githubRetry.setAttribute('aria-label', 'Check GitHub task status');
+        setLabel(githubRetry, 'Check GitHub task status');
         ui.on(githubRetry, 'click', () => pollGitHubJob(context));
         importStatus = addText(importSection, 'div', 'codlet-local-copy', '');
         importStatus.setAttribute('role', 'status'); importStatus.setAttribute('aria-live', 'polite');
+        importErrorDetails = addText(importSection, 'details', 'codlet-import-error', ''); importErrorDetails.hidden = true;
+        addText(importErrorDetails, 'summary', 'codlet-local-copy', 'Error details');
+        importErrorText = addText(importErrorDetails, 'p', 'codlet-local-copy', '');
         previewBody = addText(importSection, 'div', 'codlet-local-preview', ''); previewBody.hidden = true;
-        importSubmit = ui.button({ text: 'Import plugin', label: 'Confirm local import', variant: 'primary', disabled: true });
+        importSubmit = guiButton({ text: 'Import plugin', label: 'Confirm local import', variant: 'primary', disabled: true });
         importSection.appendChild(importSubmit);
         ui.on(importSubmit, 'click', () => submitImport(context));
+        communityLink = ui.externalLink({ text: translate('Browse community plugins'), href: COMMUNITY_URL });
+        communityLink.className = 'codlet-community-link'; setText(communityLink, 'Browse community plugins');
+        communityLink.appendChild(ui.icon('external')); importSection.appendChild(communityLink);
         detailsSection = addText(parent, 'section', 'codlet-local-page', ''); detailsSection.hidden = true;
-        const detailsBack = addText(detailsSection, 'button', '', 'Back to plugins');
-        ui.on(detailsBack, 'click', () => backToPlugins(context));
+        backButton(detailsSection, context);
         detailsStatus = addText(detailsSection, 'div', 'codlet-local-copy', ''); detailsStatus.setAttribute('role', 'status');
         detailsBody = addText(detailsSection, 'div', 'codlet-local-preview', '');
     }
@@ -1240,9 +1659,10 @@ module.exports = (() => {
             }
             button?.setAttribute('aria-expanded', 'true');
             if (button) button.title = 'Codlet';
-            focus(closeButton);
+            focus(action === 'idle' && page === 'plugins' ? searchInput : closeButton);
         } else {
             hideTooltip();
+            cancelUpdatePolling(); cancelHeaderPolling(); updateBusy = false; removalRequest += 1; removalBusy = false;
             cancelGitHubWork(); invalidatePreview(); page = 'plugins'; detailsPlugin = null;
             panelRequest += 1;
             if (operationTimer !== null) clearTimeout(operationTimer);
@@ -1269,9 +1689,9 @@ module.exports = (() => {
             return;
         }
         if (!button) {
-            button = ui.button({ text: 'Codlet', label: 'Codlet', variant: 'menu' });
+            button = guiButton({ text: 'Codlet', label: 'Codlet', variant: 'menu' });
             button.setAttribute(BUTTON_ATTRIBUTE, 'codlet');
-            button.setAttribute('aria-label', 'Codlet');
+            setLabel(button, 'Codlet');
             button.setAttribute('aria-haspopup', 'dialog');
             button.setAttribute('aria-controls', panel.id);
             button.setAttribute('aria-expanded', 'false');
@@ -1318,6 +1738,7 @@ module.exports = (() => {
         };
         installStyle();
         createPanel(context);
+        stopLocale = context.i18n?.onChange?.(() => { if (epoch === lifecycle && panel) refreshLanguage(context); }) ?? null;
         ui.on(panel, 'keydown', keydown);
         mountButton(context);
         observer = new MutationObserver(() => {
@@ -1336,6 +1757,9 @@ module.exports = (() => {
 
     function deactivate() {
         cancelGitHubWork();
+        cancelUpdatePolling(); cancelHeaderPolling(); stopLocale?.(); stopLocale = null;
+        if (previewTimer !== null) clearTimeout(previewTimer); previewTimer = null;
+        removalRequest += 1; removalBusy = false; removalPreview = null;
         lifecycle += 1;
         panelRequest += 1;
         localRequest += 1;
@@ -1343,10 +1767,12 @@ module.exports = (() => {
         pickerTimer = null;
         importPreview = detailsPlugin = localManagement = null;
         importGrants.clear(); scopeInputs.clear();
+        textBindings.clear();
         page = 'plugins'; importBusy = false;
         if (operationTimer !== null) clearTimeout(operationTimer);
         operationTimer = null;
         pendingOperation = null;
+        managementBusy = false;
         hideTooltip();
         visiblePlugins = [];
         confirmationSelection = null;
@@ -1368,8 +1794,10 @@ module.exports = (() => {
         style?.remove();
         if (restore) focus(target);
         style = button = panel = pluginList = managementStatus = refreshButton = closeButton = null;
-        panelTitle = settingsSection = null;
-        importButton = importSection = importPath = chooseFolderButton = inspectButton = importStatus = previewBody = importSubmit = null;
+        panelTitle = versionLabel = developmentLabel = clientStatusLine = settingsSection = searchInput = null;
+        updateButton = updateSection = updateBody = updateStatus = updateReply = null; updateBusy = false;
+        importButton = importSection = importPath = localFields = chooseFolderButton = importStatus = importErrorDetails = importErrorText = previewBody = importSubmit = null;
+        localTab = githubTab = communityLink = confirmationHeading = removeSourceChoice = null;
         importTrust = importEnable = detailsSection = detailsBody = detailsStatus = null;
         githubButton = githubFields = githubUrl = githubRead = githubRelease = githubAsset = githubDownload = githubCancel = githubRetry = null;
         githubCatalog = importTarget = runtimeContext = null; importMode = 'local'; importOperation = 'install';

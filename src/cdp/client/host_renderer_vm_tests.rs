@@ -291,6 +291,7 @@ impl Fixture {
                 plugin_id: PLUGIN.into(),
                 permission: None,
                 cascade: false,
+                remove_source: None,
                 local_import: None,
             }));
         let id = prepared.operation_id().unwrap().to_owned();

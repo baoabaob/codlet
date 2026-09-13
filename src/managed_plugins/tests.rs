@@ -416,6 +416,7 @@ mod runtime {
                 plugin_id: "dev.managed".into(),
                 permission: None,
                 cascade: false,
+                remove_source: None,
                 local_import: Some(preview.request(
                     vec![Permission::HostProcess],
                     BrokerPolicy::default(),

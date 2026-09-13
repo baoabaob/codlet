@@ -558,6 +558,7 @@ mod tests {
             plugin_id: "dev.fixture".into(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: None,
         }
     }
@@ -682,6 +683,7 @@ mod tests {
             plugin_id: "dev.fixture".into(),
             permission: Some(crate::plugins::Permission::HostFs),
             cascade: false,
+            remove_source: None,
             local_import: None,
         };
         let prepared = get(&scope, &ControlRequest::prepare(request.clone()));

@@ -224,6 +224,7 @@ impl HostControl {
                         permission: None,
                         cascade: false,
                         local_import: None,
+                        remove_source: None,
                     },
                 ));
                 if prepared.status != ControlStatus::Prepared {

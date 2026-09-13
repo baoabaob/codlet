@@ -99,6 +99,8 @@ pub(super) fn plugin_list(
         let mut row = json!({
             "id":id,
             "name":metadata.map(|plugin| plugin.manifest.display_name()).unwrap_or(id),
+            "description":metadata.and_then(|plugin| plugin.manifest.description.as_deref()),
+            "i18n":metadata.map(|plugin| &plugin.manifest.i18n),
             "disableDependents":crate::plugin_lifecycle::disable_closure(&logical, catalog, registry, id).unwrap_or_default().into_iter().filter(|dependent| dependent != id).collect::<Vec<_>>(),
             "version":metadata.map(|plugin| &plugin.manifest.version),
             "source":if bundled { "bundled" } else { "local" },
@@ -132,7 +134,7 @@ pub(super) fn plugin_list(
         }
         row
     }).collect();
-    json!({"plugins":rows})
+    json!({"plugins":rows,"runtimeVersion":env!("CARGO_PKG_VERSION")})
 }
 
 #[cfg(test)]
@@ -159,6 +161,9 @@ mod tests {
         let list = plugin_list(&catalog, &plugins, &registry, &BTreeSet::new(), &[]);
         assert_eq!(row(&list, "codex.ui.adapter")["name"], "Codex UI Adapter");
         assert_eq!(row(&list, "codlet-gui")["name"], "Codlet GUI");
+        assert_eq!(row(&list, "codlet-gui")["i18n"]["zh"]["name"], "Codlet 管理界面");
+        assert_eq!(row(&list, "codlet-gui")["description"], "Manage plugins, imports, permissions, and Codlet updates.");
+        assert_eq!(list["runtimeVersion"], env!("CARGO_PKG_VERSION"));
         assert_eq!(
             row(&list, "codex.ui.adapter")["disableDependents"],
             json!(["codlet-gui"])

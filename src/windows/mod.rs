@@ -5,6 +5,7 @@ pub mod fake_child;
 pub(crate) mod folder_dialog;
 pub mod launch_mutex;
 pub(crate) mod local_ipc;
+pub(crate) mod open_folder;
 pub mod packages;
 pub mod pipes;
 pub(crate) mod plugin_process;

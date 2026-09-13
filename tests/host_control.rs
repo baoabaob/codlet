@@ -38,7 +38,9 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let directory = tempdir().unwrap();
-        let registry_path = directory.path().join("config.json");
+        // Author-owned plugin sources are siblings of the shared registry state,
+        // matching the deletion boundary enforced by production management.
+        let registry_path = directory.path().join("state/config.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
         for id in ["codlet-gui", "codex.ui.adapter"] {
             registry.set_enabled(id, false).unwrap();
@@ -108,6 +110,7 @@ impl Fixture {
             plugin_id: id.into(),
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: None,
         })
     }
@@ -271,6 +274,7 @@ fn confirmed_adapter_disable_persists_the_gui_closure_without_reactivation() {
             plugin_id: "codex.ui.adapter".into(),
             permission: None,
             cascade: true,
+            remove_source: None,
             local_import: None,
         }));
     let receipt = prepared.operation_id().unwrap().to_owned();
@@ -660,6 +664,7 @@ fn import_request(fixture: &Fixture, root: &Path, enable: bool) -> PluginControl
         plugin_id: preview.manifest.id.clone(),
         permission: None,
         cascade: false,
+        remove_source: None,
         local_import: Some(preview.request(
             vec![Permission::HostProcess, Permission::CdpRaw],
             Default::default(),
@@ -739,6 +744,71 @@ fn local_import_then_enable_and_remove_use_receipts_and_preserve_author_files() 
 }
 
 #[test]
+fn explicit_source_delete_waits_for_native_retirement_and_preserves_separate_data() {
+    let mut fixture = Fixture::new();
+    let id = "dev.delete-source";
+    let gate = fixture.directory.path().join("allow-source-stop");
+    let stopped = fixture.directory.path().join("source-stopped");
+    let data = fixture.directory.path().join("separate-plugin-data");
+    std::fs::write(&data, "preserve").unwrap();
+    let source = format!(
+        r#"
+const fs = require('node:fs');
+module.exports = {{ activate() {{}}, async deactivate() {{
+  while (!fs.existsSync({gate})) await new Promise(resolve => setTimeout(resolve, 10));
+  fs.writeFileSync({stopped}, 'stopped');
+}} }};
+"#,
+        gate = serde_json::to_string(&gate).unwrap(),
+        stopped = serde_json::to_string(&stopped).unwrap()
+    );
+    let root = fixture.register(id, &source);
+    assert!(root.starts_with(fixture.directory.path().canonicalize().unwrap()));
+    assert_eq!(
+        fixture.command(PluginControlAction::Enable, id).outcome,
+        PluginControlOutcome::Applied
+    );
+    let preview = codlet::source_removal::preview(&fixture.registry(), id).unwrap();
+    assert_eq!(preview.status, "available", "{preview:?}");
+    let receipt = fixture.submit_request(PluginControlRequest {
+        action: PluginControlAction::Remove,
+        plugin_id: id.into(),
+        permission: None,
+        cascade: false,
+        local_import: None,
+        remove_source: Some(preview.request()),
+    });
+    fixture.until(|fixture| !fixture.registry().local_plugins().contains_key(id));
+    for _ in 0..5 {
+        fixture.tick();
+    }
+    assert!(
+        root.exists(),
+        "source must remain until the native owner has retired"
+    );
+    assert!(!stopped.exists());
+    std::fs::write(&gate, "allow").unwrap();
+    let report = lifecycle_report(fixture.wait(&receipt));
+    assert_eq!(report.outcome, PluginControlOutcome::Applied, "{report:?}");
+    assert!(stopped.exists());
+    assert!(
+        !root.exists(),
+        "the explicitly confirmed fixture source should be deleted; report={report:?}"
+    );
+    assert_eq!(std::fs::read_to_string(data).unwrap(), "preserve");
+    assert!(
+        report
+            .message
+            .unwrap()
+            .contains("source directory was deleted")
+    );
+    assert!(matches!(
+        fixture.observation(id).state,
+        ExecutionState::Exited | ExecutionState::Failed
+    ));
+}
+
+#[test]
 fn changed_import_and_failed_initial_activation_leave_no_running_authority() {
     let mut fixture = Fixture::new();
     let id = "dev.import-failure";
@@ -798,6 +868,7 @@ fn remove_requires_confirmation_for_dependents_and_disables_the_closure_atomical
         plugin_id: provider.into(),
         permission: None,
         cascade: true,
+        remove_source: None,
         local_import: None,
     });
     let removed = lifecycle_report(fixture.wait(&receipt));

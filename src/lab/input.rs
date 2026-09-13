@@ -217,6 +217,7 @@ fn parse_plugin_command(line: &[u8]) -> Option<PluginControlRequest> {
         plugin_id: crate::plugins::canonical_plugin_id(plugin_id).to_owned(),
         permission: None,
         cascade: false,
+        remove_source: None,
         local_import: None,
     };
     request.validate().ok()?;

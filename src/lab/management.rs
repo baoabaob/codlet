@@ -29,6 +29,12 @@ pub(super) struct LabRuntime {
     host_control: HostControl,
     control: ControlBroker,
     manage_service: crate::runtime_manage::RuntimeManageService,
+    client_update_monitor: Option<crate::probe::client_updates::ClientUpdateMonitor>,
+    runtime_update: Option<crate::runtime_update::RuntimeUpdateService>,
+    update_handoff: Option<crate::runtime_update_owner::RuntimeUpdateHandoff>,
+    update_armed: bool,
+    update_waiting_for_exit: bool,
+    update_cancelled: bool,
     status: StatusPublisher,
     js_runtime: Option<JsRuntime>,
     stdin_receipts: BTreeSet<String>,
@@ -68,6 +74,12 @@ impl LabRuntime {
             host_control,
             control,
             manage_service,
+            client_update_monitor: None,
+            runtime_update: None,
+            update_handoff: None,
+            update_armed: false,
+            update_waiting_for_exit: false,
+            update_cancelled: false,
             status,
             js_runtime,
             stdin_receipts: BTreeSet::new(),
@@ -81,6 +93,52 @@ impl LabRuntime {
     }
     pub fn registry_scope(&self) -> &str {
         self.server.scope().id()
+    }
+
+    pub fn observe_client_updates(&mut self, version: String) {
+        self.client_update_monitor =
+            Some(crate::probe::client_updates::ClientUpdateMonitor::start(
+                self.manage_service.clone(),
+                version,
+            ));
+    }
+
+    pub fn configure_runtime_updates(
+        &mut self,
+        child: &crate::windows::process::ChildProcess,
+        reporter: &mut Reporter,
+    ) {
+        let Some(install) = std::env::current_exe()
+            .ok()
+            .and_then(|file| file.parent().map(Path::to_owned))
+        else {
+            return;
+        };
+        let Some(lab_root) = self.registry_path().parent().and_then(Path::parent) else {
+            return;
+        };
+        let restart = super::runtime_updates::restart_context(&install, lab_root, child);
+        let update_state = install.join(".codlet-updates").join(self.registry_scope());
+        match crate::runtime_update::RuntimeUpdateService::start(install, update_state, restart) {
+            Ok(service) => {
+                self.manage_service.set_runtime_update(service.clone());
+                self.runtime_update = Some(service);
+            }
+            Err(error) => reporter.emit(
+                "runtime_update_unavailable",
+                json!({"error":error.to_string()}),
+            ),
+        }
+    }
+
+    pub fn take_update_restart_requested(&mut self) -> bool {
+        std::mem::take(&mut self.update_armed)
+    }
+    pub fn take_update_restart_cancelled(&mut self) -> bool {
+        std::mem::take(&mut self.update_cancelled)
+    }
+    pub fn update_installing(&self) -> bool {
+        self.update_handoff.is_some() || self.update_waiting_for_exit
     }
 
     pub fn activate(
@@ -208,7 +266,8 @@ impl LabRuntime {
                 .map_err(|error| error.to_string());
             self.host_control.renderer_executor_result(result);
         }
-        if !self.host_control.is_pending()
+        if !self.update_installing()
+            && !self.host_control.is_pending()
             && let Some(job) = self.control.take_next()
             && let Some(job) = self.host_control.dispatch(
                 job,
@@ -224,6 +283,54 @@ impl LabRuntime {
         self.renderer.refresh_management_list();
         for report in self.host_control.take_authorization_reports() {
             reporter.emit("plugin_authorization_result", json!({"result":report}));
+        }
+        if self.update_waiting_for_exit
+            && self.runtime_update.as_ref().is_some_and(|service| {
+                let status = service.status();
+                matches!(
+                    status.phase,
+                    crate::runtime_update::RuntimeUpdatePhase::Downloaded
+                        | crate::runtime_update::RuntimeUpdatePhase::Failed
+                ) && status.error.is_some()
+            })
+        {
+            self.update_waiting_for_exit = false;
+            self.update_cancelled = true;
+            reporter.emit(
+                "runtime_update_client_retained",
+                json!({"management_resumed":true}),
+            );
+        }
+        if !self.host_control.is_pending()
+            && !self.update_installing()
+            && let Some(service) = &self.runtime_update
+            && let Some(request) = service.take_install_request()
+        {
+            self.update_handoff = Some(crate::runtime_update_owner::RuntimeUpdateHandoff::start(
+                service.clone(),
+                request,
+            ));
+        }
+        if let Some(result) = self
+            .update_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.poll())
+        {
+            self.update_handoff = None;
+            match result {
+                Ok(()) => {
+                    self.update_armed = true;
+                    self.update_waiting_for_exit = true;
+                    reporter.emit(
+                        "runtime_update_install_armed",
+                        json!({"normal_owned_shutdown":true}),
+                    );
+                }
+                Err(error) => reporter.emit(
+                    "runtime_update_handoff_failed",
+                    json!({"error":error,"client_retained":true}),
+                ),
+            }
         }
         self.stdin_receipts.retain(|operation_id| {
             let report = self.control.handle(ControlRequest::result(operation_id));
@@ -376,6 +483,7 @@ mod tests {
             action: crate::plugin_control::PluginControlAction::Reload,
             permission: None,
             cascade: false,
+            remove_source: None,
             local_import: None,
         };
         assert_eq!(

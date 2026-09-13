@@ -27,9 +27,13 @@ async function initialize(ctx, cancelled) {
           *{box-sizing:border-box}button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer;border:1px solid #cdd0d4;background:#fff;border-radius:7px;padding:6px 9px}button:disabled{opacity:.5;cursor:wait}
           #toggle{background:#16473f;color:white;border:0;box-shadow:0 3px 14px #0002}article{display:none;width:410px;max-height:72vh;overflow:auto;margin-bottom:9px;padding:16px;background:#fafafa;border:1px solid #d8dadd;border-radius:12px;box-shadow:0 8px 28px #0002}
           article.open{display:block}h2{font-size:16px;margin:0 0 7px}.muted{font-size:12px;color:#666;line-height:1.6}label{display:block;margin:10px 0 6px}select,textarea,input[type=text]{width:100%;border:1px solid #cdd0d4;border-radius:6px;padding:7px;background:white}textarea{height:72px;resize:vertical}.actions{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}pre{font:11px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;background:#eee;padding:8px;border-radius:6px}#message{min-height:18px;overflow-wrap:anywhere}.approval{border-top:1px solid #ddd;margin-top:8px;padding-top:8px}
-          @media(prefers-color-scheme:dark){:host{color:#ececec}article{background:#232323;border-color:#444}button,select,textarea,input[type=text]{background:#303030;border-color:#555}.muted{color:#b8b8b8}pre{background:#161616}}
+          .back{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:4px 0;margin-bottom:8px;border:0;background:transparent;box-shadow:none}.back svg{flex-shrink:0}
+          @media(prefers-color-scheme:dark){:host{color:#ececec}article{background:#232323;border-color:#444}button,select,textarea,input[type=text]{background:#303030;border-color:#555}.back{background:transparent}.muted{color:#b8b8b8}pre{background:#161616}}
         </style><article><h2>M3 / M4 验收</h2><div class="muted" id="connection"></div><label><input id="interception" type="checkbox"> 启用测试拦截</label><div class="muted">以 [M3] 开头会改写输入并追加上下文；以 [M3 BLOCK] 开头会阻止提交。</div><div class="muted" id="selection">正在读取窗口选择…</div><label>任务</label><select id="threads"><option value="">刷新并选择任务</option></select><div class="actions"><button id="refresh">刷新任务</button><button id="open">在本窗口打开</button><button id="history">读取回合</button><button id="models">模型 / 技能 / provider</button><button id="hooks">拦截器诊断</button></div><textarea id="text" placeholder="输入测试消息"></textarea><label>操作回合 ID</label><input id="turn" type="text"><div class="actions"><button id="start">发起回合</button><button id="steer">追加输入</button><button id="interrupt">中断回合</button></div><div id="message" role="status"></div><div id="approvals"></div><pre id="events">尚无事件</pre></article><button id="toggle">M3 / M4</button>`;
         const $ = selector => shadow.querySelector(selector);
+        const back = document.createElement('button'); back.id = 'back'; back.type = 'button'; back.className = 'back'; back.setAttribute('aria-label', '返回');
+        back.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M19 12H5m6-6-6 6 6 6"/></svg><span>返回</span>';
+        $('article').prepend(back);
         $('#connection').textContent = `${connection.build.appVersion} · ${connection.build.appServerVersion} · 当前 Desktop 连接`;
         const log = text => { if (alive) $('#message').textContent = text; };
         const renderEvidence = () => { if (opened && alive) $('#events').textContent = evidence.slice(-30).map(event => JSON.stringify(event)).join('\n'); };
@@ -55,6 +59,7 @@ async function initialize(ctx, cancelled) {
             $('#selection').textContent = `${value.threadId ? `当前任务 ${value.threadId}` : '当前窗口未选择本地任务'} · ${value.resumeState} · ${value.streamRole} · ${value.activeTurnId ? `运行中 ${value.activeTurnId}` : value.activeTurnKnown ? '无运行中回合' : '回合状态尚不可用'}`;
         }
         action('#toggle', () => { opened = !opened; $('article').classList.toggle('open', opened); renderEvidence(); });
+        action('#back', () => { opened = false; $('article').classList.remove('open'); $('#toggle').focus(); });
         action('#refresh', async () => {
             const result = await read('threads.list', { limit: 30 });
             const selected = $('#threads').value; $('#threads').replaceChildren();

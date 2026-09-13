@@ -30,11 +30,16 @@ if (config.fixtureMode === 'ready') {
 } else if (config.fixtureMode === 'stale') {
   fs.writeFileSync(path.join(config.labRoot, 'logs/manual-client.json'), JSON.stringify({ ...state, state: 'ready', managerCreated: '2000-01-01T00:00:00.0000000Z' }));
   setTimeout(() => { console.error('Fixture exited without current readiness'); process.exit(9); }, 500);
-} else if (config.fixtureMode === 'failed') {
+} else if (['failed', 'failed-clean'].includes(config.fixtureMode)) {
   state.state = 'failed'; state.error = 'Fixture backend startup failed'; publish(state);
   console.error('Fixture backend startup failed: backend-stderr.log');
 }
 setInterval(() => {
+  if (config.fixtureMode === 'failed-clean' && fs.existsSync(path.join(logs, 'quit.request'))) {
+    state.hostExit = { code: 0 }; publish(state);
+    fs.writeFileSync(path.join(directory, 'fixture-stopped.json'), JSON.stringify({ pid: process.pid }));
+    process.exit(0);
+  }
   if (fs.existsSync(path.join(directory, 'fixture-stop.request'))) {
     fs.writeFileSync(path.join(directory, 'fixture-stopped.json'), JSON.stringify({ pid: process.pid }));
     process.exit(0);
@@ -50,6 +55,7 @@ async function fixture(mode) {
     await mkdir(directory); await mkdir(path.join(labRoot, 'logs'), { recursive: true });
     await copyFile(new URL('../scripts/Start-TestClient.ps1', import.meta.url), path.join(directory, 'Start-TestClient.ps1'));
     await copyFile(new URL('../scripts/Start-TestClient.cmd', import.meta.url), path.join(directory, 'Start-TestClient.cmd'));
+    await copyFile(new URL('../scripts/Restart-TestClient.ps1', import.meta.url), path.join(directory, 'Restart-TestClient.ps1'));
     await writeFile(path.join(directory, 'isolated-client.mjs'), fakeCoordinator);
     await writeFile(path.join(directory, 'lab-config.json'), JSON.stringify({ schema: 1, labRoot, nodeRelative: path.relative(directory, process.execPath), officialCli: mode === 'missing-cli' ? path.join(base, 'removed-official-cli/codex.exe') : process.execPath, fixtureMode: mode }));
     return {
@@ -67,15 +73,17 @@ async function fixture(mode) {
                     catch (error) { if (error.code !== 'ENOENT') throw error; await delay(50); }
                 }
             }
+            assert.equal(path.dirname(path.resolve(base)), path.resolve(os.tmpdir()));
+            assert.ok(path.basename(base).startsWith('codlet-launcher-test-'));
             await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
         }
     };
 }
 
-function launch(f, cmd = false) {
+function launch(f, cmd = false, script = 'Start-TestClient.ps1') {
     const child = cmd
         ? spawn(process.env.COMSPEC ?? 'C:/Windows/System32/cmd.exe', ['/d', '/c', '"' + path.join(f.directory, 'Start-TestClient.cmd') + '" -StartupTimeoutSeconds 20'], { windowsHide: true, windowsVerbatimArguments: true, stdio: 'pipe' })
-        : spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(f.directory, 'Start-TestClient.ps1'), '-StartupTimeoutSeconds', '20'], { windowsHide: true, stdio: 'pipe' });
+        : spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(f.directory, script), ...(script === 'Start-TestClient.ps1' ? ['-StartupTimeoutSeconds', '20'] : [])], { windowsHide: true, stdio: 'pipe' });
     let stdout = '', stderr = '', ended = false;
     child.stdout.on('data', bytes => { stdout += bytes.toString('utf8'); });
     child.stderr.on('data', bytes => { stderr += bytes.toString('utf8'); });
@@ -166,5 +174,34 @@ test('startup wait is bounded and leaves the same pending worker intact without 
         assert.match(result.stderr, /No restart or recovery was attempted/);
         const starts = await f.starts(); assert.equal(starts.length, 1); assert.equal(starts[0].action, 'start');
         assert.doesNotThrow(() => process.kill(starts[0].pid, 0));
+    } finally { await f.cleanup(); }
+});
+
+test('update restart wrapper returns ready only for its single fresh owner', { skip: !windows, timeout: 20000 }, async () => {
+    const f = await fixture('ready');
+    try {
+        const result = await launch(f, false, 'Restart-TestClient.ps1').completion;
+        assert.equal(result.code, 0, result.stdout + result.stderr);
+        assert.equal((await f.starts()).length, 1);
+    } finally { await f.cleanup(); }
+});
+
+test('update restart wrapper confirms a failed fresh owner stopped through its own quit mailbox', { skip: !windows, timeout: 20000 }, async () => {
+    const f = await fixture('failed-clean');
+    try {
+        const result = await launch(f, false, 'Restart-TestClient.ps1').completion;
+        assert.equal(result.code, 1, result.stdout + result.stderr);
+        const starts = await f.starts(); assert.equal(starts.length, 1);
+        assert.equal(JSON.parse(await readFile(path.join(f.directory, 'fixture-stopped.json'), 'utf8')).pid, starts[0].pid);
+        assert.throws(() => process.kill(starts[0].pid, 0), { code: 'ESRCH' });
+    } finally { await f.cleanup(); }
+});
+
+test('update restart wrapper reports uncertain cleanup without starting a second owner', { skip: !windows, timeout: 20000 }, async () => {
+    const f = await fixture('stale');
+    try {
+        const result = await launch(f, false, 'Restart-TestClient.ps1').completion;
+        assert.equal(result.code, 42, result.stdout + result.stderr);
+        assert.equal((await f.starts()).length, 1);
     } finally { await f.cleanup(); }
 });

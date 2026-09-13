@@ -2,6 +2,16 @@
 import type { RendererUiFactory } from './renderer-ui';
 export interface CapabilityDescriptor { readonly name: string; readonly api: number; readonly scope: 'runtime' | 'target' }
 export interface RpcOptions { timeoutMs?: number; signal?: AbortSignal }
+export type PluginLocale = 'zh' | 'en';
+export type PluginMessages = Readonly<Partial<Record<PluginLocale, Readonly<Record<string, string>>>>>;
+export interface PluginI18n {
+  /** Client language: Chinese becomes zh, all other languages become en. */
+  readonly locale: PluginLocale;
+  /** Missing Chinese messages fall back to English, then to the key. Plain text only. */
+  t(messages: PluginMessages, key: string, values?: Readonly<Record<string, string | number>>): string;
+  /** Listeners are released automatically with the plugin generation. */
+  onChange(listener: (locale: PluginLocale) => void): () => void;
+}
 export interface RendererInvocation {
   readonly pluginId: string;
   readonly generation: number;
@@ -14,6 +24,7 @@ export interface RendererInvocation {
   remainingMs(): number;
   /** Use this bound client for nested calls; browsers have no Host AsyncLocalStorage. */
   readonly rpc: RendererRpc;
+  readonly i18n: PluginI18n;
 }
 export interface RendererRpc {
   request<T = unknown>(capability: CapabilityDescriptor, method: string, params?: unknown, options?: RpcOptions): Promise<T>;

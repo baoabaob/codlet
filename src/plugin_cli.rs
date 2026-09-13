@@ -274,6 +274,11 @@ fn offline_edit(
         {
             return Err(PluginCliError::UnknownPlugin(plugin_id.clone()));
         }
+        let source_removal = request
+            .remove_source
+            .as_ref()
+            .map(|selection| crate::source_removal::prepare(&registry, plugin_id, selection))
+            .transpose()?;
         let catalog = crate::catalog::PluginCatalog::load(&registry)?;
         if !request.cascade {
             crate::plugin_lifecycle::validate_disable(&[], &catalog, &registry, plugin_id)
@@ -292,9 +297,28 @@ fn offline_edit(
             registry.remove_local(plugin_id)?;
         }
         registry.save()?;
+        let source_result = source_removal.map(crate::source_removal::apply);
         output.registration = Some(
             serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":false,"affected_plugin_ids":affected,"applies":"next-codlet-launch","directory":"preserved"}),
         );
+        if let Some(result) = source_result {
+            let record = output.registration.as_mut().expect("registration result");
+            record["directory"] = serde_json::Value::from(if result.status == "deleted" {
+                "deleted"
+            } else if result.failed() {
+                "not_fully_deleted"
+            } else {
+                "preserved"
+            });
+            record["source_removal"] =
+                serde_json::to_value(&result).expect("source result is serializable");
+            if result.failed() {
+                return Err(PluginCliError::Request(PluginControlError::new(
+                    result.code,
+                    result.message,
+                )));
+            }
+        }
         return Ok(());
     }
     if request.action == PluginControlAction::Revoke {

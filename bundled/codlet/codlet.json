@@ -2,6 +2,11 @@
   "schema": 1,
   "id": "codlet-gui",
   "name": "Codlet GUI",
+  "description": "Manage plugins, imports, permissions, and Codlet updates.",
+  "i18n": {
+    "zh": { "name": "Codlet 管理界面", "description": "管理插件、导入、权限和 Codlet 更新。" },
+    "en": { "name": "Codlet GUI", "description": "Manage plugins, imports, permissions, and Codlet updates." }
+  },
   "version": "0.1.0",
   "renderer": {
     "entry": "dist/renderer.js",

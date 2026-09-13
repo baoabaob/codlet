@@ -202,7 +202,8 @@ async function start(recoverInterrupted = false) {
   const logs = path.join(root, 'logs', 'coordinator-' + runId);
   fs.mkdirSync(logs);
   const quitFile = path.join(logs, 'quit.request');
-  const managerIdentity = await ps("(Get-Process -Id ([int]$env:CODLET_CHECK_PID)).StartTime.ToUniversalTime().ToString('o') | ConvertTo-Json -Compress", { CODLET_CHECK_PID: String(process.pid) });
+  const managerFacts = await ps("$codletStarted=(Get-Process -Id ([int]$env:CODLET_CHECK_PID)).StartTime.ToUniversalTime(); [pscustomobject]@{created=$codletStarted.ToString('o');filetime=$codletStarted.ToFileTimeUtc().ToString()} | ConvertTo-Json -Compress", { CODLET_CHECK_PID: String(process.pid) });
+  const managerIdentity = managerFacts.created;
   let state = { schema: 1, runId, state: 'preparing', labRoot: root, managerPid: process.pid, managerCreated: managerIdentity, logs, quitFile, before };
   atomicJson(path.join(logs, 'state.json'), state);
   let backend, backendExit, lab, labExit, prepared, deadline, wroteState = false;
@@ -215,7 +216,7 @@ async function start(recoverInterrupted = false) {
     const endpoint = 'ws://127.0.0.1:' + port;
     lab = spawn(labBinary, ['--experimental-isolated-client', '--root', root, '--expected-package-version', config.expectedPackageVersion,
       '--app-server-url', endpoint, '--resume-from', report, ...(recoverInterrupted ? ['--recover-interrupted'] : [])],
-      { cwd: path.join(root, 'project'), env: environment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      { cwd: path.join(root, 'project'), env: { ...environment(), CODLET_UPDATE_OWNER_PID: String(process.pid), CODLET_UPDATE_OWNER_CREATED: managerFacts.filetime }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     labExit = exited(lab);
     lab.stdin.on('error', () => {});
     const hostOutput = fs.createWriteStream(path.join(logs, 'lab-stdout.jsonl'), { flags: 'wx' });
@@ -298,6 +299,7 @@ async function start(recoverInterrupted = false) {
       }
     }
   } finally {
+    if (lab && lab.exitCode !== null && !state.hostExit) state.hostExit = await labExit;
     if (backend && backend.exitCode === null && backend.signalCode === null) {
       backend.kill('SIGTERM'); // Windows: terminate only this retained, newly created backend handle.
       await backendExit;

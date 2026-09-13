@@ -39,6 +39,8 @@ impl RuntimeManageError {
 pub struct RuntimeManageService {
     broker: ControlBroker,
     listing: Arc<Mutex<Result<Value, RuntimeManageError>>>,
+    client_status: Arc<Mutex<Value>>,
+    runtime_update: Arc<Mutex<Option<crate::runtime_update::RuntimeUpdateService>>>,
     local_registry: Option<Arc<PathBuf>>,
     local_watch: bool,
     github_jobs: Option<crate::runtime_manage_github::GitHubJobs>,
@@ -55,6 +57,8 @@ impl RuntimeManageService {
                 "The runtime has not published a plugin list yet.",
             )))),
             local_registry: None,
+            client_status: Arc::new(Mutex::new(serde_json::json!({"status":"unknown"}))),
+            runtime_update: Arc::new(Mutex::new(None)),
             local_watch: false,
             github_jobs: None,
             #[cfg(windows)]
@@ -73,6 +77,12 @@ impl RuntimeManageService {
     }
 
     pub(crate) fn decorate_list(&self, list: &mut Value) {
+        list["runtimeVersion"] = Value::from(env!("CARGO_PKG_VERSION"));
+        list["clientStatus"] = self
+            .client_status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
         if self.local_registry.is_some() {
             list["localManagement"] = serde_json::json!({"available":true, "watchEnabled":self.local_watch, "folderPicker":cfg!(windows)});
             list["githubManagement"] = serde_json::json!({"available":true});
@@ -96,6 +106,20 @@ impl RuntimeManageService {
                 }
             }
         }
+    }
+
+    pub(crate) fn publish_client_status(&self, status: Value) {
+        *self
+            .client_status
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = status;
+    }
+
+    pub(crate) fn set_runtime_update(&self, service: crate::runtime_update::RuntimeUpdateService) {
+        *self
+            .runtime_update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(service);
     }
 
     /// Publish owner facts without reading plugin files. Host callers receive
@@ -136,6 +160,43 @@ impl RuntimeManageService {
     /// executable, registry or source snapshot.
     pub fn invoke(&self, method: &str, params: Value) -> Result<Value, RuntimeManageError> {
         let params = bounded_value(params, MAX_CONTROL_REQUEST_BYTES, "invalid_params")?;
+        if matches!(
+            method,
+            "runtimeUpdateStatus"
+                | "checkRuntimeUpdate"
+                | "downloadRuntimeUpdate"
+                | "installRuntimeUpdate"
+        ) {
+            if !params.is_null() && params.as_object().is_none_or(|object| !object.is_empty()) {
+                return Err(RuntimeManageError::new(
+                    "invalid_params",
+                    "Runtime updates expect empty params.",
+                ));
+            }
+            let service = self
+                .runtime_update
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .ok_or_else(|| {
+                    RuntimeManageError::new(
+                        "runtime_update_unavailable",
+                        "Runtime updates are unavailable for this launcher.",
+                    )
+                })?;
+            let status = match method {
+                "runtimeUpdateStatus" => Ok(service.status()),
+                "checkRuntimeUpdate" => service.check(),
+                "downloadRuntimeUpdate" => service.download(),
+                _ => service.request_install(),
+            }
+            .map_err(|error| RuntimeManageError::new("runtime_update_error", error.to_string()))?;
+            return bounded_value(
+                serde_json::to_value(status).expect("update status serializes"),
+                MAX_CONTROL_RESPONSE_BYTES,
+                "response_too_large",
+            );
+        }
         if method == "list" {
             if !params.is_null() {
                 return Err(RuntimeManageError::new(
@@ -173,6 +234,8 @@ impl RuntimeManageService {
                 | "folderSelection"
                 | "managedHistory"
                 | "previewRollback"
+                | "sourceRemovalPreview"
+                | "openFolder"
         ) {
             let path = self.local_registry.as_ref().ok_or_else(|| {
                 RuntimeManageError::new(
@@ -198,7 +261,44 @@ impl RuntimeManageService {
             }
             let registry = crate::plugins::PluginRegistry::load(path.as_ref())
                 .map_err(|error| RuntimeManageError::new("registry_error", error.to_string()))?;
-            let value = if method == "previewLocal" {
+            let value = if method == "sourceRemovalPreview" || method == "openFolder" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields, rename_all = "camelCase")]
+                struct SourceInput {
+                    plugin_id: String,
+                }
+                let input: SourceInput = serde_json::from_value(params).map_err(|error| {
+                    RuntimeManageError::new("invalid_params", error.to_string())
+                })?;
+                if method == "sourceRemovalPreview" {
+                    serde_json::to_value(
+                        crate::source_removal::preview(&registry, &input.plugin_id).map_err(
+                            |error| {
+                                RuntimeManageError::new("source_removal_error", error.to_string())
+                            },
+                        )?,
+                    )
+                    .expect("source preview serializes")
+                } else {
+                    #[cfg(windows)]
+                    {
+                        crate::windows::open_folder::open_registered_source(
+                            &registry,
+                            &input.plugin_id,
+                        )
+                        .map_err(|error| {
+                            RuntimeManageError::new("open_folder_error", error.to_string())
+                        })?
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        return Err(RuntimeManageError::new(
+                            "unsupported_platform",
+                            "Opening a source folder is unavailable on this platform.",
+                        ));
+                    }
+                }
+            } else if method == "previewLocal" {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct PreviewInput {
@@ -363,6 +463,22 @@ impl RuntimeManageService {
                 request.validate().map_err(|error| {
                     RuntimeManageError::new("invalid_params", error.to_string())
                 })?;
+                if let Some(selection) = &request.remove_source {
+                    let path = self.local_registry.as_ref().ok_or_else(|| {
+                        RuntimeManageError::new(
+                            "runtime_unavailable",
+                            "Source removal requires a managed registry.",
+                        )
+                    })?;
+                    let registry =
+                        crate::plugins::PluginRegistry::load(path.as_ref()).map_err(|error| {
+                            RuntimeManageError::new("registry_error", error.to_string())
+                        })?;
+                    crate::source_removal::prepare(&registry, &request.plugin_id, selection)
+                        .map_err(|error| {
+                            RuntimeManageError::new("source_removal_error", error.to_string())
+                        })?;
+                }
                 ControlRequest::prepare(request)
             }
             "submit" | "operation" => {

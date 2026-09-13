@@ -19,6 +19,8 @@ pub mod runtime_inspection;
 pub mod runtime_manage;
 mod runtime_manage_github;
 pub mod runtime_status;
+pub mod runtime_update;
+pub mod source_removal;
 
 #[cfg(windows)]
 pub mod host_control;
@@ -36,3 +38,5 @@ pub mod plugin_cli;
 pub mod probe;
 #[cfg(windows)]
 pub mod windows;
+#[cfg(windows)]
+pub(crate) mod runtime_update_owner;

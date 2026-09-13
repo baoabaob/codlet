@@ -326,6 +326,7 @@ impl PluginWatcher {
                     plugin_id: id,
                     permission: None,
                     cascade: false,
+                    remove_source: None,
                     local_import: None,
                 },
                 executor: selected.executor().expect("watch source has an executor"),

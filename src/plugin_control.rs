@@ -48,6 +48,9 @@ pub struct PluginControlRequest {
     /// Explicit local or managed package selection and grants. Submission carries only a receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_import: Option<Box<crate::local_import::LocalImportRequest>>,
+    /// Present only after explicit confirmation to delete this registered source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_source: Option<Box<crate::source_removal::SourceRemovalRequest>>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -67,6 +70,15 @@ impl PluginControlRequest {
     }
 
     pub fn validate(&self) -> Result<(), PluginControlError> {
+        if let Some(selection) = &self.remove_source {
+            if self.action != PluginControlAction::Remove {
+                return Err(PluginControlError::new(
+                    "invalid_source_removal",
+                    "Only remove may explicitly delete a confirmed source directory.",
+                ));
+            }
+            selection.validate()?;
+        }
         if self.cascade
             && !matches!(
                 self.action,

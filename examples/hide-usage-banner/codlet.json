@@ -2,6 +2,11 @@
   "schema": 1,
   "id": "dev.local.hide-usage-banner",
   "name": "Usage Banner Hider",
+  "description": "Hide the exhausted usage banner in Codex.",
+  "i18n": {
+    "zh": { "name": "隐藏额度提示", "description": "隐藏 Codex 中额度已用尽的提示卡片。" },
+    "en": { "name": "Usage Banner Hider", "description": "Hide the exhausted usage banner in Codex." }
+  },
   "version": "0.1.0",
   "renderer": { "entry": "renderer.js", "world": "isolated" },
   "permissions": ["ui.dom"],

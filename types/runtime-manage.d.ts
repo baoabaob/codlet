@@ -23,10 +23,34 @@ export interface RuntimeManageDescriptor {
   readonly scope: 'runtime' | 'target';
 }
 
+export interface PluginTranslation { name?: string; description?: string; }
+export type PluginTranslations = Partial<Record<'zh' | 'en', PluginTranslation>>;
+export interface SourceRemovalRequest { registrationDigest: string; sourceIdentity: string | null; }
+export interface SourceRemovalPreview extends SourceRemovalRequest {
+  schema: 1; kind: 'codlet.source-removal-preview'; pluginId: string; path: string;
+  status: 'available' | 'missing' | 'blocked'; warning: string | null;
+}
+
+export interface RuntimeUpdateStatus {
+  currentVersion: string;
+  phase: 'development' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'downloaded' | 'installRequested' | 'failed';
+  configured: boolean;
+  channel: string;
+  lastCheckedAt: number | null;
+  nextCheckAt: number | null;
+  candidate: { id: string; version: string; platform: string; size: number; sha256: string; releaseUrl: string | null } | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  installAvailable: boolean;
+  unavailableReason: string | null;
+  error: { code: string; message: string } | null;
+}
+
 /** prepare uses plugin_id, matching the existing control receipt protocol. */
 export type PluginControlRequest =
   | { action: 'enable' | 'reload'; plugin_id: string; permission?: never; cascade?: false; local_import?: never }
-  | { action: 'disable' | 'remove'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never }
+  | { action: 'disable'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never; remove_source?: never }
+  | { action: 'remove'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never; remove_source?: SourceRemovalRequest }
   | { action: 'revoke'; plugin_id: string; permission: PluginPermission; cascade?: false; local_import?: never }
   | { action: 'import'; plugin_id: string; local_import: LocalImportRequest & { managed?: 'install' }; permission?: never; cascade?: false }
   | { action: 'update'; plugin_id: string; local_import: LocalImportRequest & { managed: 'update' }; permission?: never; cascade?: false }
@@ -57,7 +81,7 @@ export interface LocalImportPreview {
   existingRegistration: LocalPluginRegistration | null;
   existingEnabled: boolean;
   manifest: {
-    schema: 1; id: string; name?: string; version: string;
+    schema: 1; id: string; name?: string; description?: string; i18n?: PluginTranslations; version: string;
     renderer?: { entry: string; world: 'isolated' | 'main' };
     host?: { entry: string; provides?: ImportCapability[]; requires?: ImportCapability[] };
     permissions: PluginPermission[]; provides: ImportCapability[]; requires: ImportCapability[];
@@ -136,6 +160,8 @@ export interface RuntimeManagePlugin {
   id: string;
   /** Manifest name, with the stable ID as fallback for older packages. */
   name: string;
+  description: string | null;
+  i18n: PluginTranslations | null;
   /** Other enabled/running plugins included by an explicit cascade disable. */
   disableDependents: string[];
   version: string | null;
@@ -169,6 +195,8 @@ export interface RuntimeManagePlugin {
 
 /** Managed renderer list retains immediate registry semantics and may omit time. */
 export interface RuntimeManageList {
+  runtimeVersion: string;
+  clientStatus?: { status: 'officialUpdateAvailable' | 'unmatched' | 'matched' | 'unknown'; installedVersion?: string; latestVersion?: string | null; officialUpdateAvailable?: boolean; matchesLatestClient?: boolean; checkedAt?: number };
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
   localManagement?: { available: true; watchEnabled: boolean; folderPicker: boolean };
   githubManagement?: { available: true };
@@ -183,7 +211,13 @@ export interface RuntimeManageMethods {
   operation: { params: RuntimeManageOperationInput; result: ControlReport };
   previewLocal: { params: { path: string }; result: LocalImportPreview };
   permissions: { params: { pluginId: string }; result: PluginPermissionsReport };
-  chooseLocalFolder: { params: null; result: FolderSelection };
+  sourceRemovalPreview: { params: { pluginId: string }; result: SourceRemovalPreview };
+  openFolder: { params: { pluginId: string }; result: { pluginId: string; opened: true } };
+  chooseLocalFolder: { params: null | { locale: 'zh' | 'en' }; result: FolderSelection };
+  runtimeUpdateStatus: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
+  checkRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
+  downloadRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
+  installRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
   folderSelection: { params: { selectionId: string }; result: FolderSelection };
   githubReleases: { params: { url: string }; result: GitHubJob };
   githubPrepare: { params: { repositoryUrl: string; releaseId: number; assetId: number } & ({ operation?: 'install'; pluginId?: string } | { operation: 'update'; pluginId: string }); result: GitHubJob };

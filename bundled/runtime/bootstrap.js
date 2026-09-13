@@ -1,4 +1,4 @@
-((options = {}, createUI = null) => {
+((options = {}, createUI = null, createI18n = null) => {
     const world = options.world ?? 'isolated';
     if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -389,11 +389,16 @@
                     closed: false,
                     definition
                 };
+                let i18n;
                 const context = Object.freeze({
                     pluginId: metadata.id,
                     version: metadata.version,
                     generation: metadata.generation,
                     world,
+                    get i18n() {
+                        if (!i18n && typeof createI18n === 'function') i18n = createI18n(context);
+                        return i18n;
+                    },
                     reportDiagnostic(diagnostic) {
                         if (!diagnostic || typeof diagnostic.code !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(diagnostic.code) || typeof diagnostic.message !== 'string' || new TextEncoder().encode(diagnostic.message).byteLength > 4096 || !['info', 'error'].includes(diagnostic.level ?? 'error')) throw rpcError('invalid_diagnostic', 'expected a bounded diagnostic code, message and level');
                         if (record.diagnosticCount >= 32) throw rpcError('diagnostic_limit', 'at most 32 diagnostics per renderer generation');

@@ -32,10 +32,9 @@
         node.setAttribute('data-codlet-ui-role', name);
         node.setAttribute('data-codlet-ui-variant', variant);
     };
-    function createElement(tag, options = {}) {
+    function ownElement(node, options = {}) {
         assertLive();
         if (nodes.size >= 4096) throw error('ui_resource_limit', 'UI element limit reached');
-        const node = document.createElement(tag);
         if (options.role) role(node, options.role, options.variant);
         if (options.text !== undefined) node.textContent = text(options.text);
         if (options.className !== undefined) node.className = text(options.className, 'className');
@@ -45,8 +44,9 @@
         focusOwners.set(node, () => outsideFocus);
         return node;
     }
+    function createElement(tag, options = {}) { return ownElement(document.createElement(tag), options); }
     function element(tag, options = {}) {
-        if (!['div', 'span', 'p', 'section', 'h1', 'h2', 'label', 'button', 'input', 'dialog', 'textarea', 'select', 'option'].includes(tag)) throw error('invalid_ui_argument', 'Unsupported UI element');
+        if (!['div', 'span', 'p', 'section', 'h1', 'h2', 'label', 'button', 'input', 'dialog', 'textarea', 'select', 'option', 'details', 'summary'].includes(tag)) throw error('invalid_ui_argument', 'Unsupported UI element');
         return createElement(tag, options);
     }
     function externalLink(options) {
@@ -61,6 +61,36 @@
         node.setAttribute('target', '_blank');
         node.setAttribute('rel', 'noopener noreferrer');
         if (label !== null) node.setAttribute('aria-label', label);
+        return node;
+    }
+    const iconPaths = Object.freeze({
+        close: ['M6 6l12 12M6 18L18 6'],
+        back: ['M19 12H5m6-6-6 6 6 6'],
+        refresh: ['M20 7v5h-5', 'M20 12a8 8 0 1 1-2.3-5.7L20 9'],
+        update: ['M12 16V4m-5 5 5-5 5 5', 'M5 16v4h14v-4'],
+        restart: ['M20 6v6h-6', 'M20 12a8 8 0 1 1-3-6.25L20 8'],
+        spinner: ['M20 12a8 8 0 1 1-8-8'],
+        download: ['M12 4v12m-5-5 5 5 5-5', 'M5 16v4h14v-4'],
+        import: ['M4 19V5h8l2 3h6v11H4', 'M12 11v6m-3-3 3 3 3-3'],
+        folder: ['M3 19V5h7l3 3h8v3', 'M3 19l3-8h16l-3 8H3'],
+        external: ['M14 4h6v6m0-6L10 14', 'M10 4H4v16h16v-6'],
+        search: ['M16 16l5 5', 'M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0']
+    });
+    function icon(name, { size = 16 } = {}) {
+        if (!Object.hasOwn(iconPaths, name) || ![16, 18].includes(size)) throw error('invalid_ui_argument', 'Unsupported icon or size');
+        const node = ownElement(document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
+        for (const [key, value] of Object.entries({ width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' })) node.setAttribute(key, String(value));
+        node.style.flexShrink = '0';
+        for (const d of iconPaths[name]) { const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d); node.appendChild(path); }
+        return node;
+    }
+    function backButton({ text: caption = 'Back', label = caption, onClick } = {}) {
+        const node = button({ text: caption, label, onClick });
+        node.textContent = '';
+        node.appendChild(icon('back'));
+        node.appendChild(element('span', { text: caption }));
+        node.setAttribute('data-codlet-back-button', '');
+        node.style.cssText = 'display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:4px 0;border:0;background:transparent;box-shadow:none;align-self:flex-start;';
         return node;
     }
     function on(target, type, handler, options) {
@@ -211,6 +241,6 @@
     const unregister = context.onDeactivate(dispose);
     try { on(document, 'focusin', event => { if (!ownsFocus(event.target)) outsideFocus = externalFocus(event.target); }); }
     catch (failure) { dispose(); throw failure; }
-    return Object.freeze({ api: 1, signal: abort.signal, element, on, remove, button, externalLink, switch: toggle, row, status, dialog, busy, after, dispose });
+    return Object.freeze({ api: 1, signal: abort.signal, element, on, remove, button, icon, backButton, externalLink, switch: toggle, row, status, dialog, busy, after, dispose });
     };
 })()

@@ -174,6 +174,9 @@ pub fn preview_rollback(
                 "Choose a retained version from this plugin's history.",
             )
         })?;
+    if version.package_path.try_exists().ok() == Some(false) {
+        return Err(control_error("managed_version_missing", "This retained version's source directory is missing or was explicitly deleted; download that release again."));
+    }
     preview(registry, &version.package_path, ManagedOperation::Rollback)
 }
 

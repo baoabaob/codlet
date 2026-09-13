@@ -8,8 +8,9 @@ export interface UiAppearance {
   nativeLayout?: string | null;
   nativeTokensAvailable?: boolean;
 }
-export type UiTag = 'div' | 'span' | 'p' | 'section' | 'h1' | 'h2' | 'label' | 'button' | 'input' | 'dialog' | 'textarea' | 'select' | 'option';
+export type UiTag = 'div' | 'span' | 'p' | 'section' | 'h1' | 'h2' | 'label' | 'button' | 'input' | 'dialog' | 'textarea' | 'select' | 'option' | 'details' | 'summary';
 export interface UiElementOptions { role?: UiRole; variant?: string; text?: string; className?: string }
+export type UiIconName = 'close' | 'back' | 'refresh' | 'update' | 'restart' | 'spinner' | 'download' | 'import' | 'folder' | 'external' | 'search';
 export interface UiDialog {
   readonly element: HTMLDialogElement;
   readonly header: HTMLDivElement;
@@ -28,8 +29,10 @@ export interface RendererUi {
   element<K extends UiTag>(tag: K, options?: UiElementOptions): HTMLElementTagNameMap[K];
   /** Listener lifetime belongs to this owner; DOM control listeners also retire on remove(). */
   on(target: EventTarget, type: string, handler: (event: Event, signal: AbortSignal) => unknown, options?: boolean | AddEventListenerOptions): () => void;
-  remove(node: HTMLElement): void;
+  remove(node: HTMLElement | SVGElement): void;
   button(options: { text?: string; label?: string; variant?: 'default' | 'primary' | 'danger' | 'icon' | 'close' | 'menu'; disabled?: boolean; onClick?: (event: Event, signal: AbortSignal) => unknown }): HTMLButtonElement;
+  icon(name: UiIconName, options?: { size?: 16 | 18 }): SVGSVGElement;
+  backButton(options?: { text?: string; label?: string; onClick?: (event: Event, signal: AbortSignal) => unknown }): HTMLButtonElement;
   /** Owned standard link, HTTPS only, without credentials; opens with noopener/noreferrer. */
   externalLink(options: { text: string; href: string; label?: string }): HTMLAnchorElement;
   switch(options: { label: string; checked?: boolean; disabled?: boolean; onChange?: (checked: boolean, event: Event, signal: AbortSignal) => unknown }): HTMLInputElement;

@@ -8,6 +8,8 @@ module.exports = {
         const ui = context.ui.create(appearance);
         let count = 0, trigger, observer;
         const panel = ui.dialog({ title: 'UI controls', onClose() { trigger?.setAttribute('aria-expanded', 'false'); } });
+        const back = ui.backButton({ text: 'Back', onClick() { panel.close('back'); } });
+        panel.body.insertBefore(back, panel.actions);
         const intro = ui.element('p', { text: 'Shared controls, local events and owned cleanup. This example has no runtime-management grant.' });
         const group = ui.element('section', { role: 'section' });
         panel.body.insertBefore(intro, panel.actions); panel.body.insertBefore(group, panel.actions);

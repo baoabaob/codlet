@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "channel": "stable",
+  "checkIntervalSeconds": 900,
+  "source": null
+}

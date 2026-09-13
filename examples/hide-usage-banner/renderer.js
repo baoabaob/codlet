@@ -7,8 +7,14 @@ const ATTRIBUTE = 'data-codlet-hide-usage-banner';
 const TITLES = [
     "you're out of codex and work usage",
     "you've used all codex and work usage",
+    '你的 codex 和工作使用额度已用完',
+    '你的 codex 和工作用量均已用完',
+    '你的 codex 和工作使用量已用完',
+    '你已用完 codex 和工作的所有使用量',
+    'codex 及「工作」用量已用盡',
+    '你已用盡 codex 和「工作」用量',
 ];
-const ACTIONS = new Set(['add credits', 'reset usage']);
+const ACTIONS = new Set(['add credits', 'reset usage', '增加额度', '重置使用量', '新增積分', '重設使用量']);
 let dispose = null;
 
 function normalize(value) {

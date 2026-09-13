@@ -617,6 +617,7 @@ mod tests {
                         plugin_id: "dev.host".into(),
                         permission: None,
                         cascade: false,
+                        remove_source: None,
                         local_import: None,
                     })
                     .unwrap_err()
@@ -721,6 +722,7 @@ mod tests {
                     plugin_id: "dev.local".into(),
                     permission: None,
                     cascade: false,
+                    remove_source: None,
                     local_import: None,
                 })
                 .unwrap_err();
@@ -867,6 +869,7 @@ mod tests {
                     plugin_id: "dev.consumer".into(),
                     permission: None,
                     cascade: false,
+                    remove_source: None,
                     local_import: None,
                 })
                 .unwrap_err()

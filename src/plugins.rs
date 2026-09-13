@@ -34,6 +34,10 @@ pub struct PluginManifest {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub i18n: BTreeMap<String, PluginTranslation>,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renderer: Option<RendererManifest>,
@@ -45,6 +49,17 @@ pub struct PluginManifest {
     pub provides: Vec<CapabilityDescriptor>,
     #[serde(default)]
     pub requires: Vec<CapabilityDescriptor>,
+}
+
+/// Optional presentation metadata. Stable plugin identity and permissions are
+/// never localized; clients choose Chinese or the English fallback.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginTranslation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -336,6 +351,22 @@ impl PluginManifest {
                 "name must contain 1–256 bytes of readable text".into(),
             ));
         }
+        validate_description(self.description.as_deref())?;
+        for (locale, translation) in &self.i18n {
+            if !matches!(locale.as_str(), "zh" | "en") {
+                return Err(ManifestError::Json(
+                    "i18n supports zh and en dictionaries".into(),
+                ));
+            }
+            if translation.name.as_ref().is_some_and(|name| {
+                name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control)
+            }) {
+                return Err(ManifestError::Json(
+                    "translated name must contain 1–256 bytes of readable text".into(),
+                ));
+            }
+            validate_description(translation.description.as_deref())?;
+        }
         if self.version.is_empty()
             || self.version.len() > MAX_VERSION_BYTES
             || !self.version.is_ascii()
@@ -371,6 +402,38 @@ impl PluginManifest {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_description(description: Option<&str>) -> Result<(), ManifestError> {
+    if description.is_some_and(|text| {
+        text.trim().is_empty() || text.len() > 2048 || text.chars().any(char::is_control)
+    }) {
+        return Err(ManifestError::Json(
+            "description must contain 1–2048 bytes of readable text".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn translated_metadata_preserves_identity_and_validates_every_locale() {
+    let mut value = serde_json::json!({"schema":1,"id":"dev.localized","name":"English name","description":"English description","i18n":{"zh":{"name":"中文名称","description":"中文描述"}},"version":"1","renderer":{"entry":"entry.js","world":"isolated"}});
+    let manifest = PluginManifest::parse(&value.to_string()).unwrap();
+    assert_eq!(manifest.id, "dev.localized");
+    assert_eq!(manifest.display_name(), "English name");
+    assert_eq!(manifest.i18n["zh"].description.as_deref(), Some("中文描述"));
+    let round_trip = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(round_trip["i18n"], value["i18n"]);
+    for bad in [
+        serde_json::json!({"zh":{"name":""}}),
+        serde_json::json!({"en":{"description":"bad\u{0000}text"}}),
+        serde_json::json!({"fr":{"name":"unsupported"}}),
+        serde_json::json!({"zh":{"description":"x".repeat(2049)}}),
+    ] {
+        value["i18n"] = bad;
+        assert!(PluginManifest::parse(&value.to_string()).is_err());
     }
 }
 

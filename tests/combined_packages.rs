@@ -171,6 +171,7 @@ impl Fixture {
                 plugin_id: id.into(),
                 permission: None,
                 cascade: false,
+                remove_source: None,
                 local_import: None,
             }));
         assert_eq!(prepared.status, ControlStatus::Prepared);
@@ -485,6 +486,7 @@ fn combined_disable_self_preserves_response_and_retries_a_full_receipt_queue() {
                     action: Action::Disable,
                     permission: None,
                     cascade: false,
+                    remove_source: None,
                     local_import: None,
                     plugin_id: format!("dev.absent{index}"),
                 }))

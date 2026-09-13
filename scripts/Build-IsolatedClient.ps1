@@ -34,6 +34,9 @@ foreach ($codletFile in @('node.exe', 'LICENSE')) {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.cmd') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Restart-TestClient.ps1') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/node-runtime.json') -Destination (Join-Path $codletOutput 'runtime/node-runtime.json')
+Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/update-channel.json') -Destination (Join-Path $codletOutput 'runtime/update-channel.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
 $codletDocsOutput = Join-Path $codletOutput 'docs'
 $null = New-Item -ItemType Directory -Path $codletDocsOutput

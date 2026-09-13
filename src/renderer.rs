@@ -30,6 +30,7 @@ use crate::runtime_status::{
 
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
 const UI_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/ui.js");
+const I18N_SOURCE: &str = include_str!("../bundled/runtime/i18n.js");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_RENDERER_RPC_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_RENDERER_RPC_METHOD_BYTES: usize = 256;
@@ -2066,7 +2067,7 @@ fn parse_lifecycle_result(result: Value) -> Result<(), String> {
 
 fn bootstrap_expression(world: RendererWorld) -> String {
     let options = json!({"world": world});
-    format!("({BOOTSTRAP_SOURCE})({options}, {UI_HELPERS_SOURCE})")
+    format!("({BOOTSTRAP_SOURCE})({options}, {UI_HELPERS_SOURCE}, {I18N_SOURCE})")
 }
 
 fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
@@ -2387,7 +2388,10 @@ fn invoke_builtin_host_endpoint(
             }
             match request.method.as_str() {
                 "prepare" | "submit" | "operation" | "previewLocal" | "permissions"
-                | "chooseLocalFolder" | "folderSelection" => {
+                | "chooseLocalFolder" | "folderSelection" | "sourceRemovalPreview" | "openFolder"
+                | "githubReleases" | "githubPrepare" | "githubJob" | "cancelGitHubJob"
+                | "managedHistory" | "previewRollback"
+                | "runtimeUpdateStatus" | "checkRuntimeUpdate" | "downloadRuntimeUpdate" | "installRuntimeUpdate" => {
                     if request.id.is_none() {
                         return Err(host_failure(
                             "request_required",
@@ -3127,3 +3131,6 @@ mod tests {
         assert!(error.contains("payload exceeds"));
     }
 }
+
+#[cfg(test)]
+mod manage_endpoint_tests;

@@ -11,6 +11,20 @@ function fixture() {
     return { ...dom, ...lifecycle, ui: lifecycle.context.ui.create(appearance) };
 }
 
+test('shared navigation uses owned thin SVG icons and a keyboard-accessible back button', async () => {
+    const f = fixture(); let returned = 0;
+    const back = f.ui.backButton({ text: 'Back', onClick: () => returned++ }); f.document.body.appendChild(back);
+    assert.equal(back.getAttribute('aria-label'), 'Back'); assert.equal(back.children[0].tagName, 'svg');
+    assert.equal(back.children[0].getAttribute('width'), '16'); assert.equal(back.children[0].getAttribute('stroke-width'), '1.6');
+    assert.equal(back.children[0].getAttribute('aria-hidden'), 'true');
+    await back.emit('click'); assert.equal(returned, 1);
+    for (const name of ['folder', 'download', 'restart', 'external', 'refresh', 'import', 'close', 'spinner']) {
+        const icon = f.ui.icon(name, { size: 18 }); assert.equal(icon.getAttribute('height'), '18'); f.ui.remove(icon);
+    }
+    assert.throws(() => f.ui.icon('unknown'), { code: 'invalid_ui_argument' });
+    f.deactivate(); await back.emit('click'); assert.equal(returned, 1); assert.equal(back.isConnected, false);
+});
+
 test('external links accept only credential-free HTTPS and retire with their UI owner', async () => {
     const f = fixture();
     for (const href of ['javascript:alert(1)', 'http://github.com', '/relative', 'https://user:secret@github.com', 'file:///C:/plugin']) {
