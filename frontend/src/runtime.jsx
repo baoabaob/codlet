@@ -25,10 +25,11 @@ const STYLE_ID = 'data-codlet-official-styles';
 // pinned client the native accent Switch uses chart-blue and thumb-on-accent.
 const hostTokens = Object.freeze(Object.fromEntries([
   'color-text','color-text-secondary','color-text-tertiary','color-text-inverse',
-  'color-surface','color-surface-elevated','color-border','color-ring','color-page-search',
+  'color-surface','color-surface-elevated','color-border','color-ring',
 ].map(name=>['--'+name,'--'+name]).concat([
   ['--switch-track-color-checked','--color-chart-blue'],
   ['--switch-thumb-color','--color-control-thumb-on-accent'],
+  ['--color-page-search','--color-background-page-search'],
 ])));
 let sharedStyle, owners = 0;
 // Replaced with scoped, compiled upstream CSS by the reproducible build.

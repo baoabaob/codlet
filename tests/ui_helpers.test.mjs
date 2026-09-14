@@ -45,7 +45,9 @@ test('locale/theme sync is scoped and never rewrites the host',async t=>{
 test('host semantic colors bridge to official tokens and follow host theme changes',async t=>{
   const f=uiFixture();t.after(()=>f.dispose());const body=f.document.body;
   body.style.setProperty('--color-chart-blue','rgb(173, 81, 21)');body.style.setProperty('--color-control-thumb-on-accent','rgb(255, 253, 249)');body.style.setProperty('--color-ring','rgb(165, 79, 18)');
-  body.style.setProperty('--color-page-search','rgb(45, 45, 45)');
+  // The audited native .bg-page-search utility reads this exact host token.
+  body.style.setProperty('--color-background-page-search','rgb(45, 45, 45)');
+  body.style.setProperty('--color-page-search','rgb(200, 0, 0)'); // Wrong host name must not win.
   const ui=f.context.ui.create(),node=ui.container();
   assert.equal(node.style.getPropertyValue('--switch-track-color-checked'),'rgb(173, 81, 21)');assert.equal(node.style.getPropertyValue('--switch-thumb-color'),'rgb(255, 253, 249)');assert.equal(node.style.getPropertyValue('--color-ring'),'rgb(165, 79, 18)');
   assert.equal(node.style.getPropertyValue('--color-page-search'),'rgb(45, 45, 45)');
