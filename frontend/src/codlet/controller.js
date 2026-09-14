@@ -11,7 +11,7 @@ export class Manager {
     this.context = context; this.messages = createMessages(context);
     this.listeners = new Set(); this.timers = new Map(); this.sequence = { list:0, page:0, removal:0, update:0 };
     this.alive = true; this.job = null; this.pending = null; this.updateCommand = null;
-    this.state = { open:false, page:'plugins', plugins:[], query:'', loading:false, error:'', operationStatus:'',
+    this.state = { open:false, page:'plugins', plugins:[], query:'', loading:false, error:'', operationError:'', listError:'', listStale:false, operationStatus:'',
       runtimeVersion:'', clientStatus:null, localManagement:null, githubAvailable:false, confirmation:null,
       mode:'local', importOperation:'install', target:null, path:'', url:'', catalog:null, release:'', asset:'',
       preview:null, importBusy:false, importStatus:'', importError:'', grants:[], trusted:false, enableAfter:false, policy:{},
@@ -21,12 +21,12 @@ export class Manager {
   }
   subscribe = fn => { this.listeners.add(fn); return () => this.listeners.delete(fn); };
   snapshot = () => this.state;
-  set(patch) { if (!this.alive) return; this.state = {...this.state,...patch}; for (const fn of this.listeners) fn(); }
+  set(patch) { if (!this.alive) return; this.state = {...this.state,...patch}; this.state.error=[this.state.operationError,this.state.listError].filter(Boolean).join('\n'); for (const fn of this.listeners) fn(); }
   rpc(method, params = null) { return this.context.rpc.request(capability, method, params); }
   clearTimer(name) { clearTimeout(this.timers.get(name)); this.timers.delete(name); }
   after(name, delay, fn) { this.clearTimer(name); this.timers.set(name,setTimeout(()=>{this.timers.delete(name); if(this.alive) void fn();},delay)); }
   current(channel, sequence, page) { return this.alive && this.state.open && this.sequence[channel] === sequence && (!page || this.state.page === page); }
-  available() { return this.alive && this.state.open && !this.pending && !this.state.confirmation; }
+  available() { return this.alive && this.state.open && !this.state.listStale && !this.pending && !this.state.confirmation; }
   async open() { if (this.state.open) return; this.set({open:true}); return this.pending?.id ? this.checkMutation() : this.refresh(); }
   close() {
     if (this.pending && !this.pending.submitted) this.pending.cancelled = true;
@@ -42,15 +42,15 @@ export class Manager {
   async refresh() {
     if (!this.alive || !this.state.open) return;
     if (this.pending) return this.pending.id ? this.checkMutation() : undefined;
-    const sequence=++this.sequence.list; this.set({loading:true,error:''});
+    const sequence=++this.sequence.list; this.set({loading:true,listError:''});
     try {
       const reply=await this.rpc('list');
       if (!this.current('list',sequence)) return;
       if (!Array.isArray(reply?.plugins) || reply.plugins.some(p=>!p || typeof p.id!=='string' || !p.id) || new Set(reply.plugins.map(p=>p.id)).size!==reply.plugins.length) throw new Error('Plugin list unavailable');
-      this.set({plugins:reply.plugins,localManagement:reply.localManagement??null,githubAvailable:reply.githubManagement?.available===true,
+      this.set({plugins:reply.plugins,listStale:false,localManagement:reply.localManagement??null,githubAvailable:reply.githubManagement?.available===true,
         runtimeVersion:reply.runtimeVersion??'',clientStatus:reply.clientStatus??null});
       if (typeof reply.runtimeVersion==='string') void this.loadUpdate();
-    } catch(error) { if(this.current('list',sequence)) this.set({error:error?.code==='rpc_timeout'?'Plugin list timed out. Refresh to try again.':message(error)}); }
+    } catch(error) { if(this.current('list',sequence)) this.set({listStale:true,listError:'Plugin state could not be refreshed. Displayed values may be out of date.\n'+(error?.code==='rpc_timeout'?'Plugin list timed out. Refresh to try again.':message(error))}); }
     finally { if(this.current('list',sequence)) this.set({loading:false}); }
   }
   filtered() {
@@ -61,7 +61,7 @@ export class Manager {
   async mutate(pluginId, action, extra = {}, name) {
     if (!this.available()) return;
     const expected={pluginId,action,name:name||this.messages.name(this.state.plugins.find(p=>p.id===pluginId)??{id:pluginId}),id:null,checking:false,deleteSource:!!extra.remove_source};
-    this.pending=expected; this.set({error:'',operationStatus:`${expected.name}: preparing...`});
+    this.pending=expected; this.set({operationError:'',operationStatus:`${expected.name}: preparing...`});
     try {
       const prepared=await this.rpc('prepare',{action,plugin_id:pluginId,...extra});
       if (!this.alive || this.pending!==expected) return;
@@ -86,7 +86,7 @@ export class Manager {
       if(!this.alive || this.pending!==expected) return;
       const operation=reply?.operation;
       if(operation?.operation_id!==expected.id || operation.request?.plugin_id!==expected.pluginId || operation.request?.action!==expected.action) {
-        this.set({error:reply?.error||'Action status is no longer available. The action has not been repeated.'}); return;
+        this.set({operationError:reply?.error||'Action status is no longer available. The action has not been repeated.'}); return;
       }
       if(reply.status==='completed') {
         const result=operation.completion, report=result?.kind==='report'?result.report:null;
@@ -97,17 +97,16 @@ export class Manager {
           'The plugin was unregistered and its confirmed source directory was deleted. Separate plugin data was preserved.' ? report.message : '';
         return this.finishMutation(expected,success?deletionWarning:result?.error?.message||report?.message||'The action finished with an error. Refresh for the current state.');
       }
-      if(!['queued','running'].includes(reply.status)) {this.set({error:reply?.error||'The action was not confirmed. Refresh checks the same action without repeating it.'});return;}
+      if(!['queued','running'].includes(reply.status)) {this.set({operationError:reply?.error||'The action was not confirmed. Refresh checks the same action without repeating it.'});return;}
       this.set({operationStatus:`${expected.name}: ${reply.status==='queued'?'waiting':'updating'}...`});
       if(this.state.open) this.after('mutation',250,()=>this.checkMutation(expected));
-    } catch { if(this.alive && this.pending===expected) this.set({error:'Action status unavailable. Refresh to check again.'}); }
+    } catch { if(this.alive && this.pending===expected) this.set({operationError:'Action status unavailable. Refresh to check again.'}); }
     finally { expected.checking=false; }
   }
   async finishMutation(expected,error='') {
     if(this.pending!==expected) return;
-    this.pending=null; this.clearTimer('mutation'); this.set({operationStatus:''});
+    this.pending=null; this.clearTimer('mutation'); this.set({operationStatus:'',operationError:error});
     if(this.state.open) await this.refresh();
-    if(this.alive && !this.pending) this.set({error});
   }
   disable(plugin) {
     if(!this.available()) return;

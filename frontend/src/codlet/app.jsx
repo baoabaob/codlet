@@ -1,5 +1,6 @@
 import { Manager } from './controller.js';
 import { PERMISSION_COPY } from './messages.js';
+import { displayPath } from './paths.js';
 import layout from './layout.css';
 let React,h,C,I,ui,manager,epoch=0;
 const t = value => manager.messages.t(value);
@@ -19,7 +20,7 @@ function Source({source,metadata}) {
     <Copy>{t(`Runtime compatibility: ${metadata?.runtimeApi==null?'unknown (not declared)':`author declared API ${metadata.runtimeApi}`}\nPlatforms: ${metadata?.platforms?.length?`author declared ${metadata.platforms.join(', ')}`:'unknown (not declared)'}`)}</Copy></>;
 }
 function PluginRow({plugin,s}) {
-  const busy=mutationBusy(s)||s.loading, enabled=plugin.enabled===true, registered=plugin.registered!==false;
+  const busy=mutationBusy(s)||s.loading||s.listStale, enabled=plugin.enabled===true, registered=plugin.registered!==false;
   const error=plugin.execution?.error || plugin.validation?.error?.message;
   return <div className="codlet-plugin-row" data-codlet-plugin={plugin.id} aria-busy={manager.pending?.pluginId===plugin.id}>
     <div className="codlet-plugin-copy">
@@ -31,9 +32,9 @@ function PluginRow({plugin,s}) {
     </div>
     <div className="codlet-plugin-actions">
       {registered&&<C.Button color="secondary" variant="ghost" size="sm" aria-label={t(`Details for ${name(plugin)}`)} disabled={busy} onClick={()=>manager.details(plugin)}>{t('Details')}</C.Button>}
-      {!registered ? plugin.loaded&&<C.Button color="secondary" variant="ghost" size="sm" aria-label={t(`Stop ${name(plugin)}`)} disabled={busy} onClick={()=>manager.disable(plugin)}>{t('Stop')}</C.Button> :
+      {!registered ? plugin.loaded&&<C.Button color="secondary" variant="ghost" size="sm" data-codlet-focus-key={`stop:${plugin.id}`} aria-label={t(`Stop ${name(plugin)}`)} disabled={busy} onClick={()=>manager.disable(plugin)}>{t('Stop')}</C.Button> :
         <>{enabled?<IconAction icon={I.Regenerate} label={`Reload ${name(plugin)}`} loading={manager.pending?.pluginId===plugin.id} disabled={busy} onClick={()=>manager.mutate(plugin.id,plugin.loaded||Number.isSafeInteger(plugin.generation)?'reload':'enable')}/>:<span className="codlet-action-space" aria-hidden="true"/>}
-        <C.Switch checked={enabled} disabled={busy} aria-label={t(plugin.id===manager.context.pluginId?'Enable Codlet GUI':`Enable ${name(plugin)}`)} onCheckedChange={next=>next?manager.mutate(plugin.id,'enable'):manager.disable(plugin)}/></>}
+        <C.Switch checked={enabled} disabled={busy} data-codlet-focus-key={`disable:${plugin.id}`} aria-label={t(plugin.id===manager.context.pluginId?'Enable Codlet GUI':`Enable ${name(plugin)}`)} onCheckedChange={next=>next?manager.mutate(plugin.id,'enable'):manager.disable(plugin)}/></>}
     </div>
   </div>;
 }
@@ -44,12 +45,12 @@ function PluginList({s}) {
   const plugins=manager.filtered();
   return <>
     <div className="codlet-search-toolbar">
-      <C.Input className="codlet-search" ref={input} size="md" pill type="search" aria-label={t('Search plugins')} placeholder={t('Search plugins')} value={draft}
+      <C.Input className="codlet-search" ref={input} variant="outline" size="md" pill type="text" role="searchbox" aria-label={t('Search plugins')} placeholder={t('Search plugins')} value={draft}
         startAdornment={<I.Search width={16} height={16}/>} endAdornment={draft?<IconAction icon={I.X} label="Clear search" onClick={clear}/>:null}
         onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={event=>{composing.current=false;manager.setQuery(event.currentTarget.value);}}
         onChange={event=>{setDraft(event.currentTarget.value);if(!composing.current)manager.setQuery(event.currentTarget.value);}}
         onKeyDown={event=>{if(event.key==='Escape'&&!event.nativeEvent.isComposing&&!composing.current&&draft&&!event.altKey&&!event.ctrlKey&&!event.metaKey&&!event.shiftKey){event.preventDefault();event.stopPropagation();clear();}}}/>
-      {s.localManagement?.available&&<C.Button color="secondary" variant="soft" size="md" aria-label={t('Import plugins')} disabled={mutationBusy(s)||s.loading} onClick={()=>manager.importPage()}><I.Download/>{t('Import plugins')}</C.Button>}
+      {s.localManagement?.available&&<IconAction icon={I.Download} label="Import plugins" disabled={mutationBusy(s)||s.loading||s.listStale} onClick={()=>manager.importPage()}/>}
       <IconAction icon={I.Regenerate} label="Refresh plugins" disabled={s.loading&&!manager.pending} loading={s.loading} onClick={()=>manager.refresh()}/>
     </div>
     {s.error&&<p className="codlet-status codlet-error" role="alert">{t(s.error)}</p>}
@@ -84,18 +85,18 @@ function ImportPage({s}) {
   const submitText=s.importOperation==='update'?'Update plugin':s.importOperation==='rollback'?'Roll back plugin':'Import plugin';
   const submitLabel=s.mode==='local'?'Confirm local import':s.importOperation==='update'?'Confirm managed update':s.importOperation==='rollback'?'Confirm managed rollback':'Confirm GitHub import';
   return <section className="codlet-page"><Back/>
-    {s.importOperation!=='rollback'&&<C.SegmentedControl value={s.mode} onChange={mode=>manager.importPage(mode)} aria-label={t('Import source')} size="sm" pill>
+    {s.importOperation!=='rollback'&&<C.SegmentedControl className="codlet-import-source" value={s.mode} onChange={mode=>manager.importPage(mode)} aria-label={t('Import source')} size="sm" pill>
       <C.SegmentedControl.Option value="local" aria-label={t('Local folder')}>{t('Local folder')}</C.SegmentedControl.Option>
       <C.SegmentedControl.Option value="github" aria-label={t('Import from GitHub')} disabled={!s.githubAvailable}>GitHub</C.SegmentedControl.Option>
     </C.SegmentedControl>}
     {s.mode==='local'?<div className="codlet-field"><label htmlFor="codlet-import-path">{t('Plugin folder')}</label><div className="codlet-folder-input">
-      <C.Input id="codlet-import-path" aria-label={t('Plugin folder')} aria-describedby="codlet-import-status" value={s.path} invalid={!!s.importError}
+      <C.Input id="codlet-import-path" aria-label={t('Plugin folder')} aria-describedby="codlet-import-status" value={displayPath(s.path)} invalid={!!s.importError}
         onCompositionStart={()=>{composing.current=true;manager.setPath(s.path,true);}} onCompositionEnd={e=>{composing.current=false;manager.setPath(e.currentTarget.value);}}
         onChange={e=>manager.setPath(e.currentTarget.value,composing.current)}/>
       {s.localManagement?.folderPicker&&<IconAction icon={I.FolderOpen} label="Choose plugin folder" disabled={s.importBusy} onClick={()=>manager.chooseFolder()}/>}
     </div></div>:s.importOperation!=='rollback'&&<>
       <div className="codlet-field"><label htmlFor="codlet-github-url">{t('GitHub repository or release URL')}</label><C.Input id="codlet-github-url" aria-label={t('GitHub repository or release URL')} value={s.url} onChange={e=>manager.setUrl(e.currentTarget.value)}/></div>
-      <C.Button color="secondary" variant="soft" size="md" aria-label={t('Read GitHub releases')} loading={s.importBusy&&manager.job?.kind==='releases'} disabled={s.importBusy} onClick={()=>manager.readReleases()}><I.Regenerate/>{t('Read releases')}</C.Button>
+      <C.Button color="secondary" variant="soft" size="md" aria-label={t('Find versions')} loading={s.importBusy&&manager.job?.kind==='releases'} disabled={s.importBusy} onClick={()=>manager.readReleases()}><I.Regenerate/>{t('Find versions')}</C.Button>
       {s.catalog&&<><div className="codlet-field"><label htmlFor="codlet-github-release">{t('GitHub release')}</label><C.Select id="codlet-github-release" TriggerView={ReleaseTrigger} placeholder={t('Choose a release')} searchPlaceholder={t('Search releases')} searchEmptyMessage={t('No matching releases')} value={s.release} disabled={s.importBusy} options={s.catalog.releases.map(r=>({value:String(r.id),label:r.tag,description:r.name}))} onChange={r=>manager.selectRelease(r.value)}/></div>
         {release&&<div className="codlet-field"><label htmlFor="codlet-github-asset">{t('GitHub ZIP asset')}</label><C.Select id="codlet-github-asset" TriggerView={AssetTrigger} placeholder={t('Choose a ZIP asset')} searchPlaceholder={t('Search assets')} searchEmptyMessage={t('No matching assets')} value={s.asset} disabled={s.importBusy||!assets.length} options={assets.map(a=>({value:String(a.id),label:a.name,description:`${a.size.toLocaleString()} ${t('bytes')}`}))} onChange={a=>manager.selectAsset(a.value)}/></div>}
         {release&&!assets.length&&<Copy>{t('This release has no ZIP assets. Repository source archives are not plugin release packages. Ask the author for a built package or use local folder import.')}</Copy>}
@@ -115,14 +116,14 @@ function Details({s}){
   return <section className="codlet-page"><Back/>
     {s.detailsError&&<Copy error role="alert">{t(s.detailsError)}</Copy>}
     {s.detailsBusy?<Copy role="status">{t('Loading permissions...')}</Copy>:p&&<>
-      <div className="codlet-details-heading"><h2>{name(p)}</h2>{p.source!=='bundled'&&<IconAction icon={I.FolderOpen} label="Open plugin folder" onClick={()=>manager.openFolder()}/>}</div>
-      <Copy>{p.id}{p.version?` · ${p.version}`:''}</Copy>{description(p)&&<Copy>{description(p)}</Copy>}
+      <div className="codlet-details-identity"><div className="codlet-details-heading"><h2>{name(p)}</h2>{p.version&&<span className="codlet-version">{p.version}</span>}{p.source!=='bundled'&&<IconAction icon={I.FolderOpen} label="Open plugin folder" onClick={()=>manager.openFolder()}/>}</div>
+        <Copy>{p.id}</Copy>{description(p)&&<Copy>{description(p)}</Copy>}</div>
       {p.ownership==='core-managed-github'&&<Source source={p.managedSource} metadata={p.metadata}/>}
       {p.grants?.length>0&&<h2>{t('Granted permissions')}</h2>}
       {(p.grants??[]).map(permission=><div className="codlet-permission-line" key={permission}><Copy>{permission}{'\n'}{t(PERMISSION_COPY[permission]||'')}</Copy>
-        {p.source!=='bundled'&&<C.Button color="secondary" variant="ghost" size="sm" aria-label={t(`Revoke ${permission}`)} onClick={()=>manager.requestRemoval(p,permission)}>{t('Revoke')}</C.Button>}</div>)}
+        {p.source!=='bundled'&&<C.Button color="secondary" variant="ghost" size="sm" data-codlet-focus-key={`revoke:${p.id}:${permission}`} aria-label={t(`Revoke ${permission}`)} onClick={()=>manager.requestRemoval(p,permission)}>{t('Revoke')}</C.Button>}</div>)}
       {[['readRoots','Allowed read folders'],['networkOrigins','Allowed network origins'],['executables','Allowed child programs']].filter(([key])=>p.brokerPolicy?.[key]?.length).map(([key,label])=><Copy key={key}>{t(label)}{'\n'}{p.brokerPolicy[key].join('\n')}</Copy>)}
-      {p.source!=='bundled'&&<C.Button color="danger" variant="soft" size="md" aria-label={t(`Remove ${name(p)}`)} onClick={()=>manager.requestRemoval(p)}>{t('Remove plugin')}</C.Button>}
+      {p.source!=='bundled'&&<C.Button color="danger" variant="soft" size="md" data-codlet-focus-key={`remove:${p.id}`} aria-label={t(`Remove ${name(p)}`)} onClick={()=>manager.requestRemoval(p)}>{t('Remove plugin')}</C.Button>}
       {p.ownership==='core-managed-github'&&<>
         <C.Button color="secondary" variant="soft" size="md" aria-label={t('Check GitHub versions')} onClick={()=>manager.importPage('github',p)}>{t('Check GitHub versions')}</C.Button>
         <h2>{t('Installed version history')}</h2>
@@ -141,7 +142,7 @@ function UpdatePage({s}){
     <Copy>{t(`Current Codlet version: ${r?.currentVersion||s.runtimeVersion}`)}</Copy>
     {r?.configured&&!['checking','downloading','installRequested'].includes(phase)&&<C.Button color="secondary" variant="soft" size="md" disabled={s.updateBusy||s.updateUncertain} onClick={()=>manager.loadUpdate('checkRuntimeUpdate')}><I.Regenerate/>{t('Check for Codlet updates')}</C.Button>}
     {phase==='available'&&<C.Button color="primary" size="md" disabled={s.updateBusy||s.updateUncertain} onClick={()=>manager.loadUpdate('downloadRuntimeUpdate')}><I.Download/>{t('Download update')}</C.Button>}
-    {phase==='downloaded'&&(r.installAvailable?<C.Button color="primary" size="md" disabled={s.updateBusy||s.updateUncertain} onClick={()=>manager.requestInstall()}><I.ArrowRotateCw/>{t('Install and restart')}</C.Button>:<Copy>{t(`Automatic installation is unavailable for this launch.\n${r.unavailableReason||''}`)}</Copy>)}
+    {phase==='downloaded'&&(r.installAvailable?<C.Button color="primary" size="md" data-codlet-focus-key="install:page" disabled={s.updateBusy||s.updateUncertain} onClick={()=>manager.requestInstall()}><I.ArrowRotateCw/>{t('Install and restart')}</C.Button>:<Copy>{t(`Automatic installation is unavailable for this launch.\n${r.unavailableReason||''}`)}</Copy>)}
   </section>;
 }
 function Confirmation({s}){
@@ -151,7 +152,7 @@ function Confirmation({s}){
   const copy=c.kind==='install'?'The current client will restart and running local tasks will be interrupted.':c.kind==='remove'?'Remove this plugin’s registration and disable it. Source files and plugin data are kept by default. Selecting deletion below removes the source folder and all its contents.':c.kind==='revoke'?`Revoke ${c.permission}. This stops the package and its running dependents. To grant it again, ${p.ownership==='core-managed-github'?'select a managed version and confirm its permissions again':'import the local folder and confirm its permissions'}.`:p.id===manager.context.pluginId||p.disableDependents?.includes(manager.context.pluginId)?'The Codlet GUI will close in all open windows. Re-enable the plugins from the launcher to restore it.':'These plugins will stay disabled until you enable them again.';
   return <section className="codlet-page"><h2>{t(title)}</h2><Copy>{t(copy)}{dependents.length?'\n'+t(`Also disable: ${dependents.join(', ')}.`):''}</Copy>
     {c.kind==='remove'&&<><C.Checkbox checked={c.deleteSource} disabled={!manager.sourceDeletable()||c.busy} aria-label={t('Delete source files')} label={t('Delete the plugin source folder')} onCheckedChange={value=>manager.setDeleteSource(value)}/>
-      <Copy>{t(c.busy?'Checking source folder...':manager.sourceDeletable()?`Source folder: ${c.source.path}`:c.source?.status==='missing'?'The source folder is missing or moved. Removing registration is still available.':'Source deletion is unavailable. Removing registration keeps the remaining files.')}</Copy>
+      <Copy>{t(c.busy?'Checking source folder...':manager.sourceDeletable()?`Source folder: ${displayPath(c.source.path)}`:c.source?.status==='missing'?'The source folder is missing or moved. Removing registration is still available.':'Source deletion is unavailable. Removing registration keeps the remaining files.')}</Copy>
       {c.source?.warning&&<Copy>{c.source.warning}</Copy>}</>}
     {c.error&&<Copy error role="alert">{t(c.error)}</Copy>}
     <div className="codlet-confirmation-actions"><C.Button color="secondary" variant="soft" size="md" disabled={c.submitting} onClick={()=>manager.cancelConfirmation()} data-codlet-cancel="">{t('Cancel')}</C.Button>
@@ -169,17 +170,20 @@ function Version({s}) {
     <C.Popover.Content width={320} maxWidth="calc(100vw - 40px)" align="start"><section className="codlet-version-copy" aria-label={t('Version and compatibility')}><h2>Codlet {s.runtimeVersion}</h2><Copy>{lines.map(t).join('\n')}</Copy><C.Button color="secondary" variant="ghost" size="sm" onClick={()=>manager.updates()}>{t('Updates')}</C.Button></section></C.Popover.Content></C.Popover>;
 }
 function Page({s}){
-  const panel=React.useRef(null);
+  const panel=React.useRef(null),lastFocus=React.useRef(null),previous=React.useRef(null);
   ui.useEscCloseStack(!!s.confirmation,()=>manager.cancelConfirmation());
   React.useLayoutEffect(()=>{
-    const target=panel.current?.querySelector(s.confirmation?'[data-codlet-cancel]':s.page==='plugins'?'input[type=search]':'[data-codlet-back-button]');
+    const returning=previous.current?.confirmation&&!s.confirmation;
+    const trigger=returning&&[...panel.current.querySelectorAll('[data-codlet-focus-key]')].find(node=>node.dataset.codletFocusKey===lastFocus.current&&!node.disabled);
+    const target=trigger||panel.current?.querySelector(s.confirmation?'[data-codlet-cancel]':s.page==='plugins'?'[role=searchbox]':'[data-codlet-back-button]');
+    previous.current={confirmation:!!s.confirmation};
     target?.focus({preventScroll:true});
   },[s.page,!!s.confirmation]);
   const phase=s.update?.phase,updateAction=phase==='downloaded'?'Install and restart':'Download update';
-  return <section ref={panel} data-codlet-panel="codlet" data-codlet-view={s.confirmation?'confirmation':s.page} aria-label={t(s.confirmation?'Confirm action':s.page==='import'?'Import plugins':s.page==='updates'?'Updates':'Codlet')}>
+  return <section ref={panel} onFocusCapture={event=>{if(!s.confirmation)lastFocus.current=event.target.closest('[data-codlet-focus-key]')?.dataset.codletFocusKey??null;}} data-codlet-panel="codlet" data-codlet-view={s.confirmation?'confirmation':s.page} aria-label={t(s.confirmation?'Confirm action':s.page==='import'?'Import plugins':s.page==='updates'?'Updates':'Codlet')}>
     <div className="codlet-content">
       <header className="codlet-header"><div className="codlet-brand"><h1>Codlet</h1><div className="codlet-version-group"><span className="codlet-version">{s.runtimeVersion}</span>{s.update?.configured===false&&<span className="codlet-version">{t('Development')}</span>}<Version key={s.page+Boolean(s.confirmation)} s={s}/></div></div>
-        {['available','downloading','downloaded','checking','installRequested'].includes(phase)&&<IconAction icon={phase==='downloaded'?I.ArrowRotateCw:I.Download} label={updateAction} loading={['checking','downloading','installRequested'].includes(phase)} disabled={s.updateBusy||s.updateUncertain||mutationBusy(s)} onClick={()=>phase==='downloaded'?manager.requestInstall():manager.loadUpdate('downloadRuntimeUpdate')}/>}
+        {['available','downloading','downloaded','checking','installRequested'].includes(phase)&&<IconAction icon={phase==='downloaded'?I.ArrowRotateCw:I.Download} label={updateAction} data-codlet-focus-key="install:header" loading={['checking','downloading','installRequested'].includes(phase)} disabled={s.updateBusy||s.updateUncertain||mutationBusy(s)} onClick={()=>phase==='downloaded'?manager.requestInstall():manager.loadUpdate('downloadRuntimeUpdate')}/>}
       </header>
       <div className="codlet-panel-body">{s.confirmation?<Confirmation s={s}/>:s.page==='plugins'?<PluginList s={s}/>:s.page==='import'?<ImportPage s={s}/>:s.page==='details'?<Details s={s}/>:<UpdatePage s={s}/>}</div>
     </div>

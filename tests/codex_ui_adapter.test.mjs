@@ -34,3 +34,12 @@ test('provider teardown removes native navigation roots without leaving a top-ba
   const f=fixture(t),original=[...f.shell.routes];register(f);await tick();f.navigation.dispose();await tick();
   assert.equal(f.shell.routes.length,original.length);original.forEach((route,i)=>assert.equal(f.shell.routes[i],route));assert.equal(f.control('Codlet'),undefined);assert.equal(f.document.querySelector('[data-codlet-titlebar-button]'),null);assert.equal(f.document.querySelector('[data-codlet-ui-adapter-style]'),null);
 });
+test('the reviewed avatar window declines pages without errors, observers or route mutations',async t=>{
+  const f=fixture(t),original=[...f.shell.routes];f.navigation.dispose();f.shell.navigator.push('/avatar-overlay');await tick();
+  const before=f.observers.size,host=f.adapter.locateHost();assert.equal(host.auxiliary,true);
+  const auxiliary=f.adapter.createNavigation(f.context,f.native,host);t.after(()=>auxiliary.dispose());assert.equal(f.observers.size,before);
+  f.overrides.set('register',args=>auxiliary.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
+  const ui=f.context.ui.create();let mounts=0;const page=await ui.page({label:'Codlet',render(){mounts++;return null;}});
+  assert.equal(page.path,null);assert.equal(mounts,0);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);assert.equal(f.document.querySelector('[data-codlet-native-navigation]'),null);
+  assert.equal(f.shell.routes.length,original.length);original.forEach((route,index)=>assert.equal(f.shell.routes[index],route));assert.equal(f.errors.length,0);page.dispose();ui.dispose();
+});

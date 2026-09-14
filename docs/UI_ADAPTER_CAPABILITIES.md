@@ -8,6 +8,8 @@ The bundled `codex.ui.adapter` provides `codex.ui.navigation.page@1` in target s
 
 The result is `{ api: 1, token, path }`, with one stable `/codlet/<encoded-plugin-id>` route per owner. Registering the same marker again is idempotent. A later generation retires the previous registration. Markers are removed by synchronous UI disposal, so cleanup does not rely on sending RPC after a caller's authority has already been revoked.
 
+The reviewed `/avatar-overlay` auxiliary window has no navigation page surface. It returns `{ api: 1, token, path: null, available: false }` after checking the caller and marker. The helper releases the pending marker/container without rendering or reporting an error. No route, sidebar root, or navigation observer is added there.
+
 ## Native ownership
 
 The adapter recognizes only Codex `26.908.40834`, build `8881`, package `26.908.4834.0`, with its exact entry module. It validates a unique native memory router and authenticated route collection. The registered route is appended with a stable explicit ID; existing descriptors and their generated IDs remain unchanged. The audited React Router implementation reparses descriptors on navigation.

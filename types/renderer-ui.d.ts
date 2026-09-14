@@ -42,8 +42,8 @@ export interface RendererUi {
   flushSync(callback: () => void): void;
   container(parent?: Element): HTMLDivElement;
   mount(container: HTMLDivElement, content: React.ReactNode): RendererUiMount;
-  /** Requires codex.ui.navigation.page@1. One page per plugin and generation. */
-  page(options: RendererUiPageOptions): Promise<Readonly<{ path: string; dispose(): void }>>;
+  /** Requires codex.ui.navigation.page@1. Path is null in reviewed auxiliary windows. */
+  page(options: RendererUiPageOptions): Promise<Readonly<{ path: string | null; dispose(): void }>>;
   /** Aborts the owner, unregisters pages and synchronously unmounts every root. */
   dispose(): void;
 }

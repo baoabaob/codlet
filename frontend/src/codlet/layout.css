@@ -1,4 +1,4 @@
-/* Page composition only. All controls and their interaction styles come from Apps SDK UI. */
+/* Page composition and the host search background. Controls and interactions come from Apps SDK UI. */
 [data-codlet-panel] { height:100%; min-height:0; color:var(--color-text); overflow:hidden; -webkit-app-region:no-drag; }
 [data-codlet-panel] .codlet-content { display:flex; flex-direction:column; height:100%; min-height:0; width:100%; max-width:944px; margin:0 auto; padding:32px 32px 24px; }
 [data-codlet-panel] [hidden] { display:none!important; }
@@ -6,11 +6,11 @@
 [data-codlet-panel] .codlet-brand { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; min-width:0; margin-right:auto; }
 [data-codlet-panel] .codlet-version-group { display:inline-flex; align-items:center; gap:6px; }
 [data-codlet-panel] h1 { margin:0; font-size:28px; font-weight:var(--font-weight-semibold); line-height:36px; letter-spacing:-.02em; }
-[data-codlet-panel] h2 { margin:0; font-size:14px; font-weight:var(--font-weight-semibold); }
+[data-codlet-panel] h2, [data-codlet-official-ui] .codlet-version-copy h2 { margin:0; font-size:14px; font-weight:var(--font-weight-semibold); }
 [data-codlet-panel] .codlet-version { color:var(--color-text-secondary); font-size:12px; white-space:nowrap; }
 [data-codlet-panel] .codlet-panel-body { display:flex; flex:1; flex-direction:column; min-height:0; }
 [data-codlet-panel] .codlet-search-toolbar { display:flex; align-items:center; flex:0 0 auto; gap:8px; margin-bottom:12px; }
-[data-codlet-panel] .codlet-search { flex:1; min-width:0; }
+[data-codlet-panel] .codlet-search { flex:1; min-width:0; background-color:var(--color-page-search,transparent); }
 [data-codlet-panel] .codlet-list-scroll { overflow:auto; min-height:0; overscroll-behavior:contain; scrollbar-gutter:stable; }
 [data-codlet-panel] .codlet-plugin-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; column-gap:24px; padding:18px 0; }
 [data-codlet-panel] .codlet-plugin-row + .codlet-plugin-row { border-top:1px solid var(--color-border); }
@@ -21,17 +21,18 @@
 [data-codlet-panel] .codlet-action-space { width:28px; flex:0 0 28px; }
 [data-codlet-panel] .codlet-page { display:flex; flex-direction:column; gap:16px; overflow:auto; overscroll-behavior:contain; min-height:0; }
 [data-codlet-panel] .codlet-page > button, [data-codlet-panel] .codlet-page > a { align-self:flex-start; }
+[data-codlet-panel] .codlet-import-source { align-self:flex-start; max-width:100%; }
 [data-codlet-panel] .codlet-field { display:flex; flex-direction:column; gap:6px; min-width:0; }
 [data-codlet-panel] .codlet-field > label { font-size:13px; font-weight:var(--font-weight-medium); }
 [data-codlet-panel] .codlet-folder-input { display:flex; align-items:center; gap:8px; }
 [data-codlet-panel] .codlet-folder-input > :first-child { flex:1; min-width:0; }
 [data-codlet-panel] .codlet-local-preview { display:flex; flex-direction:column; gap:14px; }
-[data-codlet-panel] .codlet-copy { margin:0; font-size:13px; line-height:1.5; color:var(--color-text-secondary); white-space:pre-line; overflow-wrap:anywhere; }
+[data-codlet-panel] .codlet-copy, [data-codlet-official-ui] .codlet-version-copy .codlet-copy { margin:0; font-size:13px; line-height:1.5; color:var(--color-text-secondary); white-space:pre-line; overflow-wrap:anywhere; }
 [data-codlet-panel] .codlet-error { color:var(--color-text-danger); }
 [data-codlet-panel] .codlet-status { font-size:13px; margin:0 0 12px; overflow-wrap:anywhere; }
 [data-codlet-panel] .codlet-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
-[data-codlet-panel] .codlet-details-heading { display:flex; align-items:center; gap:8px; }
-[data-codlet-panel] .codlet-details-heading h2 { margin-right:auto; }
+[data-codlet-panel] .codlet-details-identity { display:flex; flex-direction:column; gap:4px; }
+[data-codlet-panel] .codlet-details-heading { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 [data-codlet-panel] .codlet-permission-line { display:flex; gap:12px; align-items:center; }
 [data-codlet-panel] .codlet-permission-line > p { flex:1; min-width:0; }
 [data-codlet-panel] .codlet-confirmation-actions { display:flex; justify-content:flex-end; gap:8px; padding-top:8px; }

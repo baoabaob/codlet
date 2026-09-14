@@ -39,7 +39,10 @@ async function fixture(mode = 'success') {
   const manifest = { schema: 1, kind: 'codlet-runtime-update', version: '9.0.0', platform: 'win-x64', profile: 'isolatedClient', runtime: next.runtime, files: next.files };
   const manifestBytes = Buffer.from(JSON.stringify(manifest)); fs.writeFileSync(path.join(staged, 'runtime-update-manifest.json'), manifestBytes);
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(SYSTEMROOT|WINDIR|PATH|TEMP|TMP|SYSTEMDRIVE|COMSPEC)$/i.test(name)));
-  const plan = { schema: 1, kind: 'codlet-runtime-install-plan', id, version: '9.0.0', currentVersion: '0.1.0', platform: 'win-x64', profile: 'isolatedClient', installRoot: install, stateRoot: state, stagedRoot: staged, backupRoot: path.join(job, 'backup'), manifestSha256: sha(manifestBytes), currentFiles: old.files, newFiles: next.files, currentRuntime: old.runtime, newRuntime: next.runtime, helperNode: checked(process.execPath), helperScript: checked(helper), restart: { program: process.execPath, args: [launcher, install, configPath, log, mode], workingDirectory: install, environment, timeoutSeconds: 15 }, restartProgramSha256: checked(process.execPath).sha256, launcherFiles: [checked(launcher), checked(configPath)], configPin: { ...checked(configPath), field: 'labBinarySha256', oldValue: JSON.parse(originalConfig).labBinarySha256, newValue: next.files.find(f => f.path === 'codlet-lab.exe').sha256, oldNodeRelative: 'runtime/node-v24.21.0-win-x64/node.exe', newNodeRelative: 'runtime/node-v25.0.0-win-x64/node.exe' }, waitFor: [identity], handoffAckPath: path.join(job, 'handoff-ack.json'), installReceiptPath: path.join(job, 'install-receipt.json'), summaryReceiptPath: path.join(state, 'runtime-update-install-receipt.json'), createdAt: Date.now(), expiresAt: Date.now() + 30 * 60 * 1000 };
+  // One clock sample: two Date.now() calls can make this exceed the helper's
+  // strict 30-minute maximum by a millisecond under concurrent test load.
+  const createdAt = Date.now();
+  const plan = { schema: 1, kind: 'codlet-runtime-install-plan', id, version: '9.0.0', currentVersion: '0.1.0', platform: 'win-x64', profile: 'isolatedClient', installRoot: install, stateRoot: state, stagedRoot: staged, backupRoot: path.join(job, 'backup'), manifestSha256: sha(manifestBytes), currentFiles: old.files, newFiles: next.files, currentRuntime: old.runtime, newRuntime: next.runtime, helperNode: checked(process.execPath), helperScript: checked(helper), restart: { program: process.execPath, args: [launcher, install, configPath, log, mode], workingDirectory: install, environment, timeoutSeconds: 15 }, restartProgramSha256: checked(process.execPath).sha256, launcherFiles: [checked(launcher), checked(configPath)], configPin: { ...checked(configPath), field: 'labBinarySha256', oldValue: JSON.parse(originalConfig).labBinarySha256, newValue: next.files.find(f => f.path === 'codlet-lab.exe').sha256, oldNodeRelative: 'runtime/node-v24.21.0-win-x64/node.exe', newNodeRelative: 'runtime/node-v25.0.0-win-x64/node.exe' }, waitFor: [identity], handoffAckPath: path.join(job, 'handoff-ack.json'), installReceiptPath: path.join(job, 'install-receipt.json'), summaryReceiptPath: path.join(state, 'runtime-update-install-receipt.json'), createdAt, expiresAt: createdAt + 30 * 60 * 1000 };
   const planPath = path.join(job, 'install-plan.json'); let planSha;
   function save() { const bytes = Buffer.from(JSON.stringify(plan)); fs.writeFileSync(planPath, bytes); planSha = sha(bytes); return planSha; }
   save();
@@ -188,6 +191,19 @@ test('tampered staged bytes and arbitrary non-owned paths fail before helper rea
       if (mode === 'payload-hardlink') fs.linkSync(path.join(f.install, 'codlet-lab.exe'), path.join(f.root, 'external-hardlink'));
       await assert.rejects(runInstall(f.planPath, f.planSha, () => { ready = true; })); assert.equal(ready, false); assert.equal(fs.readFileSync(path.join(f.install, 'codlet-lab.exe'), 'utf8'), 'old runtime'); assert.deepEqual(fs.readFileSync(f.configPath), f.originalConfig); assert.equal(fs.existsSync(f.log), false);
     } finally { await f.cleanup(); }
+  }
+});
+test('expired, future and overlong plans fail before helper readiness or installation',async()=>{
+  for(const mode of ['expired','future','overlong']) {
+    const f=await fixture();let ready=false;
+    try {
+      const now=Date.now();
+      if(mode==='expired'){f.plan.createdAt=now-60000;f.plan.expiresAt=now-1;}
+      if(mode==='future'){f.plan.createdAt=now+60000;f.plan.expiresAt=now+120000;}
+      if(mode==='overlong'){f.plan.createdAt=now;f.plan.expiresAt=now+30*60*1000+1;}
+      f.save();await assert.rejects(runInstall(f.planPath,f.planSha,()=>{ready=true;}),{code:'plan_expired'});
+      assert.equal(ready,false);assert.equal(fs.readFileSync(path.join(f.install,'codlet-lab.exe'),'utf8'),'old runtime');assert.deepEqual(fs.readFileSync(f.configPath),f.originalConfig);assert.equal(fs.existsSync(f.log),false);
+    } finally {await f.cleanup();}
   }
 });
 

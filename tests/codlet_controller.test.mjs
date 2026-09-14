@@ -45,6 +45,21 @@ test('mismatched and expired operation replies cannot complete a receipt or enab
   const f=await setup(t);f.overrides.set('operation',()=>({status:'completed',operation:{operation_id:'different',request:{action:'enable',plugin_id:'local.notes'},completion:{kind:'report',report:{outcome:'applied'}}}}));await f.m.mutate('local.notes','enable');assert.ok(f.m.pending);assert.match(f.m.state.error,/no longer available/);
   f.overrides.set('operation',()=>({status:'expired'}));await f.m.refresh();await f.m.mutate('local.notes','remove');assert.equal(count(f,'submit'),1);assert.equal(count(f,'prepare'),1);
 });
+test('a successful mutation cannot erase a failed list refresh or resubmit against stale values',async t=>{
+  const f=await setup(t);f.demo.state.failure=true;
+  await f.m.mutate('local.notes','enable');
+  assert.equal(f.m.pending,null);assert.equal(f.m.state.operationError,'');assert.equal(f.m.state.listStale,true);
+  assert.match(f.m.state.error,/Displayed values may be out of date/);assert.equal(f.m.state.plugins.find(p=>p.id==='local.notes').enabled,false);
+  await f.m.mutate('local.notes','enable');assert.equal(count(f,'submit'),1);
+  f.demo.state.failure=false;await f.m.refresh();
+  assert.equal(f.m.state.listStale,false);assert.equal(f.m.state.error,'');assert.equal(f.m.state.plugins.find(p=>p.id==='local.notes').enabled,true);assert.equal(count(f,'submit'),1);
+});
+test('operation errors and list errors remain independent across refresh and the next operation',async t=>{
+  const f=await setup(t);f.overrides.set('prepare',()=>({error:'Operation rejected'}));f.demo.state.failure=true;
+  await f.m.mutate('local.notes','enable');assert.match(f.m.state.error,/Operation rejected/);assert.match(f.m.state.error,/Displayed values may be out of date/);
+  f.demo.state.failure=false;await f.m.refresh();assert.equal(f.m.state.error,'Operation rejected');assert.equal(f.m.state.listError,'');
+  f.overrides.delete('prepare');await f.m.mutate('local.notes','enable');assert.equal(f.m.state.error,'');
+});
 test('overlapping lists and old generations cannot publish stale success or errors',async t=>{
   const f=await setup(t),old=deferred();f.overrides.set('list',()=>old.promise);const first=f.m.refresh();f.m.close();f.overrides.set('list',()=>({plugins:[{id:'fresh'}]}));await f.m.open();old.resolve({plugins:[{id:'stale'}]});await first;assert.deepEqual(f.m.state.plugins,[{id:'fresh'}]);
   const late=deferred();f.overrides.set('list',()=>late.promise);const next=f.m.refresh();f.m.dispose();late.reject(Error('old error'));await next;assert.equal(f.m.state.error,'');

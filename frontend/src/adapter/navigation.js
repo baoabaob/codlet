@@ -38,8 +38,10 @@ export function locateHost() {
   if (navigators.size !== 1 || trees.size !== 1) throw fail('ui_host_pending', 'A unique Desktop router and route tree are required');
   const navigator = [...navigators][0], tree = [...trees][0];
   if (typeof navigator.push !== 'function' || typeof navigator.replace !== 'function' ||
-      typeof navigator.location?.pathname !== 'string' || navigator.location.pathname.startsWith('/avatar-overlay'))
+      typeof navigator.location?.pathname !== 'string')
     throw fail('ui_host_drift', 'The Desktop memory router is unavailable in this window');
+  if(navigator.location.pathname==='/avatar-overlay'||navigator.location.pathname.startsWith('/avatar-overlay/'))
+    return {navigator,tree,rootNode:document.getElementById('root'),auxiliary:true};
   const candidates = [];
   const visit = element => {
     if (!element?.props) return;
@@ -121,7 +123,7 @@ export function createNavigation(context, native, host) {
     pending = true; queueMicrotask(() => { pending = false; reconcile(); });
   };
   const observer = new MutationObserver(schedule);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  if(!host.auxiliary)observer.observe(document.documentElement, { childList: true, subtree: true });
   function register(args, invocation) {
     check();
     const caller = invocation?.caller;
@@ -132,6 +134,9 @@ export function createNavigation(context, native, host) {
     const lease = [...document.querySelectorAll('[data-codlet-page-lease]')].find(node => node.dataset.codletPageLease === args.token);
     if (!lease || lease.dataset.codletPageOwner !== caller.pluginId || lease.dataset.codletGeneration !== String(caller.generation))
       throw fail('invalid_owner', 'The page lifetime does not match its caller');
+    // The Desktop pet is a reviewed auxiliary route, not a page surface.
+    // Tell the public helper to release its pending DOM without an error.
+    if(host.auxiliary)return {api:1,token:args.token,path:null,available:false};
     const existing = entries.get(caller.pluginId);
     if (existing) {
       if (existing.token === args.token && existing.lease === lease) return existing.description;

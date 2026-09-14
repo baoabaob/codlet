@@ -7,10 +7,11 @@ export const PERMISSION_COPY = Object.freeze({
 
 export function createMessages(context) {
     const TRANSLATIONS = {
+        'Plugin state could not be refreshed. Displayed values may be out of date.': '插件状态刷新失败，当前显示的值可能已过期。',
         'Search releases': '搜索发布版本', 'No matching releases': '没有匹配的发布版本',
         'Search assets': '搜索资源包', 'No matching assets': '没有匹配的资源包', 'bytes': '字节',
         'The update changed. Cancel and review it again before installing.': '待安装的更新已变化，请取消并重新查看后再安装。',
-        'Clear search': '清除搜索', 'Version and compatibility': '版本与兼容性', 'Import source': '导入来源',
+        'Clear search': '清除搜索', 'Version and compatibility': '版本与兼容性', 'Import source': '导入来源', 'Confirm action': '确认操作',
         'Client compatibility information is unavailable.': '暂时无法获取客户端兼容性信息。',
         'Back': '返回', 'Codlet': 'Codlet', 'Close Codlet': '关闭 Codlet', 'Import': '导入', 'Import plugins': '导入插件', 'Search plugins': '搜索插件',
         'Refresh plugins': '刷新插件', 'Check for updates': '检查更新', 'Updates': '更新', 'Local folder': '本地文件夹', 'GitHub release': 'GitHub 发布版本',
@@ -27,7 +28,7 @@ export function createMessages(context) {
         'I trust this plugin’s author and this local folder.': '我信任这个插件的作者和本地文件夹。', 'Loading permissions...': '正在读取权限…',
         'Open plugin folder': '打开插件文件夹', 'Delete source files': '同时删除源文件', 'Delete the plugin source folder': '同时删除插件源文件夹',
         'Checking source folder...': '正在检查源文件夹…', 'Plugin details': '插件详情', 'Local development folder': '本地开发文件夹', 'Codlet managed GitHub package': 'Codlet 托管的 GitHub 插件包', 'Bundled plugin': '内置插件',
-        'Read releases': '读取发布版本', 'Read GitHub releases': '读取 GitHub 发布版本', 'GitHub repository or release URL': 'GitHub 仓库或发布链接',
+        'Find versions': '查找版本', 'GitHub repository or release URL': 'GitHub 仓库或发布链接',
         'GitHub ZIP asset': 'GitHub ZIP 资源包', 'Choose a release': '选择发布版本', 'Choose a ZIP asset': '选择 ZIP 资源包', 'Download and inspect ZIP': '下载并检查 ZIP',
         'Download selected GitHub asset': '下载所选 GitHub 资源包', 'Cancel GitHub task': '取消 GitHub 任务', 'Check task status': '查看任务状态', 'Check GitHub task status': '查看 GitHub 任务状态',
         'Check GitHub versions': '检查 GitHub 版本', 'Installed version history': '已安装版本历史', 'Review rollback': '预览回退', 'Load more versions': '加载更多版本',

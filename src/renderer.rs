@@ -211,6 +211,8 @@ struct ProviderResult {
     value: Value,
     #[serde(default)]
     error: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -2333,9 +2335,15 @@ fn parse_provider_result(value: Value) -> Result<Value, String> {
             Err("provider endpoint returned ok=true without a value".to_owned())
         }
     } else {
-        Err(result
+        let message = result
             .error
-            .unwrap_or_else(|| "provider endpoint returned ok=false".to_owned()))
+            .unwrap_or_else(|| "provider endpoint returned ok=false".to_owned());
+        // The bootstrap includes the provider's code in failed invocations.
+        // Retain it as diagnostic text; it cannot impersonate a Core error.
+        Err(match result.code {
+            Some(code) => format!("{code}: {message}"),
+            None => message,
+        })
     }
 }
 
@@ -2631,6 +2639,33 @@ mod tests {
         PluginManifest, bundled_codex_ui_adapter, bundled_codlet, bundled_plugins,
     };
     use tempfile::{TempDir, tempdir};
+
+    #[test]
+    fn provider_bootstrap_failure_codes_preserve_the_original_diagnostic() {
+        for code in ["ui_host_drift", "request_timeout", "invocation_cancelled"] {
+            assert_eq!(
+                parse_provider_result(json!({"result":{"value":{
+                    "ok":false,"code":code,"error":"provider stopped"
+                }}})),
+                Err(format!("{code}: provider stopped"))
+            );
+        }
+        assert_eq!(
+            parse_provider_result(json!({"result":{"value":{"ok":false,"error":"legacy"}}})),
+            Err("legacy".to_owned())
+        );
+        assert_eq!(
+            parse_provider_result(json!({"result":{"value":{"ok":true,"value":null}}})),
+            Ok(Value::Null)
+        );
+        for value in [
+            json!({"ok":false,"code":7,"error":"bad code"}),
+            json!({"ok":false,"code":"provider_error","error":"failed","unknown":true}),
+            json!({"ok":true}),
+        ] {
+            assert!(parse_provider_result(json!({"result":{"value":value}})).is_err());
+        }
+    }
 
     fn test_registry() -> (TempDir, PluginRegistry) {
         let directory = tempdir().unwrap();

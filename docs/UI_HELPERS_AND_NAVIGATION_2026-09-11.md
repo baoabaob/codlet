@@ -23,7 +23,11 @@ Declare `ui.dom` and `requires: [{ "name": "codex.ui.navigation.page", "api": 1,
 
 `page({ label, icon, render, onActivate?, onDeactivate? })` waits for the document, registers a caller-owned route, and renders only while that native route is mounted. Departure unmounts React synchronously; re-entry calls `render` again. Keep long-lived RPC receipt state outside the component tree, invalidate page-local asynchronous callbacks, and check `ui.signal` for owner retirement.
 
+In the reviewed Desktop pet window, `page()` resolves with `path: null`, releases its pending DOM, and never invokes `render` or activation callbacks. Unsupported builds and ambiguous routers still report errors.
+
 `container(parent?)` / `mount(container, content)` are available for existing extension-owned surfaces. The returned mount has `render(next)` and synchronous `unmount()`. The same container can be mounted again after unmounting. `dispose()` is idempotent and is automatically registered with the renderer lifecycle: pages, roots, shared styles, theme/locale observers and media listeners retire together. It restores prior focus only if the retiring owner still held focus.
+
+Teardown completes all cleanup steps even if a React effect or page callback throws. Explicit disposal reports the collected error afterward; navigation cleanup reports it through the plugin diagnostic channel after retiring the failed page. Repeated disposal is safe. Theme synchronization copies the host's resolved semantic text/surface/border/focus colors into owned roots and maps its accent Switch track/thumb colors to the official component variables, without changing the host.
 
 Use upstream `Button`, `Input`, `Textarea`, `Switch`, `Checkbox`, `Popover`, `Tooltip`, `Select`, `SegmentedControl`, `TextLink`, `ButtonLink` and `LoadingIndicator` from `ui.components`. Use hooks and JSX normally. The `PortalContainer` and scoped `useEscCloseStack` exist for composition of custom plugin content. Escape does not close a whole navigation page. A confirmation may register its own Escape handler; upstream popovers close before that confirmation.
 
