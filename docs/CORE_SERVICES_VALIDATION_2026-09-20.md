@@ -25,11 +25,12 @@
 - 旧生命周期 fixture 把转发超时和完整双窗口补偿压在 300～500 毫秒内，在 CI 慢机上误报。扩大测试自身预算，以目标端退休时刻和请求 trace 检测错误的期限重置，保留补偿结果断言并补充耗时/回执诊断；生产期限未修改。完整 46 项集成测试在双线程与四线程下均通过
 - 更新辅助程序测试曾把系统临时目录的 8.3 别名直接写入计划，被生产路径身份校验拒绝。在本机显式短路径环境复现同样的 11 项失败后，仅规范化测试根目录与清理边界；正常目录与 8.3 目录下的 12 项测试均通过，生产链接/篡改防护未放宽
 - Windows Job 活动计数归零时，外部保留的后代进程句柄仍可能尚未 signaled。清理完成现在同时要求根进程退出、计数归零及私有 IOCP 的 `ACTIVE_PROCESS_ZERO` 通知；每次轮询有界清理通知，缺少确认则返回 `cleanup_incomplete`。后代清理回归重复 20 次、完整 Host、进程流和撤权回归均通过。实现参照[微软关于等待整个 Job 退出的说明](https://devblogs.microsoft.com/oldnewthing/20130405-00/?p=4743)
+- PowerShell 7 的 `Add-Type` 不支持生成控制台 EXE，导致旧启动测试在构造原生 argv 夹具时失败。改用 Windows 自带 .NET Framework C# 编译器生成夹具，实际验收脚本仍在被测 PowerShell 中运行；Windows PowerShell 5.1 与 PowerShell 7 的完整启动测试均通过
 
 ## 平台和发布范围
 
 私有仓库为 `baoabaob/codlet`，CI 分别运行 Windows 和 Apple silicon macOS。提交 `54e36a9` 的 macOS CI 全部通过：全目标编译、12 项存储/凭据测试、6 项事件/任务测试、1 项未 reap 子进程回归及 6 项原生生命周期/字节流测试。真实 Mac 上的官方客户端页面、文件选择器、Keychain 提示、剪贴板、通知和全局快捷键交互仍需人工验收；模拟凭据后端测试不等于原生 Keychain 交互验收。
 
-Windows 原生与 JavaScript/界面检查作为独立 CI job 并行运行。启动和异常退出脚本仍分别覆盖 Windows PowerShell 与 PowerShell 7，前一组测试失败不会阻断另一组结果的收集。
+Windows 原生、JavaScript/界面、启动脚本作为独立 CI job 并行运行。启动和异常退出脚本分别覆盖 Windows PowerShell 与 PowerShell 7，前一组测试失败不会阻断另一组结果的收集。提交 `ab94a48` 的 Windows Core、macOS 及 258 项 JavaScript 测试均通过（另 2 项按平台跳过）；该轮剩余的 PowerShell 7 夹具问题如上已修复并在两种 shell 中复验。
 
 本轮不制作安装包、不创建 release、不适配 Linux。文件写入采用有界原子替换，任务记录不跨 Core 重启恢复，基础系统通知尚不提供自定义操作按钮；这些限制均在公开契约中说明。

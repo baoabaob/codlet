@@ -553,7 +553,7 @@ try {
     $argumentProbeDirectory = Join-Path $tempRoot 'native-argument-probe'
     [void] (New-Item -ItemType Directory -Path $argumentProbeDirectory)
     $argumentProbePath = Join-Path $argumentProbeDirectory 'codlet.exe'
-    Add-Type -OutputAssembly $argumentProbePath -OutputType ConsoleApplication -TypeDefinition @'
+    $argumentProbeSource = @'
 using System;
 public static class CodletAcceptanceArgumentProbe {
     public static int Main(string[] args) {
@@ -572,6 +572,16 @@ public static class CodletAcceptanceArgumentProbe {
     }
 }
 '@
+    # PowerShell 7 Add-Type only emits libraries. Compile the small native argv
+    # fixture with the Windows .NET Framework compiler in both shells; the
+    # acceptance script itself still executes in the shell under test.
+    $argumentProbeSourcePath = Join-Path $argumentProbeDirectory 'arguments.cs'
+    [IO.File]::WriteAllText($argumentProbeSourcePath, $argumentProbeSource, (New-Object Text.UTF8Encoding($false)))
+    $frameworkDirectory = if ([Environment]::Is64BitOperatingSystem) { 'Framework64' } else { 'Framework' }
+    $frameworkCompiler = Join-Path ([Environment]::GetFolderPath('Windows')) "Microsoft.NET\$frameworkDirectory\v4.0.30319\csc.exe"
+    Assert-True -Condition (Test-Path -LiteralPath $frameworkCompiler -PathType Leaf) -Message 'Windows .NET Framework compiler is required for the native argv fixture'
+    & $frameworkCompiler /nologo /target:exe ("/out:$argumentProbePath") $argumentProbeSourcePath
+    Assert-True -Condition ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $argumentProbePath -PathType Leaf)) -Message 'native argv fixture compilation must succeed'
     $argumentFixture = $schemaFixture | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     $argumentFixture.command = $null
     $argumentFixturePath = Join-Path $tempRoot 'native-argument-fixture.json'

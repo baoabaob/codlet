@@ -46,7 +46,6 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-        id: checkout
       - uses: actions/setup-node@v4
         with:
           node-version: '24.21.0'
@@ -55,6 +54,14 @@ jobs:
       - run: npm ci --prefix frontend
       - run: node frontend/build.mjs
       - run: node --test --test-concurrency=2 tests/*.test.mjs
+
+  windows-acceptance:
+    name: Windows launch scripts
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
