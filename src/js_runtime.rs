@@ -9,12 +9,17 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use tempfile::NamedTempFile;
+#[cfg(windows)]
 use windows_sys::Win32::Security::Cryptography::*;
 
 use crate::plugin_host::HostError;
 use crate::plugins::LoadedHost;
 
-const BOOTSTRAP: &str = include_str!("../runtime/host.cjs");
+const BOOTSTRAP: &str = concat!(
+    include_str!("../runtime/host-traffic-bundle.cjs"),
+    "\n",
+    include_str!("../runtime/host.cjs")
+);
 const MAX_NODE_BYTES: u64 = 160 * 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -28,12 +33,15 @@ struct RuntimePin {
 #[serde(rename_all = "camelCase")]
 struct PlatformPin {
     executable_sha256: String,
+    version: Option<String>,
 }
 
 struct RuntimeFiles {
     executable: PathBuf,
     // Hold the checked binary against replacement while any plugin uses it.
     _file: File,
+    #[cfg(target_os = "macos")]
+    _snapshot: tempfile::TempDir,
 }
 
 #[derive(Clone)]
@@ -46,6 +54,9 @@ pub(crate) struct JsInvocation {
     pub environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     // Snapshot source is disposed with this generation, not left in the package.
     _source: NamedTempFile,
+    // The embedded bootstrap is too large for Windows' process command line.
+    // Keep its private snapshot for exactly the same generation lifetime.
+    _bootstrap: NamedTempFile,
     _runtime: JsRuntime,
 }
 
@@ -65,48 +76,53 @@ impl JsRuntime {
     pub fn from_distribution(directory: &Path) -> Result<Self, HostError> {
         let pin: RuntimePin = serde_json::from_str(include_str!("../runtime/node-runtime.json"))
             .expect("checked-in Node runtime pin is valid");
-        let platform = if cfg!(target_arch = "x86_64") {
-            "win-x64"
-        } else if cfg!(target_arch = "aarch64") {
-            "win-arm64"
-        } else {
-            return Err(HostError::new(
+        let target = crate::platform::DesktopTarget::current().ok_or_else(|| {
+            HostError::new(
                 "js_runtime_platform",
-                "this JS runtime distribution supports Windows x64 and arm64",
-            ));
-        };
-        let expected = &pin.platforms[platform].executable_sha256;
+                "this JS runtime supports Windows x64/ARM64 and macOS ARM64",
+            )
+        })?;
+        let platform = target.node_platform();
+        let platform_pin = &pin.platforms[platform];
+        let version = platform_pin.version.as_deref().unwrap_or(&pin.version);
+        let expected = &platform_pin.executable_sha256;
         let path = directory
             .join("runtime")
-            .join(format!("node-v{}-{platform}", pin.version))
-            .join("node.exe");
+            .join(format!("node-v{version}-{platform}"))
+            .join(target.node_executable());
         let missing = |error| {
             HostError::new(
                 "js_runtime_missing",
                 format!(
-                    "managed Node {} is unavailable at {}: {error}; stage the runtime with scripts/Install-JsRuntime.ps1 -Destination <Codlet directory>",
-                    pin.version,
+                    "managed Node {} is unavailable at {}: {error}; stage the pinned runtime using the platform setup instructions",
+                    version,
                     path.display()
                 ),
             )
         };
-        let metadata = std::fs::symlink_metadata(&path).map_err(missing)?;
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        #[cfg(windows)]
+        let file = {
+            let metadata = std::fs::symlink_metadata(&path).map_err(missing)?;
+            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+            };
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return Err(HostError::new(
+                    "js_runtime_invalid",
+                    "managed Node must be an ordinary file",
+                ));
+            }
+            OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&path)
+                .map_err(missing)?
         };
-        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(HostError::new(
-                "js_runtime_invalid",
-                "managed Node must be an ordinary file",
-            ));
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(&path)
-            .map_err(missing)?;
+        #[cfg(target_os = "macos")]
+        let (file, executable, snapshot) = snapshot_runtime(&path).map_err(missing)?;
         if file.metadata().map_err(io_error)?.len() > MAX_NODE_BYTES {
             return Err(HostError::new(
                 "js_runtime_invalid",
@@ -119,13 +135,18 @@ impl JsRuntime {
                 format!(
                     "{} does not match Codlet's pinned Node {}; repair the runtime package",
                     path.display(),
-                    pin.version
+                    version
                 ),
             ));
         }
         Ok(Self(Arc::new(RuntimeFiles {
+            #[cfg(windows)]
             executable: std::fs::canonicalize(&path).map_err(io_error)?,
+            #[cfg(target_os = "macos")]
+            executable,
             _file: file,
+            #[cfg(target_os = "macos")]
+            _snapshot: snapshot,
         })))
     }
 
@@ -146,8 +167,19 @@ impl JsRuntime {
             .map_err(io_error)?;
         source.write_all(host.source.as_bytes()).map_err(io_error)?;
         source.flush().map_err(io_error)?;
+        let mut bootstrap = tempfile::Builder::new()
+            .prefix("codlet-bootstrap-")
+            .suffix(".cjs")
+            .tempfile()
+            .map_err(io_error)?;
+        bootstrap
+            .write_all(BOOTSTRAP.as_bytes())
+            .map_err(io_error)?;
+        bootstrap.flush().map_err(io_error)?;
         // No user flags or loader hooks. TS is compiled before distribution;
         // native Node addons are disabled in this process by the runtime itself.
+        // The short loader removes its own path so host.cjs still observes the
+        // plugin entry at argv[1] and immutable source snapshot at argv[2].
         let arguments = vec![
             "--no-addons".into(),
             "--no-experimental-strip-types".into(),
@@ -155,8 +187,9 @@ impl JsRuntime {
             "--no-experimental-require-module".into(),
             "--input-type=commonjs".into(),
             "--eval".into(),
-            BOOTSTRAP.into(),
+            "require(process.argv.splice(1,1)[0])".into(),
             "--".into(),
+            bootstrap.path().to_string_lossy().into_owned(),
             host.entry.to_string_lossy().into_owned(),
             source.path().to_string_lossy().into_owned(),
         ];
@@ -165,6 +198,7 @@ impl JsRuntime {
                 let name = key.to_string_lossy().to_ascii_uppercase();
                 !name.starts_with("NODE_")
                     && !name.starts_with("OPENSSL_")
+                    && !name.starts_with("DYLD_")
                     && name != "ELECTRON_RUN_AS_NODE"
             })
             .collect();
@@ -174,6 +208,7 @@ impl JsRuntime {
             cwd: host.root.clone(),
             environment,
             _source: source,
+            _bootstrap: bootstrap,
             _runtime: self.clone(),
         })
     }
@@ -183,6 +218,57 @@ fn io_error(error: std::io::Error) -> HostError {
     HostError::new("js_runtime_io", error.to_string())
 }
 
+#[cfg(target_os = "macos")]
+fn snapshot_runtime(path: &Path) -> std::io::Result<(File, PathBuf, tempfile::TempDir)> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let source = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_NODE_BYTES || metadata.nlink() != 1 {
+        return Err(std::io::Error::other(
+            "Managed Node must be an ordinary bounded executable",
+        ));
+    }
+    // A Unix open descriptor does not prevent a pathname replacement or an
+    // in-place write. Execute a private generation-owned copy, hash that copy,
+    // and keep it until the last Host generation has retired.
+    let directory = tempfile::Builder::new().prefix("codlet-node-").tempdir()?;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+    let executable = directory.path().join("node");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o500)
+        .open(&executable)?;
+    if std::io::copy(&mut source.take(MAX_NODE_BYTES + 1), &mut output)? > MAX_NODE_BYTES {
+        return Err(std::io::Error::other(
+            "Managed Node exceeded its size limit during snapshot",
+        ));
+    }
+    output.sync_all()?;
+    drop(output);
+    let file = File::open(&executable)?;
+    Ok((file, executable, directory))
+}
+
+#[cfg(target_os = "macos")]
+fn sha256(mut file: &File) -> Result<String, HostError> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(io_error)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+#[cfg(windows)]
 fn sha256(mut file: &File) -> Result<String, HostError> {
     struct Hash {
         algorithm: BCRYPT_ALG_HANDLE,

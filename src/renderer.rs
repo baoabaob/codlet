@@ -123,6 +123,7 @@ pub struct RendererRuntime {
     generations: BTreeMap<String, u64>,
     management_active: bool,
     owner_lifecycle_depth: usize,
+    runtime_skills: Option<crate::runtime_skills::RuntimeSkills>,
 }
 
 struct RendererSession {
@@ -132,6 +133,7 @@ struct RendererSession {
     recovery_pending: bool,
     plugins: Vec<ActivePlugin>,
     events: CdpEventStream,
+    skill_bootstrap: Option<String>,
 }
 
 #[derive(Clone)]
@@ -357,6 +359,7 @@ impl RendererRuntime {
             generations,
             management_active: false,
             owner_lifecycle_depth: 0,
+            runtime_skills: None,
         })
     }
 
@@ -408,8 +411,10 @@ impl RendererRuntime {
             recovery_pending: false,
             plugins: Vec::with_capacity(self.plugins.len()),
             events: session.subscribe_events(),
+            skill_bootstrap: None,
         };
         self.sessions.insert(target_id.clone(), renderer_session);
+        self.install_runtime_skill(&target_id);
         self.publish_rpc_target(&target_id);
         self.publish_status();
         if let Err(error) = self.install_target_plugins(&target_id, authorizations) {
@@ -607,6 +612,9 @@ impl RendererRuntime {
         }
         self.capabilities
             .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
+        if let Some(skill) = self.runtime_skills.as_mut() {
+            skill.retire(target_id);
+        }
         self.sessions.remove(target_id);
         self.cancel_host_capabilities_for(target_id, None);
         self.record_status_event(
@@ -739,6 +747,10 @@ impl RendererRuntime {
             }
         }
         self.capabilities.deactivate_scope(&scope);
+        self.retire_runtime_skill(target_id);
+        if let Some(skill) = self.runtime_skills.as_mut() {
+            skill.retire(target_id);
+        }
         self.sessions.remove(target_id);
         self.cancel_host_capabilities_for(target_id, None);
         self.flush_host_actions();
@@ -898,6 +910,11 @@ impl RendererRuntime {
     }
 
     pub fn set_manage_service(&mut self, service: crate::runtime_manage::RuntimeManageService) {
+        service.publish_runtime_skill(
+            self.runtime_skills
+                .as_ref()
+                .map_or(json!({"available":false}), |skill| skill.descriptor()),
+        );
         self.manage_service = Some(service);
         self.refresh_management_list();
     }
@@ -952,6 +969,72 @@ impl RendererRuntime {
     pub fn has_renderer_plugins(&self) -> bool {
         !self.plugins.is_empty()
     }
+    #[cfg(windows)]
+    pub(crate) fn needs_renderer_targets(&self) -> bool {
+        self.has_renderer_plugins() || self.runtime_skills.is_some()
+    }
+    pub(crate) fn enable_runtime_skill(&mut self) {
+        match crate::runtime_skills::RuntimeSkills::prepare(self.registry_path()) {
+            Ok(skill) => self.runtime_skills = Some(skill),
+            Err(error) => crate::runtime_log::error("runtime_skill_unavailable", &error),
+        }
+        if let Some(service) = &self.manage_service {
+            service.publish_runtime_skill(
+                self.runtime_skills
+                    .as_ref()
+                    .map_or(json!({"available":false}), |skill| skill.descriptor()),
+            );
+        }
+    }
+    fn install_runtime_skill(&mut self, target: &str) {
+        let Some(skill) = self.runtime_skills.as_ref() else {
+            return;
+        };
+        let Some(owner) = self.sessions.get_mut(target) else {
+            return;
+        };
+        match skill.install(&owner.session) {
+            Ok(id) => owner.skill_bootstrap = Some(id),
+            Err(error) => crate::runtime_log::error("runtime_skill_attach", &error),
+        }
+    }
+    fn retire_runtime_skill(&mut self, target: &str) {
+        if let Some(skill) = self.runtime_skills.as_mut() {
+            skill.retire(target);
+        }
+        if let Some(owner) = self.sessions.get_mut(target)
+            && let Some(id) = owner.skill_bootstrap.take()
+        {
+            let _ = owner.session.evaluate(&format!(
+                "globalThis[Symbol.for({})]?.dispose()",
+                json!(crate::runtime_skills::MARKER)
+            ));
+            let _ = owner.session.request(
+                "Page.removeScriptToEvaluateOnNewDocument",
+                Some(json!({"identifier":id})),
+            );
+            let _ = owner.session.request(
+                "Runtime.removeBinding",
+                Some(json!({"name":crate::runtime_skills::BINDING})),
+            );
+        }
+    }
+    pub(crate) fn stop_runtime_skill(&mut self) {
+        if let Some(skill) = self.runtime_skills.as_ref() {
+            let script = skill.shutdown_script();
+            for owner in self.sessions.values().filter(|o| o.session.is_live()) {
+                let _ = owner.session.evaluate(&script);
+            }
+        }
+        let targets: Vec<_> = self.sessions.keys().cloned().collect();
+        for target in targets {
+            self.retire_runtime_skill(&target);
+        }
+        self.runtime_skills = None;
+        if let Some(service) = &self.manage_service {
+            service.publish_runtime_skill(json!({"available":false}));
+        }
+    }
 
     pub(crate) fn catalog_snapshot(&self) -> &PluginCatalog {
         &self.catalog
@@ -1000,6 +1083,12 @@ impl RendererRuntime {
     }
 
     pub fn take_diagnostics(&mut self) -> Vec<RendererDiagnostic> {
+        for diagnostic in &self.diagnostics {
+            crate::runtime_log::error(
+                "renderer_plugin",
+                &format!("{}: {}", diagnostic.plugin_id, diagnostic.message),
+            );
+        }
         std::mem::take(&mut self.diagnostics)
     }
 
@@ -1122,6 +1211,7 @@ impl RendererRuntime {
                                 document_epoch: next_epoch,
                                 recovery_pending: false,
                                 plugins: Vec::new(),
+                                skill_bootstrap: None,
                             },
                         );
                     }
@@ -1215,6 +1305,9 @@ impl RendererRuntime {
         {
             self.capabilities
                 .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
+            if let Some(skill) = self.runtime_skills.as_mut() {
+                skill.retire(target_id);
+            }
             self.sessions.remove(target_id);
             self.record_status_event(
                 target_id,
@@ -1397,6 +1490,33 @@ impl RendererRuntime {
             // CdpClient normally filters session events before they reach this
             // router. Keep the identity check here as a second, local guard.
             return Ok(false);
+        }
+        if call.binding_name == crate::runtime_skills::BINDING && session.skill_bootstrap.is_some()
+        {
+            let frame = target_session.request("Page.getFrameTree", None)?;
+            let context = frame
+                .pointer("/frameTree/frame/id")
+                .and_then(Value::as_str)
+                .and_then(|id| target_session.default_context(id));
+            if context != Some(call.execution_context_id) || call.payload.len() > 65536 {
+                return Ok(false);
+            }
+            let input: Value = serde_json::from_str(&call.payload)
+                .map_err(|_| RendererError::InvalidBindingEvent("invalid skill payload"))?;
+            let Some(id) = input["id"].as_u64() else {
+                return Ok(false);
+            };
+            if let Some(skill) = self.runtime_skills.as_mut() {
+                let reply = skill.invoke(target_id, call.execution_context_id, &input);
+                target_session.evaluate_in_context(
+                    &format!(
+                        "globalThis[Symbol.for({})]?.receive({id},{reply})",
+                        json!(crate::runtime_skills::MARKER)
+                    ),
+                    Some(call.execution_context_id),
+                )?;
+            }
+            return Ok(true);
         }
         let Some(consumer) = session
             .plugins
@@ -2404,6 +2524,7 @@ fn invoke_builtin_host_endpoint(
                 | "folderSelection"
                 | "sourceRemovalPreview"
                 | "openFolder"
+                | "openRuntimeFolder"
                 | "githubReleases"
                 | "githubPrepare"
                 | "githubJob"
@@ -2411,8 +2532,15 @@ fn invoke_builtin_host_endpoint(
                 | "managedHistory"
                 | "previewRollback"
                 | "runtimeUpdateStatus"
+                | "getSettings"
+                | "versionStatus"
+                | "saveSettings"
                 | "checkRuntimeUpdate"
+                | "checkPluginUpdates"
+                | "updatePlugins"
+                | "pluginUpdateReview"
                 | "downloadRuntimeUpdate"
+                | "installCombinedUpdate"
                 | "installRuntimeUpdate" => {
                     if request.id.is_none() {
                         return Err(host_failure(

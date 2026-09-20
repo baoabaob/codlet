@@ -116,11 +116,13 @@ pub struct StatusEvent {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg(any(windows, test))]
 struct StatusRequest {
     schema_version: u32,
     command: String,
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn validate_request(bytes: &[u8]) -> Result<(), StatusCode> {
     if bytes.len() > MAX_STATUS_REQUEST_BYTES {
         return Err(StatusCode::InvalidRequest);

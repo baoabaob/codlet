@@ -71,6 +71,9 @@ pub struct ChildProcess {
 }
 
 impl ChildProcess {
+    pub(crate) fn owned_handle(&self) -> &OwnedHandle {
+        &self.handle
+    }
     pub fn process_id(&self) -> u32 {
         self.process_id
     }

@@ -215,6 +215,7 @@ pub(super) struct PendingControl {
     renderers_started: bool,
     managed_previous: Option<PluginRegistry>,
     managed_restored: bool,
+    managed_installation: Option<crate::managed_storage::Installation>,
 }
 
 impl PendingControl {
@@ -236,6 +237,7 @@ impl PendingControl {
             renderers_started: false,
             managed_previous: None,
             managed_restored: false,
+            managed_installation: None,
         }
     }
 
@@ -283,13 +285,21 @@ impl PendingControl {
                     self.cleanup_confirmed &= confirmed;
                     renderer.set_external_observations(hosts.observations());
                     match self.phase {
-                        Phase::Disable => return Some(self.finish(renderer, generations, if self.failures.is_empty() { if self.unchanged { PluginControlOutcome::Unchanged } else { PluginControlOutcome::Applied } } else { PluginControlOutcome::Degraded }, None)),
+                        Phase::Disable => {
+                            if confirmed && self.failures.is_empty() && let Err(error)=self.publish_managed_installation() { self.failure("managed_install",error.to_string()); }
+                            return Some(self.finish(renderer, generations, if self.failures.is_empty() { if self.unchanged { PluginControlOutcome::Unchanged } else { PluginControlOutcome::Applied } } else { PluginControlOutcome::Degraded }, None));
+                        }
                         Phase::StopPrevious => {
                             if !confirmed { return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Previous native retirement could not be confirmed; replacement code was not started.".into()))); }
                             if !self.failures.is_empty() { if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); } continue; }
                             if let Err(error) = self.verify_candidate() {
                                 self.failure("activate_validate", error.to_string());
                                 if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
+                                continue;
+                            }
+                            if let Err(error)=self.publish_managed_installation() {
+                                self.failure("managed_install",error.to_string());
+                                if let Some(report)=self.start_rollback(renderer,hosts,generations) { return Some(report); }
                                 continue;
                             }
                             if let Err(error) = renderer.register_rpc_plugins(&self.plan.replacements()) {
@@ -579,7 +589,56 @@ impl PendingControl {
         });
     }
 
+    fn publish_managed_installation(&mut self) -> Result<(), PluginControlError> {
+        let Some(previous) = &self.managed_previous else {
+            return Ok(());
+        };
+        if self.managed_installation.is_some() {
+            return Ok(());
+        }
+        let id = &self.job.request.plugin_id;
+        let (installation, registry, mut entry) = crate::managed_storage::Installation::publish(
+            &self.registry,
+            previous,
+            id,
+            self.job.request.activation_requested(),
+        )?;
+        let generation = self
+            .plan
+            .entries
+            .iter()
+            .find(|e| e.id == *id)
+            .and_then(|e| e.plugin.as_ref().ok())
+            .map_or(1, |p| p.generation);
+        entry
+            .plugin
+            .as_mut()
+            .expect("checked installation")
+            .generation = generation;
+        for plugin in &mut self.plan.next {
+            if plugin.manifest.id == *id {
+                *plugin = entry.plugin.as_ref().unwrap().clone();
+            }
+        }
+        if let Some(selected) = self
+            .plan
+            .entries
+            .iter_mut()
+            .find(|selected| selected.id == *id)
+        {
+            *selected = entry;
+        }
+        self.registry = registry;
+        self.managed_installation = Some(installation);
+        Ok(())
+    }
     fn restore_managed_registration(&mut self) -> Result<(), PluginControlError> {
+        if let Some(installation) = &mut self.managed_installation {
+            self.registry = installation.rollback()?;
+            self.managed_installation = None;
+            self.managed_previous = None;
+            self.managed_restored = true;
+        }
         if let Some(previous) = &self.managed_previous {
             self.registry = crate::managed_plugins::restore_previous(
                 &self.registry,
@@ -602,6 +661,11 @@ impl PendingControl {
             outcome,
             PluginControlOutcome::Applied | PluginControlOutcome::Unchanged
         ) {
+            if let Some(mut installation) = self.managed_installation.take()
+                && let Err(error) = installation.commit()
+            {
+                self.failure("managed_cleanup", error.to_string());
+            }
             // Disabled managed selections still commit their new catalog entry.
             if self.managed_previous.is_some() && !self.plan.entries.is_empty() {
                 renderer.commit_package_entries(std::mem::take(&mut self.plan.entries));

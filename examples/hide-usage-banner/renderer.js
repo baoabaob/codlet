@@ -1,20 +1,23 @@
 'use strict';
 
-// Codex Desktop 26.903.8094.0: the usage card is an aside with an h3
-// containing a title and description. Match that card, not arbitrary page text.
+// Audited 26.908.40834 / 8881: app-initial xBa ($M) renders the aside/h3;
+// app-primary's upsell banner supplies codex.upsellBanner.merged.* titles.
+// Match the complete title and a quota action inside that card only.
 const CARD = 'aside.relative.isolate.bg-surface';
 const ATTRIBUTE = 'data-codlet-hide-usage-banner';
 const TITLES = [
     "you're out of codex and work usage",
     "you've used all codex and work usage",
     '你的 codex 和工作使用额度已用完',
+    'codex 和工作使用额度已用完',
+    'codex 和工作用量均已用完',
     '你的 codex 和工作用量均已用完',
     '你的 codex 和工作使用量已用完',
     '你已用完 codex 和工作的所有使用量',
     'codex 及「工作」用量已用盡',
     '你已用盡 codex 和「工作」用量',
 ];
-const ACTIONS = new Set(['add credits', 'reset usage', '增加额度', '重置使用量', '新增積分', '重設使用量']);
+const ACTIONS = new Set(['add credits', 'reset usage', '增加额度', '添加额度', '重置使用量', '新增積分', '重設使用量']);
 let dispose = null;
 
 function normalize(value) {
@@ -25,11 +28,11 @@ function isUsageCard(card) {
     if (!card.matches(CARD)) return false;
     const heading = card.querySelector('h3');
     if (!heading || heading.closest('aside') !== card) return false;
-    const carrier = heading.firstElementChild?.tagName === 'DIV' ? heading.firstElementChild : heading;
-    // The description is a sibling span inside h3; textContent joins the title
-    // and description without a space. Select only the direct title text nodes.
-    const text = normalize([...carrier.childNodes].filter(node => node.nodeType === 3).map(node => node.textContent).join(''));
-    if (!TITLES.includes(text)) return false;
+    // Native has both a title-only h3 and a title/description wrapper. Localized
+    // titles may themselves be spans. Never match the whole card by substring.
+    const titles = [heading, ...heading.querySelectorAll('div, span')];
+    if (!titles.some(node => TITLES.includes(normalize(node.textContent)) ||
+        TITLES.includes(normalize([...node.childNodes].filter(child => child.nodeType === 3).map(child => child.textContent).join(''))))) return false;
     return [...card.querySelectorAll('button')].some(button =>
         button.closest('aside') === card && ACTIONS.has(normalize(button.textContent)));
 }

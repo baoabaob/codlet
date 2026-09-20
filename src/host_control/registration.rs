@@ -129,6 +129,7 @@ impl HostControl {
                 .expect("validated managed selection");
             let (mut candidate, entry) = crate::managed_plugins::stage(&previous, &id, selection)?;
             renderer.validate_package_shape(entry.plugin.as_ref().expect("validated package"))?;
+            crate::managed_storage::checkpoint_registration(&candidate, &previous, &id)?;
             candidate.save().map_err(registry_error)?;
             // Both running replacements and stopped registrations use one receipt.
             // Package rollback first restores this exact prior registry snapshot.

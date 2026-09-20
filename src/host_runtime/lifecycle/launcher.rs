@@ -168,7 +168,7 @@ impl Drop for Launcher {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::path::PathBuf;

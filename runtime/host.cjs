@@ -1,5 +1,7 @@
 'use strict';
 
+const { createTrafficRuntime: createEmbeddedTrafficRuntime } = module.exports;
+
 // Codlet owns this adapter; plugin entrypoints export activate/deactivate just
 // like renderer entrypoints. A separate process is a lifetime boundary, no sandbox.
 const fs = require('node:fs');
@@ -130,12 +132,23 @@ function takePending(id) {
 }
 
 function retire() {
+  trafficRuntime.closeAll(error('host_stopping', 'Codlet is stopping this generation'));
   for (const invocation of invocations.values()) closeInvocation(invocation, error('host_stopping', 'Codlet is stopping this generation'));
   endpoints.clear();
   if (!abort.signal.aborted) abort.abort(error('host_stopping', 'Codlet is stopping this generation'));
   for (const id of pending.keys()) takePending(id)?.reject(error('host_stopping', 'Codlet is stopping this generation'));
   subscriptions.clear();
 }
+
+const trafficRuntime = createEmbeddedTrafficRuntime({
+  rootSignal: abort.signal,
+  makeError: error,
+  coreRequest(method, params, signal) {
+    // A channel is generation-owned, not a continuation of the capability call
+    // that happened to create it. Future socket callbacks get fresh Core deadlines.
+    return invocationContext.run(undefined, () => request(method, params, MAX_TIMEOUT, undefined, false, signal));
+  },
+});
 
 function deactivate(cleanup) {
   if (!deactivation) deactivation = invocationContext.run(undefined, () => Promise.resolve().then(() => loaded?.deactivate?.(cleanup)));
@@ -221,6 +234,7 @@ function context(params) {
     network: Object.freeze({ fetch: osMethod('host.network.fetch') }),
     process: Object.freeze({ run: osMethod('host.process.run') }),
     system: Object.freeze({ info: (options = {}) => osMethod('host.system.info')({}, options) }),
+    traffic: trafficRuntime.api,
   });
 }
 

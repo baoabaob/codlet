@@ -2,6 +2,8 @@
 
 日期：2026-09-11。状态：完成源码盘点、最小接口草案和验收矩阵；平台接口尚未抽取，非 Windows 运行支持尚未实现。
 
+此页保留 9 月 11 日的盘点基线。最新官方平台范围和当前实现状态以 [平台支持矩阵](PLATFORM_SUPPORT.md) 为准；已实施的接口抽取与 Mac 工作见 [架构复审](ARCHITECTURE_REVIEW_2026-09-16.md)。
+
 本记录落实[下一阶段计划](NEXT_DEVELOPMENT_PLAN_2026-09-11.md#p0--p1跨操作系统适配)的第一项 P0 工作。继续复用现有 manifest、权限、capability、generation、receipt 和生命周期协议；后续导入与管理功能按这些边界开发。
 
 ## 当前耦合位置

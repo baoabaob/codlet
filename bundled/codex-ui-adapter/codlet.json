@@ -2,6 +2,7 @@
   "schema": 1,
   "id": "codex.ui.adapter",
   "name": "Codex UI Adapter",
+  "tags": ["UI", "Adapter"],
   "description": "Connect plugin pages to Codex navigation.",
   "i18n": {
     "zh": { "name": "Codex 界面适配器", "description": "将插件页面接入 Codex 主导航。" },

@@ -5,6 +5,10 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use crate::local_plugins::{LocalPluginError, load_local_plugin};
+use crate::platform::control_pipe::{
+    ControlPipeError, RegistryScope, RegistryScopeGuard, discover, query,
+};
+use crate::platform::launch_mutex::LaunchMutexGuard;
 use crate::plugin_control::{PluginControlAction, PluginControlError, PluginControlRequest};
 use crate::plugins::{
     ManifestError, PluginRegistry, PluginRegistryError, bundled_plugins, default_registry_path,
@@ -13,10 +17,7 @@ use crate::runtime_control::{
     ControlCompletion, ControlReport, ControlRequest, ControlStatus, valid_operation_id,
 };
 use crate::runtime_status::StatusCode;
-use crate::windows::control_pipe::{
-    ControlPipeError, RegistryScope, RegistryScopeGuard, discover, query,
-};
-use crate::windows::launch_mutex::LaunchMutexGuard;
+#[cfg(windows)]
 use crate::windows::status_pipe::query_current_user;
 
 const OFFLINE_LEASE_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -243,18 +244,82 @@ fn offline_edit(
     output: &mut CliOutput,
 ) -> Result<(), PluginCliError> {
     let _lease = offline_lease(scope)?;
-    let mut registry = PluginRegistry::load(scope.path())?;
+    edit_registration(scope.path(), request, output)
+}
+
+/// The safe-mode owner already holds the scope lease. Reuse offline validation
+/// and atomic saves, but never dispatch a plugin executor or delete source files.
+pub(crate) fn recover_in_safe_mode(
+    path: &std::path::Path,
+    request: &PluginControlRequest,
+) -> Result<crate::plugin_control::PluginControlReport, PluginControlError> {
+    request.validate()?;
+    if !crate::plugin_control::recovery_request(request) {
+        return Err(PluginControlError::new(
+            "safe_mode",
+            "Plugin activation is unavailable in safe mode",
+        ));
+    }
+    let mut output = CliOutput::default();
+    edit_registration(path, request, &mut output)
+        .map_err(|error| PluginControlError::new(error.code(), error.to_string()))?;
+    let affected = output
+        .registration
+        .as_ref()
+        .and_then(|value| value.get("affected_plugin_ids"))
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_else(|| vec![request.plugin_id.clone()]);
+    Ok(crate::plugin_control::PluginControlReport {
+        action: request.action,
+        plugin_id: request.plugin_id.clone(),
+        outcome: crate::plugin_control::PluginControlOutcome::Applied,
+        desired_enabled: request.action == PluginControlAction::Revoke
+            && PluginRegistry::load(path)
+                .map_err(|error| PluginControlError::new("registry_error", error.to_string()))?
+                .is_enabled(&request.plugin_id),
+        affected_plugin_ids: affected,
+        generations: Vec::new(),
+        target_failures: Vec::new(),
+        message: Some(
+            "Recovery changes saved; all plugins remain stopped for this safe-mode session".into(),
+        ),
+    })
+}
+
+fn edit_registration(
+    path: &std::path::Path,
+    request: &PluginControlRequest,
+    output: &mut CliOutput,
+) -> Result<(), PluginCliError> {
+    let mut registry = PluginRegistry::load(path)?;
     let plugin_id = &request.plugin_id;
     if matches!(
         request.action,
         PluginControlAction::Import | PluginControlAction::Update | PluginControlAction::Rollback
     ) {
         let selection = request.local_import.as_ref().expect("validated import");
-        let (mut next, _) = if selection.managed.is_some() {
-            crate::managed_plugins::stage(&registry, plugin_id, selection)?
-        } else {
-            crate::local_import::stage(&registry, plugin_id, selection)?
-        };
+        if selection.managed.is_some() {
+            let (staged, _) = crate::managed_plugins::stage(&registry, plugin_id, selection)?;
+            let (mut installation, mut next, _) = crate::managed_storage::Installation::publish(
+                &staged,
+                &registry,
+                plugin_id,
+                selection.enable,
+            )?;
+            if let Err(error) = next
+                .set_enabled(plugin_id, selection.enable)
+                .and_then(|()| next.save())
+            {
+                installation.rollback()?;
+                return Err(error.into());
+            }
+            installation.commit()?;
+            output.registration = Some(
+                serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":selection.enable,"applies":"next-codlet-launch","directory":"installed","path":next.local_plugins()[plugin_id].path}),
+            );
+            return Ok(());
+        }
+        let (mut next, _) = crate::local_import::stage(&registry, plugin_id, selection)?;
         next.set_enabled(plugin_id, selection.enable)?;
         next.save()?;
         output.registration = Some(
@@ -382,7 +447,15 @@ fn offline_lease(scope: &RegistryScope) -> Result<OfflineLease, PluginCliError> 
     }
     let discovery = discover();
     let legacy_status = if discovery.status == ControlStatus::NotRunning {
-        Some(query_current_user().status)
+        #[cfg(windows)]
+        {
+            Some(query_current_user().status)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // macOS has no legacy listener generation outside this scope lease.
+            Some(StatusCode::NotRunning)
+        }
     } else {
         None
     };

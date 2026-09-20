@@ -89,6 +89,7 @@ function fileIn(root, relative) {
   ancestors(file); return file;
 }
 function validatePlan(plan, planPath, planSha) {
+  if (plan.officialUpdate != null && typeof plan.officialUpdate !== 'boolean') throw fail('plan_invalid', 'Invalid official update gate.');
   if (plan.schema !== 1 || plan.kind !== 'codlet-runtime-install-plan' || plan.platform !== 'win-x64' || !/^runtime-install-[A-Za-z0-9_-]+$/.test(plan.id) || !sha(planSha) || !sha(plan.manifestSha256)) throw fail('plan_invalid', 'Unrecognized runtime installation plan.');
   const job = path.dirname(absolute(planPath));
   if (process.platform === 'win32' && path.parse(key(plan.installRoot)).root !== path.parse(key(plan.stateRoot)).root) throw fail('plan_cross_volume', 'Runtime staging and installation must be on the same volume before any owner is closed.');
@@ -248,6 +249,17 @@ function rollback(plan, receipt, persist) {
   }
   verifyCurrent(plan);
 }
+export function officialResult(plan, expectedSha, required = false) {
+  if (!plan.officialUpdate) return;
+  const file = path.join(plan.stateRoot, plan.id, 'official-result.json');
+  if (!fs.existsSync(file)) {
+    if (required) throw fail('official_update_unconfirmed', 'The official installation was not confirmed; no Codlet files were changed.');
+    return;
+  }
+  const result = JSON.parse(read(file, 8192));
+  if (result.id !== plan.id || result.planSha256 !== expectedSha || typeof result.ready !== 'boolean') throw fail('official_update_gate_invalid', 'The official update result does not match this transaction.');
+  if (!result.ready) throw fail('official_update_cancelled', String(result.detail ?? 'Official update cancelled').slice(0,4096));
+}
 export async function runInstall(planPath, expectedSha, onReady = () => {}) {
   const bytes = read(planPath);
   if (!sha(expectedSha) || hashBytes(bytes) !== expectedSha) throw fail('plan_digest_mismatch', 'Install plan SHA-256 differs from the owner handoff.');
@@ -272,11 +284,13 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}) {
     }
     if (!armed) throw fail('handoff_not_armed', 'Owner did not acknowledge the helper; no runtime files were changed.');
     receipt.phase = 'waitingForExit'; persist();
-    const exitDeadline = Date.now() + 180000;
+    const exitDeadline = Date.now() + (plan.officialUpdate ? 600000 : 180000);
     while (await ownersAlive(plan.waitFor)) {
+      officialResult(plan, expectedSha);
       if (Date.now() >= exitDeadline) throw fail('owner_still_running', 'Original owner processes are still running. No process was killed and no runtime files were changed.');
       await delay(250);
     }
+    officialResult(plan, expectedSha, true);
     ownersRetired = true;
     verifyCurrent(plan); verifyStaged(plan); verifyLauncher(plan, false, receipt);
     fs.mkdirSync(plan.backupRoot); ordinary(plan.backupRoot, true);

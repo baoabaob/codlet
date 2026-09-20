@@ -14,7 +14,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 const config = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 const directory = path.dirname(process.argv[3]);
-fs.appendFileSync(path.join(directory, 'starts.jsonl'), JSON.stringify({ pid: process.pid, action: process.argv[2] }) + '\n');
+fs.appendFileSync(path.join(directory, 'starts.jsonl'), JSON.stringify({ pid: process.pid, action: process.argv[2], flags:process.argv.slice(4) }) + '\n');
 const ps = path.join(process.env.SYSTEMROOT ?? 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const created = JSON.parse(execFileSync(ps, ['-NoProfile', '-NonInteractive', '-Command', '(Get-Process -Id ' + process.pid + ').StartTime.ToUniversalTime().ToString("o") | ConvertTo-Json -Compress'], { encoding: 'utf8', windowsHide: true }).trim());
 const runId = Date.now() + '-' + process.pid;
@@ -33,6 +33,10 @@ if (config.fixtureMode === 'ready') {
 } else if (['failed', 'failed-clean'].includes(config.fixtureMode)) {
   state.state = 'failed'; state.error = 'Fixture backend startup failed'; publish(state);
   console.error('Fixture backend startup failed: backend-stderr.log');
+} else if (config.fixtureMode === 'interrupted') {
+  fs.writeFileSync(path.join(logs, 'lab-stderr.log'), 'codlet-lab: preflightBlocked: resume requires a closed run or a recorded preparation-only exit\n');
+  state.state = 'failed'; state.error = 'Lab preparation failed; see lab-stderr.log'; publish(state);
+  console.error(state.error);
 }
 setInterval(() => {
   if (config.fixtureMode === 'failed-clean' && fs.existsSync(path.join(logs, 'quit.request'))) {
@@ -80,10 +84,10 @@ async function fixture(mode) {
     };
 }
 
-function launch(f, cmd = false, script = 'Start-TestClient.ps1') {
+function launch(f, cmd = false, script = 'Start-TestClient.ps1', flags = []) {
     const child = cmd
         ? spawn(process.env.COMSPEC ?? 'C:/Windows/System32/cmd.exe', ['/d', '/c', '"' + path.join(f.directory, 'Start-TestClient.cmd') + '" -StartupTimeoutSeconds 20'], { windowsHide: true, windowsVerbatimArguments: true, stdio: 'pipe' })
-        : spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(f.directory, script), ...(script === 'Start-TestClient.ps1' ? ['-StartupTimeoutSeconds', '20'] : [])], { windowsHide: true, stdio: 'pipe' });
+        : spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(f.directory, script), ...(script === 'Start-TestClient.ps1' ? ['-StartupTimeoutSeconds', '20'] : []), ...flags], { windowsHide: true, stdio: 'pipe' });
     let stdout = '', stderr = '', ended = false;
     child.stdout.on('data', bytes => { stdout += bytes.toString('utf8'); });
     child.stderr.on('data', bytes => { stderr += bytes.toString('utf8'); });
@@ -102,6 +106,17 @@ function launch(f, cmd = false, script = 'Start-TestClient.ps1') {
     });
     return { child, completion, output: () => stdout + stderr, ended: () => ended };
 }
+
+test('the existing launcher forwards safe mode for one launch without changing configuration', {skip:!windows,timeout:15000}, async()=>{
+    const f=await fixture('ready');
+    try {
+        const config=await readFile(path.join(f.directory,'lab-config.json'));
+        const result=await launch(f,false,'Start-TestClient.ps1',['-SafeMode']).completion;
+        assert.equal(result.code,0,result.stderr);
+        assert.deepEqual((await f.starts())[0].flags,['--safe-mode']);
+        assert.deepEqual(await readFile(path.join(f.directory,'lab-config.json')),config);
+    } finally { await f.cleanup(); }
+});
 
 test('missing pinned CLI reports the upgrade problem and the actual cmd pauses only on failure', { skip: !windows, timeout: 15000 }, async () => {
     const f = await fixture('missing-cli');
@@ -159,6 +174,19 @@ test('early coordinator failure is visible with its owned state and log paths be
         assert.match(result.stderr, /Startup log: .*launch-.*stdout.log/);
         assert.match(result.stderr, /Error log: .*launch-.*stderr.log/);
         assert.equal((await f.starts()).length, 1);
+    } finally { await f.cleanup(); }
+});
+
+test('an interrupted run reports the host cause and the existing recovery command without retrying', { skip: !windows, timeout: 15000 }, async () => {
+    const f = await fixture('interrupted');
+    try {
+        const result = await launch(f).completion;
+        assert.equal(result.code, 1, result.stdout + result.stderr);
+        assert.match(result.stderr, /preflightBlocked: resume requires a closed run/);
+        assert.match(result.stderr, /Close any remaining ChatGPT \(Dev\) window/);
+        assert.match(result.stderr, /Start-TestClient\.cmd -RecoverInterrupted/);
+        assert.match(result.stderr, /keeps your plugins and settings/);
+        const starts = await f.starts(); assert.equal(starts.length, 1); assert.equal(starts[0].action, 'start');
     } finally { await f.cleanup(); }
 });
 

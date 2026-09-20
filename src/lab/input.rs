@@ -14,6 +14,7 @@ use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 pub(super) enum InputEvent {
     Start,
     Quit,
+    RehearseUpdate,
     Plugin(PluginControlRequest),
     Invalid,
     Eof,
@@ -185,6 +186,7 @@ impl ControlInput {
             events.push(match (self.oversized, self.line.as_slice()) {
                 (false, b"start") => InputEvent::Start,
                 (false, b"quit") => InputEvent::Quit,
+                (false, b"rehearse-update") => InputEvent::RehearseUpdate,
                 (false, line) => {
                     parse_plugin_command(line).map_or(InputEvent::Invalid, InputEvent::Plugin)
                 }

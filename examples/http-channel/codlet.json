@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "example.http-channel",
+  "version": "1.0.0",
+  "name": "Traffic channel example",
+  "host": { "entry": "host.js", "provides": [{ "name": "example.traffic.channel", "api": 1, "scope": "runtime" }] },
+  "renderer": { "entry": "renderer.js", "world": "main" },
+  "permissions": ["host.process", "host.network", "ui.mainWorld"],
+  "requires": [
+    { "name": "example.traffic.channel", "api": 1, "scope": "runtime" },
+    { "name": "codex.backend.transport", "api": 1, "scope": "target" }
+  ]
+}

@@ -22,5 +22,5 @@ const withinOwner = (primitive, customEscape = false) => ({
 export const Popover = withinOwner(Radix.Popover, true);
 export const Tooltip = withinOwner(Radix.Tooltip);
 export const Select = withinOwner(Radix.Select);
-export const DropdownMenu = withinOwner(Radix.DropdownMenu);
+export const DropdownMenu = withinOwner(Radix.DropdownMenu, true);
 export const Dialog = withinOwner(Radix.Dialog);

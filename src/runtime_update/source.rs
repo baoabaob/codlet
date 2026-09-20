@@ -680,7 +680,7 @@ fn parse_version(value: &str) -> Result<Version> {
     }
     Ok(Version { numbers, pre })
 }
-pub(super) fn newer(candidate: &str, current: &str) -> Result<bool> {
+pub(crate) fn newer(candidate: &str, current: &str) -> Result<bool> {
     use std::cmp::Ordering;
     let (a, b) = (parse_version(candidate)?, parse_version(current)?);
     match a.numbers.cmp(&b.numbers) {

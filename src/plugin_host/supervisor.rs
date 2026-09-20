@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -8,15 +7,15 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};
-use windows_sys::Win32::System::Threading::SetEvent;
 
+use super::HostError;
 use super::protocol::{
     HostIdentity, HostRpcError, LineDecoder, MAX_HOST_PENDING_REQUESTS, MAX_SAFE_INTEGER,
     WireMessage, decode_frame, encode_frame, validate_method,
 };
-use crate::windows::local_ipc::{Channel, LocalIpcError, raw};
-use crate::windows::plugin_process::{OwnedPluginProcess, PluginStdio};
+use crate::platform::host::{
+    Channel, LocalIpcError, OwnedPluginProcess, PluginStdio, StopSignal, signal, stream_closed,
+};
 
 const QUEUE_FRAMES: usize = 4;
 const STDERR_TAIL_BYTES: usize = 64 * 1024;
@@ -26,22 +25,6 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_GRACE: Duration = Duration::from_millis(1500);
 const EXIT_DRAIN: Duration = Duration::from_millis(100);
 const IO_POLL: Duration = Duration::from_millis(20);
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{code}: {message}")]
-pub struct HostError {
-    pub code: &'static str,
-    pub message: String,
-}
-
-impl HostError {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,7 +83,7 @@ struct Inbound {
 }
 
 struct IoState {
-    stop: Arc<OwnedHandle>,
+    stop: StopSignal,
     stopping: AtomicBool,
     failure: Mutex<Option<HostError>>,
     partial_since: Mutex<Option<Instant>>,
@@ -118,9 +101,7 @@ impl IoState {
     }
     fn cancel(&self) {
         self.stopping.store(true, Ordering::Release);
-        unsafe {
-            SetEvent(raw(&self.stop));
-        }
+        signal(&self.stop);
     }
     fn is_stopping(&self) -> bool {
         self.stopping.load(Ordering::Acquire)
@@ -572,7 +553,7 @@ impl HostSupervisor {
         }
         self.join_finished();
         if self.exit_code.is_some() && !self.job_empty {
-            match self.process.job_is_empty() {
+            match self.process.process_scope_is_empty() {
                 Ok(empty) => self.job_empty = empty,
                 Err(error) => self.fail(HostError::new("job_query_failed", error.to_string())),
             }
@@ -1040,14 +1021,4 @@ fn read_stderr(channel: Channel, io: Arc<IoState>) {
             }
         }
     }
-}
-
-fn stream_closed(error: &LocalIpcError) -> bool {
-    matches!(
-        error,
-        LocalIpcError::Win32 {
-            code: ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED,
-            ..
-        }
-    )
 }

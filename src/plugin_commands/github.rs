@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::{PluginTrustOptions, ProbeError, parse_plugin_trust_options};
+use super::{CommandError as ProbeError, PluginTrustOptions, parse_plugin_trust_options};
 use crate::github_distribution::{GitHubClient, GitHubLink};
 use crate::managed_plugins::{ManagedOperation, ManagedPreview};
 use crate::plugin_control::{PluginControlAction, PluginControlRequest};

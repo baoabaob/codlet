@@ -59,8 +59,10 @@ impl RendererRuntime {
                             recovery_pending: false,
                             plugins: Vec::with_capacity(self.plugins.len()),
                             events: session.subscribe_events(),
+                            skill_bootstrap: None,
                         },
                     );
+                    self.install_runtime_skill(&target);
                     self.publish_rpc_target(&target);
                     authorizations.insert(target, authorization);
                 }

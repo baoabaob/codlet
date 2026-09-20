@@ -100,6 +100,8 @@ function pumpLines(stream, onLine, log) {
       if (line.trim()) onLine(line);
     }
   });
+  stream.once('end', () => log?.end());
+  stream.once('error', () => log?.end());
 }
 function exited(child) {
   return new Promise(resolve => {
@@ -189,6 +191,8 @@ async function probe(endpoint, port) {
 }
 
 async function start(recoverInterrupted = false) {
+  if(pluginArguments.length && !(pluginArguments.length===1 && pluginArguments[0]==='--safe-mode'))throw new Error('Start accepts only --safe-mode');
+  const safeMode=pluginArguments[0]==='--safe-mode';
   verifyHash(officialCli, config.officialCliSha256);
   const previous = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
   if (previous?.state === 'ready') {
@@ -204,20 +208,22 @@ async function start(recoverInterrupted = false) {
   const quitFile = path.join(logs, 'quit.request');
   const managerFacts = await ps("$codletStarted=(Get-Process -Id ([int]$env:CODLET_CHECK_PID)).StartTime.ToUniversalTime(); [pscustomobject]@{created=$codletStarted.ToString('o');filetime=$codletStarted.ToFileTimeUtc().ToString()} | ConvertTo-Json -Compress", { CODLET_CHECK_PID: String(process.pid) });
   const managerIdentity = managerFacts.created;
-  let state = { schema: 1, runId, state: 'preparing', labRoot: root, managerPid: process.pid, managerCreated: managerIdentity, logs, quitFile, before };
+  let state = { schema: 1, runId, state: 'preparing', safeMode, labRoot: root, managerPid: process.pid, managerCreated: managerIdentity, logs, quitFile, before };
   atomicJson(path.join(logs, 'state.json'), state);
-  let backend, backendExit, lab, labExit, prepared, deadline, wroteState = false;
+  let backend, backendExit, lab, labExit, labOutputEnded, prepared, deadline, wroteState = false;
   let startupVerified = false, pluginReady = false;
   let labFailure = null;
+  let restartAfterUpdate = false;
   const rows = [];
   function publish() { atomicJson(path.join(logs, 'state.json'), state); if (prepared) { atomicJson(statePath, state); wroteState = true; } }
   try {
     const port = await freePort();
     const endpoint = 'ws://127.0.0.1:' + port;
     lab = spawn(labBinary, ['--experimental-isolated-client', '--root', root, '--expected-package-version', config.expectedPackageVersion,
-      '--app-server-url', endpoint, '--resume-from', report, ...(recoverInterrupted ? ['--recover-interrupted'] : [])],
+      '--app-server-url', endpoint, '--resume-from', report, ...(recoverInterrupted ? ['--recover-interrupted'] : []), ...(safeMode ? ['--safe-mode'] : [])],
       { cwd: path.join(root, 'project'), env: { ...environment(), CODLET_UPDATE_OWNER_PID: String(process.pid), CODLET_UPDATE_OWNER_CREATED: managerFacts.filetime }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     labExit = exited(lab);
+    labOutputEnded = new Promise(resolve => { lab.stdout.once('end',resolve);lab.stdout.once('close',resolve);lab.stdout.once('error',resolve); });
     lab.stdin.on('error', () => {});
     const hostOutput = fs.createWriteStream(path.join(logs, 'lab-stdout.jsonl'), { flags: 'wx' });
     const hostErrors = fs.createWriteStream(path.join(logs, 'lab-stderr.log'), { flags: 'wx' });
@@ -229,9 +235,10 @@ async function start(recoverInterrupted = false) {
       rows.push(row); if (rows.length > 1000) rows.shift();
       if (row.event === 'prepared') prepared = row.detail;
       if (row.event === 'startup_verified') startupVerified = true;
-      if (row.event === 'plugin_runtime_ready') pluginReady = true;
+      if (row.event === (safeMode ? 'safe_mode_ready' : 'plugin_runtime_ready')) pluginReady = true;
       if (['startup_failed', 'plugin_startup_failed', 'renderer_pump_failed', 'quit_timed_out'].includes(row.event)) labFailure = row.event;
       if (row.event === 'child_created') { state.desktopPid = row.child_pid; state.desktopCreated = row.detail.creation_time_windows_100ns; publish(); }
+      if (row.event === 'official_update_restart') { restartAfterUpdate = row.detail.rehearsal === true; state.updateRestart = row.detail; publish(); }
     }, hostOutput);
     deadline = Date.now() + 120000;
     while (!prepared) {
@@ -274,14 +281,23 @@ async function start(recoverInterrupted = false) {
     state.state = 'ready'; state.readyAt = new Date().toISOString(); publish();
     console.log(JSON.stringify({ state: 'ready', labRoot: root, desktopPid: state.desktopPid, report: state.report, localPluginsSupported: true, originalProcessesUnchanged: true }));
     let quitRequested = false;
+    let rehearsalRequested = false;
     while (lab.exitCode === null && lab.signalCode === null) {
       if (!quitRequested && (fs.existsSync(quitFile) || backend.exitCode !== null || backend.signalCode !== null || labFailure)) {
         lab.stdin.write('quit\n'); quitRequested = true;
         state.state = 'stopping'; publish();
       }
+      const rehearsalFile = path.join(logs, 'update-rehearsal.request');
+      if (!quitRequested && !rehearsalRequested && fs.existsSync(rehearsalFile)) {
+        const info = fs.lstatSync(rehearsalFile);
+        if (!info.isFile() || info.isSymbolicLink() || info.size > 128 || fs.readFileSync(rehearsalFile, 'utf8') !== runId) throw new Error('Invalid update rehearsal request');
+        rehearsalRequested = true;
+        lab.stdin.write('rehearse-update\n');
+      }
       await delay(250);
     }
     state.hostExit = await labExit;
+    await labOutputEnded;
     state.state = state.hostExit.code === 0 ? 'closed' : 'failed';
     if (state.hostExit.code !== 0) process.exitCode = 1;
   } catch (error) {
@@ -300,6 +316,7 @@ async function start(recoverInterrupted = false) {
     }
   } finally {
     if (lab && lab.exitCode !== null && !state.hostExit) state.hostExit = await labExit;
+    if (lab && (lab.exitCode !== null || lab.signalCode !== null)) await labOutputEnded;
     if (backend && backend.exitCode === null && backend.signalCode === null) {
       backend.kill('SIGTERM'); // Windows: terminate only this retained, newly created backend handle.
       await backendExit;
@@ -309,6 +326,19 @@ async function start(recoverInterrupted = false) {
     if (wroteState || prepared) publish(); else atomicJson(path.join(logs, 'state.json'), state);
     console.log(JSON.stringify({ state: state.state, logs, error: state.error ?? null }));
   }
+  // Keep the known coordinator while replacing its retired child. A detached
+  // PowerShell child can disappear during parent teardown on Windows.
+  // Combined Codlet replacement deliberately returns false so its checked
+  // external helper can wait for this coordinator and replace the binary.
+  return restartAfterUpdate && state.state === 'closed' && state.hostExit?.code === 0;
+}
+async function rehearseUpdate() {
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  if (state.state !== 'ready' || !/^\d+-\d+$/.test(state.runId)) throw new Error('Start the test client before rehearsing an update restart');
+  const logs = path.join(root, 'logs', 'coordinator-' + state.runId);
+  if (path.resolve(state.logs).toLowerCase() !== logs.toLowerCase()) throw new Error('Invalid rehearsal owner');
+  fs.writeFileSync(path.join(logs, 'update-rehearsal.request'), state.runId, {flag:'wx'});
+  console.log('Update restart rehearsal requested. No official package will be downloaded or installed.');
 }
 async function stop() {
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -327,8 +357,8 @@ async function plugins() {
   process.exitCode = result.code ?? 1;
 }
 
-async function doctor() {
-  const child = spawn(labBinary, ['--experimental-isolated-client', '--root', root, 'doctor', ...pluginArguments], {
+async function doctor(command = 'doctor') {
+  const child = spawn(labBinary, ['--experimental-isolated-client', '--root', root, command, ...pluginArguments], {
     cwd: process.cwd(), env: environment(true), windowsHide: true, stdio: 'inherit',
   });
   const result = await exited(child);
@@ -337,9 +367,11 @@ async function doctor() {
 
 validateRoot();
 verifyHash(labBinary, config.labBinarySha256);
-if (action === 'start') await start();
-else if (action === 'recover') await start(true);
+if (action === 'start') { while(await start()) {} }
+else if (action === 'recover') { if(await start(true))while(await start()) {} }
 else if (action === 'stop') await stop();
 else if (action === 'plugins') await plugins();
 else if (action === 'doctor') await doctor();
-else throw new Error('Expected start, recover, stop, plugins or doctor');
+else if (action === 'diagnostics') await doctor('diagnostics');
+else if (action === 'rehearse-update') await rehearseUpdate();
+else throw new Error('Expected start, recover, stop, plugins, doctor or diagnostics');

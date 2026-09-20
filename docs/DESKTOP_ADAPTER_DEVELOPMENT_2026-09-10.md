@@ -33,6 +33,8 @@ Adapter 复用页面已经建立的 `connect-app-host` 服务对象及 Native Ap
 
 类型在 `types/codex-desktop.d.ts`，它独立于 Core 的 `types/renderer.d.ts` 和 `types/host.d.ts`。
 
+2026-09-20 新增 `codex.backend.transport@1`：统一接入 Core HTTP(S)/SSE 与 WS/WSS 通道，详细契约见[插件流量通道](TRAFFIC_CHANNELS.md)。它有独立的构建可用性，历史客户端不因此被标记为支持。
+
 | Target capability @1 | 方法 | 语义 |
 | --- | --- | --- |
 | `codex.desktop.compatibility` | `probe`, `waitReady` | 当前连接身份、初始化进度、可用性与失效原因 |
@@ -46,6 +48,7 @@ Adapter 复用页面已经建立的 `connect-app-host` 服务对象及 Native Ap
 | 同上 | `approvals.respond` | 按不透明句柄回复当前待处理请求 |
 | 同上 | `threads.open` | 校验已有任务并进入原生页面，由 Native 冷恢复 |
 | `codex.backend.events` | `read`, `getApi` | 有界事件读取或主世界事件回调 |
+| `codex.backend.transport` | `probe`, `getApi`, `interceptors.list` | 新建/恢复线程时选择明确的 HTTP/WS 通道；不迁移已加载线程 |
 
 插件依赖 capability 描述符，不依赖 `codex.desktop.adapter` 这个实现 ID。替代实现可以声明相同的版本化能力。
 

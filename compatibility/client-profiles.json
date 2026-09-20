@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "builds": [
+    {
+      "appVersion": "26.903.61454", "buildNumber": "8378", "appServerVersion": "0.153.4",
+      "entry": "app://-/assets/index-71057a3aecef.js", "module": "app://-/assets/app-initial-92cbfeba4f7c.js",
+      "exports": { "scope": "t3t", "manager": "Mwt", "client": "Nwt", "services": "mz", "postbox": "Smn" }
+    },
+    {
+      "appVersion": "26.903.71938", "buildNumber": "8576", "appServerVersion": "0.153.4", "navigation": true,
+      "entry": "app://-/assets/index-5232d4cce9a2.js", "module": "app://-/assets/app-initial-f094ef01c64d.js",
+      "exports": { "scope": "a3t", "manager": "Mwt", "client": "Nwt", "services": "mz", "postbox": "Emn" }
+    },
+    {
+      "appVersion": "26.908.40834", "buildNumber": "8881", "appServerVersion": "0.154.0-alpha.6.2", "navigation": true, "runtimeSkill": true,
+      "entry": "app://-/assets/index-cbd874f72008.js", "module": "app://-/assets/app-initial-d9bed9d614d8.js",
+      "postboxModule": "app://-/assets/get-trusted-message-for-view-eee599500f15.js",
+      "exports": { "scope": "e6t", "manager": "cDt", "client": "lDt", "services": "TW", "postbox": "i" },
+      "page": {
+        "react": "app://-/assets/react-d6ffadc57208.js", "dom": "app://-/assets/react-dom-2c70d35283e7.js",
+        "client": "app://-/assets/client-d8dffccad60c.js", "primary": "app://-/assets/app-primary-17b54400f32a.js",
+        "exports": { "sidebar": "ov", "headerInit": "hB", "header": "mB", "newTaskInit": "rN", "newTask": "oN" }
+      }
+    },
+    {
+      "appVersion": "26.908.70816", "buildNumber": "9275", "appServerVersion": "0.154.0-alpha.6.2", "navigation": true, "runtimeSkill": true,
+      "entry": "app://-/assets/index-53d76a96a6f3.js", "module": "app://-/assets/app-initial-4d7ea7f81c2d.js",
+      "postboxModule": "app://-/assets/get-trusted-message-for-view-eee599500f15.js",
+      "exports": { "scope": "e6t", "manager": "cDt", "client": "lDt", "services": "TW", "postbox": "i" },
+      "page": {
+        "react": "app://-/assets/react-d6ffadc57208.js", "dom": "app://-/assets/react-dom-2c70d35283e7.js",
+        "client": "app://-/assets/client-d8dffccad60c.js", "primary": "app://-/assets/app-primary-4af6ed7f68d1.js",
+        "exports": { "sidebar": "ov", "headerInit": "hB", "header": "mB", "newTaskInit": "rN", "newTask": "oN" }
+      }
+    },
+    {
+      "appVersion": "26.915.31029", "buildNumber": "9771", "appServerVersion": "0.155.0-alpha.9", "navigation": true, "runtimeSkill": true,
+      "entry": "app://-/assets/index-fb66e3ef1e20.js", "module": "app://-/assets/app-initial-f61fcec072b5.js",
+      "postboxModule": "app://-/assets/app-shared-81f1324f1b97.js",
+      "exports": { "scope": "Xpn", "manager": "Mqt", "client": "Nqt", "services": "Y9", "postbox": "UB" },
+      "page": {
+        "react": "app://-/assets/app-shared-81f1324f1b97.js", "dom": "app://-/assets/app-shared-81f1324f1b97.js",
+        "client": "app://-/assets/app-shared-81f1324f1b97.js", "primary": "app://-/assets/app-initial-f61fcec072b5.js",
+        "exports": { "react": "qB", "dom": "jB", "client": "AB", "sidebar": "KS", "headerInit": "_8", "header": "g8", "newTaskInit": "m1", "newTask": "_1" }
+      }
+    },
+    {
+      "appVersion": "26.915.31945", "buildNumber": "9922", "appServerVersion": "0.155.0-alpha.9.2", "navigation": true, "runtimeSkill": true, "threadTransport": true,
+      "officialUpdates": { "stateSelector": "s7" },
+      "entry": "app://-/assets/index-399eac8299b8.js", "module": "app://-/assets/app-initial-6c4523b43a11.js",
+      "postboxModule": "app://-/assets/app-shared-8f4fbb856ceb.js",
+      "exports": { "scope": "Bpn", "manager": "xqt", "client": "Sqt", "services": "L9", "postbox": "UB" },
+      "page": {
+        "react": "app://-/assets/app-shared-8f4fbb856ceb.js", "dom": "app://-/assets/app-shared-8f4fbb856ceb.js",
+        "client": "app://-/assets/app-shared-8f4fbb856ceb.js", "primary": "app://-/assets/app-initial-6c4523b43a11.js",
+        "exports": { "react": "qB", "dom": "jB", "client": "AB", "sidebar": "PS", "headerInit": "a8", "header": "i8", "newTaskInit": "n1", "newTask": "a1" }
+      }
+    }
+  ]
+}

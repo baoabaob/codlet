@@ -1,16 +1,14 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED};
-use windows_sys::Win32::System::Threading::SetEvent;
 
 use super::{CHECK_INTERVAL, OsBrokerError, RequestGuard, Result, byte_limit, decode, invalid};
-use crate::windows::local_ipc::{Channel, LocalIpcError, raw};
-use crate::windows::plugin_process::{OwnedPluginProcess, PluginStdio};
+use crate::platform::host::{
+    Channel, LocalIpcError, OwnedPluginProcess, PluginStdio, StopSignal, signal, stream_closed,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -44,10 +42,18 @@ pub(super) fn run(params: Value, guard: &RequestGuard) -> Result<Value> {
     let cwd = &guard.authorization.0.registration.path;
     let cwd_guard = super::filesystem::pin_exact_grant(cwd, std::slice::from_ref(cwd))?;
     guard.check_full()?;
-    let environment: Vec<(OsString, OsString)> = ["SystemRoot", "WINDIR", "TEMP", "TMP"]
-        .into_iter()
-        .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
-        .collect();
+    let environment: Vec<(OsString, OsString)> = [
+        "SystemRoot",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_CTYPE",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+    .collect();
     let (child, stdio) =
         OwnedPluginProcess::spawn(executable, &request.args, cwd, Some(&environment))
             .map_err(|error| OsBrokerError::new("process_start_failed", error.to_string()))?;
@@ -80,7 +86,8 @@ pub(super) fn run(params: Value, guard: &RequestGuard) -> Result<Value> {
         }
         match child.wait(Duration::ZERO) {
             Ok(Some(code)) => {
-                if child.job_is_empty().unwrap_or(false) && stdout_closed && stderr_closed {
+                if child.process_scope_is_empty().unwrap_or(false) && stdout_closed && stderr_closed
+                {
                     break Ok(code);
                 }
                 // The executable has returned; descendants may not keep a run
@@ -121,9 +128,18 @@ pub(super) fn run(params: Value, guard: &RequestGuard) -> Result<Value> {
         .map_err(|_| OsBrokerError::new("invalid_utf8", "process stdout is not UTF-8"))?;
     let stderr = String::from_utf8(errors)
         .map_err(|_| OsBrokerError::new("invalid_utf8", "process stderr is not UTF-8"))?;
-    Ok(
-        json!({"processId":pid,"exitCode":code,"stdoutBytes":stdout.len(),"stderrBytes":stderr.len(),"stdout":stdout,"stderr":stderr,"jobReaped":true}),
-    )
+    let mut receipt = json!({"processId":pid,"exitCode":code,"stdoutBytes":stdout.len(),"stderrBytes":stderr.len(),"stdout":stdout,"stderr":stderr,"processesReaped":true});
+    #[cfg(windows)]
+    {
+        receipt["ownershipScope"] = json!("windows-job");
+        receipt["jobReaped"] = json!(true);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        receipt["ownershipScope"] = json!("posix-process-group");
+        receipt["processGroupReaped"] = json!(true);
+    }
+    Ok(receipt)
 }
 
 fn read_available(
@@ -148,21 +164,16 @@ fn read_available(
             bytes.extend_from_slice(&buffer[..count]);
         }
         Err(LocalIpcError::Timeout) => {}
-        Err(LocalIpcError::Win32 {
-            code: ERROR_BROKEN_PIPE | ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED,
-            ..
-        }) => *closed = true,
+        Err(error) if stream_closed(&error) => *closed = true,
         Err(error) => return Err(OsBrokerError::new("process_io_error", error.to_string())),
     }
     Ok(())
 }
 
-fn retire(child: &OwnedPluginProcess, stop: &Arc<std::os::windows::io::OwnedHandle>) -> Result<()> {
-    unsafe {
-        SetEvent(raw(stop));
-    }
+fn retire(child: &OwnedPluginProcess, stop: &StopSignal) -> Result<()> {
+    signal(stop);
     if !child
-        .job_is_empty()
+        .process_scope_is_empty()
         .map_err(|error| OsBrokerError::new("cleanup_incomplete", error.to_string()))?
     {
         child
@@ -176,7 +187,7 @@ fn retire(child: &OwnedPluginProcess, stop: &Arc<std::os::windows::io::OwnedHand
             .map_err(|error| OsBrokerError::new("cleanup_incomplete", error.to_string()))?
             .is_some()
             && child
-                .job_is_empty()
+                .process_scope_is_empty()
                 .map_err(|error| OsBrokerError::new("cleanup_incomplete", error.to_string()))?
         {
             return Ok(());
@@ -184,7 +195,7 @@ fn retire(child: &OwnedPluginProcess, stop: &Arc<std::os::windows::io::OwnedHand
         if Instant::now() >= deadline {
             return Err(OsBrokerError::new(
                 "cleanup_incomplete",
-                "process Job retirement could not be confirmed",
+                "owned process scope retirement could not be confirmed",
             ));
         }
         std::thread::sleep(CHECK_INTERVAL);

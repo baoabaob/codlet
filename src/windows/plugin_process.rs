@@ -197,7 +197,7 @@ impl OwnedPluginProcess {
 
     /// Terminating the main process is not sufficient evidence that descendants
     /// have retired. Keep owning the job until Windows confirms it is empty.
-    pub(crate) fn job_is_empty(&self) -> Result<bool, PluginProcessError> {
+    pub(crate) fn process_scope_is_empty(&self) -> Result<bool, PluginProcessError> {
         let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
         if unsafe {
             QueryInformationJobObject(

@@ -193,6 +193,18 @@ test('tampered staged bytes and arbitrary non-owned paths fail before helper rea
     } finally { await f.cleanup(); }
   }
 });
+
+test('combined install requires a matching successful official result before replacing any payload or restarting',async()=>{
+  for(const kind of ['confirmed','missing','cancelled','wrong-job']) {
+    const f=await fixture();
+    try {
+      f.plan.officialUpdate=true;f.save();
+      const start=message=>{if(kind!=='missing')fs.writeFileSync(path.join(f.job,'official-result.json'),JSON.stringify({id:kind==='wrong-job'?'stale':f.plan.id,planSha256:f.planSha,ready:kind!=='cancelled',detail:'Installation cancelled'}));f.armed(message);};
+      if(kind==='confirmed'){assert.equal((await runInstall(f.planPath,f.planSha,start)).phase,'installed');assert.equal(fs.readFileSync(path.join(f.install,'codlet-lab.exe'),'utf8'),'new runtime');}
+      else {await assert.rejects(runInstall(f.planPath,f.planSha,start),error=>error.code.startsWith('official_update_')&&error.receipt.phase==='failed');assert.equal(fs.readFileSync(path.join(f.install,'codlet-lab.exe'),'utf8'),'old runtime');assert.equal(fs.existsSync(f.log),false);}
+    } finally {await f.cleanup();}
+  }
+});
 test('expired, future and overlong plans fail before helper readiness or installation',async()=>{
   for(const mode of ['expired','future','overlong']) {
     const f=await fixture();let ready=false;

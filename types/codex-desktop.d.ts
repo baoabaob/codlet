@@ -17,6 +17,8 @@ export interface DesktopCompatibility {
   pendingSubmits: number;
   /** Independently probed; failure does not disable existing backend or submit APIs. */
   navigation: { available: boolean; unavailable: { code: string; message: string | null } | null };
+  /** Present after initialization; only explicitly attached model channels. */
+  threadTransport?: ThreadTransportCompatibility;
 }
 export interface Item {
   id: string;
@@ -127,6 +129,56 @@ export interface InterceptorHandle {
 /** codex.ui.preSubmit@1 RPC also supports interceptors.list with empty arguments. */
 export interface InterceptorList { interceptors: InterceptorInfo[] }
 export interface CallbackAccess { api: 1; symbol: string; ticket: string }
+export interface ThreadTransportCompatibility {
+  available: boolean;
+  protocol: 'responses';
+  protocols: ('http' | 'websocket')[];
+  appliesAt: ('thread.start' | 'thread.resume')[];
+  activeTurns: false;
+  existingLoadedThreads: false;
+  officialOAuth: false;
+  hooks: number;
+  pending: number;
+  unavailable: { code: string; message: string } | null;
+}
+export interface ThreadTransportDraft {
+  readonly source: 'thread.start' | 'thread.resume';
+  readonly threadId: string | null;
+  readonly cwd: string | null;
+  readonly model: string | null;
+  readonly provider: string | null;
+}
+export interface ThreadTransportSelection {
+  /** Explicit loopback Core channel (or compatible owned channel).
+   * It can contain a private path token: never log or persist it. Upstream
+   * authentication belongs to the channel; Desktop OAuth is not forwarded. */
+  channel: { readonly endpoint: string; readonly protocols: readonly ('http' | 'websocket')[] };
+  /** API path relative to the private channel endpoint, defaults to /v1.
+   * Adapter handles Native's HTTP/WebSocket configuration automatically. */
+  path?: string;
+  model?: string;
+}
+/** Return nothing to leave Native's configuration alone. Selecting more than
+ * one channel rejects that thread request instead of silently picking a winner.
+ * A running/loaded thread is not rebound. Disposal removes future attachment
+ * hooks; it does not rewrite a thread already configured to use the channel. */
+export type ThreadTransportHandler = (draft: ThreadTransportDraft, options: Readonly<{ signal: AbortSignal }>) => void | ThreadTransportSelection | Promise<void | ThreadTransportSelection>;
+export interface ThreadTransportInfo {
+  pluginId: string; generation: number; id: string; enabled: boolean;
+  priority: number; timeoutMs: number; calls: number; applied: number; failures: number;
+}
+export interface ThreadTransportHandle {
+  (): void;
+  setEnabled(enabled: boolean): void;
+  inspect(): ThreadTransportInfo;
+}
+/** codex.backend.transport@1 Target RPC methods. GetApi tickets have the same
+ * owner/generation/expiry rules as other Desktop callback capabilities. */
+export interface TransportMethods {
+  probe: { params: Record<string, never>; result: ThreadTransportCompatibility };
+  getApi: { params: Record<string, never>; result: CallbackAccess };
+  'interceptors.list': { params: Record<string, never>; result: { interceptors: ThreadTransportInfo[] } };
+}
 /** Obtain a fresh getApi ticket through the corresponding declared capability.
  * The ticket can be claimed once, within 15 seconds, by the same live generation.
  * Callback registration requires main world; all data operations use Core RPC.
@@ -134,6 +186,7 @@ export interface CallbackAccess { api: 1; symbol: string; ticket: string }
 export interface DesktopCallbackApi {
   readonly api: 1;
   registerPreSubmit(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: SubmissionInterceptor): InterceptorHandle;
+  registerThreadTransport(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: ThreadTransportHandler): ThreadTransportHandle;
   onEvent(owner: RendererContext, ticket: string, handler: (event: Readonly<DesktopEvent>) => void): () => void;
 }
 /** Convenience typing for an author's own Core RPC wrapper. No private transport. */

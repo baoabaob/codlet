@@ -35,9 +35,11 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destinat
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.cmd') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Restart-TestClient.ps1') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-UpdateRestart.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/node-runtime.json') -Destination (Join-Path $codletOutput 'runtime/node-runtime.json')
 Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/update-channel.json') -Destination (Join-Path $codletOutput 'runtime/update-channel.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Export-Diagnostics.ps1') -Destination $codletOutput
 $codletDocsOutput = Join-Path $codletOutput 'docs'
 $null = New-Item -ItemType Directory -Path $codletDocsOutput
 foreach ($codletDocument in (Get-ChildItem -LiteralPath (Join-Path $codletSource 'docs') -Filter '*.md' -File)) {
@@ -75,8 +77,11 @@ exit $LASTEXITCODE
 foreach ($codletEntry in @{ 'Stop-TestClient.ps1'=$codletStop; 'Test-Plugins.ps1'=$codletPlugins }.GetEnumerator()) {
     [IO.File]::WriteAllText((Join-Path $codletOutput $codletEntry.Key), $codletEntry.Value, $codletUtf8)
 }
-foreach ($codletName in @('Stop-TestClient', 'Test-Plugins', 'Test-Doctor')) {
+foreach ($codletName in @('Stop-TestClient', 'Test-Plugins', 'Test-Doctor', 'Export-Diagnostics', 'Test-UpdateRestart')) {
     $codletCommand = '@echo off' + [Environment]::NewLine + 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0' + $codletName + '.ps1" %*' + [Environment]::NewLine
+    if ($codletName -eq 'Export-Diagnostics') {
+        $codletCommand += 'set "codletExportExit=%errorlevel%"' + [Environment]::NewLine + 'pause' + [Environment]::NewLine + 'exit /b %codletExportExit%' + [Environment]::NewLine
+    }
     [IO.File]::WriteAllText((Join-Path $codletOutput ($codletName + '.cmd')), $codletCommand, [Text.Encoding]::ASCII)
 }
 $codletPluginOutput = Join-Path $codletOutput 'plugins/hide-usage-banner'

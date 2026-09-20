@@ -7,16 +7,21 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 
-const bootstrap = await readFile(new URL('../runtime/host.cjs', import.meta.url), 'utf8');
+const bootstrap = (await Promise.all([
+  readFile(new URL('../runtime/host-traffic-bundle.cjs', import.meta.url), 'utf8'),
+  readFile(new URL('../runtime/host.cjs', import.meta.url), 'utf8'),
+])).join('\n');
 const identity = { v: 1, pluginId: 'dev.js-bootstrap', generation: 8 };
 
 async function host(t, source, setup) {
   const root = await mkdtemp(path.join(tmpdir(), 'codlet-js-bootstrap-'));
   const entry = path.join(root, 'host.js');
   const snapshot = path.join(root, 'snapshot.js');
+  const bootstrapPath = path.join(root, 'bootstrap.cjs');
   await writeFile(snapshot, source);
+  await writeFile(bootstrapPath, bootstrap);
   await setup?.(root);
-  const child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', '--input-type=commonjs', '--eval', bootstrap, '--', entry, snapshot], {
+  const child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', '--require', bootstrapPath, '--eval', '', '--', entry, snapshot], {
     cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const frames = [];

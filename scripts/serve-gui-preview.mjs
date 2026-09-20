@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const allowed = new Set([
   '/scripts/preview-codlet-gui.html', '/bundled/runtime/ui.js', '/bundled/runtime/i18n.js',
+  '/scripts/preview-runtime.mjs',
   '/bundled/codlet/dist/renderer.js', '/bundled/codex-ui-adapter/dist/renderer.js',
   '/bundled/codlet/codlet.json', '/bundled/codex-ui-adapter/codlet.json',
 ]);

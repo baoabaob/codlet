@@ -27,9 +27,9 @@ pub(super) struct LabRuntime {
     hosts: Option<HostRuntime>,
     os_broker: Option<OsBroker>,
     host_control: HostControl,
+    watcher: Option<crate::plugin_watch::PluginWatcher>,
     control: ControlBroker,
-    manage_service: crate::runtime_manage::RuntimeManageService,
-    client_update_monitor: Option<crate::probe::client_updates::ClientUpdateMonitor>,
+    pub(super) manage_service: crate::runtime_manage::RuntimeManageService,
     runtime_update: Option<crate::runtime_update::RuntimeUpdateService>,
     update_handoff: Option<crate::runtime_update_owner::RuntimeUpdateHandoff>,
     update_armed: bool,
@@ -50,9 +50,12 @@ impl LabRuntime {
         let lease = scope
             .acquire(Duration::from_millis(1500))
             .map_err(preflight)?;
-        let registry = PluginRegistry::load(&registry_path).map_err(preflight)?;
+        crate::runtime_log::initialize(&registry_path);
+        let mut registry = PluginRegistry::load(&registry_path).map_err(preflight)?;
+        crate::managed_storage::prepare_installations(&mut registry).map_err(preflight)?;
         let (mut renderer, host_plugins) =
             crate::probe::prepare_plugin_runtimes(registry).map_err(preflight)?;
+        renderer.enable_runtime_skill();
         let mut host_control = HostControl::new(registry_path);
         host_control.seed_watch_sources(&renderer, &host_plugins);
         let js_runtime = if host_plugins.is_empty() {
@@ -72,9 +75,9 @@ impl LabRuntime {
             hosts: None,
             os_broker: None,
             host_control,
+            watcher: None,
             control,
             manage_service,
-            client_update_monitor: None,
             runtime_update: None,
             update_handoff: None,
             update_armed: false,
@@ -95,12 +98,8 @@ impl LabRuntime {
         self.server.scope().id()
     }
 
-    pub fn observe_client_updates(&mut self, version: String) {
-        self.client_update_monitor =
-            Some(crate::probe::client_updates::ClientUpdateMonitor::start(
-                self.manage_service.clone(),
-                version,
-            ));
+    pub fn observe_client_versions(&mut self, version: String) {
+        crate::probe::client_versions::publish(&self.manage_service, &version);
     }
 
     pub fn configure_runtime_updates(
@@ -108,6 +107,7 @@ impl LabRuntime {
         child: &crate::windows::process::ChildProcess,
         reporter: &mut Reporter,
     ) {
+        self.manage_service.start_plugin_update_checks();
         let Some(install) = std::env::current_exe()
             .ok()
             .and_then(|file| file.parent().map(Path::to_owned))
@@ -119,7 +119,12 @@ impl LabRuntime {
         };
         let restart = super::runtime_updates::restart_context(&install, lab_root, child);
         let update_state = install.join(".codlet-updates").join(self.registry_scope());
-        match crate::runtime_update::RuntimeUpdateService::start(install, update_state, restart) {
+        match crate::runtime_update::RuntimeUpdateService::start_with_preferences(
+            install,
+            update_state,
+            restart,
+            self.manage_service.preferences_for_start(),
+        ) {
             Ok(service) => {
                 self.manage_service.set_runtime_update(service.clone());
                 self.runtime_update = Some(service);
@@ -138,8 +143,9 @@ impl LabRuntime {
         std::mem::take(&mut self.update_cancelled)
     }
     pub fn update_installing(&self) -> bool {
-        self.update_handoff.is_some() || self.update_waiting_for_exit
+        self.update_handoff.is_some() || self.update_waiting_for_exit || self.manage_service.official_updates.busy()
     }
+    pub fn update_preparation_blocked(&self) -> bool { self.host_control.is_pending() || self.update_handoff.is_some() || self.update_waiting_for_exit }
 
     pub fn activate(
         &mut self,
@@ -266,18 +272,65 @@ impl LabRuntime {
                 .map_err(|error| error.to_string());
             self.host_control.renderer_executor_result(result);
         }
-        if !self.update_installing()
-            && !self.host_control.is_pending()
-            && let Some(job) = self.control.take_next()
-            && let Some(job) = self.host_control.dispatch(
-                job,
-                &mut self.renderer,
-                self.hosts.as_ref().unwrap(),
-                &self.control,
-            )
-        {
-            let result = self.renderer.manage_plugin(job.request);
-            self.control.complete(&job.operation_id, result);
+        if !self.update_installing() && !self.host_control.is_pending() {
+            let job = crate::probe::next_management_job(&self.control, || {
+                crate::plugin_watch::configure_watcher(
+                    &mut self.watcher,
+                    self.manage_service.local_watch_enabled(),
+                    self.renderer.registry_path(),
+                );
+                let watcher = self.watcher.as_mut()?;
+                if self.host_control.has_watch_receipt() {
+                    return None;
+                }
+                let observations = self.hosts.as_ref().unwrap().observations();
+                let mut sources = self.renderer.local_watch_sources();
+                sources.extend(self.host_control.local_watch_sources(&observations));
+                let selection = watcher.poll_guarded(Instant::now(), &sources);
+                for diagnostic in watcher.take_diagnostics() {
+                    reporter.emit("plugin_watch_diagnostic",json!({"plugin_id":diagnostic.plugin_id,"code":diagnostic.code,"message":diagnostic.message}));
+                }
+                selection
+            });
+            match job {
+                Some(crate::probe::ManagementJob::Cli(job)) => {
+                    if let Some(job) = self.host_control.dispatch(
+                        job,
+                        &mut self.renderer,
+                        self.hosts.as_ref().unwrap(),
+                        &self.control,
+                    ) {
+                        let result = self.renderer.manage_plugin(job.request);
+                        self.control.complete(&job.operation_id, result);
+                    }
+                }
+                Some(crate::probe::ManagementJob::Watch(selection)) => {
+                    match self
+                        .host_control
+                        .submit_watched(selection.clone(), &self.control)
+                    {
+                        Ok(id) => reporter.emit(
+                            "plugin_watch_requested",
+                            json!({"operation_id":id,"plugin_id":selection.request.plugin_id}),
+                        ),
+                        Err(error) => {
+                            if let Some(watcher) = &mut self.watcher {
+                                watcher.not_attempted(&selection);
+                            }
+                            reporter.emit("plugin_watch_error", json!({"error":error.to_string()}));
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        for completed in self.host_control.take_watch_results() {
+            if let Some(selection) = &completed.not_attempted
+                && let Some(watcher) = &mut self.watcher
+            {
+                watcher.not_attempted(selection);
+            }
+            reporter.emit("plugin_watch_result",json!({"operation_id":completed.operation_id,"plugin_id":completed.plugin_id,"result":completed.result}));
         }
         self.renderer.publish_status();
         self.renderer.refresh_management_list();
@@ -354,6 +407,7 @@ impl LabRuntime {
             return clean;
         }
         self.control.stop();
+        self.renderer.stop_runtime_skill();
         let mut clean = true;
         for failure in self.renderer.retire_all_package_renderers() {
             reporter.emit(

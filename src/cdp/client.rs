@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 use super::framing::MAX_CDP_FRAME_BYTES;
 use super::framing::{FramingError, NulJsonDecoder, encode_json_frame};
 
@@ -118,7 +118,7 @@ pub enum EventStreamError {
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum ShutdownError {
-    #[error("failed to cancel {worker} CDP I/O: Win32 error {code}")]
+    #[error("failed to cancel {worker} CDP I/O: OS error {code}")]
     CancelIo { worker: &'static str, code: u32 },
     #[error("{worker} CDP worker panicked")]
     WorkerPanicked { worker: &'static str },
@@ -143,7 +143,7 @@ pub enum ClientSpawnError {
         #[source]
         source: io::Error,
     },
-    #[error("failed to open the CDP {worker} thread for I/O cancellation: Win32 error {code}")]
+    #[error("failed to prepare CDP {worker} I/O cancellation: OS error {code}")]
     CancellationHandle { worker: &'static str, code: u32 },
     #[error("the CDP {worker} thread exited during startup")]
     StartupDisconnected { worker: &'static str },
@@ -234,16 +234,16 @@ struct WorkerCancellation {
 }
 
 impl WorkerCancellation {
-    fn register(&self, worker: WorkerKind, handle: platform::ThreadCancelHandle) {
+    fn register_current(&self, worker: WorkerKind) -> Result<(), u32> {
         let mut slots = self.slots.lock().expect("CDP cancellation state poisoned");
         let slot = match worker {
             WorkerKind::Reader => &mut slots.reader,
             WorkerKind::Writer => &mut slots.writer,
         };
-        assert!(
-            slot.replace(handle).is_none(),
-            "CDP worker registered twice"
-        );
+        if slot.is_none() {
+            *slot = Some(platform::ThreadCancelHandle::current()?);
+        }
+        Ok(())
     }
 
     fn cancel(&self, worker: WorkerKind) -> Result<(), u32> {
@@ -268,7 +268,7 @@ impl WorkerCancellation {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     fn force_failure(&self, failure: Option<(WorkerKind, u32)>) {
         *self
             .forced_failure
@@ -281,6 +281,8 @@ struct Runtime {
     shared: Arc<Shared>,
     writer_sender: mpsc::Sender<WriterCommand>,
     cancellation: Arc<WorkerCancellation>,
+    #[cfg(test)]
+    worker_activity: Arc<TestWorkers>,
 }
 
 impl Runtime {
@@ -432,7 +434,7 @@ struct OutgoingRequest<'a> {
 impl CdpClient {
     /// Wake the existing renderer drive when another owned executor has a local
     /// completion. This publishes no CDP event and does not complete any request.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn notify_runtime_activity(&self) {
         let shared = &self.inner.runtime.shared;
         let mut state = shared
@@ -453,10 +455,47 @@ impl CdpClient {
         Self::spawn_io(reader, writer, SpawnConfig::default())
     }
 
+    #[cfg(target_os = "macos")]
+    /// macOS workers retain their own socket shutdown handles. Cancellation
+    /// interrupts both blocked reads and blocked writes without closing a reused fd.
+    pub fn spawn(
+        pipes: crate::macos::pipes::ParentCdpPipes,
+    ) -> Result<(Self, CdpEventStream), ClientSpawnError> {
+        let (reader, writer) = pipes.into_parts();
+        let cancel = |stream: &std::os::unix::net::UnixStream, worker| {
+            stream
+                .try_clone()
+                .map(platform::ThreadCancelHandle::socket)
+                .map_err(|e| ClientSpawnError::CancellationHandle {
+                    worker,
+                    code: e.raw_os_error().unwrap_or(0) as u32,
+                })
+        };
+        let slots = CancellationSlots {
+            reader: Some(cancel(&reader, "reader")?),
+            writer: Some(cancel(&writer, "writer")?),
+        };
+        Self::spawn_with_cancellation(reader, writer, SpawnConfig::default(), slots)
+    }
+
+    #[cfg(windows)]
     fn spawn_io<R, W>(
         reader: R,
         writer: W,
         config: SpawnConfig,
+    ) -> Result<(Self, CdpEventStream), ClientSpawnError>
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        Self::spawn_with_cancellation(reader, writer, config, CancellationSlots::default())
+    }
+
+    fn spawn_with_cancellation<R, W>(
+        reader: R,
+        writer: W,
+        config: SpawnConfig,
+        slots: CancellationSlots,
     ) -> Result<(Self, CdpEventStream), ClientSpawnError>
     where
         R: Read + Send + 'static,
@@ -483,11 +522,17 @@ impl CdpClient {
             activity: Condvar::new(),
         });
         let (writer_sender, writer_receiver) = mpsc::channel();
-        let cancellation = Arc::new(WorkerCancellation::default());
+        let cancellation = Arc::new(WorkerCancellation {
+            slots: Mutex::new(slots),
+            #[cfg(test)]
+            forced_failure: Mutex::default(),
+        });
         let runtime = Arc::new(Runtime {
             shared,
             writer_sender,
             cancellation,
+            #[cfg(test)]
+            worker_activity: TEST_WORKERS.with(Arc::clone),
         });
 
         let writer_runtime = Arc::clone(&runtime);
@@ -1028,14 +1073,10 @@ where
     let thread = thread::Builder::new()
         .name(format!("codlet-cdp-{}", worker.name()))
         .spawn(move || {
-            let handle = match platform::ThreadCancelHandle::current() {
-                Ok(handle) => handle,
-                Err(code) => {
-                    let _ = ready_sender.send(Err(code));
-                    return;
-                }
-            };
-            runtime.cancellation.register(worker, handle);
+            if let Err(code) = runtime.cancellation.register_current(worker) {
+                let _ = ready_sender.send(Err(code));
+                return;
+            }
             if ready_sender.send(Ok(())).is_err() {
                 return;
             }
@@ -1109,7 +1150,7 @@ fn writer_loop<W: Write>(
     receiver: mpsc::Receiver<WriterCommand>,
     runtime: &Arc<Runtime>,
 ) {
-    let _activity = WorkerActivity::new(WorkerKind::Writer);
+    let _activity = WorkerActivity::new(WorkerKind::Writer, runtime);
     while let Ok(command) = receiver.recv() {
         match command {
             WriterCommand::Shutdown => return,
@@ -1159,7 +1200,7 @@ fn writer_loop<W: Write>(
 }
 
 fn reader_loop<R: Read>(mut reader: R, runtime: &Arc<Runtime>) {
-    let _activity = WorkerActivity::new(WorkerKind::Reader);
+    let _activity = WorkerActivity::new(WorkerKind::Reader, runtime);
     let mut decoder = NulJsonDecoder::new();
     let mut chunk = [0_u8; 8192];
 
@@ -1510,19 +1551,28 @@ fn duration_millis(duration: Duration) -> u64 {
 }
 
 #[cfg(test)]
-static ACTIVE_READERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
-static ACTIVE_WRITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[derive(Default)]
+struct TestWorkers {
+    readers: AtomicUsize,
+    writers: AtomicUsize,
+}
 
 #[cfg(test)]
-struct WorkerActivity(&'static std::sync::atomic::AtomicUsize);
+thread_local! {
+    // Each harness test counts only its own clients. VM integration tests run
+    // concurrently and must not look like leaked workers from this test.
+    static TEST_WORKERS: Arc<TestWorkers> = Arc::default();
+}
 
 #[cfg(test)]
-impl WorkerActivity {
-    fn new(kind: WorkerKind) -> Self {
+struct WorkerActivity<'a>(&'a AtomicUsize);
+
+#[cfg(test)]
+impl<'a> WorkerActivity<'a> {
+    fn new(kind: WorkerKind, runtime: &'a Runtime) -> Self {
         let counter = match kind {
-            WorkerKind::Reader => &ACTIVE_READERS,
-            WorkerKind::Writer => &ACTIVE_WRITERS,
+            WorkerKind::Reader => &runtime.worker_activity.readers,
+            WorkerKind::Writer => &runtime.worker_activity.writers,
         };
         counter.fetch_add(1, Ordering::SeqCst);
         Self(counter)
@@ -1530,7 +1580,7 @@ impl WorkerActivity {
 }
 
 #[cfg(test)]
-impl Drop for WorkerActivity {
+impl Drop for WorkerActivity<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
@@ -1541,7 +1591,7 @@ struct WorkerActivity;
 
 #[cfg(not(test))]
 impl WorkerActivity {
-    fn new(_kind: WorkerKind) -> Self {
+    fn new(_kind: WorkerKind, _runtime: &Runtime) -> Self {
         Self
     }
 }
@@ -1588,17 +1638,46 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod platform {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+    pub(super) struct ThreadCancelHandle(UnixStream);
+    impl ThreadCancelHandle {
+        pub(super) fn current() -> Result<Self, u32> {
+            // No thread-cancellation equivalent is used on macOS. Production
+            // transports must supply an owned socket before workers are started.
+            Err(libc::ENOTSUP as u32)
+        }
+        pub(super) fn socket(stream: UnixStream) -> Self {
+            Self(stream)
+        }
+        pub(super) fn cancel(&self) -> Result<(), u32> {
+            self.0
+                .shutdown(Shutdown::Both)
+                .or_else(|e| {
+                    if e.raw_os_error() == Some(libc::ENOTCONN) {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                })
+                .map_err(|e| e.raw_os_error().unwrap_or(0) as u32)
+        }
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod platform {
     pub(super) struct ThreadCancelHandle;
 
     impl ThreadCancelHandle {
         pub(super) fn current() -> Result<Self, u32> {
-            Ok(Self)
+            Err(95)
         }
 
         pub(super) fn cancel(&self) -> Result<(), u32> {
-            Ok(())
+            Err(95)
         }
     }
 }
@@ -1816,8 +1895,14 @@ mod tests {
                 CdpClient::spawn_io(reader, std::io::sink(), SpawnConfig::default()).unwrap();
             client.shutdown().unwrap();
         }
-        assert_eq!(ACTIVE_READERS.load(Ordering::SeqCst), 0);
-        assert_eq!(ACTIVE_WRITERS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.readers.load(Ordering::SeqCst)),
+            0
+        );
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.writers.load(Ordering::SeqCst)),
+            0
+        );
     }
 
     #[cfg(windows)]
@@ -1900,8 +1985,14 @@ mod tests {
         assert!(matches!(error, ClientError::RequestTimedOut { .. }));
         assert!(started.elapsed() < Duration::from_secs(3));
         client.shutdown().unwrap();
-        assert_eq!(ACTIVE_READERS.load(Ordering::SeqCst), 0);
-        assert_eq!(ACTIVE_WRITERS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.readers.load(Ordering::SeqCst)),
+            0
+        );
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.writers.load(Ordering::SeqCst)),
+            0
+        );
     }
 
     #[cfg(windows)]
@@ -1974,8 +2065,14 @@ mod tests {
         client.inner.runtime.cancellation.force_failure(None);
         drop(remote_writer);
         client.shutdown().unwrap();
-        assert_eq!(ACTIVE_READERS.load(Ordering::SeqCst), 0);
-        assert_eq!(ACTIVE_WRITERS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.readers.load(Ordering::SeqCst)),
+            0
+        );
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.writers.load(Ordering::SeqCst)),
+            0
+        );
     }
 
     #[cfg(windows)]
@@ -1999,8 +2096,14 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(ACTIVE_READERS.load(Ordering::SeqCst), 0);
-        assert_eq!(ACTIVE_WRITERS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.readers.load(Ordering::SeqCst)),
+            0
+        );
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.writers.load(Ordering::SeqCst)),
+            0
+        );
     }
 
     #[test]
@@ -2026,6 +2129,7 @@ mod tests {
             shared,
             writer_sender,
             cancellation: Arc::clone(&cancellation),
+            worker_activity: TEST_WORKERS.with(Arc::clone),
         });
         let (release_sender, release_receiver) = mpsc::channel();
         let writer = thread::spawn(move || {
@@ -2175,8 +2279,14 @@ mod tests {
         );
 
         client.shutdown().unwrap();
-        assert_eq!(ACTIVE_READERS.load(Ordering::SeqCst), 0);
-        assert_eq!(ACTIVE_WRITERS.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.readers.load(Ordering::SeqCst)),
+            0
+        );
+        assert_eq!(
+            TEST_WORKERS.with(|counts| counts.writers.load(Ordering::SeqCst)),
+            0
+        );
     }
 
     #[cfg(windows)]

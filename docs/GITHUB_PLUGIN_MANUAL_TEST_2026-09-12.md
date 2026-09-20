@@ -1,11 +1,21 @@
 # M5b GitHub 导入、更新与回滚手测
 
-日期：2026-09-12。**以下 Native 界面用例均待手测。** 下载器、托管事务和界面已有自动测试；这不替代实际窗口、网络与打包入口的检查。原本的 [M5a 本地管理用例](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md) 和 [审批 / M0/M1 补充说明](REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md) 继续保留。
+初版日期：2026-09-12。2026-09-15 已补充以下真实远程主流程，其余未执行分支仍待手测。下载器、托管事务和界面自动测试不替代实际窗口、网络与打包入口的检查。原本的 [M5a 本地管理用例](LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md) 和 [审批 / M0/M1 补充说明](REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md) 继续保留。
+
+## 2026-09-15 已执行的分支
+
+- [临时仓库](https://github.com/baoabaob/codlet-update-smoke-20260915)的 v1.0.0 / v1.1.0 均为真实公开 release 与 ZIP 资产
+- Native 从仓库地址读取并显式选择 v1.0.0；预览不执行，三个勾选默认关闭，仅勾权限时导入仍不可用；确认信任并主动勾启用后完成导入，显示唯一 v1 标记
+- 发布 v1.1.0 后正常停启测试客户端；原 1.0.0 与授权保持，启动检查使首页直接显示“新发布”，没有手动检查后才发现
+- 从首页提示进入更新审核，核对 1.0.0 → 1.1.0 和无新增权限，再确认来源、权限及启用；原生界面完成热更新，显示唯一 v2 标记，列表版本变为 1.1.0 且不再提示新发布
+- CLI 经同一 Core 回执完成历史 1.0.0 的回滚，明确不启用；只影响此测试插件，1.1.0 历史保留。此项不冒充 G04 的完整 GUI 回滚验收
+
+原始界面截图、远端 release/asset ID、下载摘要和执行记录位于 `.codlet-artifacts/github-live-2026-09-15/`。其它边界分支继续按下文逐项记录。
 
 ## 准备
 
 1. 使用更新后的隔离测试客户端 `Start-TestClient.cmd`，打开 **ChatGPT (Dev)** 的 Codlet 菜单。不要把日常 Codex 当成本轮测试窗口。
-2. 准备一个公开 GitHub 仓库的两个**合规插件 ZIP release 资产**。已有发布包可直接使用；没有时，可用本项目 `examples/github-release-check/v1`、`v2` 和 [发布规范](GITHUB_PLUGIN_DISTRIBUTION.md) 生成后自行上传。**本次没有创建或上传远程仓库**；不要把 GitHub 自动 Source code ZIP 当作构建资产。
+2. 准备一个公开 GitHub 仓库的两个**合规插件 ZIP release 资产**。可使用上述临时测试仓库，或用本项目 `examples/github-release-check/v1`、`v2` 和 [发布规范](GITHUB_PLUGIN_DISTRIBUTION.md) 生成自己的发布。不要把 GitHub 自动 Source code ZIP 当作构建资产。
 3. 本轮提供的样例 ID 为 `dev.example.github-release-check`，两个版本分别为 1.0.0 / 1.1.0，都只需要 `ui.dom`。分别显示 `M5 GitHub test — v1` / `v2`，不读文件、不联网、不启动 Host。客户端中的 `plugins/github-release-check` 只是发布素材，不会自动注册。
 4. 记录两个 release URL、资产名和版本。主流程约 10–15 分钟；没有合规公开 release 时先做 G06/G07，其他记录“缺少发布包，未测”，无需反复尝试任意 GitHub ZIP。
 

@@ -155,6 +155,22 @@ impl GitHubJobs {
     where
         F: Future<Output = Result<Value, RuntimeManageError>> + Send + 'static,
     {
+        self.start_with_timeout(
+            kind,
+            work,
+            Duration::from_secs(if kind == "releases" { 25 } else { 120 }),
+        )
+    }
+
+    fn start_with_timeout<F>(
+        &self,
+        kind: &'static str,
+        work: F,
+        timeout: Duration,
+    ) -> Result<Value, RuntimeManageError>
+    where
+        F: Future<Output = Result<Value, RuntimeManageError>> + Send + 'static,
+    {
         let (job_id, cancelled, initial) = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.active_workers >= MAX_RUNNING_JOBS {
@@ -192,18 +208,19 @@ impl GitHubJobs {
         };
         let state = self.state.clone();
         let thread_id = job_id.clone();
+        let started = std::time::Instant::now();
         let worker = std::thread::Builder::new().name("codlet-github-preview".into()).spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| RuntimeManageError::new("github_runtime_error", error.to_string()))?;
                 runtime.block_on(async {
                     tokio::pin!(work);
-                    let deadline = tokio::time::sleep(Duration::from_secs(120));
+                    let deadline = tokio::time::sleep(timeout);
                     tokio::pin!(deadline);
                     let mut cancellation = tokio::time::interval(Duration::from_millis(50));
                     loop {
                         tokio::select! {
                             result = &mut work => return result,
-                            _ = &mut deadline => return Err(RuntimeManageError::new("github_timeout", "GitHub preparation exceeded two minutes. No plugin was registered.")),
+                            _ = &mut deadline => return Err(RuntimeManageError::new("github_timeout", "GitHub request timed out. Check the connection or proxy, then try again.")),
                             _ = cancellation.tick() => if cancelled.load(Ordering::Acquire) { return Err(RuntimeManageError::new("github_cancelled", "Preparation was cancelled.")); },
                         }
                     }
@@ -219,7 +236,10 @@ impl GitHubJobs {
                 } else { Ok(value) }
             }) {
                 Ok(value) => { entry.result["status"] = json!("completed"); entry.result["stage"] = json!("ready"); entry.result["result"] = value; }
-                Err(error) => { entry.result["status"] = json!("failed"); entry.result["stage"] = json!("failed"); entry.result["error"] = json!({"code":error.code,"message":error.message}); }
+                Err(error) => {
+                    crate::runtime_log::error("github_preparation", &format!("kind={kind} code={} elapsedMs={}", error.code, started.elapsed().as_millis()));
+                    entry.result["status"] = json!("failed"); entry.result["stage"] = json!("failed"); entry.result["error"] = json!({"code":error.code,"message":error.message});
+                }
             }
         });
         if let Err(error) = worker {
@@ -242,7 +262,19 @@ fn invalid(message: impl Into<String>) -> RuntimeManageError {
     RuntimeManageError::new("invalid_params", message)
 }
 fn github_error(error: crate::github_distribution::GitHubDistributionError) -> RuntimeManageError {
-    RuntimeManageError::new("github_error", format!("{}: {}", error.code, error.message))
+    let code = match error.code.as_str() {
+        "github_timeout" => "github_timeout",
+        "github_network" => "github_network",
+        "github_rate_limited" => "github_rate_limited",
+        "github_not_found" => "github_not_found",
+        _ => {
+            return RuntimeManageError::new(
+                "github_error",
+                format!("{}: {}", error.code, error.message),
+            );
+        }
+    };
+    RuntimeManageError::new(code, error.message)
 }
 fn control_error(error: crate::plugin_control::PluginControlError) -> RuntimeManageError {
     RuntimeManageError::new(
@@ -254,6 +286,50 @@ fn control_error(error: crate::plugin_control::PluginControlError) -> RuntimeMan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stalled_release_job_expires_and_releases_its_worker_slot() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = directory.path().join("registry.json");
+        let jobs = GitHubJobs::new(Arc::new(registry.clone()));
+        let job = jobs
+            .start_with_timeout(
+                "releases",
+                std::future::pending(),
+                Duration::from_millis(30),
+            )
+            .unwrap();
+        let params = json!({"jobId":job["jobId"]});
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let result = loop {
+            let value = jobs
+                .invoke("githubJob", params.clone(), |_| Ok(()))
+                .unwrap();
+            if value["status"] != "running" {
+                break value;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["error"]["code"], "github_timeout");
+        assert_eq!(jobs.state.lock().unwrap().active_workers, 0);
+        assert_eq!(
+            jobs.invoke("githubJob", params, |_| Ok(())).unwrap(),
+            result
+        );
+        assert!(!registry.exists());
+    }
+
+    #[test]
+    fn transport_errors_keep_their_structured_code_and_translatable_message() {
+        let error = github_error(crate::github_distribution::GitHubDistributionError {
+            code: "github_timeout".into(),
+            message: "GitHub request timed out.".into(),
+        });
+        assert_eq!(error.code, "github_timeout");
+        assert_eq!(error.message, "GitHub request timed out.");
+    }
 
     #[test]
     fn cancellation_is_terminal_and_running_preparations_are_bounded() {

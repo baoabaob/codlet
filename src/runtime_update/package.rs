@@ -177,12 +177,12 @@ pub(super) fn no_redirect_ancestors(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         match std::fs::symlink_metadata(ancestor) {
             Ok(meta) => {
-                let mut redirected = meta.file_type().is_symlink();
+                let redirected = meta.file_type().is_symlink();
                 #[cfg(windows)]
-                {
+                let redirected = {
                     use std::os::windows::fs::MetadataExt;
-                    redirected |= meta.file_attributes() & 0x400 != 0;
-                }
+                    redirected || meta.file_attributes() & 0x400 != 0
+                };
                 if redirected {
                     return Err(error(
                         "runtime_update_path_invalid",

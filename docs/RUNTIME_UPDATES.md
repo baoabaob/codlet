@@ -2,22 +2,27 @@
 
 Codlet currently has no published release repository. The checked-in
 `runtime/update-channel.json` therefore has `source: null`. This is a development
-state: the header reports the compiled Cargo version, no update request is sent,
+state: the header reports the compiled Cargo version, Settings explains the unconfigured source, no update request is sent,
 and the app does not claim that this is the newest released version. Users do not
 enter a release URL in the GUI.
 
-This updater updates Codlet's owned binaries and Node payload. It does not update
-the official Codex MSIX package or use the official client's updater. The official
-Windows updater's check also downloads/stages its package; Codlet deliberately
-keeps the requested **check → click Download → click Install and restart** flow.
+This updater replaces only Codlet's owned binaries and Node payload. The separate
+official-update owner can coordinate it with the client's own installer through
+an explicit **Update both** confirmation. Ordinary Codlet updates retain the
+**check → click Download → click Install and restart** flow. See
+[the Windows handoff record](OFFICIAL_UPDATE_HANDOFF_2026-09-19.md).
 
 ## Release configuration
 
 The developer ships one local `runtime/update-channel.json` beside the owned
-installation. RPC methods cannot change its URL, origins, profile or interval.
-The default interval is 900 seconds; errors back off up to six hours. Checks run
-on a bounded background worker, and a downloaded candidate is not replaced by
-later checks.
+installation. RPC methods cannot change its URL, origins or profile. Its interval
+is the default (900 seconds when omitted). Registry-scoped preferences can disable
+automatic Codlet checks or override their interval from 300 to 86400 seconds;
+manual checks remain available when a source is configured. Errors back off to
+the larger of six hours and the chosen interval. Checks run on a bounded
+background worker, and automatic checks cannot replace a queued, downloading,
+downloaded or installation-pending candidate. A configured worker that has never
+checked and has automatic checks disabled reports `idle`, not `upToDate`.
 
 For a public GitHub repository, configure:
 
@@ -205,6 +210,20 @@ The four `runtime.manage` methods are `runtimeUpdateStatus`, `checkRuntimeUpdate
 They return promptly with the compiled version, phase, candidate identity,
 progress, scheduling timestamps and install availability. Semantic version ordering
 selects strictly newer releases; missing source remains `development`.
+
+The GUI uses `versionStatus(null)` for lightweight combined Codlet/client status,
+including when the Codlet source is unconfigured. It polls while its native page
+is visible (five seconds idle, one second during update work), without fetching
+the whole plugin list, and stops this poll on hide/departure. All version details
+and explicit check/download/install actions are in Settings. The management
+heading shows the compiled version and only adds a warning icon for a confirmed
+new Codlet candidate or confirmed client mismatch/update. Clicking that warning
+opens Settings and focuses the version section after settings data settles.
+
+`getSettings` / `saveSettings` persist the automatic-check preference and interval
+independently of the fixed release source. See [the management contract](RUNTIME_MANAGE_2026-09-10.md)
+for CAS and failure recovery. Official-client version monitoring stays on its
+separate 15-minute cadence.
 
 Fixture tests cover public-source transport, malicious ZIPs, persisted staged
 recovery, live-owner waiting, unacknowledged handoff, fixed configuration patches,

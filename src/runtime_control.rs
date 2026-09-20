@@ -205,6 +205,7 @@ struct BrokerState {
     last_ticket: u64,
     ready: bool,
     stopped: bool,
+    recovery_only: bool,
     records: BTreeMap<u64, Record>,
     queue: VecDeque<u64>,
 }
@@ -234,6 +235,7 @@ impl ControlBroker {
                 last_ticket: 0,
                 ready: false,
                 stopped: false,
+                recovery_only: false,
                 records: BTreeMap::new(),
                 queue: VecDeque::new(),
             })),
@@ -253,6 +255,13 @@ impl ControlBroker {
         broker
     }
 
+    /// Must be selected before readiness and cannot be relaxed during a session.
+    pub(crate) fn restrict_to_recovery(&self) {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(!state.ready && state.records.is_empty());
+        state.recovery_only = true;
+    }
+
     pub fn set_ready(&self) {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         if !state.stopped {
@@ -264,6 +273,30 @@ impl ControlBroker {
         let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
         state.stopped = true;
         state.queue.clear();
+    }
+
+    /// A small settings commit shares the owner's readiness/stop boundary.
+    /// It cannot overlap a queued/running lifecycle operation or outlive stop.
+    pub(crate) fn with_settings_write<T>(
+        &self,
+        save: impl FnOnce() -> T,
+    ) -> Result<T, ControlStatus> {
+        let state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.stopped {
+            return Err(ControlStatus::Stopping);
+        }
+        if !state.ready {
+            return Err(ControlStatus::NotReady);
+        }
+        if state.records.values().any(|record| {
+            matches!(
+                record.status,
+                ControlStatus::Queued | ControlStatus::Running
+            )
+        }) {
+            return Err(ControlStatus::Busy);
+        }
+        Ok(save())
     }
 
     pub fn handle(&self, request: ControlRequest) -> ControlReport {
@@ -305,6 +338,10 @@ impl ControlBroker {
             ControlRequest::Prepare { request, .. } => {
                 if let Err(error) = request.validate() {
                     return state.failure(ControlStatus::InvalidRequest, error.to_string());
+                }
+                if state.recovery_only && !crate::plugin_control::recovery_request(&request) {
+                    return state.failure(ControlStatus::InvalidRequest,
+                        "Safe mode permits only disable, permission revocation, and removal with source files preserved; restart normally to activate plugins");
                 }
                 if state.records.len() == MAX_CONTROL_RECORDS {
                     let removable = state.records.iter().find_map(|(id, record)| {

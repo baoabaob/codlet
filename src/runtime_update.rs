@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 mod install;
 mod package;
 mod source;
+pub(crate) use source::newer as newer_version;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
@@ -95,6 +96,7 @@ pub struct RuntimeUpdateCandidate {
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeUpdatePhase {
     Development,
+    Idle,
     Checking,
     UpToDate,
     Available,
@@ -129,6 +131,7 @@ pub struct RuntimeInstallRequest {
     pub helper_path: PathBuf,
     pub node_path: PathBuf,
     pub handoff_ack_path: PathBuf,
+    pub official_update: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -162,11 +165,15 @@ pub enum RuntimeUpdateSource {
 pub struct RuntimeUpdateService {
     sender: mpsc::Sender<Command>,
     shared: Arc<Mutex<State>>,
+    default_check_interval_seconds: u64,
 }
 enum Command {
     Check,
+    AutomaticCheck,
     Download,
     Install,
+    CombinedInstall,
+    Reschedule,
 }
 struct State {
     status: RuntimeUpdateStatus,
@@ -177,6 +184,9 @@ struct State {
     install_id: Option<String>,
     install_receipt: Option<(PathBuf, String)>,
     install_blocked: bool,
+    settings_revision: u64,
+    automatic_checks: bool,
+    check_interval_seconds: u64,
 }
 
 impl RuntimeUpdateService {
@@ -188,9 +198,32 @@ impl RuntimeUpdateService {
         state_root: PathBuf,
         restart: Option<RuntimeRestartContext>,
     ) -> Result<Self> {
+        Self::start_with_preferences(
+            install_root,
+            state_root,
+            restart,
+            crate::runtime_settings::SettingsDocument::default(),
+        )
+    }
+    pub fn start_with_preferences(
+        install_root: PathBuf,
+        state_root: PathBuf,
+        restart: Option<RuntimeRestartContext>,
+        preferences: crate::runtime_settings::SettingsDocument,
+    ) -> Result<Self> {
+        preferences
+            .values
+            .validate()
+            .map_err(|error| self::error(error.code, error.message))?;
         let install_root = package::canonical_directory(&install_root)?;
         let channel = read_channel(&install_root)?;
         let configured = channel.source.is_some();
+        let automatic_checks = preferences.values.automatic_update_checks;
+        let default_check_interval_seconds = channel.check_interval_seconds;
+        let check_interval_seconds = preferences
+            .values
+            .update_check_interval_seconds
+            .unwrap_or(default_check_interval_seconds);
         let mut unavailable_reason = restart
             .as_ref()
             .map(|_| ())
@@ -201,15 +234,17 @@ impl RuntimeUpdateService {
         }
         let status = RuntimeUpdateStatus {
             current_version: CURRENT_VERSION.into(),
-            phase: if configured {
+            phase: if configured && automatic_checks {
                 RuntimeUpdatePhase::Checking
+            } else if configured {
+                RuntimeUpdatePhase::Idle
             } else {
                 RuntimeUpdatePhase::Development
             },
             configured,
             channel: channel.channel.clone(),
             last_checked_at: None,
-            next_check_at: configured.then_some(now_ms()),
+            next_check_at: (configured && automatic_checks).then_some(now_ms()),
             candidate: None,
             downloaded_bytes: 0,
             total_bytes: 0,
@@ -226,6 +261,9 @@ impl RuntimeUpdateService {
             install_id: None,
             install_receipt: None,
             install_blocked: false,
+            settings_revision: preferences.revision,
+            automatic_checks,
+            check_interval_seconds,
         }));
         let (sender, receiver) = mpsc::channel();
         let worker_shared = shared.clone();
@@ -252,7 +290,8 @@ impl RuntimeUpdateService {
                         return;
                     }
                 };
-                let mut next = configured.then_some(std::time::Instant::now());
+                let mut next =
+                    (configured && automatic_checks).then_some(std::time::Instant::now());
                 let mut failures = 0u32;
                 if configured {
                     match package::restore_staged(
@@ -268,10 +307,10 @@ impl RuntimeUpdateService {
                             state.status.candidate = Some(staged.candidate.clone());
                             state.staged = Some(staged);
                             state.busy = false;
-                            next = Some(
+                            next = automatic_checks.then(|| {
                                 std::time::Instant::now()
-                                    + Duration::from_secs(channel.check_interval_seconds),
-                            );
+                                    + Duration::from_secs(check_interval_seconds)
+                            });
                         }
                         Ok(None) => {
                             worker_shared.lock().unwrap().busy = false;
@@ -295,7 +334,7 @@ impl RuntimeUpdateService {
                                     poll_install_receipt(&worker_shared);
                                     continue;
                                 }
-                                Command::Check
+                                Command::AutomaticCheck
                             }
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         },
@@ -304,31 +343,34 @@ impl RuntimeUpdateService {
                             Err(_) => break,
                         },
                     };
-                    let checking = matches!(command, Command::Check);
+                    if matches!(command, Command::Reschedule) {
+                        let mut state = worker_shared.lock().unwrap();
+                        next = (configured && state.automatic_checks).then(|| {
+                            std::time::Instant::now()
+                                + Duration::from_secs(state.check_interval_seconds)
+                        });
+                        state.status.next_check_at =
+                            next.map(|_| now_ms() + state.check_interval_seconds * 1000);
+                        continue;
+                    }
+                    let checking = matches!(command, Command::Check | Command::AutomaticCheck);
                     if checking {
                         let mut state = worker_shared.lock().unwrap();
                         // A completed candidate stays fixed while awaiting a user
                         // install. No periodic check replaces it behind that click.
-                        if state.install_blocked
-                            || matches!(
-                                state.status.phase,
-                                RuntimeUpdatePhase::Downloaded
-                                    | RuntimeUpdatePhase::InstallRequested
-                            )
-                        {
-                            state.busy = false;
-                            next = Some(
+                        if !reserve_check(
+                            &mut state,
+                            configured,
+                            matches!(command, Command::AutomaticCheck),
+                        ) {
+                            next = state.automatic_checks.then(|| {
                                 std::time::Instant::now()
-                                    + Duration::from_secs(channel.check_interval_seconds),
-                            );
+                                    + Duration::from_secs(state.check_interval_seconds)
+                            });
+                            state.status.next_check_at =
+                                next.map(|_| now_ms() + state.check_interval_seconds * 1000);
                             continue;
                         }
-                        state.busy = true;
-                        state.status.phase = if configured {
-                            RuntimeUpdatePhase::Checking
-                        } else {
-                            RuntimeUpdatePhase::Development
-                        };
                     }
                     let result = runtime.block_on(run_command(
                         command,
@@ -346,14 +388,11 @@ impl RuntimeUpdateService {
                         failures = 0;
                     }
                     if checking {
-                        let delay = channel
-                            .check_interval_seconds
-                            .saturating_mul(1u64 << failures.min(5))
-                            .min(21600);
-                        next = configured
+                        let mut state = worker_shared.lock().unwrap();
+                        let delay = check_delay(state.check_interval_seconds, failures);
+                        next = (configured && state.automatic_checks)
                             .then(|| std::time::Instant::now() + Duration::from_secs(delay));
-                        worker_shared.lock().unwrap().status.next_check_at =
-                            configured.then(|| now_ms() + delay * 1000);
+                        state.status.next_check_at = next.map(|_| now_ms() + delay * 1000);
                     }
                     let snapshot = {
                         let mut state = worker_shared.lock().unwrap();
@@ -367,7 +406,53 @@ impl RuntimeUpdateService {
                 }
             })
             .map_err(|e| error("runtime_update_worker", e.to_string()))?;
-        Ok(Self { sender, shared })
+        Ok(Self {
+            sender,
+            shared,
+            default_check_interval_seconds,
+        })
+    }
+    pub fn default_check_interval_seconds(&self) -> u64 {
+        self.default_check_interval_seconds
+    }
+    pub fn configure_checks(
+        &self,
+        preferences: &crate::runtime_settings::SettingsDocument,
+    ) -> Result<()> {
+        preferences
+            .values
+            .validate()
+            .map_err(|error| self::error(error.code, error.message))?;
+        let mut state = self.shared.lock().unwrap();
+        if preferences.revision < state.settings_revision {
+            return Ok(());
+        }
+        let interval = preferences
+            .values
+            .update_check_interval_seconds
+            .unwrap_or(self.default_check_interval_seconds);
+        let automatic = preferences.values.automatic_update_checks;
+        if state.settings_revision == preferences.revision
+            && state.automatic_checks == automatic
+            && state.check_interval_seconds == interval
+        {
+            return Ok(());
+        }
+        // Keep the last successfully applied revision if the worker has gone
+        // away. A later read/retry must not turn an apply failure into success.
+        // The worker takes this same lock before processing the queued change.
+        self.sender.send(Command::Reschedule).map_err(|_| {
+            error(
+                "runtime_update_worker",
+                "Runtime update worker is unavailable.",
+            )
+        })?;
+        state.settings_revision = preferences.revision;
+        state.automatic_checks = automatic;
+        state.check_interval_seconds = interval;
+        state.status.next_check_at =
+            (state.status.configured && automatic).then(|| now_ms() + interval * 1000);
+        Ok(())
     }
     pub fn status(&self) -> RuntimeUpdateStatus {
         self.shared.lock().unwrap().status.clone()
@@ -381,10 +466,17 @@ impl RuntimeUpdateService {
     pub fn request_install(&self) -> Result<RuntimeUpdateStatus> {
         self.enqueue(Command::Install)
     }
+    pub(crate) fn request_combined_install(&self) -> Result<RuntimeUpdateStatus> {
+        self.enqueue(Command::CombinedInstall)
+    }
     /// The owner starts the returned checked helper command, then requests normal
     /// shutdown of only its processes. Returning a request never kills anything.
     pub fn take_install_request(&self) -> Option<RuntimeInstallRequest> {
-        self.shared.lock().unwrap().install_request.take()
+        self.take_install_request_for(false)
+    }
+    pub(crate) fn take_install_request_for(&self, official: bool) -> Option<RuntimeInstallRequest> {
+        let mut state = self.shared.lock().unwrap();
+        if state.install_request.as_ref().is_some_and(|r| r.official_update == official) { state.install_request.take() } else { None }
     }
     /// Only the owner reports a helper launch/ready failure. It retains the verified
     /// candidate and permits retry; a matching helper must not have been armed.
@@ -419,6 +511,9 @@ impl RuntimeUpdateService {
             ));
         }
         match command {
+            Command::Reschedule | Command::AutomaticCheck => {
+                unreachable!("internal worker command")
+            }
             Command::Check => {
                 if matches!(
                     state.status.phase,
@@ -450,7 +545,7 @@ impl RuntimeUpdateService {
                 }
                 state.status.phase = RuntimeUpdatePhase::Downloading;
             }
-            Command::Install => {
+            Command::Install | Command::CombinedInstall => {
                 if !state.status.install_available {
                     return Err(error(
                         "install_unavailable",
@@ -489,6 +584,38 @@ impl RuntimeUpdateService {
     }
 }
 
+fn check_delay(interval: u64, failures: u32) -> u64 {
+    interval
+        .saturating_mul(1u64 << failures.min(5))
+        .min(interval.max(21600))
+}
+
+fn reserve_check(state: &mut State, configured: bool, automatic: bool) -> bool {
+    if automatic && (!state.automatic_checks || state.busy)
+        || state.install_blocked
+        || state.staged.is_some()
+        || matches!(
+            state.status.phase,
+            RuntimeUpdatePhase::Downloading
+                | RuntimeUpdatePhase::Downloaded
+                | RuntimeUpdatePhase::InstallRequested
+        )
+    {
+        // Do not release the busy flag of a manual command already in the queue.
+        if !automatic {
+            state.busy = false;
+        }
+        return false;
+    }
+    state.busy = true;
+    state.status.phase = if configured {
+        RuntimeUpdatePhase::Checking
+    } else {
+        RuntimeUpdatePhase::Development
+    };
+    true
+}
+
 fn fail_state(shared: &Arc<Mutex<State>>, e: RuntimeUpdateError) {
     let mut state = shared.lock().unwrap();
     state.status.phase = RuntimeUpdatePhase::Failed;
@@ -506,7 +633,8 @@ async fn run_command(
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
     match command {
-        Command::Check => {
+        Command::Reschedule => unreachable!("rescheduling does not fetch or install"),
+        Command::Check | Command::AutomaticCheck => {
             if channel.source.is_none() {
                 let mut state = shared.lock().unwrap();
                 state.status.phase = RuntimeUpdatePhase::Development;
@@ -543,7 +671,7 @@ async fn run_command(
             state.status.phase = RuntimeUpdatePhase::Downloaded;
             state.status.error = None;
         }
-        Command::Install => {
+        Command::Install | Command::CombinedInstall => {
             let restart = restart.ok_or_else(|| {
                 error(
                     "install_unavailable",
@@ -556,8 +684,7 @@ async fn run_command(
                     "No verified update is staged.",
                 )
             })?;
-            let request =
-                install::prepare_install_plan(install_root, state_root, &staged, restart)?;
+            let request = install::prepare_install_plan_with_official(install_root, state_root, &staged, restart, matches!(command, Command::CombinedInstall))?;
             let mut state = shared.lock().unwrap();
             state.install_id = Some(request.id.clone());
             state.install_receipt = Some((

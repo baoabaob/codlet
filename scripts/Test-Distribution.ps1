@@ -70,6 +70,7 @@ function Test-Manifest([string]$Directory) {
     $actual = @(Get-ChildItem -LiteralPath $Directory -File -Recurse)
     Assert-Condition ($actual.Count -eq $manifest.files.Count + 1) 'Package contains unlisted files.'
     foreach ($required in @(
+        'Export-Diagnostics.ps1', 'scripts/Export-Diagnostics.ps1', 'docs/DIAGNOSTIC_BUNDLES.md', 'docs/SAFE_MODE.md', 'docs/OFFICIAL_CLIENT_UPDATES.md', 'docs/RUNTIME_SKILL_PLAN_2026-09-15.md',
         'examples/raw-host/codlet.json', 'examples/cleanup-host/codlet.json', 'examples/local-echo/codlet.json',
         'examples/local-host-renderer-capability/codlet.json', 'examples/local-host-renderer-capability/host.js', 'examples/local-host-renderer-capability/renderer.js',
         'examples/raw-m2/codlet.json', 'examples/raw-m2/host.js', 'examples/raw-m2/README.md',

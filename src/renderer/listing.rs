@@ -101,6 +101,7 @@ pub(super) fn plugin_list(
             "name":metadata.map(|plugin| plugin.manifest.display_name()).unwrap_or(id),
             "description":metadata.and_then(|plugin| plugin.manifest.description.as_deref()),
             "i18n":metadata.map(|plugin| &plugin.manifest.i18n),
+            "tags":metadata.map(|plugin| plugin.manifest.tags.as_slice()).unwrap_or_default(),
             "disableDependents":crate::plugin_lifecycle::disable_closure(&logical, catalog, registry, id).unwrap_or_default().into_iter().filter(|dependent| dependent != id).collect::<Vec<_>>(),
             "version":metadata.map(|plugin| &plugin.manifest.version),
             "source":if bundled { "bundled" } else { "local" },
@@ -161,6 +162,11 @@ mod tests {
         let list = plugin_list(&catalog, &plugins, &registry, &BTreeSet::new(), &[]);
         assert_eq!(row(&list, "codex.ui.adapter")["name"], "Codex UI Adapter");
         assert_eq!(row(&list, "codlet-gui")["name"], "Codlet GUI");
+        assert_eq!(
+            row(&list, "codex.ui.adapter")["tags"],
+            json!(["UI", "Adapter"])
+        );
+        assert_eq!(row(&list, "codlet-gui")["tags"], json!(["UI", "Tool"]));
         assert_eq!(
             row(&list, "codlet-gui")["i18n"]["zh"]["name"],
             "Codlet 管理界面"

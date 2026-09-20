@@ -29,6 +29,10 @@ scope 也可用，Host 通过 Core 签发的 target scope 或当前入站 scope 
 | 方法 | 输入 | 返回 |
 | --- | --- | --- |
 | `list` | `null` | `{plugins, sampledAtUnixMs}`，Host 收到前台发布的样本 |
+| `versionStatus` | `null` | `{runtimeVersion,runtimeUpdate,runtimeUpdateError,clientStatus}`，独立于插件列表的轻量版本快照 |
+| `getSettings` | `null` | `{schema,revision,values,effective,defaults,availability}`，当前 owner 的持久设置及实际值 |
+| `saveSettings` | `{expectedRevision,values}` | 一次 CAS 保存完整四个偏好字段并应用；返回新的设置快照 |
+| `checkPluginUpdates` | `null` | 只读检查已注册 GitHub 插件的发布元数据，不下载或安装；工作中及结束后 60 秒合并重复请求 |
 | `prepare` | `{action, plugin_id, permission?, cascade?, local_import?}` | 原 `ControlReport`，成功状态 `prepared` |
 | `submit` | `{operationId}` | 原 receipt 的 `queued` / `running` / `completed` 等状态 |
 | `operation` | `{operationId}` | 只读查询原 receipt |
@@ -169,6 +173,22 @@ registry 没有运行中 Host 后写入。
 
 GUI 的一般启停、reload 和 revoke 使用同一张 receipt。既有 renderer `disableSelf` 保留
 回复后清理语义；组合包清理仍交给同一前台协调器，不留下本包 Host 半边继续运行。
+
+## 运行设置与版本状态（2026-09-14）
+
+设置方法使用同一 Core caller/generation/grant 校验。它们不创建插件操作 receipt：保存通过
+`expectedRevision` 比较并交换，Host 未就绪、停止中或已有排队/执行中的生命周期操作时拒绝写入。
+`values` 必须完整包含 `automaticUpdateChecks: boolean`、`checkPluginUpdatesOnStartup: boolean`、
+`updateCheckIntervalSeconds: null | 300..86400 的整数`、`localSourceAutoReload: null | boolean`；
+未知字段和非整数 revision 拒绝。回包丢失后调用 `getSettings` 查询，不自动重复提交。
+
+偏好放在该 registry 路径追加 `.preferences.json` 的 sidecar 中，使用独立文件锁、有界大小和
+原子替换。缺省读取不会创建文件。interval 的 null 继承开发者发布通道间隔，watch 的 null
+继承原启动默认值；仅保存偏好不会改插件注册、启用、grants 或发布源。更新 worker 的排程和
+本地源码 watcher 在当前会话应用，重启读取相同偏好。自动更新设置只控制 Codlet 自身更新，
+官方客户端版本监测仍独立每 15 分钟进行。详见 [布局、设置与验证](LAYOUT_AND_SETTINGS_2026-09-14.md)。
+
+`checkPluginUpdatesOnStartup` 缺省为 true，旧偏好文件在读取时补默认值而不写文件。每个运行时 owner 启动时检查一次；切换页面或创建窗口不重复检查，修改开关影响下次启动。手工检查不受该开关限制。`versionStatus` 同时返回 `pluginUpdates`：检查阶段、毫秒检查时间、按插件 ID 索引的结果和错误。结果绑定 `versionKey`；当前注册移除或换版后不会显示旧结果。只比较同源 GitHub 发布的语义版本 tag；稳定安装不主动提示预发布。自定义 tag 和不完整目录报告 unknown，网络失败报告 failed。版本候选仍走既有下载检查、插件 ID 校验、权限确认和 update receipt。详见 [插件检查边界](UI_POLISH_AND_PLUGIN_UPDATES_2026-09-14.md)。
 
 当前运行验证和范围由 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)单独记录；分发脚本只读
 smoke 与 payload hash 不能代替这些运行时验收。

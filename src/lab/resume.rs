@@ -319,6 +319,18 @@ fn compatible_package(
             && previous_version == "26.903.9818.0"
             && current == "OpenAI.Codex_26.908.4834.0_x64__2p2nqsd0c76g0"
             && current_version == "26.908.4834.0")
+        || (previous == "OpenAI.Codex_26.908.4834.0_x64__2p2nqsd0c76g0"
+            && previous_version == "26.908.4834.0"
+            && current == "OpenAI.Codex_26.908.9136.0_x64__2p2nqsd0c76g0"
+            && current_version == "26.908.9136.0")
+        || (previous == "OpenAI.Codex_26.908.9136.0_x64__2p2nqsd0c76g0"
+            && previous_version == "26.908.9136.0"
+            && current == "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0"
+            && current_version == "26.915.3509.0")
+        || (previous == "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0"
+            && previous_version == "26.915.3509.0"
+            && current == "OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0"
+            && current_version == "26.915.4065.0")
 }
 
 pub(super) fn open_plain(path: &Path, write: bool) -> Result<File, LabError> {
@@ -654,5 +666,61 @@ mod tests {
             current,
             "26.908.4834.0"
         ));
+    }
+
+    #[test]
+    fn september_16_upgrade_only_accepts_the_reviewed_x64_transition() {
+        let old = "OpenAI.Codex_26.908.4834.0_x64__2p2nqsd0c76g0";
+        let current = "OpenAI.Codex_26.908.9136.0_x64__2p2nqsd0c76g0";
+        assert!(compatible_package(
+            old,
+            "26.908.4834.0",
+            current,
+            "26.908.9136.0"
+        ));
+        assert!(!compatible_package(
+            current,
+            "26.908.9136.0",
+            old,
+            "26.908.4834.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.908.4834.0",
+            &current.replace("x64", "arm64"),
+            "26.908.9136.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.908.4834.0",
+            current,
+            "26.908.9137.0"
+        ));
+        assert!(!compatible_package(
+            "OpenAI.Codex_26.903.9818.0_x64__2p2nqsd0c76g0",
+            "26.903.9818.0",
+            current,
+            "26.908.9136.0"
+        ));
+    }
+
+    #[test]
+    fn september_18_upgrade_keeps_package_and_architecture_pins() {
+        let old = "OpenAI.Codex_26.908.9136.0_x64__2p2nqsd0c76g0";
+        let current = "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0";
+        assert!(compatible_package(old, "26.908.9136.0", current, "26.915.3509.0"));
+        assert!(!compatible_package(current, "26.915.3509.0", old, "26.908.9136.0"));
+        assert!(!compatible_package(old, "26.908.9136.0", &current.replace("x64", "arm64"), "26.915.3509.0"));
+        assert!(!compatible_package(old, "26.908.9136.0", current, "26.915.3510.0"));
+    }
+
+    #[test]
+    fn september_19_upgrade_keeps_package_and_architecture_pins() {
+        let old = "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0";
+        let current = "OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0";
+        assert!(compatible_package(old, "26.915.3509.0", current, "26.915.4065.0"));
+        assert!(!compatible_package(current, "26.915.4065.0", old, "26.915.3509.0"));
+        assert!(!compatible_package(old, "26.915.3509.0", &current.replace("x64", "arm64"), "26.915.4065.0"));
+        assert!(!compatible_package(old, "26.915.3509.0", current, "26.915.4066.0"));
     }
 }

@@ -1,0 +1,56 @@
+{
+  "name": "Codlet",
+  "version": 1,
+  "approvedConcept": "B from first A–D board",
+  "sourceFile": "codlet-candidates-abcd.png",
+  "sourceBounds": {
+    "left": 727,
+    "top": 148,
+    "width": 343,
+    "height": 363
+  },
+  "canvas": {
+    "width": 1024,
+    "height": 1024,
+    "longestMarkExtent": 800,
+    "minimumClearSpace": 112
+  },
+  "colors": {
+    "black": "#000000",
+    "white": "#ffffff"
+  },
+  "pngSizes": [
+    16,
+    20,
+    24,
+    32,
+    48,
+    64,
+    96,
+    128,
+    180,
+    192,
+    256,
+    512,
+    1024,
+    2048
+  ],
+  "icoSizes": [
+    16,
+    20,
+    24,
+    32,
+    48,
+    64,
+    128,
+    256
+  ],
+  "smallSizeWeightAdjustments": {
+    "16": 12,
+    "20": 8,
+    "24": 6,
+    "unit": "1024-unit canvas"
+  },
+  "traceMaskIntersectionOverUnion": 0.9847748545711345,
+  "methods": "Thresholded original B silhouette; cubic Bezier vector tracing; no generative redesign"
+}

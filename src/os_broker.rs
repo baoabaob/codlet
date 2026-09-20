@@ -360,7 +360,9 @@ impl OsBrokerClient {
 pub fn permission_for_endpoint(endpoint: &str) -> Option<Permission> {
     match endpoint {
         "host.fs.readText" | "host.fs.readDir" | "host.fs.stat" => Some(Permission::HostFs),
-        "host.network.fetch" => Some(Permission::HostNetwork),
+        "host.network.fetch"
+        | "host.network.authorizeChannel"
+        | "host.network.authorizeForward" => Some(Permission::HostNetwork),
         "host.process.run" => Some(Permission::HostProcess),
         "host.system.info" => Some(Permission::HostSystem),
         _ => None,
@@ -536,6 +538,12 @@ impl OsBroker {
                                     work.params,
                                     &work.guard,
                                 )),
+                                "host.network.authorizeChannel" => {
+                                    network::authorize_channel(work.params, &work.guard)
+                                }
+                                "host.network.authorizeForward" => {
+                                    network::authorize_forward(work.params, &work.guard)
+                                }
                                 "host.process.run" => process::run(work.params, &work.guard),
                                 "host.system.info" => system_info(work.params),
                                 _ => Err(OsBrokerError::new(

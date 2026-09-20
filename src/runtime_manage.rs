@@ -40,15 +40,23 @@ pub struct RuntimeManageService {
     broker: ControlBroker,
     listing: Arc<Mutex<Result<Value, RuntimeManageError>>>,
     client_status: Arc<Mutex<Value>>,
+    runtime_skill: Arc<Mutex<Value>>,
     runtime_update: Arc<Mutex<Option<crate::runtime_update::RuntimeUpdateService>>>,
+    pub(crate) official_updates: crate::official_update::OfficialUpdates,
     local_registry: Option<Arc<PathBuf>>,
     local_watch: bool,
+    settings: Option<crate::runtime_settings::RuntimeSettings>,
     github_jobs: Option<crate::runtime_manage_github::GitHubJobs>,
-    #[cfg(windows)]
-    folder_picker: crate::windows::folder_dialog::FolderPicker,
+    plugin_updates: Option<crate::plugin_updates::PluginUpdates>,
+    plugin_install: Option<crate::plugin_update_install::PluginUpdateInstall>,
+    #[cfg(any(windows, target_os = "macos"))]
+    folder_picker: crate::platform::folder_dialog::FolderPicker,
 }
 
 impl RuntimeManageService {
+    pub(crate) fn runtime_update_service(&self) -> Option<crate::runtime_update::RuntimeUpdateService> {
+        self.runtime_update.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
     pub fn new(broker: ControlBroker) -> Self {
         Self {
             broker,
@@ -58,33 +66,102 @@ impl RuntimeManageService {
             )))),
             local_registry: None,
             client_status: Arc::new(Mutex::new(serde_json::json!({"status":"unknown"}))),
+            runtime_skill: Arc::new(Mutex::new(serde_json::json!({"available":false}))),
             runtime_update: Arc::new(Mutex::new(None)),
+            official_updates: Default::default(),
             local_watch: false,
+            settings: None,
             github_jobs: None,
-            #[cfg(windows)]
+            plugin_updates: None,
+            plugin_install: None,
+            #[cfg(any(windows, target_os = "macos"))]
             folder_picker: Default::default(),
         }
     }
 
     pub fn with_local_management(mut self, registry: PathBuf, watch: bool) -> Self {
+        self.settings = Some(crate::runtime_settings::RuntimeSettings::for_registry(
+            &registry,
+        ));
         let registry = Arc::new(registry);
         self.github_jobs = Some(crate::runtime_manage_github::GitHubJobs::new(
             registry.clone(),
+        ));
+        self.plugin_updates = Some(crate::plugin_updates::PluginUpdates::new(registry.clone()));
+        self.plugin_install = Some(crate::plugin_update_install::PluginUpdateInstall::new(
+            registry.clone(),
+            self.broker.clone(),
         ));
         self.local_registry = Some(registry);
         self.local_watch = watch;
         self
     }
 
+    pub(crate) fn preferences_for_start(&self) -> crate::runtime_settings::SettingsDocument {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.cached().ok())
+            .unwrap_or_else(|| {
+                let mut document = crate::runtime_settings::SettingsDocument::default();
+                document.values.automatic_update_checks = false;
+                document.values.check_plugin_updates_on_startup = false;
+                document
+            })
+    }
+    pub(crate) fn start_plugin_update_checks(&self) {
+        if let Some(updates) = &self.plugin_updates {
+            updates.start(
+                self.preferences_for_start()
+                    .values
+                    .check_plugin_updates_on_startup,
+            );
+        }
+    }
+    pub(crate) fn local_watch_enabled(&self) -> bool {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.cached().ok())
+            .map(|document| {
+                document
+                    .values
+                    .local_source_auto_reload
+                    .unwrap_or(self.local_watch)
+            })
+            .unwrap_or(false)
+    }
+    fn settings_snapshot(&self, document: crate::runtime_settings::SettingsDocument) -> Value {
+        let update = self
+            .runtime_update
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let interval = update
+            .as_ref()
+            .map_or(900, |service| service.default_check_interval_seconds());
+        serde_json::json!({"schema":1,"revision":document.revision,"values":document.values,
+            "effective":{"automaticUpdateChecks":document.values.automatic_update_checks,
+                "checkPluginUpdatesOnStartup":document.values.check_plugin_updates_on_startup,
+                "showPluginTags":document.values.show_plugin_tags,
+                "updateCheckIntervalSeconds":document.values.update_check_interval_seconds.unwrap_or(interval),
+                "localSourceAutoReload":document.values.local_source_auto_reload.unwrap_or(self.local_watch)},
+            "defaults":{"updateCheckIntervalSeconds":interval,"localSourceAutoReload":self.local_watch},
+            "availability":{"updateChecks":update.as_ref().is_some_and(|service|service.status().configured),"pluginUpdateChecks":self.plugin_updates.is_some(),"localSourceWatch":self.local_registry.is_some()}})
+    }
+
     pub(crate) fn decorate_list(&self, list: &mut Value) {
         list["runtimeVersion"] = Value::from(env!("CARGO_PKG_VERSION"));
+        list["runtimeSkill"] = self
+            .runtime_skill
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         list["clientStatus"] = self
             .client_status
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
         if self.local_registry.is_some() {
-            list["localManagement"] = serde_json::json!({"available":true, "watchEnabled":self.local_watch, "folderPicker":cfg!(windows)});
+            list["localManagement"] = serde_json::json!({"available":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
             list["githubManagement"] = serde_json::json!({"available":true});
         }
         if let Some(path) = &self.local_registry
@@ -113,6 +190,10 @@ impl RuntimeManageService {
             .client_status
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = status;
+    }
+
+    pub(crate) fn publish_runtime_skill(&self, skill: Value) {
+        *self.runtime_skill.lock().unwrap_or_else(|e| e.into_inner()) = skill;
     }
 
     pub(crate) fn set_runtime_update(&self, service: crate::runtime_update::RuntimeUpdateService) {
@@ -160,6 +241,132 @@ impl RuntimeManageService {
     /// executable, registry or source snapshot.
     pub fn invoke(&self, method: &str, params: Value) -> Result<Value, RuntimeManageError> {
         let params = bounded_value(params, MAX_CONTROL_REQUEST_BYTES, "invalid_params")?;
+        if method == "versionStatus" {
+            if !params.is_null() {
+                return Err(RuntimeManageError::new(
+                    "invalid_params",
+                    "versionStatus expects null params.",
+                ));
+            }
+            let update = self
+                .runtime_update
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(|service| service.status());
+            let client = self
+                .client_status
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            return bounded_value(
+                serde_json::json!({"runtimeVersion":env!("CARGO_PKG_VERSION"),"runtimeUpdate":update,
+                "runtimeUpdateError":update.is_none().then(||serde_json::json!({"code":"runtime_update_unavailable","message":"Runtime updates are unavailable for this launcher."})),
+                "officialUpdate":self.official_updates.status(),"clientStatus":client,"pluginUpdates":self.plugin_updates.as_ref().map(|service|service.status()),"pluginInstall":self.plugin_install.as_ref().map(|service|service.status())}),
+                MAX_CONTROL_RESPONSE_BYTES,
+                "response_too_large",
+            );
+        }
+        if method == "getSettings" || method == "saveSettings" {
+            let settings = self.settings.as_ref().ok_or_else(|| {
+                RuntimeManageError::new(
+                    "settings_unavailable",
+                    "Settings are unavailable for this runtime.",
+                )
+            })?;
+            let read = || {
+                settings
+                    .read()
+                    .map_err(|error| RuntimeManageError::new(error.code, error.message))
+            };
+            let document = if method == "getSettings" {
+                if !params.is_null() {
+                    return Err(RuntimeManageError::new(
+                        "invalid_params",
+                        "getSettings expects null params.",
+                    ));
+                }
+                read()?
+            } else {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Input {
+                    expected_revision: u64,
+                    values: crate::runtime_settings::RuntimePreferences,
+                }
+                if params
+                    .get("values")
+                    .and_then(Value::as_object)
+                    .is_none_or(|values| {
+                            values.len() != 5
+                            || ![
+                                "automaticUpdateChecks",
+                                "checkPluginUpdatesOnStartup",
+                                "showPluginTags",
+                                "updateCheckIntervalSeconds",
+                                "localSourceAutoReload",
+                            ]
+                            .iter()
+                            .all(|key| values.contains_key(*key))
+                    })
+                {
+                    return Err(RuntimeManageError::new(
+                        "invalid_params",
+                        "saveSettings requires all five preference values.",
+                    ));
+                }
+                let input: Input = serde_json::from_value(params).map_err(|error| {
+                    RuntimeManageError::new("invalid_params", error.to_string())
+                })?;
+                input
+                    .values
+                    .validate()
+                    .map_err(|error| RuntimeManageError::new(error.code, error.message))?;
+                self.broker.with_settings_write(|| settings.save(input.expected_revision,input.values))
+                    .map_err(|_|RuntimeManageError::new("settings_busy","The runtime is starting, stopping, or applying a plugin operation. Try again when it is ready."))?
+                    .map_err(|error|RuntimeManageError::new(error.code,error.message))?
+            };
+            if let Some(update) = self
+                .runtime_update
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
+                update.configure_checks(&document).map_err(|error| {
+                    RuntimeManageError::new("settings_apply_failed", error.message)
+                })?;
+            }
+            return Ok(self.settings_snapshot(document));
+        }
+        if method == "checkPluginUpdates" {
+            if !params.is_null() {
+                return Err(RuntimeManageError::new(
+                    "invalid_params",
+                    "checkPluginUpdates expects null params.",
+                ));
+            }
+            let service = self.plugin_updates.as_ref().ok_or_else(|| {
+                RuntimeManageError::new(
+                    "plugin_updates_unavailable",
+                    "Plugin update checks are unavailable for this runtime.",
+                )
+            })?;
+            return bounded_value(
+                serde_json::to_value(service.check(true)).expect("plugin update status serializes"),
+                MAX_CONTROL_RESPONSE_BYTES,
+                "response_too_large",
+            );
+        }
+        if method == "installCombinedUpdate" {
+            #[derive(Deserialize)]
+            #[serde(rename_all="camelCase", deny_unknown_fields)]
+            struct CombinedInput { candidate_id: String }
+            let input: CombinedInput = serde_json::from_value(params).map_err(|e|RuntimeManageError::new("invalid_params",e.to_string()))?;
+            if input.candidate_id.is_empty() || input.candidate_id.len() > 512 { return Err(RuntimeManageError::new("invalid_params", "Invalid update candidate.")); }
+            let service = self.runtime_update_service().ok_or_else(|| RuntimeManageError::new("runtime_update_unavailable", "Runtime updates are unavailable for this launcher."))?;
+            let status = self.official_updates.request_combined(&service, &input.candidate_id).map_err(|e| RuntimeManageError::new("combined_update_unavailable", e))?;
+            return Ok(serde_json::to_value(status).expect("official update status serializes"));
+        }
         if matches!(
             method,
             "runtimeUpdateStatus"
@@ -184,6 +391,7 @@ impl RuntimeManageService {
                         "Runtime updates are unavailable for this launcher.",
                     )
                 })?;
+            if method != "runtimeUpdateStatus" && self.official_updates.busy() { return Err(RuntimeManageError::new("runtime_update_busy", "A combined update is already running.")); }
             let status = match method {
                 "runtimeUpdateStatus" => Ok(service.status()),
                 "checkRuntimeUpdate" => service.check(),
@@ -197,6 +405,47 @@ impl RuntimeManageService {
                 "response_too_large",
             );
         }
+        if method == "openRuntimeFolder" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct FolderInput {
+                location: RuntimeFolder,
+            }
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            enum RuntimeFolder {
+                Installation,
+                Logs,
+            }
+            let input: FolderInput = serde_json::from_value(params)
+                .map_err(|error| RuntimeManageError::new("invalid_params", error.to_string()))?;
+            let registry = self.local_registry.as_ref().ok_or_else(|| {
+                RuntimeManageError::new(
+                    "runtime_unavailable",
+                    "Runtime directories are unavailable",
+                )
+            })?;
+            let directory = match input.location {
+                RuntimeFolder::Installation => std::env::current_exe().and_then(|file| {
+                    file.parent()
+                        .map(PathBuf::from)
+                        .ok_or_else(|| std::io::Error::other("Executable has no parent"))
+                }),
+                RuntimeFolder::Logs => crate::runtime_log::directory(registry),
+            }
+            .map_err(|error| RuntimeManageError::new("open_folder_error", error.to_string()))?;
+            #[cfg(any(windows, target_os = "macos"))]
+            return crate::platform::open_folder::open_runtime_directory(directory)
+                .map_err(|error| RuntimeManageError::new("open_folder_error", error.to_string()));
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                let _ = directory;
+                return Err(RuntimeManageError::new(
+                    "unsupported_platform",
+                    "Opening folders is unavailable on this platform",
+                ));
+            }
+        }
         if method == "list" {
             if !params.is_null() {
                 return Err(RuntimeManageError::new(
@@ -209,6 +458,34 @@ impl RuntimeManageService {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
+        }
+        if method == "updatePlugins" || method == "pluginUpdateReview" {
+            let service = self.plugin_install.as_ref().ok_or_else(|| {
+                RuntimeManageError::new("runtime_unavailable", "Plugin updates are unavailable.")
+            })?;
+            let value = if method == "updatePlugins" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields, rename_all = "camelCase")]
+                struct Input {
+                    plugin_ids: Option<Vec<String>>,
+                }
+                let input: Input = serde_json::from_value(params)
+                    .map_err(|e| RuntimeManageError::new("invalid_params", e.to_string()))?;
+                serde_json::to_value(service.start(input.plugin_ids)?).expect("batch serializes")
+            } else {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields, rename_all = "camelCase")]
+                struct Input {
+                    batch_id: u64,
+                    plugin_id: String,
+                }
+                let input: Input = serde_json::from_value(params)
+                    .map_err(|e| RuntimeManageError::new("invalid_params", e.to_string()))?;
+                let mut value = service.preview(input.batch_id, &input.plugin_id)?;
+                self.decorate_managed_preview(&mut value)?;
+                value
+            };
+            return bounded_value(value, MAX_CONTROL_RESPONSE_BYTES, "response_too_large");
         }
         if matches!(
             method,
@@ -243,7 +520,7 @@ impl RuntimeManageService {
                     "Local management is unavailable in this runtime.",
                 )
             })?;
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if method == "chooseLocalFolder" || method == "folderSelection" {
                 return self
                     .folder_picker
@@ -280,9 +557,9 @@ impl RuntimeManageService {
                     )
                     .expect("source preview serializes")
                 } else {
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "macos"))]
                     {
-                        crate::windows::open_folder::open_registered_source(
+                        crate::platform::open_folder::open_registered_source(
                             &registry,
                             &input.plugin_id,
                         )
@@ -290,7 +567,7 @@ impl RuntimeManageService {
                             RuntimeManageError::new("open_folder_error", error.to_string())
                         })?
                     }
-                    #[cfg(not(windows))]
+                    #[cfg(not(any(windows, target_os = "macos")))]
                     {
                         return Err(RuntimeManageError::new(
                             "unsupported_platform",
@@ -316,7 +593,7 @@ impl RuntimeManageService {
                     })?;
                 let dependency_check = self.dependency_check(&preview.manifest);
                 let mut value = serde_json::to_value(preview).expect("preview is serializable");
-                value["watchEnabled"] = Value::Bool(self.local_watch);
+                value["watchEnabled"] = Value::Bool(self.local_watch_enabled());
                 value["dependencyCheck"] = dependency_check;
                 value
             } else if method == "previewRollback" {

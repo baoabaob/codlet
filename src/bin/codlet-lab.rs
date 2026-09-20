@@ -2,6 +2,7 @@
 fn main() {
     if let Err(error) = codlet::lab::run_cli(std::env::args_os().skip(1)) {
         eprintln!("codlet-lab: {error}");
+        codlet::runtime_log::error("lab_failed", &error.to_string());
         std::process::exit(1);
     }
 }

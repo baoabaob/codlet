@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+const {JSDOM}=createRequire(new URL('../frontend/package.json',import.meta.url))('jsdom');
+const source=readFileSync(new URL('../examples/hide-usage-banner/renderer.js',import.meta.url),'utf8');
+const card=body=>`<aside class="relative isolate flex w-full bg-surface"><div aria-hidden="true"></div>${body}<button>添加额度</button><button>重置使用量</button></aside>`;
+const frame=window=>new Promise(resolve=>window.requestAnimationFrame(()=>window.requestAnimationFrame(resolve)));
+test('audited native title layouts hide only the exhausted usage cards and restore on disable',async t=>{
+  const dom=new JSDOM('<!doctype html><head></head><body></body>',{runScripts:'outside-only',pretendToBeVisual:true});t.after(()=>dom.window.close());
+  const w=dom.window;w.module={exports:{}};w.eval(source);const plugin=w.module.exports;
+  w.document.body.innerHTML=card('<h3>Codex 和工作使用额度已用完</h3><div>你的速率限制将在明天重置</div>')+card('<h3><div><span>你的 Codex 和工作使用额度已用完</span><span>明天重置</span></div></h3>')+card('<h3>普通提示</h3><p>Codex 和工作使用额度已用完</p>')+'<article><h3>Codex 和工作使用额度已用完</h3><button>重置使用量</button></article>';
+  plugin.activate({generation:1});await frame(w);
+  assert.equal(w.document.querySelectorAll('[data-codlet-hide-usage-banner]').length,2);
+  assert.equal(w.getComputedStyle(w.document.querySelector('aside')).display,'none');
+  w.document.querySelector('aside h3').textContent='现在有可用额度';await frame(w);
+  assert.equal(w.document.querySelectorAll('[data-codlet-hide-usage-banner]').length,1);
+  plugin.deactivate();assert.equal(w.document.querySelectorAll('[data-codlet-hide-usage-banner]').length,0);assert.equal(w.document.querySelectorAll('style').length,0);
+  plugin.activate({generation:2});plugin.activate({generation:3});assert.equal(w.document.querySelectorAll('style').length,1);plugin.deactivate();
+});

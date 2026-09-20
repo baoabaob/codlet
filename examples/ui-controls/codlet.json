@@ -1,1 +1,1 @@
-{"schema":1,"id":"example.ui.controls","name":"UI Controls Example","version":"0.1.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"],"requires":[{"name":"codex.ui.navigation.page","api":1,"scope":"target"}]}
+{"schema":1,"id":"example.ui.controls","name":"UI Controls Example","tags":["UI"],"version":"0.1.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"],"requires":[{"name":"codex.ui.navigation.page","api":1,"scope":"target"}]}

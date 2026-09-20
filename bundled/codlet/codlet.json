@@ -2,6 +2,7 @@
   "schema": 1,
   "id": "codlet-gui",
   "name": "Codlet GUI",
+  "tags": ["UI", "Tool"],
   "description": "Manage plugins, imports, permissions, and Codlet updates.",
   "i18n": {
     "zh": { "name": "Codlet 管理界面", "description": "管理插件、导入、权限和 Codlet 更新。" },

@@ -1,15 +1,16 @@
 import { Cube, CodeSquareSlash } from '@openai/apps-sdk-ui/components/Icon';
+import { clientProfile } from '../../../compatibility/client-profiles.js';
+import { createCodletIcon } from '../brand.js';
 
 // Host internals belong only to this optional adapter. Never run these imports
 // outside the reviewed Desktop build, or create another app-host connection.
-export const PROFILE = Object.freeze({
-  version: '26.908.40834', build: '8881', entry: 'app://-/assets/index-cbd874f72008.js',
-  react: 'app://-/assets/react-d6ffadc57208.js', dom: 'app://-/assets/react-dom-2c70d35283e7.js',
-  client: 'app://-/assets/client-d8dffccad60c.js', primary: 'app://-/assets/app-primary-17b54400f32a.js',
-});
+export function pageProfile(build) {
+  const profile = clientProfile(build);
+  if (!profile?.page) throw fail('ui_build_drift', 'No reviewed sidebar/page profile for this Desktop build');
+  return profile;
+}
 export const CAPABILITY = Object.freeze({ name: 'codex.ui.navigation.page', api: 1, scope: 'target' });
 const fail = (code, message) => Object.assign(new Error(message), { code });
-const icons = { Cube, CodeSquareSlash };
 let current;
 
 export function fibers() {
@@ -32,8 +33,12 @@ export function locateHost() {
   for (const fiber of fibers()) {
     for (const value of [fiber.memoizedProps, fiber.memoizedProps?.value]) if (value?.navigator) navigators.add(value.navigator);
     const child = fiber.memoizedProps?.children;
-    if (child?.props?.element === undefined && Array.isArray(child?.props?.children) &&
-        child.props.children.some(route => route?.props?.path === '/avatar-overlay')) trees.add(child);
+    // Build 9771 wraps the route collection in a Fragment inside the same
+    // element-less root Route. Keep the Route identity for appended pages.
+    const children = child?.props?.children;
+    const routes = children?.type === Symbol.for('react.fragment') ? children.props?.children : children;
+    if (child?.props?.element === undefined && child?.type !== Symbol.for('react.fragment') && Array.isArray(routes) &&
+        routes.some(route => route?.props?.path === '/avatar-overlay')) trees.add(child);
   }
   if (navigators.size !== 1 || trees.size !== 1) throw fail('ui_host_pending', 'A unique Desktop router and route tree are required');
   const navigator = [...navigators][0], tree = [...trees][0];
@@ -75,7 +80,8 @@ function nativePlacement(SidebarItem) {
 }
 
 export function createNavigation(context, native, host) {
-  const { React, DOM, Client, SidebarItem } = native;
+  const { React, DOM, Client, SidebarItem, Header, HeaderToolbar } = native;
+  const icons = { Cube, CodeSquareSlash, Codlet: createCodletIcon(React,{compact:true}) };
   const entries = new Map(), h = React.createElement;
   let alive = true, navContainer, navRoot, pending = false;
   const hostLive = () => document.getElementById('root') === host.rootNode && host.rootNode.isConnected;
@@ -124,12 +130,29 @@ export function createNavigation(context, native, host) {
   };
   const observer = new MutationObserver(schedule);
   if(!host.auxiliary)observer.observe(document.documentElement, { childList: true, subtree: true });
+  function DraftBridge({entry}) {
+    const compose=native.useStartNewConversation();
+    React.useLayoutEffect(()=>{entry.compose=compose;return()=>{if(entry.compose===compose)entry.compose=null;};},[entry,compose]);
+    return null;
+  }
+  function newTaskDraft(args,invocation) {
+    check();
+    const caller=invocation?.caller,entry=entries.get(caller?.pluginId);
+    if(!entry||!Number.isSafeInteger(caller.generation)||!entry.lease.isConnected||entry.lease.dataset.codletGeneration!==String(caller.generation)||!entry.active||!(host.navigator.location.pathname===entry.path||host.navigator.location.pathname.startsWith(entry.path+'/'))||invocation.signal?.aborted)
+      throw fail('invalid_owner','A new task draft requires this caller’s active page');
+    if(!args||Object.keys(args).some(key=>key!=='prompt')||typeof args.prompt!=='string'||!args.prompt.trim()||args.prompt.length>16384)
+      throw fail('invalid_argument','A new task draft requires a bounded prompt');
+    if(typeof entry.compose!=='function')throw fail('ui_composer_unavailable','The native new-task composer is not ready');
+    entry.compose({prefillPrompt:args.prompt,prefillLocalExecution:true,prefillComposerMode:'local',startInSidebar:true});
+    return {opened:true,submitted:false};
+  }
   function register(args, invocation) {
     check();
     const caller = invocation?.caller;
     if (!caller || typeof caller.pluginId !== 'string' || !Number.isSafeInteger(caller.generation)) throw fail('invalid_owner', 'Page registration requires a Core-authenticated caller');
-    if (!args || Object.keys(args).some(key => !['label', 'icon', 'token'].includes(key)) ||
+    if (!args || Object.keys(args).some(key => !['label', 'icon', 'token', 'toolbar'].includes(key)) ||
         typeof args.label !== 'string' || !args.label.trim() || args.label.length > 64 || !Object.hasOwn(icons, args.icon) ||
+        (args.toolbar !== undefined && typeof args.toolbar !== 'boolean') ||
         typeof args.token !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(args.token)) throw fail('invalid_argument', 'Invalid page registration');
     const lease = [...document.querySelectorAll('[data-codlet-page-lease]')].find(node => node.dataset.codletPageLease === args.token);
     if (!lease || lease.dataset.codletPageOwner !== caller.pluginId || lease.dataset.codletGeneration !== String(caller.generation))
@@ -137,6 +160,7 @@ export function createNavigation(context, native, host) {
     // The Desktop pet is a reviewed auxiliary route, not a page surface.
     // Tell the public helper to release its pending DOM without an error.
     if(host.auxiliary)return {api:1,token:args.token,path:null,available:false};
+    if(args.toolbar && (!Header || !HeaderToolbar))throw fail('ui_build_drift','The reviewed native page toolbar is unavailable');
     const existing = entries.get(caller.pluginId);
     if (existing) {
       if (existing.token === args.token && existing.lease === lease) return existing.description;
@@ -145,13 +169,23 @@ export function createNavigation(context, native, host) {
     const entry = { owner: caller.pluginId, token: args.token, lease, label: args.label, icon: args.icon,
       path: '/codlet/' + encodeURIComponent(caller.pluginId), active: false, previous: null };
     entry.description = { api: 1, token: entry.token, path: entry.path };
+    // The route owns both the content and the native Header outlet. Native
+    // teardown clears the outlet on navigation; a second toolbar in the page
+    // body would duplicate the shell's header height and shift all content.
+    const content = h('div', { 'data-codlet-page-host': entry.token,
+      className: 'h-full min-h-0 min-w-0 flex flex-col',
+      ref: node => { entry.active = !!node; queueMicrotask(renderNav); } });
     entry.route = h(host.Route, { id: 'codlet:' + caller.pluginId, path: entry.path + '/*',
-      element: h('div', { 'data-codlet-page-host': entry.token, className: 'h-full min-h-0 min-w-0 flex flex-col',
-        ref: node => { entry.active = !!node; queueMicrotask(renderNav); } }) });
+      element: h(React.Fragment,null,
+        native.useStartNewConversation?h(DraftBridge,{entry}):null,
+        args.toolbar ? h(React.Fragment, null,
+        h(Header, null, h(HeaderToolbar, { inset: true },
+          h('div', { 'data-codlet-page-toolbar': entry.token, className: 'flex w-full min-w-0 items-center' }))),
+        content) : content) });
     host.routes.push(entry.route); entries.set(entry.owner, entry); reconcile(); renderNav();
     return entry.description;
   }
-  return { register, dispose() {
+  return { register, newTaskDraft, dispose() {
     if (!alive) return;
     observer.disconnect();
     for (const entry of [...entries.values()]) retire(entry);
@@ -161,13 +195,31 @@ export function createNavigation(context, native, host) {
   } };
 }
 
+export function reviewedHeader(initial, names) {
+  // This exact module exports a lazy AppShell initializer (Uxa as hB) and
+  // its live value (fQ as mB). Importing the module alone does not initialize it.
+  if (typeof initial[names.headerInit] !== 'function') throw fail('ui_build_drift', 'The reviewed native AppShell initializer changed');
+  initial[names.headerInit]();
+  const Header = initial[names.header]?.Header, HeaderToolbar = initial[names.header]?.HeaderToolbar;
+  const component = value => typeof value === 'function' || value?.$$typeof === Symbol.for('react.memo');
+  if (!component(Header) || !component(HeaderToolbar)) throw fail('ui_build_drift', 'The reviewed native header exports changed');
+  return { Header, HeaderToolbar };
+}
+
 async function loadNative() {
   const build = globalThis.electronBridge?.getSentryInitOptions?.();
-  if (location.origin !== 'app://-' || location.pathname !== '/index.html' || build?.appVersion !== PROFILE.version || String(build?.buildNumber) !== PROFILE.build)
+  if (location.origin !== 'app://-' || location.pathname !== '/index.html')
     throw fail('ui_build_drift', 'No reviewed sidebar/page profile for this Desktop build');
-  if (![...document.scripts].some(script => script.src === PROFILE.entry)) throw fail('ui_host_pending', 'Waiting for the Desktop entry');
-  const [react, dom, client, primary] = await Promise.all([import(PROFILE.react), import(PROFILE.dom), import(PROFILE.client), import(PROFILE.primary)]);
-  const native = { React: react.t(), DOM: dom.t(), Client: client.t(), SidebarItem: primary.ov };
+  const profile = pageProfile(build), page = profile.page, names = page.exports;
+  if (![...document.scripts].some(script => script.src === profile.entry)) throw fail('ui_host_pending', 'Waiting for the Desktop entry');
+  const [react, dom, client, primary, initial] = await Promise.all([import(page.react), import(page.dom), import(page.client), import(page.primary), import(profile.module)]);
+  const native = { React: react[names.react??'t'](), DOM: dom[names.dom??'t'](), Client: client[names.client??'t'](), SidebarItem: primary[names.sidebar], ...reviewedHeader(initial, names) };
+  // Same lazy initializer and hook used by the official Create plugin/skill
+  // flow. The hook is called inside Native's route and AppScope providers.
+  if(typeof initial[names.newTaskInit]!=='function')throw fail('ui_build_drift','The reviewed new-task initializer changed');
+  initial[names.newTaskInit]();
+  if(typeof initial[names.newTask]!=='function')throw fail('ui_build_drift','The reviewed new-task hook changed');
+  native.useStartNewConversation=initial[names.newTask];
   if (typeof native.React.createElement !== 'function' || typeof native.Client.createRoot !== 'function' || typeof native.SidebarItem !== 'function')
     throw fail('ui_build_drift', 'The reviewed native UI exports changed');
   return native;
@@ -183,7 +235,8 @@ export async function activate(context) {
   session.ready = (async () => {
     let native;
     while (current === session) {
-      try { native ??= await loadNative(); if (current !== session) break; session.navigation = createNavigation(context, native, locateHost()); return session.navigation; }
+      try { native ??= await loadNative(); if (current !== session) break; session.navigation = createNavigation(context, native, locateHost());
+        return session.navigation; }
       catch (error) {
         if (error.code !== 'ui_host_pending' || Date.now() >= deadline) throw error;
         await new Promise(resolve => { const timer = setTimeout(resolve, 50); session.cancel = () => { clearTimeout(timer); resolve(); }; });
@@ -196,5 +249,10 @@ export async function activate(context) {
     const navigation = await session.ready;
     if (current !== session || invocation.signal?.aborted) throw fail('ui_retired', 'The page registration retired');
     return navigation.register(args, invocation);
+  });
+  context.rpc.provide(CAPABILITY,'newTaskDraft',async(args,invocation)=>{
+    const navigation=await session.ready;
+    if(current!==session)throw fail('ui_retired','The page provider retired');
+    return navigation.newTaskDraft(args,invocation);
   });
 }

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
@@ -36,6 +36,9 @@ pub struct PluginManifest {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Author-defined, language-independent labels, without the display hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub i18n: BTreeMap<String, PluginTranslation>,
     pub version: String,
@@ -352,6 +355,7 @@ impl PluginManifest {
             ));
         }
         validate_description(self.description.as_deref())?;
+        validate_tags(&self.tags)?;
         for (locale, translation) in &self.i18n {
             if !matches!(locale.as_str(), "zh" | "en") {
                 return Err(ManifestError::Json(
@@ -405,6 +409,32 @@ impl PluginManifest {
     }
 }
 
+fn validate_tags(tags: &[String]) -> Result<(), ManifestError> {
+    if tags.len() > 8 {
+        return Err(ManifestError::Json("tags supports at most 8 labels".into()));
+    }
+    let mut seen = BTreeSet::new();
+    for tag in tags {
+        if tag.is_empty()
+            || tag.chars().count() > 32
+            || !tag
+                .chars()
+                .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_'))
+        {
+            return Err(ManifestError::Json(
+                "each tag must contain 1–32 letters, numbers, hyphens or underscores, without #"
+                    .into(),
+            ));
+        }
+        if !seen.insert(tag.to_lowercase()) {
+            return Err(ManifestError::Json(
+                "tags must be unique ignoring case".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_description(description: Option<&str>) -> Result<(), ManifestError> {
     if description.is_some_and(|text| {
         text.trim().is_empty() || text.len() > 2048 || text.chars().any(char::is_control)
@@ -414,6 +444,47 @@ fn validate_description(description: Option<&str>) -> Result<(), ManifestError> 
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn tags_are_optional_literal_metadata_with_bounded_custom_labels() {
+    let mut value = serde_json::json!({"schema":1,"id":"dev.tags","version":"1","renderer":{"entry":"entry.js","world":"isolated"}});
+    let legacy = PluginManifest::parse(&value.to_string()).unwrap();
+    assert!(legacy.tags.is_empty());
+    assert!(serde_json::to_value(legacy).unwrap().get("tags").is_none());
+    value["tags"] = serde_json::json!(["UI", "Adapter", "Tool", "Enhancement", "My-Tag", "专注"]);
+    let tagged = PluginManifest::parse(&value.to_string()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&tagged).unwrap()["tags"],
+        value["tags"]
+    );
+    value["tags"] = serde_json::json!(["界".repeat(32)]);
+    assert!(PluginManifest::parse(&value.to_string()).is_ok());
+    for invalid in [
+        serde_json::json!(["UI", "ui"]),
+        serde_json::json!([""]),
+        serde_json::json!(["#UI"]),
+        serde_json::json!([" UI"]),
+        serde_json::json!(["two words"]),
+        serde_json::json!(["bad\nlabel"]),
+        serde_json::json!(["<script>"]),
+        serde_json::json!(["界".repeat(33)]),
+        serde_json::json!((0..9).map(|i| format!("tag{i}")).collect::<Vec<_>>()),
+        serde_json::json!("UI"),
+        serde_json::json!([1]),
+        serde_json::Value::Null,
+    ] {
+        value["tags"] = invalid;
+        assert!(
+            PluginManifest::parse(&value.to_string()).is_err(),
+            "{:?}",
+            value["tags"]
+        );
+    }
+    value["tags"] = serde_json::json!([]);
+    value["i18n"] = serde_json::json!({"zh":{"tags":["界面"]}});
+    assert!(PluginManifest::parse(&value.to_string()).is_err());
 }
 
 #[cfg(test)]
@@ -1218,12 +1289,22 @@ fn read_registry_text(path: &Path) -> Result<Option<String>, PluginRegistryError
 }
 
 pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
-    let local_app_data = env::var_os("LOCALAPPDATA")
-        .filter(|value| !value.is_empty())
-        .ok_or(PluginRegistryError::LocalAppDataUnavailable)?;
-    Ok(PathBuf::from(local_app_data)
-        .join("Codlet")
-        .join("config.json"))
+    #[cfg(target_os = "macos")]
+    {
+        let home = env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .ok_or(PluginRegistryError::LocalAppDataUnavailable)?;
+        Ok(PathBuf::from(home).join("Library/Application Support/Codlet/config.json"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let local_app_data = env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .ok_or(PluginRegistryError::LocalAppDataUnavailable)?;
+        Ok(PathBuf::from(local_app_data)
+            .join("Codlet")
+            .join("config.json"))
+    }
 }
 
 pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {

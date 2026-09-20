@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$RecoverInterrupted,
+    [switch]$SafeMode,
     [ValidateRange(20, 60)][int]$StartupTimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
@@ -68,7 +69,16 @@ function Show-CodletFailure([string]$Message, [string]$OutputLog, [string]$Error
     [Console]::Error.WriteLine('Test client startup was not confirmed: ' + $Message)
     $errorTail = Read-CodletSharedText $ErrorLog 8192 -Tail
     if ($errorTail) { [Console]::Error.WriteLine($errorTail.Trim()) }
-    if (($Message + ' ' + $errorTail) -match '(?i)ENOENT|official.?CLI|hash.*mismatch|package.?version|reviewed.*package|expected.*package') {
+    $hostErrorTail = $null
+    if ($null -ne $State -and $State.PSObject.Properties['logs'] -and $State.logs) {
+        $hostErrorTail = Read-CodletSharedText (Join-Path $State.logs 'lab-stderr.log') 8192 -Tail
+        if ($hostErrorTail) { [Console]::Error.WriteLine($hostErrorTail.Trim()) }
+    }
+    $failureDetails = $Message + ' ' + $errorTail + ' ' + $hostErrorTail
+    if ($failureDetails -match '(?i)resume requires a closed run or a recorded preparation-only exit') {
+        [Console]::Error.WriteLine('The previous test run ended without recording a clean shutdown. Close any remaining ChatGPT (Dev) window, then run Start-TestClient.cmd -RecoverInterrupted. Recovery checks that the previous owners have exited and keeps your plugins and settings.')
+    }
+    if ($failureDetails -match '(?i)ENOENT|official.?CLI|hash.*mismatch|package.?version|reviewed.*package|expected.*package') {
         [Console]::Error.WriteLine('Codex may have been updated. This bundle keeps its reviewed CLI and package pins; use a reviewed bundle for the installed version. RecoverInterrupted does not approve an upgrade or repair a missing CLI.')
     }
     [Console]::Error.WriteLine('Startup log: ' + $OutputLog)
@@ -100,6 +110,7 @@ try {
     if (-not [IO.File]::Exists($codletScript)) { throw ('The test coordinator is missing: ' + $codletScript) }
     $codletAction = if ($RecoverInterrupted) { 'recover' } else { 'start' }
     $codletArguments = '"' + $codletScript + '" ' + $codletAction + ' "' + $codletConfigPath + '"'
+    if ($SafeMode) { $codletArguments += ' --safe-mode' }
     $codletProcess = Start-Process -FilePath $codletNode -ArgumentList $codletArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $codletOutputLog -RedirectStandardError $codletErrorLog
     $codletCreated = $codletProcess.StartTime.ToUniversalTime()
     Write-Output ('Waiting for test client startup; manager PID: ' + $codletProcess.Id)
@@ -113,7 +124,11 @@ try {
             $codletState = $codletObserved
             $codletStatePath = Join-Path $codletState.logs 'state.json'
         }
-        if ($codletProcess.HasExited) { throw ('The startup manager exited before confirming readiness (exit code ' + $codletProcess.ExitCode + ').') }
+        if ($codletProcess.HasExited) {
+            $codletExitCode = $codletProcess.ExitCode
+            if ($null -eq $codletExitCode) { $codletExitCode = 'unknown' }
+            throw ('The startup manager exited before confirming readiness (exit code ' + $codletExitCode + ').')
+        }
         if ($null -ne $codletState -and $codletState.state -eq 'ready') {
             if ($codletProcess.StartTime.ToUniversalTime().Ticks -ne $codletCreated.Ticks) { throw 'The startup manager process identity changed; readiness was not accepted.' }
             Write-Output ('Test client is ready. Background manager PID: ' + $codletProcess.Id)

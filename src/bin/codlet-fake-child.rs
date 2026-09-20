@@ -12,8 +12,20 @@ fn main() {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+#[path = "fixtures/macos.rs"]
+mod macos_fixture;
+
+#[cfg(target_os = "macos")]
 fn main() {
-    eprintln!("codlet-fake-child is Windows-only");
+    if let Err(error) = macos_fixture::run() {
+        eprintln!("codlet-fake-child: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn main() {
+    eprintln!("codlet-fake-child requires Windows or macOS");
     std::process::exit(1);
 }

@@ -115,15 +115,13 @@ fn package_unavailable_still_reports_corrupt_registry_and_declared_capabilities(
             .len(),
         3
     );
-    for name in ["codex.ui.navigation.page"] {
-        assert!(
-            plugin(&json, "codex.ui.adapter")["provides"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|capability| capability["name"] == name)
-        );
-    }
+    assert!(
+        plugin(&json, "codex.ui.adapter")["provides"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability["name"] == "codex.ui.navigation.page")
+    );
     let human = report.to_human_readable();
     assert!(human.contains("package: failed [package_not_installed]"));
     assert!(human.contains("registry: failed [registry_json_invalid]"));

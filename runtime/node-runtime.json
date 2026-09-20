@@ -12,7 +12,16 @@
     "win-arm64": {
       "archive": "node-v24.21.0-win-arm64.zip",
       "archiveSha256": "8779b1bde1d39f8d420e3b57aa657b39891af434d3de44a919044cec06785921",
-      "executableSha256": "dff59da18b6ffe1bf1ca99e1d2af4906080c481740619f5b5098c0fca28bd9b7"
+      "executableSha256": "dff59da18b6ffe1bf1ca99e1d2af4906080c481740619f5b5098c0fca28bd9b7",
+      "licenseSha256": "ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9"
+    },
+    "darwin-arm64": {
+      "version": "22.23.2",
+      "baseUrl": "https://nodejs.org/download/release/v22.23.2",
+      "archive": "node-v22.23.2-darwin-arm64.tar.gz",
+      "archiveSha256": "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
+      "executableSha256": "18e387c90ab8a8400183e8bdd396376e1e875b91b4c874b894dcade7b35bf572",
+      "licenseSha256": "c738ae413cf561f174e34f6961f8ca458aae2369a73640dda6234c629b98bcc4"
     }
   }
 }

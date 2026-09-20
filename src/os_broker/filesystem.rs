@@ -1,12 +1,17 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use std::io::Read;
-use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
-use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+#[cfg(windows)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle, GetFinalPathNameByHandleW,
@@ -61,6 +66,7 @@ pub(super) fn execute(endpoint: &str, params: Value, guard: &RequestGuard) -> Re
             let text = String::from_utf8(bytes).map_err(|_| {
                 OsBrokerError::new("invalid_utf8", "readText requires UTF-8 file contents")
             })?;
+            selected.check_location()?;
             Ok(json!({"bytes":text.len(),"text":text}))
         }
         "host.fs.readDir" => {
@@ -74,7 +80,9 @@ pub(super) fn execute(endpoint: &str, params: Value, guard: &RequestGuard) -> Re
                 return Err(invalid("readDir expects a directory"));
             }
             let mut entries = Vec::new();
+            #[cfg(windows)]
             let mut truncated = false;
+            #[cfg(windows)]
             for entry in std::fs::read_dir(&selected.path).map_err(io_error)? {
                 guard.check()?;
                 if entries.len() == max {
@@ -90,6 +98,20 @@ pub(super) fn execute(endpoint: &str, params: Value, guard: &RequestGuard) -> Re
                 let kind = entry.file_type().map_err(io_error)?;
                 entries.push(json!({"name":name,"kind":if kind.is_symlink() { "link" } else if kind.is_dir() { "directory" } else if kind.is_file() { "file" } else { "other" }}));
             }
+            #[cfg(target_os = "macos")]
+            let truncated = {
+                let (children, truncated) =
+                    crate::macos::filesystem::entries(&selected.file, max).map_err(io_error)?;
+                for (name, kind) in children {
+                    guard.check()?;
+                    let name = name
+                        .to_str()
+                        .ok_or_else(|| invalid("readDir encountered a non-Unicode filename"))?;
+                    entries.push(json!({"name":name,"kind":kind}));
+                }
+                truncated
+            };
+            selected.check_location()?;
             entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
             Ok(json!({"entries":entries,"truncated":truncated}))
         }
@@ -102,6 +124,7 @@ pub(super) fn execute(endpoint: &str, params: Value, guard: &RequestGuard) -> Re
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64);
+            selected.check_location()?;
             Ok(
                 json!({"kind":if metadata.is_dir(){"directory"}else{"file"},"bytes":metadata.len(),"modifiedUnixMs":modified}),
             )
@@ -114,6 +137,38 @@ pub(super) struct Selected {
     pub(super) file: File,
     pub(super) path: PathBuf,
     _parents: Vec<File>,
+}
+impl Selected {
+    fn check_location(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if crate::macos::filesystem::final_path(&self.file).map_err(io_error)? != self.path {
+            return Err(denied("The selected path moved during the broker request"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn lexical_path(path: &Path) -> Result<PathBuf> {
+    crate::plugin_permissions::validate_policy_path(path).map_err(|e| invalid(e.to_string()))?;
+    Ok(path.to_owned())
+}
+#[cfg(target_os = "macos")]
+fn contains_path(root: &Path, path: &Path) -> bool {
+    path.starts_with(root)
+}
+#[cfg(target_os = "macos")]
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left == right
+}
+#[cfg(target_os = "macos")]
+fn pin_without_following(path: &Path) -> Result<Selected> {
+    let pinned = crate::macos::filesystem::open_checked(path).map_err(io_error)?;
+    Ok(Selected {
+        file: pinned.file,
+        path: pinned.path,
+        _parents: pinned.parents,
+    })
 }
 
 fn open_authorized(requested: &Path, guard: &RequestGuard) -> Result<Selected> {
@@ -149,6 +204,7 @@ pub(super) fn pin_exact_grant(requested: &Path, allowed: &[PathBuf]) -> Result<S
     pin_without_following(&requested)
 }
 
+#[cfg(windows)]
 fn pin_without_following(path: &Path) -> Result<Selected> {
     let path = lexical_path(path)?;
     let mut current = PathBuf::new();
@@ -183,6 +239,7 @@ fn pin_without_following(path: &Path) -> Result<Selected> {
     })
 }
 
+#[cfg(windows)]
 fn lexical_path(path: &Path) -> Result<PathBuf> {
     crate::plugin_permissions::validate_policy_path(path)
         .map_err(|error| invalid(error.to_string()))?;
@@ -198,6 +255,7 @@ fn lexical_path(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+#[cfg(windows)]
 fn contains_path(root: &Path, path: &Path) -> bool {
     let (Ok(root), Ok(path)) = (lexical_path(root), lexical_path(path)) else {
         return false;
@@ -210,6 +268,7 @@ fn contains_path(root: &Path, path: &Path) -> bool {
     })
 }
 
+#[cfg(windows)]
 fn paths_equal(left: &Path, right: &Path) -> bool {
     let (Ok(left), Ok(right)) = (lexical_path(left), lexical_path(right)) else {
         return false;
@@ -217,11 +276,13 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
     os_equal(left.as_os_str(), right.as_os_str())
 }
 
+#[cfg(windows)]
 fn os_equal(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
     use std::os::windows::ffi::OsStrExt;
     left.encode_wide().eq(right.encode_wide())
 }
 
+#[cfg(windows)]
 pub(super) fn open_pinned(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -244,6 +305,7 @@ pub(super) fn open_pinned(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+#[cfg(windows)]
 pub(super) fn final_path(file: &File) -> Result<PathBuf> {
     let mut buffer = vec![0_u16; 32768];
     let count = unsafe {

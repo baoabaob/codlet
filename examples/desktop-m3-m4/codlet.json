@@ -2,6 +2,7 @@
   "schema": 1,
   "id": "example.desktop.m3m4",
   "name": "M3 / M4 验收面板",
+  "tags": ["Tool"],
   "version": "0.1.0",
   "renderer": { "entry": "renderer.js", "world": "main" },
   "permissions": ["ui.dom", "ui.mainWorld"],

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codlet"
+  short_description: "了解 Codlet，查找、管理、排查和创建桌面扩展插件"
+  icon_small: "./assets/codlet.svg"
+  icon_large: "./assets/codlet.svg"
+  default_prompt: "使用 $codlet 了解当前插件和运行状态，帮我开始使用 Codlet"

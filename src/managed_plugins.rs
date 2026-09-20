@@ -1,5 +1,6 @@
 //! Explicit GitHub package registration and version selection. Provenance comes
-//! only from the downloader's checked receipt; this module never deletes files.
+//! only from the downloader's checked receipt. Installation storage is committed
+//! after the previous runtime has stopped, retaining one installed version.
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -394,10 +395,7 @@ fn stage_checked(
         .any(|previous| previous.version_key == version.version_key)
     {
         if record.history.len() >= MAX_HISTORY {
-            return Err(control_error(
-                "managed_history_full",
-                "Managed history reached its 64-version limit; no versions were removed.",
-            ));
+            record.history = record.current().cloned().into_iter().collect();
         }
         record.history.push(version);
     }
@@ -406,6 +404,86 @@ fn stage_checked(
         .map_err(|error| control_error("registration_conflict", error.to_string()))?;
     next.set_enabled(id, false)
         .map_err(|error| control_error("registry_error", error.to_string()))?;
+    Ok((next, entry))
+}
+
+pub(crate) fn registration_at_path(
+    registry: &PluginRegistry,
+    id: &str,
+    target: &Path,
+) -> Result<PluginRegistry, PluginControlError> {
+    let old = registry
+        .managed_plugins()
+        .get(id)
+        .and_then(ManagedPluginRecord::current)
+        .ok_or_else(|| {
+            control_error(
+                "managed_version_missing",
+                "The selected managed package is no longer registered.",
+            )
+        })?;
+    let prepared = inspect_prepared_package(registry.path(), target)
+        .map_err(|e| control_error("managed_package_invalid", e.to_string()))?;
+    if prepared.source != old.source
+        || prepared.manifest != old.manifest
+        || prepared.metadata != old.metadata
+    {
+        return Err(control_error(
+            "import_content_changed",
+            "The installation differs from the selected package.",
+        ));
+    }
+    let candidate = inspect_local_plugin(target)
+        .map_err(|e| control_error("local_plugin_invalid", e.to_string()))?;
+    let content_digest = package_digest(&prepared, &candidate);
+    let mut registration = registry
+        .local_plugins()
+        .get(id)
+        .expect("managed current registration")
+        .clone();
+    registration.path = target.into();
+    let version = ManagedVersion {
+        version_key: local_import::digest(&(target, &prepared.source, &content_digest)),
+        package_path: target.into(),
+        content_digest,
+        source: prepared.source,
+        manifest: prepared.manifest,
+        metadata: prepared.metadata,
+    };
+    let record = ManagedPluginRecord {
+        current_version: Some(version.version_key.clone()),
+        history: vec![version],
+    };
+    let mut next = registry.clone();
+    next.register_managed(id, registration, record)
+        .map_err(|e| control_error("registration_conflict", e.to_string()))?;
+    Ok(next)
+}
+
+pub(crate) fn at_installation_path(
+    registry: &PluginRegistry,
+    id: &str,
+    target: &Path,
+) -> Result<(PluginRegistry, PluginCatalogEntry), PluginControlError> {
+    let next = registration_at_path(registry, id, target)?;
+    let candidate = inspect_local_plugin(target)
+        .map_err(|e| control_error("local_plugin_invalid", e.to_string()))?;
+    let registration = &next.local_plugins()[id];
+    let request = LocalImportRequest {
+        path: target.into(),
+        content_digest: next.managed_plugins()[id]
+            .current()
+            .unwrap()
+            .content_digest
+            .clone(),
+        registration_digest: local_import::registration_digest(&next, id),
+        trusted: true,
+        grants: registration.grants.clone(),
+        broker_policy: registration.broker_policy.clone(),
+        enable: next.is_enabled(id),
+        managed: Some(ManagedOperation::Update),
+    };
+    let entry = local_import::checked_entry(candidate, &request)?;
     Ok((next, entry))
 }
 
@@ -418,6 +496,13 @@ pub(crate) fn restore_previous(
 ) -> Result<PluginRegistry, PluginControlError> {
     let current = PluginRegistry::load(expected.path())
         .map_err(|e| control_error("registry_error", e.to_string()))?;
+    if current.local_plugins().get(id) == previous.local_plugins().get(id)
+        && current.managed_plugins().get(id) == previous.managed_plugins().get(id)
+        && current.is_enabled(id) == previous.is_enabled(id)
+    {
+        crate::managed_storage::clear_registration_checkpoint(&current, id)?;
+        return Ok(current);
+    }
     if current.local_plugins().get(id) != expected.local_plugins().get(id)
         || current.managed_plugins().get(id) != expected.managed_plugins().get(id)
         || current.is_enabled(id) != expected.is_enabled(id)
@@ -439,6 +524,7 @@ pub(crate) fn restore_previous(
     restored
         .save()
         .map_err(|e| control_error("registry_error", e.to_string()))?;
+    crate::managed_storage::clear_registration_checkpoint(&restored, id)?;
     Ok(restored)
 }
 

@@ -57,6 +57,7 @@ struct InstallPlan<'a> {
     config_pin: Option<ConfigPinPlan>,
     wait_for: Vec<RuntimeProcessIdentity>,
     handoff_ack_path: PathBuf,
+    official_update: bool,
     install_receipt_path: PathBuf,
     summary_receipt_path: PathBuf,
     created_at: u64,
@@ -70,11 +71,18 @@ fn checked(path: &Path) -> Result<CheckedPath> {
         sha256: record.sha256,
     })
 }
+#[cfg(test)]
 pub(super) fn prepare_install_plan(
     install_root: &Path,
     state_root: &Path,
     staged: &package::StagedRuntime,
     restart: &RuntimeRestartContext,
+) -> Result<RuntimeInstallRequest> {
+    prepare_install_plan_with_official(install_root, state_root, staged, restart, false)
+}
+pub(super) fn prepare_install_plan_with_official(
+    install_root: &Path, state_root: &Path, staged: &package::StagedRuntime,
+    restart: &RuntimeRestartContext, official_update: bool,
 ) -> Result<RuntimeInstallRequest> {
     ensure_same_volume(install_root, state_root)?;
     let root = package::canonical_directory(install_root)?;
@@ -370,6 +378,7 @@ pub(super) fn prepare_install_plan(
         config_pin,
         wait_for,
         handoff_ack_path: handoff_ack_path.clone(),
+        official_update,
         install_receipt_path: job.join("install-receipt.json"),
         summary_receipt_path: state_root.join("runtime-update-install-receipt.json"),
         created_at: created,
@@ -390,6 +399,7 @@ pub(super) fn prepare_install_plan(
         helper_path,
         node_path,
         handoff_ack_path,
+        official_update,
     })
 }
 

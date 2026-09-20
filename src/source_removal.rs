@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::platform::path::{same_path, within};
 use crate::plugin_control::PluginControlError;
 use crate::plugins::PluginRegistry;
 
@@ -206,9 +207,9 @@ pub fn apply(plan: SourceRemovalPlan) -> SourceRemovalResult {
             format!("The plugin was unregistered. {}", issue.message),
         );
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        let directory = match windows::pin_directory(&plan.path, true) {
+        let directory = match native::pin_directory(&plan.path, true) {
             Ok(directory) => directory,
             Err(issue) => {
                 return skipped(
@@ -232,14 +233,14 @@ pub fn apply(plan: SourceRemovalPlan) -> SourceRemovalResult {
             Err(issue) => SourceRemovalResult { status: "failed", code: "source_removal_failed", message: format!("The plugin was unregistered, but its source directory was not fully deleted. Some source files may have been removed: {issue}") },
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     skipped(
         "source_removal_unsupported",
         "The plugin was unregistered. Source removal is not supported on this platform.",
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn with_registered_directory<T>(
     registry: &PluginRegistry,
     plugin_id: &str,
@@ -251,22 +252,37 @@ pub(crate) fn with_registered_directory<T>(
             "This plugin has no registered source directory.",
         )
     })?;
-    let directory = windows::pin_directory(&registration.path, false)?;
+    let directory = native::pin_directory(&registration.path, false)?;
     action(&directory.path)
 }
 
 fn directory_identity(path: &Path) -> Result<String, PluginControlError> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
-        Ok(windows::pin_directory(path, false)?.identity)
+        Ok(native::pin_directory(path, false)?.identity)
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = path;
         Err(error(
             "source_removal_unsupported",
             "Source removal is available on Windows.",
         ))
+    }
+}
+
+/// The caller has already checked Core ownership and retired every user of this
+/// package. Pin the directory and its ancestors while deleting its contents.
+pub(crate) fn remove_owned_directory(path: &Path) -> Result<(), PluginControlError> {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        native::pin_directory(path, true)?
+            .remove()
+            .map_err(|e| error("source_removal_failed", e.to_string()))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        std::fs::remove_dir_all(path).map_err(|e| error("source_removal_failed", e.to_string()))
     }
 }
 
@@ -366,24 +382,6 @@ fn protected_path(
     Ok(())
 }
 
-fn path_key(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('/', "\\");
-    text.strip_prefix("\\\\?\\")
-        .unwrap_or(&text)
-        .trim_end_matches('\\')
-        .to_lowercase()
-}
-fn same_path(left: &Path, right: &Path) -> bool {
-    path_key(left) == path_key(right)
-}
-fn within(path: &Path, root: &Path) -> bool {
-    let path = path_key(path);
-    let root = path_key(root);
-    path == root
-        || path
-            .strip_prefix(&root)
-            .is_some_and(|tail| tail.starts_with('\\'))
-}
 fn valid_digest(value: &str) -> bool {
     value.len() == 64
         && value
@@ -401,159 +399,10 @@ fn error(code: &str, message: impl Into<String>) -> PluginControlError {
     PluginControlError::new(code, message)
 }
 
-#[cfg(windows)]
-mod windows {
-    use super::*;
-    use std::fs::{File, OpenOptions};
-    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo,
-        GetFileInformationByHandle, SetFileInformationByHandle,
-    };
+#[cfg(any(windows, target_os = "macos"))]
+use crate::platform::directory as native;
 
-    pub(super) struct Directory {
-        pub path: PathBuf,
-        pub identity: String,
-        root: File,
-        _ancestors: Vec<File>,
-    }
-
-    pub(super) fn pin_directory(
-        path: &Path,
-        delete: bool,
-    ) -> Result<Directory, PluginControlError> {
-        crate::plugin_permissions::validate_policy_path(path)
-            .map_err(|issue| error("source_directory_invalid", issue.to_string()))?;
-        if path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        }) {
-            return Err(error(
-                "source_directory_invalid",
-                "The registered directory is not a canonical location.",
-            ));
-        }
-        let mut ancestors = Vec::new();
-        for ancestor in path
-            .ancestors()
-            .skip(1)
-            .filter(|ancestor| ancestor.has_root())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            ancestors.push(open_plain(ancestor, false)?);
-        }
-        let root = open_plain(path, delete)?;
-        let canonical = path.canonicalize().map_err(io_error)?;
-        if !same_path(path, &canonical) {
-            return Err(error(
-                "source_directory_changed",
-                "The registered directory redirects to a different location.",
-            ));
-        }
-        let mut info = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: the handle remains owned and pinned throughout this query.
-        if unsafe { GetFileInformationByHandle(root.as_raw_handle().cast(), &mut info) } == 0 {
-            return Err(io_error(std::io::Error::last_os_error()));
-        }
-        let identity = crate::local_import::digest(&(
-            path_key(&canonical),
-            info.dwVolumeSerialNumber,
-            info.nFileIndexHigh,
-            info.nFileIndexLow,
-            info.ftCreationTime.dwHighDateTime,
-            info.ftCreationTime.dwLowDateTime,
-        ));
-        Ok(Directory {
-            path: canonical,
-            identity,
-            root,
-            _ancestors: ancestors,
-        })
-    }
-
-    fn open_plain(path: &Path, delete: bool) -> Result<File, PluginControlError> {
-        let file = OpenOptions::new()
-            .access_mode(FILE_READ_ATTRIBUTES | if delete { DELETE } else { 0 })
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-            .map_err(io_error)?;
-        let metadata = file.metadata().map_err(io_error)?;
-        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(error(
-                "source_directory_invalid",
-                "The registered location is not an ordinary directory, or contains a link/junction in its ancestry. It will not be followed.",
-            ));
-        }
-        Ok(file)
-    }
-
-    impl Directory {
-        pub fn remove(self) -> std::io::Result<()> {
-            // The absolute root and every ancestor remain pinned without delete
-            // sharing. Rust's Windows remove_dir_all uses handle-relative APIs
-            // and never follows child symlinks/junctions, including swap races.
-            for entry in std::fs::read_dir(&self.path)? {
-                let entry = entry?;
-                let child = entry.path();
-                if child.parent() != Some(self.path.as_path()) {
-                    return Err(std::io::Error::other(
-                        "source entry escaped its pinned parent",
-                    ));
-                }
-                let metadata = std::fs::symlink_metadata(&child)?;
-                if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
-                    std::fs::remove_dir_all(&child)?;
-                } else {
-                    std::fs::remove_file(&child)?;
-                }
-            }
-            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-            // Mark the exact DELETE-capable handle, without releasing it and
-            // looking up a possibly replaced directory by pathname.
-            if unsafe {
-                SetFileInformationByHandle(
-                    self.root.as_raw_handle().cast(),
-                    FileDispositionInfo,
-                    (&disposition as *const FILE_DISPOSITION_INFO).cast(),
-                    std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
-                )
-            } == 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            let removed_path = self.path.clone();
-            drop(self);
-            match std::fs::symlink_metadata(removed_path) {
-                Err(issue) if issue.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(issue) => Err(issue),
-                Ok(_) => Err(std::io::Error::other(
-                    "source deletion was requested but disappearance was not confirmed; a replacement location will not be deleted",
-                )),
-            }
-        }
-    }
-    fn io_error(issue: std::io::Error) -> PluginControlError {
-        if issue.kind() == std::io::ErrorKind::NotFound {
-            error(
-                "source_directory_missing",
-                "The source directory is missing or has moved. It will not be recreated or searched for at another location.",
-            )
-        } else {
-            error(
-                "source_directory_unavailable",
-                format!("The source directory could not be safely accessed: {issue}"),
-            )
-        }
-    }
-}
-
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests;
 #[cfg(all(test, windows))]
 mod tests;

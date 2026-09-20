@@ -18,7 +18,7 @@ use crate::windows::process::ChildProcess;
 const RESTART_SCRIPT: &[u8] = include_bytes!("../../scripts/Restart-Codlet.ps1");
 const QUIT_SCRIPT: &str = include_str!("../lab/quit.js");
 const QUIT_AVAILABLE_SCRIPT: &str = r#"(() => { const document = 'app://-/index.html'; const href = window.location.href; return window === window.top && (href === document || href.startsWith(document + '?') || href.startsWith(document + '#')) && window.electronBridge?.windowType === 'electron' && typeof window.electronBridge?.sendMessageFromView === 'function'; })()"#;
-const AUDITED_QUIT_VERSIONS: &[&str] = &["26.903.8094.0", "26.903.9818.0", "26.908.4834.0"];
+const AUDITED_QUIT_VERSIONS: &[&str] = &["26.903.8094.0", "26.903.9818.0", "26.908.4834.0", "26.915.4065.0"];
 
 pub(super) struct RuntimeUpdateOwner {
     service: Option<RuntimeUpdateService>,
@@ -45,6 +45,7 @@ impl RuntimeUpdateOwner {
             timeout_reported: false,
         };
         owner.seed_sessions(sessions);
+        manage.start_plugin_update_checks();
         let result = (|| {
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
             let install_root = executable
@@ -56,8 +57,13 @@ impl RuntimeUpdateOwner {
             let state_root = install_root.join(".codlet-updates").join(scope.id());
             let restart =
                 restart_context(&executable, registry_path, watch, child, package_version);
-            RuntimeUpdateService::start(install_root, state_root, restart)
-                .map_err(|error| error.to_string())
+            RuntimeUpdateService::start_with_preferences(
+                install_root,
+                state_root,
+                restart,
+                manage.preferences_for_start(),
+            )
+            .map_err(|error| error.to_string())
         })();
         match result {
             Ok(service) => {

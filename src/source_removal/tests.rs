@@ -73,6 +73,30 @@ impl Fixture {
 }
 
 #[test]
+fn deletion_removes_the_directory_name_while_an_observer_keeps_a_delete_sharing_handle() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+    let mut fixture = Fixture::new();
+    let observer = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&fixture.source)
+        .unwrap();
+    let selection = preview(&fixture.registry, ID).unwrap();
+    let plan = prepare(&fixture.registry, ID, &selection.request()).unwrap();
+    fixture.unregister();
+    let result = fixture.apply(plan);
+    assert_eq!(result.status, "deleted", "{result:?}");
+    assert!(!fixture.source.exists());
+    assert!(observer.metadata().is_ok());
+    assert!(fixture.data.exists());
+}
+
+#[test]
 fn explicit_source_removal_deletes_only_the_confirmed_directory_after_unregistering() {
     let mut fixture = Fixture::new();
     let selection = preview(&fixture.registry, ID).unwrap();
@@ -274,7 +298,7 @@ fn child_junction_is_removed_without_following_its_external_contents() {
 #[test]
 fn root_pin_prevents_directory_replacement_during_source_deletion() {
     let fixture = Fixture::new();
-    let pin = windows::pin_directory(&fixture.source, true).unwrap();
+    let pin = native::pin_directory(&fixture.source, true).unwrap();
     let target = fixture.directory.path().join("moved-while-pinned");
     assert!(
         fixture
@@ -321,8 +345,9 @@ fn explicitly_deleted_managed_source_keeps_history_and_reports_missing_rollback_
     )
     .unwrap();
     registry.save().unwrap();
+    crate::managed_storage::prepare_installations(&mut registry).unwrap();
     fixture.registry = registry;
-    fixture.source = package.package_path;
+    fixture.source = fixture.registry.local_plugins()[ID].path.clone();
     let version_key = fixture.registry.managed_plugins()[ID]
         .current_version
         .clone()

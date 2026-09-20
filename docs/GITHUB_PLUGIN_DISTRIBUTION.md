@@ -2,7 +2,9 @@
 
 日期：2026-09-12。实现范围：公开 GitHub release 资产的预览与导入、来源记录、显式更新/回滚、发布格式和社区发现入口。所有原生界面验收按 [M5b 手测指南](GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md) 记录；本阶段不关闭 [M0/M1 发布门禁](REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md)。
 
-本轮验证：270 项 Rust 单元测试与 232 项集成测试通过；显式启动真实 Codex 的旧门禁测试保持 ignored。153 项 JavaScript 测试、五份公开类型的严格检查、Clippy 和 7 组分发检查通过。实际 PowerShell 打包产物已通过 Rust 下载器校验，公开 GitHub API 的只读目录请求也成功；完整 Native 导入/更新/回滚仍待手测。
+2026-09-12 基线验证：270 项 Rust 单元测试与 232 项集成测试、153 项 JavaScript 测试、五份公开类型的严格检查、Clippy 和 7 组分发检查通过；显式启动真实 Codex 的旧门禁测试保持 ignored。
+
+2026-09-15 新增真实远程验收：按用户授权发布了[临时测试仓库](https://github.com/baoabaob/codlet-update-smoke-20260915)，在隔离 Native 客户端完成 1.0.0 导入并启用、冷启动自动发现 1.1.0、界面显式审核与热更新；随后经同一 Core 管理入口回滚到 1.0.0 并停用，保留两个版本的来源历史。下载摘要与 GitHub 提供的摘要一致；界面中的 v1 标记被唯一的 v2 替换，更新完成后列表提示消失。具体分支见[手测记录](GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md)，未执行的分支不记为通过。
 
 ## 用户流程
 
@@ -88,7 +90,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-PluginPackag
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Build-PluginPackage.ps1 -PluginDirectory .\examples\github-release-check\v2 -OutputPath .\.codlet-artifacts\github-release-check-v2.zip
 ```
 
-脚本拒绝覆盖已有 ZIP。把两个 ZIP 分别上传到自己公开仓库的两个 release 资产，填写版本说明，再把 release URL 交给使用者。Codlet 本次只生成本地测试包，没有替你创建或发布任何远程仓库。
+脚本拒绝覆盖已有 ZIP。把两个 ZIP 分别上传到自己公开仓库的两个 release 资产，填写版本说明，再把 release URL 交给使用者。上述两个样例已于 2026-09-15 用于经用户授权的临时仓库验收；它们不是 Codlet 产品发行版。
 
 ## CLI：先准备，再明确安装
 

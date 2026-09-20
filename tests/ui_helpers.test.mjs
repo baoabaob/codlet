@@ -51,8 +51,9 @@ test('host semantic colors bridge to official tokens and follow host theme chang
   const ui=f.context.ui.create(),node=ui.container();
   assert.equal(node.style.getPropertyValue('--switch-track-color-checked'),'rgb(173, 81, 21)');assert.equal(node.style.getPropertyValue('--switch-thumb-color'),'rgb(255, 253, 249)');assert.equal(node.style.getPropertyValue('--color-ring'),'rgb(165, 79, 18)');
   assert.equal(node.style.getPropertyValue('--color-page-search'),'rgb(45, 45, 45)');
+  assert.match(node.style.getPropertyValue('--switch-track-color-checked-disabled'),/var\(--switch-track-color-checked\)/);
   body.style.setProperty('--color-chart-blue','rgb(128, 175, 237)');f.document.documentElement.dataset.theme='dark';await tick();assert.equal(node.style.getPropertyValue('--switch-track-color-checked'),'rgb(128, 175, 237)');assert.equal(node.style.colorScheme,'dark');
-  body.style.removeProperty('--color-chart-blue');await tick();assert.equal(node.style.getPropertyValue('--switch-track-color-checked'),'');assert.equal(body.style.getPropertyValue('--switch-track-color-checked'),'');
+  body.style.removeProperty('--color-chart-blue');await tick();assert.equal(node.style.getPropertyValue('--switch-track-color-checked'),'');assert.equal(body.style.getPropertyValue('--switch-track-color-checked'),'');assert.equal(node.style.getPropertyValue('--switch-track-color-checked-disabled'),'');
 });
 for(const failure of ['callback','react'])for(const exit of ['navigation','page','owner'])test(`${exit} cleanup survives a throwing ${failure} and retires every owned resource`,async t=>{
   const f=uiFixture();t.after(()=>f.dispose());const baseline={observers:f.observers.size,media:f.mediaListeners.size,cleanups:f.cleanups.size};
@@ -82,4 +83,27 @@ test('owner teardown aggregates multiple page failures and still retires later p
   const lease=[...f.document.querySelectorAll('[data-codlet-page-lease]')].at(-1),host=f.document.createElement('div');host.dataset.codletPageHost=lease.dataset.codletPageLease;f.document.querySelector('main').append(host);await tick();
   assert.throws(()=>ui.dispose(),error=>/First callback failed/.test(error.message)&&/Second callback failed/.test(error.message)&&/Standalone React cleanup failed/.test(error.message));
   assert.equal(first,1);assert.equal(second,1);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);assert.equal(f.document.querySelector('[data-codlet-official-styles]'),null);assert.doesNotThrow(()=>ui.dispose());
+});
+test('a native toolbar portal shares page state and is removed on departure and callback failure',async t=>{
+  for(const fail of [false,true]){
+    const f=uiFixture();t.after(()=>f.dispose());const ui=f.context.ui.create(),h=ui.React.createElement;let cleanups=0;
+    function View({toolbar}){const [count,setCount]=ui.React.useState(0);ui.React.useEffect(()=>()=>cleanups++,[]);return h(ui.React.Fragment,null,h('output',{'data-counter':''},count),ui.createPortal(h(ui.components.Button,{color:'secondary','aria-label':'Toolbar increment',onClick:()=>setCount(count+1)},'Add'),toolbar));}
+    const page=await ui.page({label:'Page',toolbar:true,render:surface=>h(View,surface),onDeactivate(){if(fail)throw Error('toolbar page cleanup failed');}});
+    await f.open();assert.equal(f.document.querySelectorAll('[data-codlet-official-ui]').length,3);assert.ok(f.control('Toolbar increment').closest('[data-codlet-page-toolbar]'));
+    await f.click('Toolbar increment');assert.equal(f.document.querySelector('[data-counter]').textContent,'1');await f.leave();assert.equal(cleanups,1);assert.equal(f.control('Toolbar increment'),undefined);
+    if(fail){assert.match(f.errors.find(error=>error.code==='ui_cleanup_failed').message,/toolbar page cleanup failed/);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);}
+    else{await f.open();assert.equal(f.document.querySelector('[data-counter]').textContent,'0');}
+    if(fail)page.dispose();else await f.leave();ui.dispose();assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);assert.equal(f.document.querySelector('[data-codlet-official-styles]'),null);
+  }
+});
+test('an auxiliary toolbar page retires both pending containers without calling render',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());f.overrides.set('register',args=>({api:1,token:args.token,path:null,available:false}));const ui=f.context.ui.create();let renders=0;
+  const page=await ui.page({label:'No page',toolbar:true,render:()=>{renders++;return null;}});assert.equal(page.path,null);assert.equal(renders,0);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);ui.dispose();
+});
+test('page tooltips escape toolbar clipping and keep owner theme and teardown',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const ui=f.context.ui.create(),h=ui.React.createElement,C=ui.components;
+  await ui.page({label:'Page',toolbar:true,render:({toolbar})=>ui.createPortal(h(C.Tooltip,{content:'Visible outside header',forceOpen:true},h(C.Button,{'aria-label':'Refresh'},'Refresh')),toolbar)});
+  await f.open();await tick();const overlay=f.document.querySelector('[data-codlet-page-overlays]');assert.ok(overlay.querySelector('[data-radix-popper-content-wrapper]'));assert.equal(overlay.parentElement,f.document.body);assert.equal(overlay.closest('[data-codlet-page-toolbar]'),null);
+  f.document.documentElement.dataset.theme='dark';await tick();assert.equal(overlay.dataset.theme,'dark');await f.leave();assert.equal(overlay.isConnected,false);assert.equal(overlay.childElementCount,0);
+  await f.open();assert.ok(f.document.querySelector('[data-codlet-page-overlays] [data-radix-popper-content-wrapper]'));ui.dispose();assert.equal(f.document.querySelector('[data-codlet-page-overlays]'),null);
 });

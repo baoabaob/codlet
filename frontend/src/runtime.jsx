@@ -8,28 +8,33 @@ import { Textarea } from '@openai/apps-sdk-ui/components/Textarea';
 import { Switch } from '@openai/apps-sdk-ui/components/Switch';
 import { Checkbox } from '@openai/apps-sdk-ui/components/Checkbox';
 import { Popover } from '@openai/apps-sdk-ui/components/Popover';
+import { Menu } from '@openai/apps-sdk-ui/components/Menu';
+import { EmptyMessage } from '@openai/apps-sdk-ui/components/EmptyMessage';
 import { Tooltip } from '@openai/apps-sdk-ui/components/Tooltip';
 import { SegmentedControl } from '@openai/apps-sdk-ui/components/SegmentedControl';
 import { Select } from '@openai/apps-sdk-ui/components/Select';
 import { TextLink } from '@openai/apps-sdk-ui/components/TextLink';
 import { LoadingIndicator } from '@openai/apps-sdk-ui/components/Indicator';
-import { ArrowLeft, ArrowRotateCw, Download, ExternalLink, FolderOpen, InfoCircle, Regenerate, Search, X } from '@openai/apps-sdk-ui/components/Icon';
-import { PortalContainer } from './portal-context.jsx';
+import { ArrowLeft, ArrowRotateCw, ArrowUpRight, ChevronDown, Cube, Download, ExclamationMarkCircle, ExternalLink, FolderOpen, InfoCircle, Plus, QuestionMarkCircle, Regenerate, Search, TriangleExclamationErrorWarning, X } from '@openai/apps-sdk-ui/components/Icon';
+import { Dialog } from './radix-bridge.jsx';
+import { PortalContainer, PortalScope } from './portal-context.jsx';
 import { useEscCloseStack } from '@openai/apps-sdk-ui/hooks/useEscCloseStack';
 import './official.css';
 
-const components = Object.freeze({ Button, ButtonLink, Input, Textarea, Switch, Checkbox, Popover, Tooltip, SegmentedControl, Select, TextLink, LoadingIndicator });
-const icons = Object.freeze({ ArrowLeft, ArrowRotateCw, Download, ExternalLink, FolderOpen, InfoCircle, Regenerate, Search, X });
+const components = Object.freeze({ Button, ButtonLink, Input, Textarea, Switch, Checkbox, Popover, Menu, EmptyMessage, Tooltip, SegmentedControl, Select, TextLink, LoadingIndicator, Dialog });
+const icons = Object.freeze({ ArrowLeft, ArrowRotateCw, ArrowUpRight, ChevronDown, Cube, Download, ExclamationMarkCircle, ExternalLink, FolderOpen, InfoCircle, Plus, QuestionMarkCircle, Regenerate, Search, TriangleExclamationErrorWarning, X });
 const STYLE_ID = 'data-codlet-official-styles';
 // Codex semantic colors, resolved outside our scoped SDK defaults. In the
 // pinned client the native accent Switch uses chart-blue and thumb-on-accent.
 const hostTokens = Object.freeze(Object.fromEntries([
   'color-text','color-text-secondary','color-text-tertiary','color-text-inverse',
-  'color-surface','color-surface-elevated','color-border','color-ring',
+  'color-surface','color-surface-elevated','color-border','color-border-primary-outline','color-ring','color-text-warning',
 ].map(name=>['--'+name,'--'+name]).concat([
   ['--switch-track-color-checked','--color-chart-blue'],
   ['--switch-thumb-color','--color-control-thumb-on-accent'],
   ['--color-page-search','--color-background-page-search'],
+  ['--codlet-content-width','--thread-content-max-width'],
+  ['--codlet-panel-padding','--padding-panel'],
 ])));
 let sharedStyle, owners = 0;
 // Replaced with scoped, compiled upstream CSS by the reproducible build.
@@ -73,6 +78,10 @@ export default function createUI(context) {
         const value=native.getPropertyValue(source).trim();
         if(value)node.style.setProperty(target,value);else node.style.removeProperty(target);
       }
+      // The SDK's dark disabled-on default is blue. Keep disabled controls in
+      // the host accent family as well, using the public component token.
+      if(node.style.getPropertyValue('--switch-track-color-checked'))node.style.setProperty('--switch-track-color-checked-disabled','color-mix(in srgb, var(--switch-track-color-checked) 40%, var(--color-surface))');
+      else node.style.removeProperty('--switch-track-color-checked-disabled');
     }
   };
   const themeObserver = new MutationObserver(syncTheme);
@@ -90,14 +99,14 @@ export default function createUI(context) {
     node.setAttribute('data-codlet-official-ui', context.pluginId); node.setAttribute('data-codlet-generation', String(context.generation));
     containers.add(node); parent.appendChild(node); syncTheme(); return node;
   }
-  function mount(node, content) {
+  function mount(node, content, overlay = node, scope = node) {
     assertLive();
     if (!containers.has(node)) throw new Error('UI mount must belong to this plugin');
     if (roots.has(node)) throw new Error('This UI container already has a React root');
     let live = true, unmounting = false;
     const reactErrors=[];
     const root = createRoot(node,{onUncaughtError(error){if(unmounting)reactErrors.push(error);else reportCleanup(error);}});
-    const handle=Object.freeze({ render(next) { assertLive(); if (!live) throw new Error('UI mount retired'); flushSync(() => root.render(<AppsSDKUIProvider><PortalContainer value={node}>{next}</PortalContainer></AppsSDKUIProvider>)); },
+    const handle=Object.freeze({ render(next) { assertLive(); if (!live) throw new Error('UI mount retired'); flushSync(() => root.render(<AppsSDKUIProvider><PortalScope value={scope}><PortalContainer value={overlay}>{next}</PortalContainer></PortalScope></AppsSDKUIProvider>)); },
       unmount() {
         if (!live) return; live = false; unmounting = true;
         // React 19 reports effect/WillUnmount errors through onUncaughtError.
@@ -110,9 +119,10 @@ export default function createUI(context) {
     try { handle.render(content); } catch(error) { throwCleanup([error,...cleanAll([()=>handle.unmount()])]); }
     return handle;
   }
-  async function page({ label, icon = 'Cube', render, onActivate, onDeactivate }) {
+  async function page({ label, icon = 'Cube', toolbar = false, render, onActivate, onDeactivate }) {
     assertLive();
     if (typeof render !== 'function') throw new Error('A page render function is required');
+    if (typeof toolbar !== 'boolean') throw new Error('Toolbar must be a boolean');
     if (!document.body || !document.head) await new Promise((resolve, reject) => {
       const done = () => { document.removeEventListener('DOMContentLoaded', ready); abort.signal.removeEventListener('abort', cancelled); };
       const ready = () => { done(); resolve(); };
@@ -124,24 +134,31 @@ export default function createUI(context) {
     themeObserver.observe(document.body,{attributes:true,attributeFilter:['class','data-theme','style']});
     themeObserver.observe(document.head,{childList:true,subtree:true,characterData:true});
     const token = crypto.randomUUID(), lease = document.createElement('span'), node = container();
+    const toolbarNode = toolbar ? container() : null;
+    const overlayNode = container();
+    overlayNode.dataset.codletPageOverlays = token;
+    overlayNode.style.display = 'contents';
+    overlayNode.remove();
+    const scope = {contains:target=>node.contains(target)||!!toolbarNode?.contains(target)||overlayNode.contains(target)};
+    if(toolbarNode){toolbarNode.remove();toolbarNode.style.width='100%';toolbarNode.style.minWidth='0';}
     node.remove(); node.style.height = '100%'; node.style.minHeight = '0'; node.style.minWidth = '0';
     lease.hidden = true; lease.dataset.codletPageLease = token; lease.dataset.codletPageOwner = context.pluginId;
     lease.dataset.codletGeneration = String(context.generation); document.body.appendChild(lease);
     let live = true, mounted = null, host = null, observer;
     const detach = () => {
       const oldMount=mounted, oldHost=host; mounted=null; host=null;
-      return cleanAll([()=>oldMount?.unmount(),()=>{if(oldHost)onDeactivate?.();},()=>node.remove()]);
+      return cleanAll([()=>oldMount?.unmount(),()=>{if(oldHost)onDeactivate?.();},()=>node.remove(),()=>toolbarNode?.remove(),()=>overlayNode.remove()]);
     };
     const stop = () => {
       if (!live) return; live = false;
       const errors=cleanAll([()=>observer?.disconnect()]);
       errors.push(...detach(),...cleanAll([()=>lease.remove()]));
-      containers.delete(node); pages.delete(stop);
+      containers.delete(node); containers.delete(overlayNode); if(toolbarNode)containers.delete(toolbarNode); pages.delete(stop);
       throwCleanup(errors);
     };
     pages.add(stop);
     try {
-      const reply = await context.rpc.request({ name: 'codex.ui.navigation.page', api: 1, scope: 'target' }, 'register', { label, icon, token });
+      const reply = await context.rpc.request({ name: 'codex.ui.navigation.page', api: 1, scope: 'target' }, 'register', { label, icon, token, ...(toolbar?{toolbar:true}:{}) });
       if (!live || disposed) { stop(); throw new Error('Page owner retired'); }
       if (reply?.api !== 1 || reply.token !== token) throw new Error('Invalid native page registration');
       if(reply.available===false&&reply.path===null){stop();return Object.freeze({path:null,dispose:stop});}
@@ -149,15 +166,21 @@ export default function createUI(context) {
       const reconcile = () => {
         if (!live) return;
         const next = [...document.querySelectorAll('[data-codlet-page-host]')].find(element => element.dataset.codletPageHost === token) ?? null;
-        if (next === host) return;
-        const errors=detach();
-        if(errors.length){errors.push(...cleanAll([stop]));throwCleanup(errors);}
-        if(!live||disposed)return;
-        host = next;
-        if (host) { host.appendChild(node); onActivate?.(); mounted = mount(node, render()); }
+        if (next !== host) {
+          const errors=detach();
+          if(errors.length){errors.push(...cleanAll([stop]));throwCleanup(errors);}
+          if(!live||disposed)return;
+          host = next;
+          if (host) { host.appendChild(node); document.body.appendChild(overlayNode); onActivate?.(); mounted = mount(node, render({toolbar:toolbarNode}), overlayNode, scope); }
+        }
+        if(toolbarNode){
+          const target=host&&[...document.querySelectorAll('[data-codlet-page-toolbar]')].find(element=>element.dataset.codletPageToolbar===token);
+          if(target){if(toolbarNode.parentElement!==target)target.appendChild(toolbarNode);}
+          else toolbarNode.remove();
+        }
       };
       observer = new MutationObserver(records => {
-        if (!records.some(record => !node.contains(record.target)))return;
+        if (!records.some(record => !scope.contains(record.target)))return;
         try { reconcile(); } catch(error) {
           const errors=[error,...cleanAll([stop])];
           try{throwCleanup(errors);}catch(failure){reportCleanup(failure);}

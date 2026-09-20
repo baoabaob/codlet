@@ -59,6 +59,242 @@ fn commit(
 }
 
 #[test]
+fn legacy_installations_migrate_to_plugin_ids_and_keep_only_the_current_package() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    fn legacy(
+        registry: &PluginRegistry,
+        mut package: PreparedGitHubPackage,
+        suffix: &str,
+    ) -> PreparedGitHubPackage {
+        let old = crate::github_distribution::managed_root(registry.path(), false)
+            .unwrap()
+            .join(format!("{}-{suffix}", package.archive_sha256));
+        std::fs::rename(&package.package_path, &old).unwrap();
+        let receipt_path = old.join(".codlet-source.json");
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
+        receipt["schema"] = json!(1);
+        receipt["packagePath"] = json!(old);
+        std::fs::write(receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        package.package_path = old;
+        crate::github_distribution::inspect_prepared_package(
+            registry.path(),
+            &package.package_path,
+        )
+        .unwrap();
+        package
+    }
+    let first = legacy(&registry, prepare(&registry, "1", &["ui.dom"]), "first");
+    let registry = commit(
+        &registry,
+        &first,
+        ManagedOperation::Install,
+        vec![Permission::UiDom],
+    );
+    let second = legacy(&registry, prepare(&registry, "2", &["ui.dom"]), "second");
+    let mut registry = commit(
+        &registry,
+        &second,
+        ManagedOperation::Update,
+        vec![Permission::UiDom],
+    );
+    registry.set_enabled("dev.managed", true).unwrap();
+    registry.save().unwrap();
+    let author = directory.path().join("author-files");
+    std::fs::create_dir(&author).unwrap();
+    std::fs::write(author.join("keep.txt"), "unrelated source").unwrap();
+    crate::managed_storage::prepare_installations(&mut registry).unwrap();
+    let target = crate::github_distribution::managed_root(registry.path(), false)
+        .unwrap()
+        .join("dev.managed");
+    assert_eq!(registry.local_plugins()["dev.managed"].path, target);
+    assert_eq!(registry.managed_plugins()["dev.managed"].history.len(), 1);
+    assert_eq!(
+        registry.managed_plugins()["dev.managed"]
+            .current()
+            .unwrap()
+            .manifest
+            .version,
+        "2"
+    );
+    assert!(registry.is_enabled("dev.managed"));
+    assert!(!first.package_path.exists());
+    assert!(!second.package_path.exists());
+    assert!(author.join("keep.txt").exists());
+    validate_current(&registry, "dev.managed").unwrap();
+    let saved = std::fs::read(registry.path()).unwrap();
+    crate::managed_storage::prepare_installations(&mut registry).unwrap();
+    assert_eq!(std::fs::read(registry.path()).unwrap(), saved);
+}
+
+#[test]
+fn migration_conflicts_preserve_the_working_registration_and_do_not_block_core() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let package = prepare(&registry, "1", &["ui.dom"]);
+    let mut registry = commit(
+        &registry,
+        &package,
+        ManagedOperation::Install,
+        vec![Permission::UiDom],
+    );
+    registry.set_enabled("dev.managed", true).unwrap();
+    registry.save().unwrap();
+    let before = std::fs::read(registry.path()).unwrap();
+    let occupied = crate::github_distribution::managed_root(registry.path(), false)
+        .unwrap()
+        .join("dev.managed");
+    std::fs::create_dir(&occupied).unwrap();
+    std::fs::write(occupied.join("user.txt"), "keep").unwrap();
+    crate::managed_storage::prepare_installations(&mut registry).unwrap();
+    assert_eq!(std::fs::read(registry.path()).unwrap(), before);
+    assert!(registry.is_enabled("dev.managed"));
+    assert_eq!(
+        registry.local_plugins()["dev.managed"].path,
+        package.package_path
+    );
+    assert_eq!(
+        std::fs::read_to_string(occupied.join("user.txt")).unwrap(),
+        "keep"
+    );
+    validate_current(&registry, "dev.managed").unwrap();
+}
+
+#[test]
+fn crash_after_registration_staging_restores_the_previous_installation_before_loading() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let first = prepare(&registry, "1", &["ui.dom"]);
+    let mut previous = commit(
+        &registry,
+        &first,
+        ManagedOperation::Install,
+        vec![Permission::UiDom],
+    );
+    previous.set_enabled("dev.managed", true).unwrap();
+    previous.save().unwrap();
+    crate::managed_storage::prepare_installations(&mut previous).unwrap();
+    let second = prepare(&previous, "2", &["ui.dom"]);
+    let preview = preview(&previous, &second.package_path, ManagedOperation::Update).unwrap();
+    let (mut staged, _) = stage(
+        &previous,
+        "dev.managed",
+        &preview.request(vec![Permission::UiDom], BrokerPolicy::default(), true),
+    )
+    .unwrap();
+    crate::managed_storage::checkpoint_registration(&staged, &previous, "dev.managed").unwrap();
+    staged.save().unwrap();
+    crate::managed_storage::prepare_installations(&mut staged).unwrap();
+    assert_eq!(staged.local_plugins(), previous.local_plugins());
+    assert_eq!(staged.managed_plugins(), previous.managed_plugins());
+    assert!(staged.is_enabled("dev.managed"));
+    validate_current(&staged, "dev.managed").unwrap();
+}
+
+#[test]
+fn migration_preserves_revoked_permissions_without_loading_the_plugin() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let first = prepare(&registry, "1", &["ui.dom"]);
+    let mut registry = commit(
+        &registry,
+        &first,
+        ManagedOperation::Install,
+        vec![Permission::UiDom],
+    );
+    registry
+        .revoke_permission("dev.managed", Permission::UiDom)
+        .unwrap();
+    registry.save().unwrap();
+    crate::managed_storage::prepare_installations(&mut registry).unwrap();
+    assert!(registry.local_plugins()["dev.managed"].grants.is_empty());
+    assert!(!registry.is_enabled("dev.managed"));
+    assert_eq!(
+        registry.local_plugins()["dev.managed"]
+            .path
+            .file_name()
+            .unwrap(),
+        "dev.managed"
+    );
+    assert!(!first.package_path.exists());
+    validate_current(&registry, "dev.managed").unwrap();
+}
+
+#[test]
+fn registration_checkpoint_never_undoes_a_later_permission_revocation() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let first = prepare(&registry, "1", &["ui.dom"]);
+    let previous = commit(
+        &registry,
+        &first,
+        ManagedOperation::Install,
+        vec![Permission::UiDom],
+    );
+    let second = prepare(&previous, "2", &["ui.dom"]);
+    let preview = preview(&previous, &second.package_path, ManagedOperation::Update).unwrap();
+    let (mut staged, _) = stage(
+        &previous,
+        "dev.managed",
+        &preview.request(vec![Permission::UiDom], BrokerPolicy::default(), true),
+    )
+    .unwrap();
+    crate::managed_storage::checkpoint_registration(&staged, &previous, "dev.managed").unwrap();
+    staged.save().unwrap();
+    staged
+        .revoke_permission("dev.managed", Permission::UiDom)
+        .unwrap();
+    staged.save().unwrap();
+    let before = std::fs::read(staged.path()).unwrap();
+    crate::managed_storage::prepare_installations(&mut staged).unwrap();
+    assert_eq!(std::fs::read(staged.path()).unwrap(), before);
+    assert!(staged.local_plugins()["dev.managed"].grants.is_empty());
+    assert!(!staged.is_enabled("dev.managed"));
+}
+
+#[test]
+fn interrupted_file_replacement_recovers_the_previous_installed_package_and_grants() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    let first = prepare(&registry, "1", &["ui.dom"]);
+    let mut previous = commit(
+        &registry,
+        &first,
+        ManagedOperation::Install,
+        vec![Permission::UiDom],
+    );
+    previous.set_enabled("dev.managed", true).unwrap();
+    previous.save().unwrap();
+    crate::managed_storage::prepare_installations(&mut previous).unwrap();
+    let second = prepare(&previous, "2", &["ui.dom"]);
+    let candidate = commit(
+        &previous,
+        &second,
+        ManagedOperation::Update,
+        vec![Permission::UiDom],
+    );
+    let (installation, mut candidate, _) =
+        crate::managed_storage::Installation::publish(&candidate, &previous, "dev.managed", true)
+            .unwrap();
+    assert_eq!(
+        candidate.managed_plugins()["dev.managed"]
+            .current()
+            .unwrap()
+            .manifest
+            .version,
+        "2"
+    );
+    drop(installation); // Simulate losing the Core before activation commits.
+    crate::managed_storage::prepare_installations(&mut candidate).unwrap();
+    assert_eq!(candidate.local_plugins(), previous.local_plugins());
+    assert_eq!(candidate.managed_plugins(), previous.managed_plugins());
+    assert!(candidate.is_enabled("dev.managed"));
+    assert!(!second.package_path.exists());
+    validate_current(&candidate, "dev.managed").unwrap();
+}
+
+#[test]
 fn managed_install_update_rollback_and_unregister_keep_immutable_versions() {
     let directory = tempfile::tempdir().unwrap();
     let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
@@ -494,7 +730,8 @@ mod runtime {
     }
 
     #[test]
-    fn running_managed_updates_and_explicit_rollback_replace_generations_under_one_receipt() {
+    fn running_managed_updates_replace_generations_at_the_same_id_directory_and_remove_old_packages()
+     {
         let mut fixture = Fixture::new();
         let first = fixture.package("1", "module.exports = {activate() {}, deactivate() {}};");
         let installed = fixture.apply(&first, ManagedOperation::Install, true);
@@ -507,31 +744,30 @@ mod runtime {
         assert_eq!(updated.generations[0].generation, 2);
         assert_eq!(
             fixture.registry().local_plugins()["dev.managed"].path,
-            second.package_path
+            crate::github_distribution::managed_root(fixture.registry().path(), false)
+                .unwrap()
+                .join("dev.managed")
         );
-        let rolled_back = fixture.apply(&first, ManagedOperation::Rollback, true);
-        assert_eq!(rolled_back.action, PluginControlAction::Rollback);
-        assert_eq!(rolled_back.outcome, PluginControlOutcome::Applied);
-        assert_eq!(rolled_back.generations[0].generation, 3);
         assert_eq!(
             fixture.registry().managed_plugins()["dev.managed"]
                 .history
                 .len(),
-            2
+            1
         );
-        assert_eq!(
-            fixture.registry().local_plugins()["dev.managed"].path,
-            first.package_path
-        );
-        let stopped = fixture.apply(&second, ManagedOperation::Update, false);
+        let third = fixture.package("3", "module.exports = {activate() {}, deactivate() {}};");
+        let stopped = fixture.apply(&third, ManagedOperation::Update, false);
         assert_eq!(stopped.outcome, PluginControlOutcome::Applied);
         assert!(!stopped.desired_enabled);
         assert!(stopped.generations.is_empty());
         assert_eq!(
             fixture.registry().local_plugins()["dev.managed"].path,
-            second.package_path
+            crate::github_distribution::managed_root(fixture.registry().path(), false)
+                .unwrap()
+                .join("dev.managed")
         );
-        assert!(first.package_path.exists());
+        assert!(!first.package_path.exists());
+        assert!(!second.package_path.exists());
+        assert!(!third.package_path.exists());
         validate_current(&fixture.registry(), "dev.managed").unwrap();
     }
 
@@ -564,8 +800,8 @@ mod runtime {
                     && observation.plugin.generation == 3)
         );
         assert!(
-            broken.package_path.exists(),
-            "failed package cache is retained, never silently deleted"
+            !broken.package_path.exists(),
+            "failed temporary download is removed after restoring the working package"
         );
     }
 
@@ -613,10 +849,20 @@ mod runtime {
         let registry = fixture.registry();
         assert_eq!(
             registry.local_plugins()["dev.managed"].path,
-            broken.package_path
+            crate::github_distribution::managed_root(registry.path(), false)
+                .unwrap()
+                .join("dev.managed")
         );
         assert!(registry.local_plugins()["dev.managed"].grants.is_empty());
         assert!(!registry.is_enabled("dev.managed"));
+        let before = std::fs::read(registry.path()).unwrap();
+        let mut restarted = registry.clone();
+        crate::managed_storage::prepare_installations(&mut restarted).unwrap();
+        assert_eq!(
+            std::fs::read(registry.path()).unwrap(),
+            before,
+            "startup must preserve a later revocation and isolate the interrupted package"
+        );
         assert!(
             !fixture
                 .hosts

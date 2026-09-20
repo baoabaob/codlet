@@ -2328,19 +2328,148 @@ var import_jsx_runtime744 = __toESM(require_jsx_runtime());
 // node_modules/@openai/apps-sdk-ui/dist/es/components/Icon/svg/XXsCrossed.js
 var import_jsx_runtime745 = __toESM(require_jsx_runtime());
 
+// ../compatibility/client-profiles.json
+var client_profiles_default = {
+  schema: 1,
+  builds: [
+    {
+      appVersion: "26.903.61454",
+      buildNumber: "8378",
+      appServerVersion: "0.153.4",
+      entry: "app://-/assets/index-71057a3aecef.js",
+      module: "app://-/assets/app-initial-92cbfeba4f7c.js",
+      exports: { scope: "t3t", manager: "Mwt", client: "Nwt", services: "mz", postbox: "Smn" }
+    },
+    {
+      appVersion: "26.903.71938",
+      buildNumber: "8576",
+      appServerVersion: "0.153.4",
+      navigation: true,
+      entry: "app://-/assets/index-5232d4cce9a2.js",
+      module: "app://-/assets/app-initial-f094ef01c64d.js",
+      exports: { scope: "a3t", manager: "Mwt", client: "Nwt", services: "mz", postbox: "Emn" }
+    },
+    {
+      appVersion: "26.908.40834",
+      buildNumber: "8881",
+      appServerVersion: "0.154.0-alpha.6.2",
+      navigation: true,
+      runtimeSkill: true,
+      entry: "app://-/assets/index-cbd874f72008.js",
+      module: "app://-/assets/app-initial-d9bed9d614d8.js",
+      postboxModule: "app://-/assets/get-trusted-message-for-view-eee599500f15.js",
+      exports: { scope: "e6t", manager: "cDt", client: "lDt", services: "TW", postbox: "i" },
+      page: {
+        react: "app://-/assets/react-d6ffadc57208.js",
+        dom: "app://-/assets/react-dom-2c70d35283e7.js",
+        client: "app://-/assets/client-d8dffccad60c.js",
+        primary: "app://-/assets/app-primary-17b54400f32a.js",
+        exports: { sidebar: "ov", headerInit: "hB", header: "mB", newTaskInit: "rN", newTask: "oN" }
+      }
+    },
+    {
+      appVersion: "26.908.70816",
+      buildNumber: "9275",
+      appServerVersion: "0.154.0-alpha.6.2",
+      navigation: true,
+      runtimeSkill: true,
+      entry: "app://-/assets/index-53d76a96a6f3.js",
+      module: "app://-/assets/app-initial-4d7ea7f81c2d.js",
+      postboxModule: "app://-/assets/get-trusted-message-for-view-eee599500f15.js",
+      exports: { scope: "e6t", manager: "cDt", client: "lDt", services: "TW", postbox: "i" },
+      page: {
+        react: "app://-/assets/react-d6ffadc57208.js",
+        dom: "app://-/assets/react-dom-2c70d35283e7.js",
+        client: "app://-/assets/client-d8dffccad60c.js",
+        primary: "app://-/assets/app-primary-4af6ed7f68d1.js",
+        exports: { sidebar: "ov", headerInit: "hB", header: "mB", newTaskInit: "rN", newTask: "oN" }
+      }
+    },
+    {
+      appVersion: "26.915.31029",
+      buildNumber: "9771",
+      appServerVersion: "0.155.0-alpha.9",
+      navigation: true,
+      runtimeSkill: true,
+      entry: "app://-/assets/index-fb66e3ef1e20.js",
+      module: "app://-/assets/app-initial-f61fcec072b5.js",
+      postboxModule: "app://-/assets/app-shared-81f1324f1b97.js",
+      exports: { scope: "Xpn", manager: "Mqt", client: "Nqt", services: "Y9", postbox: "UB" },
+      page: {
+        react: "app://-/assets/app-shared-81f1324f1b97.js",
+        dom: "app://-/assets/app-shared-81f1324f1b97.js",
+        client: "app://-/assets/app-shared-81f1324f1b97.js",
+        primary: "app://-/assets/app-initial-f61fcec072b5.js",
+        exports: { react: "qB", dom: "jB", client: "AB", sidebar: "KS", headerInit: "_8", header: "g8", newTaskInit: "m1", newTask: "_1" }
+      }
+    },
+    {
+      appVersion: "26.915.31945",
+      buildNumber: "9922",
+      appServerVersion: "0.155.0-alpha.9.2",
+      navigation: true,
+      runtimeSkill: true,
+      threadTransport: true,
+      officialUpdates: { stateSelector: "s7" },
+      entry: "app://-/assets/index-399eac8299b8.js",
+      module: "app://-/assets/app-initial-6c4523b43a11.js",
+      postboxModule: "app://-/assets/app-shared-8f4fbb856ceb.js",
+      exports: { scope: "Bpn", manager: "xqt", client: "Sqt", services: "L9", postbox: "UB" },
+      page: {
+        react: "app://-/assets/app-shared-8f4fbb856ceb.js",
+        dom: "app://-/assets/app-shared-8f4fbb856ceb.js",
+        client: "app://-/assets/app-shared-8f4fbb856ceb.js",
+        primary: "app://-/assets/app-initial-6c4523b43a11.js",
+        exports: { react: "qB", dom: "jB", client: "AB", sidebar: "PS", headerInit: "a8", header: "i8", newTaskInit: "n1", newTask: "a1" }
+      }
+    }
+  ]
+};
+
+// ../compatibility/client-profiles.js
+function freeze(value) {
+  if (value && typeof value === "object") {
+    Object.values(value).forEach(freeze);
+    Object.freeze(value);
+  }
+  return value;
+}
+var CLIENT_PROFILES = freeze(client_profiles_default.builds);
+function clientProfile(build) {
+  return CLIENT_PROFILES.find((profile) => profile.appVersion === build?.appVersion && profile.buildNumber === String(build?.buildNumber));
+}
+
+// ../assets/codlet/svg/codlet-currentcolor.svg
+var codlet_currentcolor_default = '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Codlet"><title>Codlet</title><g transform="translate(98.776860 76.738292) scale(2.203857)"><path fill="currentColor" fill-rule="evenodd" d="M 175.500 17.092 C 140.768 21.752, 109.153 42.618, 91.405 72.596 C 85.435 82.681, 79.631 97.232, 77.429 107.640 L 75.707 115.780 68.375 121.024 C 59.009 127.722, 43.845 143.342, 37.334 153 C 24.121 172.596, 17.376 192.043, 16.317 213.589 C 15.633 227.499, 16.939 238.510, 20.691 250.476 C 23.775 260.311, 30.845 274.266, 36.670 282.015 C 43.544 291.159, 56.769 302.985, 66.611 308.789 C 74.388 313.376, 76.028 314.838, 78.953 319.789 C 92.908 343.411, 117.870 362.656, 147.340 372.514 C 167.565 379.280, 189.372 380.757, 212.125 376.904 C 248.484 370.747, 291.294 348.941, 315.748 324.123 C 337.060 302.495, 340.778 280.648, 325.897 264.504 C 312.295 249.747, 288.882 246.752, 266.558 256.911 C 263.226 258.427, 250.375 265.868, 238 273.445 C 208.847 291.294, 202.746 294.594, 195.426 296.469 C 183.061 299.637, 174.723 295.532, 155.359 276.743 C 143.702 265.431, 135.870 255.248, 127.872 241.002 C 121.427 229.522, 122.334 229.409, 115.756 242.515 C 111.057 251.877, 110.454 255.040, 112.584 259.177 C 119.028 271.695, 134.324 289.913, 148.126 301.507 C 171.590 321.219, 204.245 337.868, 229.500 342.996 C 238.573 344.838, 238.826 344.951, 236.621 346.189 C 233.282 348.063, 214.755 353.030, 205.500 354.531 C 161.291 361.705, 114.437 339.736, 96.493 303.419 C 94.563 299.514, 92.027 292.535, 90.857 287.910 C 89.077 280.873, 88.821 277.704, 89.294 268.500 C 90.171 251.415, 94.916 238.776, 107.202 220.802 C 114.194 210.573, 129.733 195.265, 140.501 188 C 158.817 175.640, 175.212 169.784, 191.370 169.831 C 207.430 169.877, 217.967 173.964, 234.500 186.562 C 252.426 200.221, 261.157 203.447, 278.365 202.771 C 290.580 202.291, 294.768 201.162, 307.602 194.894 C 324.289 186.742, 352.718 166.197, 356.248 159.738 C 360.858 151.302, 359.459 145.032, 349.661 130.196 C 341.478 117.807, 328.733 104.099, 317.848 95.981 C 309.324 89.623, 294.527 82.032, 285.731 79.505 C 280.601 78.031, 279.730 77.386, 277.856 73.674 C 276.697 71.378, 273.381 65.849, 270.487 61.388 C 256.253 39.445, 234.641 24.264, 210.172 19.018 C 199.288 16.685, 184.612 15.870, 175.500 17.092 M 176 41.435 C 145.584 46.976, 118.320 67.869, 106.435 94.742 C 103.596 101.161, 102.066 101.224, 120.514 94.164 C 142.467 85.762, 171.317 78.767, 200 74.893 C 205.225 74.187, 218.612 73.585, 229.748 73.555 C 240.885 73.525, 249.997 73.273, 249.998 72.996 C 250.004 71.337, 238.802 59.269, 233.686 55.423 C 224.823 48.760, 220.501 46.493, 211.022 43.535 C 200.589 40.278, 186.864 39.455, 176 41.435 M 221 96.610 C 169.617 101.138, 120.028 116.356, 88.964 137.131 C 65.550 152.789, 48.302 175.628, 41.862 199.500 C 38.774 210.947, 38.779 229.390, 41.872 240.432 C 45.055 251.794, 52.015 264.635, 59.311 272.604 L 65.500 279.364 66.156 266.932 C 66.632 257.921, 67.543 252.023, 69.468 245.500 C 78.807 213.848, 102.529 183.754, 133.507 164.255 C 142.577 158.546, 157.785 151.940, 167.723 149.392 C 173.508 147.908, 181.787 146.661, 188 146.338 C 209.244 145.231, 226.485 151.332, 248 167.571 C 260.296 176.851, 263.501 178.594, 270.784 179.954 C 284.511 182.519, 304.136 173.272, 331.964 151.129 C 334.204 149.347, 334.307 148.941, 333.091 146.670 C 332.355 145.295, 328.896 140.364, 325.404 135.711 C 309.368 114.343, 289.944 102.847, 262.542 98.503 C 253.190 97.021, 228.899 95.914, 221 96.610 M 283 128.650 C 279.803 129.928, 275.921 134.581, 274.905 138.352 C 272.220 148.323, 281.655 157.591, 291.673 154.825 C 299.357 152.703, 303.730 144.004, 300.695 136.877 C 298.396 131.476, 294.747 128.760, 289.283 128.382 C 286.652 128.199, 283.825 128.320, 283 128.650 M 281.971 275.442 C 275.723 277.744, 268.806 281.582, 248.952 293.762 C 238.253 300.325, 225.914 307.658, 221.531 310.058 L 213.562 314.421 223.531 317.625 C 242.975 323.874, 259.634 326.086, 271.802 324.033 C 277.642 323.048, 280.496 321.856, 286.686 317.815 C 295.539 312.036, 304.507 303.424, 308.922 296.463 C 311.167 292.921, 312 290.409, 312 287.172 C 312 283.433, 311.472 282.238, 308.642 279.569 C 306.795 277.827, 303.480 275.861, 301.276 275.201 C 296.121 273.656, 286.489 273.776, 281.971 275.442"/></g></svg>\n';
+
+// ../assets/codlet/svg/codlet-small.svg
+var codlet_small_default = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="32 32 960 960" role="img" aria-label="Codlet"><title>Codlet</title><g transform="translate(98.776860 76.738292) scale(2.203857)"><path fill="currentColor" fill-rule="evenodd" d="M 175.500 17.092 C 140.768 21.752, 109.153 42.618, 91.405 72.596 C 85.435 82.681, 79.631 97.232, 77.429 107.640 L 75.707 115.780 68.375 121.024 C 59.009 127.722, 43.845 143.342, 37.334 153 C 24.121 172.596, 17.376 192.043, 16.317 213.589 C 15.633 227.499, 16.939 238.510, 20.691 250.476 C 23.775 260.311, 30.845 274.266, 36.670 282.015 C 43.544 291.159, 56.769 302.985, 66.611 308.789 C 74.388 313.376, 76.028 314.838, 78.953 319.789 C 92.908 343.411, 117.870 362.656, 147.340 372.514 C 167.565 379.280, 189.372 380.757, 212.125 376.904 C 248.484 370.747, 291.294 348.941, 315.748 324.123 C 337.060 302.495, 340.778 280.648, 325.897 264.504 C 312.295 249.747, 288.882 246.752, 266.558 256.911 C 263.226 258.427, 250.375 265.868, 238 273.445 C 208.847 291.294, 202.746 294.594, 195.426 296.469 C 183.061 299.637, 174.723 295.532, 155.359 276.743 C 143.702 265.431, 135.870 255.248, 127.872 241.002 C 121.427 229.522, 122.334 229.409, 115.756 242.515 C 111.057 251.877, 110.454 255.040, 112.584 259.177 C 119.028 271.695, 134.324 289.913, 148.126 301.507 C 171.590 321.219, 204.245 337.868, 229.500 342.996 C 238.573 344.838, 238.826 344.951, 236.621 346.189 C 233.282 348.063, 214.755 353.030, 205.500 354.531 C 161.291 361.705, 114.437 339.736, 96.493 303.419 C 94.563 299.514, 92.027 292.535, 90.857 287.910 C 89.077 280.873, 88.821 277.704, 89.294 268.500 C 90.171 251.415, 94.916 238.776, 107.202 220.802 C 114.194 210.573, 129.733 195.265, 140.501 188 C 158.817 175.640, 175.212 169.784, 191.370 169.831 C 207.430 169.877, 217.967 173.964, 234.500 186.562 C 252.426 200.221, 261.157 203.447, 278.365 202.771 C 290.580 202.291, 294.768 201.162, 307.602 194.894 C 324.289 186.742, 352.718 166.197, 356.248 159.738 C 360.858 151.302, 359.459 145.032, 349.661 130.196 C 341.478 117.807, 328.733 104.099, 317.848 95.981 C 309.324 89.623, 294.527 82.032, 285.731 79.505 C 280.601 78.031, 279.730 77.386, 277.856 73.674 C 276.697 71.378, 273.381 65.849, 270.487 61.388 C 256.253 39.445, 234.641 24.264, 210.172 19.018 C 199.288 16.685, 184.612 15.870, 175.500 17.092 M 176 41.435 C 145.584 46.976, 118.320 67.869, 106.435 94.742 C 103.596 101.161, 102.066 101.224, 120.514 94.164 C 142.467 85.762, 171.317 78.767, 200 74.893 C 205.225 74.187, 218.612 73.585, 229.748 73.555 C 240.885 73.525, 249.997 73.273, 249.998 72.996 C 250.004 71.337, 238.802 59.269, 233.686 55.423 C 224.823 48.760, 220.501 46.493, 211.022 43.535 C 200.589 40.278, 186.864 39.455, 176 41.435 M 221 96.610 C 169.617 101.138, 120.028 116.356, 88.964 137.131 C 65.550 152.789, 48.302 175.628, 41.862 199.500 C 38.774 210.947, 38.779 229.390, 41.872 240.432 C 45.055 251.794, 52.015 264.635, 59.311 272.604 L 65.500 279.364 66.156 266.932 C 66.632 257.921, 67.543 252.023, 69.468 245.500 C 78.807 213.848, 102.529 183.754, 133.507 164.255 C 142.577 158.546, 157.785 151.940, 167.723 149.392 C 173.508 147.908, 181.787 146.661, 188 146.338 C 209.244 145.231, 226.485 151.332, 248 167.571 C 260.296 176.851, 263.501 178.594, 270.784 179.954 C 284.511 182.519, 304.136 173.272, 331.964 151.129 C 334.204 149.347, 334.307 148.941, 333.091 146.670 C 332.355 145.295, 328.896 140.364, 325.404 135.711 C 309.368 114.343, 289.944 102.847, 262.542 98.503 C 253.190 97.021, 228.899 95.914, 221 96.610 M 281.971 275.442 C 275.723 277.744, 268.806 281.582, 248.952 293.762 C 238.253 300.325, 225.914 307.658, 221.531 310.058 L 213.562 314.421 223.531 317.625 C 242.975 323.874, 259.634 326.086, 271.802 324.033 C 277.642 323.048, 280.496 321.856, 286.686 317.815 C 295.539 312.036, 304.507 303.424, 308.922 296.463 C 311.167 292.921, 312 290.409, 312 287.172 C 312 283.433, 311.472 282.238, 308.642 279.569 C 306.795 277.827, 303.480 275.861, 301.276 275.201 C 296.121 273.656, 286.489 273.776, 281.971 275.442"/></g></svg>\r\n';
+
+// src/brand.js
+function createCodletIcon(React, { compact = false } = {}) {
+  const source = compact ? codlet_small_default : codlet_currentcolor_default, body = source.slice(source.indexOf("<g "), source.lastIndexOf("</svg>"));
+  return function CodletIcon({ size = 24, width = size, height = size, ...props }) {
+    return React.createElement("svg", {
+      viewBox: compact ? "32 32 960 960" : "0 0 1024 1024",
+      width,
+      height,
+      fill: "currentColor",
+      "aria-hidden": true,
+      focusable: false,
+      ...props,
+      dangerouslySetInnerHTML: { __html: body }
+    });
+  };
+}
+
 // src/adapter/navigation.js
-var PROFILE = Object.freeze({
-  version: "26.908.40834",
-  build: "8881",
-  entry: "app://-/assets/index-cbd874f72008.js",
-  react: "app://-/assets/react-d6ffadc57208.js",
-  dom: "app://-/assets/react-dom-2c70d35283e7.js",
-  client: "app://-/assets/client-d8dffccad60c.js",
-  primary: "app://-/assets/app-primary-17b54400f32a.js"
-});
+function pageProfile(build) {
+  const profile = clientProfile(build);
+  if (!profile?.page) throw fail("ui_build_drift", "No reviewed sidebar/page profile for this Desktop build");
+  return profile;
+}
 var CAPABILITY = Object.freeze({ name: "codex.ui.navigation.page", api: 1, scope: "target" });
 var fail = (code, message) => Object.assign(new Error(message), { code });
-var icons = { Cube: Cube_default, CodeSquareSlash: CodeSquareSlash_default };
 var current;
 function fibers() {
   const root = document.getElementById("root");
@@ -2361,7 +2490,9 @@ function locateHost() {
   for (const fiber of fibers()) {
     for (const value of [fiber.memoizedProps, fiber.memoizedProps?.value]) if (value?.navigator) navigators.add(value.navigator);
     const child = fiber.memoizedProps?.children;
-    if (child?.props?.element === void 0 && Array.isArray(child?.props?.children) && child.props.children.some((route) => route?.props?.path === "/avatar-overlay")) trees.add(child);
+    const children = child?.props?.children;
+    const routes = children?.type === Symbol.for("react.fragment") ? children.props?.children : children;
+    if (child?.props?.element === void 0 && child?.type !== Symbol.for("react.fragment") && Array.isArray(routes) && routes.some((route) => route?.props?.path === "/avatar-overlay")) trees.add(child);
   }
   if (navigators.size !== 1 || trees.size !== 1) throw fail("ui_host_pending", "A unique Desktop router and route tree are required");
   const navigator = [...navigators][0], tree = [...trees][0];
@@ -2400,7 +2531,8 @@ function nativePlacement(SidebarItem) {
   return candidates[0] ?? null;
 }
 function createNavigation(context, native, host) {
-  const { React, DOM, Client, SidebarItem } = native;
+  const { React, DOM, Client, SidebarItem, Header, HeaderToolbar } = native;
+  const icons = { Cube: Cube_default, CodeSquareSlash: CodeSquareSlash_default, Codlet: createCodletIcon(React, { compact: true }) };
   const entries = /* @__PURE__ */ new Map(), h = React.createElement;
   let alive = true, navContainer, navRoot, pending = false;
   const hostLive = () => document.getElementById("root") === host.rootNode && host.rootNode.isConnected;
@@ -2472,15 +2604,37 @@ function createNavigation(context, native, host) {
   };
   const observer = new MutationObserver(schedule);
   if (!host.auxiliary) observer.observe(document.documentElement, { childList: true, subtree: true });
+  function DraftBridge({ entry }) {
+    const compose = native.useStartNewConversation();
+    React.useLayoutEffect(() => {
+      entry.compose = compose;
+      return () => {
+        if (entry.compose === compose) entry.compose = null;
+      };
+    }, [entry, compose]);
+    return null;
+  }
+  function newTaskDraft(args, invocation) {
+    check();
+    const caller = invocation?.caller, entry = entries.get(caller?.pluginId);
+    if (!entry || !Number.isSafeInteger(caller.generation) || !entry.lease.isConnected || entry.lease.dataset.codletGeneration !== String(caller.generation) || !entry.active || !(host.navigator.location.pathname === entry.path || host.navigator.location.pathname.startsWith(entry.path + "/")) || invocation.signal?.aborted)
+      throw fail("invalid_owner", "A new task draft requires this caller\u2019s active page");
+    if (!args || Object.keys(args).some((key) => key !== "prompt") || typeof args.prompt !== "string" || !args.prompt.trim() || args.prompt.length > 16384)
+      throw fail("invalid_argument", "A new task draft requires a bounded prompt");
+    if (typeof entry.compose !== "function") throw fail("ui_composer_unavailable", "The native new-task composer is not ready");
+    entry.compose({ prefillPrompt: args.prompt, prefillLocalExecution: true, prefillComposerMode: "local", startInSidebar: true });
+    return { opened: true, submitted: false };
+  }
   function register(args, invocation) {
     check();
     const caller = invocation?.caller;
     if (!caller || typeof caller.pluginId !== "string" || !Number.isSafeInteger(caller.generation)) throw fail("invalid_owner", "Page registration requires a Core-authenticated caller");
-    if (!args || Object.keys(args).some((key) => !["label", "icon", "token"].includes(key)) || typeof args.label !== "string" || !args.label.trim() || args.label.length > 64 || !Object.hasOwn(icons, args.icon) || typeof args.token !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(args.token)) throw fail("invalid_argument", "Invalid page registration");
+    if (!args || Object.keys(args).some((key) => !["label", "icon", "token", "toolbar"].includes(key)) || typeof args.label !== "string" || !args.label.trim() || args.label.length > 64 || !Object.hasOwn(icons, args.icon) || args.toolbar !== void 0 && typeof args.toolbar !== "boolean" || typeof args.token !== "string" || !/^[a-zA-Z0-9-]{16,80}$/.test(args.token)) throw fail("invalid_argument", "Invalid page registration");
     const lease = [...document.querySelectorAll("[data-codlet-page-lease]")].find((node) => node.dataset.codletPageLease === args.token);
     if (!lease || lease.dataset.codletPageOwner !== caller.pluginId || lease.dataset.codletGeneration !== String(caller.generation))
       throw fail("invalid_owner", "The page lifetime does not match its caller");
     if (host.auxiliary) return { api: 1, token: args.token, path: null, available: false };
+    if (args.toolbar && (!Header || !HeaderToolbar)) throw fail("ui_build_drift", "The reviewed native page toolbar is unavailable");
     const existing = entries.get(caller.pluginId);
     if (existing) {
       if (existing.token === args.token && existing.lease === lease) return existing.description;
@@ -2497,17 +2651,32 @@ function createNavigation(context, native, host) {
       previous: null
     };
     entry.description = { api: 1, token: entry.token, path: entry.path };
+    const content = h("div", {
+      "data-codlet-page-host": entry.token,
+      className: "h-full min-h-0 min-w-0 flex flex-col",
+      ref: (node) => {
+        entry.active = !!node;
+        queueMicrotask(renderNav);
+      }
+    });
     entry.route = h(host.Route, {
       id: "codlet:" + caller.pluginId,
       path: entry.path + "/*",
-      element: h("div", {
-        "data-codlet-page-host": entry.token,
-        className: "h-full min-h-0 min-w-0 flex flex-col",
-        ref: (node) => {
-          entry.active = !!node;
-          queueMicrotask(renderNav);
-        }
-      })
+      element: h(
+        React.Fragment,
+        null,
+        native.useStartNewConversation ? h(DraftBridge, { entry }) : null,
+        args.toolbar ? h(
+          React.Fragment,
+          null,
+          h(Header, null, h(
+            HeaderToolbar,
+            { inset: true },
+            h("div", { "data-codlet-page-toolbar": entry.token, className: "flex w-full min-w-0 items-center" })
+          )),
+          content
+        ) : content
+      )
     });
     host.routes.push(entry.route);
     entries.set(entry.owner, entry);
@@ -2515,7 +2684,7 @@ function createNavigation(context, native, host) {
     renderNav();
     return entry.description;
   }
-  return { register, dispose() {
+  return { register, newTaskDraft, dispose() {
     if (!alive) return;
     observer.disconnect();
     for (const entry of [...entries.values()]) retire(entry);
@@ -2524,13 +2693,26 @@ function createNavigation(context, native, host) {
     navContainer?.remove();
   } };
 }
+function reviewedHeader(initial, names) {
+  if (typeof initial[names.headerInit] !== "function") throw fail("ui_build_drift", "The reviewed native AppShell initializer changed");
+  initial[names.headerInit]();
+  const Header = initial[names.header]?.Header, HeaderToolbar = initial[names.header]?.HeaderToolbar;
+  const component = (value) => typeof value === "function" || value?.$$typeof === Symbol.for("react.memo");
+  if (!component(Header) || !component(HeaderToolbar)) throw fail("ui_build_drift", "The reviewed native header exports changed");
+  return { Header, HeaderToolbar };
+}
 async function loadNative() {
   const build = globalThis.electronBridge?.getSentryInitOptions?.();
-  if (location.origin !== "app://-" || location.pathname !== "/index.html" || build?.appVersion !== PROFILE.version || String(build?.buildNumber) !== PROFILE.build)
+  if (location.origin !== "app://-" || location.pathname !== "/index.html")
     throw fail("ui_build_drift", "No reviewed sidebar/page profile for this Desktop build");
-  if (![...document.scripts].some((script) => script.src === PROFILE.entry)) throw fail("ui_host_pending", "Waiting for the Desktop entry");
-  const [react, dom, client, primary] = await Promise.all([import(PROFILE.react), import(PROFILE.dom), import(PROFILE.client), import(PROFILE.primary)]);
-  const native = { React: react.t(), DOM: dom.t(), Client: client.t(), SidebarItem: primary.ov };
+  const profile = pageProfile(build), page = profile.page, names = page.exports;
+  if (![...document.scripts].some((script) => script.src === profile.entry)) throw fail("ui_host_pending", "Waiting for the Desktop entry");
+  const [react, dom, client, primary, initial] = await Promise.all([import(page.react), import(page.dom), import(page.client), import(page.primary), import(profile.module)]);
+  const native = { React: react[names.react ?? "t"](), DOM: dom[names.dom ?? "t"](), Client: client[names.client ?? "t"](), SidebarItem: primary[names.sidebar], ...reviewedHeader(initial, names) };
+  if (typeof initial[names.newTaskInit] !== "function") throw fail("ui_build_drift", "The reviewed new-task initializer changed");
+  initial[names.newTaskInit]();
+  if (typeof initial[names.newTask] !== "function") throw fail("ui_build_drift", "The reviewed new-task hook changed");
+  native.useStartNewConversation = initial[names.newTask];
   if (typeof native.React.createElement !== "function" || typeof native.Client.createRoot !== "function" || typeof native.SidebarItem !== "function")
     throw fail("ui_build_drift", "The reviewed native UI exports changed");
   return native;
@@ -2574,5 +2756,10 @@ async function activate(context) {
     const navigation = await session.ready;
     if (current !== session || invocation.signal?.aborted) throw fail("ui_retired", "The page registration retired");
     return navigation.register(args, invocation);
+  });
+  context.rpc.provide(CAPABILITY, "newTaskDraft", async (args, invocation) => {
+    const navigation = await session.ready;
+    if (current !== session) throw fail("ui_retired", "The page provider retired");
+    return navigation.newTaskDraft(args, invocation);
   });
 }

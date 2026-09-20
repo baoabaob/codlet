@@ -57,6 +57,7 @@ docs/...
 scripts/Build-Distribution.ps1
 scripts/Test-Distribution.ps1
 scripts/Install-JsRuntime.ps1
+Export-Diagnostics.ps1
 ```
 
 构建脚本只复制明确白名单中的示例入口、manifest、README、类型和契约说明；不递归复制

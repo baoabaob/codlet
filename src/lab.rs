@@ -25,6 +25,7 @@ use crate::windows::process::{ChildProcess, launch_with_cdp_pipes_in_environment
 mod input;
 mod management;
 mod resume;
+mod runtime;
 mod runtime_seed;
 mod runtime_updates;
 mod shell;
@@ -39,8 +40,14 @@ const WAIT_SLICE: Duration = Duration::from_millis(50);
 const EXPERIMENT_FLAG: &str = "--experimental-isolated-client";
 const LAB_SHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const AUDITED_PACKAGE_VERSION: &str = "26.903.8094.0";
-const AUDITED_PACKAGE_VERSIONS: &[&str] =
-    &[AUDITED_PACKAGE_VERSION, "26.903.9818.0", "26.908.4834.0"];
+const AUDITED_PACKAGE_VERSIONS: &[&str] = &[
+    AUDITED_PACKAGE_VERSION,
+    "26.903.9818.0",
+    "26.908.4834.0",
+    "26.908.9136.0",
+    "26.915.3509.0",
+    "26.915.4065.0",
+];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
 const LAB_DIRECTORIES: &[&str] = &[
@@ -87,6 +94,7 @@ struct LabOptions {
     startup_trace: bool,
     resume_from: Option<PathBuf>,
     recover_interrupted: bool,
+    safe_mode: bool,
 }
 
 impl LabOptions {
@@ -112,6 +120,14 @@ impl LabOptions {
             return Err(LabError::Usage);
         }
         validate_root_path(Path::new(root))?;
+        let (extra, safe_mode) = if extra
+            .last()
+            .is_some_and(|argument| argument == OsStr::new("--safe-mode"))
+        {
+            (&extra[..extra.len() - 1], true)
+        } else {
+            (extra, false)
+        };
         let (extra, startup_trace) = if extra
             .last()
             .is_some_and(|argument| argument == OsStr::new("--startup-trace"))
@@ -177,6 +193,7 @@ impl LabOptions {
             startup_trace,
             resume_from,
             recover_interrupted,
+            safe_mode,
         })
     }
 }
@@ -186,7 +203,9 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     if let [flag, root_flag, root, command, tail @ ..] = arguments.as_slice()
         && flag == OsStr::new(EXPERIMENT_FLAG)
         && root_flag == OsStr::new("--root")
-        && (command == OsStr::new("plugin") || command == OsStr::new("doctor"))
+        && (command == OsStr::new("plugin")
+            || command == OsStr::new("doctor")
+            || command == OsStr::new("diagnostics"))
     {
         return management::run_scoped_cli(Path::new(root), command, tail);
     }
@@ -231,8 +250,9 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         "runtime_assets_prepared",
         json!({"runtime": runtime_seed, "child_created": false}),
     );
-    let mut runtime = management::LabRuntime::prepare(root.path.join("codlet/config.json"))?;
-    runtime.observe_client_updates(package.version.to_string());
+    let mut runtime =
+        runtime::LabRuntime::prepare(root.path.join("codlet/config.json"), options.safe_mode)?;
+    runtime.observe_client_versions(package.version.to_string());
     let environment = lab_environment(
         &root,
         options
@@ -253,7 +273,8 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             "plugin_control": "after verified startup, stdin or the matching codlet-lab executable can manage bundled and trusted local plugins through this lab's registry scope; production discovery/status are not bound",
             "plugin_registry": runtime.registry_path(),
             "plugin_registry_scope": runtime.registry_scope(),
-            "plugin_executors": ["renderer", "host"],
+            "plugin_executors": if options.safe_mode { vec![] } else { vec!["renderer", "host"] },
+            "safe_mode": options.safe_mode,
             "shell": LAB_SHELL, "shell_profiles_checked_absent": shell_check.profiles_checked_absent,
             "shell_environment_probe": shell_check,
             "requested_app_server_url": options.app_server_url,
@@ -346,6 +367,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     );
     hold_lab_child(
         child,
+        &package,
         client,
         runtime,
         input,
@@ -376,7 +398,7 @@ fn wait_for_start(input: &mut ControlInput, reporter: &mut Reporter) -> bool {
                     reporter.emit("cancelled_before_start", json!({"child_created": false}));
                     return false;
                 }
-                InputEvent::Plugin(_) => reporter.emit(
+                InputEvent::Plugin(_) | InputEvent::RehearseUpdate => reporter.emit(
                     "plugin_control_rejected",
                     json!({"reason": "not_started", "child_created": false}),
                 ),
@@ -492,14 +514,16 @@ fn require_reviewed_ipc_isolation(
 
 fn hold_lab_child(
     child: ChildProcess,
+    package: &InstalledPackage,
     connection: Option<(CdpClient, crate::cdp::CdpEventStream)>,
-    mut runtime: management::LabRuntime,
+    mut runtime: runtime::LabRuntime,
     mut input: ControlInput,
     mut startup: StartupCheck,
     startup_trace: bool,
     reporter: &mut Reporter,
 ) -> Result<(), LabError> {
     runtime.configure_runtime_updates(&child, reporter);
+    let mut official_update = runtime.manage_service().map(|manage| crate::official_update::OfficialUpdateOwner::start(&child, package, manage));
     let mut sessions = BTreeMap::new();
     let (client, mut targets) = if let Some((client, events)) = connection {
         let targets = match TargetController::discover(client.clone(), events, DISCOVERY_BUDGET) {
@@ -526,6 +550,7 @@ fn hold_lab_child(
         "host_waiting",
         json!({"quit_available": client.is_some() && input.is_open(), "gui_mount_verified": false}),
     );
+    if let Some(owner) = &mut official_update { owner.seed_sessions(&sessions.values().cloned().collect::<Vec<_>>()); }
     let mut quit = QuitState::new();
     let mut update_quit: Option<QuitState> = None;
     let mut startup_verified = false;
@@ -555,7 +580,11 @@ fn hold_lab_child(
                     Err(error) => return Err(LabError::Runtime(error.to_string())),
                 }
             }
-            return if let Some(failure) = failure {
+            let update_exit = if failure.is_none() { official_update.as_mut().map(|owner| owner.finish()).unwrap_or(crate::official_update::UpdateExit::Ordinary) } else { crate::official_update::UpdateExit::Ordinary };
+            if update_exit == crate::official_update::UpdateExit::Restart {
+                reporter.emit("official_update_restart", json!({"through_codlet":true,"rehearsal":official_update.as_ref().is_some_and(|owner|owner.is_rehearsal())}));
+            }
+            return if update_exit != crate::official_update::UpdateExit::Ordinary { Ok(()) } else if let Some(failure) = failure {
                 Err(LabError::Runtime(failure))
             } else if exit_code == 0 {
                 Ok(())
@@ -578,6 +607,15 @@ fn hold_lab_child(
                 }
                 InputEvent::Quit => {
                     reporter.emit("quit_already_requested", json!({"no_retry": true}))
+                }
+                InputEvent::RehearseUpdate => {
+                    let result = if startup_verified && !quit.requested() && !runtime.update_installing() {
+                        official_update.as_mut().ok_or_else(|| "Restart preservation is unavailable".to_owned()).and_then(|owner| owner.rehearse())
+                    } else { Err("The test client is not ready".into()) };
+                    match result {
+                        Ok(()) => { reporter.emit("official_update_rehearsal", json!({"official_install_called":false,"package_unchanged":true})); runtime.stop(reporter); request_own_child_quit(&mut quit, &sessions, "official_update_rehearsal", reporter); }
+                        Err(error) => reporter.emit("official_update_rehearsal_rejected", json!({"error":error})),
+                    }
                 }
                 InputEvent::Plugin(request) => {
                     plugin_request = Some(request);
@@ -611,8 +649,10 @@ fn hold_lab_child(
                             for change in changes {
                                 let target_id = change.target_id().to_owned();
                                 update_sessions(&mut sessions, &change);
+                                if let Some(owner) = &mut official_update { owner.observe(&change); }
                                 if startup_verified
-                                    && let Err(error) = runtime.renderer.apply_target_change(change)
+                                    && let Some(renderer) = runtime.renderer()
+                                    && let Err(error) = renderer.apply_target_change(change)
                                 {
                                     reporter.emit(
                                         "target_change_failed",
@@ -644,6 +684,7 @@ fn hold_lab_child(
                 }
             }
         }
+        if !quit.requested() && startup_verified && let Some(owner) = &mut official_update { owner.poll(runtime.update_preparation_blocked()); }
         if !quit.requested() && runtime.take_update_restart_requested() {
             let mut request = QuitState::new();
             request_own_child_quit(&mut request, &sessions, "runtime_update", reporter);
@@ -717,7 +758,10 @@ fn hold_lab_child(
                 json!({"client_retained":true,"helper_waits_for_owned_processes":true}),
             );
         }
-        let snapshot = runtime.renderer.status_snapshot();
+        let snapshot = runtime
+            .renderer()
+            .map(|renderer| renderer.status_snapshot())
+            .unwrap_or_default();
         if previous_renderer.as_ref() != Some(&snapshot) {
             reporter.emit(
                 "renderer_snapshot",
@@ -725,7 +769,11 @@ fn hold_lab_child(
             );
             previous_renderer = Some(snapshot);
         }
-        for diagnostic in runtime.renderer.take_diagnostics() {
+        for diagnostic in runtime
+            .renderer()
+            .map(|renderer| renderer.take_diagnostics())
+            .unwrap_or_default()
+        {
             reporter.emit("renderer_diagnostic", json!({"target_id": diagnostic.target_id, "plugin_id": diagnostic.plugin_id, "error": diagnostic.message}));
         }
         // The exact ChildProcess handle is the only process lifecycle authority.
@@ -1175,6 +1223,11 @@ impl Reporter {
         self.file.flush()
     }
     fn emit(&mut self, event: &str, detail: Value) {
+        if let Some(error) = detail.get("error").and_then(Value::as_str)
+            && !matches!(event, "host_plugin_diagnostic" | "renderer_diagnostic")
+        {
+            crate::runtime_log::error(event, error);
+        }
         if let Err(error) = self.write(event, detail) {
             eprintln!(
                 "codlet-lab: report write failed; own child PID {:?}: {error}",

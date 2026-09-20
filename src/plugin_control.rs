@@ -177,6 +177,13 @@ pub struct PluginControlReport {
     pub message: Option<String>,
 }
 
+pub(crate) fn recovery_request(request: &PluginControlRequest) -> bool {
+    matches!(
+        request.action,
+        PluginControlAction::Disable | PluginControlAction::Revoke
+    ) || (request.action == PluginControlAction::Remove && request.remove_source.is_none())
+}
+
 impl PluginControlReport {
     pub fn is_success(&self) -> bool {
         matches!(

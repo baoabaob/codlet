@@ -213,6 +213,9 @@ $null = [IO.Directory]::CreateDirectory($stage)
 $sourceFiles = @(
     'scripts/Build-Distribution.ps1', 'scripts/Test-Distribution.ps1', 'scripts/Install-JsRuntime.ps1',
     'scripts/Build-RuntimeUpdate.ps1', 'scripts/Restart-Codlet.ps1', 'docs/RUNTIME_UPDATES.md',
+    'scripts/Export-Diagnostics.ps1', 'docs/DIAGNOSTIC_BUNDLES.md', 'docs/SAFE_MODE.md', 'docs/OFFICIAL_CLIENT_UPDATES.md', 'docs/RUNTIME_SKILL_PLAN_2026-09-15.md',
+    'docs/LAYOUT_AND_SETTINGS_2026-09-14.md', 'docs/UI_POLISH_AND_PLUGIN_UPDATES_2026-09-14.md',
+    'docs/OFFICIAL_UI_STYLE_2026-09-13.md',
     'docs/UI_MANAGEMENT_2026-09-13.md', 'docs/OFFICIAL_UPDATE_FLOW_2026-09-13.md',
     'runtime/node-runtime.json', 'runtime/update-channel.json', 'docs/PLUGIN_I18N.md', 'types/host.d.ts', 'types/renderer.d.ts', 'types/runtime-manage.d.ts',
     'types/codex-desktop.d.ts', 'types/renderer-ui.d.ts',
@@ -265,6 +268,8 @@ try {
     Copy-StageFile $CodletExecutable 'codlet.exe'
     $payload.Add('codlet.exe')
     Copy-StageFile (Join-Path $repositoryRoot 'scripts/Restart-Codlet.ps1') 'Restart-Codlet.ps1'
+    Copy-StageFile (Join-Path $repositoryRoot 'scripts/Export-Diagnostics.ps1') 'Export-Diagnostics.ps1'
+    $payload.Add('Export-Diagnostics.ps1')
     $payload.Add('Restart-Codlet.ps1')
     foreach ($relative in $sourceFiles) {
         Copy-StageFile (Join-Path $repositoryRoot $relative) $relative
@@ -334,6 +339,16 @@ Native acceptance follows the [M5b manual guide](docs/GITHUB_PLUGIN_MANUAL_TEST_
 
 The payload list and SHA256 values are in distribution-manifest.json. The packaging
 script performs no signing or publication. Node's license is beside node.exe.
+
+For startup or plugin failures, run `./Export-Diagnostics.ps1` to create a local
+ZIP beside the launcher. [Diagnostic bundle details](docs/DIAGNOSTIC_BUNDLES.md)
+describe the retained metadata and omitted paths, raw messages and logs. Exporting
+does not start or stop Codex, repair configuration, or upload files.
+
+To skip all Codlet plugins for one recovery session, close the Codlet-owned client
+and run `./codlet.exe launch --safe-mode`. Launch normally to restore saved plugin
+preferences. [Safe mode and error logs](docs/SAFE_MODE.md) describe the recovery
+commands and the installation/error-log folder buttons in Settings.
 '@
     Write-StageText 'README.md' ($readme.Replace("`r`n", "`n") + "`n")
     $payload.Add('README.md')

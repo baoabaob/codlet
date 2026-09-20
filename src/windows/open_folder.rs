@@ -18,6 +18,27 @@ pub(crate) fn open_registered_source(
 ) -> Result<Value, PluginControlError> {
     let registry = registry.clone();
     let plugin_id = plugin_id.to_owned();
+    on_sta(move || open_on_sta(&registry, &plugin_id))
+}
+
+/// Only Core-selected installation/log paths reach this helper; no RPC-supplied
+/// path, command line, file association, or optional arguments are accepted.
+pub(crate) fn open_runtime_directory(directory: PathBuf) -> Result<Value, PluginControlError> {
+    if !directory.is_dir() {
+        return Err(PluginControlError::new(
+            "open_folder_missing",
+            "The runtime directory does not exist",
+        ));
+    }
+    on_sta(move || {
+        open_directory_on_sta(&directory)?;
+        Ok(json!({"opened":true}))
+    })
+}
+
+fn on_sta(
+    work: impl FnOnce() -> Result<Value, PluginControlError> + Send + 'static,
+) -> Result<Value, PluginControlError> {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("codlet-open-folder".into())
@@ -42,7 +63,7 @@ pub(crate) fn open_registered_source(
                     }
                 }
                 let _apartment = Apartment;
-                open_on_sta(&registry, &plugin_id)
+                work()
             })();
             let _ = sender.send(result);
         })
@@ -53,31 +74,36 @@ pub(crate) fn open_registered_source(
 
 fn open_on_sta(registry: &PluginRegistry, plugin_id: &str) -> Result<Value, PluginControlError> {
     crate::source_removal::with_registered_directory(registry, plugin_id, |directory| {
-        let directory = shell_directory_path(directory)?;
-        let wide: Vec<_> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
-        // SAFETY: NUL-terminated registered filesystem path, fixed verb, no
-        // parameters or shell command. Ancestor/root pins live through this call.
-        let result = unsafe {
-            ShellExecuteW(
-                None,
-                w!("open"),
-                PCWSTR(wide.as_ptr()),
-                PCWSTR::null(),
-                PCWSTR::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-        if result.0 as isize <= 32 {
-            return Err(PluginControlError::new(
-                "open_source_folder_failed",
-                format!(
-                    "Explorer could not open the registered source directory (Shell error {}).",
-                    result.0 as isize
-                ),
-            ));
-        }
+        open_directory_on_sta(directory)?;
         Ok(json!({"pluginId":plugin_id,"opened":true}))
     })
+}
+
+fn open_directory_on_sta(directory: &Path) -> Result<(), PluginControlError> {
+    let directory = shell_directory_path(directory)?;
+    let wide: Vec<_> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: NUL-terminated registered filesystem path, fixed verb, no
+    // parameters or shell command. Ancestor/root pins live through this call.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 as isize <= 32 {
+        return Err(PluginControlError::new(
+            "open_source_folder_failed",
+            format!(
+                "Explorer could not open the registered source directory (Shell error {}).",
+                result.0 as isize
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Filesystem canonicalization uses the Win32 verbatim prefix; Shell parsing

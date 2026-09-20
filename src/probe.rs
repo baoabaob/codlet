@@ -5,11 +5,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use thiserror::Error;
 
-pub(crate) mod client_updates;
-mod github_cli;
+pub(crate) mod client_versions;
 mod runtime_update_owner;
+mod safe_mode;
 
-use crate::catalog::{PluginCatalog, PluginSource};
+use crate::catalog::PluginCatalog;
 use crate::cdp::{
     CdpClient, CdpEventStream, ClientSpawnError, ShutdownError, TargetChange, TargetController,
     TargetError, TargetSession,
@@ -22,13 +22,13 @@ use crate::host_control::HostControl;
 use crate::host_runtime::{HostCoreServices, HostRuntime};
 use crate::js_runtime::JsRuntime;
 use crate::local_plugins::LocalPluginError;
-use crate::plugin_control::{
-    PluginControlAction, PluginControlError, PluginControlReport, PluginControlRequest,
-};
+#[cfg(test)]
+use crate::plugin_control::{PluginControlAction, PluginControlRequest};
+use crate::plugin_control::{PluginControlError, PluginControlReport};
 use crate::plugin_host::HostError;
 use crate::plugin_watch::PluginWatcher;
 use crate::plugins::{
-    LoadedPlugin, ManifestError, Permission, PluginRegistry, PluginRegistryError, bundled_plugins,
+    LoadedPlugin, ManifestError, PluginRegistry, PluginRegistryError, bundled_plugins,
     default_registry_path,
 };
 use crate::renderer::{RendererBootstrapReport, RendererError, RendererRuntime};
@@ -54,6 +54,8 @@ const RUNTIME_WAIT_SLICE: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Error)]
 pub enum ProbeError {
+    #[error(transparent)]
+    PluginCommand(#[from] crate::plugin_commands::CommandError),
     #[error(transparent)]
     Package(#[from] PackageError),
     #[error(transparent)]
@@ -105,7 +107,7 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch [--watch]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet plugin list`, `codlet plugin github`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--network-origin <origin>]... [--executable <file>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch [--watch | --safe-mode]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet diagnostics --output <absolute.zip> [--json]`, `codlet plugin list`, `codlet plugin github`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--network-origin <origin>]... [--executable <file>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error(
@@ -124,6 +126,8 @@ pub enum ProbeError {
         "doctor found {failed_checks} failed check(s); see the report for repair actions (exit code 1)"
     )]
     DoctorFailed { failed_checks: usize },
+    #[error(transparent)]
+    DiagnosticExport(#[from] crate::diagnostic_bundle::BundleError),
 }
 
 #[derive(Debug)]
@@ -197,10 +201,11 @@ struct CodletRuntime {
     host_control: HostControl,
     renderer: RendererRuntime,
     watcher: Option<PluginWatcher>,
+    manage_service: crate::runtime_manage::RuntimeManageService,
     initial_outcomes: Vec<RendererOutcome>,
     last_authorization_error: Option<String>,
-    _client_update_monitor: client_updates::ClientUpdateMonitor,
     runtime_update: runtime_update_owner::RuntimeUpdateOwner,
+    official_update: crate::official_update::OfficialUpdateOwner,
     // Keep listeners and the registry lease until renderer cleanup has finished.
     _servers: HostServers,
 }
@@ -208,24 +213,32 @@ struct CodletRuntime {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct LaunchOptions {
     watch: bool,
+    safe_mode: bool,
 }
 
 fn parse_launch_options(arguments: &[OsString]) -> Result<LaunchOptions, ProbeError> {
     match arguments {
         [] => Ok(LaunchOptions::default()),
-        [option] if option == OsStr::new("--watch") => Ok(LaunchOptions { watch: true }),
+        [option] if option == OsStr::new("--watch") => Ok(LaunchOptions {
+            watch: true,
+            safe_mode: false,
+        }),
+        [option] if option == OsStr::new("--safe-mode") => Ok(LaunchOptions {
+            watch: false,
+            safe_mode: true,
+        }),
         _ => Err(ProbeError::Usage),
     }
 }
 
-enum ManagementJob<T> {
+pub(crate) enum ManagementJob<T> {
     Cli(ControlJob),
     Watch(T),
 }
 
 /// Polling the watcher is lazy: a CLI operation neither consumes nor rebaselines
 /// an observed edit. The next idle iteration supplies the current loaded catalog.
-fn next_management_job<T>(
+pub(crate) fn next_management_job<T>(
     control: &ControlBroker,
     poll_watch: impl FnOnce() -> Option<T>,
 ) -> Option<ManagementJob<T>> {
@@ -250,6 +263,10 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
     match arguments.as_slice() {
         [command, options @ ..] if command == OsStr::new("launch") => {
             let options = parse_launch_options(options)?;
+            if options.safe_mode {
+                return safe_mode::run();
+            }
+            loop {
             let runtime = start_codlet_runtime(options)?;
             runtime.print_identity_and_initial_state();
             if runtime.targets.is_some() {
@@ -260,12 +277,40 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
             println!(
                 "action: use Codex normally, then close Codex to stop this foreground runtime"
             );
-            let exit_code = runtime.wait()?;
+            let (exit_code, restart) = runtime.wait()?;
             println!("codex-exit-code: {exit_code}");
             println!("runtime-state: stopped; CDP workers reaped");
+            if !restart { break; }
+            println!("official-update: restarting through Codlet with the same registry and launch options");
+            }
             Ok(())
         }
         [command] if command == OsStr::new("doctor") => run_doctor(false),
+        [command, flag, output, rest @ ..]
+            if command == OsStr::new("diagnostics")
+                && flag == OsStr::new("--output")
+                && (rest.is_empty()
+                    || matches!(rest, [format] if format == OsStr::new("--json"))) =>
+        {
+            let output = Path::new(output);
+            crate::diagnostic_bundle::validate_output(output)?;
+            let report = collect_doctor_report();
+            let receipt = crate::diagnostic_bundle::export(output, &report)?;
+            if rest.is_empty() {
+                println!(
+                    "Diagnostics exported to {}\nSHA-256: {}\nDoctor result: {}",
+                    receipt.path.display(),
+                    receipt.sha256,
+                    receipt.doctor_status
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string(&receipt).expect("diagnostic receipt serializes")
+                );
+            }
+            Ok(())
+        }
         [command] if command == OsStr::new("status") => run_status(false),
         [command, format] if command == OsStr::new("status") && format == OsStr::new("--json") => {
             run_status(true)
@@ -273,138 +318,8 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
         [command, format] if command == OsStr::new("doctor") && format == OsStr::new("--json") => {
             run_doctor(true)
         }
-        [command, action] if command == OsStr::new("plugin") && action == OsStr::new("list") => {
-            let registry = PluginRegistry::load_default()?;
-            print_plugin_registry(&registry)
-        }
-        [command, action, plugin_id, options @ ..]
-            if command == OsStr::new("plugin")
-                && matches!(
-                    action.to_str(),
-                    Some("enable" | "disable" | "reload" | "remove" | "operation")
-                ) =>
-        {
-            let json = options.iter().any(|option| option == OsStr::new("--json"));
-            let cascade = options
-                .iter()
-                .any(|option| option == OsStr::new("--cascade"));
-            let delete_source = options
-                .iter()
-                .any(|option| option == OsStr::new("--delete-source"));
-            if options.len()
-                != usize::from(json) + usize::from(cascade) + usize::from(delete_source)
-                || options.iter().any(|option| {
-                    option != OsStr::new("--json")
-                        && option != OsStr::new("--cascade")
-                        && option != OsStr::new("--delete-source")
-                })
-                || (cascade && !matches!(action.to_str(), Some("disable" | "remove")))
-                || (delete_source && action != OsStr::new("remove"))
-            {
-                return Err(ProbeError::Usage);
-            }
-            let plugin_id = plugin_id.to_str().ok_or(ProbeError::Usage)?;
-            if action == OsStr::new("operation") {
-                crate::plugin_cli::operation(plugin_id, json)?;
-            } else {
-                let action = match action.to_str().unwrap() {
-                    "enable" => PluginControlAction::Enable,
-                    "disable" => PluginControlAction::Disable,
-                    "reload" => PluginControlAction::Reload,
-                    "remove" => PluginControlAction::Remove,
-                    _ => unreachable!(),
-                };
-                let remove_source = if delete_source {
-                    Some(
-                        crate::source_removal::preview(&PluginRegistry::load_default()?, plugin_id)
-                            .map_err(crate::plugin_cli::PluginCliError::from)?
-                            .request(),
-                    )
-                } else {
-                    None
-                };
-                crate::plugin_cli::manage(
-                    PluginControlRequest {
-                        action,
-                        plugin_id: plugin_id.into(),
-                        permission: None,
-                        cascade,
-                        remove_source,
-                        local_import: None,
-                    },
-                    json,
-                )?;
-            }
-            Ok(())
-        }
-        [command, action, plugin_id, options @ ..]
-            if command == OsStr::new("plugin") && action == OsStr::new("permissions") =>
-        {
-            let json = match options {
-                [] => false,
-                [option] if option == OsStr::new("--json") => true,
-                _ => return Err(ProbeError::Usage),
-            };
-            print_plugin_permissions(plugin_id.to_str().ok_or(ProbeError::Usage)?, json)
-        }
-        [command, action, plugin_id, permission, options @ ..]
-            if command == OsStr::new("plugin") && action == OsStr::new("revoke") =>
-        {
-            let json = match options {
-                [] => false,
-                [option] if option == OsStr::new("--json") => true,
-                _ => return Err(ProbeError::Usage),
-            };
-            let permission = permission.to_str().ok_or(ProbeError::Usage)?;
-            let permission = serde_json::from_value(Value::String(permission.to_owned()))
-                .map_err(|_| ProbeError::UnknownPermission(permission.to_owned()))?;
-            crate::plugin_cli::manage(
-                PluginControlRequest {
-                    action: PluginControlAction::Revoke,
-                    plugin_id: plugin_id.to_str().ok_or(ProbeError::Usage)?.into(),
-                    permission: Some(permission),
-                    cascade: false,
-                    remove_source: None,
-                    local_import: None,
-                },
-                json,
-            )?;
-            Ok(())
-        }
-        [command, action, directory, options @ ..]
-            if command == OsStr::new("plugin") && action == OsStr::new("add") =>
-        {
-            let options = parse_plugin_trust_options(options)?;
-            add_local_plugin(Path::new(directory), options)
-        }
-        [command, source, arguments @ ..]
-            if command == OsStr::new("plugin") && source == OsStr::new("github") =>
-        {
-            github_cli::run(arguments)
-        }
-        [command, action, directory, options @ ..]
-            if command == OsStr::new("plugin") && action == OsStr::new("preview") =>
-        {
-            let json = match options {
-                [] => false,
-                [option] if option == OsStr::new("--json") => true,
-                _ => return Err(ProbeError::Usage),
-            };
-            let registry = PluginRegistry::load_default()?;
-            let preview = crate::local_import::preview(&registry, Path::new(directory))
-                .map_err(crate::plugin_cli::PluginCliError::from)?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&preview).expect("preview is serializable")
-                );
-            } else {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&preview).expect("preview is serializable")
-                );
-            }
-            Ok(())
+        [command, ..] if command == OsStr::new("plugin") => {
+            crate::plugin_commands::run(&arguments).map_err(Into::into)
         }
         [command, confirmation]
             if command == OsStr::new("m0-probe")
@@ -815,12 +730,13 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
             },
             other => ProbeError::from(other),
         })?;
-    let registry = PluginRegistry::load(scope.path())?;
-    let watcher = options
-        .watch
-        .then(|| PluginWatcher::new(registry.path().to_owned()));
+    crate::runtime_log::initialize(scope.path());
+    let mut registry = PluginRegistry::load(scope.path())?;
+    crate::managed_storage::prepare_installations(&mut registry)
+        .map_err(crate::plugin_cli::PluginCliError::from)?;
     let mut host_control = HostControl::new(registry.path().to_owned());
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
+    renderer.enable_runtime_skill();
     host_control.seed_watch_sources(&renderer, &host_plugins);
     let js_runtime = if host_plugins.is_empty() {
         None
@@ -828,7 +744,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         Some(JsRuntime::discover()?)
     };
     let status = StatusPublisher::new();
-    if renderer.has_renderer_plugins() {
+    if renderer.needs_renderer_targets() {
         renderer.set_status_publisher(status.clone());
     }
     let (connected, servers) = start_connected_codex_with_services(Some(PreparedServices {
@@ -840,10 +756,11 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let control = servers.control.broker();
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
         .with_local_management(renderer.registry_path().to_owned(), options.watch);
-    let _client_update_monitor = client_updates::ClientUpdateMonitor::start(
-        manage_service.clone(),
-        connected.package.version.to_string(),
-    );
+    let mut official_update = crate::official_update::OfficialUpdateOwner::start(&connected.process, &connected.package, manage_service.clone());
+    let watcher = manage_service
+        .local_watch_enabled()
+        .then(|| PluginWatcher::new(renderer.registry_path().to_owned()));
+    client_versions::publish(&manage_service, &connected.package.version.to_string());
     renderer.set_manage_service(manage_service.clone());
     let os_broker = crate::os_broker::OsBroker::for_registry(renderer.registry_path().to_owned())?;
     let hosts = HostRuntime::start_with_services(
@@ -858,13 +775,13 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     renderer.set_host_capability_client(hosts.capability_client());
     // A Host may await an independent renderer provider during activation.
     // Entry-level dependency readiness is driven by the shared RPC pump.
-    while !renderer.has_renderer_plugins() && hosts.is_starting() {
+    while !renderer.needs_renderer_targets() && hosts.is_starting() {
         renderer.set_external_observations(hosts.observations());
         renderer.refresh_management_list();
         std::thread::sleep(Duration::from_millis(10));
     }
     renderer.set_external_observations(hosts.observations());
-    let (targets, sessions) = if renderer.has_renderer_plugins() {
+    let (targets, sessions) = if renderer.needs_renderer_targets() {
         match TargetController::discover(
             connected.client.clone(),
             connected.events,
@@ -943,6 +860,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         &connected.package.version.to_string(),
         &sessions,
     );
+    official_update.seed_sessions(&sessions);
     Ok(CodletRuntime {
         _servers: servers,
         status,
@@ -957,10 +875,11 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         host_control,
         renderer,
         watcher,
+        manage_service,
         initial_outcomes,
         last_authorization_error: None,
-        _client_update_monitor,
         runtime_update,
+        official_update,
     })
 }
 
@@ -998,208 +917,6 @@ pub fn prepare_plugin_runtimes(
         RendererRuntime::from_catalog(catalog, registry)?,
         host_plugins,
     ))
-}
-
-fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
-    println!("plugin-registry: {}", registry.path().display());
-    let catalog = PluginCatalog::load(registry)?;
-    for entry in catalog.entries() {
-        let source = match entry.source {
-            PluginSource::Bundled => "bundled",
-            PluginSource::Local { .. }
-                if registry
-                    .managed_plugins()
-                    .get(&entry.id)
-                    .and_then(|record| record.current())
-                    .is_some() =>
-            {
-                "github"
-            }
-            PluginSource::Local { .. } => "local",
-        };
-        let version = entry
-            .plugin
-            .as_ref()
-            .map(|plugin| plugin.manifest.version.as_str())
-            .unwrap_or("unavailable");
-        println!(
-            "plugin: id={}; version={version}; source={source}; enabled={}",
-            entry.id,
-            registry.is_enabled(&entry.id)
-        );
-        if let PluginSource::Local { path, grants } = &entry.source {
-            println!("plugin-directory: {}", path.display());
-            println!("granted-permissions: {}", permission_list(grants));
-        }
-        if let Err(error) = &entry.plugin {
-            println!(
-                "plugin-validation: id={}; state=failed; error={error}",
-                entry.id
-            );
-        }
-    }
-    Ok(())
-}
-
-#[derive(Default)]
-struct PluginTrustOptions {
-    trusted: bool,
-    enable: bool,
-    json: bool,
-    grants: Vec<Permission>,
-    read_roots: Vec<PathBuf>,
-    network_origins: Vec<String>,
-    executables: Vec<PathBuf>,
-}
-
-fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptions, ProbeError> {
-    let mut options = PluginTrustOptions::default();
-    let mut arguments = arguments.iter();
-    while let Some(argument) = arguments.next() {
-        if argument == OsStr::new("--trust") && !options.trusted {
-            options.trusted = true;
-        } else if argument == OsStr::new("--enable") && !options.enable {
-            options.enable = true;
-        } else if argument == OsStr::new("--json") && !options.json {
-            options.json = true;
-        } else if argument == OsStr::new("--grant") {
-            let permission = arguments
-                .next()
-                .and_then(|permission| permission.to_str())
-                .ok_or(ProbeError::Usage)?;
-            let grant: Permission = serde_json::from_value(Value::String(permission.to_owned()))
-                .map_err(|_| ProbeError::UnknownPermission(permission.to_owned()))?;
-            if options.grants.contains(&grant) {
-                return Err(ProbeError::Usage);
-            }
-            options.grants.push(grant);
-        } else if argument == OsStr::new("--read-root") {
-            options
-                .read_roots
-                .push(PathBuf::from(arguments.next().ok_or(ProbeError::Usage)?));
-        } else if argument == OsStr::new("--network-origin") {
-            options.network_origins.push(
-                arguments
-                    .next()
-                    .and_then(|value| value.to_str())
-                    .ok_or(ProbeError::Usage)?
-                    .into(),
-            );
-        } else if argument == OsStr::new("--executable") {
-            options
-                .executables
-                .push(PathBuf::from(arguments.next().ok_or(ProbeError::Usage)?));
-        } else {
-            return Err(ProbeError::Usage);
-        }
-    }
-    Ok(options)
-}
-
-fn permission_list(permissions: &[Permission]) -> String {
-    if permissions.is_empty() {
-        "none".to_owned()
-    } else {
-        permissions
-            .iter()
-            .map(|permission| permission.as_str())
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(), ProbeError> {
-    let registry = PluginRegistry::load_default()?;
-    let candidate = crate::local_import::preview(&registry, directory)
-        .map_err(crate::plugin_cli::PluginCliError::from)?;
-    let plugin_id = &candidate.manifest.id;
-    if !options.json {
-        println!(
-            "plugin-candidate: id={plugin_id}; version={}; source=local",
-            candidate.manifest.version
-        );
-        println!("plugin-directory: {}", candidate.path.display());
-        println!(
-            "requested-permissions: {}",
-            permission_list(&candidate.manifest.permissions)
-        );
-    }
-    if !options.trusted {
-        return Err(ProbeError::PluginTrustRequired(plugin_id.clone()));
-    }
-    crate::local_plugins::validate_grants(&candidate.manifest, &options.grants)?;
-    let broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
-        &options.read_roots,
-        &options.network_origins,
-        &options.executables,
-    )?;
-    broker_policy.validate_grants(&options.grants)?;
-    if !options.json {
-        println!("granted-permissions: {}", permission_list(&options.grants));
-        println!(
-            "broker-policy: {}",
-            serde_json::to_string(&broker_policy).expect("policy is serializable")
-        );
-        if options.grants.contains(&Permission::HostProcess) {
-            println!(
-                "host-authority: managed Node and approved child processes run with the current user's OS permissions; this grant is not a sandbox"
-            );
-        }
-    }
-    crate::plugin_cli::manage(
-        PluginControlRequest {
-            action: PluginControlAction::Import,
-            plugin_id: plugin_id.clone(),
-            permission: None,
-            cascade: false,
-            remove_source: None,
-            local_import: Some(candidate.request(options.grants, broker_policy, options.enable)),
-        },
-        options.json,
-    )?;
-    Ok(())
-}
-
-fn print_plugin_permissions(plugin_id: &str, json: bool) -> Result<(), ProbeError> {
-    let registry = PluginRegistry::load_default()?;
-    let registration = registry
-        .local_plugins()
-        .get(plugin_id)
-        .ok_or_else(|| crate::plugin_cli::PluginCliError::UnknownPlugin(plugin_id.to_owned()))?;
-    if json {
-        let mut value = serde_json::json!({
-            "schema":1,"kind":"codlet.plugin-permissions","pluginId":plugin_id,
-            "registration":registration,"enabled":registry.is_enabled(plugin_id)
-        });
-        if let Some(current) = registry
-            .managed_plugins()
-            .get(plugin_id)
-            .and_then(|record| record.current())
-        {
-            value["ownership"] = Value::from("core-managed-github");
-            value["managedSource"] =
-                serde_json::to_value(&current.source).expect("source is serializable");
-            value["managedVersionKey"] = Value::from(current.version_key.clone());
-            value["metadata"] =
-                serde_json::to_value(&current.metadata).expect("metadata is serializable");
-        }
-        println!("{}", value);
-    } else {
-        println!(
-            "plugin-permissions: id={plugin_id}; directory={}",
-            registration.path.display()
-        );
-        println!(
-            "granted-permissions: {}",
-            permission_list(&registration.grants)
-        );
-        println!(
-            "broker-policy: {}",
-            serde_json::to_string_pretty(&registration.broker_policy)
-                .expect("policy is serializable")
-        );
-    }
-    Ok(())
 }
 
 impl ProbedCodex {
@@ -1271,7 +988,7 @@ impl CodletRuntime {
         }
     }
 
-    fn wait(mut self) -> Result<u32, ProbeError> {
+    fn wait(mut self) -> Result<(u32, bool), ProbeError> {
         let result = self.wait_inner();
         if let Err(error) = &result {
             self.control.stop();
@@ -1283,10 +1000,16 @@ impl CodletRuntime {
         result
     }
 
-    fn wait_inner(&mut self) -> Result<u32, ProbeError> {
+    fn wait_inner(&mut self) -> Result<(u32, bool), ProbeError> {
         let exit_code = loop {
             if let Some(exit_code) = self.process.wait(Duration::ZERO)? {
                 break exit_code;
+            }
+            // The installer may close CDP before Windows retires the process.
+            // Preserve the owner and its kernel registration event until exit.
+            if self.client.closed_reason().is_some() && self.official_update.waiting_for_restart() {
+                if let Some(exit_code) = self.process.wait(Duration::from_millis(100))? { break exit_code; }
+                continue;
             }
 
             let changes = match self
@@ -1325,6 +1048,7 @@ impl CodletRuntime {
             }
             for change in changes {
                 self.runtime_update.observe(&change);
+                self.official_update.observe(&change);
                 let target_id = change.target_id().to_owned();
                 match self.renderer.apply_target_change(change) {
                     Ok(Some(report)) => print_renderer_outcome(&RendererOutcome {
@@ -1344,16 +1068,22 @@ impl CodletRuntime {
             self.host_control
                 .poll(&mut self.renderer, &self.hosts, &self.control);
             self.runtime_update.poll(self.host_control.is_pending());
+            self.official_update.poll(self.host_control.is_pending());
             if self.host_control.needs_renderer_executor() {
                 let result = self
                     .start_renderer_executor()
                     .map_err(|error| error.to_string());
                 self.host_control.renderer_executor_result(result);
             }
-            let job = if self.host_control.is_pending() || self.runtime_update.installing() {
+            let job = if self.host_control.is_pending() || self.runtime_update.installing() || self.manage_service.official_updates.busy() {
                 None
             } else {
                 next_management_job(&self.control, || {
+                    crate::plugin_watch::configure_watcher(
+                        &mut self.watcher,
+                        self.manage_service.local_watch_enabled(),
+                        self.renderer.registry_path(),
+                    );
                     let watcher = self.watcher.as_mut()?;
                     if self.host_control.has_watch_receipt() {
                         return None;
@@ -1449,8 +1179,9 @@ impl CodletRuntime {
         self.stop_hosts()?;
         self.status.terminate(format!("child_exited: {exit_code}"));
         self.client.shutdown()?;
-        if exit_code == 0 {
-            Ok(exit_code)
+        let update_exit = self.official_update.finish();
+        if update_exit != crate::official_update::UpdateExit::Ordinary || exit_code == 0 {
+            Ok((exit_code, update_exit == crate::official_update::UpdateExit::Restart))
         } else {
             Err(ProbeError::CodexExit { exit_code })
         }
@@ -1462,6 +1193,7 @@ impl CodletRuntime {
             TargetController::discover(self.client.clone(), events, REQUEST_DEADLINE)?;
         self.targets = Some(targets);
         self.runtime_update.seed_sessions(&sessions);
+        self.official_update.seed_sessions(&sessions);
         self.renderer.set_status_publisher(self.status.clone());
         let mut first_error = None;
         for (_target_id, result) in self.renderer.attach_all(&sessions) {
@@ -1495,6 +1227,7 @@ impl CodletRuntime {
     }
 
     fn stop_hosts(&mut self) -> Result<(), HostError> {
+        self.renderer.stop_runtime_skill();
         for failure in self.renderer.retire_all_package_renderers() {
             eprintln!(
                 "renderer-cleanup: plugin-id={}; target-id={}; error={}",
@@ -1564,6 +1297,9 @@ impl Drop for CodletRuntime {
 }
 
 fn print_renderer_outcome(outcome: &RendererOutcome) {
+    if let Err(error) = &outcome.result {
+        crate::runtime_log::error("renderer_bootstrap", &error.to_string());
+    }
     match &outcome.result {
         Ok(report) => println!(
             "renderer-bootstrap: target-id={}; state=active; plugins={}",
@@ -1773,14 +1509,29 @@ mod tests {
     #[test]
     fn file_watching_requires_exact_explicit_launch_flag() {
         assert_eq!(
+            parse_launch_options(&["--safe-mode".into()]).unwrap(),
+            LaunchOptions {
+                watch: false,
+                safe_mode: true
+            }
+        );
+        assert_eq!(
             parse_launch_options(&[]).unwrap(),
-            LaunchOptions { watch: false }
+            LaunchOptions {
+                watch: false,
+                safe_mode: false
+            }
         );
         assert_eq!(
             parse_launch_options(&["--watch".into()]).unwrap(),
-            LaunchOptions { watch: true }
+            LaunchOptions {
+                watch: true,
+                safe_mode: false
+            }
         );
         for arguments in [
+            vec!["--safe-mode", "--watch"],
+            vec!["--safe-mode", "--safe-mode"],
             vec!["--watch=false"],
             vec!["--watch", "--watch"],
             vec!["--watch", "--json"],

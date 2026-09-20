@@ -20,6 +20,7 @@ pub const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_PACKAGE_FILES: usize = 2048;
 const MAX_API_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 64 * 1024;
+const API_TIMEOUT: Duration = Duration::from_secs(20);
 const RECEIPT: &str = ".codlet-source.json";
 const API_VERSION: &str = "2026-03-10";
 
@@ -131,6 +132,54 @@ fn error(code: &str, message: impl Into<String>) -> GitHubDistributionError {
 }
 fn io_error(e: std::io::Error) -> GitHubDistributionError {
     error("github_package_io", e.to_string())
+}
+fn network_error(e: reqwest::Error) -> GitHubDistributionError {
+    // Record a bounded cause without URLs, proxy credentials or response content.
+    use std::error::Error;
+    let mut cause = e.source();
+    let mut reason = if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connect"
+    } else {
+        "transport"
+    };
+    let mut os_code = None;
+    while let Some(current) = cause {
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            os_code = io.raw_os_error().or(os_code);
+            reason = match io.kind() {
+                std::io::ErrorKind::ConnectionRefused => "connection_refused",
+                std::io::ErrorKind::ConnectionReset => "connection_reset",
+                std::io::ErrorKind::TimedOut => "timeout",
+                _ => reason,
+            };
+        }
+        let text = current.to_string().to_ascii_lowercase();
+        if text.contains("certificate") || text.contains("tls") {
+            reason = "tls";
+        } else if text.contains("dns") || text.contains("resolve") {
+            reason = "dns";
+        } else if text.contains("proxy") || text.contains("tunnel") {
+            reason = "proxy";
+        }
+        cause = current.source();
+    }
+    crate::runtime_log::error(
+        "github_network",
+        &format!("cause={reason} osCode={os_code:?}"),
+    );
+    if e.is_timeout() {
+        error(
+            "github_timeout",
+            "GitHub request timed out. Check the connection or proxy, then try again.",
+        )
+    } else {
+        error(
+            "github_network",
+            "Could not connect to GitHub. Check the connection or proxy, then try again.",
+        )
+    }
 }
 
 impl GitHubRepository {
@@ -308,14 +357,18 @@ pub struct GitHubClient {
 }
 
 impl GitHubClient {
-    pub fn new() -> Result<Self> {
-        let client = reqwest::Client::builder()
+    fn http_builder() -> reqwest::ClientBuilder {
+        // reqwest's system-proxy feature also reads Windows Internet Settings.
+        // Keep TLS verification and the explicit GitHub redirect allowlist.
+        reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(90))
             .user_agent("Codlet-public-release-import/1")
-            .build()
-            .map_err(|e| error("github_network", e.without_url().to_string()))?;
+    }
+
+    pub fn new() -> Result<Self> {
+        let client = Self::http_builder().build().map_err(network_error)?;
         Ok(Self {
             client,
             #[cfg(test)]
@@ -470,6 +523,12 @@ impl GitHubClient {
             let mut response = self
                 .client
                 .get(request_url)
+                // Metadata should not inherit the much longer ZIP download timeout.
+                .timeout(if asset {
+                    Duration::from_secs(90)
+                } else {
+                    API_TIMEOUT
+                })
                 .header(
                     "Accept",
                     if asset {
@@ -482,7 +541,7 @@ impl GitHubClient {
                 .header("Accept-Encoding", "identity")
                 .send()
                 .await
-                .map_err(|e| error("github_network", e.without_url().to_string()))?;
+                .map_err(network_error)?;
             if response.status().is_redirection() {
                 if hop == 5 {
                     return Err(error("github_redirect_limit", "Too many GitHub redirects."));
@@ -536,11 +595,7 @@ impl GitHubClient {
                 ));
             }
             let mut bytes = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|e| error("github_network", e.without_url().to_string()))?
-            {
+            while let Some(chunk) = response.chunk().await.map_err(network_error)? {
                 if chunk.len() as u64 > limit.saturating_sub(bytes.len() as u64) {
                     return Err(error(
                         "github_response_limit",
@@ -653,7 +708,8 @@ impl ApiRelease {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Receipt {
     schema: u32,
-    package_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package_path: Option<PathBuf>,
     source: GitHubSource,
     tree_sha256: String,
 }
@@ -682,9 +738,9 @@ fn prepare_bytes(
             "Downloaded ZIP SHA-256 does not match GitHub's asset digest.",
         ));
     }
-    let root = managed_root(registry_path, true)?;
+    let root = staging_root(registry_path)?;
     let staging = tempfile::Builder::new()
-        .prefix(&format!("{sha256}-"))
+        .prefix("download-")
         .tempdir_in(&root)
         .map_err(io_error)?;
     archive::extract(bytes, staging.path())?;
@@ -706,8 +762,8 @@ fn prepare_bytes(
         upstream_digest_verified: asset.digest.is_some(),
     };
     let receipt = Receipt {
-        schema: 1,
-        package_path: package_path.clone(),
+        schema: 2,
+        package_path: None,
         source: source.clone(),
         tree_sha256: tree_digest(&package_path)?,
     };
@@ -738,10 +794,12 @@ pub fn inspect_prepared_package(
     package_path: &Path,
 ) -> Result<PreparedGitHubPackage> {
     let root = managed_root(registry_path, false)?;
-    if !package_path.is_absolute() || package_path.parent() != Some(root.as_path()) {
+    let in_staging = package_path.parent() == Some(root.join(".staging").as_path());
+    if !package_path.is_absolute() || (package_path.parent() != Some(root.as_path()) && !in_staging)
+    {
         return Err(error(
             "github_package_unowned",
-            "Package is not a direct child of this registry's GitHub package directory.",
+            "Package is outside this registry's GitHub installation and staging directories.",
         ));
     }
     check_regular(package_path, true)?;
@@ -765,10 +823,10 @@ pub fn inspect_prepared_package(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    if receipt.schema != 1
-        || receipt.package_path != package_path
+    if !matches!(receipt.schema, 1 | 2)
+        || (receipt.schema == 1 && receipt.package_path.as_deref() != Some(package_path))
+        || (receipt.schema == 2 && receipt.package_path.is_some())
         || !valid_sha256(&receipt.source.sha256)
-        || !name.starts_with(&format!("{}-", receipt.source.sha256))
         || !valid_sha256(&receipt.tree_sha256)
     {
         return Err(error(
@@ -785,6 +843,15 @@ pub fn inspect_prepared_package(
     }
     let candidate = inspect_local_plugin(package_path)
         .map_err(|e| error("github_package_invalid", e.to_string()))?;
+    if !in_staging
+        && name != candidate.manifest.id
+        && !name.starts_with(&format!("{}-", receipt.source.sha256))
+    {
+        return Err(error(
+            "github_package_unowned",
+            "Installed package directory must use its plugin ID.",
+        ));
+    }
     let metadata = read_metadata(package_path)?;
     Ok(PreparedGitHubPackage {
         package_path: package_path.into(),
@@ -816,7 +883,7 @@ fn validate_source(source: &GitHubSource) -> Result<()> {
     Ok(())
 }
 
-fn managed_root(registry_path: &Path, create: bool) -> Result<PathBuf> {
+pub(crate) fn managed_root(registry_path: &Path, create: bool) -> Result<PathBuf> {
     let parent = registry_path.parent().ok_or_else(|| {
         error(
             "github_package_unowned",
@@ -845,6 +912,131 @@ fn managed_root(registry_path: &Path, create: bool) -> Result<PathBuf> {
         }
     }
     Ok(root)
+}
+
+pub(crate) fn staging_root(registry: &Path) -> Result<PathBuf> {
+    let root = managed_root(registry, true)?.join(".staging");
+    match std::fs::create_dir(&root) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(e) => return Err(io_error(e)),
+    }
+    check_regular(&root, true)?;
+    if root.canonicalize().map_err(io_error)? != root {
+        return Err(error(
+            "github_package_unowned",
+            "Staging directory must not redirect.",
+        ));
+    }
+    Ok(root)
+}
+
+/// Clone into private staging so a crash never loses the selected registration's
+/// package while the stable installation directory is being replaced.
+pub(crate) fn clone_prepared_package(
+    registry: &Path,
+    source: &Path,
+) -> Result<PreparedGitHubPackage> {
+    let prepared = inspect_prepared_package(registry, source)?;
+    let target = tempfile::Builder::new()
+        .prefix("ready-")
+        .tempdir_in(staging_root(registry)?)
+        .map_err(io_error)?;
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        for entry in std::fs::read_dir(source.join(&relative)).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let child = relative.join(entry.file_name());
+            if child == Path::new(RECEIPT) {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path()).map_err(io_error)?;
+            check_regular(&entry.path(), metadata.is_dir())?;
+            if metadata.is_dir() {
+                std::fs::create_dir(target.path().join(&child)).map_err(io_error)?;
+                pending.push(child);
+            } else {
+                std::fs::copy(entry.path(), target.path().join(child)).map_err(io_error)?;
+            }
+        }
+    }
+    let old: Receipt =
+        serde_json::from_slice(&read_bounded(&source.join(RECEIPT), MAX_METADATA_BYTES)?)
+            .map_err(|e| error("github_package_unowned", e.to_string()))?;
+    if tree_digest(target.path())? != old.tree_sha256 {
+        return Err(error(
+            "github_package_changed",
+            "Package changed while copying the installation.",
+        ));
+    }
+    let receipt = Receipt {
+        schema: 2,
+        package_path: None,
+        ..old
+    };
+    std::fs::write(
+        target.path().join(RECEIPT),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .map_err(io_error)?;
+    let path = target.keep();
+    let copied = inspect_prepared_package(registry, &path)?;
+    if copied.source != prepared.source {
+        return Err(error(
+            "github_package_changed",
+            "Package source changed while copying the installation.",
+        ));
+    }
+    Ok(copied)
+}
+
+pub(crate) fn relocate_prepared_package(
+    registry: &Path,
+    source: &Path,
+    target: &Path,
+) -> Result<()> {
+    let prepared = inspect_prepared_package(registry, source)?;
+    let root = managed_root(registry, false)?;
+    if target != root.join(&prepared.manifest.id)
+        && target.parent() != Some(staging_root(registry)?.as_path())
+    {
+        return Err(error(
+            "github_package_unowned",
+            "Invalid installation destination.",
+        ));
+    }
+    if target.exists() {
+        return Err(error(
+            "github_install_conflict",
+            "The installation destination already exists.",
+        ));
+    }
+    let mut receipt: Receipt =
+        serde_json::from_slice(&read_bounded(&source.join(RECEIPT), MAX_METADATA_BYTES)?)
+            .map_err(|e| error("github_package_unowned", e.to_string()))?;
+    // Upgrade legacy receipts before moving. Schema 2 binds source/content and
+    // validates the managed root and plugin-ID destination separately, so the
+    // atomic directory rename has no intermediate invalid receipt location.
+    if receipt.schema == 1 {
+        receipt.schema = 2;
+        receipt.package_path = None;
+        let mut file =
+            tempfile::NamedTempFile::new_in(staging_root(registry)?).map_err(io_error)?;
+        use std::io::Write;
+        file.write_all(&serde_json::to_vec(&receipt).unwrap())
+            .map_err(io_error)?;
+        file.as_file().sync_all().map_err(io_error)?;
+        file.persist(source.join(RECEIPT))
+            .map_err(|e| io_error(e.error))?;
+    }
+    std::fs::rename(source, target).map_err(io_error)?;
+    Ok(())
+}
+
+pub(crate) fn remove_prepared_package(registry: &Path, path: &Path) -> Result<()> {
+    inspect_prepared_package(registry, path)?;
+    crate::source_removal::remove_owned_directory(path)
+        .map_err(|e| error("github_cleanup_failed", e.to_string()))
 }
 
 fn check_regular(path: &Path, directory: bool) -> Result<std::fs::Metadata> {

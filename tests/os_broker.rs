@@ -355,6 +355,13 @@ fn declared_and_granted_permissions_are_both_required_and_generations_never_reac
             .code,
         "permission_denied"
     );
+    assert_eq!(
+        fixture
+            .call("host.network.authorizeChannel", json!({}))
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
     let mut next = fixture.plugin.clone();
     next.generation = 2;
     let current = fixture.client.authorize(&next).unwrap();
@@ -530,6 +537,62 @@ fn network_fetch_honors_exact_origins_limits_cancellation_and_redirect_boundarie
     let destination = Server::new(None);
     let server = Server::new(Some(destination.origin.clone()));
     let fixture = Fixture::new(vec![server.origin.clone()]);
+    assert_eq!(
+        fixture
+            .call("host.network.authorizeChannel", json!({}))
+            .unwrap()["coverage"],
+        "explicit-endpoint"
+    );
+    let authorized = fixture
+        .call(
+            "host.network.authorizeForward",
+            json!({"url":format!("{}/binary?q=1",server.origin)}),
+        )
+        .unwrap();
+    assert_eq!(authorized["origin"], server.origin);
+    assert_eq!(authorized["url"], format!("{}/binary?q=1", server.origin));
+    let websocket_url = format!(
+        "ws://{}/realtime",
+        server.origin.trim_start_matches("http://")
+    );
+    let websocket = fixture
+        .call(
+            "host.network.authorizeForward",
+            json!({"url":websocket_url}),
+        )
+        .unwrap();
+    assert_eq!(websocket["origin"], server.origin);
+    assert_eq!(websocket["url"], websocket_url);
+    let secure = Fixture::new(vec!["https://example.test".into()]);
+    assert_eq!(
+        secure
+            .call(
+                "host.network.authorizeForward",
+                json!({"url":"wss://example.test/realtime"}),
+            )
+            .unwrap()["origin"],
+        "https://example.test"
+    );
+    assert_eq!(
+        fixture
+            .call(
+                "host.network.authorizeForward",
+                json!({"url":format!("{}#fragment",server.origin)}),
+            )
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
+    assert_eq!(
+        fixture
+            .call(
+                "host.network.authorizeForward",
+                json!({"url":destination.origin}),
+            )
+            .unwrap_err()
+            .code,
+        "policy_denied"
+    );
     assert_eq!(
         fixture
             .call(

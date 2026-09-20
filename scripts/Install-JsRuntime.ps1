@@ -1,10 +1,18 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Destination,
-    [ValidateSet('win-x64', 'win-arm64')][string]$Platform = 'win-x64',
+    [ValidateSet('win-x64', 'win-arm64')][string]$Platform,
     [string]$ArchivePath
 )
 $ErrorActionPreference = 'Stop'
+if (-not $Platform) {
+    $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    $Platform = switch ($architecture) {
+        'X64' { 'win-x64' }
+        'Arm64' { 'win-arm64' }
+        default { throw "Unsupported Windows architecture: $architecture" }
+    }
+}
 $lockPath = Join-Path $PSScriptRoot '../runtime/node-runtime.json'
 $lock = [System.IO.File]::ReadAllText($lockPath) | ConvertFrom-Json
 $platformSpec = $lock.platforms.$Platform
@@ -13,7 +21,8 @@ $runtimeDirectory = Join-Path $root ("runtime/node-v{0}-{1}" -f $lock.version, $
 $nodePath = Join-Path $runtimeDirectory 'node.exe'
 $licensePath = Join-Path $runtimeDirectory 'LICENSE'
 if ((Test-Path -LiteralPath $nodePath) -and (Test-Path -LiteralPath $licensePath)) {
-    if ((Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash -ieq $platformSpec.executableSha256) {
+    if (((Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash -ieq $platformSpec.executableSha256) -and
+        ((Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash -ieq $platformSpec.licenseSha256)) {
         Write-Output "JS runtime ready: $nodePath"
         return
     }
@@ -51,6 +60,9 @@ try {
     } finally { $archive.Dispose() }
     if ((Get-FileHash -LiteralPath $temporaryNode -Algorithm SHA256).Hash -ine $platformSpec.executableSha256) {
         throw 'Node executable hash differs from the checked-in runtime pin.'
+    }
+    if ((Get-FileHash -LiteralPath $temporaryLicense -Algorithm SHA256).Hash -ine $platformSpec.licenseSha256) {
+        throw 'Node license hash differs from the checked-in runtime pin.'
     }
     Move-Item -LiteralPath $temporaryNode -Destination $nodePath -Force
     Move-Item -LiteralPath $temporaryLicense -Destination $licensePath -Force

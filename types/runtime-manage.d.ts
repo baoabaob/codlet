@@ -33,7 +33,7 @@ export interface SourceRemovalPreview extends SourceRemovalRequest {
 
 export interface RuntimeUpdateStatus {
   currentVersion: string;
-  phase: 'development' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'downloaded' | 'installRequested' | 'failed';
+  phase: 'development' | 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'downloaded' | 'installRequested' | 'failed';
   configured: boolean;
   channel: string;
   lastCheckedAt: number | null;
@@ -44,6 +44,60 @@ export interface RuntimeUpdateStatus {
   installAvailable: boolean;
   unavailableReason: string | null;
   error: { code: string; message: string } | null;
+}
+
+export interface RuntimePreferences {
+  automaticUpdateChecks: boolean;
+  /** Checks registered GitHub release metadata once per runtime start, without installing. */
+  checkPluginUpdatesOnStartup: boolean;
+  /** Controls whether literal plugin labels are shown in the management list. */
+  showPluginTags: boolean;
+  /** Null inherits the trusted release channel interval; otherwise 300–86400 seconds. */
+  updateCheckIntervalSeconds: number | null;
+  /** Null inherits the existing launch default. */
+  localSourceAutoReload: boolean | null;
+}
+export interface RuntimeSettingsSnapshot {
+  schema: 1;
+  revision: number;
+  values: RuntimePreferences;
+  effective: { automaticUpdateChecks: boolean; checkPluginUpdatesOnStartup: boolean; showPluginTags: boolean; updateCheckIntervalSeconds: number; localSourceAutoReload: boolean };
+  defaults: { updateCheckIntervalSeconds: number; localSourceAutoReload: boolean };
+  availability: { updateChecks: boolean; pluginUpdateChecks: boolean; localSourceWatch: boolean };
+}
+export interface PluginUpdateStatus {
+  phase: 'idle' | 'checking' | 'completed' | 'failed';
+  checkedAt: number | null;
+  error: string | null;
+  plugins: Record<string, { versionKey: string; status: 'unknown' | 'upToDate' | 'available' | 'failed'; releaseTag: string | null; releaseUrl: string | null; error: string | null }>;
+}
+export interface ClientVersionStatus {
+  status: 'unknown' | 'matched' | 'unmatched';
+  source?: 'local-package';
+  matchesRunningClient?: boolean;
+  runningVersion?: string;
+  adaptedVersions?: string[];
+}
+export interface VersionStatus {
+  runtimeVersion: string;
+  runtimeUpdate: RuntimeUpdateStatus | null;
+  runtimeUpdateError: { code: string; message: string } | null;
+  clientStatus: ClientVersionStatus;
+  officialUpdate?: OfficialUpdateStatus;
+  pluginUpdates: PluginUpdateStatus | null;
+  pluginInstall: PluginInstallBatch | null;
+}
+export interface OfficialUpdateStatus {
+  available: boolean;
+  restartPreserved: boolean;
+  phase: 'idle'|'checking'|'downloading'|'ready'|'installing';
+  isUpdateReady: boolean;
+  combinedPhase: 'idle'|'downloading'|'preparing'|'installing'|'failed';
+  error: string|null;
+}
+export interface PluginInstallBatch {
+  id: number; running: boolean;
+  items: { pluginId: string; versionKey: string; phase: 'queued'|'downloading'|'installing'|'checkingStatus'|'updated'|'upToDate'|'reviewRequired'|'failed'; version: string|null; message: string|null; operationId: string|null }[];
 }
 
 /** prepare uses plugin_id, matching the existing control receipt protocol. */
@@ -82,6 +136,8 @@ export interface LocalImportPreview {
   existingEnabled: boolean;
   manifest: {
     schema: 1; id: string; name?: string; description?: string; i18n?: PluginTranslations; version: string;
+    /** Up to 8 literal labels, without #; recommended: UI, Adapter, Tool, Enhancement. */
+    tags?: string[];
     renderer?: { entry: string; world: 'isolated' | 'main' };
     host?: { entry: string; provides?: ImportCapability[]; requires?: ImportCapability[] };
     permissions: PluginPermission[]; provides: ImportCapability[]; requires: ImportCapability[];
@@ -162,6 +218,8 @@ export interface RuntimeManagePlugin {
   name: string;
   description: string | null;
   i18n: PluginTranslations | null;
+  /** Literal manifest labels, independent of locale; empty when metadata is unavailable. */
+  tags?: string[];
   /** Other enabled/running plugins included by an explicit cascade disable. */
   disableDependents: string[];
   version: string | null;
@@ -196,16 +254,22 @@ export interface RuntimeManagePlugin {
 /** Managed renderer list retains immediate registry semantics and may omit time. */
 export interface RuntimeManageList {
   runtimeVersion: string;
-  clientStatus?: { status: 'officialUpdateAvailable' | 'unmatched' | 'matched' | 'unknown'; installedVersion?: string; latestVersion?: string | null; officialUpdateAvailable?: boolean; matchesLatestClient?: boolean; checkedAt?: number };
+  clientStatus?: ClientVersionStatus;
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
   localManagement?: { available: true; watchEnabled: boolean; folderPicker: boolean };
   githubManagement?: { available: true };
+  /** Core-owned runtime skill, suitable for a native skill prompt link. */
+  runtimeSkill?: { available: false } | { available: true; name: 'codlet'; path: string };
 }
 /** The Host runtime.manage service always identifies the owner-published sample time. */
 export interface RuntimeManageSnapshot extends RuntimeManageList { sampledAtUnixMs: number; }
 
 export interface RuntimeManageMethods {
   list: { params: null; result: RuntimeManageList };
+  versionStatus: { params: null; result: VersionStatus };
+  getSettings: { params: null; result: RuntimeSettingsSnapshot };
+  /** One CAS write; after an uncertain reply, read getSettings instead of resubmitting. */
+  saveSettings: { params: { expectedRevision: number; values: RuntimePreferences }; result: RuntimeSettingsSnapshot };
   prepare: { params: PluginControlRequest; result: ControlReport };
   submit: { params: RuntimeManageOperationInput; result: ControlReport };
   operation: { params: RuntimeManageOperationInput; result: ControlReport };
@@ -213,11 +277,19 @@ export interface RuntimeManageMethods {
   permissions: { params: { pluginId: string }; result: PluginPermissionsReport };
   sourceRemovalPreview: { params: { pluginId: string }; result: SourceRemovalPreview };
   openFolder: { params: { pluginId: string }; result: { pluginId: string; opened: true } };
+  openRuntimeFolder: { params: { location: 'installation' | 'logs' }; result: { opened: true } };
   chooseLocalFolder: { params: null | { locale: 'zh' | 'en' }; result: FolderSelection };
   runtimeUpdateStatus: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
   checkRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
+  /** Read-only discovery, coalesced while checking or for 60 seconds after completion. */
+  checkPluginUpdates: { params: null; result: PluginUpdateStatus };
+  /** Explicit update action; keeps prior grants and enablement, with review for changed authority. */
+  updatePlugins: { params: {pluginIds: string[] | null}; result: PluginInstallBatch };
+  pluginUpdateReview: { params: {batchId: number; pluginId: string}; result: ManagedPreview };
   downloadRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
   installRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
+  /** One explicit combined transaction; a lost reply is resolved through versionStatus, never replayed. */
+  installCombinedUpdate: { params: {candidateId: string}; result: OfficialUpdateStatus };
   folderSelection: { params: { selectionId: string }; result: FolderSelection };
   githubReleases: { params: { url: string }; result: GitHubJob };
   githubPrepare: { params: { repositoryUrl: string; releaseId: number; assetId: number } & ({ operation?: 'install'; pluginId?: string } | { operation: 'update'; pluginId: string }); result: GitHubJob };

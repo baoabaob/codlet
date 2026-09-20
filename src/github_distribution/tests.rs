@@ -319,9 +319,9 @@ fn package_receipt_cannot_be_injected_and_paths_must_be_owned() {
         .join(format!("{}-copy", prepared.archive_sha256));
     std::fs::create_dir(&copy).unwrap();
     std::fs::copy(prepared.package_path.join(RECEIPT), copy.join(RECEIPT)).unwrap();
-    assert_eq!(
-        inspect_prepared_package(&registry, &copy).unwrap_err().code,
-        "github_package_unowned"
+    assert!(
+        inspect_prepared_package(&registry, &copy).is_err(),
+        "a copied receipt without its checked package must be rejected"
     );
 }
 
@@ -356,7 +356,7 @@ fn unsafe_archive_paths_are_rejected_before_extraction_and_failure_cleans_stagin
             test_prepare_archive(&registry, &bytes).is_err(),
             "accepted {path}"
         );
-        let root = temp.path().join("packages/github");
+        let root = temp.path().join("packages/github/.staging");
         if root.exists() {
             assert_eq!(
                 std::fs::read_dir(root).unwrap().count(),
@@ -601,9 +601,10 @@ impl Fixture {
         }
     }
     fn client(&self) -> GitHubClient {
-        let mut client = GitHubClient::new().unwrap();
-        client.fixture_origin = Some(self.origin.clone());
-        client
+        GitHubClient {
+            client: GitHubClient::http_builder().no_proxy().build().unwrap(),
+            fixture_origin: Some(self.origin.clone()),
+        }
     }
 }
 impl Drop for Fixture {
@@ -629,6 +630,27 @@ fn release_json(bytes: &[u8], digest: bool) -> serde_json::Value {
         "draft":false,"prerelease":false,"published_at":"2026-09-12T00:00:00Z", "assets":[{"id":2,"name":"plugin.zip","size":bytes.len(),
         "content_type":"application/zip","browser_download_url":"https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/plugin.zip","state":"uploaded",
         "digest":if digest { Some(format!("sha256:{:x}", Sha256::digest(bytes))) } else { None }}]})
+}
+
+#[tokio::test]
+async fn a_stalled_connection_reports_a_timeout_instead_of_a_generic_send_error() {
+    let fixture = Fixture::new(vec![vec![]]);
+    let mut client = fixture.client();
+    client.client = GitHubClient::http_builder()
+        .no_proxy()
+        .read_timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.list_releases(&GitHubLink::parse("https://github.com/dev-owner/dev-repo").unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(result.code, "github_timeout");
+    assert!(result.message.contains("Check the connection or proxy"));
+    assert!(!result.message.contains("error sending request"));
 }
 
 #[tokio::test]

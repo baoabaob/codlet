@@ -146,6 +146,19 @@ pub struct PluginWatcher {
     diagnostics: Vec<WatchDiagnostic>,
 }
 
+/// Toggle observation only; pending lifecycle receipts remain coordinator-owned.
+pub(crate) fn configure_watcher(
+    slot: &mut Option<PluginWatcher>,
+    enabled: bool,
+    registry: &std::path::Path,
+) {
+    if !enabled {
+        *slot = None;
+    } else if slot.is_none() {
+        *slot = Some(PluginWatcher::new(registry.to_owned()));
+    }
+}
+
 impl PluginWatcher {
     pub fn new(registry_path: PathBuf) -> Self {
         Self {
@@ -596,6 +609,81 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn persisted_switch_starts_stops_and_restores_real_source_observation() {
+        use crate::runtime_control::ControlBroker;
+        use crate::runtime_manage::RuntimeManageService;
+        let mut fixture = Fixture::new(&["dev.plugin"]);
+        let broker = ControlBroker::new([71; 16], "watch-settings".into());
+        broker.set_ready();
+        let api = RuntimeManageService::new(broker.clone())
+            .with_local_management(fixture.registry_path.clone(), false);
+        let mut watcher = None;
+        configure_watcher(
+            &mut watcher,
+            api.local_watch_enabled(),
+            &fixture.registry_path,
+        );
+        assert!(watcher.is_none());
+        let values = json!({"checkPluginUpdatesOnStartup":true,"automaticUpdateChecks":true,"showPluginTags":true,"updateCheckIntervalSeconds":null,"localSourceAutoReload":true});
+        api.invoke(
+            "saveSettings",
+            json!({"expectedRevision":0,"values":values}),
+        )
+        .unwrap();
+        configure_watcher(
+            &mut watcher,
+            api.local_watch_enabled(),
+            &fixture.registry_path,
+        );
+        let start = Instant::now();
+        assert!(fixture.poll(watcher.as_mut().unwrap(), start, 0).is_none());
+        fixture.source(
+            0,
+            "// changed\nmodule.exports = {activate(){},deactivate(){}};",
+        );
+        assert!(fixture.poll(watcher.as_mut().unwrap(), start, 1).is_none());
+        assert_eq!(
+            fixture
+                .poll(watcher.as_mut().unwrap(), start, 2)
+                .unwrap()
+                .plugin_id,
+            "dev.plugin"
+        );
+        let mut off = values.clone();
+        off["localSourceAutoReload"] = json!(false);
+        api.invoke("saveSettings", json!({"expectedRevision":1,"values":off}))
+            .unwrap();
+        configure_watcher(
+            &mut watcher,
+            api.local_watch_enabled(),
+            &fixture.registry_path,
+        );
+        assert!(watcher.is_none());
+        api.invoke(
+            "saveSettings",
+            json!({"expectedRevision":2,"values":values}),
+        )
+        .unwrap();
+        let restarted = RuntimeManageService::new(broker)
+            .with_local_management(fixture.registry_path.clone(), false);
+        fixture.load_generation(0, 2);
+        configure_watcher(
+            &mut watcher,
+            restarted.local_watch_enabled(),
+            &fixture.registry_path,
+        );
+        assert!(watcher.is_some());
+        let start = Instant::now();
+        assert!(fixture.poll(watcher.as_mut().unwrap(), start, 0).is_none());
+        fixture.source(
+            0,
+            "// saved after restart\nmodule.exports = {activate(){},deactivate(){}};",
+        );
+        assert!(fixture.poll(watcher.as_mut().unwrap(), start, 1).is_none());
+        assert!(fixture.poll(watcher.as_mut().unwrap(), start, 2).is_some());
     }
 
     #[test]

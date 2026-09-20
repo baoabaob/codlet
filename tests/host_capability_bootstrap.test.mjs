@@ -6,8 +6,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
+import http from 'node:http';
 
-const bootstrap = await readFile(new URL('../runtime/host.cjs', import.meta.url), 'utf8');
+const bootstrap = (await Promise.all([
+  readFile(new URL('../runtime/host-traffic-bundle.cjs', import.meta.url), 'utf8'),
+  readFile(new URL('../runtime/host.cjs', import.meta.url), 'utf8'),
+])).join('\n');
 const capability = { name: 'dev.host-test', api: 1, scope: 'target' };
 const caller = { pluginId: 'dev.renderer-caller', generation: 9, targetId: 'worker-target', documentEpoch: 12 };
 const identity = { v: 1, pluginId: 'dev.host-provider', generation: 8 };
@@ -16,8 +20,10 @@ async function host(t, source, requirements = []) {
   const root = await mkdtemp(path.join(tmpdir(), 'codlet-host-capability-'));
   const entry = path.join(root, 'host.js');
   const snapshot = path.join(root, 'snapshot.js');
+  const bootstrapPath = path.join(root, 'bootstrap.cjs');
   await writeFile(snapshot, source);
-  const child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', '--input-type=commonjs', '--eval', bootstrap, '--', entry, snapshot], {
+  await writeFile(bootstrapPath, bootstrap);
+  const child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', '--require', bootstrapPath, '--eval', '', '--', entry, snapshot], {
     cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const frames = [], waiters = [];
@@ -240,5 +246,38 @@ test('Host outbound SDK preserves parent tokens, opaque handles, notification re
   fixture.invoke('close'); const close = await fixture.next(); assert.deepEqual(close.params.params, { handleId: 'scope-opaque' });
   fixture.send({ type: 'response', id: close.id, ok: true, result: { closed: true } }); assert.equal((await fixture.next()).result.closed, true);
   fixture.invoke('use'); assert.equal((await fixture.next()).error.code, 'scope_denied');
+  await fixture.stop();
+});
+
+test('traffic listeners outlive their creating capability invocation without borrowing its deadline', async t => {
+  const fixture = await host(t, `const cap=${JSON.stringify(capability)}; let channel; module.exports={
+    activate(context) {
+      context.rpc.provide(cap,'open',async()=>{
+        channel=await context.traffic.openHttpChannel({},()=>({status:204}));
+        return {endpoint:channel.endpoint};
+      });
+    },
+    async deactivate(){await channel?.close();}
+  };`);
+  const invoke = fixture.invoke('open', null, 500);
+  const authorizeOpen = await fixture.next();
+  assert.equal(authorizeOpen.method, 'host.network.authorizeChannel');
+  assert.equal(authorizeOpen.params.invocationId, undefined);
+  fixture.send({ type: 'response', id: authorizeOpen.id, ok: true, result: { transport: 'http-loopback', coverage: 'explicit-endpoint' } });
+  const opened = await fixture.next();
+  assert.equal(opened.id, invoke); assert.equal(opened.ok, true);
+
+  const response = new Promise((resolve, reject) => {
+    const request = http.get(opened.result.endpoint + '/after-invocation', resolve);
+    request.once('error', reject);
+  });
+  const authorizeRequest = await fixture.next();
+  assert.equal(authorizeRequest.method, 'host.network.authorizeChannel');
+  assert.equal(authorizeRequest.params.invocationId, undefined);
+  fixture.send({ type: 'response', id: authorizeRequest.id, ok: true, result: { transport: 'http-loopback', coverage: 'explicit-endpoint' } });
+  const received = await response;
+  received.resume();
+  await once(received, 'end');
+  assert.equal(received.statusCode, 204);
   await fixture.stop();
 });

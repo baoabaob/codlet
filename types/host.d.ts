@@ -9,6 +9,93 @@ export interface CdpSubscription {
   readonly id: number;
   unsubscribe(): Promise<{ unsubscribed: boolean }>;
 }
+export type HttpHeader = readonly [name: string, value: string];
+/** One-shot binary stream. A second iteration fails with body_already_consumed. */
+export interface HttpBody extends AsyncIterable<Uint8Array> {
+  /** Stops and releases an unread or partially-read stream. */
+  cancel(): boolean;
+}
+export interface HttpChannelRequest {
+  readonly id: string;
+  readonly method: string;
+  /** Path and query below the private channel endpoint. */
+  readonly path: string;
+  readonly headers: readonly HttpHeader[];
+  readonly body: HttpBody;
+}
+export interface HttpChannelResponse {
+  status: number;
+  headers?: readonly HttpHeader[];
+  body?: string | Uint8Array | Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array> | null;
+}
+export interface HttpForwardRequest {
+  /** Absolute HTTP(S) URL. Core checks its exact origin for every dispatch. */
+  url: string;
+  method?: string;
+  /** No incoming headers, including Authorization, are inherited implicitly. */
+  headers?: readonly HttpHeader[];
+  body?: string | Uint8Array | Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array> | null;
+}
+export interface HttpChannelExchange {
+  readonly signal: AbortSignal;
+  /** Number of explicit forward calls charged to this exchange. */
+  readonly forwardAttempts: number;
+  readonly maxForwardAttempts: number;
+  /** Dispatches only on explicit calls. Consume or cancel each response body before the next attempt. Redirects are returned and are never followed. */
+  forward(request: HttpForwardRequest): Promise<Readonly<Required<Pick<HttpChannelResponse, 'status' | 'headers'>> & { body: HttpBody }>>;
+}
+export interface TrafficChannelOptions {
+  maxConcurrent?: number;
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  /** Explicit forward calls allowed per inbound HTTP exchange. Defaults to 1; maximum 8. Core never retries automatically. */
+  maxForwardAttempts?: number;
+  handlerTimeoutMs?: number;
+  maxWebSocketMessageBytes?: number;
+  maxWebSocketQueueBytes?: number;
+  maxWebSocketQueueFrames?: number;
+}
+export interface WebSocketChannelRequest {
+  readonly id: string;
+  readonly path: string;
+  readonly headers: readonly HttpHeader[];
+  readonly protocols: readonly string[];
+}
+export interface WebSocketFrame {
+  readonly data: string | Uint8Array;
+  readonly binary: boolean;
+}
+export type WebSocketFrameTransform = (frame: WebSocketFrame, context: Readonly<{ signal: AbortSignal; direction: 'clientToServer' | 'serverToClient' }>) => string | Uint8Array | WebSocketFrame | null | Promise<string | Uint8Array | WebSocketFrame | null>;
+export interface WebSocketForwardRequest {
+  /** Absolute ws:// or wss:// URL. ws/wss use the matching HTTP/HTTPS origin grant. */
+  url: string;
+  protocols?: readonly string[];
+  /** Incoming Authorization and channel credentials are never inherited. */
+  headers?: readonly HttpHeader[];
+  clientToServer?: WebSocketFrameTransform;
+  serverToClient?: WebSocketFrameTransform;
+}
+export interface WebSocketChannelExchange {
+  readonly signal: AbortSignal;
+  /** Connects upstream before accepting the downstream handshake; dispatches at most once. */
+  forward(request: WebSocketForwardRequest): Promise<Readonly<{ protocol: string | null; closed: Promise<{ code: string }> }>>;
+}
+export interface TrafficChannelHandlers {
+  http?: (request: HttpChannelRequest, exchange: HttpChannelExchange) => HttpChannelResponse | Promise<HttpChannelResponse>;
+  webSocket?: (request: WebSocketChannelRequest, exchange: WebSocketChannelExchange) => void | Promise<void>;
+}
+export interface TrafficChannel {
+  readonly id: string;
+  /** Private, generation-owned loopback URL. Append the caller's API path. */
+  readonly endpoint: string;
+  readonly protocols: readonly ('http' | 'websocket')[];
+  status(): Readonly<{ open: boolean; activeRequests: number; forwardAttempts: number; transport: 'loopback'; coverage: 'explicit-endpoint'; protocols: readonly ('http' | 'websocket')[] }>;
+  close(): Promise<{ closed: boolean }>;
+}
+/** Compatibility name for the HTTP-only openHttpChannel helper. */
+export type HttpChannelOptions = TrafficChannelOptions;
+/** Compatibility name for callers using the HTTP-only helper. */
+export type HttpChannel = TrafficChannel;
 export interface CapabilityDescriptor {
   readonly name: string;
   readonly api: number;
@@ -65,9 +152,15 @@ export interface HostContext {
     fetch(params: { url: string; method?: 'GET' | 'HEAD'; headers?: Record<string, string>; maxBytes?: number }, options?: ManagedOptions): Promise<{ status: number; url: string; headers: Record<string, string>; body: string; bytes: number }>;
   };
   readonly process: {
-    run(params: { executable: string; args: string[]; maxOutputBytes?: number }, options?: ManagedOptions): Promise<{ processId: number; exitCode: number; stdout: string; stderr: string; stdoutBytes: number; stderrBytes: number; jobReaped: boolean }>;
+    run(params: { executable: string; args: string[]; maxOutputBytes?: number }, options?: ManagedOptions): Promise<{ processId: number; exitCode: number; stdout: string; stderr: string; stdoutBytes: number; stderrBytes: number; processesReaped: boolean; ownershipScope: 'windows-job' | 'posix-process-group'; jobReaped?: boolean; processGroupReaped?: boolean }>;
   };
   readonly system: { info(options?: ManagedOptions): Promise<{ os: string; architecture: string; logicalCpus: number }> };
+  readonly traffic: {
+    /** Creates one private loopback endpoint for the handlers that are present. */
+    openChannel(options: TrafficChannelOptions, handlers: TrafficChannelHandlers): Promise<TrafficChannel>;
+    /** Requires host.network and an explicit origin grant for every forward call. */
+    openHttpChannel(options: HttpChannelOptions, handler: (request: HttpChannelRequest, exchange: HttpChannelExchange) => HttpChannelResponse | Promise<HttpChannelResponse>): Promise<HttpChannel>;
+  };
 }
 export interface HostPlugin {
   activate(context: HostContext): void | Promise<void>;

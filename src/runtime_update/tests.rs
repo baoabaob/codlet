@@ -165,6 +165,89 @@ fn unconfigured_development_is_truthful_offline_and_creates_no_update_directory(
 }
 
 #[test]
+fn preference_changes_reschedule_real_worker_without_fetching_and_honor_full_interval_range() {
+    use crate::runtime_settings::{RuntimePreferences, SettingsDocument};
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("runtime")).unwrap();
+    std::fs::write(
+        root.path().join("runtime/update-channel.json"),
+        serde_json::to_vec(&channel()).unwrap(),
+    )
+    .unwrap();
+    let mut document = SettingsDocument {
+        schema: 1,
+        revision: 0,
+        values: RuntimePreferences {
+            automatic_update_checks: false,
+            ..Default::default()
+        },
+    };
+    let service = RuntimeUpdateService::start_with_preferences(
+        root.path().into(),
+        root.path().join("state"),
+        None,
+        document.clone(),
+    )
+    .unwrap();
+    assert_eq!(service.status().phase, RuntimeUpdatePhase::Idle);
+    assert_eq!(service.status().next_check_at, None);
+    for interval in [300, 900, 3600, 86400] {
+        document.revision += 1;
+        document.values.automatic_update_checks = true;
+        document.values.update_check_interval_seconds = Some(interval);
+        let before = now_ms();
+        service.configure_checks(&document).unwrap();
+        let next = service.status().next_check_at.unwrap();
+        assert!(next >= before + interval * 1000 && next <= now_ms() + interval * 1000 + 2000);
+        assert_eq!(check_delay(interval, 0), interval);
+        assert!(check_delay(interval, 5) >= interval);
+    }
+    let active_next = service.status().next_check_at;
+    let mut stale = document.clone();
+    stale.revision = 0;
+    stale.values.automatic_update_checks = false;
+    service.configure_checks(&stale).unwrap();
+    assert!(service.status().next_check_at.is_some());
+    document.revision += 1;
+    document.values.automatic_update_checks = false;
+    service.configure_checks(&document).unwrap();
+    assert_eq!(service.status().next_check_at, None);
+    assert!(active_next.is_some());
+    assert!(service.status().last_checked_at.is_none());
+}
+
+#[test]
+fn automatic_check_reservation_cannot_replace_queued_or_downloaded_versions() {
+    let root = tempfile::tempdir().unwrap();
+    let service =
+        RuntimeUpdateService::start(root.path().into(), root.path().join("state"), None).unwrap();
+    let mut state = service.shared.lock().unwrap();
+    for phase in [
+        RuntimeUpdatePhase::Downloading,
+        RuntimeUpdatePhase::Downloaded,
+        RuntimeUpdatePhase::InstallRequested,
+    ] {
+        state.status.phase = phase.clone();
+        state.busy = true;
+        state.automatic_checks = true;
+        state.status.candidate =
+            Some(candidate(b"fixture", RuntimePayloadProfile::Portable).public);
+        let id = state.status.candidate.as_ref().unwrap().id.clone();
+        assert!(!reserve_check(&mut state, true, true));
+        assert_eq!(state.status.phase, phase);
+        assert!(state.busy);
+        assert_eq!(state.status.candidate.as_ref().unwrap().id, id);
+    }
+    state.status.phase = RuntimeUpdatePhase::Checking;
+    state.automatic_checks = false;
+    state.busy = true;
+    assert!(!reserve_check(&mut state, true, true));
+    assert!(state.busy);
+    assert!(reserve_check(&mut state, true, false));
+    assert_eq!(state.status.phase, RuntimeUpdatePhase::Checking);
+}
+
+#[test]
 fn semantic_version_order_does_not_sort_version_strings_lexically() {
     for (next, current) in [
         ("1.10.0", "1.9.0"),

@@ -5,13 +5,13 @@
 use super::*;
 use crate::capabilities::host_provider_plugin_id;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use crate::cdp::CdpRequest;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use crate::host_runtime::{
     HostCapabilityClient, HostCapabilityOperation, RendererCall, RendererEndpoint, RpcRoute,
 };
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use crate::plugin_host::HostError;
 
 type Admission = Result<(), (&'static str, String)>;
@@ -19,21 +19,21 @@ type Admission = Result<(), (&'static str, String)>;
 #[derive(Default)]
 pub(super) struct HostRpcBridge {
     registration_error: Option<String>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     client: Option<HostCapabilityClient>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pending: Vec<PendingCall>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     direct: Vec<DirectInvocation>,
 }
 
 #[derive(Default)]
 pub(super) struct ScopedCall {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     inner: Option<RendererCall>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct DirectInvocation {
     endpoint: RendererEndpoint,
     token: String,
@@ -42,12 +42,12 @@ struct DirectInvocation {
     cancelled: bool,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const MAX_PENDING: usize = 16;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 const MAX_PER_BINDING: usize = 4;
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct PendingCall {
     target_id: String,
     session_id: String,
@@ -63,14 +63,14 @@ struct PendingCall {
     scope: RendererCall,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 enum Phase {
     Invoking(HostCapabilityOperation),
     Delivering { request: CdpRequest, success: bool },
 }
 
 impl RendererRuntime {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn set_host_capability_client(&mut self, client: HostCapabilityClient) {
         // Changing the owned transport cannot transfer pending calls to it.
         self.host_rpc.pending.clear();
@@ -96,7 +96,7 @@ impl RendererRuntime {
                 message: message.clone(),
             });
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             client.shared.register_plugins(plugins).map_err(|error| {
                 RendererError::PluginRejected {
@@ -107,33 +107,33 @@ impl RendererRuntime {
                 }
             })?;
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = plugins;
         Ok(())
     }
 
     pub(super) fn retire_rpc_plugin(&self, id: &str, generation: u64) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             client.shared.retire_plugin(id, generation);
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (id, generation);
     }
 
     pub(super) fn publish_rpc_target(&self, target: &str) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let (Some(client), Some(session)) = (&self.host_rpc.client, self.sessions.get(target)) {
             let _ = client
                 .shared
                 .publish_target(&session.session, session.document_epoch);
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = target;
     }
 
     pub(super) fn publish_rpc_renderers(&self, target: &str) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let (Some(client), Some(session)) = (&self.host_rpc.client, self.sessions.get(target)) {
             for plugin in &session.plugins {
                 if matches!(
@@ -150,20 +150,20 @@ impl RendererRuntime {
                 }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = target;
     }
 
     pub(super) fn retire_rpc_renderer(&self, target: &str, id: Option<&str>) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             client.shared.retire_renderer(target, id);
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (target, id);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn rpc_endpoint(&self, target: &str, plugin: &ActivePlugin) -> Option<RendererEndpoint> {
         let session = self.sessions.get(target)?;
         Some(RendererEndpoint {
@@ -205,7 +205,7 @@ impl RendererRuntime {
         id: &str,
         generation: u64,
     ) -> Option<Result<bool, String>> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             self.host_rpc.client.as_ref().map(|client| {
                 client
@@ -214,7 +214,7 @@ impl RendererRuntime {
                     .map_err(|error| error.to_string())
             })
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (id, generation);
             None
@@ -227,7 +227,7 @@ impl RendererRuntime {
         consumer: &ActivePlugin,
         request: &BindingMessage,
     ) -> Result<ScopedCall, (&'static str, String)> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             let endpoint = self.rpc_endpoint(target, consumer).ok_or_else(|| {
                 (
@@ -251,7 +251,7 @@ impl RendererRuntime {
                 .map_err(|error| (error.code, error.message))?;
             return Ok(ScopedCall { inner: Some(call) });
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (target, consumer, request);
         if request.parent_token.is_some() {
             return Err((
@@ -263,7 +263,7 @@ impl RendererRuntime {
     }
 
     pub(super) fn cancel_scoped_call(&mut self, target: &str, consumer: &ActivePlugin, id: u64) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             if let (Some(client), Some(endpoint)) =
                 (&self.host_rpc.client, self.rpc_endpoint(target, consumer))
@@ -276,7 +276,7 @@ impl RendererRuntime {
                     || call.request_id != Some(id)
             });
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (target, consumer, id);
     }
 
@@ -284,14 +284,14 @@ impl RendererRuntime {
         &self,
         scope: &ScopedCall,
     ) -> Result<(), (&'static str, String)> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let (Some(client), Some(call)) = (&self.host_rpc.client, &scope.inner) {
             return client
                 .shared
                 .validate(&call.route)
                 .map_err(|error| (error.code, error.message));
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = scope;
         Ok(())
     }
@@ -303,7 +303,7 @@ impl RendererRuntime {
         request: &BindingMessage,
         scope: &ScopedCall,
     ) -> Result<Value, String> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if let (Some(client), Some(call)) = (self.host_rpc.client.clone(), &scope.inner) {
             let endpoint = self
                 .rpc_endpoint(target, provider)
@@ -360,7 +360,7 @@ impl RendererRuntime {
             }
             return result;
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = scope;
         if !self.renderer_authority_current(provider) {
             return Err(
@@ -379,11 +379,11 @@ impl RendererRuntime {
     }
 
     pub fn pending_host_call_count(&self) -> usize {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             self.host_rpc.pending.len()
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             0
         }
@@ -399,15 +399,15 @@ impl RendererRuntime {
         plugin_id: Option<&str>,
     ) {
         self.retire_rpc_renderer(target_id, plugin_id);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         self.host_rpc.pending.retain(|call| {
             call.target_id != target_id || plugin_id.is_some_and(|id| call.consumer.id != id)
         });
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (target_id, plugin_id);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub(super) fn queue_host_capability(
         &mut self,
         _target_id: &str,
@@ -425,7 +425,7 @@ impl RendererRuntime {
         })
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn queue_host_capability(
         &mut self,
         target_id: &str,
@@ -442,7 +442,7 @@ impl RendererRuntime {
         )
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn admit_host_call(
         &mut self,
         target_id: &str,
@@ -535,7 +535,7 @@ impl RendererRuntime {
     }
 
     pub(super) fn poll_host_capabilities(&mut self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             if let Some(client) = &self.host_rpc.client {
                 for invocation in &mut self.host_rpc.direct {
@@ -580,7 +580,7 @@ impl RendererRuntime {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn caller_is_current(&self, call: &PendingCall) -> bool {
         self.sessions.get(&call.target_id).is_some_and(|session| {
             session.session.is_live()
@@ -598,7 +598,7 @@ impl RendererRuntime {
         })
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn provider_is_current(&self, call: &PendingCall) -> bool {
         self.host_rpc
             .client
@@ -618,7 +618,7 @@ impl RendererRuntime {
                 .unwrap_or(false)
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn advance_host_call(&mut self, mut call: PendingCall) -> Option<PendingCall> {
         if !self.caller_is_current(&call) {
             return None; // Drop cancels the invocation or an unsent CDP delivery.
@@ -693,7 +693,7 @@ impl RendererRuntime {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn begin_host_reply(
         &mut self,
         mut call: PendingCall,
@@ -732,7 +732,7 @@ impl RendererRuntime {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn host_call_diagnostic(&mut self, call: &PendingCall, message: &str) {
         self.diagnostics.push(RendererDiagnostic {
             target_id: call.target_id.clone(),

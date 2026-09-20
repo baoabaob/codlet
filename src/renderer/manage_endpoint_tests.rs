@@ -16,6 +16,7 @@ const FORWARDED_METHODS: &[&str] = &[
     "folderSelection",
     "sourceRemovalPreview",
     "openFolder",
+    "openRuntimeFolder",
     "githubReleases",
     "githubPrepare",
     "githubJob",
@@ -23,9 +24,14 @@ const FORWARDED_METHODS: &[&str] = &[
     "managedHistory",
     "previewRollback",
     "runtimeUpdateStatus",
+    "getSettings",
+    "versionStatus",
+    "saveSettings",
     "checkRuntimeUpdate",
+    "checkPluginUpdates",
     "downloadRuntimeUpdate",
     "installRuntimeUpdate",
+    "installCombinedUpdate",
 ];
 
 fn request(method: &str, scope: CapabilityScope) -> BindingMessage {

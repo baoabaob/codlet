@@ -9,7 +9,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fixture(buildIndex = 0, withNavigation = false) {
-    const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, AbortController, crypto: { randomUUID } });
+    const scope = vm.createContext({ module: { exports: {} }, setTimeout, clearTimeout, AbortController, URL, crypto: { randomUUID } });
     const create = vm.runInContext(source + '\ncreateAdapter', scope);
     const build = vm.runInContext('BUILDS', scope)[buildIndex];
     const endpoints = new Map(), cleanup = new Set(), sent = [], failures = [], callbacks = new Map(), approvals = [], requestCalls = [];
@@ -204,7 +204,7 @@ test('bounded event stream preserves UI ids, reports overflow, cancels waits, an
 test('public page API exposes only callbacks and requires one-use tickets from the declared Core capability', () => {
     const f = fixture(), owner = f.owner('consumer'), other = f.owner('other');
     const exposed = f.scope[Symbol.for('codlet.codex.desktop.v1')];
-    assert.deepEqual(Object.keys(exposed).sort(), ['api', 'onEvent', 'registerPreSubmit']);
+    assert.deepEqual(Object.keys(exposed).sort(), ['api', 'onEvent', 'registerPreSubmit', 'registerThreadTransport']);
     const ticket = f.endpoints.get('codex.ui.preSubmit:getApi')({}, { caller: { pluginId: 'consumer', generation: 1 } }).ticket;
     assert.throws(() => exposed.registerPreSubmit(other.ctx, ticket, { id: 'test' }, () => {}), { code: 'api_ticket_retired' });
     assert.throws(() => exposed.onEvent(owner.ctx, ticket, () => {}), { code: 'api_ticket_retired' });
@@ -342,8 +342,8 @@ test('probing a family descriptor never constructs a missing local manager or re
 });
 
 test('each reviewed profile waits for live exports, reuses its initialized connection and rejects build replacement', async () => {
-    const versions = ['26.903.61454', '26.903.71938', '26.908.40834'];
-    for (const buildIndex of [0, 1, 2]) {
+    const versions = ['26.903.61454', '26.903.71938', '26.908.40834', '26.908.70816'];
+    for (const buildIndex of [0, 1, 2, 3]) {
         const f = fixture(buildIndex);
         assert.deepEqual(Object.keys(plain(f.api.status().build)).sort(), ['appServerVersion', 'appVersion', 'buildNumber']);
         assert.equal(f.api.status().build.appVersion, versions[buildIndex]);

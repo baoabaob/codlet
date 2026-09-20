@@ -180,13 +180,22 @@ impl HostRuntime {
     }
 
     pub fn take_diagnostics(&self) -> Vec<HostDiagnostic> {
-        std::mem::take(
+        let diagnostics = std::mem::take(
             &mut self
                 .published
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .diagnostics,
-        )
+        );
+        for diagnostic in &diagnostics {
+            if let Some(error) = &diagnostic.error {
+                crate::runtime_log::error(
+                    "host_plugin",
+                    &format!("{}: {error}", diagnostic.plugin_id),
+                );
+            }
+        }
+        diagnostics
     }
 
     pub fn stop(&mut self) -> Result<Vec<HostStopReport>, HostError> {
@@ -335,7 +344,7 @@ impl HostOwner {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     fn start(plugin: LoadedPlugin, runtime: &JsRuntime) -> Self {
         Self::start_with_services(plugin, runtime, services::CoreServices::default())
     }
@@ -796,7 +805,7 @@ impl HostOwner {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     fn pump_retirement(&mut self) {
         let Some(supervisor) = &mut self.supervisor else {
             return;

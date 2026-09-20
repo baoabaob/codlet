@@ -9,14 +9,18 @@ export interface OfficialComponents {
   readonly Switch: typeof import('@openai/apps-sdk-ui/components/Switch').Switch;
   readonly Checkbox: typeof import('@openai/apps-sdk-ui/components/Checkbox').Checkbox;
   readonly Popover: typeof import('@openai/apps-sdk-ui/components/Popover').Popover;
+  readonly Menu: typeof import('@openai/apps-sdk-ui/components/Menu').Menu;
+  readonly EmptyMessage: typeof import('@openai/apps-sdk-ui/components/EmptyMessage').EmptyMessage;
   readonly Tooltip: typeof import('@openai/apps-sdk-ui/components/Tooltip').Tooltip;
   readonly SegmentedControl: typeof import('@openai/apps-sdk-ui/components/SegmentedControl').SegmentedControl;
   readonly Select: typeof import('@openai/apps-sdk-ui/components/Select').Select;
   readonly TextLink: typeof import('@openai/apps-sdk-ui/components/TextLink').TextLink;
   readonly LoadingIndicator: typeof import('@openai/apps-sdk-ui/components/Indicator').LoadingIndicator;
+  /** Radix modal primitives with portals scoped to the UI owner. */
+  readonly Dialog: typeof import('radix-ui').Dialog;
 }
 export type OfficialIcons = Pick<typeof import('@openai/apps-sdk-ui/components/Icon'),
-  'ArrowLeft' | 'ArrowRotateCw' | 'Download' | 'ExternalLink' | 'FolderOpen' | 'InfoCircle' | 'Regenerate' | 'Search' | 'X'>;
+  'ArrowLeft' | 'ArrowRotateCw' | 'ArrowUpRight' | 'ChevronDown' | 'Cube' | 'Download' | 'ExclamationMarkCircle' | 'ExternalLink' | 'FolderOpen' | 'InfoCircle' | 'Plus' | 'QuestionMarkCircle' | 'Regenerate' | 'Search' | 'TriangleExclamationErrorWarning' | 'X'>;
 export interface RendererUiMount {
   render(content: React.ReactNode): void;
   /** Synchronously runs React cleanups; a later mount may reuse the container. */
@@ -24,9 +28,11 @@ export interface RendererUiMount {
 }
 export interface RendererUiPageOptions {
   label: string;
-  icon?: 'Cube' | 'CodeSquareSlash';
+  icon?: 'Cube' | 'CodeSquareSlash' | 'Codlet';
   /** Called on each native route entry; the React tree is unmounted on exit. */
-  render(): React.ReactNode;
+  render(surface: { readonly toolbar: HTMLDivElement | null }): React.ReactNode;
+  /** Requests an owned portal container in the reviewed native page toolbar. */
+  toolbar?: boolean;
   onActivate?(): void;
   onDeactivate?(): void;
 }
@@ -48,3 +54,9 @@ export interface RendererUi {
   dispose(): void;
 }
 export interface RendererUiFactory { readonly api: 2; create(): RendererUi }
+
+/** codex.ui.navigation.page@1 RPC; only callable by its active page owner.
+ * Opens Native's editable local-task composer without submitting a turn. */
+export interface NativeTaskDraft {
+  newTaskDraft: { params: { prompt: string }; result: { opened: true; submitted: false } };
+}

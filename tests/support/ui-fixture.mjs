@@ -20,13 +20,13 @@ export function uiFixture({locale='en',request=async()=>({plugins:[]})}={}){
   window.ResizeObserver=class{observe(){}unobserve(){}disconnect(){}};
   window.HTMLElement.prototype.scrollIntoView=function(){};
   window.PointerEvent=window.MouseEvent;
-  const cleanups=new Set(),calls=[],overrides=new Map();let entry,host;
+  const cleanups=new Set(),calls=[],overrides=new Map();let entry,host,toolbar;
   const context={pluginId:'codlet-gui',generation:1,onDeactivate(fn){cleanups.add(fn);return()=>cleanups.delete(fn);},reportDiagnostic(error){errors.push(error);},rpc:{async request(capability,method,args){
     calls.push({capability,method,args:structuredClone(args)});
     if(overrides.has(method))return overrides.get(method)(args);
     if(capability.name==='codex.ui.navigation.page'&&method==='register'){
       entry=document.createElement('button');entry.setAttribute('aria-label',args.label);entry.dataset.codletNavigationEntry=context.pluginId;entry.textContent=args.label;document.querySelector('nav').append(entry);
-      entry.onclick=()=>{host?.remove();host=document.createElement('div');host.dataset.codletPageHost=args.token;document.querySelector('main').append(host);entry.setAttribute('aria-current','page');};
+      entry.onclick=()=>{host?.remove();toolbar?.remove();if(args.toolbar){toolbar=document.createElement('div');toolbar.dataset.codletPageToolbar=args.token;document.body.prepend(toolbar);}host=document.createElement('div');host.dataset.codletPageHost=args.token;document.querySelector('main').append(host);entry.setAttribute('aria-current','page');};
       return {api:1,token:args.token,path:'/codlet/'+context.pluginId};
     }
     return request(capability,method,args);
@@ -34,9 +34,9 @@ export function uiFixture({locale='en',request=async()=>({plugins:[]})}={}){
   const factory=window.eval(uiSource);
   context.i18n=window.eval(i18nSource)(context);context.ui={api:2,create:()=>factory(context)};
   const load=path=>{window.module={exports:{}};window.exports=window.module.exports;window.eval(readFileSync(new URL('../../'+path,import.meta.url),'utf8'));return window.module.exports;};
-  const control=label=>[...document.querySelectorAll('[aria-label]')].find(el=>el.getAttribute('aria-label')===label) ?? document.getElementById([...document.querySelectorAll('label[for]')].find(el=>el.textContent===label)?.htmlFor) ?? [...document.querySelectorAll('button:not([aria-label])')].find(el=>el.textContent.trim()===label);
+  const control=label=>[...document.querySelectorAll('[aria-label]')].find(el=>el.getAttribute('aria-label')===label) ?? document.getElementById([...document.querySelectorAll('label[for]')].find(el=>el.textContent===label)?.htmlFor) ?? [...document.querySelectorAll('button:not([aria-label]),[role=menuitem]:not([aria-label])')].find(el=>el.textContent.trim()===label);
   return {dom,window,document,errors,context,calls,overrides,load,control,observers,mediaListeners,cleanups,
-    async open(){entry.click();await tick();},async leave(){host?.remove();entry?.removeAttribute('aria-current');await tick();},
+    async open(){entry.click();await tick();},async leave(){host?.remove();toolbar?.remove();entry?.removeAttribute('aria-current');await tick();},
     async click(label){const element=control(label);if(!element)throw Error('Missing control '+label);element.focus();element.click();await tick();},
     async input(label,value){const element=control(label);const prototype=element.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(element,value);element.dispatchEvent(new window.Event('input',{bubbles:true}));await tick();},
     async key(element,key,rest={}){element.dispatchEvent(new window.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...rest}));await tick();},
