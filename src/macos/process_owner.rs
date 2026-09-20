@@ -201,7 +201,10 @@ fn retire_group(pid: i32) -> io::Result<()> {
                 libc::proc_pidinfo(
                     member,
                     libc::PROC_PIDTBSDINFO,
-                    0,
+                    // Darwin requires a nonzero argument to include zombies.
+                    // The leader intentionally stays unreaped until this check;
+                    // hiding it would prevent a successful cleanup receipt.
+                    1,
                     (&mut info as *mut libc::proc_bsdinfo).cast(),
                     size,
                 )

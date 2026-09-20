@@ -934,7 +934,9 @@ mod native {
         }
     }
     #[link(name = "AppKit", kind = "framework")]
-    unsafe extern "C" {}
+    unsafe extern "C" {
+        static NSPasteboardTypeString: Ref;
+    }
     #[link(name = "objc")]
     unsafe extern "C" {
         fn objc_getClass(name: *const libc::c_char) -> Ref;
@@ -969,11 +971,7 @@ mod native {
                 objc_getClass(c"NSPasteboard".as_ptr()),
                 c"generalPasteboard",
             );
-            let kind = send1(
-                objc_getClass(c"NSString".as_ptr()),
-                c"stringWithUTF8String:",
-                c"public.utf8-plain-text".as_ptr() as Ref,
-            );
+            let kind = NSPasteboardTypeString;
             (pool, board, kind)
         }
     }
