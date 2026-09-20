@@ -94,9 +94,9 @@ impl RuntimeSkills {
     pub(crate) fn prepare(registry: &Path) -> Result<Self, String> {
         let parent = registry.parent().ok_or("Registry has no parent")?;
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(windows, target_os = "macos"))]
         let canonical_parent = parent.canonicalize().map_err(|e| e.to_string())?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(windows, target_os = "macos"))]
         let parent = canonical_parent.as_path();
         let lock = std::fs::OpenOptions::new()
             .create(true)

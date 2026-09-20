@@ -151,6 +151,57 @@ test('a callback that ignores cancellation and returns is reported as succeeded'
   await services.close();
 });
 
+test('non-JSON and oversized callback results finish as explicit local failures', async () => {
+  const root = new AbortController();
+  const calls = [];
+  let delivered = false;
+  const services = createCoreServicesRuntime({
+    rootSignal: root.signal,
+    detach: callback => callback(),
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === 'tasks.register') return { runner: 'runner_invalid_results' };
+      if (method === 'tasks.claim' && !delivered) {
+        delivered = true;
+        return {
+          tasks: [
+            { task: 'task_cyclic', claim: 'claim_cyclic', input: 'cyclic', remainingMs: 5000, deadlineAt: Date.now() + 5000 },
+            { task: 'task_oversized', claim: 'claim_oversized', input: 'oversized', remainingMs: 5000, deadlineAt: Date.now() + 5000 },
+            { task: 'task_undefined', claim: 'claim_undefined', input: 'undefined', remainingMs: 5000, deadlineAt: Date.now() + 5000 },
+          ],
+          cancellations: [],
+        };
+      }
+      if (method === 'tasks.claim') {
+        await new Promise(resolve => setTimeout(resolve, 5));
+        return { tasks: [], cancellations: [] };
+      }
+      if (method === 'tasks.finish') return { task: params.task, state: params.state };
+      if (method === 'tasks.unregister') return { unregistered: true };
+      throw new Error(`unexpected ${method}`);
+    },
+  });
+  const runner = await services.tasks.register('invalid-result-fixture', input => {
+    if (input === 'oversized') return 'x'.repeat(128 * 1024);
+    if (input === 'undefined') return undefined;
+    const result = {};
+    result.self = result;
+    return result;
+  });
+  await until(() => calls.filter(call => call.method === 'tasks.finish').length === 3, 'callback results were not finished');
+  const finishes = calls.filter(call => call.method === 'tasks.finish').map(call => call.params);
+  assert.deepEqual(finishes.find(value => value.task === 'task_undefined'), {
+    task: 'task_undefined', claim: 'claim_undefined', state: 'succeeded', result: null,
+  });
+  assert.deepEqual(finishes.filter(value => value.state === 'failed').map(value => [value.task, value.state, value.error.code]).sort(), [
+    ['task_cyclic', 'failed', 'invalid_result'],
+    ['task_oversized', 'failed', 'result_too_large'],
+  ]);
+  assert.equal(finishes.filter(value => value.state === 'failed').every(value => !('result' in value)), true);
+  await runner.close();
+  await services.close();
+});
+
 test('root abort tolerates a synchronously failing unregister transport', () => {
   const root = new AbortController();
   const services = createCoreServicesRuntime({

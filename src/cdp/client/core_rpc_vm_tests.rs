@@ -53,6 +53,10 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
     let directory = tempdir().unwrap();
     let root = directory.path().join("renderer-services");
     std::fs::create_dir(&root).unwrap();
+    // Windows CI may expose TEMP through an 8.3 alias. Use one canonical path
+    // for both the broker grant and renderer requests so the test exercises the
+    // real pinned-root policy without mixing short and long path spellings.
+    let root = root.canonicalize().unwrap();
     let scope = directory.path().join("registry.json");
     let id = "test.renderer-services";
     let capability = json!({"name":"codlet.core.services","api":1,"scope":"runtime"});
@@ -63,12 +67,11 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
     for plugin in bundled_plugins().unwrap() {
         registry.set_enabled(&plugin.manifest.id, false).unwrap();
     }
-    let canonical = root.canonicalize().unwrap();
     registry
         .register_local(
             id,
             LocalPluginRegistration {
-                path: canonical.clone(),
+                path: root.clone(),
                 grants: vec![
                     Permission::CoreStorage,
                     Permission::CoreEvents,
@@ -77,8 +80,8 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
                     Permission::HostFsWrite,
                 ],
                 broker_policy: crate::plugin_permissions::BrokerPolicy {
-                    read_roots: vec![canonical.clone()],
-                    write_roots: vec![canonical],
+                    read_roots: vec![root.clone()],
+                    write_roots: vec![root.clone()],
                     ..Default::default()
                 },
             },

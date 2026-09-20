@@ -104,6 +104,8 @@ export interface CoreResourceRequest {
  * 5. on plugin/document retirement abort local controllers and unregister; Core
  *    retires every owner resource. Current records are bounded, in-memory and
  *    generation-local; they do not promise durable restart/resume.
+ * Callback results must serialize to at most 128 KiB of JSON. undefined is
+ * normalized to null; invalid or oversized results finish the task as failed.
  */
 export interface TaskRunnerInvocation {
   readonly task: string;

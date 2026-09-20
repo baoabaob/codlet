@@ -94,29 +94,15 @@ pub fn run() -> io::Result<()> {
         }
     };
     let pid = child.id() as i32;
+    let mut direct_exited = false;
     let result = (|| {
         reply(&mut control, &OwnerReply::Started { pid: child.id() })?;
         control.set_nonblocking(true)?;
         loop {
             // WNOWAIT preserves the direct child's PID until group retirement.
             // A reused PID/PGID can therefore never name a later unrelated job.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            if unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    pid as libc::id_t,
-                    &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-                )
-            } != 0
-            {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(e);
-            }
-            if unsafe { info.si_pid() } != 0 {
+            if direct_child_exited(pid)? {
+                direct_exited = true;
                 break;
             }
             let mut command = [0];
@@ -134,7 +120,7 @@ pub fn run() -> io::Result<()> {
         Ok(())
     })();
     // The child has not been reaped on any path above, including a broken lease.
-    let cleanup = retire_group(pid);
+    let cleanup = retire_group(pid, direct_exited);
     if cleanup.is_err() {
         let _ = child.kill();
     }
@@ -165,7 +151,28 @@ pub fn run() -> io::Result<()> {
     Ok(())
 }
 
-fn retire_group(pid: i32) -> io::Result<()> {
+fn direct_child_exited(pid: i32) -> io::Result<bool> {
+    loop {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        if unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        } == 0
+        {
+            return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn retire_group(pid: i32, mut direct_exited: bool) -> io::Result<()> {
     if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0
         && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     {
@@ -173,6 +180,9 @@ fn retire_group(pid: i32) -> io::Result<()> {
     }
     let until = Instant::now() + Duration::from_secs(2);
     loop {
+        if !direct_exited {
+            direct_exited = direct_child_exited(pid)?;
+        }
         let mut pids = vec![0i32; 4096];
         unsafe {
             *libc::__error() = 0;
@@ -193,8 +203,15 @@ fn retire_group(pid: i32) -> io::Result<()> {
                 "Cannot confirm owned process group membership",
             ));
         }
-        let mut active = false;
+        // The direct child is exclusively ours and remains waitable because every
+        // observation above used WNOWAIT. Once waitid confirms its exit, keeping
+        // that zombie in the group list must not block retirement; retaining it
+        // still prevents PID/PGID reuse until Child::try_wait reaps it below.
+        let mut active = !direct_exited;
         for member in pids.into_iter().take(count as usize).filter(|p| *p > 0) {
+            if member == pid && direct_exited {
+                continue;
+            }
             let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
             let size = std::mem::size_of_val(&info) as i32;
             let received = unsafe {
@@ -222,5 +239,27 @@ fn retire_group(pid: i32) -> io::Result<()> {
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreaped_natural_exit_can_retire_its_group_before_wait_reaps_the_leader() {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !direct_child_exited(pid).unwrap() {
+            assert!(Instant::now() < deadline, "child did not become waitable");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        retire_group(pid, true).unwrap();
+        assert!(child.wait().unwrap().success());
     }
 }

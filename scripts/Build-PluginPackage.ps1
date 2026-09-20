@@ -6,6 +6,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $sourceRoot = (Resolve-Path -LiteralPath $PluginDirectory).ProviderPath.TrimEnd('\', '/')
+function FileSha256([string] $Path) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) { throw 'PluginDirectory must be a prepared plugin directory.' }
 $destination = [IO.Path]::GetFullPath($OutputPath)
 if (-not $destination.EndsWith('.zip', [StringComparison]::OrdinalIgnoreCase)) { throw 'OutputPath must end in .zip.' }
@@ -57,4 +63,4 @@ try {
     $stream.Dispose()
     if (-not $complete) { Remove-Item -LiteralPath $destination -Force }
 }
-[pscustomobject]@{ Package = $destination; Files = $files.Count; SourceBytes = $totalBytes; Sha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() } | ConvertTo-Json
+[pscustomobject]@{ Package = $destination; Files = $files.Count; SourceBytes = $totalBytes; Sha256 = (FileSha256 $destination) } | ConvertTo-Json

@@ -152,6 +152,25 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
       && (failure === active.controller.signal.reason || failure?.name === 'AbortError');
   }
 
+  function validatedTaskResult(result) {
+    if (result === undefined) return { result: null };
+    let encoded;
+    try { encoded = JSON.stringify(result); }
+    catch {
+      return { error: { code: 'invalid_result', message: 'task callback result is not JSON-serializable' } };
+    }
+    if (encoded === undefined) {
+      return { error: { code: 'invalid_result', message: 'task callback result is not JSON-serializable' } };
+    }
+    const bytes = typeof Buffer === 'function'
+      ? Buffer.byteLength(encoded, 'utf8')
+      : new TextEncoder().encode(encoded).byteLength;
+    if (bytes > 128 * 1024) {
+      return { error: { code: 'result_too_large', message: 'task callback result exceeds 128 KiB' } };
+    }
+    return { result: JSON.parse(encoded) };
+  }
+
   async function executeClaim(state, claimed) {
     const controller = new AbortController();
     const active = { controller, cancellation: false, finished: false };
@@ -172,7 +191,12 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
       // Cancellation is cooperative. A callback that observes the signal but
       // still completes may already have committed its work, so preserve its
       // successful outcome and let Core reject a late terminal transition.
-      await finishClaim(state, claimed, { state: 'succeeded', result });
+      const validated = validatedTaskResult(result);
+      if (validated.error) {
+        await finishClaim(state, claimed, { state: 'failed', error: validated.error });
+      } else {
+        await finishClaim(state, claimed, { state: 'succeeded', result: validated.result });
+      }
     } catch (failure) {
       if (acknowledgedCancellation(active, failure)) {
         await finishClaim(state, claimed, { state: 'cancelled', error: { code: 'cancelled' } });

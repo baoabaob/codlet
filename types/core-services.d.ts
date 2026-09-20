@@ -139,7 +139,9 @@ export interface RegisteredTaskRunner {
   close(): Promise<{ unregistered: boolean }>;
 }
 export interface CoreTaskServices {
-  /** Callbacks acknowledge cancellation by throwing invocation.signal.reason or an AbortError. */
+  /** Callbacks acknowledge cancellation by throwing invocation.signal.reason or
+   * an AbortError. Results must serialize to at most 128 KiB of JSON;
+   * undefined is stored as null. */
   register(
     name: string,
     callback: (input: unknown, invocation: TaskRunnerInvocation) => unknown | Promise<unknown>,

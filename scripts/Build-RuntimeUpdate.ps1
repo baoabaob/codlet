@@ -25,7 +25,12 @@ function Plain([string]$Value, [bool]$Directory = $false) {
     if (-not $Directory -and $item.Length -gt 512MB) { throw 'Runtime file exceeds 512 MiB.' }
     $selected
 }
-function Hash([string]$Value) { (Get-FileHash -LiteralPath $Value -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Hash([string]$Value) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Value)
+    try { [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $algorithm.Dispose() }
+}
 function X64([string]$Value) {
     $file = [IO.File]::OpenRead((Plain $Value))
     try {
