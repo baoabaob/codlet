@@ -54,3 +54,4 @@ jobs:
         run: 'cargo test --locked --lib plugin_services::'
       - run: python3 scripts/install-js-runtime.py --destination target/debug/deps --platform darwin-arm64
       - run: 'cargo test --locked --lib core_resources::'
+      - run: cargo test --locked --test macos_native -- --test-threads=2

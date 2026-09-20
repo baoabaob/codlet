@@ -17,6 +17,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .first()
         .map(String::as_str)
         .unwrap_or("cooperative");
+    if mode == "stream-echo" {
+        io::stdout().write_all(&[0, 255, 66])?;
+        io::stdout().flush()?;
+        io::stderr().write_all(b"ready\n")?;
+        io::stderr().flush()?;
+        let mut line = String::new();
+        io::stdin().lock().read_line(&mut line)?;
+        io::stdout().write_all(line.trim_end_matches(['\r', '\n']).as_bytes())?;
+        io::stdout().flush()?;
+        return Ok(());
+    }
+    if mode == "stream-flood" {
+        io::stdout().write_all(&vec![0; 1024 * 1024])?;
+        io::stdout().flush()?;
+        std::thread::sleep(Duration::from_secs(60));
+        return Ok(());
+    }
     if matches!(mode, "sleep" | "refuse-stdin") {
         loop {
             std::thread::sleep(Duration::from_secs(60));

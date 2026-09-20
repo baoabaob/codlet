@@ -17,6 +17,9 @@ pub fn run() -> Result<()> {
     let [mode, executable] = arguments.as_slice() else {
         return Err("Expected a native fixture mode and absolute fake-host executable".into());
     };
+    if mode == "core-services" {
+        return core_services(executable);
+    }
     if !matches!(
         mode.as_str(),
         "cooperative"
@@ -118,6 +121,105 @@ pub fn run() -> Result<()> {
         }
     }
     emit(json!({"event":"stopped", "report":host.stop()?}))?;
+    Ok(())
+}
+
+fn core_services(executable: &str) -> Result<()> {
+    use codlet::core_resources::{CoreResources, ResourceOwner};
+    let directory = tempfile::tempdir()?;
+    let binary = directory.path().join("stream-fixture");
+    std::fs::copy(executable, &binary)?;
+    let owner = ResourceOwner {
+        plugin_id: "test.macos-stream".into(),
+        source_identity: "native-fixture".into(),
+        generation: 1,
+        default_cwd: directory.path().canonicalize()?,
+        executables: vec![binary.canonicalize()?],
+        cwd_roots: vec![],
+        env_keys: vec![],
+    };
+    let core = CoreResources::default();
+    let created = core.invoke(
+        &owner,
+        "processes.spawn",
+        json!({"executable":owner.executables[0],"args":["stream-echo"],"operationKey":"echo"}),
+    )?;
+    let process = &created["process"];
+    let read = |stream: &str, wanted: usize| -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        let deadline = Instant::now() + WAIT;
+        while bytes.len() < wanted {
+            let value = core.invoke(
+                &owner,
+                "processes.read",
+                json!({"process":process,"stream":stream,"waitMs":250}),
+            )?;
+            bytes.extend(
+                value["bytes"]
+                    .as_array()
+                    .ok_or("missing bytes")?
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8),
+            );
+            if value["eof"] == true {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("stream read timed out".into());
+            }
+        }
+        Ok(bytes)
+    };
+    if read("stdout", 3)? != [0, 255, 66] || read("stderr", 6)? != b"ready\n" {
+        return Err("binary stdout/stderr mismatch".into());
+    }
+    let input = json!({"process":process,"bytes":b"hello\n".to_vec(),"sequence":"0"});
+    core.invoke(&owner, "processes.write", input.clone())?;
+    if core.invoke(&owner, "processes.write", input)?["replayedReceipt"] != true {
+        return Err("stdin replay protection failed".into());
+    }
+    core.invoke(&owner, "processes.endInput", json!({"process":process}))?;
+    if read("stdout", 5)? != b"hello" {
+        return Err("stream echo mismatch".into());
+    }
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let status = core.invoke(
+            &owner,
+            "processes.wait",
+            json!({"process":process,"waitMs":250}),
+        )?;
+        if status["workerDone"] == true {
+            if status["exitCode"] != 0 || status["processesReaped"] != true {
+                return Err(format!("process retirement failed: {status}").into());
+            }
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("process retirement timed out".into());
+        }
+    }
+    core.invoke(&owner, "processes.close", json!({"process":process}))?;
+    let flood = core.invoke(
+        &owner,
+        "processes.spawn",
+        json!({"executable":owner.executables[0],"args":["stream-flood"],"operationKey":"flood"}),
+    )?;
+    std::thread::sleep(Duration::from_millis(300));
+    let status = core.invoke(
+        &owner,
+        "processes.status",
+        json!({"process":flood["process"]}),
+    )?;
+    if status["stdoutBuffered"].as_u64().unwrap_or(u64::MAX) > 256 * 1024 {
+        return Err("process output buffer exceeded its bound".into());
+    }
+    core.retire(&owner)?;
+    core.shutdown()?;
+    println!(
+        "{}",
+        json!({"event":"core-services-complete","binary":true,"stdin":true,"backpressure":true,"processesReaped":true})
+    );
     Ok(())
 }
 fn emit(value: Value) -> Result<()> {

@@ -19,6 +19,10 @@ mod files;
 mod network;
 
 pub const CAPABILITY: &str = "codlet.core.services";
+#[cfg(target_os = "macos")]
+pub(crate) fn pump_platform_events() {
+    desktop::macos_hotkeys::pump();
+}
 type Result<T> = std::result::Result<T, ServiceError>;
 type DocumentKey = (String, String, u64);
 type DocumentRunners = (u64, Vec<(&'static str, String)>);
@@ -336,6 +340,8 @@ impl SharedCoreServices {
             host,
             document,
         } = caller;
+        #[cfg(target_os = "macos")]
+        desktop::macos_hotkeys::set_waker(waker.clone());
         if serde_json::to_vec(&params).map_or(true, |value| value.len() > 512 * 1024) {
             return Err(error(
                 "request_too_large",

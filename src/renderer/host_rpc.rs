@@ -595,6 +595,8 @@ impl RendererRuntime {
     }
 
     pub(super) fn poll_host_capabilities(&mut self) {
+        #[cfg(target_os = "macos")]
+        crate::core_services::pump_platform_events();
         #[cfg(any(windows, target_os = "macos"))]
         {
             if let Some(client) = &self.host_rpc.client {

@@ -11,6 +11,17 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(15);
+
+#[test]
+fn core_streaming_processes_use_the_native_same_executable_owner_and_reap() {
+    let mut fixture = Fixture::start("core-services");
+    let result = fixture.next("core-services-complete");
+    assert_eq!(result["binary"], true);
+    assert_eq!(result["stdin"], true);
+    assert_eq!(result["backpressure"], true);
+    assert_eq!(result["processesReaped"], true);
+    fixture.exited(true);
+}
 struct Fixture {
     child: Child,
     messages: Receiver<Value>,

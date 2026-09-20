@@ -1,12 +1,15 @@
 //! Explicit desktop actions. No clipboard polling and no keyboard hook.
 use super::*;
 use std::sync::mpsc::{Receiver, SyncSender};
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_hotkeys;
 
 #[derive(Clone)]
 pub(super) struct Desktop(Arc<SharedDesktop>);
 struct SharedDesktop {
     sender: SyncSender<Command>,
     state: Arc<Mutex<State>>,
+    retired: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
 #[derive(Default)]
 struct State {
@@ -14,7 +17,6 @@ struct State {
     notifications: BTreeMap<String, String>,
     events: VecDeque<Value>,
     cursor: u64,
-    retired: std::collections::BTreeSet<String>,
 }
 struct Registration {
     owner: String,
@@ -54,11 +56,17 @@ impl Default for Desktop {
     fn default() -> Self {
         let (sender, receiver) = mpsc::sync_channel(16);
         let state = Arc::new(Mutex::new(State::default()));
+        let retired = Arc::new(Mutex::new(std::collections::BTreeSet::new()));
+        let worker_retired = retired.clone();
         let worker = Arc::downgrade(&state);
         let _ = std::thread::Builder::new()
             .name("codlet-desktop-services".into())
-            .spawn(move || run(receiver, worker));
-        Self(Arc::new(SharedDesktop { sender, state }))
+            .spawn(move || run(receiver, worker, worker_retired));
+        Self(Arc::new(SharedDesktop {
+            sender,
+            state,
+            retired,
+        }))
     }
 }
 impl Desktop {
@@ -202,10 +210,9 @@ impl Desktop {
     }
     pub fn retire(&self, p: &Principal) {
         self.0
-            .state
+            .retired
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .retired
             .insert(owner_key(p));
         let _ = self.0.sender.try_send(Command::Retire(owner_key(p)));
     }
@@ -221,7 +228,11 @@ fn emit(state: &mut State, owner: &str, kind: &str, id: &str, event: &str, actio
         state.events.pop_front();
     }
 }
-fn run(receiver: Receiver<Command>, weak: Weak<Mutex<State>>) {
+fn run(
+    receiver: Receiver<Command>,
+    weak: Weak<Mutex<State>>,
+    retired: Arc<Mutex<std::collections::BTreeSet<String>>>,
+) {
     let mut native = match native::Native::new() {
         Ok(native) => native,
         Err(_) => return,
@@ -229,7 +240,7 @@ fn run(receiver: Receiver<Command>, weak: Weak<Mutex<State>>) {
     while let Some(shared) = weak.upgrade() {
         {
             let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
-            let retired = state.retired.clone();
+            let retired = retired.lock().unwrap_or_else(|p| p.into_inner()).clone();
             let keys = state
                 .shortcuts
                 .iter()
@@ -285,7 +296,10 @@ fn run(receiver: Receiver<Command>, weak: Weak<Mutex<State>>) {
             Command::Retire(_) => None,
         };
         if let Some((owner, reply)) = admission
-            && state.retired.contains(owner)
+            && retired
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(owner)
         {
             let _ = reply.try_send(Err(error(
                 "stale_generation",
@@ -754,50 +768,8 @@ mod native {
     use std::ffi::c_void;
     use std::process::{Command, Stdio};
     type Ref = *mut c_void;
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct HotKeyId {
-        signature: u32,
-        id: u32,
-    }
-    #[repr(C)]
-    struct EventType {
-        class: u32,
-        kind: u32,
-    }
-    #[link(name = "Carbon", kind = "framework")]
-    unsafe extern "C" {
-        fn RegisterEventHotKey(
-            key: u32,
-            mods: u32,
-            id: HotKeyId,
-            target: Ref,
-            options: u32,
-            out: *mut Ref,
-        ) -> i32;
-        fn UnregisterEventHotKey(key: Ref) -> i32;
-        fn GetApplicationEventTarget() -> Ref;
-        fn ReceiveNextEvent(
-            count: u32,
-            types: *const EventType,
-            timeout: f64,
-            pull: u8,
-            out: *mut Ref,
-        ) -> i32;
-        fn GetEventParameter(
-            event: Ref,
-            name: u32,
-            kind: u32,
-            actual: *mut u32,
-            size: u32,
-            actual_size: *mut u32,
-            data: *mut c_void,
-        ) -> i32;
-        fn ReleaseEvent(event: Ref);
-    }
     pub(super) struct Native {
-        next: u32,
-        keys: BTreeMap<String, (Ref, u32)>,
+        keys: std::collections::BTreeSet<String>,
         notifications: BTreeMap<String, String>,
     }
     impl Native {
@@ -809,8 +781,7 @@ mod native {
         }
         pub fn new() -> Result<Self> {
             Ok(Self {
-                next: 1,
-                keys: BTreeMap::new(),
+                keys: std::collections::BTreeSet::new(),
                 notifications: BTreeMap::new(),
             })
         }
@@ -832,72 +803,17 @@ mod native {
                     "this key is unavailable in macOS virtual key mapping",
                 )
             })?;
-            let token = self.next;
-            self.next += 1;
-            let mut handle = std::ptr::null_mut();
-            if unsafe {
-                RegisterEventHotKey(
-                    key,
-                    modifiers,
-                    HotKeyId {
-                        signature: u32::from_be_bytes(*b"Cdlt"),
-                        id: token,
-                    },
-                    GetApplicationEventTarget(),
-                    0,
-                    &mut handle,
-                )
-            } != 0
-            {
-                return Err(error(
-                    "shortcut_conflict",
-                    "macOS rejected the global shortcut",
-                ));
-            }
-            self.keys.insert(id.into(), (handle, token));
+            super::macos_hotkeys::register(id, key, modifiers)?;
+            self.keys.insert(id.into());
             Ok(())
         }
         pub fn unregister(&mut self, id: &str) {
-            if let Some((handle, _)) = self.keys.remove(id) {
-                unsafe {
-                    UnregisterEventHotKey(handle);
-                }
+            if self.keys.remove(id) {
+                super::macos_hotkeys::unregister(id);
             }
         }
         pub fn poll(&mut self) -> Vec<(String, &'static str)> {
-            let mut result = Vec::new();
-            unsafe {
-                let kind = EventType {
-                    class: u32::from_be_bytes(*b"keyb"),
-                    kind: 6,
-                };
-                for _ in 0..32 {
-                    let mut event = std::ptr::null_mut();
-                    if ReceiveNextEvent(1, &kind, 0.0, 1, &mut event) != 0 || event.is_null() {
-                        break;
-                    }
-                    let mut value = HotKeyId {
-                        signature: 0,
-                        id: 0,
-                    };
-                    if GetEventParameter(
-                        event,
-                        u32::from_be_bytes(*b"----"),
-                        u32::from_be_bytes(*b"hkid"),
-                        std::ptr::null_mut(),
-                        std::mem::size_of::<HotKeyId>() as u32,
-                        std::ptr::null_mut(),
-                        (&mut value as *mut HotKeyId).cast(),
-                    ) == 0
-                        && let Some((id, _)) =
-                            self.keys.iter().find(|(_, (_, token))| *token == value.id)
-                    {
-                        result.push((id.clone(), "shortcut"));
-                    }
-                    ReleaseEvent(event);
-                }
-            }
-            result
+            super::macos_hotkeys::take_events(&self.keys)
         }
         pub fn notify(&mut self, id: &str, title: &str, body: &str) -> Result<()> {
             run_script(
@@ -914,10 +830,8 @@ mod native {
     }
     impl Drop for Native {
         fn drop(&mut self) {
-            for (handle, _) in self.keys.values() {
-                unsafe {
-                    UnregisterEventHotKey(*handle);
-                }
+            for id in &self.keys {
+                super::macos_hotkeys::unregister(id);
             }
         }
     }

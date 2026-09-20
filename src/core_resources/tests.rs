@@ -458,7 +458,7 @@ fn tasks_bound_concurrency_and_timeout_without_replay() {
     );
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 fn process_owner(temp: &tempfile::TempDir) -> ResourceOwner {
     let _verified = crate::js_runtime::JsRuntime::discover()
         .expect("stage the pinned Node runtime beside the test binary");
@@ -492,7 +492,7 @@ fn process_owner(temp: &tempfile::TempDir) -> ResourceOwner {
         ..owner()
     }
 }
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 fn spawn_script(core: &CoreResources, owner: &ResourceOwner, script: &str, key: &str) -> Value {
     call(
         core,
@@ -501,7 +501,7 @@ fn spawn_script(core: &CoreResources, owner: &ResourceOwner, script: &str, key: 
         json!({"executable":owner.executables[0],"args":["--eval",script],"operationKey":key}),
     )
 }
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 fn read_until(
     core: &CoreResources,
     owner: &ResourceOwner,
@@ -532,7 +532,7 @@ fn read_until(
     output
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 #[test]
 fn process_streams_binary_io_and_write_receipts_then_reaps() {
     let temp = tempfile::tempdir().unwrap();
@@ -592,7 +592,7 @@ fn process_streams_binary_io_and_write_receipts_then_reaps() {
     );
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 #[test]
 fn process_backpressure_and_retirement_keep_buffers_bounded() {
     let temp = tempfile::tempdir().unwrap();
@@ -624,7 +624,7 @@ fn process_backpressure_and_retirement_keep_buffers_bounded() {
     );
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 #[test]
 fn process_rejects_ungranted_environment_before_start() {
     let temp = tempfile::tempdir().unwrap();
