@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   windows:
+    name: Windows Core
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -38,11 +39,30 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked --all-targets --all-features -- --test-threads=2
+
+  windows-ui:
+    name: Windows UI
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: node frontend/build.mjs
       - run: node --test --test-concurrency=2 tests/*.test.mjs
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0Acceptance.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0CrashAcceptance.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0CrashAcceptance.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
 
   macos:
     runs-on: macos-15

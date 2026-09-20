@@ -316,7 +316,7 @@ fn shutdown_reaps_the_owned_descendant_tree_and_preserves_an_unrelated_fixture()
         && events.iter().any(|event| matches!(event, HostEvent::Notification { method, .. } if method == "fixture.descendant"))
     });
     host.mark_ready().unwrap();
-    let descendant = events
+    let descendant_pid = events
         .iter()
         .find_map(|event| match event {
             HostEvent::Notification { method, params } if method == "fixture.descendant" => {
@@ -325,7 +325,7 @@ fn shutdown_reaps_the_owned_descendant_tree_and_preserves_an_unrelated_fixture()
             _ => None,
         })
         .unwrap();
-    let descendant = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, descendant) };
+    let descendant = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, descendant_pid) };
     assert!(!descendant.is_null());
     let descendant = unsafe { OwnedHandle::from_raw_handle(descendant.cast()) };
     assert_eq!(
@@ -336,9 +336,10 @@ fn shutdown_reaps_the_owned_descendant_tree_and_preserves_an_unrelated_fixture()
     let report = host.stop().unwrap();
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(report.forced && report.workers_reaped);
+    let descendant_wait = unsafe { WaitForSingleObject(raw(&descendant), 0) };
     assert_eq!(
-        unsafe { WaitForSingleObject(raw(&descendant), 0) },
-        WAIT_OBJECT_0
+        descendant_wait, WAIT_OBJECT_0,
+        "stop returned {report:?}, but owned descendant {descendant_pid} remained nonsignaled with wait result {descendant_wait}"
     );
     assert!(
         witness.0.try_wait().unwrap().is_none(),

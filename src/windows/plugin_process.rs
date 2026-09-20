@@ -5,6 +5,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -16,9 +17,11 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, OPEN_EXISTING, SECURITY_ANONYMOUS, SECURITY_SQOS_PRESENT,
 };
+use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
@@ -54,6 +57,8 @@ pub(crate) struct OwnedPluginProcess {
     // An unnamed, non-inherited job supervises this plugin and its descendants.
     // It is lifecycle cleanup, not a restriction on the plugin's user privileges.
     job: OwnedHandle,
+    completion_port: OwnedHandle,
+    active_process_zero: AtomicBool,
     process: OwnedHandle,
     pid: u32,
 }
@@ -87,6 +92,29 @@ impl OwnedPluginProcess {
         } == 0
         {
             return Err(last_error("SetInformationJobObject"));
+        }
+        // Associate while the job is still empty, before the suspended root is
+        // assigned. This avoids losing lifecycle messages during association.
+        let completion_port = owned(
+            unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) },
+            "CreateIoCompletionPort(plugin job)",
+        )?;
+        let completion = JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
+            CompletionKey: raw(&job),
+            CompletionPort: raw(&completion_port),
+        };
+        if unsafe {
+            SetInformationJobObject(
+                raw(&job),
+                JobObjectAssociateCompletionPortInformation,
+                (&completion as *const JOBOBJECT_ASSOCIATE_COMPLETION_PORT).cast(),
+                std::mem::size_of_val(&completion) as u32,
+            )
+        } == 0
+        {
+            return Err(last_error(
+                "SetInformationJobObject(associate completion port)",
+            ));
         }
         let child_handles = [raw(&child_stdin), raw(&child_stdout), raw(&child_stderr)];
         let attributes = AttributeList::with_handle_list(&child_handles)
@@ -143,6 +171,8 @@ impl OwnedPluginProcess {
         }
         let child = Self {
             job,
+            completion_port,
+            active_process_zero: AtomicBool::new(false),
             process,
             pid: output.dwProcessId,
         };
@@ -172,8 +202,17 @@ impl OwnedPluginProcess {
     }
 
     pub(crate) fn wait(&self, timeout: Duration) -> Result<Option<u32>, PluginProcessError> {
+        // A long-lived process may create and retire many descendants before
+        // its root exits. Drain the private job port on every ordinary poll so
+        // those lifecycle packets do not accumulate for the whole host run.
+        self.drain_job_completions()?;
         let timeout = timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32;
-        match unsafe { WaitForSingleObject(raw(&self.process), timeout) } {
+        let wait = unsafe { WaitForSingleObject(raw(&self.process), timeout) };
+        // Draining the completion port calls another Win32 API, so preserve a
+        // failed wait's error before doing that bounded maintenance work.
+        let wait_error = (wait == WAIT_FAILED).then(|| unsafe { GetLastError() });
+        self.drain_job_completions()?;
+        match wait {
             WAIT_OBJECT_0 => {
                 let mut code = 0;
                 if unsafe { GetExitCodeProcess(raw(&self.process), &mut code) } == 0 {
@@ -183,7 +222,10 @@ impl OwnedPluginProcess {
                 }
             }
             WAIT_TIMEOUT => Ok(None),
-            _ => Err(last_error("WaitForSingleObject")),
+            _ => Err(PluginProcessError::Win32 {
+                operation: "WaitForSingleObject",
+                code: wait_error.unwrap_or(ERROR_INVALID_FUNCTION),
+            }),
         }
     }
 
@@ -196,8 +238,11 @@ impl OwnedPluginProcess {
     }
 
     /// Terminating the main process is not sufficient evidence that descendants
-    /// have retired. Keep owning the job until Windows confirms it is empty.
+    /// have retired. Accounting can reach zero before a retained descendant
+    /// process handle becomes signaled, so require the job's ACTIVE_PROCESS_ZERO
+    /// completion after the root handle is signaled as the retirement receipt.
     pub(crate) fn process_scope_is_empty(&self) -> Result<bool, PluginProcessError> {
+        self.drain_job_completions()?;
         let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
         if unsafe {
             QueryInformationJobObject(
@@ -209,10 +254,62 @@ impl OwnedPluginProcess {
             )
         } == 0
         {
-            Err(last_error("QueryInformationJobObject"))
-        } else {
-            Ok(accounting.ActiveProcesses == 0)
+            return Err(last_error("QueryInformationJobObject"));
         }
+        let root_exited = match unsafe { WaitForSingleObject(raw(&self.process), 0) } {
+            WAIT_OBJECT_0 => true,
+            WAIT_TIMEOUT => false,
+            _ => return Err(last_error("WaitForSingleObject(plugin process receipt)")),
+        };
+        Ok(root_exited
+            && accounting.ActiveProcesses == 0
+            && self.active_process_zero.load(Ordering::Acquire))
+    }
+
+    fn drain_job_completions(&self) -> Result<(), PluginProcessError> {
+        // winnt.h defines JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO as 4. Completion
+        // delivery is not guaranteed; absence deliberately leaves cleanup
+        // unconfirmed so callers return cleanup_incomplete within their budget.
+        const ACTIVE_PROCESS_ZERO: u32 = 4;
+        const MAX_PACKETS_PER_POLL: usize = 256;
+        for _ in 0..MAX_PACKETS_PER_POLL {
+            let mut message = 0;
+            let mut completion_key = 0usize;
+            let mut overlapped = std::ptr::null_mut();
+            if unsafe {
+                GetQueuedCompletionStatus(
+                    raw(&self.completion_port),
+                    &mut message,
+                    &mut completion_key,
+                    &mut overlapped,
+                    0,
+                )
+            } == 0
+            {
+                let error = unsafe { GetLastError() };
+                if error == WAIT_TIMEOUT {
+                    return Ok(());
+                }
+                return Err(PluginProcessError::Win32 {
+                    operation: "GetQueuedCompletionStatus(plugin job)",
+                    code: error,
+                });
+            }
+            if completion_key != raw(&self.job) as usize {
+                return Err(PluginProcessError::Invalid(
+                    "plugin job completion key changed".into(),
+                ));
+            }
+            if message == ACTIVE_PROCESS_ZERO {
+                if !overlapped.is_null() {
+                    return Err(PluginProcessError::Invalid(
+                        "plugin job ACTIVE_PROCESS_ZERO carried a process identifier".into(),
+                    ));
+                }
+                self.active_process_zero.store(true, Ordering::Release);
+            }
+        }
+        Ok(())
     }
 }
 
