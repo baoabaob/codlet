@@ -8,6 +8,7 @@
 - 双窗口、无 Host 入口的 renderer 测试验证共享 CAS 存储、文件创建与替换、事件传递和越权拒绝
 - 本机 Windows Credential Manager 测试实际写入、读取使用并移除独立的测试凭据
 - 本地 HTTPS/WSS 上游及代理测试验证转发、CA、认证隔离和取消；未关闭证书或主机名校验
+- 本机官方 AppServer 的两项 opt-in 回环验收均通过：Adapter 选择的 HTTP 与 WebSocket 通道实际完成生成，并在后台冷重启后恢复会话。使用独立 home/SQLite 目录、文件凭据模式及本地模拟响应，不使用日常会话数据库或实际模型服务
 - SDK 测试验证真实 callback runner、进度、合作取消、文档结束、无效或超大结果；远端完成回执未知时不自动重放
 - 隔离 dev 内临时插件实际完成存储事务、事件传递、后台 callback 与结果读取，随后通过 CLI 移除测试注册
 - dev 主窗口显示 Codlet、UI controls、M3 / M4 入口，运行时 skill 状态为 `ready`；辅助头像窗口不挂载插件页面
@@ -31,6 +32,10 @@
 
 私有仓库为 `baoabaob/codlet`，CI 分别运行 Windows 和 Apple silicon macOS。提交 `54e36a9` 的 macOS CI 全部通过：全目标编译、12 项存储/凭据测试、6 项事件/任务测试、1 项未 reap 子进程回归及 6 项原生生命周期/字节流测试。真实 Mac 上的官方客户端页面、文件选择器、Keychain 提示、剪贴板、通知和全局快捷键交互仍需人工验收；模拟凭据后端测试不等于原生 Keychain 交互验收。
 
-Windows 原生、JavaScript/界面、启动脚本作为独立 CI job 并行运行。启动和异常退出脚本分别覆盖 Windows PowerShell 与 PowerShell 7，前一组测试失败不会阻断另一组结果的收集。提交 `ab94a48` 的 Windows Core、macOS 及 258 项 JavaScript 测试均通过（另 2 项按平台跳过）；该轮剩余的 PowerShell 7 夹具问题如上已修复并在两种 shell 中复验。
+Windows 原生、JavaScript/界面、启动脚本作为独立 CI job 并行运行。启动和异常退出脚本分别覆盖 Windows PowerShell 与 PowerShell 7，前一组测试失败不会阻断另一组结果的收集。
+
+2026-09-21（北京时间），提交 `91462e7` 的[完整 CI](https://github.com/baoabaob/codlet/actions/runs/35521716990) 全部通过：Windows Core、Windows UI、Windows launch scripts 和 macOS 四组均为 success。JavaScript 共 260 项，其中 258 项通过；另 2 项因 CI 未安装官方 CLI 而跳过，已在本机使用官方 CLI 补验通过。
+
+CI 完成后的收尾只更新此记录和 opt-in 原生测试的隔离设置，应用实现与 CI 验收版本相同。测试显式设置独立 SQLite 目录和文件凭据模式，并再次通过 HTTP/WebSocket 两项真实 AppServer 测试；预先设置的外部 SQLite 路径未被创建。该收尾提交使用 `[skip ci]`，不重复运行未变更的全套检查。
 
 本轮不制作安装包、不创建 release、不适配 Linux。文件写入采用有界原子替换，任务记录不跨 Core 重启恢复，基础系统通知尚不提供自定义操作按钮；这些限制均在公开契约中说明。

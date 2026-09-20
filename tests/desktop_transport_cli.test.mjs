@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -70,7 +70,12 @@ for (const mode of ['http', 'websocket']) test(`official AppServer starts and re
         ...(mode === 'http' ? { http: (incoming, exchange) => exchange.forward({ url: upstreamOrigin + incoming.path, method: incoming.method, headers: [['content-type', 'application/json']], body: incoming.body }) } : {}),
         ...(mode === 'websocket' ? { webSocket: (incoming, exchange) => exchange.forward({ url: upstreamOrigin.replace('http:', 'ws:') + incoming.path, protocols: incoming.protocols }) } : {})
     });
-    const env = { ...process.env, CODEX_HOME: root };
+    const sqliteHome = path.join(root, 'sqlite');
+    await mkdir(sqliteHome);
+    await writeFile(path.join(root, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
+    // A test started from a Desktop/Core shell may inherit its SQLite location.
+    // Keep both persistence and credentials inside this fixture's owned home.
+    const env = { ...process.env, CODEX_HOME: root, CODEX_SQLITE_HOME: sqliteHome };
     for (const key of Object.keys(env)) if (/(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|BEARER_TOKEN|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY)$/i.test(key)) delete env[key];
     const pending = new Map(), notifications = [];
     let nextId = 0, notify, child, closed, reader;
