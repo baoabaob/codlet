@@ -43,6 +43,19 @@ impl Files {
         check: &dyn Fn() -> Result<()>,
     ) -> Result<Value> {
         match method {
+            "release" => {
+                let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+                let reference = string(&params, "reference")?;
+                if !state
+                    .selections
+                    .get(reference)
+                    .is_some_and(|value| value.owner == owner_key(p))
+                {
+                    return Err(error("resource_closed", "file selection is unavailable"));
+                }
+                state.selections.remove(reference);
+                return Ok(json!({"released":true}));
+            }
             "openDialog" | "saveDialog" => return self.dialog(p, method == "saveDialog", params),
             "dialogStatus" | "cancelDialog" => {
                 let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
@@ -519,13 +532,13 @@ fn commit_file(
             .map_err(|e| io_error(e.error))?;
     } else {
         use std::os::windows::ffi::OsStrExt;
+        let temp = temp.into_temp_path();
         let target = path
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
         let replacement = temp
-            .path()
             .as_os_str()
             .encode_wide()
             .chain(Some(0))

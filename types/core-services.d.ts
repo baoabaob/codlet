@@ -37,13 +37,14 @@ export interface CoreFileMethods {
   'files.saveDialog': { params: { kind?: 'file'; suggestedName?: string }; result: FileDialogStatus };
   'files.dialogStatus': { params: { dialog: string }; result: FileDialogStatus };
   'files.cancelDialog': { params: { dialog: string }; result: FileDialogStatus };
+  'files.release': { params: { reference: string }; result: { released: true } };
   'files.read': { params: FileTarget & { offset?: number; maxBytes?: number }; result: { data: string; encoding: 'base64'; offset: number; eof: boolean; size: number } };
   'files.stat': { params: FileTarget; result: FileMetadata };
   'files.readDir': { params: FileTarget; result: { entries: FileDirectoryEntry[] } };
   'files.writeAtomic': { params: FileTarget & { expectedVersion: string | null; data: string }; result: { version: string; bytesWritten: number } };
   'files.mkdir': { params: FileTarget; result: { created: true } };
   'files.remove': { params: FileTarget & { expectedVersion: string }; result: { removed: true } };
-  'files.watch': { params: FileTarget; result: { watch: string; cursor: number; snapshot: unknown; recursive: false; pollIntervalMs: 300 } };
+  'files.watch': { params: FileTarget; result: { watch: string; cursor: number; snapshot: unknown; recursive: false; pollIntervalMs: 1000; idlePollIntervalMs: 5000 } };
   'files.changes': { params: { watch: string; after?: number }; result: { events: { cursor: number; kind: 'changed'; rescan: true }[]; cursor: number; gap: boolean } };
   'files.unwatch': { params: { watch: string }; result: { closed: true } };
 }
@@ -80,6 +81,7 @@ export interface CoreServiceMethods
       files: unknown;
       desktop: DesktopResources;
       network: unknown;
+      traffic: readonly { id: string; open: boolean; activeRequests: number; forwardAttempts: number; observedBy: 'managed-host' }[];
     };
   };
   'diagnostics.read': {

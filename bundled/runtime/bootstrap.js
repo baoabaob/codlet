@@ -390,8 +390,8 @@
                     definition
                 };
                 let i18n;
-                const serviceAbort = new AbortController();
-                record.disposers.add(() => serviceAbort.abort(rpcError('plugin_deactivated', 'renderer services retired')));
+                const serviceAbort = typeof createServices === 'function' ? new AbortController() : null;
+                if (serviceAbort) record.disposers.add(() => serviceAbort.abort(rpcError('plugin_deactivated', 'renderer services retired')));
                 const services = typeof createServices === 'function' ? createServices({
                     rootSignal: serviceAbort.signal,
                     detach: callback => callback(),

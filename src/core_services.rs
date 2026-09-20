@@ -21,7 +21,7 @@ mod network;
 pub const CAPABILITY: &str = "codlet.core.services";
 type Result<T> = std::result::Result<T, ServiceError>;
 type DocumentKey = (String, String, u64);
-type DocumentRunners = (u64, Vec<String>);
+type DocumentRunners = (u64, Vec<(&'static str, String)>);
 
 pub(crate) struct ServiceCaller<'a> {
     pub id: &'a str,
@@ -302,12 +302,21 @@ impl SharedCoreServices {
                 .filter(|p| p.plugin.generation == generation)
                 .cloned();
             if let Some(principal) = principal {
-                for runner in runners {
-                    let _ = self.0.resources.invoke(
-                        &principal.resources,
-                        "tasks.unregister",
-                        json!({"runner":runner}),
-                    );
+                for (kind, id) in runners {
+                    if kind == "runner" {
+                        let _ = self.0.resources.invoke(
+                            &principal.resources,
+                            "tasks.unregister",
+                            json!({"runner":id}),
+                        );
+                    } else {
+                        let _ = self.0.files.invoke(
+                            &principal,
+                            "cancelDialog",
+                            json!({"dialog":id}),
+                            &|| Ok(()),
+                        );
+                    }
                 }
             }
         }
@@ -590,9 +599,14 @@ impl SharedCoreServices {
                 failure
             });
         }
-        if work.method == "tasks.register"
+        let document_resource = match work.method.as_str() {
+            "tasks.register" => Some("runner"),
+            "files.openDialog" | "files.saveDialog" => Some("dialog"),
+            _ => None,
+        };
+        if let Some(kind) = document_resource
             && let (Some((document, epoch)), Some(runner)) =
-                (&work.document, value.get("runner").and_then(Value::as_str))
+                (&work.document, value.get(kind).and_then(Value::as_str))
         {
             let mut documents = self.0.documents.lock().unwrap_or_else(|p| p.into_inner());
             let entry = documents.get_mut(&(
@@ -603,8 +617,19 @@ impl SharedCoreServices {
             if let Some((current, runners)) = entry
                 && *current == *epoch
             {
-                if !runners.iter().any(|id| id == runner) {
-                    runners.push(runner.into());
+                if kind == "dialog" {
+                    runners.retain(|(kind, _)| *kind != "dialog");
+                }
+                if !runners.iter().any(|(k, id)| *k == kind && id == runner) {
+                    if runners.len() >= 128 {
+                        drop(documents);
+                        self.rollback_resource(p, &work.method, &value);
+                        return Err(error(
+                            "resource_limit",
+                            "document resource registration limit reached",
+                        ));
+                    }
+                    runners.push((kind, runner.into()));
                 }
             } else {
                 drop(documents);
@@ -837,9 +862,10 @@ fn permission(method: &str) -> Result<Permission> {
         Some(("files", "read" | "stat" | "readDir")) => HostFs,
         Some(("files", "writeAtomic" | "remove" | "mkdir")) => HostFsWrite,
         Some(("files", "watch" | "changes" | "unwatch")) => HostFsWatch,
-        Some(("files", "openDialog" | "saveDialog" | "dialogStatus" | "cancelDialog")) => {
-            CoreFilesDialog
-        }
+        Some((
+            "files",
+            "openDialog" | "saveDialog" | "dialogStatus" | "cancelDialog" | "release",
+        )) => CoreFilesDialog,
         Some(("events", _)) => CoreEvents,
         Some(("tasks", _)) => CoreTasks,
         Some(("processes", _)) => HostProcessSpawn,

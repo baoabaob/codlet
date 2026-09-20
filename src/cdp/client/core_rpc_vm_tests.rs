@@ -180,6 +180,22 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
     );
     assert!(written["version"].as_str().unwrap().starts_with("sha256:"));
     assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    let replace = json!({"path":path,"expectedVersion":written["version"],"data":"dXBkYXRlZA=="});
+    let updated = eval(
+        1,
+        format!("__coreServicesTest.services.files.writeAtomic({replace})"),
+    );
+    assert_ne!(updated["version"], written["version"]);
+    assert_eq!(std::fs::read(&path).unwrap(), b"updated");
+    assert_eq!(
+        eval(
+            0,
+            format!(
+                "__coreServicesTest.services.files.writeAtomic({replace}).catch(e=>({{code:e.code}}))"
+            )
+        )["code"],
+        "revision_conflict"
+    );
     let escape = json!({"path":directory.path().join("outside.txt"),"expectedVersion":null,"data":"aGVsbG8="});
     assert_eq!(
         eval(

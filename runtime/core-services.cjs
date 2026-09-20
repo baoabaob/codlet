@@ -63,6 +63,7 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
     saveDialog: optional('files.saveDialog', {}),
     dialogStatus: unary('files.dialogStatus'),
     cancelDialog: unary('files.cancelDialog'),
+    release: unary('files.release'),
     read: unary('files.read'),
     stat: unary('files.stat'),
     readDir: unary('files.readDir'),

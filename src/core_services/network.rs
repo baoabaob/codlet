@@ -282,12 +282,12 @@ impl Network {
             .build()
             .map_err(|_| error("network_unavailable", "cannot initialize network worker"))?;
         runtime.block_on(async {
-            let mut response=request.send().await.map_err(network_error)?;
+            let mut response=checked_network(request.send(),check).await?;
             check()?;
             let status=response.status().as_u16();
             let headers=response.headers().iter().map(|(name,value)|json!([name.as_str(),value.to_str().unwrap_or("")])).collect::<Vec<_>>();
             let mut bytes=Vec::new();
-            while let Some(chunk)=response.chunk().await.map_err(network_error)? {check()?;if bytes.len()+chunk.len()>maximum{return Err(error("response_too_large","fetch response exceeds maxBytes; use a streaming traffic channel"))}bytes.extend_from_slice(&chunk);}
+            while let Some(chunk)=checked_network(response.chunk(),check).await? {check()?;if bytes.len()+chunk.len()>maximum{return Err(error("response_too_large","fetch response exceeds maxBytes; use a streaming traffic channel"))}bytes.extend_from_slice(&chunk);}
             Ok(json!({"status":status,"headers":headers,"data":BASE64.encode(bytes),"encoding":"base64","profileRevision":route["revision"]}))
         })
     }
@@ -380,6 +380,16 @@ fn require_secret_grant(p: &Principal) -> Result<()> {
         ));
     }
     Ok(())
+}
+async fn checked_network<T>(
+    future: impl std::future::Future<Output = std::result::Result<T, reqwest::Error>>,
+    check: &dyn Fn() -> Result<()>,
+) -> Result<T> {
+    tokio::pin!(future);
+    let mut interval = tokio::time::interval(Duration::from_millis(25));
+    loop {
+        tokio::select! { result=&mut future=>return result.map_err(network_error), _=interval.tick()=>check()?, }
+    }
 }
 fn network_error(e: reqwest::Error) -> ServiceError {
     error(
