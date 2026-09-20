@@ -9,6 +9,10 @@ import test from 'node:test';
 import { runInstall, captureProcessIdentity } from '../scripts/runtime-update-helper.mjs';
 
 const helper = fileURLToPath(new URL('../scripts/runtime-update-helper.mjs', import.meta.url));
+// Production plans are emitted from canonical Rust paths. GitHub's Windows
+// runner exposes TEMP through an 8.3 alias, so canonicalize the fixture parent
+// before deriving any path identities that the helper intentionally pins.
+const temporaryRoot = fs.realpathSync.native(os.tmpdir());
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const record = (root, relative) => { const bytes = fs.readFileSync(path.join(root, relative)); return { path: relative, bytes: bytes.length, sha256: sha(bytes) }; };
 const checked = file => { const bytes = fs.readFileSync(file); return { path: file, bytes: bytes.length, sha256: sha(bytes) }; };
@@ -22,7 +26,7 @@ function materialize(root, nodeVersion, label, profile = 'isolatedClient') {
   return { runtime, files: [...files.keys()].sort().map(name => record(root, name)) };
 }
 async function fixture(mode = 'success') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codlet-update-helper-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(temporaryRoot, 'codlet-update-helper-')));
   const state = path.join(root, 'updates'), install = path.join(root, 'installed'), id = 'runtime-install-' + randomUUID(), job = path.join(state, id), staged = path.join(state, 'runtime-payload-' + randomUUID());
   fs.mkdirSync(job, { recursive: true });
   const old = materialize(install, '24.21.0', 'old runtime'), next = materialize(staged, '25.0.0', 'new runtime');
@@ -47,7 +51,7 @@ async function fixture(mode = 'success') {
   function save() { const bytes = Buffer.from(JSON.stringify(plan)); fs.writeFileSync(planPath, bytes); planSha = sha(bytes); return planSha; }
   save();
   function armed(message) { assert.equal(message.event, 'runtime-update-helper-ready'); assert.equal(message.id, id); assert.equal(message.planSha256, planSha); assert.equal(fs.readFileSync(path.join(install, 'codlet-lab.exe'), 'utf8'), 'old runtime'); fs.writeFileSync(plan.handoffAckPath, JSON.stringify({ id, planSha256: planSha }), { flag: 'wx' }); owner.stdin.end(); }
-  async function cleanup() { owner.stdin.end(); await ownerExited; assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep)); fs.rmSync(root, { recursive: true, force: true }); }
+  async function cleanup() { owner.stdin.end(); await ownerExited; assert.ok(path.resolve(root).startsWith(path.resolve(temporaryRoot) + path.sep)); fs.rmSync(root, { recursive: true, force: true }); }
   return { root, install, state, job, staged, owner, ownerExited, originalConfig, configPath, plan, planPath, get planSha() { return planSha; }, save, armed, cleanup, log };
 }
 
