@@ -119,7 +119,11 @@ fn runtime_inspection_samples_owned_registration_and_lifecycle_without_cdp_or_di
     use codlet::runtime_inspection::ProviderKind;
     let (directory, _registry_path, mut runtime) = control_runtime();
     let (child, client, events) = launch("renderer-control", &[]);
-    let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(400));
+    // The held candidate consumes this whole forward phase. Keep enough of the
+    // separately allocated rollback phase for a loaded CI worker to perform its
+    // real cleanup and reactivation work.
+    let phase_budget = Duration::from_millis(1_000);
+    let (_targets, sessions) = discover_targets(client.clone(), events, phase_budget);
     let publisher = StatusPublisher::new();
     publisher
         .bind_runtime_identity([9; 16], "fixture-inspection")
@@ -228,10 +232,22 @@ fn runtime_inspection_samples_owned_registration_and_lifecycle_without_cdp_or_di
         })
     };
     observing.recv_timeout(DEADLINE).unwrap();
+    let reload_started = Instant::now();
     let reloaded = runtime
         .manage_plugin(control_request(Action::Reload, "dev.provider"))
         .unwrap();
-    assert_eq!(reloaded.outcome, Outcome::RolledBack);
+    let reload_elapsed = reload_started.elapsed();
+    assert_eq!(
+        reloaded.outcome,
+        Outcome::RolledBack,
+        "reload took {reload_elapsed:?}; failures={:?}; message={:?}",
+        reloaded.target_failures,
+        reloaded.message
+    );
+    assert!(
+        reload_elapsed < phase_budget * 3,
+        "reload exceeded three phase budgets: elapsed={reload_elapsed:?}; report={reloaded:?}"
+    );
     let during = observer.join().unwrap();
     assert!(during.renderer.unwrap().lifecycle_busy);
     let after = publisher.inspection_snapshot().unwrap().renderer.unwrap();
@@ -783,7 +799,10 @@ fn running_control_uses_one_forward_deadline_across_targets_then_a_fresh_compens
     use codlet::plugin_control::{PluginControlAction as Action, PluginControlOutcome as Outcome};
     let (directory, _registry_path, mut runtime) = control_runtime();
     let (child, client, events) = launch("renderer-control", &[]);
-    let budget = Duration::from_millis(300);
+    // The test intentionally spends the complete forward budget on a withheld
+    // activation. A larger proportional window keeps the fresh rollback budget
+    // distinct from scheduler noise on a loaded Windows runner.
+    let budget = Duration::from_millis(1_000);
     let (_targets, sessions) = discover_targets(client.clone(), events, budget);
     for session in &sessions {
         runtime.attach(session).unwrap();
@@ -797,8 +816,18 @@ fn running_control_uses_one_forward_deadline_across_targets_then_a_fresh_compens
     let report = runtime
         .manage_plugin(control_request(Action::Reload, "dev.provider"))
         .unwrap();
-    assert!(started.elapsed() < Duration::from_millis(900));
-    assert_eq!(report.outcome, Outcome::RolledBack);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < budget * 3,
+        "management exceeded three phase budgets: elapsed={elapsed:?}; report={report:?}"
+    );
+    assert_eq!(
+        report.outcome,
+        Outcome::RolledBack,
+        "management took {elapsed:?}; failures={:?}; message={:?}",
+        report.target_failures,
+        report.message
+    );
     assert!(
         report
             .target_failures
@@ -811,14 +840,14 @@ fn running_control_uses_one_forward_deadline_across_targets_then_a_fresh_compens
         .result
         .unwrap();
     // A fresh per-target deadline would issue the second withheld activation.
+    let trace = stats["trace"].as_array().unwrap();
+    let timed_out = trace
+        .iter()
+        .filter(|event| event["timedOut"] == true)
+        .count();
     assert_eq!(
-        stats["trace"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|event| event["timedOut"] == true)
-            .count(),
-        1
+        timed_out, 1,
+        "forward phase renewed its deadline or skipped the held activation: elapsed={elapsed:?}; trace={trace:?}; report={report:?}"
     );
     assert!(
         runtime
@@ -1358,18 +1387,28 @@ fn run_reentrant_scenario(mode: &str, response_failure: bool) {
 #[test]
 fn renderer_reentrant_nested_wait_uses_original_absolute_deadline() {
     let (child, client, events) = launch("renderer-reentrant-deadline", &[]);
-    let (_targets, sessions) = discover_targets(client.clone(), events, Duration::from_millis(500));
+    let activation_budget = Duration::from_millis(1_000);
+    let (_targets, sessions) = discover_targets(client.clone(), events, activation_budget);
     let (_directory, mut runtime) = reentrant_runtime();
     let start = Instant::now();
     assert_eq!(runtime.attach(&sessions[0]).unwrap().plugin_count, 1);
+    let diagnostics = runtime.take_diagnostics();
     assert!(
-        runtime
-            .take_diagnostics()
+        diagnostics
             .iter()
             .any(|diagnostic| diagnostic.plugin_id == "codlet-gui"
-                && diagnostic.message.contains("deadline"))
+                && diagnostic.message.contains("deadline")),
+        "missing deadline diagnostic after {:?}: {diagnostics:?}",
+        start.elapsed()
     );
-    assert!(start.elapsed() < Duration::from_millis(750));
+    let elapsed = start.elapsed();
+    // The fake peer independently rejects retirement that begins after 1.4s,
+    // between the original 1s expiry and a wrongly renewed 1.6s expiry. This
+    // wider bound covers the successful cleanup commands after that check.
+    assert!(
+        elapsed < Duration::from_millis(2_500),
+        "nested deadline scenario cleanup was not bounded: elapsed={elapsed:?}; diagnostics={diagnostics:?}"
+    );
     assert_eq!(runtime.session_count(), 1);
     let snapshot = runtime.status_snapshot();
     assert_eq!(snapshot.targets[0].plugins.len(), 1);

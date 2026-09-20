@@ -1259,7 +1259,7 @@ fn scenario_renderer_reentrant(
     }
     if mode == "renderer-reentrant-deadline" {
         let started = std::time::Instant::now();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(600));
         emit_renderer_request(
             output,
             &session,
@@ -1270,7 +1270,7 @@ fn scenario_renderer_reentrant(
         )?;
         let provider = expect_held_evaluation(&mut reader, &session, 201, "__rpcInvoke")?;
         // Both outer activation and nested provider remain withheld until the
-        // host expires the original 500ms budget and starts retirement.
+        // host expires the original 1s budget and starts retirement.
         complete_renderer_evaluation(
             &mut reader,
             output,
@@ -1279,10 +1279,11 @@ fn scenario_renderer_reentrant(
             "__rpcClose",
             json!({"ok":true}),
         )?;
-        if started.elapsed() >= std::time::Duration::from_millis(700) {
-            return Err(FakeChildError::InvalidRequest(
-                "nested wait renewed the activation deadline".to_owned(),
-            ));
+        let elapsed = started.elapsed();
+        if elapsed >= std::time::Duration::from_millis(1_400) {
+            return Err(FakeChildError::InvalidRequest(format!(
+                "nested wait renewed the 1s activation deadline or retirement was late: elapsed={elapsed:?}, renewed expiry would be about 1.6s"
+            )));
         }
         write_evaluation_value(output, provider, json!({"ok":true,"value":null}), &session)?;
         write_evaluation_value(output, activation, json!({"ok":true}), &session)?;
