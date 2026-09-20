@@ -12,6 +12,7 @@ use super::*;
 pub struct HostCoreServices {
     pub os_broker: Option<OsBrokerClient>,
     pub runtime_manage: Option<RuntimeManageService>,
+    pub plugin_services: Option<crate::core_services::SharedCoreServices>,
 }
 
 #[derive(Clone, Default)]
@@ -39,6 +40,9 @@ impl CoreServices {
         self.rpc.retire_host_scopes(id, generation);
         if let Some(broker) = &self.config.os_broker {
             broker.revoke_owner(id, generation);
+        }
+        if let Some(services) = &self.config.plugin_services {
+            services.retire(id, generation);
         }
     }
 
@@ -75,6 +79,11 @@ impl HostRuntime {
             .and_then(|graph| graph.resolve_activation_order())
             .map_err(|error| HostError::new("dependency_conflict", error.to_string()))?;
         let services = CoreServices::new(services);
+        if let Some(plugin_services) = &services.config.plugin_services {
+            plugin_services
+                .register(&all_enabled_plugins)
+                .map_err(|error| HostError::new(error.code, error.message))?;
+        }
         services.rpc.register_plugins(&all_enabled_plugins)?;
         let plugins = all_enabled_plugins
             .into_iter()
@@ -112,6 +121,11 @@ impl HostOwner {
     pub(super) fn authorize_services(&mut self, services: CoreServices) -> Result<(), HostError> {
         self.services = services;
         self.services_active = true;
+        if let Some(services) = &self.services.config.plugin_services {
+            services
+                .register(std::slice::from_ref(&self.observation.plugin))
+                .map_err(|error| HostError::new(error.code, error.message))?;
+        }
         self.services
             .rpc
             .register_plugins(std::slice::from_ref(&self.observation.plugin))?;

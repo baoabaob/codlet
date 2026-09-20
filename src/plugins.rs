@@ -112,6 +112,36 @@ pub enum Permission {
     HostSystem,
     #[serde(rename = "runtime.manage")]
     RuntimeManage,
+    #[serde(rename = "core.storage")]
+    CoreStorage,
+    #[serde(rename = "core.credentials")]
+    CoreCredentials,
+    #[serde(rename = "core.credentials.use")]
+    CoreCredentialsUse,
+    #[serde(rename = "host.fs.write")]
+    HostFsWrite,
+    #[serde(rename = "host.fs.watch")]
+    HostFsWatch,
+    #[serde(rename = "core.files.dialog")]
+    CoreFilesDialog,
+    #[serde(rename = "core.events")]
+    CoreEvents,
+    #[serde(rename = "core.tasks")]
+    CoreTasks,
+    #[serde(rename = "host.process.spawn")]
+    HostProcessSpawn,
+    #[serde(rename = "core.network")]
+    CoreNetwork,
+    #[serde(rename = "core.notifications")]
+    CoreNotifications,
+    #[serde(rename = "core.clipboard.read")]
+    CoreClipboardRead,
+    #[serde(rename = "core.clipboard.write")]
+    CoreClipboardWrite,
+    #[serde(rename = "core.shortcuts")]
+    CoreShortcuts,
+    #[serde(rename = "core.diagnostics")]
+    CoreDiagnostics,
 }
 
 impl Permission {
@@ -125,7 +155,43 @@ impl Permission {
             Self::HostNetwork => "host.network",
             Self::HostSystem => "host.system",
             Self::RuntimeManage => "runtime.manage",
+            Self::CoreStorage => "core.storage",
+            Self::CoreCredentials => "core.credentials",
+            Self::CoreCredentialsUse => "core.credentials.use",
+            Self::HostFsWrite => "host.fs.write",
+            Self::HostFsWatch => "host.fs.watch",
+            Self::CoreFilesDialog => "core.files.dialog",
+            Self::CoreEvents => "core.events",
+            Self::CoreTasks => "core.tasks",
+            Self::HostProcessSpawn => "host.process.spawn",
+            Self::CoreNetwork => "core.network",
+            Self::CoreNotifications => "core.notifications",
+            Self::CoreClipboardRead => "core.clipboard.read",
+            Self::CoreClipboardWrite => "core.clipboard.write",
+            Self::CoreShortcuts => "core.shortcuts",
+            Self::CoreDiagnostics => "core.diagnostics",
         }
+    }
+
+    pub fn is_core_service(self) -> bool {
+        matches!(
+            self,
+            Self::CoreStorage
+                | Self::CoreCredentials
+                | Self::CoreCredentialsUse
+                | Self::HostFsWrite
+                | Self::HostFsWatch
+                | Self::CoreFilesDialog
+                | Self::CoreEvents
+                | Self::CoreTasks
+                | Self::HostProcessSpawn
+                | Self::CoreNetwork
+                | Self::CoreNotifications
+                | Self::CoreClipboardRead
+                | Self::CoreClipboardWrite
+                | Self::CoreShortcuts
+                | Self::CoreDiagnostics
+        )
     }
 }
 

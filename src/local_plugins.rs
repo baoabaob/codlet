@@ -559,16 +559,19 @@ fn require_supported_permission(
 ) -> Result<(), LocalPluginError> {
     // This is the current loader's implementation boundary. Capability names,
     // API versions, scopes, and runtime authorization stay in the existing kernel.
-    let supported = (manifest.host.is_some()
-        && matches!(
-            permission,
-            Permission::HostProcess
-                | Permission::CdpRaw
-                | Permission::HostFs
-                | Permission::HostNetwork
-                | Permission::HostSystem
-                | Permission::RuntimeManage
-        ))
+    let supported = permission.is_core_service()
+        || (manifest.renderer.is_some()
+            && matches!(permission, Permission::HostFs | Permission::HostNetwork))
+        || (manifest.host.is_some()
+            && matches!(
+                permission,
+                Permission::HostProcess
+                    | Permission::CdpRaw
+                    | Permission::HostFs
+                    | Permission::HostNetwork
+                    | Permission::HostSystem
+                    | Permission::RuntimeManage
+            ))
         || (manifest.renderer.is_some()
             && matches!(
                 permission,

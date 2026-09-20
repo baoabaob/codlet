@@ -143,10 +143,16 @@ function retire() {
 const trafficRuntime = createEmbeddedTrafficRuntime({
   rootSignal: abort.signal,
   makeError: error,
+  reportState(channels) {
+    if (!requires.some(value => value.name === 'codlet.core.services' && value.api === 1 && value.scope === 'runtime')) return;
+    return invocationContext.run(undefined, () => rpcRequest({ name: 'codlet.core.services', api: 1, scope: 'runtime' }, 'resources.reportTraffic', { channels }));
+  },
   coreRequest(method, params, signal) {
     // A channel is generation-owned, not a continuation of the capability call
     // that happened to create it. Future socket callbacks get fresh Core deadlines.
-    return invocationContext.run(undefined, () => request(method, params, MAX_TIMEOUT, undefined, false, signal));
+    return invocationContext.run(undefined, () => method.startsWith('services.')
+      ? rpcRequest({ name: 'codlet.core.services', api: 1, scope: 'runtime' }, method.slice(9), params, { signal })
+      : request(method, params, MAX_TIMEOUT, undefined, false, signal));
   },
 });
 
@@ -235,6 +241,11 @@ function context(params) {
     process: Object.freeze({ run: osMethod('host.process.run') }),
     system: Object.freeze({ info: (options = {}) => osMethod('host.system.info')({}, options) }),
     traffic: trafficRuntime.api,
+    services: createEmbeddedServicesRuntime({
+      rootSignal: abort.signal,
+      detach: callback => invocationContext.run(undefined, callback),
+      request: (method, params, options) => rpcRequest({ name: 'codlet.core.services', api: 1, scope: 'runtime' }, method, params, options),
+    }),
   });
 }
 

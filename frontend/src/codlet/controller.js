@@ -314,7 +314,8 @@ export class Manager {
     if(!warning||warning.preview!==this.state.preview||warning.sequence!==this.sequence.page||!this.importReady())return;
     this.set({importWarning:null,importReviewError:''});
     const s=this.state,p=s.preview;
-    const brokerPolicy=Object.fromEntries(Object.entries(s.policy).filter(([key])=>({readRoots:'host.fs',networkOrigins:'host.network',executables:'host.process'}[key]) && s.grants.includes({readRoots:'host.fs',networkOrigins:'host.network',executables:'host.process'}[key])).map(([key,value])=>[key,value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)]));
+    const policyPermissions={readRoots:['host.fs'],writeRoots:['host.fs.write'],watchRoots:['host.fs.watch'],networkOrigins:['host.network'],executables:['host.process','host.process.spawn'],cwdRoots:['host.process.spawn'],envKeys:['host.process.spawn'],shortcuts:['core.shortcuts']};
+    const brokerPolicy=Object.fromEntries(Object.entries(s.policy).filter(([key])=>policyPermissions[key]?.some(permission=>s.grants.includes(permission))).map(([key,value])=>[key,value.split(/\r?\n/).map(line=>line.trim()).filter(Boolean)]));
     const local_import={path:p.path,contentDigest:p.contentDigest,registrationDigest:p.registrationDigest,trusted:true,grants:p.manifest.permissions.filter(permission=>s.grants.includes(permission)),brokerPolicy,enable:s.enableAfter,...(s.mode==='github'?{managed:s.importOperation}:{})};
     const action=s.mode==='github' && s.importOperation!=='install'?s.importOperation:'import';
     this.invalidateImport();this.set({page:'plugins'});return this.mutate(p.manifest.id,action,{local_import},this.messages.name(p.manifest));

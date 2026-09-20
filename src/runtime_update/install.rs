@@ -81,8 +81,11 @@ pub(super) fn prepare_install_plan(
     prepare_install_plan_with_official(install_root, state_root, staged, restart, false)
 }
 pub(super) fn prepare_install_plan_with_official(
-    install_root: &Path, state_root: &Path, staged: &package::StagedRuntime,
-    restart: &RuntimeRestartContext, official_update: bool,
+    install_root: &Path,
+    state_root: &Path,
+    staged: &package::StagedRuntime,
+    restart: &RuntimeRestartContext,
+    official_update: bool,
 ) -> Result<RuntimeInstallRequest> {
     ensure_same_volume(install_root, state_root)?;
     let root = package::canonical_directory(install_root)?;

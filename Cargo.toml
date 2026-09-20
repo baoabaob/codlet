@@ -13,10 +13,11 @@ cc = "1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+base64 = "0.22"
 thiserror = "2.0"
 tempfile = "3.20"
 url = "2.5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "hickory-dns", "system-proxy"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "hickory-dns", "system-proxy"] }
 tokio = { version = "1", features = ["rt", "time", "net", "sync", "macros"] }
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
@@ -31,6 +32,12 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
+    "Win32_Security_Credentials",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_DataExchange",
+    "Win32_Graphics_Gdi",
+    "Win32_Networking_WinHttp",
     "Win32_Storage_FileSystem",
     "Win32_Storage_Packaging_Appx",
     "Win32_System_Diagnostics_ToolHelp",

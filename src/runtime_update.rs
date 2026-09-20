@@ -476,7 +476,15 @@ impl RuntimeUpdateService {
     }
     pub(crate) fn take_install_request_for(&self, official: bool) -> Option<RuntimeInstallRequest> {
         let mut state = self.shared.lock().unwrap();
-        if state.install_request.as_ref().is_some_and(|r| r.official_update == official) { state.install_request.take() } else { None }
+        if state
+            .install_request
+            .as_ref()
+            .is_some_and(|r| r.official_update == official)
+        {
+            state.install_request.take()
+        } else {
+            None
+        }
     }
     /// Only the owner reports a helper launch/ready failure. It retains the verified
     /// candidate and permits retry; a matching helper must not have been armed.
@@ -684,7 +692,13 @@ async fn run_command(
                     "No verified update is staged.",
                 )
             })?;
-            let request = install::prepare_install_plan_with_official(install_root, state_root, &staged, restart, matches!(command, Command::CombinedInstall))?;
+            let request = install::prepare_install_plan_with_official(
+                install_root,
+                state_root,
+                &staged,
+                restart,
+                matches!(command, Command::CombinedInstall),
+            )?;
             let mut state = shared.lock().unwrap();
             state.install_id = Some(request.id.clone());
             state.install_receipt = Some((

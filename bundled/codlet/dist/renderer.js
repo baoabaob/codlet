@@ -35,10 +35,51 @@ var PERMISSION_COPY = Object.freeze({
   "host.fs": "Read files inside explicitly allowed folders",
   "host.network": "Request explicitly allowed HTTP(S) origins",
   "host.system": "Read basic system information",
-  "runtime.manage": "Manage other plugins and their permissions"
+  "runtime.manage": "Manage other plugins and their permissions",
+  "core.storage": "Save this plugin\u2019s configuration and data",
+  "core.credentials": "Manage this plugin\u2019s system credentials",
+  "core.credentials.use": "Use saved credentials for their approved destinations",
+  "host.fs.write": "Write files inside explicitly allowed folders",
+  "host.fs.watch": "Watch explicitly allowed folders",
+  "core.files.dialog": "Open native file pickers and access selected files",
+  "core.events": "Publish and subscribe to declared plugin events",
+  "core.tasks": "Run and manage this plugin\u2019s background tasks",
+  "host.process.spawn": "Start approved programs with streaming input and output",
+  "core.network": "Configure plugin proxies and certificate trust",
+  "core.notifications": "Show system notifications",
+  "core.clipboard.read": "Read clipboard text",
+  "core.clipboard.write": "Write clipboard text",
+  "core.shortcuts": "Register explicitly allowed global shortcuts",
+  "core.diagnostics": "Read this plugin\u2019s resources and diagnostics"
 });
 function createMessages(context) {
   const TRANSLATIONS = {
+    "Save this plugin\u2019s configuration and data": "\u4FDD\u5B58\u6B64\u63D2\u4EF6\u7684\u914D\u7F6E\u548C\u6570\u636E",
+    "Manage this plugin\u2019s system credentials": "\u7BA1\u7406\u6B64\u63D2\u4EF6\u7684\u7CFB\u7EDF\u51ED\u636E",
+    "Use saved credentials for their approved destinations": "\u5C06\u4FDD\u5B58\u7684\u51ED\u636E\u7528\u4E8E\u5DF2\u6388\u6743\u7684\u76EE\u6807",
+    "Write files inside explicitly allowed folders": "\u5728\u660E\u786E\u6388\u6743\u7684\u6587\u4EF6\u5939\u4E2D\u5199\u5165\u6587\u4EF6",
+    "Watch explicitly allowed folders": "\u76D1\u542C\u660E\u786E\u6388\u6743\u7684\u6587\u4EF6\u5939",
+    "Open native file pickers and access selected files": "\u6253\u5F00\u7CFB\u7EDF\u6587\u4EF6\u9009\u62E9\u6846\u5E76\u8BBF\u95EE\u9009\u4E2D\u7684\u6587\u4EF6",
+    "Publish and subscribe to declared plugin events": "\u53D1\u5E03\u548C\u8BA2\u9605\u5DF2\u58F0\u660E\u7684\u63D2\u4EF6\u4E8B\u4EF6",
+    "Run and manage this plugin\u2019s background tasks": "\u8FD0\u884C\u5E76\u7BA1\u7406\u6B64\u63D2\u4EF6\u7684\u540E\u53F0\u4EFB\u52A1",
+    "Start approved programs with streaming input and output": "\u542F\u52A8\u5DF2\u6388\u6743\u7684\u7A0B\u5E8F\u5E76\u8BFB\u5199\u5B9E\u65F6\u8F93\u5165\u8F93\u51FA",
+    "Configure plugin proxies and certificate trust": "\u914D\u7F6E\u63D2\u4EF6\u4EE3\u7406\u548C\u8BC1\u4E66\u4FE1\u4EFB",
+    "Show system notifications": "\u663E\u793A\u7CFB\u7EDF\u901A\u77E5",
+    "Read clipboard text": "\u8BFB\u53D6\u526A\u8D34\u677F\u6587\u672C",
+    "Write clipboard text": "\u5199\u5165\u526A\u8D34\u677F\u6587\u672C",
+    "Register explicitly allowed global shortcuts": "\u6CE8\u518C\u660E\u786E\u6388\u6743\u7684\u5168\u5C40\u5FEB\u6377\u952E",
+    "Read this plugin\u2019s resources and diagnostics": "\u8BFB\u53D6\u6B64\u63D2\u4EF6\u7684\u8D44\u6E90\u548C\u8BCA\u65AD\u4FE1\u606F",
+    "Allowed write folders": "\u5141\u8BB8\u5199\u5165\u7684\u6587\u4EF6\u5939",
+    "Allowed watch folders": "\u5141\u8BB8\u76D1\u542C\u7684\u6587\u4EF6\u5939",
+    "Allowed working folders": "\u5141\u8BB8\u7684\u5DE5\u4F5C\u76EE\u5F55",
+    "Allowed environment keys": "\u5141\u8BB8\u7684\u73AF\u5883\u53D8\u91CF\u540D",
+    "Allowed global shortcuts": "\u5141\u8BB8\u7684\u5168\u5C40\u5FEB\u6377\u952E",
+    "Allowed write folders \u2014 one full path per line": "\u5141\u8BB8\u5199\u5165\u7684\u6587\u4EF6\u5939\uFF0C\u6BCF\u884C\u4E00\u4E2A\u5B8C\u6574\u8DEF\u5F84",
+    "Allowed watch folders \u2014 one full path per line": "\u5141\u8BB8\u76D1\u542C\u7684\u6587\u4EF6\u5939\uFF0C\u6BCF\u884C\u4E00\u4E2A\u5B8C\u6574\u8DEF\u5F84",
+    "Allowed working folders \u2014 one full path per line": "\u5141\u8BB8\u7684\u5DE5\u4F5C\u76EE\u5F55\uFF0C\u6BCF\u884C\u4E00\u4E2A\u5B8C\u6574\u8DEF\u5F84",
+    "Allowed environment keys \u2014 one name per line": "\u5141\u8BB8\u7684\u73AF\u5883\u53D8\u91CF\u540D\uFF0C\u6BCF\u884C\u4E00\u4E2A",
+    "Allowed global shortcuts \u2014 one combination per line": "\u5141\u8BB8\u7684\u5168\u5C40\u5FEB\u6377\u952E\uFF0C\u6BCF\u884C\u4E00\u4E2A\u7EC4\u5408",
+    "Allowed child programs \u2014 one full path per line": "\u5141\u8BB8\u7684\u5B50\u7A0B\u5E8F\uFF0C\u6BCF\u884C\u4E00\u4E2A\u5B8C\u6574\u8DEF\u5F84",
     "Update both": "\u540C\u65F6\u66F4\u65B0",
     "Updating together...": "\u6B63\u5728\u540C\u65F6\u66F4\u65B0\u2026",
     "Update Codlet and the client together": "\u540C\u65F6\u66F4\u65B0 Codlet \u548C\u5BA2\u6237\u7AEF",
@@ -1133,7 +1174,8 @@ var Manager = class {
     if (!warning || warning.preview !== this.state.preview || warning.sequence !== this.sequence.page || !this.importReady()) return;
     this.set({ importWarning: null, importReviewError: "" });
     const s = this.state, p = s.preview;
-    const brokerPolicy = Object.fromEntries(Object.entries(s.policy).filter(([key]) => ({ readRoots: "host.fs", networkOrigins: "host.network", executables: "host.process" })[key] && s.grants.includes({ readRoots: "host.fs", networkOrigins: "host.network", executables: "host.process" }[key])).map(([key, value]) => [key, value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)]));
+    const policyPermissions = { readRoots: ["host.fs"], writeRoots: ["host.fs.write"], watchRoots: ["host.fs.watch"], networkOrigins: ["host.network"], executables: ["host.process", "host.process.spawn"], cwdRoots: ["host.process.spawn"], envKeys: ["host.process.spawn"], shortcuts: ["core.shortcuts"] };
+    const brokerPolicy = Object.fromEntries(Object.entries(s.policy).filter(([key]) => policyPermissions[key]?.some((permission) => s.grants.includes(permission))).map(([key, value]) => [key, value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)]));
     const local_import = { path: p.path, contentDigest: p.contentDigest, registrationDigest: p.registrationDigest, trusted: true, grants: p.manifest.permissions.filter((permission) => s.grants.includes(permission)), brokerPolicy, enable: s.enableAfter, ...s.mode === "github" ? { managed: s.importOperation } : {} };
     const action = s.mode === "github" && s.importOperation !== "install" ? s.importOperation : "import";
     this.invalidateImport();
@@ -1701,7 +1743,7 @@ function PluginList({ s }) {
 function Preview({ s }) {
   const p = s.preview, m = p.manifest;
   const requirements = [...m.renderer ? m.requires ?? [] : [], ...m.host ? m.renderer ? m.host.requires ?? [] : m.requires ?? [] : []];
-  const choices = [["host.fs", "readRoots", "Allowed read folders \u2014 one full path per line"], ["host.network", "networkOrigins", "Allowed network origins \u2014 one HTTP(S) origin per line"], ["host.process", "executables", "Allowed child programs \u2014 one full .exe path per line"]];
+  const choices = [["host.fs", "readRoots", "Allowed read folders \u2014 one full path per line"], ["host.fs.write", "writeRoots", "Allowed write folders \u2014 one full path per line"], ["host.fs.watch", "watchRoots", "Allowed watch folders \u2014 one full path per line"], ["host.network", "networkOrigins", "Allowed network origins \u2014 one HTTP(S) origin per line"], [m.permissions.includes("host.process.spawn") ? "host.process.spawn" : "host.process", "executables", "Allowed child programs \u2014 one full path per line"], ["host.process.spawn", "cwdRoots", "Allowed working folders \u2014 one full path per line"], ["host.process.spawn", "envKeys", "Allowed environment keys \u2014 one name per line"], ["core.shortcuts", "shortcuts", "Allowed global shortcuts \u2014 one combination per line"]];
   return /* @__PURE__ */ h("div", { className: "codlet-local-preview" }, /* @__PURE__ */ h("h2", null, name(m)), /* @__PURE__ */ h(Copy, null, m.id, " \xB7 ", m.version), requirements.length > 0 && /* @__PURE__ */ h(Copy, null, t("Dependencies"), "\n", requirements.map((r) => `${r.name}@${r.api} (${r.scope})`).join("\n")), (p.dependencyCheck?.requirements ?? []).some((r) => r.status === "unavailable") && /* @__PURE__ */ h(Copy, null, t(`Currently unavailable: ${p.dependencyCheck.requirements.filter((r) => r.status === "unavailable").map((r) => `${r.capability.name}@${r.capability.api}`).join(", ")}. You can import the folder while disabled, then enable its providers first.`)), s.mode === "github" && /* @__PURE__ */ h(Source, { source: p.source, metadata: p.metadata }), p.currentVersion && /* @__PURE__ */ h(React.Fragment, null, /* @__PURE__ */ h(Copy, null, t(`Version: ${p.currentVersion.manifest.version} \u2192 ${m.version}
 Repository: ${p.currentVersion.source.repositoryUrl} \u2192 ${p.source.repositoryUrl}
 Release: ${p.currentVersion.source.tag} \u2192 ${p.source.tag}`)), [["Permissions added", "permissionsAdded"], ["Permissions removed", "permissionsRemoved"], ["Dependencies added", "requirementsAdded"], ["Dependencies removed", "requirementsRemoved"]].map(([label, key]) => /* @__PURE__ */ h(Copy, { key }, t(`${label}: ${(p.changes?.[key] ?? []).map((v) => typeof v === "string" ? v : `${v.name}@${v.api} (${v.scope})`).join(", ") || t("None")}`)))), p.existingRegistration && s.mode === "local" && /* @__PURE__ */ h(Copy, null, t(`Already registered at this folder. Confirm all grants again to replace its permission settings.
@@ -1738,7 +1780,7 @@ function ImportNotice({ s, submitLabel, submitText }) {
 }
 function Details({ s }) {
   const p = s.details;
-  return /* @__PURE__ */ h("section", { className: "codlet-page" }, /* @__PURE__ */ h(Back, null), s.detailsError && /* @__PURE__ */ h(Copy, { error: true, role: "alert" }, t(s.detailsError)), s.detailsBusy ? /* @__PURE__ */ h(Copy, { role: "status" }, t("Loading permissions...")) : p && /* @__PURE__ */ h(React.Fragment, null, /* @__PURE__ */ h("div", { className: "codlet-details-identity" }, /* @__PURE__ */ h("div", { className: "codlet-details-heading" }, /* @__PURE__ */ h("h2", null, name(p)), p.version && /* @__PURE__ */ h("span", { className: "codlet-version" }, p.version), p.source !== "bundled" && /* @__PURE__ */ h(IconAction, { icon: I.FolderOpen, label: "Open plugin folder", onClick: () => manager.openFolder() })), /* @__PURE__ */ h(Copy, null, p.id), description(p) && /* @__PURE__ */ h(Copy, null, description(p))), p.ownership === "core-managed-github" && /* @__PURE__ */ h(Source, { source: p.managedSource, metadata: p.metadata }), p.grants?.length > 0 && /* @__PURE__ */ h("h2", null, t("Granted permissions")), (p.grants ?? []).map((permission) => /* @__PURE__ */ h("div", { className: "codlet-permission-line", key: permission }, /* @__PURE__ */ h(Copy, null, permission, "\n", t(PERMISSION_COPY[permission] || "")), p.source !== "bundled" && /* @__PURE__ */ h(C.Button, { color: "secondary", variant: "ghost", size: "sm", "data-codlet-focus-key": `revoke:${p.id}:${permission}`, "aria-label": t(`Revoke ${permission}`), onClick: () => manager.requestRemoval(p, permission) }, t("Revoke")))), [["readRoots", "Allowed read folders"], ["networkOrigins", "Allowed network origins"], ["executables", "Allowed child programs"]].filter(([key]) => p.brokerPolicy?.[key]?.length).map(([key, label]) => /* @__PURE__ */ h(Copy, { key }, t(label), "\n", p.brokerPolicy[key].join("\n"))), manager.removalRequiresCli(p) ? /* @__PURE__ */ h("div", { className: "codlet-removal-notice" }, /* @__PURE__ */ h(Copy, null, t("The GUI plugin cannot uninstall itself or its dependencies")), /* @__PURE__ */ h("p", { className: "codlet-copy" }, t("To uninstall, use the CLI or "), /* @__PURE__ */ h("button", { type: "button", className: "codlet-inline-link", disabled: s.createBusy || s.detailsBusy || mutationBusy(s), onClick: () => manager.uninstallWithCodex() }, t("use Codex"), /* @__PURE__ */ h(I.ArrowUpRight, { "aria-hidden": "true" })))) : p.source !== "bundled" && /* @__PURE__ */ h(C.Button, { color: "danger", variant: "soft", size: "md", "data-codlet-focus-key": `remove:${p.id}`, "aria-label": t(`Remove ${name(p)}`), onClick: () => manager.requestRemoval(p) }, t("Remove plugin")), p.ownership === "core-managed-github" && /* @__PURE__ */ h(React.Fragment, null, /* @__PURE__ */ h(C.Button, { color: "secondary", variant: "soft", size: "md", "aria-label": t("Check GitHub versions"), onClick: () => manager.importPage("github", p) }, t("Check GitHub versions")))));
+  return /* @__PURE__ */ h("section", { className: "codlet-page" }, /* @__PURE__ */ h(Back, null), s.detailsError && /* @__PURE__ */ h(Copy, { error: true, role: "alert" }, t(s.detailsError)), s.detailsBusy ? /* @__PURE__ */ h(Copy, { role: "status" }, t("Loading permissions...")) : p && /* @__PURE__ */ h(React.Fragment, null, /* @__PURE__ */ h("div", { className: "codlet-details-identity" }, /* @__PURE__ */ h("div", { className: "codlet-details-heading" }, /* @__PURE__ */ h("h2", null, name(p)), p.version && /* @__PURE__ */ h("span", { className: "codlet-version" }, p.version), p.source !== "bundled" && /* @__PURE__ */ h(IconAction, { icon: I.FolderOpen, label: "Open plugin folder", onClick: () => manager.openFolder() })), /* @__PURE__ */ h(Copy, null, p.id), description(p) && /* @__PURE__ */ h(Copy, null, description(p))), p.ownership === "core-managed-github" && /* @__PURE__ */ h(Source, { source: p.managedSource, metadata: p.metadata }), p.grants?.length > 0 && /* @__PURE__ */ h("h2", null, t("Granted permissions")), (p.grants ?? []).map((permission) => /* @__PURE__ */ h("div", { className: "codlet-permission-line", key: permission }, /* @__PURE__ */ h(Copy, null, permission, "\n", t(PERMISSION_COPY[permission] || "")), p.source !== "bundled" && /* @__PURE__ */ h(C.Button, { color: "secondary", variant: "ghost", size: "sm", "data-codlet-focus-key": `revoke:${p.id}:${permission}`, "aria-label": t(`Revoke ${permission}`), onClick: () => manager.requestRemoval(p, permission) }, t("Revoke")))), [["readRoots", "Allowed read folders"], ["writeRoots", "Allowed write folders"], ["watchRoots", "Allowed watch folders"], ["networkOrigins", "Allowed network origins"], ["executables", "Allowed child programs"], ["cwdRoots", "Allowed working folders"], ["envKeys", "Allowed environment keys"], ["shortcuts", "Allowed global shortcuts"]].filter(([key]) => p.brokerPolicy?.[key]?.length).map(([key, label]) => /* @__PURE__ */ h(Copy, { key }, t(label), "\n", p.brokerPolicy[key].join("\n"))), manager.removalRequiresCli(p) ? /* @__PURE__ */ h("div", { className: "codlet-removal-notice" }, /* @__PURE__ */ h(Copy, null, t("The GUI plugin cannot uninstall itself or its dependencies")), /* @__PURE__ */ h("p", { className: "codlet-copy" }, t("To uninstall, use the CLI or "), /* @__PURE__ */ h("button", { type: "button", className: "codlet-inline-link", disabled: s.createBusy || s.detailsBusy || mutationBusy(s), onClick: () => manager.uninstallWithCodex() }, t("use Codex"), /* @__PURE__ */ h(I.ArrowUpRight, { "aria-hidden": "true" })))) : p.source !== "bundled" && /* @__PURE__ */ h(C.Button, { color: "danger", variant: "soft", size: "md", "data-codlet-focus-key": `remove:${p.id}`, "aria-label": t(`Remove ${name(p)}`), onClick: () => manager.requestRemoval(p) }, t("Remove plugin")), p.ownership === "core-managed-github" && /* @__PURE__ */ h(React.Fragment, null, /* @__PURE__ */ h(C.Button, { color: "secondary", variant: "soft", size: "md", "aria-label": t("Check GitHub versions"), onClick: () => manager.importPage("github", p) }, t("Check GitHub versions")))));
 }
 function Confirmation({ s }) {
   const c = s.confirmation, p = c.plugin, verb = c.kind === "remove" ? "Remove" : c.kind === "revoke" ? "Revoke" : "Disable";

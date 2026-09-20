@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 
 const bootstrap = (await Promise.all([
+  readFile(new URL('../runtime/core-services.cjs', import.meta.url), 'utf8').then(source => `const createEmbeddedServicesRuntime = (() => { const module = {exports:{}};${source};return module.exports.createCoreServicesRuntime;})();`),
   readFile(new URL('../runtime/host-traffic-bundle.cjs', import.meta.url), 'utf8'),
   readFile(new URL('../runtime/host.cjs', import.meta.url), 'utf8'),
 ])).join('\n');

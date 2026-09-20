@@ -63,6 +63,7 @@ enum Kind {
 
 enum Phase {
     Waiting,
+    Core(crate::core_services::ServiceOperation),
     Host(HostCapabilityOperation),
     Renderer {
         request: CdpRequest,
@@ -274,6 +275,49 @@ impl HostOwner {
                     return Some(Err(error));
                 }
                 let result = match &mut phase {
+                    Phase::Waiting
+                        if route.provider_id == BUILTIN_HOST_PROVIDER_ID
+                            && route.capability.name.as_str()
+                                == crate::core_services::CAPABILITY =>
+                    {
+                        let result = self
+                            .services
+                            .config
+                            .plugin_services
+                            .as_ref()
+                            .ok_or_else(|| {
+                                HostError::new(
+                                    "runtime_unavailable",
+                                    "Core services were not installed",
+                                )
+                            })
+                            .and_then(|services| {
+                                services
+                                    .begin(
+                                        crate::core_services::ServiceCaller {
+                                            id: &route.caller.plugin_id,
+                                            generation: route.caller.generation,
+                                            host: true,
+                                            document: None,
+                                        },
+                                        &method,
+                                        params.clone(),
+                                        pending.deadline,
+                                        client.clone(),
+                                    )
+                                    .map_err(|e| HostError::new(e.code, e.message))
+                            });
+                        match result {
+                            Ok(operation) => {
+                                phase = Phase::Core(operation);
+                                None
+                            }
+                            Err(error) => Some(Err(error)),
+                        }
+                    }
+                    Phase::Core(operation) => operation
+                        .try_result()
+                        .map(|result| result.map_err(|e| HostError::new(e.code, e.message))),
                     Phase::Waiting if route.provider_id == BUILTIN_HOST_PROVIDER_ID => {
                         Some(self.invoke_core_rpc(&route, &method, params.clone(), notification))
                     }

@@ -122,6 +122,8 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         super::client_versions::publish(&manage, &application.version);
         renderer.set_manage_service(manage.clone());
         let os = OsBroker::for_registry(scope.path().to_owned())?;
+        let plugin_services = crate::core_services::SharedCoreServices::new(scope.path())?;
+        renderer.set_core_services(plugin_services.clone())?;
         let hosts = HostRuntime::start_with_services(
             renderer.logical_plugins(),
             client.clone(),
@@ -129,6 +131,7 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             HostCoreServices {
                 os_broker: Some(os.client()),
                 runtime_manage: Some(manage.clone()),
+                plugin_services: Some(plugin_services),
             },
         )?;
         renderer.set_host_capability_client(hosts.capability_client());

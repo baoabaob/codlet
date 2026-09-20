@@ -107,7 +107,7 @@ pub enum ProbeError {
         cleanup: Box<MarkerFailure>,
     },
     #[error(
-        "unrecognized arguments; use `codlet launch [--watch | --safe-mode]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet diagnostics --output <absolute.zip> [--json]`, `codlet plugin list`, `codlet plugin github`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--network-origin <origin>]... [--executable <file>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
+        "unrecognized arguments; use `codlet launch [--watch | --safe-mode]`, `codlet status [--json]`, `codlet doctor [--json]`, `codlet diagnostics --output <absolute.zip> [--json]`, `codlet plugin list`, `codlet plugin github`, `codlet plugin add <directory> [--trust] [--grant <permission>]... [--read-root <directory>]... [--write-root <directory>]... [--watch-root <directory>]... [--network-origin <origin>]... [--executable <file>]... [--cwd-root <directory>]... [--env-key <name>]... [--shortcut <combination>]...`, `codlet plugin permissions <id> [--json]`, `codlet plugin revoke <id> <permission> [--json]`, `codlet plugin remove <id>`, `codlet plugin enable <id> [--json]`, `codlet plugin disable <id> [--json]`, `codlet plugin reload <id> [--json]`, `codlet plugin operation <receipt> [--json]`, `codlet m0-probe --launch-codex`, or `codlet m0-runtime --launch-codex`"
     )]
     Usage,
     #[error(
@@ -267,21 +267,25 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeErr
                 return safe_mode::run();
             }
             loop {
-            let runtime = start_codlet_runtime(options)?;
-            runtime.print_identity_and_initial_state();
-            if runtime.targets.is_some() {
-                println!("runtime-state: active; Codlet renderer runtime attached");
-            } else {
-                println!("runtime-state: active; Core runtime with optional plugin hosts");
-            }
-            println!(
-                "action: use Codex normally, then close Codex to stop this foreground runtime"
-            );
-            let (exit_code, restart) = runtime.wait()?;
-            println!("codex-exit-code: {exit_code}");
-            println!("runtime-state: stopped; CDP workers reaped");
-            if !restart { break; }
-            println!("official-update: restarting through Codlet with the same registry and launch options");
+                let runtime = start_codlet_runtime(options)?;
+                runtime.print_identity_and_initial_state();
+                if runtime.targets.is_some() {
+                    println!("runtime-state: active; Codlet renderer runtime attached");
+                } else {
+                    println!("runtime-state: active; Core runtime with optional plugin hosts");
+                }
+                println!(
+                    "action: use Codex normally, then close Codex to stop this foreground runtime"
+                );
+                let (exit_code, restart) = runtime.wait()?;
+                println!("codex-exit-code: {exit_code}");
+                println!("runtime-state: stopped; CDP workers reaped");
+                if !restart {
+                    break;
+                }
+                println!(
+                    "official-update: restarting through Codlet with the same registry and launch options"
+                );
             }
             Ok(())
         }
@@ -756,13 +760,20 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let control = servers.control.broker();
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
         .with_local_management(renderer.registry_path().to_owned(), options.watch);
-    let mut official_update = crate::official_update::OfficialUpdateOwner::start(&connected.process, &connected.package, manage_service.clone());
+    let mut official_update = crate::official_update::OfficialUpdateOwner::start(
+        &connected.process,
+        &connected.package,
+        manage_service.clone(),
+    );
     let watcher = manage_service
         .local_watch_enabled()
         .then(|| PluginWatcher::new(renderer.registry_path().to_owned()));
     client_versions::publish(&manage_service, &connected.package.version.to_string());
     renderer.set_manage_service(manage_service.clone());
     let os_broker = crate::os_broker::OsBroker::for_registry(renderer.registry_path().to_owned())?;
+    let plugin_services = crate::core_services::SharedCoreServices::new(renderer.registry_path())
+        .map_err(|e| HostError::new(e.code, e.message))?;
+    renderer.set_core_services(plugin_services.clone())?;
     let hosts = HostRuntime::start_with_services(
         renderer.logical_plugins(),
         connected.client.clone(),
@@ -770,6 +781,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         HostCoreServices {
             os_broker: Some(os_broker.client()),
             runtime_manage: Some(manage_service.clone()),
+            plugin_services: Some(plugin_services),
         },
     )?;
     renderer.set_host_capability_client(hosts.capability_client());
@@ -1008,7 +1020,9 @@ impl CodletRuntime {
             // The installer may close CDP before Windows retires the process.
             // Preserve the owner and its kernel registration event until exit.
             if self.client.closed_reason().is_some() && self.official_update.waiting_for_restart() {
-                if let Some(exit_code) = self.process.wait(Duration::from_millis(100))? { break exit_code; }
+                if let Some(exit_code) = self.process.wait(Duration::from_millis(100))? {
+                    break exit_code;
+                }
                 continue;
             }
 
@@ -1075,7 +1089,10 @@ impl CodletRuntime {
                     .map_err(|error| error.to_string());
                 self.host_control.renderer_executor_result(result);
             }
-            let job = if self.host_control.is_pending() || self.runtime_update.installing() || self.manage_service.official_updates.busy() {
+            let job = if self.host_control.is_pending()
+                || self.runtime_update.installing()
+                || self.manage_service.official_updates.busy()
+            {
                 None
             } else {
                 next_management_job(&self.control, || {
@@ -1181,7 +1198,10 @@ impl CodletRuntime {
         self.client.shutdown()?;
         let update_exit = self.official_update.finish();
         if update_exit != crate::official_update::UpdateExit::Ordinary || exit_code == 0 {
-            Ok((exit_code, update_exit == crate::official_update::UpdateExit::Restart))
+            Ok((
+                exit_code,
+                update_exit == crate::official_update::UpdateExit::Restart,
+            ))
         } else {
             Err(ProbeError::CodexExit { exit_code })
         }

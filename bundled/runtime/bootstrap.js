@@ -1,4 +1,4 @@
-((options = {}, createUI = null, createI18n = null) => {
+((options = {}, createUI = null, createI18n = null, createServices = null) => {
     const world = options.world ?? 'isolated';
     if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -390,6 +390,13 @@
                     definition
                 };
                 let i18n;
+                const serviceAbort = new AbortController();
+                record.disposers.add(() => serviceAbort.abort(rpcError('plugin_deactivated', 'renderer services retired')));
+                const services = typeof createServices === 'function' ? createServices({
+                    rootSignal: serviceAbort.signal,
+                    detach: callback => callback(),
+                    request: (method, params, options) => createRpc(record).request({ name: 'codlet.core.services', api: 1, scope: 'runtime' }, method, params, options),
+                }) : undefined;
                 const context = Object.freeze({
                     pluginId: metadata.id,
                     version: metadata.version,
@@ -413,6 +420,7 @@
                         return () => record.disposers.delete(listener);
                     },
                     rpc: createRpc(record),
+                    ...(services ? { services } : {}),
                     ...(typeof createUI === 'function' ? { ui: Object.freeze({ api: 2, create: () => {
                         if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
                         return createUI(context);

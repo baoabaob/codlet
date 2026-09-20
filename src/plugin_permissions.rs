@@ -20,6 +20,16 @@ pub struct BrokerPolicy {
     pub network_origins: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub executables: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_roots: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watch_roots: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cwd_roots: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shortcuts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -30,13 +40,23 @@ pub struct PermissionPolicyError {
 
 impl BrokerPolicy {
     pub fn is_empty(&self) -> bool {
-        self.read_roots.is_empty() && self.network_origins.is_empty() && self.executables.is_empty()
+        self.read_roots.is_empty()
+            && self.network_origins.is_empty()
+            && self.executables.is_empty()
+            && self.write_roots.is_empty()
+            && self.watch_roots.is_empty()
+            && self.cwd_roots.is_empty()
+            && self.env_keys.is_empty()
+            && self.shortcuts.is_empty()
     }
 
     pub fn validate(&self) -> Result<(), PermissionPolicyError> {
         for (name, paths) in [
             ("readRoots", &self.read_roots),
             ("executables", &self.executables),
+            ("writeRoots", &self.write_roots),
+            ("watchRoots", &self.watch_roots),
+            ("cwdRoots", &self.cwd_roots),
         ] {
             if paths.len() > MAX_BROKER_SCOPES {
                 return Err(policy_error(format!(
@@ -73,6 +93,24 @@ impl BrokerPolicy {
                 return Err(policy_error("networkOrigins contains duplicates"));
             }
         }
+        for (name, values) in [("envKeys", &self.env_keys), ("shortcuts", &self.shortcuts)] {
+            if values.len() > MAX_BROKER_SCOPES
+                || values.iter().any(|value| {
+                    value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+                })
+                || values.iter().collect::<BTreeSet<_>>().len() != values.len()
+            {
+                return Err(policy_error(format!(
+                    "{name} must contain at most 32 distinct bounded values"
+                )));
+            }
+        }
+        if self.env_keys.iter().any(|key| {
+            !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || key.as_bytes()[0].is_ascii_digit()
+        }) {
+            return Err(policy_error("envKeys must be environment variable names"));
+        }
         Ok(())
     }
 
@@ -81,7 +119,13 @@ impl BrokerPolicy {
         for (present, permission) in [
             (!self.read_roots.is_empty(), Permission::HostFs),
             (!self.network_origins.is_empty(), Permission::HostNetwork),
-            (!self.executables.is_empty(), Permission::HostProcess),
+            (!self.write_roots.is_empty(), Permission::HostFsWrite),
+            (!self.watch_roots.is_empty(), Permission::HostFsWatch),
+            (
+                !self.cwd_roots.is_empty() || !self.env_keys.is_empty(),
+                Permission::HostProcessSpawn,
+            ),
+            (!self.shortcuts.is_empty(), Permission::CoreShortcuts),
         ] {
             if present && !grants.contains(&permission) {
                 return Err(policy_error(format!(
@@ -89,6 +133,14 @@ impl BrokerPolicy {
                     permission.as_str()
                 )));
             }
+        }
+        if !self.executables.is_empty()
+            && !grants.contains(&Permission::HostProcess)
+            && !grants.contains(&Permission::HostProcessSpawn)
+        {
+            return Err(policy_error(
+                "executable scopes require host.process or host.process.spawn",
+            ));
         }
         Ok(())
     }
@@ -116,7 +168,32 @@ impl BrokerPolicy {
             read_roots,
             network_origins,
             executables,
+            ..Self::default()
         };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn canonicalized(&self) -> Result<Self, PermissionPolicyError> {
+        let mut policy =
+            Self::from_explicit_inputs(&self.read_roots, &self.network_origins, &self.executables)?;
+        policy.write_roots = self
+            .write_roots
+            .iter()
+            .map(|path| canonical_selected(path, true))
+            .collect::<Result<_, _>>()?;
+        policy.watch_roots = self
+            .watch_roots
+            .iter()
+            .map(|path| canonical_selected(path, true))
+            .collect::<Result<_, _>>()?;
+        policy.cwd_roots = self
+            .cwd_roots
+            .iter()
+            .map(|path| canonical_selected(path, true))
+            .collect::<Result<_, _>>()?;
+        policy.env_keys = self.env_keys.clone();
+        policy.shortcuts = self.shortcuts.clone();
         policy.validate()?;
         Ok(policy)
     }
@@ -131,7 +208,19 @@ impl LocalPluginRegistration {
         match permission {
             Permission::HostFs => self.broker_policy.read_roots.clear(),
             Permission::HostNetwork => self.broker_policy.network_origins.clear(),
-            Permission::HostProcess => self.broker_policy.executables.clear(),
+            Permission::HostProcess if !self.grants.contains(&Permission::HostProcessSpawn) => {
+                self.broker_policy.executables.clear()
+            }
+            Permission::HostProcessSpawn => {
+                if !self.grants.contains(&Permission::HostProcess) {
+                    self.broker_policy.executables.clear();
+                }
+                self.broker_policy.cwd_roots.clear();
+                self.broker_policy.env_keys.clear();
+            }
+            Permission::HostFsWrite => self.broker_policy.write_roots.clear(),
+            Permission::HostFsWatch => self.broker_policy.watch_roots.clear(),
+            Permission::CoreShortcuts => self.broker_policy.shortcuts.clear(),
             _ => {}
         }
         *self != old

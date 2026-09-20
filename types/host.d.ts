@@ -29,6 +29,10 @@ export interface HttpChannelResponse {
   body?: string | Uint8Array | Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array> | null;
 }
 export interface HttpForwardRequest {
+  /** Generation-owned Core network profile; declare codlet.core.services@1 and core.network. */
+  networkProfile?: string;
+  /** Origin-bound credential used as an explicit Bearer token. */
+  credentialRef?: string;
   /** Absolute HTTP(S) URL. Core checks its exact origin for every dispatch. */
   url: string;
   method?: string;
@@ -67,6 +71,8 @@ export interface WebSocketFrame {
 }
 export type WebSocketFrameTransform = (frame: WebSocketFrame, context: Readonly<{ signal: AbortSignal; direction: 'clientToServer' | 'serverToClient' }>) => string | Uint8Array | WebSocketFrame | null | Promise<string | Uint8Array | WebSocketFrame | null>;
 export interface WebSocketForwardRequest {
+  networkProfile?: string;
+  credentialRef?: string;
   /** Absolute ws:// or wss:// URL. ws/wss use the matching HTTP/HTTPS origin grant. */
   url: string;
   protocols?: readonly string[];
@@ -131,6 +137,8 @@ export interface HostCapabilityInvocation {
   remainingMs(): number;
 }
 export interface HostContext {
+  /** Requires the declared Runtime codlet.core.services@1 capability and each method's permission. */
+  readonly services: import('./core-services').CoreServices;
   readonly plugin: Readonly<{ id: string; version: string; generation: number }>;
   readonly root: string;
   readonly signal: AbortSignal;

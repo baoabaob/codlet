@@ -54,8 +54,13 @@ pub struct RuntimeManageService {
 }
 
 impl RuntimeManageService {
-    pub(crate) fn runtime_update_service(&self) -> Option<crate::runtime_update::RuntimeUpdateService> {
-        self.runtime_update.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    pub(crate) fn runtime_update_service(
+        &self,
+    ) -> Option<crate::runtime_update::RuntimeUpdateService> {
+        self.runtime_update
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     pub fn new(broker: ControlBroker) -> Self {
         Self {
@@ -298,7 +303,7 @@ impl RuntimeManageService {
                     .get("values")
                     .and_then(Value::as_object)
                     .is_none_or(|values| {
-                            values.len() != 5
+                        values.len() != 5
                             || ![
                                 "automaticUpdateChecks",
                                 "checkPluginUpdatesOnStartup",
@@ -359,12 +364,28 @@ impl RuntimeManageService {
         }
         if method == "installCombinedUpdate" {
             #[derive(Deserialize)]
-            #[serde(rename_all="camelCase", deny_unknown_fields)]
-            struct CombinedInput { candidate_id: String }
-            let input: CombinedInput = serde_json::from_value(params).map_err(|e|RuntimeManageError::new("invalid_params",e.to_string()))?;
-            if input.candidate_id.is_empty() || input.candidate_id.len() > 512 { return Err(RuntimeManageError::new("invalid_params", "Invalid update candidate.")); }
-            let service = self.runtime_update_service().ok_or_else(|| RuntimeManageError::new("runtime_update_unavailable", "Runtime updates are unavailable for this launcher."))?;
-            let status = self.official_updates.request_combined(&service, &input.candidate_id).map_err(|e| RuntimeManageError::new("combined_update_unavailable", e))?;
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct CombinedInput {
+                candidate_id: String,
+            }
+            let input: CombinedInput = serde_json::from_value(params)
+                .map_err(|e| RuntimeManageError::new("invalid_params", e.to_string()))?;
+            if input.candidate_id.is_empty() || input.candidate_id.len() > 512 {
+                return Err(RuntimeManageError::new(
+                    "invalid_params",
+                    "Invalid update candidate.",
+                ));
+            }
+            let service = self.runtime_update_service().ok_or_else(|| {
+                RuntimeManageError::new(
+                    "runtime_update_unavailable",
+                    "Runtime updates are unavailable for this launcher.",
+                )
+            })?;
+            let status = self
+                .official_updates
+                .request_combined(&service, &input.candidate_id)
+                .map_err(|e| RuntimeManageError::new("combined_update_unavailable", e))?;
             return Ok(serde_json::to_value(status).expect("official update status serializes"));
         }
         if matches!(
@@ -391,7 +412,12 @@ impl RuntimeManageService {
                         "Runtime updates are unavailable for this launcher.",
                     )
                 })?;
-            if method != "runtimeUpdateStatus" && self.official_updates.busy() { return Err(RuntimeManageError::new("runtime_update_busy", "A combined update is already running.")); }
+            if method != "runtimeUpdateStatus" && self.official_updates.busy() {
+                return Err(RuntimeManageError::new(
+                    "runtime_update_busy",
+                    "A combined update is already running.",
+                ));
+            }
             let status = match method {
                 "runtimeUpdateStatus" => Ok(service.status()),
                 "checkRuntimeUpdate" => service.check(),

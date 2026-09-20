@@ -237,6 +237,11 @@ struct PluginTrustOptions {
     read_roots: Vec<PathBuf>,
     network_origins: Vec<String>,
     executables: Vec<PathBuf>,
+    write_roots: Vec<PathBuf>,
+    watch_roots: Vec<PathBuf>,
+    cwd_roots: Vec<PathBuf>,
+    env_keys: Vec<String>,
+    shortcuts: Vec<String>,
 }
 
 fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptions, ProbeError> {
@@ -272,6 +277,27 @@ fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptio
                     .ok_or(ProbeError::Usage)?
                     .into(),
             );
+        } else if matches!(
+            argument.to_str(),
+            Some("--write-root" | "--watch-root" | "--cwd-root")
+        ) {
+            let path = PathBuf::from(arguments.next().ok_or(ProbeError::Usage)?);
+            match argument.to_str().unwrap() {
+                "--write-root" => options.write_roots.push(path),
+                "--watch-root" => options.watch_roots.push(path),
+                _ => options.cwd_roots.push(path),
+            }
+        } else if matches!(argument.to_str(), Some("--env-key" | "--shortcut")) {
+            let value = arguments
+                .next()
+                .and_then(|value| value.to_str())
+                .ok_or(ProbeError::Usage)?
+                .to_owned();
+            if argument == OsStr::new("--env-key") {
+                options.env_keys.push(value);
+            } else {
+                options.shortcuts.push(value);
+            }
         } else if argument == OsStr::new("--executable") {
             options
                 .executables
@@ -315,11 +341,17 @@ fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(),
         return Err(ProbeError::PluginTrustRequired(plugin_id.clone()));
     }
     crate::local_plugins::validate_grants(&candidate.manifest, &options.grants)?;
-    let broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
+    let mut broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
         &options.read_roots,
         &options.network_origins,
         &options.executables,
     )?;
+    broker_policy.write_roots = options.write_roots;
+    broker_policy.watch_roots = options.watch_roots;
+    broker_policy.cwd_roots = options.cwd_roots;
+    broker_policy.env_keys = options.env_keys;
+    broker_policy.shortcuts = options.shortcuts;
+    let broker_policy = broker_policy.canonicalized()?;
     broker_policy.validate_grants(&options.grants)?;
     if !options.json {
         println!("granted-permissions: {}", permission_list(&options.grants));

@@ -78,6 +78,7 @@ impl Fixture {
             HostCoreServices {
                 os_broker: Some(os.client()),
                 runtime_manage: Some(manage.clone()),
+                plugin_services: None,
             },
         )
         .unwrap();

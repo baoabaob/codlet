@@ -66,10 +66,25 @@ struct PendingCall {
 #[cfg(any(windows, target_os = "macos"))]
 enum Phase {
     Invoking(HostCapabilityOperation),
+    Core(crate::core_services::ServiceOperation),
     Delivering { request: CdpRequest, success: bool },
 }
 
 impl RendererRuntime {
+    #[cfg(any(windows, target_os = "macos"))]
+    pub fn set_core_services(
+        &mut self,
+        services: crate::core_services::SharedCoreServices,
+    ) -> Result<(), RendererError> {
+        services
+            .register(&self.logical_plugins())
+            .map_err(|error| RendererError::PluginRejected {
+                plugin_id: "core-services".into(),
+                message: error.to_string(),
+            })?;
+        self.core_services = Some(services);
+        Ok(())
+    }
     #[cfg(any(windows, target_os = "macos"))]
     pub fn set_host_capability_client(&mut self, client: HostCapabilityClient) {
         // Changing the owned transport cannot transfer pending calls to it.
@@ -90,6 +105,15 @@ impl RendererRuntime {
         &self,
         plugins: &[LoadedPlugin],
     ) -> Result<(), RendererError> {
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(services) = &self.core_services {
+            services
+                .register(plugins)
+                .map_err(|error| RendererError::PluginRejected {
+                    plugin_id: "core-services".into(),
+                    message: error.to_string(),
+                })?;
+        }
         if let Some(message) = &self.host_rpc.registration_error {
             return Err(RendererError::PluginRejected {
                 plugin_id: "core-rpc".into(),
@@ -113,6 +137,10 @@ impl RendererRuntime {
     }
 
     pub(super) fn retire_rpc_plugin(&self, id: &str, generation: u64) {
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(services) = &self.core_services {
+            services.retire(id, generation);
+        }
         #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             client.shared.retire_plugin(id, generation);
@@ -155,6 +183,10 @@ impl RendererRuntime {
     }
 
     pub(super) fn retire_rpc_renderer(&self, target: &str, id: Option<&str>) {
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(services) = &self.core_services {
+            services.retire_document(target, id);
+        }
         #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             client.shared.retire_renderer(target, id);
@@ -435,7 +467,11 @@ impl RendererRuntime {
         request: &BindingMessage,
         scope: &mut ScopedCall,
     ) -> Option<Admission> {
-        host_provider_plugin_id(provider_id)?;
+        if !(provider_id == BUILTIN_HOST_PROVIDER_ID
+            && request.capability.name.as_str() == crate::core_services::CAPABILITY)
+        {
+            host_provider_plugin_id(provider_id)?;
+        }
         Some(
             self.admit_host_call(target_id, consumer, lease, provider_id, request, scope)
                 .map_err(|error| (error.code, error.message)),
@@ -512,11 +548,35 @@ impl RendererRuntime {
             ));
         }
         let deadline = deadline.min(scope.route.lineage.deadline);
-        let operation = client.begin_routed(
-            scope.route.clone(),
-            request.method.clone(),
-            request.params.clone(),
-        )?;
+        let phase = if provider_id == BUILTIN_HOST_PROVIDER_ID
+            && request.capability.name.as_str() == crate::core_services::CAPABILITY
+        {
+            let services = self.core_services.as_ref().ok_or_else(|| {
+                HostError::new("runtime_unavailable", "Core services were not installed")
+            })?;
+            Phase::Core(
+                services
+                    .begin(
+                        crate::core_services::ServiceCaller {
+                            id: &consumer.id,
+                            generation: consumer.generation,
+                            host: false,
+                            document: Some(target_id.into()),
+                        },
+                        &request.method,
+                        request.params.clone(),
+                        deadline,
+                        client.waker(),
+                    )
+                    .map_err(|e| HostError::new(e.code, e.message))?,
+            )
+        } else {
+            Phase::Invoking(client.begin_routed(
+                scope.route.clone(),
+                request.method.clone(),
+                request.params.clone(),
+            )?)
+        };
         self.host_rpc.pending.push(PendingCall {
             target_id: target_id.into(),
             session_id: session.session.session_id().into(),
@@ -528,7 +588,7 @@ impl RendererRuntime {
             capability: request.capability.clone(),
             request_id: request.id,
             deadline,
-            phase: Some(Phase::Invoking(operation)),
+            phase: Some(phase),
             scope,
         });
         Ok(())
@@ -632,6 +692,29 @@ impl RendererRuntime {
             .take()
             .expect("a retained Host call has one phase")
         {
+            Phase::Core(mut operation) => {
+                if !self.provider_is_current(&call)
+                    || !self.renderer_authority_current(&call.consumer)
+                {
+                    return self.begin_host_reply(
+                        call,
+                        Err(HostError::new(
+                            "authorization_revoked",
+                            "the original Core service caller retired",
+                        )),
+                    );
+                }
+                match operation.try_result() {
+                    Some(result) => self.begin_host_reply(
+                        call,
+                        result.map_err(|e| HostError::new(e.code, e.message)),
+                    ),
+                    None => {
+                        call.phase = Some(Phase::Core(operation));
+                        Some(call)
+                    }
+                }
+            }
             Phase::Invoking(mut operation) => {
                 if !self.provider_is_current(&call) {
                     drop(operation);

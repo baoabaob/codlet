@@ -5,11 +5,29 @@ export const PERMISSION_COPY = Object.freeze({
         'ui.dom': 'Read and change the page interface', 'ui.mainWorld': 'Run in the page’s main JavaScript world',
         'cdp.raw': 'Use raw browser debugging access', 'host.process': 'Run native code with your user account’s OS permissions',
         'host.fs': 'Read files inside explicitly allowed folders', 'host.network': 'Request explicitly allowed HTTP(S) origins',
-        'host.system': 'Read basic system information', 'runtime.manage': 'Manage other plugins and their permissions'
+        'host.system': 'Read basic system information', 'runtime.manage': 'Manage other plugins and their permissions',
+        'core.storage':'Save this plugin’s configuration and data', 'core.credentials':'Manage this plugin’s system credentials',
+        'core.credentials.use':'Use saved credentials for their approved destinations', 'host.fs.write':'Write files inside explicitly allowed folders',
+        'host.fs.watch':'Watch explicitly allowed folders', 'core.files.dialog':'Open native file pickers and access selected files',
+        'core.events':'Publish and subscribe to declared plugin events', 'core.tasks':'Run and manage this plugin’s background tasks',
+        'host.process.spawn':'Start approved programs with streaming input and output', 'core.network':'Configure plugin proxies and certificate trust',
+        'core.notifications':'Show system notifications', 'core.clipboard.read':'Read clipboard text', 'core.clipboard.write':'Write clipboard text',
+        'core.shortcuts':'Register explicitly allowed global shortcuts', 'core.diagnostics':'Read this plugin’s resources and diagnostics'
     });
 
 export function createMessages(context) {
     const TRANSLATIONS = {
+        'Save this plugin’s configuration and data':'保存此插件的配置和数据','Manage this plugin’s system credentials':'管理此插件的系统凭据',
+        'Use saved credentials for their approved destinations':'将保存的凭据用于已授权的目标','Write files inside explicitly allowed folders':'在明确授权的文件夹中写入文件',
+        'Watch explicitly allowed folders':'监听明确授权的文件夹','Open native file pickers and access selected files':'打开系统文件选择框并访问选中的文件',
+        'Publish and subscribe to declared plugin events':'发布和订阅已声明的插件事件','Run and manage this plugin’s background tasks':'运行并管理此插件的后台任务',
+        'Start approved programs with streaming input and output':'启动已授权的程序并读写实时输入输出','Configure plugin proxies and certificate trust':'配置插件代理和证书信任',
+        'Show system notifications':'显示系统通知','Read clipboard text':'读取剪贴板文本','Write clipboard text':'写入剪贴板文本',
+        'Register explicitly allowed global shortcuts':'注册明确授权的全局快捷键','Read this plugin’s resources and diagnostics':'读取此插件的资源和诊断信息',
+        'Allowed write folders':'允许写入的文件夹','Allowed watch folders':'允许监听的文件夹','Allowed working folders':'允许的工作目录','Allowed environment keys':'允许的环境变量名','Allowed global shortcuts':'允许的全局快捷键',
+        'Allowed write folders — one full path per line':'允许写入的文件夹，每行一个完整路径','Allowed watch folders — one full path per line':'允许监听的文件夹，每行一个完整路径',
+        'Allowed working folders — one full path per line':'允许的工作目录，每行一个完整路径','Allowed environment keys — one name per line':'允许的环境变量名，每行一个',
+        'Allowed global shortcuts — one combination per line':'允许的全局快捷键，每行一个组合','Allowed child programs — one full path per line':'允许的子程序，每行一个完整路径',
         'Update both':'同时更新','Updating together...':'正在同时更新…','Update Codlet and the client together':'同时更新 Codlet 和客户端','Update and restart':'更新并重启','Client':'客户端',
         'Update prepared by the official client':'官方客户端已准备好的更新',
         'After updating, launch through Codlet with your plugins and settings preserved':'更新后仍通过 Codlet 启动，保留插件和设置',

@@ -4,6 +4,8 @@
 // also lets the socket behavior run under Node's ordinary test runner.
 const httpTraffic = require('node:http');
 const httpsTraffic = require('node:https');
+const tlsTraffic = require('node:tls');
+const netTraffic = require('node:net');
 const { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID } = require('node:crypto');
 const { WebSocket: TrafficWebSocket, WebSocketServer: TrafficWebSocketServer } = require('ws');
 
@@ -21,10 +23,17 @@ const TRAFFIC_HOP_HEADERS = new Set([
   'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade',
 ]);
 
-function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
+function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState }) {
   if (typeof coreRequest !== 'function' || typeof makeError !== 'function') throw new TypeError('traffic runtime dependencies are required');
   const channels = new Map();
   let retired = false, opening = 0;
+  let reporting = false, reportVersion = 0;
+  function changed() {
+    reportVersion++;
+    if (typeof reportState !== 'function' || reporting || retired) return;
+    reporting = true;
+    Promise.resolve().then(async () => { let observed; do { observed = reportVersion; await reportState([...channels.keys()].map(channel => ({ id: channel.id, ...channel.status() }))); } while (!retired && observed !== reportVersion); }).catch(() => {}).finally(() => { reporting = false; });
+  }
 
   const fail = (code, message, data) => makeError(code, message, data);
   const integer = (value, fallback, maximum, name) => {
@@ -241,8 +250,70 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
     return () => signal.removeEventListener('abort', abort);
   }
 
+  async function networkOptions(input, target, signal, headers) {
+    let route;
+    if (input.networkProfile != null) {
+      if (typeof input.networkProfile !== 'string') throw fail('invalid_argument', 'networkProfile must be a Core profile reference');
+      route = await coreRequest('services.network.resolve', { url: target.href, profile: input.networkProfile }, signal);
+    }
+    if (input.credentialRef != null) {
+      const origin = new URL(target.href); origin.protocol = origin.protocol === 'wss:' ? 'https:' : origin.protocol === 'ws:' ? 'http:' : origin.protocol;
+      const result = await coreRequest('services.credentials.resolve', { reference: input.credentialRef, origin: origin.origin }, signal);
+      if (typeof result?.secret !== 'string' || /[\r\n]/u.test(result.secret)) throw fail('invalid_credential', 'credential is not a valid Authorization value');
+      for (let index = headers.length - 1; index >= 0; index--) if (headers[index][0].toLowerCase() === 'authorization') headers.splice(index, 1);
+      headers.push(['Authorization', `Bearer ${result.secret}`]);
+    }
+    if (!route) return { agent: false };
+    const ca = [...tlsTraffic.getCACertificates('default'), ...tlsTraffic.getCACertificates('system'), ...(route.caPem ? [route.caPem] : [])];
+    if (!route.proxyUrl) return { agent: false, ca };
+    const proxy = new URL(route.proxyUrl);
+    if (!['http:', 'https:'].includes(proxy.protocol) || proxy.username || proxy.password) throw fail('invalid_proxy', 'Core returned an invalid HTTP proxy');
+    let authorization;
+    if (route.proxyCredentialRef) {
+      const result = await coreRequest('services.credentials.resolve', { reference: route.proxyCredentialRef, origin: proxy.origin }, signal);
+      authorization = `Basic ${Buffer.from(result.secret).toString('base64')}`;
+    }
+    const secure = ['https:', 'wss:'].includes(target.protocol);
+    const hostname = target.hostname.replace(/^\[|\]$/gu, '');
+    const host = hostname.includes(':') ? `[${hostname}]` : hostname;
+    const authority = `${host}:${target.port || (secure ? '443' : '80')}`;
+    const socket = await new Promise((resolve, reject) => {
+      let tunnel, finished = false;
+      const done = (reason, value) => {
+        if (finished) return;
+        finished = true; clearTimeout(timer); signal.removeEventListener('abort', abort);
+        if (reason) { request.destroy(); tunnel?.destroy(); reject(reason); } else resolve(value);
+      };
+      const request = (proxy.protocol === 'https:' ? httpsTraffic : httpTraffic).request(proxy, {
+        method: 'CONNECT', path: authority, agent: false, ca,
+        headers: { Host: authority, ...(authorization ? { 'Proxy-Authorization': authorization } : {}) },
+      });
+      const abort = () => done(signal.reason ?? fail('request_cancelled', 'proxy connection cancelled'));
+      const timer = setTimeout(() => done(fail('proxy_timeout', 'proxy connection timed out')), TRAFFIC_MAX_TIMEOUT);
+      signal.addEventListener('abort', abort, { once: true });
+      request.once('error', () => done(fail('proxy_failed', 'proxy connection failed')));
+      request.once('connect', (response, connected, head) => {
+        tunnel = connected;
+        if (response.statusCode !== 200) return done(fail('proxy_rejected', `proxy returned HTTP ${response.statusCode}`));
+        if (head.length) connected.unshift(head);
+        if (!secure) return done(null, connected);
+        tunnel = tlsTraffic.connect({ socket: connected, host: hostname, ...(netTraffic.isIP(hostname) ? {} : { servername: hostname }), ca, rejectUnauthorized: true });
+        tunnel.once('error', () => done(fail('tls_failed', 'upstream certificate or TLS negotiation failed')));
+        tunnel.once('secureConnect', () => done(null, tunnel));
+      });
+      if (signal.aborted) abort(); else request.end();
+    });
+    if (signal.aborted) { socket.destroy(); throw signal.reason; }
+    const agent = new (secure ? httpsTraffic.Agent : httpTraffic.Agent)({ keepAlive: false, maxSockets: 1 });
+    agent.createConnection = () => socket;
+    const abortSocket = () => { socket.destroy(); agent.destroy(); };
+    signal.addEventListener('abort', abortSocket, { once: true });
+    socket.once('close', () => { signal.removeEventListener('abort', abortSocket); agent.destroy(); });
+    return { agent, ca };
+  }
+
   async function forwardHttp(input, signal, requestLimit, responseLimit, responseFinished) {
-    if (!ownObject(input) || Object.keys(input).some(key => !['url', 'method', 'headers', 'body'].includes(key))) throw fail('invalid_argument', 'forward expects url, method, headers and body only');
+    if (!ownObject(input) || Object.keys(input).some(key => !['url', 'method', 'headers', 'body', 'networkProfile', 'credentialRef'].includes(key))) throw fail('invalid_argument', 'forward contains an unsupported field');
     if (typeof input.url !== 'string' || !input.url) throw fail('invalid_argument', 'forward url is required');
     const authorized = await coreRequest('host.network.authorizeForward', { url: input.url }, signal);
     if (signal.aborted) throw signal.reason ?? fail('request_cancelled', 'HTTP exchange was cancelled');
@@ -255,6 +326,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
     const body = responseBody(input.body);
     if (body != null && ['GET', 'HEAD'].includes(method.toUpperCase())) throw fail('invalid_argument', `${method.toUpperCase()} forward requests cannot have a body`);
     const headers = stripHeaders(headerPairs(input.headers, 'forward headers'), { outbound: true });
+    const network = await networkOptions(input, target, signal, headers);
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (failure, value) => {
@@ -262,7 +334,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
         settled = true; signal.removeEventListener('abort', abort);
         failure ? reject(failure) : resolve(value);
       };
-      const upstream = transport.request(target, { method, headers: ['Host', target.host, ...headers.flatMap(pair => pair)], agent: false }, response => {
+      const upstream = transport.request(target, { method, headers: ['Host', target.host, ...headers.flatMap(pair => pair)], ...network }, response => {
         const body = onceBody(response, responseLimit, signal, 'upstream response', () => response.destroy(), responseFinished);
         finish(null, Object.freeze({ status: response.statusCode ?? 502, headers: rawHeaderPairs(response.rawHeaders), body }));
       });
@@ -375,7 +447,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
   }
 
   async function forwardWebSocket(input, request, incoming, socket, head, webSocketServer, signal, limits) {
-    if (!ownObject(input) || Object.keys(input).some(key => !['url', 'protocols', 'headers', 'clientToServer', 'serverToClient'].includes(key))) {
+    if (!ownObject(input) || Object.keys(input).some(key => !['url', 'protocols', 'headers', 'clientToServer', 'serverToClient', 'networkProfile', 'credentialRef'].includes(key))) {
       throw fail('invalid_argument', 'WebSocket forward contains an unsupported field');
     }
     if (typeof input.url !== 'string' || !input.url) throw fail('invalid_argument', 'WebSocket forward url is required');
@@ -387,9 +459,11 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
     if (!['ws:', 'wss:'].includes(target.protocol)) throw fail('protocol_error', 'Core authorized a non-WebSocket URL for WebSocket forwarding');
     const headers = stripHeaders(headerPairs(input.headers, 'WebSocket forward headers'), { outbound: true })
       .filter(([name]) => !name.toLowerCase().startsWith('sec-websocket-'));
+    const network = await networkOptions(input, target, signal, headers);
     const upstream = new TrafficWebSocket(target, protocols, {
       headers: headerObject(headers), followRedirects: false, handshakeTimeout: limits.handlerTimeout,
       maxPayload: limits.maxMessageBytes, perMessageDeflate: false,
+      ...network,
     });
     const initialServerFrames = [];
     let initialBytes = 0, initialOverflow = false;
@@ -474,6 +548,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
         outgoing.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '1' }); outgoing.end('channel busy'); return;
       }
       concurrent += 1;
+      changed();
       const controller = new AbortController(); active.add(controller);
       const unlinkRoot = linkAbort(controller, rootSignal, fail('host_stopping', 'Host traffic runtime retired'));
       const cancelled = () => { if (!controller.signal.aborted) controller.abort(fail('request_cancelled', 'downstream client cancelled the request')); };
@@ -528,6 +603,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
         } else if (!outgoing.destroyed) outgoing.destroy();
       } finally {
         incoming.off('aborted', cancelled); unlinkRoot(); active.delete(controller); concurrent -= 1;
+        changed();
         if (!controller.signal.aborted) controller.abort(fail('request_complete', 'HTTP exchange completed'));
       }
     });
@@ -551,6 +627,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
       if (closed || retired || rootSignal.aborted) return reject('503 Service Unavailable', 'channel unavailable');
       if (concurrent >= maximumConcurrent) return reject('503 Service Unavailable', 'channel busy');
       concurrent += 1; socket.pause();
+      changed();
       const controller = new AbortController(); active.add(controller);
       const unlinkRoot = linkAbort(controller, rootSignal, fail('host_stopping', 'Host traffic runtime retired'));
       let forwarded = false, bridge;
@@ -593,6 +670,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
         else if (!socket.destroyed) socket.destroy();
       } finally {
         unlinkRoot(); active.delete(controller); concurrent -= 1;
+        changed();
         if (!controller.signal.aborted) controller.abort(fail('request_complete', 'WebSocket exchange completed'));
       }
     });
@@ -617,6 +695,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
       for (const socket of sockets) socket.destroy();
       closePromise = new Promise(resolve => server.close(() => resolve({ closed: true })));
       channels.delete(channel);
+      changed();
       return closePromise;
     }
     function close() { return closeWithReason(fail('channel_closed', 'traffic channel was closed')); }
@@ -627,6 +706,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError }) {
       close,
     });
     channels.set(channel, closeWithReason);
+    changed();
     return channel;
     } finally { opening -= 1; }
   }

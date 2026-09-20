@@ -48,6 +48,196 @@ const ASSETS: [(&str, &str, &str, bool); 4] = [
 ];
 const WAIT: Duration = Duration::from_secs(15);
 
+#[test]
+fn renderer_only_core_services_share_cas_storage_files_and_events_between_windows() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("renderer-services");
+    std::fs::create_dir(&root).unwrap();
+    let scope = directory.path().join("registry.json");
+    let id = "test.renderer-services";
+    let capability = json!({"name":"codlet.core.services","api":1,"scope":"runtime"});
+    let manifest = json!({"schema":1,"id":id,"version":"1.0.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["core.storage","core.events","core.tasks","host.fs","host.fs.write"],"requires":[capability]});
+    std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
+    std::fs::write(root.join("renderer.js"),"exports.activate = context => { globalThis.__coreServicesTest = context; }; exports.deactivate = () => { delete globalThis.__coreServicesTest; };").unwrap();
+    let mut registry = PluginRegistry::load(&scope).unwrap();
+    for plugin in bundled_plugins().unwrap() {
+        registry.set_enabled(&plugin.manifest.id, false).unwrap();
+    }
+    let canonical = root.canonicalize().unwrap();
+    registry
+        .register_local(
+            id,
+            LocalPluginRegistration {
+                path: canonical.clone(),
+                grants: vec![
+                    Permission::CoreStorage,
+                    Permission::CoreEvents,
+                    Permission::CoreTasks,
+                    Permission::HostFs,
+                    Permission::HostFsWrite,
+                ],
+                broker_policy: crate::plugin_permissions::BrokerPolicy {
+                    read_roots: vec![canonical.clone()],
+                    write_roots: vec![canonical],
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    registry.set_enabled(id, true).unwrap();
+    registry.save().unwrap();
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    let loaded = catalog.enabled_plugins(&registry).unwrap();
+    let services = crate::core_services::SharedCoreServices::new(&scope).unwrap();
+    let (mut peer, events) = VmPeer::start();
+    let mut hosts = HostRuntime::start_with_services(
+        loaded,
+        peer.client.clone(),
+        Some(peer.runtime.clone()),
+        HostCoreServices {
+            plugin_services: Some(services.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        hosts.observations().is_empty(),
+        "renderer-only service usage must not start an empty Host"
+    );
+    let mut renderer = RendererRuntime::from_catalog(catalog, registry).unwrap();
+    renderer.set_core_services(services).unwrap();
+    renderer.set_host_capability_client(hosts.capability_client());
+    let (_controller, sessions) =
+        TargetController::discover(peer.client.clone(), events, Duration::from_secs(5)).unwrap();
+    let reports = renderer.attach_all(&sessions);
+    assert!(
+        reports.iter().all(|(_, result)| result.is_ok()),
+        "{reports:?}"
+    );
+    let snapshot = peer.request("Fixture.inspect", json!({"keys":[]}));
+    let realms = snapshot["contexts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ctx| {
+            ctx["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|plugin| plugin["id"] == id)
+        })
+        .map(|ctx| {
+            (
+                ctx["targetId"].as_str().unwrap().to_owned(),
+                ctx["id"].as_u64().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(realms.len(), 2);
+    let mut eval = |index: usize, expression: String| {
+        let (target, context) = &realms[index];
+        let session = sessions
+            .iter()
+            .find(|session| session.target_id() == target)
+            .unwrap();
+        let deadline = Instant::now() + WAIT;
+        let mut request = session
+            .until(deadline)
+            .start_evaluate_in_context(&expression, Some(*context))
+            .unwrap();
+        loop {
+            renderer.pump_bindings().unwrap();
+            if let Some(response) = request.try_response().unwrap() {
+                let value = response.result.unwrap();
+                assert!(value.get("exceptionDetails").is_none(), "{value}");
+                break value
+                    .pointer("/result/value")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Core service call did not settle"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    assert_eq!(
+        eval(0, "__coreServicesTest.services.storage.snapshot()".into())["revision"],
+        0
+    );
+    assert_eq!(eval(0,"__coreServicesTest.services.storage.transaction({expectedRevision:0,config:{selected:'shared'},operations:[{op:'set',key:'counter',value:1}]})".into())["revision"],1);
+    assert_eq!(
+        eval(1, "__coreServicesTest.services.storage.snapshot()".into())["config"]["selected"],
+        "shared"
+    );
+    assert_eq!(eval(1,"__coreServicesTest.services.storage.transaction({expectedRevision:0,config:{}}).catch(e=>({code:e.code}))".into())["code"],"storage_conflict");
+    let path = root.join("export.txt");
+    let input = json!({"path":path,"expectedVersion":null,"data":"aGVsbG8="});
+    let written = eval(
+        0,
+        format!("__coreServicesTest.services.files.writeAtomic({input})"),
+    );
+    assert!(written["version"].as_str().unwrap().starts_with("sha256:"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    let escape = json!({"path":directory.path().join("outside.txt"),"expectedVersion":null,"data":"aGVsbG8="});
+    assert_eq!(
+        eval(
+            0,
+            format!(
+                "__coreServicesTest.services.files.writeAtomic({escape}).catch(e=>({{code:e.code}}))"
+            )
+        )["code"],
+        "policy_denied"
+    );
+    assert_eq!(
+        eval(
+            0,
+            "__coreServicesTest.services.desktop.clipboardRead().catch(e=>({code:e.code}))".into()
+        )["code"],
+        "permission_denied"
+    );
+    let topic = eval(
+        0,
+        "__coreServicesTest.services.events.createTopic({name:'state'})".into(),
+    )["topic"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sub = eval(
+        1,
+        format!(
+            "__coreServicesTest.services.events.subscribe({})",
+            json!({"topic":topic})
+        ),
+    )["subscription"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    eval(
+        0,
+        format!(
+            "__coreServicesTest.services.events.publish({})",
+            json!({"topic":topic,"event":{"updated":true}})
+        ),
+    );
+    let events = eval(
+        1,
+        format!(
+            "__coreServicesTest.services.events.read({})",
+            json!({"subscription":sub})
+        ),
+    );
+    assert_eq!(events["events"].as_array().unwrap().len(), 1);
+    for session in &sessions {
+        renderer.deactivate_target(session.target_id()).unwrap();
+    }
+    hosts.stop().unwrap();
+    drop(renderer);
+    drop(hosts);
+    peer.close();
+}
+
 struct Fixture {
     renderer: RendererRuntime,
     hosts: HostRuntime,
@@ -112,6 +302,7 @@ impl Fixture {
             HostCoreServices {
                 os_broker: Some(os.client()),
                 runtime_manage: None,
+                plugin_services: None,
             },
         )
         .unwrap();

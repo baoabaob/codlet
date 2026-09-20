@@ -708,19 +708,59 @@ mod tests {
     fn september_18_upgrade_keeps_package_and_architecture_pins() {
         let old = "OpenAI.Codex_26.908.9136.0_x64__2p2nqsd0c76g0";
         let current = "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0";
-        assert!(compatible_package(old, "26.908.9136.0", current, "26.915.3509.0"));
-        assert!(!compatible_package(current, "26.915.3509.0", old, "26.908.9136.0"));
-        assert!(!compatible_package(old, "26.908.9136.0", &current.replace("x64", "arm64"), "26.915.3509.0"));
-        assert!(!compatible_package(old, "26.908.9136.0", current, "26.915.3510.0"));
+        assert!(compatible_package(
+            old,
+            "26.908.9136.0",
+            current,
+            "26.915.3509.0"
+        ));
+        assert!(!compatible_package(
+            current,
+            "26.915.3509.0",
+            old,
+            "26.908.9136.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.908.9136.0",
+            &current.replace("x64", "arm64"),
+            "26.915.3509.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.908.9136.0",
+            current,
+            "26.915.3510.0"
+        ));
     }
 
     #[test]
     fn september_19_upgrade_keeps_package_and_architecture_pins() {
         let old = "OpenAI.Codex_26.915.3509.0_x64__2p2nqsd0c76g0";
         let current = "OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0";
-        assert!(compatible_package(old, "26.915.3509.0", current, "26.915.4065.0"));
-        assert!(!compatible_package(current, "26.915.4065.0", old, "26.915.3509.0"));
-        assert!(!compatible_package(old, "26.915.3509.0", &current.replace("x64", "arm64"), "26.915.4065.0"));
-        assert!(!compatible_package(old, "26.915.3509.0", current, "26.915.4066.0"));
+        assert!(compatible_package(
+            old,
+            "26.915.3509.0",
+            current,
+            "26.915.4065.0"
+        ));
+        assert!(!compatible_package(
+            current,
+            "26.915.4065.0",
+            old,
+            "26.915.3509.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.915.3509.0",
+            &current.replace("x64", "arm64"),
+            "26.915.4065.0"
+        ));
+        assert!(!compatible_package(
+            old,
+            "26.915.3509.0",
+            current,
+            "26.915.4066.0"
+        ));
     }
 }

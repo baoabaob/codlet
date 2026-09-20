@@ -73,6 +73,7 @@ fn policy_is_one_atomic_registration_record_and_scope_revocation_preserves_other
             read_roots: vec![root.clone()],
             network_origins: vec!["https://example.com".into()],
             executables: vec![],
+            ..Default::default()
         },
     };
     let mut registry = PluginRegistry::load(&path).unwrap();

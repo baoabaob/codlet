@@ -70,6 +70,7 @@ impl RawFixture {
             HostCoreServices {
                 os_broker: Some(os.client()),
                 runtime_manage: None,
+                plugin_services: None,
             },
         )
         .unwrap();

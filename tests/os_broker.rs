@@ -107,6 +107,7 @@ impl Fixture {
                 .collect(),
             network_origins: origins,
             executables: vec![node()],
+            ..Default::default()
         };
         let registration = LocalPluginRegistration {
             path: root.clone(),
@@ -872,6 +873,7 @@ fn actual_host_os_example_uses_public_sdk_and_its_old_generation_is_denied_after
             read_roots: vec![root.join("approved-data").canonicalize().unwrap()],
             network_origins: vec![server.origin.clone()],
             executables: vec![],
+            ..Default::default()
         },
     };
     registry
@@ -900,6 +902,7 @@ fn actual_host_os_example_uses_public_sdk_and_its_old_generation_is_denied_after
         HostCoreServices {
             os_broker: Some(broker.client()),
             runtime_manage: None,
+            plugin_services: None,
         },
     )
     .unwrap();
@@ -1050,6 +1053,7 @@ module.exports={{
         HostCoreServices {
             os_broker: Some(broker.client()),
             runtime_manage: None,
+            plugin_services: None,
         },
     )
     .unwrap();

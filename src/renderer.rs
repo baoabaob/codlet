@@ -31,6 +31,7 @@ use crate::runtime_status::{
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
 const UI_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/ui.js");
 const I18N_SOURCE: &str = include_str!("../bundled/runtime/i18n.js");
+const CORE_SERVICES_SOURCE: &str = include_str!("../runtime/core-services.cjs");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_RENDERER_RPC_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_RENDERER_RPC_METHOD_BYTES: usize = 256;
@@ -110,6 +111,8 @@ pub struct RendererRuntime {
     external_observations: Vec<PluginExecutionObservation>,
     host_rpc: host_rpc::HostRpcBridge,
     manage_service: Option<crate::runtime_manage::RuntimeManageService>,
+    #[cfg(any(windows, target_os = "macos"))]
+    core_services: Option<crate::core_services::SharedCoreServices>,
     plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
@@ -352,6 +355,8 @@ impl RendererRuntime {
             drive_depth: 0,
             host_rpc: host_rpc::HostRpcBridge::default(),
             manage_service: None,
+            #[cfg(any(windows, target_os = "macos"))]
+            core_services: None,
             pending_actions: Vec::new(),
             pending_package_disables: BTreeSet::new(),
             status_publisher: None,
@@ -2189,7 +2194,9 @@ fn parse_lifecycle_result(result: Value) -> Result<(), String> {
 
 fn bootstrap_expression(world: RendererWorld) -> String {
     let options = json!({"world": world});
-    format!("({BOOTSTRAP_SOURCE})({options}, {UI_HELPERS_SOURCE}, {I18N_SOURCE})")
+    format!(
+        "({BOOTSTRAP_SOURCE})({options}, {UI_HELPERS_SOURCE}, {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})())"
+    )
 }
 
 fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
@@ -2737,7 +2744,7 @@ fn builtin_host_capability() -> CapabilityDescriptor {
     .expect("the built-in host capability descriptor is valid")
 }
 
-pub(crate) fn builtin_host_capabilities() -> [CapabilityDescriptor; 4] {
+pub(crate) fn builtin_host_capabilities() -> [CapabilityDescriptor; 6] {
     let mut ping = builtin_host_capability();
     ping.scope = crate::capabilities::CapabilityScope::Runtime;
     let mut manage = builtin_manage_capability();
@@ -2747,6 +2754,18 @@ pub(crate) fn builtin_host_capabilities() -> [CapabilityDescriptor; 4] {
         builtin_manage_capability(),
         ping,
         manage,
+        CapabilityDescriptor::new(
+            "codlet.core.services",
+            1,
+            crate::capabilities::CapabilityScope::Runtime,
+        )
+        .expect("Core services descriptor"),
+        CapabilityDescriptor::new(
+            "codlet.core.services",
+            1,
+            crate::capabilities::CapabilityScope::Target,
+        )
+        .expect("Core services descriptor"),
     ]
 }
 

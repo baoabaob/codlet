@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::plugins::{LoadedPlugin, LocalPluginRegistration, Permission, PluginRegistry};
 
-mod filesystem;
+pub(crate) mod filesystem;
 mod network;
 mod process;
 

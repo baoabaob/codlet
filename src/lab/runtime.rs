@@ -21,7 +21,10 @@ pub(super) enum LabRuntime {
 
 impl LabRuntime {
     pub fn manage_service(&self) -> Option<crate::runtime_manage::RuntimeManageService> {
-        match self { Self::Normal(owner) => Some(owner.manage_service.clone()), _ => None }
+        match self {
+            Self::Normal(owner) => Some(owner.manage_service.clone()),
+            _ => None,
+        }
     }
     pub fn prepare(path: PathBuf, safe: bool) -> Result<Self, LabError> {
         if !safe {
@@ -91,7 +94,9 @@ impl LabRuntime {
     pub fn update_installing(&self) -> bool {
         matches!(self, Self::Normal(owner) if owner.update_installing())
     }
-    pub fn update_preparation_blocked(&self) -> bool { matches!(self, Self::Normal(owner) if owner.update_preparation_blocked()) }
+    pub fn update_preparation_blocked(&self) -> bool {
+        matches!(self, Self::Normal(owner) if owner.update_preparation_blocked())
+    }
     pub fn activate(
         &mut self,
         client: CdpClient,

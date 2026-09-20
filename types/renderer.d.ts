@@ -39,6 +39,8 @@ export interface RendererRpc {
   onNotification(handler: (message: unknown) => void): () => void;
 }
 export interface RendererContext {
+  /** Core services also work for renderer-only plugins. Callback runners retire with this document. */
+  readonly services: import('./core-services').CoreServices;
   readonly pluginId: string;
   readonly version: string;
   readonly generation: number;

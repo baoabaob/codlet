@@ -16,6 +16,9 @@ use crate::plugin_host::HostError;
 use crate::plugins::LoadedHost;
 
 const BOOTSTRAP: &str = concat!(
+    "const createEmbeddedServicesRuntime = (() => { const module = { exports: {} };\n",
+    include_str!("../runtime/core-services.cjs"),
+    "\nreturn module.exports.createCoreServicesRuntime; })();\n",
     include_str!("../runtime/host-traffic-bundle.cjs"),
     "\n",
     include_str!("../runtime/host.cjs")

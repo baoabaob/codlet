@@ -143,9 +143,15 @@ impl LabRuntime {
         std::mem::take(&mut self.update_cancelled)
     }
     pub fn update_installing(&self) -> bool {
-        self.update_handoff.is_some() || self.update_waiting_for_exit || self.manage_service.official_updates.busy()
+        self.update_handoff.is_some()
+            || self.update_waiting_for_exit
+            || self.manage_service.official_updates.busy()
     }
-    pub fn update_preparation_blocked(&self) -> bool { self.host_control.is_pending() || self.update_handoff.is_some() || self.update_waiting_for_exit }
+    pub fn update_preparation_blocked(&self) -> bool {
+        self.host_control.is_pending()
+            || self.update_handoff.is_some()
+            || self.update_waiting_for_exit
+    }
 
     pub fn activate(
         &mut self,
@@ -155,6 +161,11 @@ impl LabRuntime {
     ) -> Result<(), LabError> {
         let os_broker =
             OsBroker::for_registry(self.registry_path().to_owned()).map_err(runtime_error)?;
+        let plugin_services = crate::core_services::SharedCoreServices::new(self.registry_path())
+            .map_err(runtime_error)?;
+        self.renderer
+            .set_core_services(plugin_services.clone())
+            .map_err(runtime_error)?;
         let hosts = HostRuntime::start_with_services(
             self.renderer.logical_plugins(),
             client,
@@ -162,6 +173,7 @@ impl LabRuntime {
             HostCoreServices {
                 os_broker: Some(os_broker.client()),
                 runtime_manage: Some(self.manage_service.clone()),
+                plugin_services: Some(plugin_services),
             },
         )
         .map_err(runtime_error)?;

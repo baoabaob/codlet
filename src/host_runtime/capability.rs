@@ -137,6 +137,9 @@ impl HostRuntime {
 }
 
 impl HostCapabilityClient {
+    pub(crate) fn waker(&self) -> CdpClient {
+        self.waker.clone()
+    }
     pub fn begin_request(
         &self,
         request: HostCapabilityRequest,

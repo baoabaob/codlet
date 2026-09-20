@@ -2,12 +2,19 @@
  * module or automatic retry helper is supplied by this declaration file. */
 export type PluginPermission =
   | 'ui.dom' | 'ui.mainWorld' | 'cdp.raw' | 'host.process'
-  | 'host.fs' | 'host.network' | 'host.system' | 'runtime.manage';
+  | 'host.fs' | 'host.network' | 'host.system' | 'runtime.manage'
+  | 'core.storage' | 'core.credentials' | 'core.credentials.use' | 'host.fs.write' | 'host.fs.watch' | 'core.files.dialog'
+  | 'core.events' | 'core.tasks' | 'host.process.spawn' | 'core.network' | 'core.notifications' | 'core.clipboard.read' | 'core.clipboard.write' | 'core.shortcuts' | 'core.diagnostics';
 
 export interface BrokerPolicy {
   readonly readRoots?: readonly string[];
   readonly networkOrigins?: readonly string[];
   readonly executables?: readonly string[];
+  readonly writeRoots?: readonly string[];
+  readonly watchRoots?: readonly string[];
+  readonly cwdRoots?: readonly string[];
+  readonly envKeys?: readonly string[];
+  readonly shortcuts?: readonly string[];
 }
 
 export interface LocalPluginRegistration {

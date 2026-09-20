@@ -18,7 +18,12 @@ use crate::windows::process::ChildProcess;
 const RESTART_SCRIPT: &[u8] = include_bytes!("../../scripts/Restart-Codlet.ps1");
 const QUIT_SCRIPT: &str = include_str!("../lab/quit.js");
 const QUIT_AVAILABLE_SCRIPT: &str = r#"(() => { const document = 'app://-/index.html'; const href = window.location.href; return window === window.top && (href === document || href.startsWith(document + '?') || href.startsWith(document + '#')) && window.electronBridge?.windowType === 'electron' && typeof window.electronBridge?.sendMessageFromView === 'function'; })()"#;
-const AUDITED_QUIT_VERSIONS: &[&str] = &["26.903.8094.0", "26.903.9818.0", "26.908.4834.0", "26.915.4065.0"];
+const AUDITED_QUIT_VERSIONS: &[&str] = &[
+    "26.903.8094.0",
+    "26.903.9818.0",
+    "26.908.4834.0",
+    "26.915.4065.0",
+];
 
 pub(super) struct RuntimeUpdateOwner {
     service: Option<RuntimeUpdateService>,

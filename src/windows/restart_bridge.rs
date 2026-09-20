@@ -131,10 +131,7 @@ fn module_base(pid: u32, expected: &Path) -> Result<usize, String> {
             Ok(None) if std::time::Instant::now() < deadline => (),
             Err(code)
                 if [ERROR_BAD_LENGTH, ERROR_PARTIAL_COPY].contains(&code)
-                    && std::time::Instant::now() < deadline =>
-            {
-                ()
-            }
+                    && std::time::Instant::now() < deadline => {}
             Ok(None) => {
                 return Err(
                     "Expected restart bridge/system module is absent in the owned child".into(),

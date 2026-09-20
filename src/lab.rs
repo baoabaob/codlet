@@ -512,6 +512,7 @@ fn require_reviewed_ipc_isolation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // One foreground owner retains the complete launch receipt.
 fn hold_lab_child(
     child: ChildProcess,
     package: &InstalledPackage,
@@ -523,7 +524,9 @@ fn hold_lab_child(
     reporter: &mut Reporter,
 ) -> Result<(), LabError> {
     runtime.configure_runtime_updates(&child, reporter);
-    let mut official_update = runtime.manage_service().map(|manage| crate::official_update::OfficialUpdateOwner::start(&child, package, manage));
+    let mut official_update = runtime
+        .manage_service()
+        .map(|manage| crate::official_update::OfficialUpdateOwner::start(&child, package, manage));
     let mut sessions = BTreeMap::new();
     let (client, mut targets) = if let Some((client, events)) = connection {
         let targets = match TargetController::discover(client.clone(), events, DISCOVERY_BUDGET) {
@@ -550,7 +553,9 @@ fn hold_lab_child(
         "host_waiting",
         json!({"quit_available": client.is_some() && input.is_open(), "gui_mount_verified": false}),
     );
-    if let Some(owner) = &mut official_update { owner.seed_sessions(&sessions.values().cloned().collect::<Vec<_>>()); }
+    if let Some(owner) = &mut official_update {
+        owner.seed_sessions(&sessions.values().cloned().collect::<Vec<_>>());
+    }
     let mut quit = QuitState::new();
     let mut update_quit: Option<QuitState> = None;
     let mut startup_verified = false;
@@ -580,11 +585,20 @@ fn hold_lab_child(
                     Err(error) => return Err(LabError::Runtime(error.to_string())),
                 }
             }
-            let update_exit = if failure.is_none() { official_update.as_mut().map(|owner| owner.finish()).unwrap_or(crate::official_update::UpdateExit::Ordinary) } else { crate::official_update::UpdateExit::Ordinary };
+            let update_exit = if failure.is_none() {
+                official_update
+                    .as_mut()
+                    .map(|owner| owner.finish())
+                    .unwrap_or(crate::official_update::UpdateExit::Ordinary)
+            } else {
+                crate::official_update::UpdateExit::Ordinary
+            };
             if update_exit == crate::official_update::UpdateExit::Restart {
                 reporter.emit("official_update_restart", json!({"through_codlet":true,"rehearsal":official_update.as_ref().is_some_and(|owner|owner.is_rehearsal())}));
             }
-            return if update_exit != crate::official_update::UpdateExit::Ordinary { Ok(()) } else if let Some(failure) = failure {
+            return if update_exit != crate::official_update::UpdateExit::Ordinary {
+                Ok(())
+            } else if let Some(failure) = failure {
                 Err(LabError::Runtime(failure))
             } else if exit_code == 0 {
                 Ok(())
@@ -649,7 +663,9 @@ fn hold_lab_child(
                             for change in changes {
                                 let target_id = change.target_id().to_owned();
                                 update_sessions(&mut sessions, &change);
-                                if let Some(owner) = &mut official_update { owner.observe(&change); }
+                                if let Some(owner) = &mut official_update {
+                                    owner.observe(&change);
+                                }
                                 if startup_verified
                                     && let Some(renderer) = runtime.renderer()
                                     && let Err(error) = renderer.apply_target_change(change)
@@ -684,7 +700,12 @@ fn hold_lab_child(
                 }
             }
         }
-        if !quit.requested() && startup_verified && let Some(owner) = &mut official_update { owner.poll(runtime.update_preparation_blocked()); }
+        if !quit.requested()
+            && startup_verified
+            && let Some(owner) = &mut official_update
+        {
+            owner.poll(runtime.update_preparation_blocked());
+        }
         if !quit.requested() && runtime.take_update_restart_requested() {
             let mut request = QuitState::new();
             request_own_child_quit(&mut request, &sessions, "runtime_update", reporter);

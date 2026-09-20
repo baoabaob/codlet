@@ -133,13 +133,13 @@ pub(super) fn execute(endpoint: &str, params: Value, guard: &RequestGuard) -> Re
     }
 }
 
-pub(super) struct Selected {
-    pub(super) file: File,
-    pub(super) path: PathBuf,
+pub(crate) struct Selected {
+    pub(crate) file: File,
+    pub(crate) path: PathBuf,
     _parents: Vec<File>,
 }
 impl Selected {
-    fn check_location(&self) -> Result<()> {
+    pub(crate) fn check_location(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         if crate::macos::filesystem::final_path(&self.file).map_err(io_error)? != self.path {
             return Err(denied("The selected path moved during the broker request"));
@@ -193,7 +193,7 @@ fn open_authorized(requested: &Path, guard: &RequestGuard) -> Result<Selected> {
     Ok(selected)
 }
 
-pub(super) fn pin_exact_grant(requested: &Path, allowed: &[PathBuf]) -> Result<Selected> {
+pub(crate) fn pin_exact_grant(requested: &Path, allowed: &[PathBuf]) -> Result<Selected> {
     let requested = lexical_path(requested)?;
     if !allowed
         .iter()
@@ -202,6 +202,19 @@ pub(super) fn pin_exact_grant(requested: &Path, allowed: &[PathBuf]) -> Result<S
         return Err(denied("path was not explicitly granted"));
     }
     pin_without_following(&requested)
+}
+
+pub(crate) fn pin_within_grants(requested: &Path, roots: &[PathBuf]) -> Result<Selected> {
+    let path = lexical_path(requested)?;
+    let root = roots
+        .iter()
+        .find(|root| contains_path(root, &path))
+        .ok_or_else(|| denied("path is outside the explicitly granted roots"))?;
+    let selected = pin_without_following(&path)?;
+    if !contains_path(root, &selected.path) {
+        return Err(denied("the open handle escaped its granted root"));
+    }
+    Ok(selected)
 }
 
 #[cfg(windows)]

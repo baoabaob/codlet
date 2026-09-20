@@ -198,6 +198,18 @@ impl RuntimeSkills {
             ),
             ("types/host.d.ts", include_str!("../types/host.d.ts")),
             (
+                "types/core-services.d.ts",
+                include_str!("../types/core-services.d.ts"),
+            ),
+            (
+                "types/plugin-storage.d.ts",
+                include_str!("../types/plugin-storage.d.ts"),
+            ),
+            (
+                "types/core-resources.d.ts",
+                include_str!("../types/core-resources.d.ts"),
+            ),
+            (
                 "types/codex-desktop.d.ts",
                 include_str!("../types/codex-desktop.d.ts"),
             ),
@@ -232,6 +244,10 @@ impl RuntimeSkills {
             (
                 "docs/TRAFFIC_CHANNELS.md",
                 include_str!("../docs/TRAFFIC_CHANNELS.md"),
+            ),
+            (
+                "docs/CORE_SERVICES.md",
+                include_str!("../docs/CORE_SERVICES.md"),
             ),
             (
                 "docs/JS_PLUGIN_RUNTIME_2026-09-09.md",

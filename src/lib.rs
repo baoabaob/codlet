@@ -3,22 +3,28 @@ pub mod catalog;
 pub mod cdp;
 #[cfg(any(windows, target_os = "macos"))]
 mod control_validation;
+#[cfg(any(windows, target_os = "macos"))]
+pub mod core_resources;
+#[cfg(any(windows, target_os = "macos"))]
+pub mod core_services;
 pub mod diagnostic_bundle;
 pub mod diagnostics;
 pub mod github_distribution;
 pub mod local_import;
 pub mod local_plugins;
-mod official_update;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod managed_plugins;
 mod managed_storage;
+mod official_update;
 pub mod platform;
 pub mod plugin_control;
 pub mod plugin_execution;
 pub mod plugin_host;
 mod plugin_lifecycle;
 pub mod plugin_permissions;
+#[cfg(any(windows, target_os = "macos"))]
+pub mod plugin_services;
 pub mod plugin_watch;
 pub mod plugins;
 pub mod renderer;

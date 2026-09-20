@@ -212,12 +212,10 @@ pub(crate) fn checked_entry(
         .validate_grants(&request.grants)
         .map_err(|e| error("permission_required", e.to_string()))?;
     // Revalidate explicit scopes through the same canonicalizer used by the CLI.
-    let broker_policy = BrokerPolicy::from_explicit_inputs(
-        &request.broker_policy.read_roots,
-        &request.broker_policy.network_origins,
-        &request.broker_policy.executables,
-    )
-    .map_err(|e| error("invalid_broker_policy", e.to_string()))?;
+    let broker_policy = request
+        .broker_policy
+        .canonicalized()
+        .map_err(|e| error("invalid_broker_policy", e.to_string()))?;
     if broker_policy != request.broker_policy {
         return Err(error(
             "broker_scope_changed",
