@@ -165,6 +165,9 @@ export default function createUI(context) {
       if(typeof reply.path!=='string'||reply.available===false)throw new Error('Invalid native page registration');
       const reconcile = () => {
         if (!live) return;
+        // Deferred native registration can be declined by an auxiliary window
+        // or retired before the official shell becomes ready.
+        if (!lease.isConnected) { stop(); return; }
         const next = [...document.querySelectorAll('[data-codlet-page-host]')].find(element => element.dataset.codletPageHost === token) ?? null;
         if (next !== host) {
           const errors=detach();

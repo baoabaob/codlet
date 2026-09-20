@@ -304,12 +304,33 @@ impl Channel {
             let result = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, wait_ms) };
             if result != WAIT_OBJECT_0 + 1 {
                 // Drain asynchronous cancellation before freeing OVERLAPPED or the buffer.
-                unsafe {
-                    CancelIoEx(raw(&self.pipe), &overlapped);
-                }
+                let cancel_error = if unsafe { CancelIoEx(raw(&self.pipe), &overlapped) } == 0 {
+                    Some(unsafe { GetLastError() })
+                } else {
+                    None
+                };
                 let mut transferred = 0;
-                unsafe {
-                    GetOverlappedResult(raw(&self.pipe), &overlapped, &mut transferred, 1);
+                if unsafe { GetOverlappedResult(raw(&self.pipe), &overlapped, &mut transferred, 1) }
+                    != 0
+                {
+                    // The operation completed as the deadline/stop event fired.
+                    // Its bytes were consumed from the pipe and must not be lost.
+                    return Ok(transferred);
+                }
+                let completion_error = unsafe { GetLastError() };
+                if completion_error != ERROR_OPERATION_ABORTED {
+                    return Err(LocalIpcError::Win32 {
+                        operation: "GetOverlappedResult(local IPC cancellation)",
+                        code: completion_error,
+                    });
+                }
+                if let Some(code) = cancel_error
+                    && code != ERROR_NOT_FOUND
+                {
+                    return Err(LocalIpcError::Win32 {
+                        operation: "CancelIoEx(local IPC)",
+                        code,
+                    });
                 }
                 return Err(match result {
                     WAIT_OBJECT_0 => LocalIpcError::Stopping,

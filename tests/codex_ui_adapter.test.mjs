@@ -3,7 +3,7 @@ import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
-import {uiFixture,tick} from './support/ui-fixture.mjs';
+import {uiFixture,tick,deferred} from './support/ui-fixture.mjs';
 const require=createRequire(new URL('../frontend/package.json',import.meta.url)),{buildSync}=require('esbuild');
 const cwd=fileURLToPath(new URL('../frontend',import.meta.url));
 const compile=(path,name)=>buildSync({absWorkingDir:cwd,stdin:{contents:readFileSync(new URL(path,import.meta.url),'utf8'),resolveDir:path.includes('native-shell')?cwd:cwd+'/src/adapter',sourcefile:path},bundle:true,write:false,format:'iife',globalName:name,platform:'browser',loader:{'.svg':'text'},define:{'process.env.NODE_ENV':'"production"'}}).outputFiles[0].text;
@@ -103,4 +103,26 @@ test('the reviewed avatar window declines pages without errors, observers or rou
   const ui=f.context.ui.create();let mounts=0;const page=await ui.page({label:'Codlet',render(){mounts++;return null;}});
   assert.equal(page.path,null);assert.equal(mounts,0);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);assert.equal(f.document.querySelector('[data-codlet-native-navigation]'),null);
   assert.equal(f.shell.routes.length,original.length);original.forEach((route,index)=>assert.equal(f.shell.routes[index],route));assert.equal(f.errors.length,0);page.dispose();ui.dispose();
+});
+
+test('cold startup accepts a page lease without holding its activation RPC and mounts once the native shell is ready',async t=>{
+  const f=fixture(t);f.navigation.dispose();const loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);
+  t.after(()=>bridge.dispose());f.overrides.set('register',args=>bridge.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
+  const ui=f.context.ui.create(),page=await ui.page({label:'Codlet',render:()=>null});
+  assert.equal(page.path,'/codlet/codlet-gui');assert.equal(f.control('Codlet'),undefined);assert.ok(f.document.querySelector('[data-codlet-page-lease]'));
+  loading.resolve(f.native);await bridge.ready;await tick();assert.ok(f.control('Codlet'));f.control('Codlet').click();await tick();assert.ok(f.document.querySelector('[data-codlet-page-host]'));
+  assert.equal(f.errors.length,0);ui.dispose();await tick();assert.equal(f.control('Codlet'),undefined);bridge.dispose();await tick();
+});
+test('deferred registration retires with its page or provider and never adds a late route',async t=>{
+  const f=fixture(t);f.navigation.dispose();const count=f.shell.routes.length,loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);
+  f.overrides.set('register',args=>bridge.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
+  const ui=f.context.ui.create();await ui.page({label:'Codlet',render:()=>null});ui.dispose();bridge.dispose();loading.resolve(f.native);
+  await assert.rejects(bridge.ready,{code:'ui_retired'});await tick();assert.equal(f.shell.routes.length,count);assert.equal(f.control('Codlet'),undefined);assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);
+});
+test('a deferred avatar page releases its UI resources when the native router declines it',async t=>{
+  const f=fixture(t);f.navigation.dispose();f.shell.navigator.push('/avatar-overlay');await tick();
+  const loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);t.after(()=>bridge.dispose());
+  f.overrides.set('register',args=>bridge.register(args,{caller:{pluginId:f.context.pluginId,generation:f.context.generation}}));
+  const ui=f.context.ui.create();await ui.page({label:'Codlet',render:()=>null});loading.resolve(f.native);await bridge.ready;await tick();
+  assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.control('Codlet'),undefined);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);assert.equal(f.errors.length,0);ui.dispose();bridge.dispose();await tick();
 });

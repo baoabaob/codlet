@@ -172,66 +172,89 @@ fn direct_child_exited(pid: i32) -> io::Result<bool> {
     }
 }
 
-fn retire_group(pid: i32, mut direct_exited: bool) -> io::Result<()> {
-    if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0
-        && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-    {
-        return Err(io::Error::last_os_error());
+fn group_has_active_members(pid: i32, direct_exited: bool) -> io::Result<bool> {
+    let mut pids = vec![0i32; 4096];
+    unsafe {
+        *libc::__error() = 0;
     }
+    let count =
+        unsafe { libc::proc_listpgrppids(pid, pids.as_mut_ptr().cast(), (pids.len() * 4) as i32) };
+    if count == 0
+        && matches!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(0 | libc::ESRCH)
+        )
+    {
+        return Ok(false);
+    }
+    if count <= 0 || count as usize >= pids.len() {
+        return Err(io::Error::other(
+            "Cannot confirm owned process group membership",
+        ));
+    }
+    // The direct child is exclusively ours and remains waitable because every
+    // observation above used WNOWAIT. Once waitid confirms its exit, keeping
+    // that zombie in the group list must not count as active; retaining it still
+    // prevents PID/PGID reuse until Child::try_wait reaps it below.
+    let mut active = !direct_exited;
+    for member in pids.into_iter().take(count as usize).filter(|p| *p > 0) {
+        if member == pid && direct_exited {
+            continue;
+        }
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as i32;
+        let received = unsafe {
+            libc::proc_pidinfo(
+                member,
+                libc::PROC_PIDTBSDINFO,
+                // Darwin requires a nonzero argument to include zombies.
+                // The leader intentionally stays unreaped until this check;
+                // hiding it would prevent a successful cleanup receipt.
+                1,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                size,
+            )
+        };
+        // A disappearing member requires a fresh list. Zombies have already
+        // stopped executing; the direct child is reaped only after this check.
+        active |= received != size || info.pbi_status != libc::SZOMB;
+    }
+    Ok(active)
+}
+
+fn retire_group(pid: i32, mut direct_exited: bool) -> io::Result<()> {
     let until = Instant::now() + Duration::from_secs(2);
+    let mut signal_sent = false;
     loop {
         if !direct_exited {
             direct_exited = direct_child_exited(pid)?;
         }
-        let mut pids = vec![0i32; 4096];
-        unsafe {
-            *libc::__error() = 0;
-        }
-        let count = unsafe {
-            libc::proc_listpgrppids(pid, pids.as_mut_ptr().cast(), (pids.len() * 4) as i32)
-        };
-        if count == 0
-            && matches!(
-                io::Error::last_os_error().raw_os_error(),
-                Some(0 | libc::ESRCH)
-            )
-        {
+        // Darwin can reject kill(-pgid, SIGKILL) with EPERM when the group only
+        // contains an unreaped zombie. Confirm liveness before sending a group
+        // signal so that only a group with an active owned member is signalled.
+        if !group_has_active_members(pid, direct_exited)? {
             return Ok(());
         }
-        if count <= 0 || count as usize >= pids.len() {
-            return Err(io::Error::other(
-                "Cannot confirm owned process group membership",
-            ));
-        }
-        // The direct child is exclusively ours and remains waitable because every
-        // observation above used WNOWAIT. Once waitid confirms its exit, keeping
-        // that zombie in the group list must not block retirement; retaining it
-        // still prevents PID/PGID reuse until Child::try_wait reaps it below.
-        let mut active = !direct_exited;
-        for member in pids.into_iter().take(count as usize).filter(|p| *p > 0) {
-            if member == pid && direct_exited {
-                continue;
+        if !signal_sent {
+            if unsafe { libc::kill(-pid, libc::SIGKILL) } == 0 {
+                signal_sent = true;
+            } else {
+                let error = io::Error::last_os_error();
+                // An active member may have exited between enumeration and the
+                // signal. Accept the failure only after a new waitid/listing pass
+                // proves that the owned group no longer has an active member.
+                if !direct_exited {
+                    direct_exited = direct_child_exited(pid)?;
+                }
+                if !group_has_active_members(pid, direct_exited)? {
+                    return Ok(());
+                }
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    // EPERM and every other failure remain fatal after the strict
+                    // recheck established an active owned process.
+                    return Err(error);
+                }
             }
-            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-            let size = std::mem::size_of_val(&info) as i32;
-            let received = unsafe {
-                libc::proc_pidinfo(
-                    member,
-                    libc::PROC_PIDTBSDINFO,
-                    // Darwin requires a nonzero argument to include zombies.
-                    // The leader intentionally stays unreaped until this check;
-                    // hiding it would prevent a successful cleanup receipt.
-                    1,
-                    (&mut info as *mut libc::proc_bsdinfo).cast(),
-                    size,
-                )
-            };
-            // A disappearing member requires a fresh list. Zombies have already
-            // stopped executing; the direct child is reaped only after this check.
-            active |= received != size || info.pbi_status != libc::SZOMB;
-        }
-        if !active {
-            return Ok(());
         }
         if Instant::now() >= until {
             return Err(io::Error::other(

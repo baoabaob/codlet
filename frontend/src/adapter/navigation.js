@@ -79,6 +79,19 @@ function nativePlacement(SidebarItem) {
   return candidates[0] ?? null;
 }
 
+function pageOwner(args, invocation) {
+  const caller = invocation?.caller;
+  if (!caller || typeof caller.pluginId !== 'string' || !Number.isSafeInteger(caller.generation)) throw fail('invalid_owner', 'Page registration requires a Core-authenticated caller');
+  if (!args || Object.keys(args).some(key => !['label', 'icon', 'token', 'toolbar'].includes(key)) ||
+      typeof args.label !== 'string' || !args.label.trim() || args.label.length > 64 || !['Cube', 'CodeSquareSlash', 'Codlet'].includes(args.icon) ||
+      (args.toolbar !== undefined && typeof args.toolbar !== 'boolean') ||
+      typeof args.token !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(args.token)) throw fail('invalid_argument', 'Invalid page registration');
+  const lease = [...document.querySelectorAll('[data-codlet-page-lease]')].find(node => node.dataset.codletPageLease === args.token);
+  if (!lease || lease.dataset.codletPageOwner !== caller.pluginId || lease.dataset.codletGeneration !== String(caller.generation))
+    throw fail('invalid_owner', 'The page lifetime does not match its caller');
+  return { caller, lease };
+}
+
 export function createNavigation(context, native, host) {
   const { React, DOM, Client, SidebarItem, Header, HeaderToolbar } = native;
   const icons = { Cube, CodeSquareSlash, Codlet: createCodletIcon(React,{compact:true}) };
@@ -148,15 +161,7 @@ export function createNavigation(context, native, host) {
   }
   function register(args, invocation) {
     check();
-    const caller = invocation?.caller;
-    if (!caller || typeof caller.pluginId !== 'string' || !Number.isSafeInteger(caller.generation)) throw fail('invalid_owner', 'Page registration requires a Core-authenticated caller');
-    if (!args || Object.keys(args).some(key => !['label', 'icon', 'token', 'toolbar'].includes(key)) ||
-        typeof args.label !== 'string' || !args.label.trim() || args.label.length > 64 || !Object.hasOwn(icons, args.icon) ||
-        (args.toolbar !== undefined && typeof args.toolbar !== 'boolean') ||
-        typeof args.token !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(args.token)) throw fail('invalid_argument', 'Invalid page registration');
-    const lease = [...document.querySelectorAll('[data-codlet-page-lease]')].find(node => node.dataset.codletPageLease === args.token);
-    if (!lease || lease.dataset.codletPageOwner !== caller.pluginId || lease.dataset.codletGeneration !== String(caller.generation))
-      throw fail('invalid_owner', 'The page lifetime does not match its caller');
+    const { caller, lease } = pageOwner(args, invocation);
     // The Desktop pet is a reviewed auxiliary route, not a page surface.
     // Tell the public helper to release its pending DOM without an error.
     if(host.auxiliary)return {api:1,token:args.token,path:null,available:false};
@@ -225,34 +230,76 @@ async function loadNative() {
   return native;
 }
 
-export function deactivate() {
-  const session = current; current = null;
-  session?.cancel?.(); session?.navigation?.dispose();
-}
-export async function activate(context) {
-  deactivate(); const session = {}; current = session;
-  const deadline = Date.now() + 12000;
-  session.ready = (async () => {
-    let native;
-    while (current === session) {
-      try { native ??= await loadNative(); if (current !== session) break; session.navigation = createNavigation(context, native, locateHost());
-        return session.navigation; }
-      catch (error) {
-        if (error.code !== 'ui_host_pending' || Date.now() >= deadline) throw error;
-        await new Promise(resolve => { const timer = setTimeout(resolve, 50); session.cancel = () => { clearTimeout(timer); resolve(); }; });
+export function deferredNavigation(context, load = loadNative) {
+  let alive = true, navigation, failure, cancelWait;
+  const pending = new Map();
+  const ready = (async () => {
+    let native, delay = 50;
+    while (alive) {
+      try {
+        native ??= await load();
+        if (!alive) break;
+        navigation = createNavigation(context, native, locateHost());
+        break;
+      } catch (error) {
+        if (error.code !== 'ui_host_pending') throw error;
+        // Cold startup may need substantially longer than one RPC deadline.
+        // Back off while the document lives; accepted leases mount when ready.
+        await new Promise(resolve => { const timer = setTimeout(resolve, delay); cancelWait = () => { clearTimeout(timer); resolve(); }; });
+        cancelWait = null; delay = Math.min(1000, delay * 2);
       }
     }
-    throw fail('ui_retired', 'The UI adapter retired during initialization');
+    if (!alive) throw fail('ui_retired', 'The UI adapter retired during initialization');
+    for (const entry of pending.values()) {
+      if (!entry.lease.isConnected) continue;
+      try {
+        const result = navigation.register(entry.args, { caller: entry.caller });
+        if (result.available === false) entry.lease.remove();
+      } catch (error) {
+        entry.lease.remove();
+        context.reportDiagnostic?.({ code: error.code || 'ui_unavailable', message: error.message });
+      }
+    }
+    pending.clear();
+    return navigation;
   })();
-  session.ready.catch(error => { if (current === session) context.reportDiagnostic?.({ code: error.code || 'ui_unavailable', message: error.message }); });
-  context.rpc.provide(CAPABILITY, 'register', async (args, invocation) => {
-    const navigation = await session.ready;
-    if (current !== session || invocation.signal?.aborted) throw fail('ui_retired', 'The page registration retired');
-    return navigation.register(args, invocation);
+  ready.catch(error => {
+    failure = error;
+    for (const entry of pending.values()) entry.lease.remove();
+    pending.clear();
+    if (alive) context.reportDiagnostic?.({ code: error.code || 'ui_unavailable', message: error.message });
   });
-  context.rpc.provide(CAPABILITY,'newTaskDraft',async(args,invocation)=>{
-    const navigation=await session.ready;
-    if(current!==session)throw fail('ui_retired','The page provider retired');
-    return navigation.newTaskDraft(args,invocation);
-  });
+  return {
+    ready,
+    register(args, invocation) {
+      if (!alive || invocation?.signal?.aborted) throw fail('ui_retired', 'The page registration retired');
+      if (failure) throw failure;
+      if (navigation) return navigation.register(args, invocation);
+      const { caller, lease } = pageOwner(args, invocation);
+      for (const [id, entry] of pending) if (!entry.lease.isConnected) pending.delete(id);
+      if (!pending.has(caller.pluginId) && pending.size >= 64) throw fail('resource_limit', 'Too many pending native pages');
+      const previous = pending.get(caller.pluginId);
+      if (previous && previous.lease !== lease) previous.lease.remove();
+      pending.set(caller.pluginId, { args: { ...args }, caller: { ...caller }, lease });
+      return { api: 1, token: args.token, path: '/codlet/' + encodeURIComponent(caller.pluginId), pending: true };
+    },
+    newTaskDraft(args, invocation) {
+      if (!alive) throw fail('ui_retired', 'The page provider retired');
+      if (failure) throw failure;
+      if (!navigation) throw fail('ui_host_pending', 'The native page is not ready');
+      return navigation.newTaskDraft(args, invocation);
+    },
+    dispose() {
+      if (!alive) return;
+      alive = false; cancelWait?.();
+      for (const entry of pending.values()) entry.lease.remove();
+      pending.clear(); navigation?.dispose();
+    },
+  };
+}
+export function deactivate() { current?.dispose(); current = null; }
+export async function activate(context) {
+  deactivate(); const session = deferredNavigation(context); current = session;
+  context.rpc.provide(CAPABILITY, 'register', async (args, invocation) => session.register(args, invocation));
+  context.rpc.provide(CAPABILITY, 'newTaskDraft', async (args, invocation) => session.newTaskDraft(args, invocation));
 }
