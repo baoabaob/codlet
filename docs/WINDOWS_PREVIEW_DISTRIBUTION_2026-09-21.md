@@ -38,3 +38,16 @@
 Windows UI 自动化读取 `msiexec.exe` 被产品策略拒绝，原因为 `product policy blocks this app`。组件行为和真实安装事务已经验证，安装器视觉观感没有计为通过。当前打开的候选安装器仅供用户手动查看，未通过它提交安装。
 
 最终 ZIP/MSI、摘要和额外验收报告位于用户原项目的 `.codlet-artifacts/local-preview-2026-09-21/`；不上传真实运行配置或这些本地测试产物，不创建公开 release。
+
+## 最终本地交付
+
+源码实现提交为 `35e8d86f75054d21b01cca17811be7e636626c9e`，Codlet 版本 `0.2.0-preview.1`，独立插件提交 `7d7d54d`。最终产物均未签名：
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `Codlet-0.2.0-preview.1-win-x64.zip` | 43167869 | `33a184f57abec537fd25d9feb9962d0feed5bbfbad40408d027385663367718b` |
+| `Codlet-0.2.0-preview.1-win-x64.msi` | 35610624 | `a181dbdbee21c6f6eccc9739a75ad4204c342ecf22d51d71a121bc61ebf1d693` |
+
+`portable-final-acceptance/report.json` 通过五组验证，补充确认旧 GUI 禁用偏好不会被重新启用，省略 plugins 字段的有效 registry 也能初始化。`msi-final-acceptance/report.json` 通过实际 Core-only 安装、追加 GUI/UI Adapter、追加 Desktop Adapter、卸载及用户数据保留。测试安装已全部卸载；最终包未包含 config.json、auth.json、运行日志或数据库。
+
+这次未启动或替换用户的日常客户端和原有 dev。实际已安装的官方 Windows 包为 `26.915.4065.0`，对应本次说明的已研究前端 `26.915.31945 / 9922`。先正常关闭已有官方/Dev 实例，再用便携包的 `Start-Codlet.cmd` 或 MSI 的开始菜单入口试用。
