@@ -183,6 +183,18 @@ __declspec(dllexport) DWORD WINAPI codlet_restart_initialize(LPVOID parameter) {
     return 0;
 }
 
+/* Transfer foreground permission only from the owned client's active window
+ * to its live Core. No arbitrary PID, window activation, or global permission. */
+__declspec(dllexport) DWORD WINAPI codlet_allow_owner_foreground(LPVOID parameter) {
+    Bridge *b = bridge;
+    if (!b || parameter != b || b->stop ||
+        WaitForSingleObject((HANDLE)b->owner_handle, 0) != WAIT_TIMEOUT) return 0;
+    DWORD foreground_pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &foreground_pid);
+    if (foreground_pid != GetCurrentProcessId()) return 0;
+    return AllowSetForegroundWindow(b->owner_pid) ? 1 : 0;
+}
+
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(instance);

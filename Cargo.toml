@@ -1,6 +1,6 @@
 [package]
 name = "codlet"
-version = "0.2.0-preview.1"
+version = "0.2.0-preview.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -30,7 +30,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate-flate2-z
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Globalization",

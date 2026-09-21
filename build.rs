@@ -22,7 +22,7 @@ fn main() {
             "/OUT:{}",
             output.join("codlet-restart-bridge.dll").display()
         ));
-        command.arg("kernel32.lib");
+        command.args(["kernel32.lib", "user32.lib"]);
     } else {
         command.args([
             "-shared",
@@ -35,7 +35,7 @@ fn main() {
             "-o",
         ]);
         command.arg(output.join("codlet-restart-bridge.dll"));
-        command.arg("-Wl,--no-insert-timestamp");
+        command.args(["-Wl,--no-insert-timestamp", "-luser32"]);
     }
     let status = command
         .status()
@@ -61,7 +61,7 @@ fn main() {
                 command
                     .arg("/link")
                     .arg(format!("/OUT:{}", output.join(filename).display()))
-                    .arg("kernel32.lib");
+                    .args(["kernel32.lib", "user32.lib"]);
             } else {
                 command
                     .args(["-O2", "native/windows-restart-fixture.c", "-o"])
@@ -71,6 +71,7 @@ fn main() {
                 } else {
                     command.arg("-municode");
                 }
+                command.arg("-luser32");
             }
             assert!(
                 command

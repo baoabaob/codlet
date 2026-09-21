@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::Shell::{
+    SEE_MASK_CLASSNAME, SEE_MASK_FLAG_LOG_USAGE, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC,
+    SHELLEXECUTEINFOW, ShellExecuteExW,
+};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use windows::core::{PCWSTR, w};
 
@@ -82,28 +85,26 @@ fn open_on_sta(registry: &PluginRegistry, plugin_id: &str) -> Result<Value, Plug
 fn open_directory_on_sta(directory: &Path) -> Result<(), PluginControlError> {
     let directory = shell_directory_path(directory)?;
     let wide: Vec<_> = directory.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: NUL-terminated registered filesystem path, fixed verb, no
-    // parameters or shell command. Ancestor/root pins live through this call.
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            PCWSTR(wide.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
+    let mut request = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        // This STA has no message loop and exits after the call. Wait for Shell
+        // dispatch and mark the launch as user initiated so Explorer receives
+        // activation semantics rather than a background directory open.
+        fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_LOG_USAGE | SEE_MASK_FLAG_NO_UI | SEE_MASK_CLASSNAME,
+        lpVerb: w!("explore"),
+        lpClass: w!("folder"),
+        lpFile: PCWSTR(wide.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
     };
-    if result.0 as isize <= 32 {
-        return Err(PluginControlError::new(
+    // SAFETY: NUL-terminated checked directory, fixed folder class/verb, no
+    // parameters or shell command. Ancestor/root pins live through this call.
+    unsafe { ShellExecuteExW(&mut request) }.map_err(|error| {
+        PluginControlError::new(
             "open_source_folder_failed",
-            format!(
-                "Explorer could not open the registered source directory (Shell error {}).",
-                result.0 as isize
-            ),
-        ));
-    }
-    Ok(())
+            format!("Explorer could not open the registered source directory: {error}"),
+        )
+    })
 }
 
 /// Filesystem canonicalization uses the Win32 verbatim prefix; Shell parsing
@@ -145,6 +146,7 @@ pub(crate) fn shell_directory_path(path: &Path) -> Result<PathBuf, PluginControl
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn shell_paths_preserve_local_unicode_and_reject_device_or_network_namespaces() {
         assert_eq!(

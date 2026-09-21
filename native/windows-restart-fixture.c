@@ -19,11 +19,22 @@ int wmain(int argc, wchar_t **argv) {
     _snwprintf(request, 4096, L"%ls/request", argv[1]);
     _snwprintf(response, 4096, L"%ls/response", argv[1]);
     for (int tries = 0; tries < 6000; tries++) {
+        MSG message;
+        while (PeekMessageW(&message, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
         FILE *file = _wfopen(request, L"rb");
         if (!file) { Sleep(10); continue; }
         int command = fgetc(file); fclose(file); DeleteFileW(request);
         if (command == 'q') return 0;
         if (command == 'x') { run(); return 0; }
+        if (command == 'w') {
+            HWND window = CreateWindowExW(0, L"STATIC", L"Codlet folder activation test",
+                WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 460, 160,
+                NULL, NULL, GetModuleHandleW(NULL), NULL);
+            if (!window) return 6;
+            ShowWindow(window, SW_SHOWNORMAL);
+        }
         HRESULT result = command == 'r' ? run() : command == 'o' ? unrelated() : S_OK;
         if (command == 'u') UnregisterApplicationRestart();
         wchar_t text[1024]; DWORD length = 1024, flags = 0;
