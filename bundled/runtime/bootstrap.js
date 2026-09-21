@@ -1,4 +1,4 @@
-((options = {}, createUI = null, createI18n = null, createServices = null) => {
+((options = {}, createUI = null, createI18n = null, createServices = null, disposeHelpers = null) => {
     const world = options.world ?? 'isolated';
     if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -15,6 +15,7 @@
         if (typeof TaskChannel === 'function') {
             const channel = new TaskChannel();
             channel.port1.onmessage = () => {
+                channel.port1.onmessage = null;
                 channel.port1.close();
                 channel.port2.close();
                 wakeQueued = false;
@@ -38,6 +39,11 @@
     const activating = new Map();
     const stopping = new Set();
     const operations = new Map();
+    // Core supplies a loader so unused worlds do not initialize the UI SDK.
+    // Retired isolated worlds can outlive their plugin in Chromium; do not keep
+    // the SDK's module graph rooted through the immutable runtime tombstone.
+    let uiFactory = options.lazyUI === true ? null : createUI;
+    let retired = false;
     const RPC_TIMEOUT_MS = 15000;
     const MAX_PENDING = 16;
     const MAX_ENDPOINTS = 256;
@@ -244,8 +250,21 @@
     }
 
     function releaseEmptyRuntime() {
-        if (world === 'main' && !plugins.size && !activating.size && !stopping.size && !operations.size && globalThis[key] === runtime) {
-            delete globalThis[key];
+        if (!plugins.size && !activating.size && !stopping.size && !operations.size) {
+            let failure;
+            const release = disposeHelpers;
+            disposeHelpers = null;
+            try { release?.(); } catch (error) { failure = error; }
+            if (options.lazyUI === true) uiFactory = null;
+            if (world === 'isolated' && options.retireOnEmpty === true) {
+                // Core gives each generation a different isolated context. Keep
+                // the immutable ABI tombstone, but release all helper loaders
+                // and reject attempts to revive this retired generation.
+                retired = true;
+                uiFactory = createUI = createI18n = createServices = null;
+            }
+            if (world === 'main' && globalThis[key] === runtime) delete globalThis[key];
+            if (failure) throw failure;
         }
     }
 
@@ -351,6 +370,7 @@
         world,
         async activate(metadata, definition) {
             wakeEventLoop();
+            if (retired) return { ok: false, error: 'renderer generation has retired' };
             if (!metadata || typeof metadata.id !== 'string' || metadata.id.length === 0 ||
                 !Number.isSafeInteger(metadata.generation) || metadata.generation < 1) {
                 return { ok: false, error: 'invalid plugin metadata' };
@@ -423,7 +443,8 @@
                     ...(services ? { services } : {}),
                     ...(typeof createUI === 'function' ? { ui: Object.freeze({ api: 2, create: () => {
                         if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
-                        return createUI(context);
+                        if (!uiFactory) uiFactory = createUI();
+                        return uiFactory(context);
                     } }) } : {})
                 });
                 activating.set(metadata.id, record);

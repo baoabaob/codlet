@@ -30,6 +30,7 @@ use crate::runtime_status::{
 
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
 const UI_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/ui.js");
+const HELPERS_OWNER_SOURCE: &str = include_str!("../bundled/runtime/helpers.js");
 const I18N_SOURCE: &str = include_str!("../bundled/runtime/i18n.js");
 const CORE_SERVICES_SOURCE: &str = include_str!("../runtime/core-services.cjs");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -154,7 +155,7 @@ struct ActivePlugin {
     leases: BTreeMap<CapabilityDescriptor, CapabilityLease>,
     last_request_id: Cell<u64>,
     diagnostic_count: Cell<u32>,
-    bootstrap_identifier: String,
+    bootstrap_identifiers: Vec<String>,
     state: RendererPluginState,
 }
 
@@ -508,22 +509,26 @@ impl RendererRuntime {
                 document_epoch,
             );
             add_renderer_binding(&session, &binding_name, world, &world_name, context_id)?;
-            let bootstrap = bootstrap_expression(world);
-            let bootstrap_identifier =
+            let mut bootstrap_identifiers = Vec::new();
+            for bootstrap in bootstrap_expressions(world) {
                 match add_new_document_script(&session, &bootstrap, world, &world_name) {
-                    Ok(identifier) => identifier,
+                    Ok(identifier) => bootstrap_identifiers.push(identifier),
                     Err(error) => {
+                        let _ = remove_bootstrap_scripts(&session, &bootstrap_identifiers);
+                        let _ = evaluate_lifecycle(&session, CLEAR_STAGED_HELPERS, context_id);
                         let _ = remove_renderer_binding(&session, &binding_name);
                         return Err(error);
                     }
-                };
-            if let Err(message) = evaluate_lifecycle(&session, &bootstrap, context_id) {
-                let _ = remove_new_document_script(&session, &bootstrap_identifier);
-                let _ = remove_renderer_binding(&session, &binding_name);
-                return Err(RendererError::BootstrapRejected {
-                    plugin_id: plugin.manifest.id.clone(),
-                    message,
-                });
+                }
+                if let Err(message) = evaluate_lifecycle(&session, &bootstrap, context_id) {
+                    let _ = remove_bootstrap_scripts(&session, &bootstrap_identifiers);
+                    let _ = evaluate_lifecycle(&session, CLEAR_STAGED_HELPERS, context_id);
+                    let _ = remove_renderer_binding(&session, &binding_name);
+                    return Err(RendererError::BootstrapRejected {
+                        plugin_id: plugin.manifest.id.clone(),
+                        message,
+                    });
+                }
             }
 
             let (principal, leases) = authorizations
@@ -547,7 +552,7 @@ impl RendererRuntime {
                     leases,
                     last_request_id: Cell::new(0),
                     diagnostic_count: Cell::new(0),
-                    bootstrap_identifier,
+                    bootstrap_identifiers,
                     state: RendererPluginState::Activating,
                 });
             self.publish_status();
@@ -2011,7 +2016,7 @@ impl RendererRuntime {
         }
         if target_session.is_live() {
             if let Err(error) =
-                remove_new_document_script(&cleanup_session, &plugin.bootstrap_identifier)
+                remove_bootstrap_scripts(&cleanup_session, &plugin.bootstrap_identifiers)
             {
                 first_error.get_or_insert(error);
             }
@@ -2046,7 +2051,7 @@ impl RendererSession {
         let mut first_error = None;
         for plugin in self.plugins.iter().rev() {
             if let Err(error) =
-                remove_new_document_script(&self.session, &plugin.bootstrap_identifier)
+                remove_bootstrap_scripts(&self.session, &plugin.bootstrap_identifiers)
             {
                 first_error.get_or_insert(error);
             }
@@ -2138,6 +2143,21 @@ fn remove_new_document_script(
     Ok(())
 }
 
+fn remove_bootstrap_scripts(
+    session: &TargetSession,
+    identifiers: &[String],
+) -> Result<(), RendererError> {
+    let mut first_error = None;
+    // Remove the helper producer first. A navigation between removals must not
+    // stage a large helper graph after its consuming bootstrap was removed.
+    for identifier in identifiers {
+        if let Err(error) = remove_new_document_script(session, identifier) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 fn add_renderer_binding(
     session: &TargetSession,
     binding_name: &str,
@@ -2192,11 +2212,21 @@ fn parse_lifecycle_result(result: Value) -> Result<(), String> {
     }
 }
 
-fn bootstrap_expression(world: RendererWorld) -> String {
-    let options = json!({"world": world});
-    format!(
-        "({BOOTSTRAP_SOURCE})({options}, {UI_HELPERS_SOURCE}, {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})())"
-    )
+const CLEAR_STAGED_HELPERS: &str = "(() => { const helpers=globalThis.__codletRendererHelpersV1; delete globalThis.__codletRendererHelpersV1; helpers?.dispose(); return {ok:true}; })()";
+
+fn bootstrap_expressions(world: RendererWorld) -> [String; 2] {
+    let options = json!({"world": world, "lazyUI": true, "retireOnEmpty": true});
+    // Keep the large SDK in a different V8 Script. A retired isolated world's
+    // immutable ABI methods still reference their defining Script and its entire
+    // source; inlining helpers would pin the SDK source even after its functions
+    // were released. Both persisted scripts belong to the same generation.
+    let helpers = format!(
+        "({HELPERS_OWNER_SOURCE})((MessageChannel) => ({UI_HELPERS_SOURCE}), {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})())"
+    );
+    let bootstrap = format!(
+        "(() => {{ const helpers=globalThis.__codletRendererHelpersV1; delete globalThis.__codletRendererHelpersV1; if(!helpers) return {{ok:false,error:'renderer helpers unavailable'}}; const result=({BOOTSTRAP_SOURCE})({options}, helpers.ui, helpers.i18n, helpers.services, helpers.dispose); if(result.reused || !result.ok) helpers.dispose(); return result; }})()"
+    );
+    [helpers, bootstrap]
 }
 
 fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
