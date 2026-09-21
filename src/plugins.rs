@@ -1208,10 +1208,7 @@ fn validate_local_registration(registration: &LocalPluginRegistration) -> Result
 }
 
 fn reserved_plugin_id(id: &str) -> bool {
-    matches!(
-        id,
-        LEGACY_GUI_PLUGIN_ID | GUI_PLUGIN_ID | "codex.ui.adapter" | "codlet.core.host"
-    )
+    matches!(id, LEGACY_GUI_PLUGIN_ID | "codlet.core.host")
 }
 
 /// User-facing aliases are resolved before preparing a control receipt. Runtime
@@ -1355,6 +1352,18 @@ fn read_registry_text(path: &Path) -> Result<Option<String>, PluginRegistryError
 }
 
 pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
+    // A portable launcher scopes only Codlet data, never the official client's
+    // LOCALAPPDATA/HOME or account/database directories.
+    if let Some(home) = env::var_os("CODLET_HOME").filter(|value| !value.is_empty()) {
+        let home = PathBuf::from(home);
+        if !home.is_absolute() {
+            return Err(PluginRegistryError::Json {
+                path: home,
+                message: "CODLET_HOME must be an absolute directory".into(),
+            });
+        }
+        return Ok(home.join("config.json"));
+    }
     #[cfg(target_os = "macos")]
     {
         let home = env::var_os("HOME")
@@ -1373,28 +1382,39 @@ pub fn default_registry_path() -> Result<PathBuf, PluginRegistryError> {
     }
 }
 
+/// Synthetic protocol fixture, not an official plugin implementation.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         authorization: None,
-        manifest: PluginManifest::parse(include_str!("../bundled/codlet/codlet.json"))?,
-        source: Some(include_str!("../bundled/codlet/dist/renderer.js").to_owned()),
+        manifest: PluginManifest::parse(include_str!("../tests/fixtures/catalog/gui.json"))?,
+        source: Some("module.exports = { activate() {}, deactivate() {} };".to_owned()),
         host: None,
         generation: 1,
     })
 }
 
+/// Synthetic protocol fixture, not an official plugin implementation.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub fn bundled_codex_ui_adapter() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         authorization: None,
-        manifest: PluginManifest::parse(include_str!("../bundled/codex-ui-adapter/codlet.json"))?,
-        source: Some(include_str!("../bundled/codex-ui-adapter/dist/renderer.js").to_owned()),
+        manifest: PluginManifest::parse(include_str!("../tests/fixtures/catalog/ui.json"))?,
+        source: Some("module.exports = { activate() {}, deactivate() {} };".to_owned()),
         host: None,
         generation: 1,
     })
 }
 
 pub fn bundled_plugins() -> Result<Vec<LoadedPlugin>, ManifestError> {
-    Ok(vec![bundled_codex_ui_adapter()?, bundled_codlet()?])
+    #[cfg(any(test, feature = "test-fixtures"))]
+    {
+        Ok(vec![bundled_codex_ui_adapter()?, bundled_codlet()?])
+    }
+    #[cfg(not(any(test, feature = "test-fixtures")))]
+    {
+        Ok(Vec::new())
+    }
 }
 
 pub fn enabled_bundled_plugins(
@@ -1476,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn bundled_codlet_uses_the_public_manifest_contract() {
+    fn synthetic_manager_fixture_uses_the_public_manifest_contract() {
         let plugin = bundled_codlet().unwrap();
         assert_eq!(plugin.manifest.id, "codlet-gui");
         assert_eq!(
@@ -1497,33 +1517,10 @@ mod tests {
             .map(|name| CapabilityDescriptor::new(name, 1, CapabilityScope::Target).unwrap())
         );
         assert!(plugin.source.as_deref().unwrap().contains("module.exports"));
-        assert!(plugin.source.as_deref().unwrap().contains("ui.page"));
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("context.rpc.request")
-        );
-        assert!(plugin.source.as_deref().unwrap().contains("disableSelf"));
-        assert!(
-            !plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("data-app-shell-header-layout")
-        );
-        assert!(
-            !plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("app-shell-header-context-menu-surface")
-        );
     }
 
     #[test]
-    fn bundled_ui_adapter_provides_native_page_navigation() {
+    fn synthetic_navigation_fixture_declares_the_expected_graph() {
         let plugin = bundled_codex_ui_adapter().unwrap();
         assert_eq!(plugin.manifest.id, "codex.ui.adapter");
         assert_eq!(
@@ -1544,21 +1541,7 @@ mod tests {
             .unwrap())
         );
         assert!(plugin.manifest.requires.is_empty());
-        assert!(plugin.source.as_deref().unwrap().contains("locateHost"));
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("data-codlet-page-host")
-        );
-        assert!(
-            plugin
-                .source
-                .as_deref()
-                .unwrap()
-                .contains("codex.ui.navigation.page")
-        );
+        assert!(plugin.source.as_deref().unwrap().contains("module.exports"));
     }
 
     #[test]

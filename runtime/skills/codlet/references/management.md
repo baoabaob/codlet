@@ -30,7 +30,7 @@ python3 "<cliScript>" plugin list --json
 
 清单可能包含不翻译的 `tags`，可用于本地筛选；缺失表示未分类。GUI 搜索 `#Adapter` 可以精确匹配标签，多个搜索词取交集。CLI 仍使用 `plugin list --json` 后筛选真实 manifest，不把 GUI 搜索语法当成新的 CLI 参数。
 
-`plugin permissions` 用于本地/托管注册。内置插件没有该本地注册项，通过 list 中的 manifest 查看其声明权限，不把该命令的 UnknownPlugin 误报成未安装。
+`plugin permissions` 用于本地/托管注册。当前官方 GUI 和 Adapter 也是普通注册，应正常查询其权限；名字或 ID 不构成特殊信任。仅旧版本清单中实际标为 `bundled` 的条目没有本地注册项，此时通过 manifest 查看声明，不把 UnknownPlugin 误报成未安装。
 
 `enabled` 是启用偏好，不是运行健康证据。需要健康状态时：普通 Core 在 `cliCommands` 包含对应命令时可用 `status --json`、`doctor --json`；测试客户端根据该实例的运行报告/日志检查，拿不到证据就明确只查了注册信息。
 
@@ -80,7 +80,7 @@ plugin revoke <id> <permission> --json
 
 卸载/停用前用当前 manifest 的 provides/requires（包括 host.requires、target/runtime scope）检查依赖，列出传递链上受影响插件的显示名和 ID。以 Core 的当前依赖校验结果为准，不使用文本名字猜绑定。有额外级联影响且用户未授权时先说明这些插件，确认后用 `--cascade`；Core 发现遗漏的影响时重新核对，不能绕过它。
 
-默认 remove 取消目标插件的登记并停止它，保留源文件和独立数据；`--cascade` 同时停用依赖链上的插件，保留这些依赖者的登记和文件，不等于把整条链都卸载。`--delete-source` 只有用户明确要求删除目标源码/安装包时使用；不会因此删除其他插件的数据。内置插件用 disable 停用，不能声称已删除内置包。停用 GUI 或其适配层会关闭管理页，CLI 仍可恢复。
+默认 remove 取消目标插件的登记并停止它，保留源文件和独立数据；`--cascade` 同时停用依赖链上的插件，保留这些依赖者的登记和文件，不等于把整条链都卸载。`--delete-source` 只有用户明确要求删除目标源码/安装包时使用；不会因此删除其他插件的数据。当前官方 GUI 和 Adapter 可以通过 CLI 移除；GUI 不能在自身页面移除自己及其依赖。停用 GUI 或其适配层会关闭管理页，CLI 仍可恢复。旧版本真正的内置条目只能停用，须依照实际清单处理。
 
 ## 回执与故障排查
 

@@ -10,6 +10,7 @@ executable = runtime["cliExecutable"]
 if not Path(executable).is_absolute():
     raise ValueError("Core CLI executable must be an absolute path")
 environment = os.environ.copy()
+environment["CODLET_HOME"] = os.path.dirname(runtime["registry"])
 if os.name == "nt" and runtime.get("cliLocalAppData"):
     environment["LOCALAPPDATA"] = runtime["cliLocalAppData"]
 raise SystemExit(subprocess.call([executable, *runtime["cliPrefix"], *sys.argv[1:]], env=environment))

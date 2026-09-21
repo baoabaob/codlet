@@ -19,7 +19,7 @@ try {
     if ([IO.Path]::GetFileName($codletExecutable) -ine 'codlet.exe') { throw 'The restart target must be codlet.exe.' }
     $codletExecutableInfo = Get-Item -LiteralPath $codletExecutable -Force
     if ($codletExecutableInfo.PSIsContainer -or ($codletExecutableInfo.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'The restart executable is not a plain file.' }
-    $codletDefaultRegistry = Get-NormalLocalPath (Join-Path $env:LOCALAPPDATA 'Codlet/config.json')
+    $codletDefaultRegistry = if($env:CODLET_HOME){Get-NormalLocalPath (Join-Path $env:CODLET_HOME 'config.json')}else{Get-NormalLocalPath (Join-Path $env:LOCALAPPDATA 'Codlet/config.json')}
     if ($codletDefaultRegistry -ine $codletRegistry) { throw 'The restart environment selects a different registry.' }
 
     $codletLogs = Join-Path ([IO.Path]::GetDirectoryName($codletRegistry)) 'runtime-updates/restarts'

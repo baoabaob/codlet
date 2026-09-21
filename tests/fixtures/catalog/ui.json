@@ -1,0 +1,1 @@
+{"schema":1,"id":"codex.ui.adapter","name":"Codex UI Adapter","description":"Synthetic lifecycle fixture","tags":["UI","Adapter"],"version":"0.1.0","renderer":{"entry":"renderer.js","world":"main"},"permissions":["ui.dom","ui.mainWorld"],"provides":[{"name":"codex.ui.navigation.page","api":1,"scope":"target"}]}

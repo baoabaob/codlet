@@ -184,14 +184,7 @@ fn schema_two_rejects_malformed_fields_ids_paths_and_grants_without_rewriting() 
         assert_eq!(directory.path().read_dir().unwrap().count(), 1);
     }
 
-    for id in [
-        "",
-        "Bad.id",
-        "dev..example",
-        "codlet-gui",
-        "codex.ui.adapter",
-        "codlet.core.host",
-    ] {
+    for id in ["", "Bad.id", "dev..example", "codlet", "codlet.core.host"] {
         let original = format!(r#"{{"schema":2,"localPlugins":{{"{id}":{local}}}}}"#);
         fs::write(&path, &original).unwrap();
         assert!(PluginRegistry::load(&path).is_err(), "accepted id {id}");
@@ -234,7 +227,7 @@ fn invalid_api_edits_preserve_staged_registrations_and_preferences() {
         .register_local("dev.example", initial.clone())
         .unwrap();
     registry.set_enabled("dev.example", false).unwrap();
-    for id in ["codlet-gui", "codex.ui.adapter", "codlet.core.host"] {
+    for id in ["codlet", "codlet.core.host"] {
         assert_eq!(
             io_kind(registry.register_local(id, initial.clone()).unwrap_err()),
             io::ErrorKind::InvalidInput

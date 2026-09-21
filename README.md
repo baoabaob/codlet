@@ -2,11 +2,13 @@
 
 Codlet is a lightweight extension runtime for Codex Desktop. It launches an explicitly selected desktop session, loads trusted JS/TS plugins, and provides shared lifecycle, capability, permission, and management APIs.
 
-Development is currently in user trial. Windows x64 has live client evidence. Windows ARM64 has cross-compilation checks; macOS Apple Silicon has a native implementation pending native client and visual acceptance. Linux is deferred. See the [current review](docs/DEVELOPMENT_REVIEW_2026-09-16.md) and [macOS build and acceptance guide](docs/MACOS_DEVELOPMENT_2026-09-16.md). Release packaging, signing, installation UX, and icon design are deferred.
+The current milestone is a local Windows x64 Preview with portable ZIP and per-user MSI delivery. The source repositories remain private and no public release has been published. Windows ARM64 and macOS Apple Silicon still need real-client acceptance; Linux is deferred. See the [distribution work and evidence](docs/WINDOWS_PREVIEW_DISTRIBUTION_2026-09-21.md).
+
+This repository owns Core, CLI, SDK, runtime skill and distribution tools. The UI Adapter, Desktop Adapter and management GUI are ordinary optional plugins maintained in the separate [codlet-plugins repository](https://github.com/baoabaob/codlet-plugins). Their source and bundles are not compiled into normal Core builds. The generic `context.ui` library remains part of the public Core SDK.
 
 ## Current functionality
 
-- A sidebar page built with official OpenAI Apps SDK UI components, including light/dark themes, Chinese/English labels, plugin search and enabled-state filters
+- An optional management plugin with official UI components, light/dark themes, Chinese/English labels, search, tags and enabled-state filters
 - Local folder import and GitHub release import with source inspection, permission confirmation, and dependency checks
 - One-click plugin updates and Update all, using the existing Core transaction queue; permissions or dependency changes require review
 - Stable GitHub installation directories at `packages/github/<plugin-id>`, one installed version, and removal of old packages after successful updates
@@ -52,18 +54,18 @@ codlet plugin operation <receipt> --json
 
 Submitted operations are checked through their receipt when a response is lost; a timeout does not authorize another submission. Registry writes merge explicit edits under a process lock and protect concurrent permission changes. The CLI remains available when the GUI is disabled.
 
-The Windows registry is `%LOCALAPPDATA%/Codlet/config.json`; macOS uses `~/Library/Application Support/Codlet/config.json`. GitHub packages use `packages/github/<plugin-id>` below that registry directory; new plugins created through the authoring skill default to `packages/<plugin-id>`. Author-owned local directories are registered in place. Plugin data is separate from package code. The runtime skill uses `runtime-skills/codlet` while Core is running.
+The Windows registry is `%LOCALAPPDATA%/Codlet/config.json`; macOS uses `~/Library/Application Support/Codlet/config.json`. An absolute `CODLET_HOME` scopes only Codlet data and takes precedence on either platform. The portable launchers set it to their own `data/`; they do not redirect the official client's data. GitHub packages use `packages/github/<plugin-id>` below that registry directory; new plugins and first-party offline packages use `packages/<plugin-id>`. Author-owned local directories are registered in place. Plugin data is separate from package code. The runtime skill uses `runtime-skills/codlet` while Core is running.
 
 The generated independent test client provides `Start-TestClient.cmd`, `Stop-TestClient.cmd`, and `Test-Plugins.ps1`. After an interrupted run, close the leftover Dev client and use `Start-TestClient.cmd -RecoverInterrupted`; the recovery path verifies that previous owners have exited. See [test-client recovery and current evidence](docs/DEVELOPMENT_REVIEW_2026-09-16.md).
 
 ## Development
 
-Build the frontend before compiling Rust, because its generated output is embedded in the executable:
+Build the generic SDK bundles before compiling Rust. Official plugins are built independently and are not needed to compile or run Core:
 
 ~~~powershell
 npm ci --prefix frontend
 node frontend/build.mjs
-cargo build --bins
+cargo build --bin codlet --no-default-features
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Install-JsRuntime.ps1 -Destination target/debug
 ~~~
 
@@ -78,7 +80,9 @@ cargo test --locked --all-targets --all-features
 node --test tests/*.test.mjs
 ~~~
 
-Fake-client, protocol, and process fixtures are distinct from real desktop acceptance. The existing real-client and crash harnesses must target their own explicitly selected test processes. Passing a build or mock test is not a claim of native platform support.
+`--all-features` enables the synthetic `test-fixtures` catalog used by legacy protocol/lifecycle integration tests. That feature is rejected in release builds. Fake-client fixtures are distinct from real desktop acceptance; use a normal release build for the latter. The separate official-plugin repository runs the actual adapter/GUI tests against an explicitly prepared Core SDK snapshot.
+
+Build local delivery with `scripts/Build-PreviewDistribution.ps1`, passing the Core binary, pinned Node directory and the independent plugin repository's `dist/`. Then use `node scripts/build-msi.mjs PORTABLE_DIRECTORY WIX_DIRECTORY OUTPUT.msi`. Details and acceptance commands are in [the Windows Preview guide](docs/WINDOWS_PREVIEW_DISTRIBUTION_2026-09-21.md).
 
 ## Contracts and evidence
 

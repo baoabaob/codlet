@@ -227,6 +227,11 @@ fn restart_context(
         return None;
     }
     let directory = executable.parent()?;
+    // MSI owns this installation's executable files. Its maintenance database
+    // must not be bypassed by the portable ZIP replacement helper.
+    if directory.join("msi-install.json").exists() {
+        return None;
+    }
     let wrapper = directory.join("Restart-Codlet.ps1");
     let mut script = Vec::with_capacity(RESTART_SCRIPT.len());
     std::fs::File::open(&wrapper)
@@ -261,8 +266,12 @@ fn restart_context(
     if watch {
         args.push("-Watch".into());
     }
-    let environment =
+    let mut environment =
         BTreeMap::from([("LOCALAPPDATA".into(), std::env::var("LOCALAPPDATA").ok()?)]);
+    environment.insert(
+        "CODLET_HOME".into(),
+        registry_path.parent()?.to_str()?.into(),
+    );
     Some(RuntimeRestartContext {
         profile: RuntimePayloadProfile::Portable,
         command: RuntimeRestartCommand {

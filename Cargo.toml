@@ -1,10 +1,15 @@
 [package]
 name = "codlet"
-version = "0.1.0"
+version = "0.2.0-preview.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 autoexamples = false
+
+[features]
+# Synthetic renderer fixtures for the protocol/lifecycle integration suite only.
+# Release builds reject this feature; normal Core has no built-in plugins.
+test-fixtures = []
 
 [build-dependencies]
 cc = "1.2"

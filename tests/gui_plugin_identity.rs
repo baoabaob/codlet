@@ -103,7 +103,7 @@ fn alias_updates_share_one_preference_and_merge_with_current_registrations_under
 }
 
 #[test]
-fn gui_ids_cannot_adopt_a_local_registration_or_silently_rewrite_a_conflict() {
+fn legacy_alias_stays_reserved_but_canonical_official_ids_are_ordinary_registrations() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("config.json");
     let registration = LocalPluginRegistration {
@@ -111,7 +111,7 @@ fn gui_ids_cannot_adopt_a_local_registration_or_silently_rewrite_a_conflict() {
         path: directory.path().join("unrelated-user-plugin"),
         grants: vec![Permission::UiDom],
     };
-    for id in ["codlet", GUI_PLUGIN_ID] {
+    for id in ["codlet", "codlet.core.host"] {
         let mut registry = PluginRegistry::load(directory.path().join("not-created.json")).unwrap();
         let error = registry
             .register_local(id, registration.clone())
@@ -130,6 +130,16 @@ fn gui_ids_cannot_adopt_a_local_registration_or_silently_rewrite_a_conflict() {
                 .contains("reserved")
         );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    for id in [GUI_PLUGIN_ID, "codex.ui.adapter", "codex.desktop.adapter"] {
+        let separate = directory.path().join(format!("{id}.json"));
+        let mut registry = PluginRegistry::load(&separate).unwrap();
+        registry.register_local(id, registration.clone()).unwrap();
+        registry.save().unwrap();
+        assert_eq!(
+            PluginRegistry::load(&separate).unwrap().local_plugins()[id],
+            registration
+        );
     }
     let duplicate =
         br#"{"schema":1,"plugins":{"codlet":{"enabled":false},"codlet":{"enabled":true}}}"#;

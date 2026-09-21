@@ -95,7 +95,7 @@ artifacts.set(resolve(root,'bundled/runtime/ui.js'),banner+'(() => { '+js+'; ret
 artifacts.set(resolve(out,'runtime.css'),css);
 artifacts.set(resolve(out,'metafile.json'),JSON.stringify(result.metafile,null,2));
 collectPackages(result.metafile);
-for (const [entry, destination] of [['src/adapter/entry.js','bundled/codex-ui-adapter/dist/renderer.js'],['src/desktop/entry.js','bundled/codex-desktop-adapter/renderer.js'],['src/codlet/app.jsx','bundled/codlet/dist/renderer.js'],['src/examples/ui-controls.jsx','examples/ui-controls/renderer.js'],['src/examples/desktop-m3-m4.jsx','examples/desktop-m3-m4/renderer.js']]) {
+for (const [entry, destination] of [['src/examples/ui-controls.jsx','examples/ui-controls/renderer.js'],['src/examples/desktop-m3-m4.jsx','examples/desktop-m3-m4/renderer.js']]) {
   const result=await build({absWorkingDir:base,entryPoints:[entry],bundle:true,write:false,metafile:true,format:'cjs',platform:'browser',jsxFactory:'h',jsxFragment:'React.Fragment',target:'chrome130',minify:false,legalComments:'inline',define:{'process.env.NODE_ENV':'"production"'},loader:{'.css':'text','.svg':'text'}});
   artifacts.set(resolve(root,destination),banner+result.outputFiles[0].text);collectPackages(result.metafile);
 }
@@ -123,4 +123,4 @@ const runtimePath=resolve(root,'bundled/runtime/ui.js');
 artifacts.set(runtimePath,artifacts.get(runtimePath)+'\n/*\n'+licenseText.replaceAll('*/','* /')+'*/\n');
 // Compile and validate every output before replacing any checked-in bundle.
 for(const [path,contents] of artifacts)await writeFile(path,contents);
-console.log('Built official UI runtime, Codlet manager and example.');
+console.log('Built Core UI SDK, Host traffic runtime and examples; official plugins build independently.');

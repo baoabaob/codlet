@@ -235,9 +235,9 @@ fn broken_enabled_plugin_is_rejected_before_launch_and_can_be_disabled_and_remov
 }
 
 #[test]
-fn registration_cannot_replace_bundled_ids_or_an_existing_directory() {
+fn registration_cannot_replace_core_ids_or_an_existing_directory() {
     let fixture = Fixture::new();
-    for id in ["codlet-gui", "codex.ui.adapter", "codlet.core.host"] {
+    for id in ["codlet", "codlet.core.host"] {
         fixture.write_manifest(id, &["ui.dom"]);
         assert!(
             !fixture

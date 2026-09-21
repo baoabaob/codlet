@@ -2,7 +2,7 @@
 use crate::runtime_manage::RuntimeManageService;
 use serde_json::{Value, json};
 
-const MATCHED_VERSIONS: &str = include_str!("../../bundled/codex-ui-adapter/client-versions.json");
+const MATCHED_VERSIONS: &str = include_str!("../../compatibility/tested-client-versions.json");
 pub(crate) fn publish(service: &RuntimeManageService, running_version: &str) {
     service.publish_client_status(status(running_version));
 }

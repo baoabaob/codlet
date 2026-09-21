@@ -1,149 +1,41 @@
-# Windows x64 便携分发
+# Windows x64 本地 Preview 分发
 
-分发目录把已经构建的 `codlet.exe`、固定 Node、统一 JS 插件示例与开发资料放在一起。
-打包不运行 Codex、Node、插件或依赖安装脚本，不注册插件，也不修改 PATH 或用户配置。
-本脚本当前只产出 Windows x64 包，不进行签名或公开发布。
+Core 与官方插件分别构建。普通 Core 发行构建不包含任何官方插件；`codlet-plugins` 仓库提供 UI Adapter、Desktop Adapter、GUI 三个独立包。运行时 skill 与公开 UI SDK helper 仍属于 Core。
 
-## 从源码目录打包
+## 构建
 
-先使用正常构建流程得到本轮 `codlet.exe`，然后运行：
+先构建 Core、固定 Node 和插件仓库的 `dist/`：
 
 ```powershell
-.\scripts\Build-Distribution.ps1 `
-  -CodletExecutable 'C:\build output\release\codlet.exe' `
-  -NodeDirectory 'C:\build output\release\runtime\node-v24.21.0-win-x64' `
-  -OutputDirectory '.\.codlet-artifacts\distributions\codlet-dev-win-x64' `
-  -Zip
+node frontend/build.mjs
+cargo build --locked --release --bin codlet --no-default-features
+./scripts/Install-JsRuntime.ps1 -Destination target/release
+./scripts/Build-Distribution.ps1 -CodletExecutable target/release/codlet.exe `
+  -NodeDirectory target/release/runtime/node-v24.21.0-win-x64 `
+  -PluginDistribution C:/checkouts/codlet-plugins/dist `
+  -OutputDirectory .codlet-artifacts/codlet-preview -Zip
+node scripts/build-msi.mjs .codlet-artifacts/codlet-preview C:/tools/wix-3.14.1 .codlet-artifacts/codlet-preview.msi
 ```
 
-`-NodeDirectory` 指向包含 `node.exe` 和 `LICENSE` 的现有目录。两份文件分别按
-[`runtime/node-runtime.json`](../runtime/node-runtime.json) 的 SHA256 校验。脚本不接受系统
-PATH 上的 Node，不只检查 LICENSE 是否存在。输入 `codlet.exe` 必须具有 Windows x64 PE
-标头，但其内容与来源仍由调用方负责；打包不会通过执行它来推断版本或可信性。
+示例目录须替换为实际路径。工具只复制校验后的明确载荷，不携带真实 registry、账户、缓存、开发日志或 `node_modules`。打包不启动插件或官方客户端。Node 按项目固定摘要验证；插件按独立 catalog 的每文件摘要验证。
 
-省略 `-NodeDirectory` 时复用 `Install-JsRuntime.ps1`，下载固定摘要的官方归档并仅提取
-Node 与 LICENSE；可用 `-NodeArchivePath` 指定同一固定摘要的离线归档。这两个参数互斥。
-分发版本取源码的 Cargo package version；在已有便携包内重新打包时取旧分发 manifest 的
-version。`-SourceCommit <commit>` 可选，记录调用方提供的来源标识；省略就写入 null，
-不会把当前 checkout 自动当成输入二进制的构建来源。
+WiX 3.14.1 的官方工具归档：`https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip`，SHA-256 `6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31`。使用原生 MSI 特性和标准 WixUI，不运行安装自定义动作。ICE91 的当前用户目录警告和 ICE61 的同版本 Preview 重装警告是明确的设计选择；其余验证不得跳过。
 
-默认输出为源码目录下 ignored 的
-`.codlet-artifacts/distributions/codlet-<version>-win-x64`，`-Zip` 在旁边生成同名 ZIP。
-路径支持空格和中文。已有目录或 ZIP 一律拒绝，原有内容不会被覆盖或递归删除；重做时选择
-一个新的输出目录。脚本在同一父目录的专用临时 stage 中完成检查，再原子移动目录。
-如果最后 ZIP 移动失败，已经完整发布的目录仍可使用和核验。
+## 使用与所有权
 
-## 目录与内容清单
+- 便携版先完整解压，运行 `Start-Codlet.cmd`；首次启动选择官方插件，默认推荐三项。`Choose-Plugins.cmd` 可补装；选择 GUI 自动包含 UI Adapter
+- 便携版 Codlet 数据在 `data/`。`Codlet-CLI.cmd` 使用同一数据目录，原生 CLI 也接受绝对目录的 `CODLET_HOME`
+- MSI 为当前用户安装，安装页可选择三个官方插件；选择 GUI 会包含 UI Adapter 的实际文件，即使单独的 UI Adapter 功能未勾选
+- MSI 不在安装事务中运行插件或改用户 registry；首次启动通过正常 CLI 导入所选离线载荷。之后的插件启停、授权、移除和源码由 Codlet 管理，MSI repair 不覆盖用户插件
+- MSI 维护可追加尚未安装的离线载荷，用户已移除、停用或撤权的插件不会因启动而恢复。取消 MSI 中的载荷选项不删除已经导入用户目录的插件；卸载插件使用 GUI 或 CLI
+- MSI 卸载只移除安装器拥有的程序、快捷方式和安装记录，保留插件、配置及数据。当前 MSI 版通过后续 MSI 升级，不使用便携 ZIP 更新器替换 Windows Installer 管理的文件
+- 程序支持的客户端构建、真实官方跨版本更新、Core crash 和官方入口实例复用仍按各自的发布前条件验收；本地 Preview 不是公开稳定版
 
-```text
-codlet.exe
-distribution-manifest.json
-README.md
-runtime/node-runtime.json
-runtime/node-v24.21.0-win-x64/node.exe
-runtime/node-v24.21.0-win-x64/LICENSE
-examples/raw-host/...
-examples/cleanup-host/...
-examples/local-host-renderer-capability/...
-examples/local-echo/...
-examples/raw-m2/...
-examples/hide-usage-banner/...
-examples/host-os-broker/...
-examples/core-rpc/{service,view,coordinator,consumer}/...
-types/host.d.ts
-types/renderer.d.ts
-types/runtime-manage.d.ts
-docs/...
-scripts/Build-Distribution.ps1
-scripts/Test-Distribution.ps1
-scripts/Install-JsRuntime.ps1
-Export-Diagnostics.ps1
-```
-
-构建脚本只复制明确白名单中的示例入口、manifest、README、类型和契约说明；不递归复制
-源码树，不携带用户 registry、运行后生成的 settings/report、缓存、历史二进制或测试日志。
-唯一配置样本是白名单中的 `examples/host-os-broker/approved-data/settings.json`：它指向
-独立的 loopback fixture，并不授权或触发网络请求。说明文档之间与示例中的相对链接保持原
-目录关系，打包时验证目标存在且没有越界；`.d.ts` 的相对 import 同样必须在包内闭合。
-随包的历史契约说明用于解释当前
-接口的演进，不是已验收的运行时产物。
-
-`distribution-manifest.json` 使用 schema 1，包含分发 version、platform、可选来源 commit、
-Node pin，以及每份载荷的相对路径、字节数和 SHA256。manifest 自身不嵌入自己的摘要，
-其 SHA256 与 ZIP SHA256 由命令结果返回。清单是内容核验资料，不是签名或信任证明。
-
-ZIP 条目直接对应上述相对路径，没有额外顶层目录。请解压到独立空目录，并保持 `codlet.exe`
-与 `runtime/` 一起移动。ZIP 使用固定时间戳和排序；在相同 PowerShell/.NET 环境、相同输入
-文件与来源参数下，可得到相同的清单和 ZIP。源码资料改变后，其摘要也会改变。
-
-## 使用与重新打包
-
-从解压目录开始，先做不授信的候选检查：
+## 验收
 
 ```powershell
-.\codlet.exe plugin add .\examples\cleanup-host
+./scripts/Test-Distribution.ps1 -Distribution C:/output/portable -ArtifactsDirectory C:/output/portable-test
+./scripts/Test-MsiDistribution.ps1 -MsiPath C:/output/codlet.msi -ArtifactsDirectory C:/output/msi-test
 ```
 
-没有 `--trust` 与 grants 时，这个命令只显示候选信息并退出，不执行或注册插件。完整注册、
-watch、Inspect/doctor 与 disable 步骤见 [开发闭环指南](HOST_DEVELOPMENT_2026-09-10.md)。
-生命周期边界见 [cleanup](HOST_CLEANUP_2026-09-10.md)、[watch](HOST_WATCH_2026-09-10.md)
-和 [运行观察](HOST_INSPECTION_2026-09-10.md)。
-
-同时运行 Host 与 renderer 的可用入口见
-[组合示例](../examples/local-host-renderer-capability/README.md)与
-[组合包契约](COMBINED_PACKAGES_2026-09-10.md)。分发同时包含 Host capability 契约及执行
-两侧真实 JavaScript 的验收说明；测试源码和 VM peer 留在源码仓库。
-
-M2 分发还包含 [原始 CDP/导航示例](../examples/raw-m2/README.md)、
-[OS broker 示例](../examples/host-os-broker/README.md)、
-[四个 Core RPC 包](../examples/core-rpc/README.md)，以及
-[RPC](CORE_RPC_2026-09-10.md)、[OS 授权](OS_BROKER_2026-09-10.md)、
-[公开管理](RUNTIME_MANAGE_2026-09-10.md)、[本地作者契约](LOCAL_PLUGINS.md)和
-[M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)。OS 示例附带的 HTTP fixture 服务需由开发者
-单独运行，实际 fetch 还需声明、明确 origin grant 与插件 activation；候选 smoke 不执行它。
-
-便携包内保留了[构建脚本](../scripts/Build-Distribution.ps1)，可把当前二进制与固定 runtime
-重新复制到另一个新目录。它不编译源码；新版本的正式包应由该版本实际构建产物生成。
-
-## 包装专项验收
-
-随包的 `scripts/Test-Distribution.ps1` 接收现成二进制与 Node 目录，在新建的专用目录检查
-正常打包、空格/中文路径、重复输出拒绝、错误 Node/LICENSE 拒绝、所有载荷摘要、ZIP
-条目与重复打包一致性。它还分别植入缺失 Markdown/type import，确认拒绝发布后恢复
-测试副本的原始字节。
-
-```powershell
-.\scripts\Test-Distribution.ps1 `
-  -CodletExecutable 'C:\build output\release\codlet.exe' `
-  -NodeDirectory 'C:\build output\release\runtime\node-v24.21.0-win-x64' `
-  -OutputRoot '.\.codlet-artifacts\m2-distribution-acceptance'
-```
-
-`-SourceCommit` 可选，必须由调用者明确提供，并在两次打包间保留。脚本对十一个可注册示例
-逐个执行不带 `--trust` 的候选检查，每个子进程使用独立 `LOCALAPPDATA`，确认没有创建
-registry/config 目录。另有一份脚本自行准备的私有 registry fixture，用来核对
-`plugin permissions --json` 返回完整 grants/policy 且不改变输入字节；这不是向用户环境
-注册插件。最终再次核验包内文件，没有生成插件报告或其他额外载荷。
-
-报告明确标记 `verificationScope: "distribution-layout-and-read-only-cli"` 和
-`runtimeFunctionalAcceptance: "not_run"`。脚本不启动 Codex、插件、fixture server，不执行
-broker 网络/文件/子进程操作或 GUI 交互；运行时闭包证据由 M2 验收记录负责。
-
-候选 smoke 要求输入二进制理解本轮 manifest、permissions 和 CLI；旧二进制缺接口时应
-失败。最终交付须在本轮代码冻结并构建后，用那个确定二进制重新打包与测试，不能据静态
-文件布局或旧候选的只读行为宣称 M2 功能已经包含并通过。
-
-早先 Host 开发包的包装逻辑验收已通过上述五类检查，包含 23 份载荷及 manifest。两次从相同
-便携输入生成的 manifest 和 ZIP 摘要分别完全一致；错误摘要与重复目标均未发布或覆盖内容。
-记录位于源码 ignored 目录的
-`.codlet-artifacts/distribution-packaging-2026-09-10-r2/packaging-acceptance.json`。
-该次输入是 `104c432` 的旧开发二进制，仅用于包装流程验收。
-
-组合入口交付时，使用本轮新 release 二进制再次通过五类检查，载荷增至 30 份及 manifest，
-候选检查覆盖 raw-host、cleanup-host 与双入口示例。记录位于
-`.codlet-artifacts/combined-distribution-2026-09-10/packaging-acceptance.json`；
-正式包另记录源码 commit 并核验最终逐文件及 ZIP 内容摘要。
-
-完整 M2 使用新 release 二进制再次通过 7 类包装检查及 11 个只读候选检查。当前白名单包含
-58 份源资料，加上可执行文件、固定 Node/许可证和生成的 README，共 62 份载荷及 manifest。
-运行时验收、编译与最终候选指纹见 [M2 验收记录](M2_ACCEPTANCE_2026-09-10.md)。
+所有输出目录必须新建。MSI 测试发现已安装的 Codlet Preview 会拒绝，避免改变用户已有安装；测试自己的安装使用独立程序和数据目录，完成后正常卸载。完整结果见[本次记录](WINDOWS_PREVIEW_DISTRIBUTION_2026-09-21.md)。旧 M2/M5 文档中的内置 GUI 和开发示例便携包清单属于历史状态。

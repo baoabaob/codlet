@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param([string]$OutputPath)
 $ErrorActionPreference = 'Stop'
+if (-not $env:CODLET_HOME -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'portable.mode') -PathType Leaf)) {
+    $env:CODLET_HOME = Join-Path $PSScriptRoot 'data'
+}
 if (-not $OutputPath) {
     $codletExportName = 'Codlet-diagnostics-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.zip'
     $OutputPath = Join-Path $PSScriptRoot $codletExportName
