@@ -25,6 +25,11 @@ $cargo=[IO.File]::ReadAllText((Join-Path $root 'Cargo.toml'))
 $version=[regex]::Match($cargo,'(?m)^version = "([^"]+)"').Groups[1].Value
 $catalog=[IO.File]::ReadAllText((Join-Path $PluginDistribution 'catalog.json'))|ConvertFrom-Json
 if($catalog.schema -ne 1 -or $catalog.kind -ne 'codlet-official-plugin-bundle'){throw 'Invalid independent plugin catalog'}
+$seedIds=if($catalog.PSObject.Properties['installerPlugins']){@($catalog.installerPlugins)}else{@($catalog.packages.id)}
+if(@($seedIds|Sort-Object -Unique).Count -ne @($seedIds).Count){throw 'Duplicate installer plugin selection'}
+foreach($id in $seedIds){if($id -notin @('codex.ui.adapter','codex.desktop.adapter','codlet-gui') -or @($catalog.packages|Where-Object{$_.id -eq $id}).Count -ne 1){throw 'Invalid installer plugin selection'}}
+if('codlet-gui' -in $seedIds -and 'codex.ui.adapter' -notin $seedIds){throw 'The GUI installer preset requires UI Adapter'}
+$catalog.packages=@($catalog.packages|Where-Object{$_.id -in $seedIds})
 $pluginOrigins=@();$repositories=@{}
 foreach($package in $catalog.packages){
   # Older local-preview catalogs remain readable. New catalogs preserve each
@@ -55,7 +60,8 @@ foreach($name in @('Start-Codlet.cmd','Choose-Plugins.cmd','Codlet-CLI.cmd','Ini
 Copy-Payload (Join-Path $root 'scripts/Restart-Codlet.ps1') 'Restart-Codlet.ps1'
 Copy-Payload (Join-Path $root 'scripts/Export-Diagnostics.ps1') 'Export-Diagnostics.ps1'
 Copy-Payload (Join-Path $root 'assets/codlet/ico/codlet.ico') 'codlet.ico'
-Copy-Payload (Join-Path $PluginDistribution 'catalog.json') 'optional-plugins/catalog.json'
+[IO.Directory]::CreateDirectory((Join-Path $stage 'optional-plugins'))|Out-Null
+[IO.File]::WriteAllText((Join-Path $stage 'optional-plugins/catalog.json'),($catalog|ConvertTo-Json -Depth 20),$utf8)
 foreach($package in $catalog.packages){
   if($package.id -notin @('codex.ui.adapter','codex.desktop.adapter','codlet-gui')){throw 'Unexpected package in first-party catalog'}
   foreach($file in $package.files){
