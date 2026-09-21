@@ -51,3 +51,20 @@ Windows UI 自动化读取 `msiexec.exe` 被产品策略拒绝，原因为 `prod
 `portable-final-acceptance/report.json` 通过五组验证，补充确认旧 GUI 禁用偏好不会被重新启用，省略 plugins 字段的有效 registry 也能初始化。`msi-final-acceptance/report.json` 通过实际 Core-only 安装、追加 GUI/UI Adapter、追加 Desktop Adapter、卸载及用户数据保留。测试安装已全部卸载；最终包未包含 config.json、auth.json、运行日志或数据库。
 
 这次未启动或替换用户的日常客户端和原有 dev。实际已安装的官方 Windows 包为 `26.915.4065.0`，对应本次说明的已研究前端 `26.915.31945 / 9922`。先正常关闭已有官方/Dev 实例，再用便携包的 `Start-Codlet.cmd` 或 MSI 的开始菜单入口试用。
+
+## Preview 3 本地交付
+
+Core `01241736252e77764f2407b8cdb4c51f573ccede`，插件仓库 `c5ecacd`；版本 `0.2.0-preview.3`，MSI 数字版本 `0.2.3`。包含 GUI/UI Adapter `0.1.1`、Desktop Adapter `0.1.0`，以及完成本地创建后再询问发布的运行时技能。市场仍为独立 UI 预览，未混入生产 GUI。
+
+- Release 构建无测试特性；ZIP 中的 36 个载荷文件、MSI 中的 37 个载荷文件均逐一比对 SHA-256
+- 从最终 MSI 提取文件，确认 GUI 包含 UI Adapter 组件、Desktop Adapter 独立可选、仅当前用户安装；最新插件 renderer 与插件源码构建输出完全一致，Core 内含最新创建指引
+- MSI 摘要新增 `SummaryCodepage=936`，修复中文 Description 在摘要属性中变成乱码；最终反编译描述已验证正确
+- Core-only 初始化通过。继续注册插件时，当前已安装的 Preview Core 被不同路径的新二进制识别为 `UntrustedServer`，离线写入被拒绝。没有绕过隔离，也没有关闭现有客户端；本轮不记为完成插件注册或真实 MSI 升级事务验收
+- WiX 编译/链接通过。既有 ICE61（允许同版本替换）和 ICE91（仅当前用户安装）提示保留；本地包仍未签名
+
+| 文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `Codlet-0.2.0-preview.3-win-x64.msi` | 35639296 | `31d9873cb764b2f8d52c23d19cebab69b1d77d2e67f8f11589002edded3af287` |
+| `Codlet-0.2.0-preview.3-win-x64.zip` | 43185560 | `7a53b4998a49379ac793c5caa511b9c61f606acaa6a1e78cc0b4dd26ec11fb03` |
+
+产物仍在原项目 `.codlet-artifacts/local-preview-2026-09-21/`，并附 `preview3-verification.json` 和 `Codlet-0.2.0-preview.3-SHA256.txt`。安装前完全退出当前 Codlet/Codex，再运行 MSI；旧插件和配置按既有安装契约保留。
