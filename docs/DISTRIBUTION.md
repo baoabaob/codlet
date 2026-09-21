@@ -2,6 +2,8 @@
 
 Core 与官方插件分别构建。普通 Core 发行构建不包含任何官方插件；`codlet-plugins` 仓库提供 UI Adapter、Desktop Adapter、GUI 三个独立包。运行时 skill 与公开 UI SDK helper 仍属于 Core。
 
+官方插件集中在 `codlet-plugins` 开发，自动同步到 `codlet-ui-adapter`、`codlet-desktop-adapter`、`codlet-gui` 三个分发仓库，各自拥有 topic、标签与 Release。开发与分发流程见 [官方插件分发说明](https://github.com/baoabaob/codlet-plugins/blob/main/docs/DISTRIBUTION.md)。Core 安装包仍消费统一 catalog，并记录每个插件的独立仓库、版本和包摘要，不需要在主仓复制官方插件源码。当前私有草稿阶段继续使用本地离线载荷；已有预装的本地来源不自动转换为 GitHub 来源。
+
 ## 构建
 
 先构建 Core、固定 Node 和插件仓库的 `dist/`：

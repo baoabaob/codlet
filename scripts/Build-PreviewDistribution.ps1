@@ -25,6 +25,16 @@ $cargo=[IO.File]::ReadAllText((Join-Path $root 'Cargo.toml'))
 $version=[regex]::Match($cargo,'(?m)^version = "([^"]+)"').Groups[1].Value
 $catalog=[IO.File]::ReadAllText((Join-Path $PluginDistribution 'catalog.json'))|ConvertFrom-Json
 if($catalog.schema -ne 1 -or $catalog.kind -ne 'codlet-official-plugin-bundle'){throw 'Invalid independent plugin catalog'}
+$pluginOrigins=@();$repositories=@{}
+foreach($package in $catalog.packages){
+  # Older local-preview catalogs remain readable. New catalogs preserve each
+  # independent release channel without fabricating a GitHub install receipt.
+  if($package.PSObject.Properties['repository']){
+    if($package.repository -notmatch '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $repositories.ContainsKey($package.repository) -or $package.tag -ne ('v'+$package.version)){throw 'Invalid independent plugin release channel'}
+    $repositories[$package.repository]=$true
+    $pluginOrigins+=@{id=$package.id;version=$package.version;repository=$package.repository;tag=$package.tag;packageSha256=$package.sha256;registration='local-seed'}
+  }
+}
 $stage=$output+'.stage-'+[Guid]::NewGuid().ToString('N')
 [IO.Directory]::CreateDirectory($stage)|Out-Null
 function Copy-Payload([string]$Source,[string]$Relative){
@@ -87,14 +97,17 @@ guarantee the official client closes. Real cross-version official update accepta
 is still pending. The update source is not yet published.
 
 Source (private during preview): https://github.com/baoabaob/codlet
-Official plugins: https://github.com/baoabaob/codlet-plugins
+Official plugin development: https://github.com/baoabaob/codlet-plugins
+Independent plugin release channels are recorded in optional-plugins/catalog.json.
+Offline presets remain local installations; this does not enable GitHub updates
+for existing local registrations or grant access to private/draft releases.
 
 No real account information, registry files or dev-client data is included.
 The manifest records each distributed file and its SHA-256.
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.md'),$readme.Replace("`r`n","`n")+"`n",$utf8)
 $records=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName | ForEach-Object{[ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');bytes=$_.Length;sha256=Hash $_.FullName}})
-$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';sourceCommit=$SourceCommit;files=$records}
+$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';sourceCommit=$SourceCommit;officialPlugins=$pluginOrigins;files=$records}
 [IO.File]::WriteAllText((Join-Path $stage 'distribution-manifest.json'),($manifest|ConvertTo-Json -Depth 8),$utf8)
 [IO.Directory]::Move($stage,$output)
 $zipPath=$null
