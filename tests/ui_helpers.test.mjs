@@ -37,6 +37,22 @@ test('a retired page registration cannot mount or leak its lifetime marker',asyn
   const result=ui.page({label:'Page',render:()=>null});ui.dispose();reply.resolve({api:1,token:'late',path:'/codlet/late'});await assert.rejects(result);
   assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);
 });
+test('inactive pages skip message mutations and still discover nested hosts, toolbar replacements and retirement',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const ui=f.context.ui.create(),h=ui.React.createElement;
+  await ui.page({label:'Page',toolbar:true,render:({toolbar})=>h(ui.React.Fragment,null,h('p',null,'Profile page'),ui.createPortal(h('b',null,'Toolbar'),toolbar))});await tick();
+  const original=f.document.querySelectorAll.bind(f.document);let scans=0;
+  f.document.querySelectorAll=(selector,...args)=>{if(selector==='[data-codlet-page-host]')scans++;return original(selector,...args);};
+  const stream=f.document.createElement('article');f.document.querySelector('main').append(stream);await tick();scans=0;
+  for(let i=0;i<30;i++){stream.textContent=String(i);await Promise.resolve();await Promise.resolve();}
+  assert.equal(scans,0);
+  const lease=f.document.querySelector('[data-codlet-page-lease]'),wrapper=f.document.createElement('div'),host=f.document.createElement('section'),toolbar=f.document.createElement('header');
+  host.dataset.codletPageHost=lease.dataset.codletPageLease;toolbar.dataset.codletPageToolbar=lease.dataset.codletPageLease;wrapper.append(host,toolbar);f.document.body.append(wrapper);await tick();
+  assert.equal(host.textContent,'Profile page');assert.equal(toolbar.textContent,'Toolbar');
+  const replacement=toolbar.cloneNode(false);toolbar.replaceWith(replacement);await tick();assert.equal(replacement.textContent,'Toolbar');
+  wrapper.remove();await tick();assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);
+  lease.remove();await tick();ui.dispose();assert.equal(f.mediaListeners.size,0);assert.equal(f.errors.length,0);
+  f.document.querySelectorAll=original;
+});
 test('locale/theme sync is scoped and never rewrites the host',async t=>{
   const f=uiFixture();t.after(()=>f.dispose());const ui=f.context.ui.create(),node=ui.container();f.document.documentElement.dataset.theme='dark';await f.locale('zh');
   assert.equal(node.dataset.theme,'dark');assert.equal(node.lang,'zh');assert.equal(f.document.documentElement.dataset.theme,'dark');

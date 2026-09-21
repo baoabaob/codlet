@@ -1,0 +1,1406 @@
+{
+  "schema": 1,
+  "date": "2026-09-21",
+  "machine": {
+    "os": "Windows 11 Home China 10.0.26200 x64",
+    "cpu": "Intel Core i7-12700K",
+    "logicalProcessors": 20,
+    "physicalMemoryBytes": 33646673920
+  },
+  "baselineRevisions": {
+    "core": "c4b1c221b365ce88b0dc260a394f3ea74f0f4494",
+    "plugins": "c5ecacd"
+  },
+  "client": {
+    "processes": 13,
+    "durationSeconds": 62.7973127,
+    "samples": 31,
+    "medianPrivateMiB": 1810.33984375,
+    "privateRangeMiB": [
+      1776.27734375,
+      1817.765625
+    ],
+    "medianWorkingSetMiB": 2098.98828125,
+    "codletCoreRunningAtStart": false,
+    "systemCpuPercent": 0.31350863840388504
+  },
+  "scans": {
+    "navigation": {
+      "before": [
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 159.46260000000007,
+          "cpuMs": 157,
+          "documentScans": {
+            "sidebar": 1000,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 154.87290000000007,
+          "cpuMs": 141,
+          "documentScans": {
+            "sidebar": 1000,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 151.79030000000012,
+          "cpuMs": 188,
+          "documentScans": {
+            "sidebar": 1000,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 150.7271999999998,
+          "cpuMs": 203,
+          "documentScans": {
+            "sidebar": 1000,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 145.75379999999996,
+          "cpuMs": 140,
+          "documentScans": {
+            "sidebar": 1000,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        }
+      ],
+      "after": [
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 27.295299999999997,
+          "cpuMs": 46,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 25.768400000000042,
+          "cpuMs": 46,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 25.376300000000015,
+          "cpuMs": 62,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 22.026600000000144,
+          "cpuMs": 31,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 25.023400000000038,
+          "cpuMs": 32,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        }
+      ],
+      "beforeMedianMs": 151.79030000000012,
+      "afterMedianMs": 25.376300000000015,
+      "node": "v24.18.1"
+    },
+    "ui": {
+      "before": [
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 653.9935,
+          "cpuMs": 750,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 1000,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 648.3438999999998,
+          "cpuMs": 687,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 1000,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 645.9558,
+          "cpuMs": 656,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 1000,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 676.8793000000001,
+          "cpuMs": 703,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 1000,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 717.9423000000002,
+          "cpuMs": 688,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 1000,
+            "toolbar": 0
+          }
+        }
+      ],
+      "after": [
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 16.81880000000001,
+          "cpuMs": 47,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 14.319299999999998,
+          "cpuMs": 78,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 13.532799999999952,
+          "cpuMs": 31,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 14.913700000000063,
+          "cpuMs": 31,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 13.410300000000007,
+          "cpuMs": 15,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        }
+      ],
+      "beforeMedianMs": 653.9935,
+      "afterMedianMs": 14.319299999999998,
+      "node": "v24.18.1"
+    }
+  },
+  "memory": {
+    "coreRenderer": {
+      "from": 10,
+      "to": 200,
+      "fromHeapMiB": 7.294456481933594,
+      "toHeapMiB": 7.355438232421875,
+      "deltaMiB": 0.06098175048828125
+    },
+    "desktop": {
+      "from": 10,
+      "to": 100,
+      "fromHeapMiB": 21.149559020996094,
+      "toHeapMiB": 21.152847290039062,
+      "deltaMiB": 0.00328826904296875
+    },
+    "navigation": {
+      "from": 10,
+      "to": 60,
+      "fromHeapMiB": 27.752609252929688,
+      "toHeapMiB": 27.93482208251953,
+      "deltaMiB": 0.18221282958984375
+    },
+    "gui": {
+      "from": 100,
+      "to": 200,
+      "fromHeapMiB": 34.287376403808594,
+      "toHeapMiB": 34.645965576171875,
+      "deltaMiB": 0.35858917236328125
+    }
+  },
+  "profiles": {
+    "coreRenderer": {
+      "schema": 1,
+      "node": "v24.21.0",
+      "platform": "win32",
+      "arch": "x64",
+      "method": "Production Core renderer bootstrap in Node VM; in-memory echo replaces native Core IPC. Full GC before heap samples; no browser UI SDK included.",
+      "lifecycle": [
+        {
+          "cycles": 10,
+          "rpcCalls": 500,
+          "heapUsed": 7648792,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 1.0954999999999586,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 20,
+          "rpcCalls": 1000,
+          "heapUsed": 7672472,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7740999999999758,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 30,
+          "rpcCalls": 1500,
+          "heapUsed": 7686568,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.6355000000000928,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 40,
+          "rpcCalls": 2000,
+          "heapUsed": 7686752,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7076000000001841,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 50,
+          "rpcCalls": 2500,
+          "heapUsed": 7688976,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 1.011199999999917,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 60,
+          "rpcCalls": 3000,
+          "heapUsed": 7690128,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7078000000001339,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 70,
+          "rpcCalls": 3500,
+          "heapUsed": 7692664,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.8836999999998625,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 80,
+          "rpcCalls": 4000,
+          "heapUsed": 7692800,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 1.163600000000315,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 90,
+          "rpcCalls": 4500,
+          "heapUsed": 7695752,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.5976000000000568,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 100,
+          "rpcCalls": 5000,
+          "heapUsed": 7697176,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.6093999999998232,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 110,
+          "rpcCalls": 5500,
+          "heapUsed": 7700736,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7708999999999833,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 120,
+          "rpcCalls": 6000,
+          "heapUsed": 7700872,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.5755999999996675,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 130,
+          "rpcCalls": 6500,
+          "heapUsed": 7703056,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7533000000003085,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 140,
+          "rpcCalls": 7000,
+          "heapUsed": 7705632,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 1.0689999999995052,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 150,
+          "rpcCalls": 7500,
+          "heapUsed": 7705768,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7381999999997788,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 160,
+          "rpcCalls": 8000,
+          "heapUsed": 7705904,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 1.0254000000004453,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 170,
+          "rpcCalls": 8500,
+          "heapUsed": 7706040,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.7998999999999796,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 180,
+          "rpcCalls": 9000,
+          "heapUsed": 7708624,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.6118999999998778,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 190,
+          "rpcCalls": 9500,
+          "heapUsed": 7711736,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 1.1476999999995314,
+          "cycleCpuMs": 0
+        },
+        {
+          "cycles": 200,
+          "rpcCalls": 10000,
+          "heapUsed": 7712736,
+          "ports": 0,
+          "timers": 0,
+          "activePlugins": 0,
+          "cycleWallMs": 0.5986999999995533,
+          "cycleCpuMs": 0
+        }
+      ],
+      "baselineHeap": 7340128,
+      "idle": {
+        "durationMs": 1012.1373999999996,
+        "wakeTasks": 0,
+        "ports": 0,
+        "timers": 0,
+        "cpuMs": 0
+      }
+    },
+    "desktop": {
+      "schema": 1,
+      "kind": "desktop",
+      "node": "v24.18.1",
+      "platform": "win32",
+      "arch": "x64",
+      "method": "Offline production bundles; Node --expose-gc; jsdom disables CSS parsing. Heap samples follow three full GCs. Native/backend responses are fixtures.",
+      "baselineHeap": 22074488,
+      "activeHeap": 22114752,
+      "events": [
+        {
+          "events": 10000,
+          "wallMs": 51.81639999999999,
+          "cpuMs": 47,
+          "heapUsed": 22722288
+        },
+        {
+          "events": 20000,
+          "wallMs": 51.64699999999999,
+          "cpuMs": 77,
+          "heapUsed": 22562800
+        },
+        {
+          "events": 30000,
+          "wallMs": 48.72569999999996,
+          "cpuMs": 47,
+          "heapUsed": 22563592
+        },
+        {
+          "events": 40000,
+          "wallMs": 48.55689999999993,
+          "cpuMs": 46,
+          "heapUsed": 22563784
+        },
+        {
+          "events": 50000,
+          "wallMs": 48.127700000000004,
+          "cpuMs": 47,
+          "heapUsed": 22606488
+        }
+      ],
+      "afterEventsDispose": {
+        "heapUsed": 22120152,
+        "callbacks": 0,
+        "endpoints": 0
+      },
+      "lifecycle": [
+        {
+          "cycles": 10,
+          "heapUsed": 22176920,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 20,
+          "heapUsed": 22177560,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 30,
+          "heapUsed": 22179192,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 40,
+          "heapUsed": 22179888,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 50,
+          "heapUsed": 22179968,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 60,
+          "heapUsed": 22180048,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 70,
+          "heapUsed": 22180128,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 80,
+          "heapUsed": 22180208,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 90,
+          "heapUsed": 22180288,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        },
+        {
+          "cycles": 100,
+          "heapUsed": 22180368,
+          "callbacks": 0,
+          "endpoints": 0,
+          "cleanups": 0
+        }
+      ],
+      "limitations": "Uses a mock connection.check, so CPU excludes native React-scope validation, real IPC, network, and service streaming."
+    },
+    "navigation": {
+      "schema": 1,
+      "kind": "navigation",
+      "node": "v24.18.1",
+      "platform": "win32",
+      "arch": "x64",
+      "method": "Offline production bundles; Node --expose-gc; jsdom disables CSS parsing. Heap samples follow three full GCs. Native/backend responses are fixtures.",
+      "baselineHeap": 27109640,
+      "activeHeap": 27855088,
+      "streaming": [
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 27.295299999999997,
+          "cpuMs": 46,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 25.768400000000042,
+          "cpuMs": 46,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 25.376300000000015,
+          "cpuMs": 62,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 22.026600000000144,
+          "cpuMs": 31,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        },
+        {
+          "batches": 1000,
+          "historyElements": 1000,
+          "wallMs": 25.023400000000038,
+          "cpuMs": 32,
+          "documentScans": {
+            "sidebar": 0,
+            "pageHost": 0,
+            "toolbar": 0
+          }
+        }
+      ],
+      "lifecycle": [
+        {
+          "cycles": 0,
+          "heapUsed": 31719248,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        },
+        {
+          "cycles": 10,
+          "heapUsed": 29100720,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        },
+        {
+          "cycles": 20,
+          "heapUsed": 29110520,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        },
+        {
+          "cycles": 30,
+          "heapUsed": 29139152,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        },
+        {
+          "cycles": 40,
+          "heapUsed": 29196856,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        },
+        {
+          "cycles": 50,
+          "heapUsed": 29265520,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        },
+        {
+          "cycles": 60,
+          "heapUsed": 29291784,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1
+        }
+      ]
+    },
+    "gui": {
+      "schema": 1,
+      "kind": "gui",
+      "node": "v24.21.0",
+      "platform": "win32",
+      "arch": "x64",
+      "method": "Offline production bundles; Node --expose-gc; jsdom disables CSS parsing. Heap samples follow three full GCs. Native/backend responses are fixtures.",
+      "fixtureResources": {
+        "observers": 1,
+        "mediaListeners": 0,
+        "ownedNodes": 0,
+        "cleanupCallbacks": 1
+      },
+      "baselineHeap": 26505928,
+      "lifecycle": [
+        {
+          "cycles": 5,
+          "heapUsed": 33429392,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 10,
+          "heapUsed": 34206664,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 15,
+          "heapUsed": 34528616,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 20,
+          "heapUsed": 34760232,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 25,
+          "heapUsed": 34922352,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 30,
+          "heapUsed": 35029144,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 35,
+          "heapUsed": 35154840,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 40,
+          "heapUsed": 35203400,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 45,
+          "heapUsed": 35260384,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 50,
+          "heapUsed": 35331288,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 55,
+          "heapUsed": 35489184,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 60,
+          "heapUsed": 35582368,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 65,
+          "heapUsed": 35630744,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 70,
+          "heapUsed": 35677152,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 75,
+          "heapUsed": 35794128,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 80,
+          "heapUsed": 35830264,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 85,
+          "heapUsed": 35845360,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 90,
+          "heapUsed": 35929392,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 95,
+          "heapUsed": 35954080,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 100,
+          "heapUsed": 35952920,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 105,
+          "heapUsed": 36000048,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 110,
+          "heapUsed": 36032152,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 115,
+          "heapUsed": 36039696,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 120,
+          "heapUsed": 36058872,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 125,
+          "heapUsed": 36086728,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 130,
+          "heapUsed": 36137360,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 135,
+          "heapUsed": 36161632,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 140,
+          "heapUsed": 36158648,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 145,
+          "heapUsed": 36183304,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 150,
+          "heapUsed": 36181624,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 155,
+          "heapUsed": 36211712,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 160,
+          "heapUsed": 36193104,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 165,
+          "heapUsed": 36201248,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 170,
+          "heapUsed": 36230168,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 175,
+          "heapUsed": 36262600,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 180,
+          "heapUsed": 36280024,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 185,
+          "heapUsed": 36308952,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 190,
+          "heapUsed": 36307824,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 195,
+          "heapUsed": 36337928,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        },
+        {
+          "cycles": 200,
+          "heapUsed": 36328928,
+          "observers": 1,
+          "mediaListeners": 0,
+          "ownedNodes": 0,
+          "cleanupCallbacks": 1,
+          "retainedPluginFunctions": 1,
+          "retainedPanels": 1
+        }
+      ],
+      "renderMs": [
+        95.23360000000002,
+        69.13819999999998,
+        56.71160000000009,
+        56.97649999999999,
+        55.134799999999814,
+        53.68989999999985,
+        56.26909999999998,
+        56.88369999999986,
+        42.25279999999975,
+        57.63850000000002,
+        68.01769999999988,
+        72.35369999999966,
+        57.73079999999982,
+        45.59389999999985,
+        57.129399999999805,
+        67.90369999999984,
+        70.04709999999977,
+        58.49229999999989,
+        27.89280000000008,
+        58.972899999999754,
+        117.84069999999974,
+        70.28749999999945,
+        73.67540000000008,
+        71.58389999999963,
+        57.46270000000004,
+        56.6845000000003,
+        56.95300000000043,
+        72.4964,
+        58.05540000000019,
+        40.44579999999951,
+        57.76459999999952,
+        40.87219999999979,
+        44.099999999999454,
+        56.45020000000022,
+        56.84220000000005,
+        70.7536,
+        42.33640000000014,
+        56.13799999999992,
+        56.89130000000023,
+        57.44300000000021,
+        63.98960000000079,
+        56.99210000000039,
+        73.44340000000011,
+        57.88630000000012,
+        57.55169999999998,
+        67.03019999999924,
+        42.49129999999968,
+        58.7487000000001,
+        42.41650000000118,
+        71.02550000000156,
+        64.34569999999985,
+        72.39750000000095,
+        42.370200000001205,
+        53.9341000000004,
+        56.82049999999981,
+        58.80479999999989,
+        58.11539999999877,
+        60.23490000000129,
+        57.135700000000725,
+        59.71550000000025,
+        69.06180000000131,
+        57.034599999999045,
+        57.787500000000364,
+        73.58699999999953,
+        72.75540000000001,
+        82.45529999999962,
+        73.24239999999918,
+        71.13459999999941,
+        40.45509999999922,
+        58.998999999999796,
+        78.99219999999877,
+        58.52089999999953,
+        73.07760000000053,
+        58.11830000000009,
+        57.71759999999995,
+        75.72049999999945,
+        73.23580000000038,
+        58.97659999999996,
+        42.69670000000042,
+        44.10820000000058,
+        78.39709999999832,
+        71.70360000000073,
+        72.11830000000009,
+        74.39589999999953,
+        59.103000000000975,
+        59.58089999999902,
+        72.95749999999862,
+        56.70899999999892,
+        58.1833000000006,
+        40.83859999999913,
+        68.90250000000015,
+        54.705799999999726,
+        72.22479999999996,
+        70.33320000000094,
+        56.631499999999505,
+        59.39020000000164,
+        59.34259999999995,
+        56.532600000002276,
+        41.4458999999988,
+        58.15720000000147,
+        76.0077999999994,
+        56.89350000000195,
+        58.0609000000004,
+        72.7000999999982,
+        71.02869999999893,
+        65.12670000000071,
+        56.77439999999842,
+        72.20360000000073,
+        56.919199999996636,
+        59.4442999999992,
+        84.88130000000092,
+        70.71700000000055,
+        58.19220000000132,
+        58.212500000001455,
+        55.376899999999296,
+        50.89879999999903,
+        58.41159999999945,
+        56.51670000000013,
+        60.37800000000061,
+        59.47929999999906,
+        64.3898999999983,
+        41.65689999999813,
+        57.56670000000304,
+        59.618099999999686,
+        58.24120000000039,
+        53.39780000000246,
+        58.30370000000039,
+        56.885599999997794,
+        59.163000000000466,
+        58.43239999999787,
+        66.41090000000258,
+        58.39969999999812,
+        44.36399999999776,
+        40.025799999999435,
+        59.3537000000033,
+        67.5573000000004,
+        59.067299999998795,
+        56.70679999999993,
+        58.47990000000209,
+        71.78510000000097,
+        71.89489999999932,
+        56.5041999999994,
+        56.69380000000092,
+        57.963299999999435,
+        58.174299999998766,
+        70.97700000000259,
+        55.595900000000256,
+        57.06500000000233,
+        59.91790000000037,
+        57.35540000000037,
+        60.53610000000117,
+        71.94580000000133,
+        57.61319999999978,
+        57.940199999997276,
+        41.28900000000067,
+        66.81370000000243,
+        71.57159999999931,
+        68.28199999999924,
+        73.99409999999989,
+        57.586200000001554,
+        72.15339999999924,
+        55.24040000000241,
+        59.27669999999853,
+        71.8663000000015,
+        59.37870000000112,
+        67.05159999999887,
+        59.04070000000138,
+        56.466700000000856,
+        56.87160000000222,
+        43.0025999999998,
+        54.46219999999812,
+        59.914199999999255,
+        56.10180000000037,
+        44.49959999999919,
+        58.262299999998504,
+        69.71680000000197,
+        56.465000000000146,
+        57.3083000000006,
+        57.97060000000056,
+        43.37280000000101,
+        72.59360000000015,
+        60.147799999998824,
+        59.45780000000377,
+        56.55599999999686,
+        55.92790000000241,
+        61.45010000000184,
+        72.6929999999993,
+        70.7934000000023,
+        74.63650000000052,
+        59.20919999999751,
+        52.590400000000955,
+        55.87420000000566,
+        59.81369999999879,
+        59.089599999999336,
+        58.27689999999711,
+        66.01490000000194,
+        72.18910000000324,
+        58.003499999998894,
+        55.038699999997334,
+        43.92129999999452
+      ],
+      "activeHeap": 34796896,
+      "finalRetirement": {
+        "heapUsed": 36313296,
+        "retainedPluginFunctions": 1,
+        "retainedPanels": 1
+      },
+      "afterWindowClosed": {
+        "heapUsed": 36280264,
+        "retainedPluginFunctions": 1,
+        "retainedPanels": 1
+      }
+    }
+  },
+  "nativeCoreMeasurement": {
+    "status": "incomplete",
+    "reason": "Windows Defender quarantined the newly built isolated codlet-lab.exe; no valid Core native process memory series was collected.",
+    "threatName": "Behavior:Win32/DefenseEvasion.A!ml",
+    "threatID": 2147738096,
+    "securitySettingsChanged": false,
+    "labRegistryRestored": true
+  },
+  "notes": [
+    "MiB = 1048576 bytes. Working sets include shared pages.",
+    "Node/jsdom heap measurements are not Electron/native RSS.",
+    "GUI retained one last generation on a V8 stack root; 199 earlier generations were collected. Heap snapshot path: GC roots -> Stack roots -> deactivate -> Context -> activate.",
+    "Invalid zero-process baseline was discarded.",
+    "System Node 24.18.1 crashed in inspector test teardown; pinned distribution Node 24.21.0 passed all four idle tests."
+  ]
+}

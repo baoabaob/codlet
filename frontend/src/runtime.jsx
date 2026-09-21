@@ -183,7 +183,13 @@ export default function createUI(context) {
         }
       };
       observer = new MutationObserver(records => {
-        if (!records.some(record => !scope.contains(record.target)))return;
+        // A token's native mount changes on navigation, not on every streamed
+        // message. Check the changed subtrees before searching the whole page.
+        const markers='[data-codlet-page-host], [data-codlet-page-toolbar]';
+        const changed=records.some(record => !scope.contains(record.target) &&
+          [...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1&&
+            (node.matches(markers)||node.querySelector(markers))));
+        if(lease.isConnected&&(!host||host.isConnected)&&!changed)return;
         try { reconcile(); } catch(error) {
           const errors=[error,...cleanAll([stop])];
           try{throwCleanup(errors);}catch(failure){reportCleanup(failure);}
