@@ -28,9 +28,15 @@ function Save-State {
   if([IO.File]::Exists($statePath)){[IO.File]::Replace($temporary,$statePath,[NullString]::Value)}else{[IO.File]::Move($temporary,$statePath)}
 }
 function Invoke-Cli([string[]]$Arguments){
-  $text=(& $exe @Arguments | Out-String)
-  if($LASTEXITCODE -ne 0){throw "Codlet CLI failed ($LASTEXITCODE): $text"}
-  $text|ConvertFrom-Json
+  # Windows PowerShell uses the console output encoding to decode native stdout.
+  # Codlet emits UTF-8 JSON even when the launching console uses GBK or an OEM page.
+  $previousConsoleEncoding=[Console]::OutputEncoding
+  try{
+    [Console]::OutputEncoding=$utf8
+    $text=(& $exe @Arguments | Out-String)
+    if($LASTEXITCODE -ne 0){throw "Codlet CLI failed ($LASTEXITCODE): $text"}
+    $text|ConvertFrom-Json
+  }finally{[Console]::OutputEncoding=$previousConsoleEncoding}
 }
 function Select-Plugins($Available){
   Add-Type -AssemblyName System.Windows.Forms

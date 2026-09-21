@@ -70,6 +70,10 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-M0CrashAcceptance.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-DistributionEncoding.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      - run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-DistributionEncoding.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
 
   macos:
     runs-on: macos-15

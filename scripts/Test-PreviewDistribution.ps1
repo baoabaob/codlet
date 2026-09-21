@@ -9,7 +9,11 @@ if(Test-Path -LiteralPath $artifacts){throw 'Use a new owned test output directo
 $checks=[Collections.Generic.List[string]]::new()
 $exe=Join-Path $root 'codlet.exe'
 function Assert([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message}}
-function Invoke-CodletTestCli([string[]]$Arguments){$output=& $exe @Arguments;if($LASTEXITCODE -ne 0){throw "CLI failed: $output"};($output|Out-String)|ConvertFrom-Json}
+function Invoke-CodletTestCli([string[]]$Arguments){
+  $before=[Console]::OutputEncoding
+  try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$output=& $exe @Arguments;if($LASTEXITCODE -ne 0){throw "CLI failed: $output"};($output|Out-String)|ConvertFrom-Json}
+  finally{[Console]::OutputEncoding=$before}
+}
 function Setup([string]$Data,[string[]]$Selection){
   $parameters=@{NoLaunch=$true;DataDirectory=$Data}
   if($null -ne $Selection){$parameters.Plugins=$Selection}
