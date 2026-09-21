@@ -38,7 +38,8 @@ impl RuntimeManageError {
 #[derive(Clone)]
 pub struct RuntimeManageService {
     #[cfg(windows)]
-    pub(crate) folder_foreground: Arc<Mutex<Option<crate::windows::restart_bridge::ForegroundPermission>>>,
+    pub(crate) folder_foreground:
+        Arc<Mutex<Option<crate::windows::restart_bridge::ForegroundPermission>>>,
     broker: ControlBroker,
     listing: Arc<Mutex<Result<Value, RuntimeManageError>>>,
     client_status: Arc<Mutex<Value>>,
@@ -59,7 +60,11 @@ impl RuntimeManageService {
     #[cfg(any(windows, target_os = "macos"))]
     fn prepare_folder_foreground(&self) {
         #[cfg(windows)]
-        if let Some(permission) = self.folder_foreground.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        if let Some(permission) = self
+            .folder_foreground
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
             && let Err(error) = permission.request()
         {
             // Opening a checked directory still works when the client has
@@ -479,8 +484,9 @@ impl RuntimeManageService {
             #[cfg(any(windows, target_os = "macos"))]
             {
                 self.prepare_folder_foreground();
-                return crate::platform::open_folder::open_runtime_directory(directory)
-                    .map_err(|error| RuntimeManageError::new("open_folder_error", error.to_string()));
+                return crate::platform::open_folder::open_runtime_directory(directory).map_err(
+                    |error| RuntimeManageError::new("open_folder_error", error.to_string()),
+                );
             }
             #[cfg(not(any(windows, target_os = "macos")))]
             {

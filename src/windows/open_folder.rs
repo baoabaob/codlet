@@ -90,7 +90,10 @@ fn open_directory_on_sta(directory: &Path) -> Result<(), PluginControlError> {
         // This STA has no message loop and exits after the call. Wait for Shell
         // dispatch and mark the launch as user initiated so Explorer receives
         // activation semantics rather than a background directory open.
-        fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_LOG_USAGE | SEE_MASK_FLAG_NO_UI | SEE_MASK_CLASSNAME,
+        fMask: SEE_MASK_NOASYNC
+            | SEE_MASK_FLAG_LOG_USAGE
+            | SEE_MASK_FLAG_NO_UI
+            | SEE_MASK_CLASSNAME,
         lpVerb: w!("explore"),
         lpClass: w!("folder"),
         lpFile: PCWSTR(wide.as_ptr()),

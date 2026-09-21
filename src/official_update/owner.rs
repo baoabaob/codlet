@@ -88,8 +88,10 @@ impl OfficialUpdateOwner {
         });
         let bridge = match result {
             Ok(bridge) => {
-                *manage.folder_foreground.lock().unwrap_or_else(|e| e.into_inner()) =
-                    bridge.foreground_permission().ok();
+                *manage
+                    .folder_foreground
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = bridge.foreground_permission().ok();
                 eprintln!("official-update: native restart bridge loaded into the owned client");
                 Some(bridge)
             }

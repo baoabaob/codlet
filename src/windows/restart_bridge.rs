@@ -267,12 +267,13 @@ impl RestartBridge {
         }
         let entry = unsafe { GetProcAddress(local, c"codlet_restart_initialize".as_ptr().cast()) }
             .map(|entry| entry as usize - local as usize);
-        let foreground_entry = unsafe {
-            GetProcAddress(local, c"codlet_allow_owner_foreground".as_ptr().cast())
-        }.map(|entry| entry as usize - local as usize);
+        let foreground_entry =
+            unsafe { GetProcAddress(local, c"codlet_allow_owner_foreground".as_ptr().cast()) }
+                .map(|entry| entry as usize - local as usize);
         unsafe { FreeLibrary(local) };
         let entry = entry.ok_or("The embedded restart bridge has no initializer")?;
-        let foreground_entry = foreground_entry.ok_or("The embedded bridge has no foreground handoff")?;
+        let foreground_entry =
+            foreground_entry.ok_or("The embedded bridge has no foreground handoff")?;
         let mut owner = std::ptr::null_mut();
         if unsafe {
             DuplicateHandle(
@@ -333,7 +334,10 @@ impl RestartBridge {
     }
     pub(crate) fn foreground_permission(&self) -> Result<ForegroundPermission, String> {
         Ok(ForegroundPermission {
-            process: self.process.try_clone().map_err(|error| error.to_string())?,
+            process: self
+                .process
+                .try_clone()
+                .map_err(|error| error.to_string())?,
             address: self.address,
             entry: self.foreground_entry,
         })
@@ -400,17 +404,25 @@ mod tests {
     #[ignore = "activate the test window on an unlocked desktop; opens Explorer"]
     fn foreground_client_hands_directory_activation_to_core() {
         use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
-        let root = tempfile::Builder::new().prefix("Codlet-folder-activation-").tempdir().unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("Codlet-folder-activation-")
+            .tempdir()
+            .unwrap();
         let target = root.path().join("windows-updater.node");
         let other = root.path().join("unrelated.dll");
         let compiled = Path::new(env!("OUT_DIR"));
         std::fs::copy(compiled.join("restart-fixture.dll"), &target).unwrap();
         std::fs::copy(&target, &other).unwrap();
         let args: Vec<OsString> = [root.path(), target.as_path(), other.as_path()]
-            .iter().map(|p| p.as_os_str().to_owned()).collect();
+            .iter()
+            .map(|p| p.as_os_str().to_owned())
+            .collect();
         let (child, _pipes) = super::super::process::launch_with_cdp_pipes(
-            &compiled.join("restart-fixture.exe"), &args, true,
-        ).unwrap();
+            &compiled.join("restart-fixture.exe"),
+            &args,
+            true,
+        )
+        .unwrap();
         struct Exit<'a>(&'a Path, &'a ChildProcess);
         impl Drop for Exit<'_> {
             fn drop(&mut self) {
@@ -421,7 +433,10 @@ mod tests {
         let _exit = Exit(root.path(), &child);
         let bridge = RestartBridge::install(&child, &target).unwrap();
         let permission = bridge.foreground_permission().unwrap();
-        assert!(!permission.request().unwrap(), "a background child cannot grant foreground");
+        assert!(
+            !permission.request().unwrap(),
+            "a background child cannot grant foreground"
+        );
         std::fs::write(root.path().join("request"), b"w").unwrap();
         eprintln!("Activate the window named 'Codlet folder activation test' within 45 seconds");
         let deadline = Instant::now() + Duration::from_secs(45);
@@ -438,7 +453,10 @@ mod tests {
             let length = unsafe { GetWindowTextW(GetForegroundWindow(), &mut text) };
             title = String::from_utf16_lossy(&text[..length as usize]);
             if title.contains(name.as_ref()) {
-                assert!(!permission.request().unwrap(), "the background client must stop granting permission");
+                assert!(
+                    !permission.request().unwrap(),
+                    "the background client must stop granting permission"
+                );
                 return;
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -472,10 +490,16 @@ mod tests {
         }
         bridge.enable(true).unwrap();
         let permission = bridge.foreground_permission().unwrap();
-        assert!(!permission.request().unwrap(), "the headless child has no foreground permission");
+        assert!(
+            !permission.request().unwrap(),
+            "the headless child has no foreground permission"
+        );
         std::fs::write(root.path().join("request"), b"x").unwrap();
         assert_eq!(child.wait(Duration::from_secs(5)).unwrap(), Some(0));
-        assert!(!permission.request().unwrap(), "a retired child cannot grant permission");
+        assert!(
+            !permission.request().unwrap(),
+            "a retired child cannot grant permission"
+        );
         assert!(
             bridge.take_registered(),
             "registration evidence must remain after process memory is gone"
