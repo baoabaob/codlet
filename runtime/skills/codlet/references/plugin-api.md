@@ -28,6 +28,10 @@ module.exports = {
 
 分类使用顶层可选 `tags`，例如 `"tags":["UI","Enhancement"]`。推荐 `UI`、`Adapter`、`Tool`、`Enhancement`，也允许自定义。名称不做 i18n，不包含界面自动绘制的 `#`；最多 8 个不区分大小写的唯一标签，每个 1–32 个字母、数字、连字符或下划线。标签不授予权限，也不声明依赖，不要根据标签推断插件能力。旧版 Core 可能不支持该字段，以运行时提供的类型和 `plugin preview` 结果为准。
 
+平台与语言按用户已确认的范围实现。发布元数据 `codlet-package.json` 的 `platforms` 可声明系统/架构；省略表示未知，`any` 是作者明确的跨平台声明，不是默认值。目标范围需要同时满足 Core、插件自身限制、所需 Adapter 能力及传递依赖，静态检查不能证明任意 JavaScript 都跨平台。当前 Core 的 GitHub 包检查会拦截明确不匹配的平台；不要声称尚未实现的自动继承已经由 Core 强制执行。
+
+多语言使用运行时 `context.i18n` 和 manifest 的 `i18n` 元数据，按 `types/renderer.d.ts` 中的实际接口实现。日期、数字等显示也随所选语言格式化；技术标识保持稳定。用户只选单语言时不自动扩大翻译范围。
+
 依赖使用清单中的精确能力描述 `{name, api, scope}`。Renderer 通过 `context.rpc.request(capability, method, params, options)` 调用；依赖放在 `requires`，所提供能力放在 `provides`。组合插件的顶层声明属于 Renderer，Host 的声明在 `host.requires` / `host.provides`。单纯调用一个适配能力不自动需要所有底层权限。
 
 | 权限 | 向用户解释的范围 |
