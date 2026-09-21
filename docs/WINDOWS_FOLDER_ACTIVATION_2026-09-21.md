@@ -38,3 +38,10 @@ The GUI bundle was reloaded successfully in the current installed instance. Core
 changes require closing that instance and installing Preview 2. MSI upgrade on
 the user's live installation is deliberately left to the user, since this task
 is running inside that client.
+
+Preview 2 artifacts were built with WiX validation and verified against their
+payload manifest. The portable Core-only acceptance passed; continuing the
+isolated plugin-registration acceptance while the installed Preview 1 Core was
+live was refused with `UntrustedServer` by control discovery. No discovery guard
+was bypassed and the running client was not stopped. This is not recorded as a
+completed portable installation/upgrade acceptance for Preview 2.
