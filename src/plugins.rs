@@ -217,8 +217,9 @@ pub struct LoadedPlugin {
     /// is reserved for bundled/embedded snapshots, never a loaded local entry.
     pub authorization: Option<LocalPluginRegistration>,
     pub manifest: PluginManifest,
-    /// The unchanged renderer source, absent for a host-only plugin.
-    pub source: Option<String>,
+    /// Immutable renderer snapshot, shared across lifecycle/rollback copies.
+    /// Absent for a host-only plugin.
+    pub source: Option<Arc<str>>,
     pub host: Option<LoadedHost>,
     pub generation: u64,
 }
@@ -1388,7 +1389,7 @@ pub fn bundled_codlet() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         authorization: None,
         manifest: PluginManifest::parse(include_str!("../tests/fixtures/catalog/gui.json"))?,
-        source: Some("module.exports = { activate() {}, deactivate() {} };".to_owned()),
+        source: Some("module.exports = { activate() {}, deactivate() {} };".into()),
         host: None,
         generation: 1,
     })
@@ -1400,7 +1401,7 @@ pub fn bundled_codex_ui_adapter() -> Result<LoadedPlugin, ManifestError> {
     Ok(LoadedPlugin {
         authorization: None,
         manifest: PluginManifest::parse(include_str!("../tests/fixtures/catalog/ui.json"))?,
-        source: Some("module.exports = { activate() {}, deactivate() {} };".to_owned()),
+        source: Some("module.exports = { activate() {}, deactivate() {} };".into()),
         host: None,
         generation: 1,
     })

@@ -1011,14 +1011,7 @@ fn scenario_renderer_document_recovery(
         let world = "codlet.plugin.codex.ui.adapter.g1.d2";
         complete_renderer_context(&mut reader, output, &session, world, 41)?;
         expect_renderer_binding(&mut reader, output, &session, world)?;
-        expect_renderer_script(
-            &mut reader,
-            output,
-            &session,
-            world,
-            "__codletRendererV1",
-            "recovery-timeout",
-        )?;
+        expect_renderer_bootstrap(&mut reader, output, &session, world, 41, "recovery-timeout")?;
         complete_renderer_evaluation(
             &mut reader,
             output,
@@ -1065,14 +1058,7 @@ fn scenario_renderer_document_recovery(
             &session,
             &world,
         )?);
-        expect_renderer_script(
-            &mut reader,
-            output,
-            &session,
-            &world,
-            "__codletRendererV1",
-            identifier,
-        )?;
+        expect_renderer_bootstrap(&mut reader, output, &session, &world, context, identifier)?;
         complete_renderer_evaluation(
             &mut reader,
             output,
@@ -1975,14 +1961,7 @@ fn scenario_renderer_local_manage(
     let world = "codlet.plugin.dev.local.g1";
     complete_renderer_context(&mut reader, output, session, world, 303)?;
     let binding = expect_renderer_binding(&mut reader, output, session, world)?;
-    expect_renderer_script(
-        &mut reader,
-        output,
-        session,
-        world,
-        "__codletRendererV1",
-        "local-bootstrap",
-    )?;
+    expect_renderer_bootstrap(&mut reader, output, session, world, 303, "local-bootstrap")?;
     complete_renderer_evaluation(
         &mut reader,
         output,
@@ -2582,12 +2561,12 @@ fn complete_bundled_renderer_install(
 
     complete_renderer_context(reader, output, session_id, codlet_world, codlet_context)?;
     let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
-    expect_renderer_script(
+    expect_renderer_bootstrap(
         reader,
         output,
         session_id,
         codlet_world,
-        "__codletRendererV1",
+        codlet_context,
         &bootstrap_codlet,
     )?;
     complete_renderer_evaluation(
@@ -2689,12 +2668,12 @@ fn begin_bundled_renderer_activation(
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
     complete_renderer_context(reader, output, session_id, codlet_world, codlet_context)?;
     let codlet_binding = expect_renderer_binding(reader, output, session_id, codlet_world)?;
-    expect_renderer_script(
+    expect_renderer_bootstrap(
         reader,
         output,
         session_id,
         codlet_world,
-        "__codletRendererV1",
+        codlet_context,
         &bootstrap_codlet,
     )?;
     complete_renderer_evaluation(
@@ -2781,12 +2760,12 @@ fn complete_adapter_renderer_install(
     let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
     complete_renderer_context(reader, output, session_id, adapter_world, adapter_context)?;
     let adapter_binding = expect_renderer_binding(reader, output, session_id, adapter_world)?;
-    let bootstrap_script = expect_renderer_script(
+    let bootstrap_script = expect_renderer_bootstrap(
         reader,
         output,
         session_id,
         adapter_world,
-        "__codletRendererV1",
+        adapter_context,
         &bootstrap_adapter,
     )?;
     if bootstrap_script
@@ -2936,6 +2915,40 @@ fn complete_renderer_context(
     Ok(())
 }
 
+fn expect_renderer_bootstrap(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    world_name: &str,
+    context_id: u64,
+    identifier: &str,
+) -> Result<Value, FakeChildError> {
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        world_name,
+        "__codletRendererHelpersV1",
+        &format!("{identifier}-helpers"),
+    )?;
+    complete_renderer_evaluation(
+        reader,
+        output,
+        session_id,
+        context_id,
+        "__codletRendererHelpersV1",
+        json!({"ok":true}),
+    )?;
+    expect_renderer_script(
+        reader,
+        output,
+        session_id,
+        world_name,
+        "__codletRendererV1",
+        identifier,
+    )
+}
+
 fn expect_renderer_script(
     reader: &mut RequestReader<'_>,
     output: &mut File,
@@ -3056,6 +3069,21 @@ fn complete_renderer_evaluation(
 }
 
 fn expect_remove_renderer_script(
+    reader: &mut RequestReader<'_>,
+    output: &mut File,
+    session_id: &str,
+    identifier: &str,
+) -> Result<(), FakeChildError> {
+    expect_remove_renderer_script_once(
+        reader,
+        output,
+        session_id,
+        &format!("{identifier}-helpers"),
+    )?;
+    expect_remove_renderer_script_once(reader, output, session_id, identifier)
+}
+
+fn expect_remove_renderer_script_once(
     reader: &mut RequestReader<'_>,
     output: &mut File,
     session_id: &str,

@@ -244,7 +244,7 @@ fn declared_plugin(id: &str, provides: Vec<Value>, requires: Vec<Value>) -> Load
             "schema": 1, "id": id, "version": "1", "renderer": {"entry": "renderer.js", "world": "isolated"},
             "provides": provides, "requires": requires,
         }).to_string()).unwrap(),
-        source: Some(String::new()),
+        source: Some("".into()),
         host: None,
         generation: 1,
     }

@@ -1,0 +1,1563 @@
+{
+  "schema": 1,
+  "date": "2026-09-22",
+  "baselineCommit": "ebdbabd3a996413af274d876b2d60923ff4e51a1",
+  "platform": "Windows 11 x64 / Codex 26.915.4065.0",
+  "sourceHashes": {
+    "bundled/runtime/bootstrap.js": "93bc4638d2ce873d91a209d5cb00d739065230e30c9fcdf79c29ae6a3cd2acf7",
+    "bundled/runtime/helpers.js": "82dc1f537b7ceb07583d70ce241c155b808f981818478767fd03366a897223f2",
+    "bundled/runtime/facade.js": "895b71e6f7a00755ca2bd436787e01a6147588095500673c6594d0dff1b8d9fe",
+    "bundled/runtime/ui.js": "ec8335e77f841ea59ae17a87f723ceadd58eddbde8a614bd791e449d0d42d6e1",
+    "bundled/runtime/page.js": "e4b53090867a9a70ea5dd673ff7fd3b4d375e8922a8b0c3fa40331e14a160c64",
+    "frontend/src/page.js": "ddd212803d60be27ef017b64a351aff2131e8b4f6e55e206c95eb1a97e3c5763",
+    "frontend/src/runtime.jsx": "d2e8ba5e214279a40a2f491d6bbb515eacd3ae745e2705e5673d499ee99ded14",
+    "src/renderer.rs": "1d6858e96271483c5f9bbebb0847f6ae576669d40db8cbb1380f6e0f7afcf2f2",
+    "src/plugins.rs": "da556d8cac51211992ba33eb24c5b4405d851c8c4b8064b3d6d88c1a6fa07c4a",
+    "src/local_plugins.rs": "51011c1d291da302eb33b604cd45fede813027b218f6b0d6316b4af4c9d3e93d"
+  },
+  "binary": {
+    "before": "917C1E770F0DFBF77194461FF3243CC9FC2AEEE362BC318541E003E4EEEA5963",
+    "after": "0DD242A1F0E229CAB1AA787551D3962D5F79EA678BD7177A01CDF126E3B9279B"
+  },
+  "before": {
+    "verified-A-warmup": {
+      "warmingUp": true
+    },
+    "verified-A-baseline": {
+      "durationSeconds": 102.3507757,
+      "samples": 73,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 4.62109375,
+          "minMiB": 4.36328125,
+          "maxMiB": 4.68359375
+        },
+        "privateCommit": {
+          "medianMiB": 6.15234375,
+          "minMiB": 5.87890625,
+          "maxMiB": 6.18359375
+        },
+        "workingSet": {
+          "medianMiB": 23.10546875,
+          "minMiB": 22.84765625,
+          "maxMiB": 23.16796875
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 978.83203125,
+          "minMiB": 976.10546875,
+          "maxMiB": 986.140625
+        },
+        "privateCommit": {
+          "medianMiB": 1189.60546875,
+          "minMiB": 1188.0625,
+          "maxMiB": 1199.9609375
+        },
+        "workingSet": {
+          "medianMiB": 1633.78125,
+          "minMiB": 1630.4296875,
+          "maxMiB": 1640.75390625
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 30.6328125,
+          "minMiB": 30.5703125,
+          "maxMiB": 30.6328125
+        },
+        "privateCommit": {
+          "medianMiB": 38.75390625,
+          "minMiB": 38.75390625,
+          "maxMiB": 38.796875
+        },
+        "workingSet": {
+          "medianMiB": 120.43359375,
+          "minMiB": 120.37109375,
+          "maxMiB": 120.43359375
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 40.17578125,
+          "minMiB": 39.984375,
+          "maxMiB": 40.52734375
+        },
+        "privateCommit": {
+          "medianMiB": 84.91015625,
+          "minMiB": 84.05078125,
+          "maxMiB": 85.26953125
+        },
+        "workingSet": {
+          "medianMiB": 105.703125,
+          "minMiB": 105.47265625,
+          "maxMiB": 106.08984375
+        }
+      },
+      "chromium": {
+        "samples": 21,
+        "firstMiB": 260.0389709472656,
+        "lastMiB": 270.9701461791992,
+        "gc": [
+          {
+            "utc": "2026-09-21T16:54:32.044Z",
+            "label": "verified-A-visible",
+            "heapMiB": 260.0389709472656,
+            "nodes": 1123,
+            "listeners": 1253
+          }
+        ]
+      }
+    },
+    "verified-B-transition": {
+      "warmingUp": true
+    },
+    "verified-B-adapters": {
+      "durationSeconds": 62.172385399999996,
+      "samples": 40,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 5.07421875,
+          "minMiB": 4.75,
+          "maxMiB": 5.31640625
+        },
+        "privateCommit": {
+          "medianMiB": 6.70703125,
+          "minMiB": 6.2421875,
+          "maxMiB": 6.96875
+        },
+        "workingSet": {
+          "medianMiB": 24.70703125,
+          "minMiB": 24.37890625,
+          "maxMiB": 24.95703125
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 980.97265625,
+          "minMiB": 980.01171875,
+          "maxMiB": 988.640625
+        },
+        "privateCommit": {
+          "medianMiB": 1191.287109375,
+          "minMiB": 1189.9921875,
+          "maxMiB": 1200.07421875
+        },
+        "workingSet": {
+          "medianMiB": 1636.056640625,
+          "minMiB": 1635.06640625,
+          "maxMiB": 1643.73828125
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 30.6328125,
+          "minMiB": 30.6328125,
+          "maxMiB": 30.67578125
+        },
+        "privateCommit": {
+          "medianMiB": 38.75390625,
+          "minMiB": 38.75390625,
+          "maxMiB": 38.8515625
+        },
+        "workingSet": {
+          "medianMiB": 120.43359375,
+          "minMiB": 120.43359375,
+          "maxMiB": 120.4765625
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 40.68359375,
+          "minMiB": 40.53515625,
+          "maxMiB": 40.70703125
+        },
+        "privateCommit": {
+          "medianMiB": 84.90625,
+          "minMiB": 84.90234375,
+          "maxMiB": 84.91796875
+        },
+        "workingSet": {
+          "medianMiB": 106.24609375,
+          "minMiB": 106.09765625,
+          "maxMiB": 106.26953125
+        }
+      },
+      "chromium": {
+        "samples": 13,
+        "firstMiB": 263.9929428100586,
+        "lastMiB": 270.15268325805664,
+        "gc": [
+          {
+            "utc": "2026-09-21T16:56:17.180Z",
+            "label": "verified-B-start",
+            "heapMiB": 263.9929428100586,
+            "nodes": 1123,
+            "listeners": 1257
+          }
+        ]
+      }
+    },
+    "verified-C-transition": {
+      "warmingUp": true
+    },
+    "verified-C-gui-closed": {
+      "durationSeconds": 61.09062129999998,
+      "samples": 39,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 6.25,
+          "minMiB": 5.27734375,
+          "maxMiB": 6.36328125
+        },
+        "privateCommit": {
+          "medianMiB": 8.22265625,
+          "minMiB": 6.8359375,
+          "maxMiB": 8.24609375
+        },
+        "workingSet": {
+          "medianMiB": 26.09375,
+          "minMiB": 25.0234375,
+          "maxMiB": 26.2109375
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 992.76171875,
+          "minMiB": 991.04296875,
+          "maxMiB": 1006.546875
+        },
+        "privateCommit": {
+          "medianMiB": 1206.203125,
+          "minMiB": 1204.265625,
+          "maxMiB": 1220.93359375
+        },
+        "workingSet": {
+          "medianMiB": 1649.5078125,
+          "minMiB": 1646.60546875,
+          "maxMiB": 1663.421875
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 31.63671875,
+          "minMiB": 31.53125,
+          "maxMiB": 31.78515625
+        },
+        "privateCommit": {
+          "medianMiB": 39.87890625,
+          "minMiB": 39.81640625,
+          "maxMiB": 40.0546875
+        },
+        "workingSet": {
+          "medianMiB": 121.5625,
+          "minMiB": 121.33203125,
+          "maxMiB": 121.7109375
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 40.796875,
+          "minMiB": 40.71875,
+          "maxMiB": 40.859375
+        },
+        "privateCommit": {
+          "medianMiB": 85.38671875,
+          "minMiB": 84.9140625,
+          "maxMiB": 85.38671875
+        },
+        "workingSet": {
+          "medianMiB": 106.52734375,
+          "minMiB": 106.28125,
+          "maxMiB": 106.60546875
+        }
+      },
+      "chromium": {
+        "samples": 12,
+        "firstMiB": 270.1580352783203,
+        "lastMiB": 275.61112213134766,
+        "gc": [
+          {
+            "utc": "2026-09-21T16:57:22.269Z",
+            "label": "verified-C-start",
+            "heapMiB": 270.1580352783203,
+            "nodes": 1141,
+            "listeners": 1403
+          }
+        ]
+      }
+    },
+    "verified-D-gui-open": {
+      "durationSeconds": 255.6832563,
+      "samples": 202,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 6.4140625,
+          "minMiB": 5.52734375,
+          "maxMiB": 6.54296875
+        },
+        "privateCommit": {
+          "medianMiB": 8.359375,
+          "minMiB": 7.0703125,
+          "maxMiB": 8.5390625
+        },
+        "workingSet": {
+          "medianMiB": 26.33203125,
+          "minMiB": 25.41015625,
+          "maxMiB": 26.4609375
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 999.0234375,
+          "minMiB": 995.65625,
+          "maxMiB": 1006.015625
+        },
+        "privateCommit": {
+          "medianMiB": 1226.314453125,
+          "minMiB": 1219.93359375,
+          "maxMiB": 1233.32421875
+        },
+        "workingSet": {
+          "medianMiB": 1661.626953125,
+          "minMiB": 1657.76171875,
+          "maxMiB": 1668.73828125
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 31.7734375,
+          "minMiB": 31.70703125,
+          "maxMiB": 31.96875
+        },
+        "privateCommit": {
+          "medianMiB": 39.98046875,
+          "minMiB": 39.90234375,
+          "maxMiB": 40.26171875
+        },
+        "workingSet": {
+          "medianMiB": 121.69921875,
+          "minMiB": 121.6328125,
+          "maxMiB": 121.89453125
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 41.12109375,
+          "minMiB": 40.75,
+          "maxMiB": 41.5
+        },
+        "privateCommit": {
+          "medianMiB": 86.25,
+          "minMiB": 84.8125,
+          "maxMiB": 86.6328125
+        },
+        "workingSet": {
+          "medianMiB": 107.16015625,
+          "minMiB": 106.5078125,
+          "maxMiB": 107.5
+        }
+      },
+      "chromium": {
+        "samples": 52,
+        "firstMiB": 265.906307220459,
+        "lastMiB": 273.1772880554199,
+        "gc": [
+          {
+            "utc": "2026-09-21T16:58:22.392Z",
+            "label": "verified-D-start",
+            "heapMiB": 265.906307220459,
+            "nodes": 1192,
+            "listeners": 1621
+          }
+        ]
+      }
+    },
+    "verified-E-reload-20": {
+      "warmingUp": true
+    },
+    "verified-E-reload-20-settled": {
+      "durationSeconds": 34.624679000000015,
+      "samples": 17,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 6.703125,
+          "minMiB": 6.06640625,
+          "maxMiB": 6.71875
+        },
+        "privateCommit": {
+          "medianMiB": 8.5703125,
+          "minMiB": 7.640625,
+          "maxMiB": 8.58203125
+        },
+        "workingSet": {
+          "medianMiB": 26.6953125,
+          "minMiB": 26.05859375,
+          "maxMiB": 26.7109375
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 1027.91015625,
+          "minMiB": 1014.89453125,
+          "maxMiB": 1169.23828125
+        },
+        "privateCommit": {
+          "medianMiB": 1238.71875,
+          "minMiB": 1227.39453125,
+          "maxMiB": 1390.4609375
+        },
+        "workingSet": {
+          "medianMiB": 1691.6328125,
+          "minMiB": 1678.68359375,
+          "maxMiB": 1833.0234375
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 32.55078125,
+          "minMiB": 32.53125,
+          "maxMiB": 32.67578125
+        },
+        "privateCommit": {
+          "medianMiB": 42.32421875,
+          "minMiB": 42.05078125,
+          "maxMiB": 42.38671875
+        },
+        "workingSet": {
+          "medianMiB": 122.48046875,
+          "minMiB": 122.4609375,
+          "maxMiB": 122.60546875
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 41.65234375,
+          "minMiB": 41.60546875,
+          "maxMiB": 41.66015625
+        },
+        "privateCommit": {
+          "medianMiB": 87.01953125,
+          "minMiB": 86.87890625,
+          "maxMiB": 87.01953125
+        },
+        "workingSet": {
+          "medianMiB": 107.703125,
+          "minMiB": 107.65625,
+          "maxMiB": 107.7109375
+        }
+      },
+      "chromium": {
+        "samples": 7,
+        "firstMiB": 271.7884941101074,
+        "lastMiB": 274.2909126281738,
+        "gc": [
+          {
+            "utc": "2026-09-21T17:02:52.800Z",
+            "label": "verified-E-reload-20-completed",
+            "heapMiB": 271.7884941101074,
+            "nodes": 1312,
+            "listeners": 1845
+          }
+        ]
+      }
+    },
+    "verified-F-reload-40": {
+      "warmingUp": true
+    },
+    "verified-F-reload-40-settled": {
+      "durationSeconds": 44.255689000000075,
+      "samples": 25,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 6.8671875,
+          "minMiB": 6.8515625,
+          "maxMiB": 6.8828125
+        },
+        "privateCommit": {
+          "medianMiB": 8.4765625,
+          "minMiB": 8.42578125,
+          "maxMiB": 8.49609375
+        },
+        "workingSet": {
+          "medianMiB": 26.859375,
+          "minMiB": 26.84375,
+          "maxMiB": 26.875
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 1034.62890625,
+          "minMiB": 1033.99609375,
+          "maxMiB": 1044.73828125
+        },
+        "privateCommit": {
+          "medianMiB": 1250.8203125,
+          "minMiB": 1249.3046875,
+          "maxMiB": 1261.578125
+        },
+        "workingSet": {
+          "medianMiB": 1698.8984375,
+          "minMiB": 1698.30078125,
+          "maxMiB": 1709.0234375
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 32.4921875,
+          "minMiB": 32.4921875,
+          "maxMiB": 32.4921875
+        },
+        "privateCommit": {
+          "medianMiB": 41.98046875,
+          "minMiB": 41.98046875,
+          "maxMiB": 41.98046875
+        },
+        "workingSet": {
+          "medianMiB": 122.421875,
+          "minMiB": 122.421875,
+          "maxMiB": 122.421875
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 41.8203125,
+          "minMiB": 41.78125,
+          "maxMiB": 41.8203125
+        },
+        "privateCommit": {
+          "medianMiB": 87.84375,
+          "minMiB": 87.80859375,
+          "maxMiB": 87.87890625
+        },
+        "workingSet": {
+          "medianMiB": 107.875,
+          "minMiB": 107.8359375,
+          "maxMiB": 107.875
+        }
+      },
+      "chromium": {
+        "samples": 9,
+        "firstMiB": 282.7188034057617,
+        "lastMiB": 283.530086517334,
+        "gc": [
+          {
+            "utc": "2026-09-21T17:03:42.916Z",
+            "label": "verified-F-reload-40-completed",
+            "heapMiB": 282.7188034057617,
+            "nodes": 1312,
+            "listeners": 1845
+          },
+          {
+            "utc": "2026-09-21T17:04:08.004Z",
+            "label": "verified-F-idle-gc",
+            "heapMiB": 282.7916564941406,
+            "nodes": 1312,
+            "listeners": 1845
+          }
+        ]
+      }
+    },
+    "verified-H-reload-60": {
+      "warmingUp": true
+    },
+    "verified-H-reload-60-settled": {
+      "durationSeconds": 63.65937919999999,
+      "samples": 41,
+      "readErrors": 0,
+      "core": {
+        "privateWorkingSet": {
+          "medianMiB": 6.96484375,
+          "minMiB": 6.09375,
+          "maxMiB": 7.0078125
+        },
+        "privateCommit": {
+          "medianMiB": 8.48828125,
+          "minMiB": 7.515625,
+          "maxMiB": 8.55859375
+        },
+        "workingSet": {
+          "medianMiB": 26.95703125,
+          "minMiB": 26.0859375,
+          "maxMiB": 27
+        }
+      },
+      "client": {
+        "privateWorkingSet": {
+          "medianMiB": 1047.52734375,
+          "minMiB": 1040.46484375,
+          "maxMiB": 1050.109375
+        },
+        "privateCommit": {
+          "medianMiB": 1266.92578125,
+          "minMiB": 1264.30859375,
+          "maxMiB": 1273.8125
+        },
+        "workingSet": {
+          "medianMiB": 1711.87890625,
+          "minMiB": 1704.8125,
+          "maxMiB": 1714.45703125
+        }
+      },
+      "backend": {
+        "privateWorkingSet": {
+          "medianMiB": 32.5546875,
+          "minMiB": 32.5546875,
+          "maxMiB": 32.5546875
+        },
+        "privateCommit": {
+          "medianMiB": 41.98046875,
+          "minMiB": 41.98046875,
+          "maxMiB": 41.98046875
+        },
+        "workingSet": {
+          "medianMiB": 122.484375,
+          "minMiB": 122.484375,
+          "maxMiB": 122.484375
+        }
+      },
+      "instrumentation": {
+        "privateWorkingSet": {
+          "medianMiB": 41.93359375,
+          "minMiB": 41.93359375,
+          "maxMiB": 41.9375
+        },
+        "privateCommit": {
+          "medianMiB": 87.84375,
+          "minMiB": 87.84375,
+          "maxMiB": 87.84375
+        },
+        "workingSet": {
+          "medianMiB": 107.98828125,
+          "minMiB": 107.98828125,
+          "maxMiB": 107.9921875
+        }
+      },
+      "chromium": {
+        "samples": 13,
+        "firstMiB": 291.563289642334,
+        "lastMiB": 297.96814727783203,
+        "gc": [
+          {
+            "utc": "2026-09-21T17:04:37.989Z",
+            "label": "verified-H-reload-60-completed",
+            "heapMiB": 291.563289642334,
+            "nodes": 1312,
+            "listeners": 1845
+          }
+        ]
+      }
+    },
+    "verified-M-desktop-start": {
+      "warmingUp": true
+    },
+    "verified-N-desktop-20": {
+      "warmingUp": true
+    },
+    "verified-N-desktop-20-settled": {
+      "warmingUp": true
+    },
+    "verified-O-desktop-disabled": {
+      "warmingUp": true
+    },
+    "verified-M-ui-start": {
+      "warmingUp": true
+    },
+    "verified-N-ui-20": {
+      "warmingUp": true
+    },
+    "verified-N-ui-20-settled": {
+      "warmingUp": true
+    },
+    "verified-O-ui-disabled": {
+      "warmingUp": true
+    }
+  },
+  "after": {
+    "phases": {
+      "optimized-A-visible": {
+        "samples": 51,
+        "duration": 74.0384651,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 22.87890625,
+            "min": 22.86328125,
+            "max": 24.21875
+          },
+          "privateWorkingSet": {
+            "median": 4.43359375,
+            "min": 4.41796875,
+            "max": 4.6015625
+          },
+          "privateCommit": {
+            "median": 6.05078125,
+            "min": 6.01953125,
+            "max": 6.72265625
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1605.8984375,
+            "min": 1599.15234375,
+            "max": 1641.7734375
+          },
+          "privateWorkingSet": {
+            "median": 964.0703125,
+            "min": 957.3671875,
+            "max": 999.7265625
+          },
+          "privateCommit": {
+            "median": 1178.33984375,
+            "min": 1171.578125,
+            "max": 1218.36328125
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 120.515625,
+            "min": 120.50390625,
+            "max": 120.5234375
+          },
+          "privateWorkingSet": {
+            "median": 29.15234375,
+            "min": 29.140625,
+            "max": 29.16015625
+          },
+          "privateCommit": {
+            "median": 36.70703125,
+            "min": 36.70703125,
+            "max": 36.70703125
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 105.54296875,
+            "min": 105.25390625,
+            "max": 105.5703125
+          },
+          "privateWorkingSet": {
+            "median": 39.9765625,
+            "min": 39.6875,
+            "max": 40.00390625
+          },
+          "privateCommit": {
+            "median": 84.140625,
+            "min": 84.0625,
+            "max": 84.1796875
+          }
+        }
+      },
+      "optimized-B-adapters": {
+        "samples": 19,
+        "duration": 36.682745400000016,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 24.0390625,
+            "min": 23.94921875,
+            "max": 24.21484375
+          },
+          "privateWorkingSet": {
+            "median": 4.421875,
+            "min": 4.33203125,
+            "max": 4.59765625
+          },
+          "privateCommit": {
+            "median": 5.83203125,
+            "min": 5.65625,
+            "max": 5.9609375
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1620.7265625,
+            "min": 1620.38671875,
+            "max": 1622.2265625
+          },
+          "privateWorkingSet": {
+            "median": 978.6640625,
+            "min": 978.32421875,
+            "max": 980.171875
+          },
+          "privateCommit": {
+            "median": 1193.640625,
+            "min": 1193.1875,
+            "max": 1197.58203125
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 122.46484375,
+            "min": 122.46484375,
+            "max": 122.4921875
+          },
+          "privateWorkingSet": {
+            "median": 31.1015625,
+            "min": 31.1015625,
+            "max": 31.12890625
+          },
+          "privateCommit": {
+            "median": 38.4921875,
+            "min": 38.4921875,
+            "max": 38.546875
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 105.6484375,
+            "min": 105.5703125,
+            "max": 105.76953125
+          },
+          "privateWorkingSet": {
+            "median": 40.08203125,
+            "min": 40.00390625,
+            "max": 40.12109375
+          },
+          "privateCommit": {
+            "median": 84.23828125,
+            "min": 84.1484375,
+            "max": 84.30859375
+          }
+        }
+      },
+      "optimized-C-gui-closed": {
+        "samples": 49,
+        "duration": 70.6798614,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 24.6875,
+            "min": 24.68359375,
+            "max": 24.7890625
+          },
+          "privateWorkingSet": {
+            "median": 4.84375,
+            "min": 4.83984375,
+            "max": 4.90625
+          },
+          "privateCommit": {
+            "median": 6.23046875,
+            "min": 6.2265625,
+            "max": 6.3203125
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1628.44921875,
+            "min": 1617.04296875,
+            "max": 1633.94140625
+          },
+          "privateWorkingSet": {
+            "median": 984.97265625,
+            "min": 973.71484375,
+            "max": 988.74609375
+          },
+          "privateCommit": {
+            "median": 1205.3125,
+            "min": 1194.640625,
+            "max": 1209.671875
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 122.609375,
+            "min": 122.609375,
+            "max": 122.62890625
+          },
+          "privateWorkingSet": {
+            "median": 31.12109375,
+            "min": 31.12109375,
+            "max": 31.140625
+          },
+          "privateCommit": {
+            "median": 38.51953125,
+            "min": 38.51953125,
+            "max": 38.56640625
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 105.88671875,
+            "min": 105.81640625,
+            "max": 105.89453125
+          },
+          "privateWorkingSet": {
+            "median": 40.140625,
+            "min": 40.05859375,
+            "max": 40.14453125
+          },
+          "privateCommit": {
+            "median": 84.34375,
+            "min": 84.34375,
+            "max": 85.0625
+          }
+        }
+      },
+      "optimized-D-visible": {
+        "samples": 46,
+        "duration": 67.52845280000003,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 24.78515625,
+            "min": 24.74609375,
+            "max": 24.78515625
+          },
+          "privateWorkingSet": {
+            "median": 4.87109375,
+            "min": 4.83203125,
+            "max": 4.87109375
+          },
+          "privateCommit": {
+            "median": 6.25390625,
+            "min": 6.1875,
+            "max": 6.25390625
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1626.6875,
+            "min": 1624.8984375,
+            "max": 1628.95703125
+          },
+          "privateWorkingSet": {
+            "median": 978.900390625,
+            "min": 977.1171875,
+            "max": 981.12109375
+          },
+          "privateCommit": {
+            "median": 1212.513671875,
+            "min": 1209.05859375,
+            "max": 1218.10546875
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 122.59765625,
+            "min": 122.578125,
+            "max": 122.61328125
+          },
+          "privateWorkingSet": {
+            "median": 31.109375,
+            "min": 31.08984375,
+            "max": 31.125
+          },
+          "privateCommit": {
+            "median": 38.44921875,
+            "min": 38.44921875,
+            "max": 38.49609375
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 105.890625,
+            "min": 105.890625,
+            "max": 105.953125
+          },
+          "privateWorkingSet": {
+            "median": 40.125,
+            "min": 40.125,
+            "max": 40.1875
+          },
+          "privateCommit": {
+            "median": 85.28125,
+            "min": 85.28125,
+            "max": 85.375
+          }
+        }
+      },
+      "optimized-E-reload-20-settled": {
+        "samples": 29,
+        "duration": 47.80314490000001,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 25.1328125,
+            "min": 25.1328125,
+            "max": 25.1328125
+          },
+          "privateWorkingSet": {
+            "median": 5.14453125,
+            "min": 5.14453125,
+            "max": 5.14453125
+          },
+          "privateCommit": {
+            "median": 6.57421875,
+            "min": 6.57421875,
+            "max": 6.57421875
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1649.25,
+            "min": 1648.9296875,
+            "max": 1649.96484375
+          },
+          "privateWorkingSet": {
+            "median": 1001.12109375,
+            "min": 1000.796875,
+            "max": 1001.8203125
+          },
+          "privateCommit": {
+            "median": 1222.53515625,
+            "min": 1222.1328125,
+            "max": 1223.41015625
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 122.890625,
+            "min": 122.890625,
+            "max": 123.16796875
+          },
+          "privateWorkingSet": {
+            "median": 31.40234375,
+            "min": 31.40234375,
+            "max": 31.6796875
+          },
+          "privateCommit": {
+            "median": 38.84375,
+            "min": 38.84375,
+            "max": 39.2890625
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 106.125,
+            "min": 106,
+            "max": 106.125
+          },
+          "privateWorkingSet": {
+            "median": 40.2734375,
+            "min": 40.234375,
+            "max": 40.2734375
+          },
+          "privateCommit": {
+            "median": 85.39453125,
+            "min": 85.39453125,
+            "max": 85.39453125
+          }
+        }
+      },
+      "optimized-F-reload-40-settled": {
+        "samples": 60,
+        "duration": 83.43343240000002,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 25.421875,
+            "min": 25.37109375,
+            "max": 25.45703125
+          },
+          "privateWorkingSet": {
+            "median": 5.42578125,
+            "min": 5.3828125,
+            "max": 5.4609375
+          },
+          "privateCommit": {
+            "median": 7.27734375,
+            "min": 7.2109375,
+            "max": 7.27734375
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1653.177734375,
+            "min": 1647.94140625,
+            "max": 1913.8984375
+          },
+          "privateWorkingSet": {
+            "median": 1004.986328125,
+            "min": 999.734375,
+            "max": 1265.33203125
+          },
+          "privateCommit": {
+            "median": 1222.720703125,
+            "min": 1219.3125,
+            "max": 1504.40234375
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 123.16796875,
+            "min": 123.125,
+            "max": 123.515625
+          },
+          "privateWorkingSet": {
+            "median": 31.67578125,
+            "min": 31.63671875,
+            "max": 32.0234375
+          },
+          "privateCommit": {
+            "median": 39.26171875,
+            "min": 39.19140625,
+            "max": 39.81640625
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 106.59375,
+            "min": 106.40234375,
+            "max": 106.64453125
+          },
+          "privateWorkingSet": {
+            "median": 40.73828125,
+            "min": 40.546875,
+            "max": 40.7890625
+          },
+          "privateCommit": {
+            "median": 85.83203125,
+            "min": 85.671875,
+            "max": 85.8671875
+          }
+        }
+      },
+      "optimized-G-reload-60-settled": {
+        "samples": 115,
+        "duration": 146.56349390000003,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 25.58984375,
+            "min": 25.57421875,
+            "max": 25.58984375
+          },
+          "privateWorkingSet": {
+            "median": 5.59375,
+            "min": 5.578125,
+            "max": 5.59375
+          },
+          "privateCommit": {
+            "median": 6.97265625,
+            "min": 6.97265625,
+            "max": 6.97265625
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1667.23828125,
+            "min": 1663.75390625,
+            "max": 1702.296875
+          },
+          "privateWorkingSet": {
+            "median": 1022.2578125,
+            "min": 1017.0078125,
+            "max": 1057.40625
+          },
+          "privateCommit": {
+            "median": 1244.24609375,
+            "min": 1239.87890625,
+            "max": 1311.0703125
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 123.33984375,
+            "min": 119.94140625,
+            "max": 123.40234375
+          },
+          "privateWorkingSet": {
+            "median": 31.84765625,
+            "min": 28.44921875,
+            "max": 31.91015625
+          },
+          "privateCommit": {
+            "median": 39.41796875,
+            "min": 33.66796875,
+            "max": 39.48828125
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 106.6640625,
+            "min": 106.3125,
+            "max": 106.7265625
+          },
+          "privateWorkingSet": {
+            "median": 40.80859375,
+            "min": 40.45703125,
+            "max": 40.87109375
+          },
+          "privateCommit": {
+            "median": 85.76171875,
+            "min": 84.25,
+            "max": 85.796875
+          }
+        }
+      },
+      "optimized-G-visible": {
+        "samples": 27,
+        "duration": 45.20454710000001,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 25.625,
+            "min": 25.625,
+            "max": 25.625
+          },
+          "privateWorkingSet": {
+            "median": 5.50390625,
+            "min": 5.50390625,
+            "max": 5.50390625
+          },
+          "privateCommit": {
+            "median": 6.99609375,
+            "min": 6.99609375,
+            "max": 6.99609375
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1657.82421875,
+            "min": 1656.71875,
+            "max": 1661.09765625
+          },
+          "privateWorkingSet": {
+            "median": 1011.98046875,
+            "min": 1010.87890625,
+            "max": 1015.16015625
+          },
+          "privateCommit": {
+            "median": 1244.88671875,
+            "min": 1241.62890625,
+            "max": 1248.63671875
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 122.28515625,
+            "min": 122.28515625,
+            "max": 122.28515625
+          },
+          "privateWorkingSet": {
+            "median": 30.79296875,
+            "min": 30.79296875,
+            "max": 30.79296875
+          },
+          "privateCommit": {
+            "median": 36.1796875,
+            "min": 36.1796875,
+            "max": 36.1796875
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 122.921875,
+            "min": 122.81640625,
+            "max": 123.07421875
+          },
+          "privateWorkingSet": {
+            "median": 40.28125,
+            "min": 40.17578125,
+            "max": 40.43359375
+          },
+          "privateCommit": {
+            "median": 84.546875,
+            "min": 83.90625,
+            "max": 84.8203125
+          }
+        }
+      },
+      "optimized-H-page-closed": {
+        "samples": 31,
+        "duration": 49.911603600000035,
+        "errors": 0,
+        "core": {
+          "workingSet": {
+            "median": 25.625,
+            "min": 25.625,
+            "max": 25.625
+          },
+          "privateWorkingSet": {
+            "median": 5.50390625,
+            "min": 5.50390625,
+            "max": 5.50390625
+          },
+          "privateCommit": {
+            "median": 6.99609375,
+            "min": 6.99609375,
+            "max": 6.99609375
+          }
+        },
+        "client": {
+          "workingSet": {
+            "median": 1660.8359375,
+            "min": 1659.99609375,
+            "max": 1661.3515625
+          },
+          "privateWorkingSet": {
+            "median": 1015.4765625,
+            "min": 1015.125,
+            "max": 1016.4453125
+          },
+          "privateCommit": {
+            "median": 1239.79296875,
+            "min": 1237.2109375,
+            "max": 1242.93359375
+          }
+        },
+        "backend": {
+          "workingSet": {
+            "median": 122.32421875,
+            "min": 122.32421875,
+            "max": 122.40625
+          },
+          "privateWorkingSet": {
+            "median": 30.83203125,
+            "min": 30.83203125,
+            "max": 30.9140625
+          },
+          "privateCommit": {
+            "median": 36.21875,
+            "min": 36.21875,
+            "max": 36.25390625
+          }
+        },
+        "instrumentation": {
+          "workingSet": {
+            "median": 123.05078125,
+            "min": 122.96875,
+            "max": 123.3046875
+          },
+          "privateWorkingSet": {
+            "median": 40.41015625,
+            "min": 40.328125,
+            "max": 40.6640625
+          },
+          "privateCommit": {
+            "median": 84.84375,
+            "min": 84.13671875,
+            "max": 84.84375
+          }
+        }
+      }
+    },
+    "gc": [
+      {
+        "phase": "optimized-A-visible",
+        "label": "optimized-A-visible",
+        "utc": "2026-09-22T03:08:36.920Z",
+        "heapMiB": 260.6887016296387,
+        "nodes": 1151,
+        "listeners": 1255
+      },
+      {
+        "phase": "optimized-B-adapters",
+        "label": "optimized-B-adapters",
+        "utc": "2026-09-22T03:09:52.000Z",
+        "heapMiB": 264.4297294616699,
+        "nodes": 1151,
+        "listeners": 1259
+      },
+      {
+        "phase": "optimized-C-gui-closed",
+        "label": "optimized-C-gui-closed",
+        "utc": "2026-09-22T03:10:32.046Z",
+        "heapMiB": 269.18468856811523,
+        "nodes": 1160,
+        "listeners": 1401
+      },
+      {
+        "phase": "optimized-D-visible",
+        "label": "optimized-D-visible",
+        "utc": "2026-09-22T03:12:37.228Z",
+        "heapMiB": 265.42625427246094,
+        "nodes": 1214,
+        "listeners": 1621
+      },
+      {
+        "phase": "optimized-E-reload-20-settled",
+        "label": "optimized-E-reload-20-completed",
+        "utc": "2026-09-22T03:13:52.380Z",
+        "heapMiB": 281.66690826416016,
+        "nodes": 1335,
+        "listeners": 1844
+      },
+      {
+        "phase": "optimized-F-reload-40-settled",
+        "label": "optimized-F-reload-40-completed",
+        "utc": "2026-09-22T03:14:52.424Z",
+        "heapMiB": 284.1475830078125,
+        "nodes": 1335,
+        "listeners": 1844
+      },
+      {
+        "phase": "optimized-G-reload-60-settled",
+        "label": "optimized-G-reload-60-completed",
+        "utc": "2026-09-22T03:16:27.626Z",
+        "heapMiB": 288.6452293395996,
+        "nodes": 1335,
+        "listeners": 1844
+      },
+      {
+        "phase": "optimized-G-visible",
+        "label": "optimized-G-visible",
+        "utc": "2026-09-22T03:21:13.716Z",
+        "heapMiB": 284.9478988647461,
+        "nodes": 1389,
+        "listeners": 2064
+      },
+      {
+        "phase": "optimized-H-page-closed",
+        "label": "optimized-H-page-closed",
+        "utc": "2026-09-22T03:21:58.819Z",
+        "heapMiB": 291.8347969055176,
+        "nodes": 1340,
+        "listeners": 2263
+      },
+      {
+        "phase": "optimized-I-reopened",
+        "label": "optimized-I-reopened",
+        "utc": "2026-09-22T03:23:43.941Z",
+        "heapMiB": 286.3792304992676,
+        "nodes": 1389,
+        "listeners": 2064
+      }
+    ]
+  },
+  "curve": [
+    {
+      "cycles": 0,
+      "beforeMiB": 265.906307220459,
+      "afterMiB": 265.42625427246094
+    },
+    {
+      "cycles": 20,
+      "beforeMiB": 271.7884941101074,
+      "afterMiB": 281.66690826416016
+    },
+    {
+      "cycles": 40,
+      "beforeMiB": 282.7188034057617,
+      "afterMiB": 284.1475830078125
+    },
+    {
+      "cycles": 60,
+      "beforeMiB": 291.563289642334,
+      "afterMiB": 288.6452293395996
+    }
+  ],
+  "ranges": [
+    {
+      "start": 0,
+      "end": 20,
+      "beforeMiB": 5.8821868896484375,
+      "afterMiB": 16.24065399169922
+    },
+    {
+      "start": 20,
+      "end": 40,
+      "beforeMiB": 10.930309295654297,
+      "afterMiB": 2.4806747436523438
+    },
+    {
+      "start": 40,
+      "end": 60,
+      "beforeMiB": 8.844486236572266,
+      "afterMiB": 4.497646331787109
+    },
+    {
+      "start": 0,
+      "end": 40,
+      "beforeMiB": 16.812496185302734,
+      "afterMiB": 18.721328735351562
+    },
+    {
+      "start": 0,
+      "end": 60,
+      "beforeMiB": 25.656982421875,
+      "afterMiB": 23.218975067138672
+    },
+    {
+      "start": 20,
+      "end": 60,
+      "beforeMiB": 19.774795532226562,
+      "afterMiB": 6.978321075439453
+    }
+  ],
+  "views": {
+    "optimized-X-diagnostic": [
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 0
+      },
+      {
+        "uiContainers": 3,
+        "styles": 1,
+        "gui": true,
+        "leases": 1
+      },
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 0
+      }
+    ],
+    "optimized-H-page-closed": [
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 0
+      },
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 1
+      },
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 0
+      }
+    ],
+    "optimized-I-reopened": [
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 0
+      },
+      {
+        "uiContainers": 3,
+        "styles": 1,
+        "gui": true,
+        "leases": 1
+      },
+      {
+        "uiContainers": 0,
+        "styles": 0,
+        "gui": false,
+        "leases": 0
+      }
+    ],
+    "optimized-J-disabled": null
+  },
+  "validation": {
+    "rustPassed": 620,
+    "rustIgnored": 2,
+    "coreJavaScriptPassed": 130,
+    "guiPassed": 24,
+    "clippy": "passed"
+  },
+  "limitations": [
+    "Single run per revision; native client caches and window painting vary.",
+    "First 40 GUI reloads did not reduce retained JS heap growth; show this alongside later-interval improvements.",
+    "Private resident bytes, total resident bytes, private commit, and JavaScript heap are different measures.",
+    "Paused/background screenshots were stale; owned DOM and foreground GUI were verified.",
+    "Remaining isolated-world retention is not eliminated.",
+    "Installed Preview MSI was not replaced."
+  ]
+}

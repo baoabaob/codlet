@@ -256,7 +256,7 @@ pub(crate) fn content_digest(candidate: &LocalPluginCandidate) -> String {
     digest(&(
         candidate.root.as_path(),
         &candidate.manifest,
-        &candidate.source,
+        candidate.source.as_deref(),
         candidate.host.as_ref().map(|host| host.source.as_ref()),
     ))
 }

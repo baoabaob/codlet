@@ -20,6 +20,7 @@ import { Dialog } from './radix-bridge.jsx';
 import { PortalContainer, PortalScope } from './portal-context.jsx';
 import { useEscCloseStack } from '@openai/apps-sdk-ui/hooks/useEscCloseStack';
 import './official.css';
+import registerPage from './page.js';
 
 const components = Object.freeze({ Button, ButtonLink, Input, Textarea, Switch, Checkbox, Popover, Menu, EmptyMessage, Tooltip, SegmentedControl, Select, TextLink, LoadingIndicator, Dialog });
 const icons = Object.freeze({ ArrowLeft, ArrowRotateCw, ArrowUpRight, ChevronDown, Cube, Download, ExclamationMarkCircle, ExternalLink, FolderOpen, InfoCircle, Plus, QuestionMarkCircle, Regenerate, Search, TriangleExclamationErrorWarning, X });
@@ -119,85 +120,11 @@ export default function createUI(context) {
     try { handle.render(content); } catch(error) { throwCleanup([error,...cleanAll([()=>handle.unmount()])]); }
     return handle;
   }
-  async function page({ label, icon = 'Cube', toolbar = false, render, onActivate, onDeactivate }) {
+  async function page(options) {
     assertLive();
-    if (typeof render !== 'function') throw new Error('A page render function is required');
-    if (typeof toolbar !== 'boolean') throw new Error('Toolbar must be a boolean');
-    if (!document.body || !document.head) await new Promise((resolve, reject) => {
-      const done = () => { document.removeEventListener('DOMContentLoaded', ready); abort.signal.removeEventListener('abort', cancelled); };
-      const ready = () => { done(); resolve(); };
-      const cancelled = () => { done(); reject(new Error('Page owner retired before document readiness')); };
-      document.addEventListener('DOMContentLoaded', ready, { once: true }); abort.signal.addEventListener('abort', cancelled, { once: true });
-    });
-    assertLive();
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style', 'dir'] });
-    themeObserver.observe(document.body,{attributes:true,attributeFilter:['class','data-theme','style']});
-    themeObserver.observe(document.head,{childList:true,subtree:true,characterData:true});
-    const token = crypto.randomUUID(), lease = document.createElement('span'), node = container();
-    const toolbarNode = toolbar ? container() : null;
-    const overlayNode = container();
-    overlayNode.dataset.codletPageOverlays = token;
-    overlayNode.style.display = 'contents';
-    overlayNode.remove();
-    const scope = {contains:target=>node.contains(target)||!!toolbarNode?.contains(target)||overlayNode.contains(target)};
-    if(toolbarNode){toolbarNode.remove();toolbarNode.style.width='100%';toolbarNode.style.minWidth='0';}
-    node.remove(); node.style.height = '100%'; node.style.minHeight = '0'; node.style.minWidth = '0';
-    lease.hidden = true; lease.dataset.codletPageLease = token; lease.dataset.codletPageOwner = context.pluginId;
-    lease.dataset.codletGeneration = String(context.generation); document.body.appendChild(lease);
-    let live = true, mounted = null, host = null, observer;
-    const detach = () => {
-      const oldMount=mounted, oldHost=host; mounted=null; host=null;
-      return cleanAll([()=>oldMount?.unmount(),()=>{if(oldHost)onDeactivate?.();},()=>node.remove(),()=>toolbarNode?.remove(),()=>overlayNode.remove()]);
-    };
-    const stop = () => {
-      if (!live) return; live = false;
-      const errors=cleanAll([()=>observer?.disconnect()]);
-      errors.push(...detach(),...cleanAll([()=>lease.remove()]));
-      containers.delete(node); containers.delete(overlayNode); if(toolbarNode)containers.delete(toolbarNode); pages.delete(stop);
-      throwCleanup(errors);
-    };
-    pages.add(stop);
-    try {
-      const reply = await context.rpc.request({ name: 'codex.ui.navigation.page', api: 1, scope: 'target' }, 'register', { label, icon, token, ...(toolbar?{toolbar:true}:{}) });
-      if (!live || disposed) { stop(); throw new Error('Page owner retired'); }
-      if (reply?.api !== 1 || reply.token !== token) throw new Error('Invalid native page registration');
-      if(reply.available===false&&reply.path===null){stop();return Object.freeze({path:null,dispose:stop});}
-      if(typeof reply.path!=='string'||reply.available===false)throw new Error('Invalid native page registration');
-      const reconcile = () => {
-        if (!live) return;
-        // Deferred native registration can be declined by an auxiliary window
-        // or retired before the official shell becomes ready.
-        if (!lease.isConnected) { stop(); return; }
-        const next = [...document.querySelectorAll('[data-codlet-page-host]')].find(element => element.dataset.codletPageHost === token) ?? null;
-        if (next !== host) {
-          const errors=detach();
-          if(errors.length){errors.push(...cleanAll([stop]));throwCleanup(errors);}
-          if(!live||disposed)return;
-          host = next;
-          if (host) { host.appendChild(node); document.body.appendChild(overlayNode); onActivate?.(); mounted = mount(node, render({toolbar:toolbarNode}), overlayNode, scope); }
-        }
-        if(toolbarNode){
-          const target=host&&[...document.querySelectorAll('[data-codlet-page-toolbar]')].find(element=>element.dataset.codletPageToolbar===token);
-          if(target){if(toolbarNode.parentElement!==target)target.appendChild(toolbarNode);}
-          else toolbarNode.remove();
-        }
-      };
-      observer = new MutationObserver(records => {
-        // A token's native mount changes on navigation, not on every streamed
-        // message. Check the changed subtrees before searching the whole page.
-        const markers='[data-codlet-page-host], [data-codlet-page-toolbar]';
-        const changed=records.some(record => !scope.contains(record.target) &&
-          [...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1&&
-            (node.matches(markers)||node.querySelector(markers))));
-        if(lease.isConnected&&(!host||host.isConnected)&&!changed)return;
-        try { reconcile(); } catch(error) {
-          const errors=[error,...cleanAll([stop])];
-          try{throwCleanup(errors);}catch(failure){reportCleanup(failure);}
-        }
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true }); reconcile();
-      return Object.freeze({ path: reply.path, dispose: stop });
-    } catch (error) { throwCleanup([error,...cleanAll([stop])]); }
+    const handle = await registerPage(context, options, () => {assertLive();return createUI(context);}, stop=>pages.delete(stop), stop=>pages.add(stop));
+    if(disposed){handle.dispose();throw new Error('Page owner retired');}
+    return handle;
   }
   function dispose() {
     if (disposed) return;

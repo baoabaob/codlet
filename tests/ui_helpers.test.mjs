@@ -34,7 +34,7 @@ test('native page departures unmount controls, retire portals and remount with f
 });
 test('a retired page registration cannot mount or leak its lifetime marker',async t=>{
   const f=uiFixture();t.after(()=>f.dispose());const reply=deferred();f.overrides.set('register',()=>reply.promise);const ui=f.context.ui.create();
-  const result=ui.page({label:'Page',render:()=>null});ui.dispose();reply.resolve({api:1,token:'late',path:'/codlet/late'});await assert.rejects(result);
+  const result=ui.page({label:'Page',render:()=>null});ui.dispose();assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);reply.resolve({api:1,token:'late',path:'/codlet/late'});await assert.rejects(result);
   assert.equal(f.document.querySelector('[data-codlet-page-lease]'),null);assert.equal(f.document.querySelector('[data-codlet-official-ui]'),null);
 });
 test('inactive pages skip message mutations and still discover nested hosts, toolbar replacements and retirement',async t=>{

@@ -1,4 +1,4 @@
-((options = {}, createUI = null, createI18n = null, createServices = null, disposeHelpers = null) => {
+((options = {}, createUI = null, createI18n = null, createServices = null, disposeHelpers = null, createPage = null, publish = null) => {
     const world = options.world ?? 'isolated';
     if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -44,6 +44,7 @@
     // the SDK's module graph rooted through the immutable runtime tombstone.
     let uiFactory = options.lazyUI === true ? null : createUI;
     let retired = false;
+    let retireFacade = null;
     const RPC_TIMEOUT_MS = 15000;
     const MAX_PENDING = 16;
     const MAX_ENDPOINTS = 256;
@@ -261,9 +262,10 @@
                 // the immutable ABI tombstone, but release all helper loaders
                 // and reject attempts to revive this retired generation.
                 retired = true;
-                uiFactory = createUI = createI18n = createServices = null;
+                uiFactory = createUI = createI18n = createServices = createPage = null;
             }
-            if (world === 'main' && globalThis[key] === runtime) delete globalThis[key];
+            if (retireFacade) { const retire = retireFacade; retireFacade = null; retire(); }
+            else if (world === 'main' && globalThis[key] === runtime) delete globalThis[key];
             if (failure) throw failure;
         }
     }
@@ -445,7 +447,10 @@
                         if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
                         if (!uiFactory) uiFactory = createUI();
                         return uiFactory(context);
-                    } }) } : {})
+                    }, ...(typeof createPage === 'function' ? {page: options => {
+                        if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+                        return createPage(context, options, () => context.ui.create());
+                    }} : {}) }) } : {})
                 });
                 activating.set(metadata.id, record);
                 try {
@@ -558,7 +563,8 @@
         }
     };
 
-    Object.defineProperty(globalThis, key, {
+    if (typeof publish === 'function') retireFacade = publish(Object.freeze(runtime));
+    else Object.defineProperty(globalThis, key, {
         value: Object.freeze(runtime),
         configurable: world === 'main',
         enumerable: false,

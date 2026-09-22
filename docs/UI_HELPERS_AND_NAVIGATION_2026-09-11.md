@@ -1,16 +1,13 @@
 # Renderer UI API 2
 
-Updated 2026-09-14. The former API 1 DOM helpers and appearance recipes have been removed. This API exposes the actual pinned Apps SDK UI components and React instance, plus ownership and native-page integration.
+Updated 2026-09-22. The former API 1 DOM helpers and appearance recipes have been removed. This API exposes the actual pinned Apps SDK UI components and React instance, plus ownership and native-page integration.
 
 ```jsx
 export async function activate(context) {
-  const ui = context.ui.create();
-  const React = ui.React;
-  const { Button, Input, Switch } = ui.components;
-  await ui.page({
+  await context.ui.page({
     label: 'My tools',
     icon: 'Cube',
-    render: () => React.createElement(Button, {
+    render: ({ui}) => ui.React.createElement(ui.components.Button, {
       color: 'primary', variant: 'solid', size: 'md',
       onClick: () => doWork(ui.signal), children: 'Run'
     })
@@ -22,6 +19,8 @@ export function deactivate() {}
 Declare `ui.dom` and `requires: [{ "name": "codex.ui.navigation.page", "api": 1, "scope": "target" }]`. A normal page consumer stays in the isolated world. API 2 `create()` takes no appearance object. Component props and icons follow upstream types; use the supplied React instance to avoid duplicate hook dispatchers. [Type declarations](../types/renderer-ui.d.ts) use type-only imports from the official package.
 
 `page({ label, icon, toolbar?, render, onActivate?, onDeactivate? })` waits for the document, registers a caller-owned route, and renders only while that native route is mounted. Departure unmounts React synchronously; re-entry calls `render` again. Keep long-lived RPC receipt state outside the component tree, invalidate page-local asynchronous callbacks, and check `ui.signal` for owner retirement.
+
+Prefer `context.ui.page` for navigation-only plugins: registration does not initialize React, SDK styles or theme listeners. Each route entry acquires a UI owner, available as `render({ui, toolbar})`; route departure disposes its roots, styles and listeners. Keep the received UI reference inside the current view, and release any module-level view references on `onDeactivate`. Unsupported auxiliary windows never acquire the SDK. Older API 2 runtimes lack this optional method; feature-detect it and fall back to `context.ui.create().page(...)` when those runtimes must remain supported. `create()` remains available for persistent custom surfaces.
 
 With `toolbar: true`, `render({ toolbar })` receives an owned container inside the actual native `AppShell.Header` / `HeaderToolbar` outlet. Render controls with `ui.createPortal(controls, toolbar)` from the same page React tree so the toolbar and body share state. The default is `false`, with `toolbar: null`. Do not add another header-height row inside the page. Navigation and owner disposal unmount the page and toolbar together, including exceptional React/callback cleanup.
 

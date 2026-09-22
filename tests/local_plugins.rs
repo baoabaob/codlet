@@ -82,14 +82,14 @@ fn valid_unicode_and_space_root_returns_canonical_root_and_unchanged_source() {
     let candidate = inspect_local_plugin(&fixture.root).unwrap();
     assert_eq!(candidate.root, fs::canonicalize(&fixture.root).unwrap());
     assert!(candidate.root.is_absolute());
-    assert_eq!(candidate.source, Some(SOURCE.to_owned()));
+    assert_eq!(candidate.source, Some(SOURCE.to_owned().into()));
     assert_eq!(candidate.manifest.id, "dev.local");
     assert_eq!(candidate.manifest.provides[0].api.get(), 2);
     candidate.validate_grants(&[Permission::UiDom]).unwrap();
     let loaded = load_local_plugin("dev.local", &candidate.root, &[Permission::UiDom], 7).unwrap();
     assert_eq!(loaded.generation, 7);
     assert_eq!(loaded.manifest, candidate.manifest);
-    assert_eq!(loaded.source, Some(SOURCE.to_owned()));
+    assert_eq!(loaded.source, Some(SOURCE.to_owned().into()));
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn multibyte_utf8_limits_are_measured_in_bytes() {
     fs::write(fixture.entry(), &source).unwrap();
     assert_eq!(
         inspect_local_plugin(&fixture.root).unwrap().source,
-        Some(source.to_owned())
+        Some(source.to_owned().into())
     );
     source.push('x');
     fs::write(fixture.entry(), source).unwrap();
@@ -279,7 +279,7 @@ fn bounded_sources_leave_room_for_json_encoded_cdp_frames() {
     fs::write(fixture.entry(), &source).unwrap();
     let candidate = inspect_local_plugin(&fixture.root).unwrap();
     let frame = serde_json::to_vec(&json!({
-        "method": "Runtime.evaluate", "params": { "expression": candidate.source }
+        "method": "Runtime.evaluate", "params": { "expression": candidate.source.as_deref() }
     }))
     .unwrap();
     assert!(frame.len() + 6 * MAX_MANIFEST_BYTES < codlet::cdp::MAX_CDP_FRAME_BYTES);
@@ -317,7 +317,7 @@ fn empty_entry_is_rejected_but_source_is_not_a_javascript_parser() {
     fs::write(fixture.entry(), source).unwrap();
     assert_eq!(
         inspect_local_plugin(&fixture.root).unwrap().source,
-        Some(source.to_owned())
+        Some(source.to_owned().into())
     );
 }
 
@@ -468,9 +468,9 @@ fn load_rereads_identity_permissions_and_source_each_time() {
         3,
     )
     .unwrap();
-    assert_eq!(loaded.source, Some(replacement.to_owned()));
+    assert_eq!(loaded.source, Some(replacement.to_owned().into()));
     assert_eq!(loaded.generation, 3);
-    assert_eq!(original.source, Some(SOURCE.to_owned()));
+    assert_eq!(original.source, Some(SOURCE.to_owned().into()));
     assert_eq!(
         loaded.manifest.permissions,
         [Permission::UiDom, Permission::RuntimeManage]
@@ -597,13 +597,13 @@ fn successful_inspection_and_load_do_not_execute_source_or_create_configuration(
         .collect();
     assert_eq!(
         inspect_local_plugin(&fixture.root).unwrap().source,
-        Some(source.to_owned())
+        Some(source.to_owned().into())
     );
     assert_eq!(
         load_local_plugin("dev.local", &fixture.root, &[Permission::UiDom], 1)
             .unwrap()
             .source,
-        Some(source.to_owned())
+        Some(source.to_owned().into())
     );
     assert!(!sentinel.exists());
     let after: Vec<_> = fs::read_dir(&fixture.root)

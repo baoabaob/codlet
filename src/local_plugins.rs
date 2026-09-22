@@ -37,7 +37,7 @@ const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub struct LocalPluginCandidate {
     pub root: PathBuf,
     pub manifest: PluginManifest,
-    pub source: Option<String>,
+    pub source: Option<Arc<str>>,
     pub host: Option<LoadedHost>,
 }
 
@@ -369,7 +369,7 @@ pub fn inspect_local_plugin(root: &Path) -> Result<LocalPluginCandidate, LocalPl
                 "entry must contain non-whitespace JavaScript source",
             ));
         }
-        Some(source)
+        Some(Arc::from(source))
     } else {
         None
     };
