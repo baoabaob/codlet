@@ -18,6 +18,7 @@ const TRAFFIC_MAX_TIMEOUT = 15000;
 const TRAFFIC_MAX_WS_MESSAGE = 8 * 1024 * 1024;
 const TRAFFIC_MAX_WS_QUEUE = 16 * 1024 * 1024;
 const TRAFFIC_MAX_WS_QUEUE_FRAMES = 256;
+const TRAFFIC_PROXY_CHALLENGE = 'Basic realm="Codlet"';
 const TRAFFIC_HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade',
@@ -596,7 +597,13 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     const server = httpTraffic.createServer({ maxHeaderSize: TRAFFIC_MAX_HEADER_BYTES }, async (incoming, outgoing) => {
       let destination;
       try { destination = resolveIncoming(incoming); }
-      catch (reason) { outgoing.writeHead(reason.code === 'proxy_authentication_required' ? 407 : reason.code === 'target_not_found' ? 404 : 400, { connection: 'close' }); outgoing.end('proxy_target_rejected'); return; }
+      catch (reason) {
+        const authenticationRequired = reason.code === 'proxy_authentication_required';
+        outgoing.writeHead(authenticationRequired ? 407 : reason.code === 'target_not_found' ? 404 : 400, {
+          connection: 'close', ...(authenticationRequired ? { 'proxy-authenticate': TRAFFIC_PROXY_CHALLENGE } : {}),
+        });
+        outgoing.end('proxy_target_rejected'); return;
+      }
       if (!httpHandler) {
         outgoing.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' }); outgoing.end('HTTP handler unavailable'); return;
       }
@@ -674,7 +681,10 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     server.maxConnections = maximumConcurrent + 8;
     server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
     server.on('connect', async (incoming, socket, head) => {
-      const reject = status => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); };
+      const reject = status => {
+        const challenge = status === '407 Proxy Authentication Required' ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r\n` : '';
+        if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\n${challenge}Connection: close\r\nContent-Length: 0\r\n\r\n`);
+      };
       if (!ingress) return reject('405 Method Not Allowed');
       if (tunnels.has(socket)) return reject('405 Method Not Allowed');
       if (!authorizedProxy(incoming)) return reject('407 Proxy Authentication Required');
@@ -746,7 +756,10 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       handleProtocols(_protocols, request) { return request.__codletProtocol; },
     });
     server.on('upgrade', async (incoming, socket, head) => {
-      const reject = (status, reason) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(reason)}\r\n\r\n${reason}`); };
+      const reject = (status, reason) => {
+        const challenge = status === '407 Proxy Authentication Required' ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r\n` : '';
+        if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\n${challenge}Connection: close\r\nContent-Length: ${Buffer.byteLength(reason)}\r\n\r\n${reason}`);
+      };
       let destination;
       try { destination = resolveIncoming(incoming, true); }
       catch (reason) { reject(reason.code === 'proxy_authentication_required' ? '407 Proxy Authentication Required' : reason.code === 'target_not_found' ? '404 Not Found' : '400 Bad Request', 'proxy_target_rejected'); return; }

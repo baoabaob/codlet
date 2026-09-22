@@ -4558,6 +4558,7 @@ var require_host_traffic = __commonJS({
     var TRAFFIC_MAX_WS_MESSAGE = 8 * 1024 * 1024;
     var TRAFFIC_MAX_WS_QUEUE = 16 * 1024 * 1024;
     var TRAFFIC_MAX_WS_QUEUE_FRAMES = 256;
+    var TRAFFIC_PROXY_CHALLENGE = 'Basic realm="Codlet"';
     var TRAFFIC_HOP_HEADERS = /* @__PURE__ */ new Set([
       "connection",
       "keep-alive",
@@ -5210,7 +5211,11 @@ var require_host_traffic = __commonJS({
             try {
               destination = resolveIncoming(incoming);
             } catch (reason) {
-              outgoing.writeHead(reason.code === "proxy_authentication_required" ? 407 : reason.code === "target_not_found" ? 404 : 400, { connection: "close" });
+              const authenticationRequired = reason.code === "proxy_authentication_required";
+              outgoing.writeHead(authenticationRequired ? 407 : reason.code === "target_not_found" ? 404 : 400, {
+                connection: "close",
+                ...authenticationRequired ? { "proxy-authenticate": TRAFFIC_PROXY_CHALLENGE } : {}
+              });
               outgoing.end("proxy_target_rejected");
               return;
             }
@@ -5326,8 +5331,10 @@ var require_host_traffic = __commonJS({
           });
           server.on("connect", async (incoming, socket, head) => {
             const reject = (status) => {
+              const challenge = status === "407 Proxy Authentication Required" ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r
+` : "";
               if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r
-Connection: close\r
+${challenge}Connection: close\r
 Content-Length: 0\r
 \r
 `);
@@ -5428,8 +5435,10 @@ Content-Length: 0\r
           });
           server.on("upgrade", async (incoming, socket, head) => {
             const reject = (status, reason) => {
+              const challenge = status === "407 Proxy Authentication Required" ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r
+` : "";
               if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r
-Connection: close\r
+${challenge}Connection: close\r
 Content-Length: ${Buffer.byteLength(reason)}\r
 \r
 ${reason}`);

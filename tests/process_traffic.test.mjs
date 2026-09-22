@@ -93,6 +93,59 @@ test('authenticated process ingress preserves HTTP/HTTPS destination, bytes and 
   assert.equal((await through(proxy.proxyUrl, 'https://codlet-probe.invalid/', { headers: { Host: 'different.invalid' } })).status, 400);
 });
 
+test('HTTP, CONNECT and WebSocket ingress challenge before any privileged work and allow authenticated retries', { timeout: 10000 }, async t => {
+  let requests = 0, certificates = 0, upgrades = 0;
+  const upstream = http.createServer(), websocketServer = new WebSocketServer({ server: upstream });
+  const upstreamPort = await listen(upstream);
+  t.after(() => { for (const socket of websocketServer.clients) socket.terminate(); websocketServer.close(); upstream.close(); });
+  const { proxy } = await setup(t, {
+    http: () => { requests++; return { status: 200, body: 'authenticated' }; },
+    webSocket: async (_request, exchange) => { upgrades++; await exchange.forward({ url: `ws://127.0.0.1:${upstreamPort}/` }); },
+  }, { certificateFor: () => { certificates++; return { key, cert }; } });
+  const endpoint = new URL(proxy.proxyUrl);
+  async function responseHead(method, path, headers = []) {
+    return new Promise((resolve, reject) => {
+      const socket = net.connect({ host: endpoint.hostname, port: endpoint.port });
+      let received = '';
+      socket.setTimeout(2000, () => socket.destroy(new Error('proxy header deadline')));
+      socket.once('error', reject);
+      socket.once('connect', () => socket.write([
+        `${method} ${path} HTTP/1.1`, 'Host: codlet-probe.invalid', ...headers, '', '',
+      ].join('\r\n')));
+      socket.on('data', data => {
+        received += data.toString();
+        const end = received.indexOf('\r\n\r\n');
+        if (end >= 0) { socket.destroy(); resolve(received.slice(0, end)); }
+      });
+      socket.once('end', () => reject(new Error('proxy closed before response headers')));
+    });
+  }
+  const websocket = ['Connection: Upgrade', 'Upgrade: websocket', 'Sec-WebSocket-Version: 13', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=='];
+  for (const credential of [[], ['Proxy-Authorization: Basic d3Jvbmc6d3Jvbmc=']]) {
+    for (const [method, path, headers] of [
+      ['GET', 'http://codlet-probe.invalid/', []],
+      ['CONNECT', 'codlet-probe.invalid:443', []],
+      ['GET', 'http://codlet-probe.invalid/', websocket],
+    ]) {
+      const head = await responseHead(method, path, [...headers, ...credential]);
+      assert.match(head, /^HTTP\/1\.1 407 Proxy Authentication Required\r\n/);
+      assert.match(head, /\r\nproxy-authenticate: Basic realm="Codlet"(?:\r\n|$)/i);
+      assert.match(head, /\r\nconnection: close(?:\r\n|$)/i);
+    }
+  }
+  assert.deepEqual({ requests, certificates, upgrades }, { requests: 0, certificates: 0, upgrades: 0 });
+  for (const protocol of ['http', 'https']) {
+    const response = await through(proxy.proxyUrl, `${protocol}://codlet-probe.invalid/`);
+    assert.equal(response.status, 200);
+    assert.equal(response.body, 'authenticated');
+    assert.equal(response.headers['proxy-authenticate'], undefined);
+  }
+  const upgraded = await responseHead('GET', 'http://codlet-probe.invalid/', [...websocket, `Proxy-Authorization: ${auth(endpoint)}`]);
+  assert.match(upgraded, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+  assert.doesNotMatch(upgraded, /proxy-authenticate/i);
+  assert.deepEqual({ requests, certificates, upgrades }, { requests: 2, certificates: 1, upgrades: 1 });
+});
+
 test('WSS process ingress reuses bounded bidirectional text and binary transforms', { timeout: 10000 }, async t => {
   const server = http.createServer(), ws = new WebSocketServer({ server });
   ws.on('connection', socket => socket.on('message', (data, binary) => socket.send(data, { binary })));
