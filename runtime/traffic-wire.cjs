@@ -71,13 +71,21 @@ async function connectTrafficPeer(endpoint, { signal, handle, event = () => {}, 
     } catch { close(failure('invalid_frame')); }
   }));
   await connected;
-  function request(method, params = {}, { timeoutMs = 30000, signal: requestSignal, prepareResult } = {}) {
+  function request(method, params = {}, { timeoutMs = 30000, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
     if (closed || requestSignal?.aborted) return Promise.reject(failure('peer_closed'));
     if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure('resource_limit'));
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) return Promise.reject(failure('invalid_timeout'));
     return new Promise((resolve, reject) => {
       const id = ++sequence;
-      const abort = () => { const item = pending.get(id); if (!item) return; pending.delete(id); clearTimeout(item.timer); requestSignal?.removeEventListener('abort', abort); reject(failure('request_cancelled')); };
+      const abort = () => {
+        const item = pending.get(id); if (!item) return;
+        pending.delete(id); clearTimeout(item.timer); requestSignal?.removeEventListener('abort', abort);
+        if (cancelOpen && method === 'open' && !closed) {
+          try { send({ id: ++sequence, method: 'cancelOpen', params: { request: id } }); }
+          catch { close(failure('peer_closed')); }
+        }
+        reject(failure('request_cancelled'));
+      };
       const timer = setTimeout(abort, timeoutMs);
       pending.set(id, { resolve, reject, timer, signal: requestSignal, abort, prepareResult });
       requestSignal?.addEventListener('abort', abort, { once: true });

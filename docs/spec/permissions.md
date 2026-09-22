@@ -12,6 +12,9 @@ Managed authority is the intersection of the loaded manifest declarations, expli
 | `host.process` | Managed Node Host activation; legacy `process.run` also needs `executables` |
 | `host.fs` | Host read broker and Core file reads under `readRoots` |
 | `host.network` | HTTP fetch/traffic dispatch to exact `networkOrigins`, including a selected proxy |
+| `traffic.intercept` | Host interception of granted exact origins through the Native traffic entrance |
+| `traffic.sensitiveHeaders` | Read/change sensitive traffic headers and WebSocket subprotocols |
+| `traffic.redirect` | Rewrite a request to another separately granted origin |
 | `host.system` | Host's bounded OS/architecture/logical CPU query |
 | `runtime.manage` | Management of other plugins, imports and grants; not a read-only listing grant |
 | `core.storage` | Own config/KV and data/cache namespace |

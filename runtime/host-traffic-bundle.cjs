@@ -3822,7 +3822,7 @@ var require_traffic_wire = __commonJS({
         }
       }));
       await connected;
-      function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult } = {}) {
+      function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
         if (closed || requestSignal?.aborted) return Promise.reject(failure("peer_closed"));
         if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure("resource_limit"));
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e4) return Promise.reject(failure("invalid_timeout"));
@@ -3834,6 +3834,13 @@ var require_traffic_wire = __commonJS({
             pending.delete(id);
             clearTimeout(item.timer);
             requestSignal?.removeEventListener("abort", abort);
+            if (cancelOpen && method === "open" && !closed) {
+              try {
+                send({ id: ++sequence, method: "cancelOpen", params: { request: id } });
+              } catch {
+                close(failure("peer_closed"));
+              }
+            }
             reject(failure("request_cancelled"));
           };
           const timer = setTimeout(abort, timeoutMs);
@@ -4148,6 +4155,18 @@ var require_host_interceptors = __commonJS({
         if (typeof key !== "string") throw fail("invalid_registration");
         const registration = { key, handlers: { ...handlers }, enabled: true, closed: false, operation: 0 };
         registrations.set(key, registration);
+        async function synchronized(result2) {
+          const deadline = Date.now() + 2e3;
+          while (true) {
+            check();
+            if (registration.closed) throw fail("interceptor_retired");
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw fail("traffic_timeout");
+            const state = await connected.request("synchronized", { registration: key, revision: result2.revision }, { signal: rootSignal, timeoutMs: remaining });
+            if (state.applied === true) return;
+            await new Promise((resolve) => setTimeout(resolve, Math.min(20, remaining)));
+          }
+        }
         async function close() {
           if (registration.closed) return;
           registration.closed = true;
@@ -4161,7 +4180,7 @@ var require_host_interceptors = __commonJS({
         }
         try {
           check();
-          await connected.request("activate", { registration: key }, { signal: rootSignal, timeoutMs: 2e3 });
+          await synchronized(await connected.request("activate", { registration: key }, { signal: rootSignal, timeoutMs: 2e3 }));
           check();
           if (registration.closed) throw fail("interceptor_retired");
         } catch (error) {
@@ -4182,7 +4201,8 @@ var require_host_interceptors = __commonJS({
               for (const [id, lease] of leases) if (lease.registration === registration) closeLease(id);
             }
             try {
-              await connected.request("setEnabled", { registration: key, enabled }, { signal: rootSignal, timeoutMs: 2e3 });
+              const result2 = await connected.request("setEnabled", { registration: key, enabled }, { signal: rootSignal, timeoutMs: 2e3 });
+              if (enabled) await synchronized(result2);
             } catch (error) {
               if (registration.operation === operation && !registration.closed) registration.enabled = previous;
               throw error;

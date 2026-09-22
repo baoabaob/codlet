@@ -52,6 +52,7 @@ struct State {
     pending: BTreeMap<String, Pending>,
     sequence: u64,
     revision: u64,
+    applied_revision: u64,
     order: u64,
     change_queued: bool,
     ready: bool,
@@ -87,6 +88,7 @@ struct Registration {
 #[derive(Clone)]
 struct Lease {
     registration: Arc<Registration>,
+    opening_request: Value,
     url: String,
     expires: Instant,
 }

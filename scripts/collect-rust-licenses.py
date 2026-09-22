@@ -11,6 +11,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TARGETS = ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "aarch64-apple-darwin")
 NOTICE_NAME = re.compile(r"^(?:licen[cs]e|copying|notice|copyright)(?:[._-]|$)", re.I)
+SUPPLEMENTAL = {
+    ("asn1-rs-impl", "0.2.0"): {
+        "LICENSE-MIT": "a5c61b93b6ee1d104af9920cf020ff3c7efe818e31fe562c72261847a728f513",
+        "LICENSE-APACHE": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+    }
+}
 
 
 def command(*args):
@@ -76,6 +82,16 @@ def collect():
         files = {path for path in directory.rglob("*") if path.is_file() and NOTICE_NAME.match(path.name)}
         if package.get("license_file"):
             files.add(directory / package["license_file"])
+        supplemental = SUPPLEMENTAL.get((package["name"], package["version"]))
+        if not files and supplemental:
+            # This crate omitted workspace license files from its archive.
+            # Reviewed texts come from its exact published VCS revision.
+            directory = ROOT / "scripts/licenses" / f"{package['name']}-{package['version']}"
+            for name, expected in supplemental.items():
+                file = directory / name
+                if hashlib.sha256(file.read_bytes().replace(b"\r\n", b"\n")).hexdigest() != expected:
+                    raise ValueError(f"Supplemental license digest mismatch: {name}")
+                files.add(file)
         if not files:
             raise ValueError(f"No license/notice text shipped by {package['name']} {package['version']}")
         label = f"{package['name']} {package['version']}"

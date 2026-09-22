@@ -12,6 +12,8 @@ The portable ZIP must be extracted completely to a writable location. Its first 
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, requests normal close with a bounded wait, and offers retry/cancel. Restart Manager automatic shutdown is disabled; no client is force-killed. An unattended busy install fails explicitly. Uninstall removes program files/shortcuts and preserves plugin/config/data.
 
+An updated installer does not silently replace an existing registered plugin. A changed catalog offers an explicit check; matching package contents preserve registration and grants. Different versions, author-managed paths, or unverifiable legacy installs return a clear manual-migration result (20) and keep the old files/configuration. This Preview does not yet implement automatic in-place upgrades of offline official-plugin presets. Core installation success is not plugin update success.
+
 Build the official plugin repository's `dist/` independently, then assemble from reviewed inputs:
 
 ```powershell

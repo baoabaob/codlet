@@ -102,6 +102,16 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
     if (typeof key !== 'string') throw fail('invalid_registration');
     const registration = { key, handlers: { ...handlers }, enabled: true, closed: false, operation: 0 };
     registrations.set(key, registration);
+    async function synchronized(result) {
+      const deadline = Date.now() + 2000;
+      while (true) {
+        check(); if (registration.closed) throw fail('interceptor_retired');
+        const remaining = deadline - Date.now(); if (remaining <= 0) throw fail('traffic_timeout');
+        const state = await connected.request('synchronized', { registration: key, revision: result.revision }, { signal: rootSignal, timeoutMs: remaining });
+        if (state.applied === true) return;
+        await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
+      }
+    }
     async function close() {
       if (registration.closed) return;
       registration.closed = true; registrations.delete(key);
@@ -110,7 +120,7 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
       catch (error) { if (!['host_stopping', 'stale_generation', 'authorization_revoked', 'traffic_unavailable'].includes(error.code)) throw error; }
     }
     try {
-      check(); await connected.request('activate', { registration: key }, { signal: rootSignal, timeoutMs: 2000 }); check(); if (registration.closed) throw fail('interceptor_retired');
+      check(); await synchronized(await connected.request('activate', { registration: key }, { signal: rootSignal, timeoutMs: 2000 })); check(); if (registration.closed) throw fail('interceptor_retired');
     } catch (error) { await close().catch(() => {}); throw error; }
     return Object.freeze({ id: key, close, dispose: close,
       async setEnabled(enabled) {
@@ -118,7 +128,7 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
         const previous = registration.enabled, operation = ++registration.operation;
         registration.enabled = enabled;
         if (!enabled) for (const [id, lease] of leases) if (lease.registration === registration) closeLease(id);
-        try { await connected.request('setEnabled', { registration: key, enabled }, { signal: rootSignal, timeoutMs: 2000 }); }
+        try { const result = await connected.request('setEnabled', { registration: key, enabled }, { signal: rootSignal, timeoutMs: 2000 }); if (enabled) await synchronized(result); }
         catch (error) { if (registration.operation === operation && !registration.closed) registration.enabled = previous; throw error; }
       },
       inspect: () => Object.freeze({ registered: !registration.closed, enabled: !registration.closed && registration.enabled, exchanges: [...leases.values()].filter(lease => lease.registration === registration).length }),

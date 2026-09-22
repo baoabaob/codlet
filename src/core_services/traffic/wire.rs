@@ -281,6 +281,34 @@ impl Hub {
         };
         let params = frame.get("params").cloned().unwrap_or(json!({}));
         let value = match method.as_str() {
+            "applied" if role == Role::Gateway => {
+                let revision = params["revision"]
+                    .as_u64()
+                    .ok_or_else(|| error("invalid_params", "revision required"))?;
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if revision > state.revision {
+                    return Err(error("invalid_params", "future revision"));
+                }
+                state.applied_revision = state.applied_revision.max(revision);
+                json!({"applied":true})
+            }
+            "synchronized" if matches!(role, Role::Host(_)) => {
+                let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                let registration = state
+                    .registrations
+                    .get(string(&params, "registration")?)
+                    .ok_or_else(|| error("interceptor_retired", "registration retired"))?;
+                if role != Role::Host(registration.owner.clone()) {
+                    return Err(error(
+                        "permission_denied",
+                        "registration belongs to another owner",
+                    ));
+                }
+                let revision = params["revision"]
+                    .as_u64()
+                    .ok_or_else(|| error("invalid_params", "revision required"))?;
+                json!({"applied":state.ready && state.applied_revision>=revision})
+            }
             "launched" if role == Role::Gateway => {
                 if serde_json::to_vec(&params).map_or(true, |v| v.len() > 16 * 1024) {
                     return Err(error("invalid_params", "launch descriptor exceeds bound"));
@@ -414,7 +442,7 @@ impl Hub {
                     }
                 }
                 self.changed(&mut state);
-                json!({"activated":enabled,"attached":state.attached})
+                json!({"activated":enabled,"attached":state.attached,"revision":state.revision})
             }
             "authorize" | "open" if role == Role::Gateway => {
                 let key = string(&params, "registration")?;
@@ -477,12 +505,32 @@ impl Hub {
                         lease.clone(),
                         Lease {
                             registration,
+                            opening_request: id.clone(),
                             url: policy_url.origin().ascii_serialization(),
                             expires: Instant::now() + Duration::from_secs(300),
                         },
                     );
                     json!({"lease":lease})
                 }
+            }
+            "cancelOpen" if role == Role::Gateway => {
+                let request = params
+                    .get("request")
+                    .filter(|value| valid_id(value))
+                    .ok_or_else(|| error("invalid_params", "opening request id required"))?;
+                // The gateway sends this on the same ordered connection as open.
+                // It works even when its caller never received the lease id.
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                let keys = state
+                    .leases
+                    .iter()
+                    .filter(|(_, lease)| lease.opening_request == *request)
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>();
+                for key in keys {
+                    self.release(&mut state, &key);
+                }
+                json!({"cancelled":true})
             }
             "release" if role == Role::Gateway => {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
