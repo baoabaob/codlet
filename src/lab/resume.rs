@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path};
@@ -21,6 +21,11 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use super::{LabError, pin_plain_directory, validate_root_path};
+
+const MAX_REPORT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_REPORT_RECORD_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_REPORT_RECORDS: usize = 131_072;
+const MAX_RECOVERY_PIDS: usize = 8192;
 
 #[derive(Debug, Serialize)]
 pub(super) struct ResumeEvidence {
@@ -71,7 +76,7 @@ impl ResumeEvidence {
         validate_root_path(parent)?;
         let _logs_pin = pin_plain_directory(&logs)?;
         let _parent_pin = pin_plain_directory(parent)?;
-        let report_file = open_plain(report, false)?;
+        let mut report_file = open_plain(report, false)?;
         let created = report_file.metadata()?.creation_time();
         let mut candidates = vec![logs.join("report.jsonl")];
         let mut candidate_pins = Vec::new();
@@ -99,9 +104,16 @@ impl ResumeEvidence {
                 ));
             }
         }
-        let bytes = bounded_bytes(report_file, 4 * 1024 * 1024)?;
-        let mut evidence =
-            Self::parse_with_policy(&bytes, root, package, version, recover_interrupted)?;
+        if report_file.metadata()?.len() > MAX_REPORT_BYTES {
+            return Err(blocked("lab resume report exceeds its total byte limit"));
+        }
+        let mut evidence = Self::parse_reader(
+            &mut report_file,
+            root,
+            package,
+            version,
+            recover_interrupted,
+        )?;
         if let (Some(pid), Some(created)) =
             (evidence.previous_child_pid, evidence.previous_child_created)
             && child_still_running(pid, created)?
@@ -115,7 +127,9 @@ impl ResumeEvidence {
                 open_plain(&logs.join("manual-client.json"), false)?,
                 512 * 1024,
             )?;
-            let pids = interrupted_processes(&bytes, &state, root, report, &evidence)?;
+            report_file.rewind()?;
+            let pids =
+                interrupted_processes_reader(&mut report_file, &state, root, report, &evidence)?;
             for pid in &pids {
                 // Missing creation times deliberately reject a reused live PID.
                 // Recovery never attaches, sends control or terminates a process.
@@ -138,6 +152,7 @@ impl ResumeEvidence {
         Self::parse_with_policy(bytes, root, package, version, false)
     }
 
+    #[cfg(test)]
     fn parse_with_policy(
         bytes: &[u8],
         root: &Path,
@@ -145,10 +160,16 @@ impl ResumeEvidence {
         version: &str,
         recover_interrupted: bool,
     ) -> Result<Self, LabError> {
-        let text = std::str::from_utf8(bytes).map_err(|_| blocked("resume report is not UTF-8"))?;
-        if !text.ends_with('\n') {
-            return Err(blocked("resume report has an incomplete final record"));
-        }
+        Self::parse_reader(bytes, root, package, version, recover_interrupted)
+    }
+
+    fn parse_reader(
+        reader: impl Read,
+        root: &Path,
+        package: &str,
+        version: &str,
+        recover_interrupted: bool,
+    ) -> Result<Self, LabError> {
         let mut host = None;
         let mut child = None;
         let mut exited = false;
@@ -157,8 +178,9 @@ impl ResumeEvidence {
         let mut no_child = false;
         let mut plugin_cleanup = None;
         let mut previous_package: Option<(String, String)> = None;
-        for line in text.lines() {
-            let row: Value = serde_json::from_str(line)
+        for line in report_lines(reader) {
+            let line = line?;
+            let row: Value = serde_json::from_str(&line)
                 .map_err(|_| blocked("resume report contains invalid JSON"))?;
             let row_host = row
                 .get("host_pid")
@@ -241,8 +263,19 @@ impl ResumeEvidence {
     }
 }
 
+#[cfg(test)]
 fn interrupted_processes(
     bytes: &[u8],
+    state: &[u8],
+    root: &Path,
+    report: &Path,
+    evidence: &ResumeEvidence,
+) -> Result<BTreeSet<u32>, LabError> {
+    interrupted_processes_reader(bytes, state, root, report, evidence)
+}
+
+fn interrupted_processes_reader(
+    reader: impl Read,
     state: &[u8],
     root: &Path,
     report: &Path,
@@ -275,21 +308,70 @@ fn interrupted_processes(
     }
     // Host plugins run in non-inherited kill-on-close Jobs. Their owning Host
     // must be retired, and every plugin PID observed in its journal is checked.
-    for line in std::str::from_utf8(bytes)
-        .map_err(|_| blocked("invalid interrupted report"))?
-        .lines()
-    {
+    for line in report_lines(reader) {
+        let line = line?;
         let row: Value =
-            serde_json::from_str(line).map_err(|_| blocked("invalid interrupted report"))?;
+            serde_json::from_str(&line).map_err(|_| blocked("invalid interrupted report"))?;
         if matches!(
             row["event"].as_str(),
             Some("host_plugin_diagnostic" | "host_plugin_stopped")
         ) && !row["detail"]["pid"].is_null()
         {
             pids.insert(valid_pid(&row["detail"]["pid"])?);
+            if pids.len() > MAX_RECOVERY_PIDS {
+                return Err(blocked(
+                    "interrupted report has too many process identities",
+                ));
+            }
         }
     }
     Ok(pids)
+}
+
+// A long, closed stress run must remain resumable without retaining its whole
+// journal in memory. Preserve complete UTF-8/JSON/lifecycle validation, bound
+// each allocation and total work, and reject a truncated final record.
+fn report_lines(reader: impl Read) -> impl Iterator<Item = Result<String, LabError>> {
+    let mut reader = BufReader::new(reader);
+    let (mut total, mut records, mut done) = (0_u64, 0_usize, false);
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        let result = (&mut reader)
+            .take(MAX_REPORT_RECORD_BYTES + 1)
+            .read_until(b'\n', &mut bytes);
+        let result = (|| {
+            let count = result?;
+            if count == 0 {
+                done = true;
+                return Ok(None);
+            }
+            total += count as u64;
+            records += 1;
+            if count as u64 > MAX_REPORT_RECORD_BYTES {
+                return Err(blocked("lab resume report record is oversized"));
+            }
+            if total > MAX_REPORT_BYTES || records > MAX_REPORT_RECORDS {
+                return Err(blocked("lab resume report exceeds its bounded work limit"));
+            }
+            if !bytes.ends_with(b"\n") {
+                return Err(blocked("resume report has an incomplete final record"));
+            }
+            String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| blocked("resume report is not UTF-8"))
+        })();
+        match result {
+            Ok(Some(line)) => Some(Ok(line)),
+            Ok(None) => None,
+            Err(error) => {
+                done = true;
+                Some(Err(error))
+            }
+        }
+    })
 }
 
 fn valid_pid(value: &Value) -> Result<u32, LabError> {
@@ -447,6 +529,76 @@ mod tests {
             .map(|row| format!("{row}\n"))
             .collect::<String>()
             .into_bytes()
+    }
+
+    #[test]
+    fn long_closed_journal_streams_and_still_checks_the_final_records() {
+        let root = Path::new("C:/lab-fixture");
+        let mut bytes = report(root, true);
+        let row = format!(
+            "{}\n",
+            json!({"schema_version":1,"host_pid":9,"event":"diagnostic","detail":{"message":"a".repeat(160)}})
+        );
+        for _ in 0..20_000 {
+            bytes.extend_from_slice(row.as_bytes());
+        }
+        assert!(bytes.len() > 4 * 1024 * 1024);
+        struct ShortReads<'a> {
+            bytes: &'a [u8],
+            largest_request: usize,
+        }
+        impl Read for ShortReads<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.largest_request = self.largest_request.max(buffer.len());
+                let count = buffer.len().min(79);
+                self.bytes.read(&mut buffer[..count])
+            }
+        }
+        let mut reader = ShortReads {
+            bytes: &bytes,
+            largest_request: 0,
+        };
+        let result = ResumeEvidence::parse_reader(&mut reader, root, "fixture", "1", false)
+            .expect("a long, fully closed journal remains valid");
+        assert!(result.previous_lifecycle_closed);
+        assert!(reader.bytes.is_empty());
+        assert!(reader.largest_request <= 8192);
+
+        bytes.extend_from_slice(
+            b"{\"schema_version\":1,\"host_pid\":88,\"event\":\"diagnostic\"}\n",
+        );
+        let error = ResumeEvidence::parse(&bytes, root, "fixture", "1").unwrap_err();
+        assert!(error.to_string().contains("Host identities"));
+    }
+
+    #[test]
+    fn journal_stream_bounds_records_work_and_rejects_incomplete_utf8() {
+        let mut oversized = report_lines(std::io::repeat(b'x'));
+        assert!(
+            oversized
+                .next()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("record is oversized")
+        );
+        assert!(oversized.next().is_none());
+
+        let mut lines = report_lines(std::io::repeat(b'\n'));
+        for _ in 0..MAX_REPORT_RECORDS {
+            assert_eq!(lines.next().unwrap().unwrap(), "\n");
+        }
+        assert!(
+            lines
+                .next()
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("bounded work limit")
+        );
+        assert!(lines.next().is_none());
+        assert!(report_lines(&b"{}"[..]).next().unwrap().is_err());
+        assert!(report_lines(&b"\xff\n"[..]).next().unwrap().is_err());
     }
 
     #[test]

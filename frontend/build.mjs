@@ -21,6 +21,19 @@ await mkdir(out, { recursive: true });
 const bridge = {
   name: 'owned-radix-portals',
   setup(b) {
+    b.onLoad({filter: /[\\/]react-dom[\\/]cjs[\\/]react-dom-client\.production\.js$/}, async args => {
+      let source=await readFile(args.path,'utf8');
+      const changes=[
+        ['((ownerDocument[listeningMarker] = !0),','(codletMarkSelectionDocument(ownerDocument, listeningMarker),'],
+        ['targetContainer.addEventListener(domEventName, eventSystemFlags, !1);','codletAddUIEventListener(targetContainer, domEventName, eventSystemFlags);'],
+      ];
+      for(const [from,to] of changes){
+        if(source.indexOf(from)<0||source.indexOf(from)!==source.lastIndexOf(from))throw new Error('React document event integration changed; review SDK lifetime ownership');
+        source=source.replace(from,to);
+      }
+      const owner=JSON.stringify(resolve(base,'src/react-document-events.js'));
+      return {contents:'"use strict";\nconst { markSelectionDocument: codletMarkSelectionDocument, addUIEventListener: codletAddUIEventListener } = require('+owner+');\n'+source,loader:'js'};
+    });
     b.onResolve({filter: /^radix-ui$/}, () => ({path: resolve(base, 'src/radix-bridge.jsx')}));
     b.onResolve({filter: /^radix-original$/}, () => ({path: officialRequire.resolve('radix-ui').replace(/\.js$/, '.mjs')}));
     b.onLoad({filter: /[\\/]useEscCloseStack\.js$/}, async args => {
