@@ -86,7 +86,17 @@ impl TrafficOwner {
             &invocation.cwd,
             Some(&invocation.environment),
         )
-        .map_err(|_| failure("traffic_worker_spawn_failed"))?;
+        .map_err(|error| {
+            #[cfg(target_os = "macos")]
+            {
+                crate::macos::host::spawn_failure("traffic_worker_spawn_failed", &error)
+            }
+            #[cfg(windows)]
+            {
+                let _ = error;
+                failure("traffic_worker_spawn_failed")
+            }
+        })?;
         let mut owner = Self {
             traffic,
             process,

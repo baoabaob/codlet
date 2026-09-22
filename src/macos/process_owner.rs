@@ -61,8 +61,15 @@ pub fn run() -> io::Result<()> {
     if unsafe { libc::fcntl(control.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    let parent = super::identity::ProcessIdentity::inspect(unsafe { libc::getppid() } as u32)?;
+    let parent = super::identity::ProcessIdentity::inspect(unsafe { libc::getppid() } as u32)
+        .map_err(|error| sanitized_stage("parent_identity_inspect", &error))?;
     if parent.uid != unsafe { libc::geteuid() } || parent.executable != std::env::current_exe()? {
+        let _ = reply(
+            &mut control,
+            &OwnerReply::Failed {
+                message: "owner_stage=parent_identity_rejected".into(),
+            },
+        );
         return Err(io::Error::other(
             "Process owner must be created by this Codlet executable",
         ));
@@ -87,7 +94,7 @@ pub fn run() -> io::Result<()> {
             reply(
                 &mut control,
                 &OwnerReply::Failed {
-                    message: error.to_string(),
+                    message: sanitized_stage("plugin_exec", &error).to_string(),
                 },
             )?;
             return Ok(());
@@ -149,6 +156,17 @@ pub fn run() -> io::Result<()> {
     // A vanished Core cannot receive a receipt; its process group was still retired.
     let _ = reply(&mut control, &final_reply);
     Ok(())
+}
+
+pub(super) fn sanitized_stage(stage: &'static str, error: &io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "owner_stage={stage};io_kind={:?};errno={:?}",
+            error.kind(),
+            error.raw_os_error()
+        ),
+    )
 }
 
 fn direct_child_exited(pid: i32) -> io::Result<bool> {

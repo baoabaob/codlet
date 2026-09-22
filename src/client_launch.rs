@@ -124,7 +124,17 @@ impl LaunchAdapter {
             &invocation.cwd,
             Some(&invocation.environment),
         )
-        .map_err(|_| error("client_launch_adapter_spawn_failed"))?;
+        .map_err(|cause| {
+            #[cfg(target_os = "macos")]
+            {
+                crate::macos::host::spawn_failure("client_launch_adapter_spawn_failed", &cause)
+            }
+            #[cfg(windows)]
+            {
+                let _ = cause;
+                error("client_launch_adapter_spawn_failed")
+            }
+        })?;
         let mut adapter = Self {
             provider: provider.clone(),
             registry: registry.into(),

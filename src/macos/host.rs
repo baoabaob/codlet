@@ -13,6 +13,46 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 pub(crate) type StopSignal = Arc<AtomicBool>;
+pub(crate) fn spawn_failure(
+    code: &'static str,
+    error: &io::Error,
+) -> crate::plugin_host::HostError {
+    // Only fixed stage identifiers plus OS classifications cross this boundary.
+    // Never forward command paths, arguments, environment, or arbitrary messages.
+    let message = error.to_string();
+    let stage = message
+        .strip_prefix("owner_stage=")
+        .and_then(|text| text.split(';').next())
+        .filter(|stage| {
+            matches!(
+                *stage,
+                "owner_exec"
+                    | "plan_write"
+                    | "plan_delimiter"
+                    | "startup_reply"
+                    | "plugin_exec"
+                    | "parent_identity_inspect"
+                    | "parent_identity_rejected"
+            )
+        })
+        .unwrap_or("prepare");
+    let errno = error.raw_os_error().or_else(|| {
+        message.split(';').find_map(|field| {
+            field
+                .strip_prefix("errno=Some(")?
+                .strip_suffix(')')?
+                .parse::<i32>()
+                .ok()
+        })
+    });
+    crate::plugin_host::HostError::new(
+        code,
+        format!(
+            "Native process startup failed: owner_stage={stage};io_kind={:?};errno={errno:?}",
+            error.kind()
+        ),
+    )
+}
 pub(crate) fn signal(stop: &StopSignal) {
     stop.store(true, Ordering::Release);
 }
@@ -160,9 +200,17 @@ impl OwnedPluginProcess {
             return Err(io::Error::last_os_error());
         }
         let descriptor = unsafe { OwnedFd::from_raw_fd(fd) };
-        let mut command = Command::new(process_owner_executable()?);
+        let mut command = Command::new(std::env::current_exe()?);
+        #[cfg(not(test))]
+        command.arg("__codlet_process_owner");
+        #[cfg(test)]
+        command.args([
+            "--exact",
+            "macos::host::tests::process_owner_fixture",
+            "--ignored",
+            "--nocapture",
+        ]);
         command
-            .arg("__codlet_process_owner")
             // Terminal signals may end Core, but its lease observer must remain
             // alive long enough to retire the separate plugin process group.
             .process_group(0)
@@ -174,10 +222,32 @@ impl OwnedPluginProcess {
                 if libc::dup2(descriptor.as_raw_fd(), 5) < 0 {
                     return Err(io::Error::last_os_error());
                 }
+                #[cfg(test)]
+                {
+                    // libtest writes a header before invoking the selected test.
+                    // Preserve the real Host output endpoints on extra inherited
+                    // descriptors, hiding the harness until the fixture restores
+                    // them. All of this exists only in the cfg(test) executable.
+                    for (source, target) in [(1, 6), (2, 7)] {
+                        if libc::dup2(source, target) < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                    }
+                    let null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+                    if null < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if libc::dup2(null, 1) < 0 || libc::dup2(null, 2) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    libc::close(null);
+                }
                 Ok(())
             });
         }
-        let mut child = command.spawn()?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| super::process_owner::sanitized_stage("owner_exec", &error))?;
         drop(command);
         drop(child_control);
         let startup = (|| {
@@ -192,9 +262,14 @@ impl OwnedPluginProcess {
                     "Host environment exceeded its startup limit",
                 ));
             }
-            control.write_all(&body)?;
-            control.write_all(b"\n")?;
-            let reply = super::process_owner::read_reply(&mut control)?;
+            control
+                .write_all(&body)
+                .map_err(|error| super::process_owner::sanitized_stage("plan_write", &error))?;
+            control
+                .write_all(b"\n")
+                .map_err(|error| super::process_owner::sanitized_stage("plan_delimiter", &error))?;
+            let reply = super::process_owner::read_reply(&mut control)
+                .map_err(|error| super::process_owner::sanitized_stage("startup_reply", &error))?;
             match reply {
                 OwnerReply::Started { pid } if pid > 0 => {
                     control.set_nonblocking(true)?;
@@ -280,30 +355,52 @@ impl OwnedPluginProcess {
     }
 }
 
-fn process_owner_executable() -> io::Result<std::path::PathBuf> {
-    let executable = std::env::current_exe()?;
-    #[cfg(not(test))]
-    {
-        Ok(executable)
-    }
-    #[cfg(test)]
-    {
-        // libtest does not dispatch Core's private owner subcommand. Only the
-        // sibling binary built by Cargo is accepted; never an env/PATH override.
-        let deps = executable
-            .parent()
-            .filter(|path| path.file_name().is_some_and(|name| name == "deps"))
-            .ok_or_else(|| io::Error::other("Host unit test is outside Cargo's deps directory"))?;
-        let owner = deps
-            .parent()
-            .ok_or_else(|| io::Error::other("Cargo distribution directory is missing"))?
-            .join("codlet");
-        if !owner.is_file() {
-            return Err(io::Error::other(
-                "Build the sibling codlet binary before Host unit tests",
-            ));
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "private same-executable process owner entry; invoked only by Host spawn tests"]
+    fn process_owner_fixture() {
+        // An ordinary test run does not select this function exclusively.
+        // No env override, alternate executable, or parent-auth bypass exists.
+        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        if arguments
+            != [
+                "--exact",
+                "macos::host::tests::process_owner_fixture",
+                "--ignored",
+                "--nocapture",
+            ]
+        {
+            return;
         }
-        owner.canonicalize()
+        for (source, target) in [(6, 1), (7, 2)] {
+            if unsafe { libc::dup2(source, target) } < 0 {
+                std::process::exit(120);
+            }
+            unsafe {
+                libc::close(source);
+            }
+        }
+        // Exit directly so no libtest trailer enters the plugin's output pipe.
+        std::process::exit(if super::super::process_owner::run().is_ok() {
+            0
+        } else {
+            121
+        });
+    }
+
+    #[test]
+    fn spawn_diagnostics_do_not_include_arbitrary_error_text() {
+        let error = std::io::Error::other("secret-token /private/config.json");
+        let failure = super::spawn_failure("spawn_failed", &error);
+        assert!(!failure.message.contains("secret-token"));
+        assert!(!failure.message.contains("/private"));
+        let error = std::io::Error::other("owner_stage=parent_identity_rejected");
+        assert!(
+            super::spawn_failure("spawn_failed", &error)
+                .message
+                .contains("parent_identity_rejected")
+        );
     }
 }
 impl Owner {
