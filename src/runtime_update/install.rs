@@ -71,7 +71,7 @@ fn checked(path: &Path) -> Result<CheckedPath> {
         sha256: record.sha256,
     })
 }
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(super) fn prepare_install_plan(
     install_root: &Path,
     state_root: &Path,

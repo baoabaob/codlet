@@ -241,10 +241,9 @@ pub(crate) fn pump() {
                     .iter()
                     .find(|(_, (_, token))| *token == value.id)
                     .map(|(id, _)| id.clone())
+                && state.events.len() < 256
             {
-                if state.events.len() < 256 {
-                    state.events.push_back(id);
-                }
+                state.events.push_back(id);
             }
             ReleaseEvent(event);
         }

@@ -90,6 +90,7 @@ impl OfficialUpdates {
         state.status.error = None;
         Ok(state.status.clone())
     }
+    #[cfg(windows)]
     fn fail(&self, message: impl Into<String>) {
         let mut state = self.0.lock().unwrap();
         state.status.combined_phase = "failed".into();

@@ -1,5 +1,7 @@
 use super::*;
-use crate::os_broker::filesystem::{pin_exact_grant, pin_within_grants};
+#[cfg(windows)]
+use crate::os_broker::filesystem::pin_exact_grant;
+use crate::os_broker::filesystem::pin_within_grants;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};

@@ -171,8 +171,7 @@ enum Command {
     Check,
     AutomaticCheck,
     Download,
-    Install,
-    CombinedInstall,
+    Install { official: bool },
     Reschedule,
 }
 struct State {
@@ -464,10 +463,11 @@ impl RuntimeUpdateService {
         self.enqueue(Command::Download)
     }
     pub fn request_install(&self) -> Result<RuntimeUpdateStatus> {
-        self.enqueue(Command::Install)
+        self.enqueue(Command::Install { official: false })
     }
+    #[cfg(windows)]
     pub(crate) fn request_combined_install(&self) -> Result<RuntimeUpdateStatus> {
-        self.enqueue(Command::CombinedInstall)
+        self.enqueue(Command::Install { official: true })
     }
     /// The owner starts the returned checked helper command, then requests normal
     /// shutdown of only its processes. Returning a request never kills anything.
@@ -553,7 +553,7 @@ impl RuntimeUpdateService {
                 }
                 state.status.phase = RuntimeUpdatePhase::Downloading;
             }
-            Command::Install | Command::CombinedInstall => {
+            Command::Install { .. } => {
                 if !state.status.install_available {
                     return Err(error(
                         "install_unavailable",
@@ -679,7 +679,7 @@ async fn run_command(
             state.status.phase = RuntimeUpdatePhase::Downloaded;
             state.status.error = None;
         }
-        Command::Install | Command::CombinedInstall => {
+        Command::Install { official } => {
             let restart = restart.ok_or_else(|| {
                 error(
                     "install_unavailable",
@@ -697,7 +697,7 @@ async fn run_command(
                 state_root,
                 &staged,
                 restart,
-                matches!(command, Command::CombinedInstall),
+                official,
             )?;
             let mut state = shared.lock().unwrap();
             state.install_id = Some(request.id.clone());

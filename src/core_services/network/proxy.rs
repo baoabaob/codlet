@@ -127,6 +127,7 @@ pub(super) fn system_proxy(target: &url::Url) -> Result<Option<String>> {
         )
     }
 }
+#[cfg(any(windows, test))]
 fn select_proxy(spec: &str, bypass: &str, target: &url::Url) -> Result<Option<String>> {
     let host = target.host_str().unwrap_or("").to_ascii_lowercase();
     if bypass
@@ -174,6 +175,7 @@ fn select_proxy(spec: &str, bypass: &str, target: &url::Url) -> Result<Option<St
     validate_proxy(&value)?;
     Ok(Some(value))
 }
+#[cfg(any(windows, test))]
 fn wildcard(pattern: &str, value: &str) -> bool {
     let p = pattern.as_bytes();
     let v = value.as_bytes();
