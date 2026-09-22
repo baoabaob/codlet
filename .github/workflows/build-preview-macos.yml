@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: macos-preview-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   apple-silicon:
     runs-on: macos-15
@@ -112,4 +116,4 @@ jobs:
           name: codlet-macos-arm64-preview
           path: core/.codlet-artifacts/installer-refresh-2026-09-22/macos/package/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
