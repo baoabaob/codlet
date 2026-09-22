@@ -21,6 +21,7 @@ import { PortalContainer, PortalScope } from './portal-context.jsx';
 import { useEscCloseStack } from '@openai/apps-sdk-ui/hooks/useEscCloseStack';
 import './official.css';
 import registerPage from './page.js';
+import { releaseDocumentEvents } from './react-document-events.js';
 
 const components = Object.freeze({ Button, ButtonLink, Input, Textarea, Switch, Checkbox, Popover, Menu, EmptyMessage, Tooltip, SegmentedControl, Select, TextLink, LoadingIndicator, Dialog });
 const icons = Object.freeze({ ArrowLeft, ArrowRotateCw, ArrowUpRight, ChevronDown, Cube, Download, ExclamationMarkCircle, ExternalLink, FolderOpen, InfoCircle, Plus, QuestionMarkCircle, Regenerate, Search, TriangleExclamationErrorWarning, X });
@@ -134,7 +135,7 @@ export default function createUI(context) {
     errors.push(...cleanAll([...pages])); pages.clear();
     errors.push(...cleanAll([...roots.values()].map(root=>()=>root.unmount()))); roots.clear();
     errors.push(...cleanAll([...containers].map(node=>()=>node.remove()))); containers.clear();
-    if (!--owners) { const style=sharedStyle; sharedStyle=null; errors.push(...cleanAll([()=>style?.remove()])); }
+    if (!--owners) { const style=sharedStyle; sharedStyle=null; errors.push(...cleanAll([()=>style?.remove(),releaseDocumentEvents])); }
     errors.push(...cleanAll([unregister,()=>{if(heldFocus&&focusReturn?.isConnected)focusReturn.focus({preventScroll:true});}]));
     throwCleanup(errors);
   }

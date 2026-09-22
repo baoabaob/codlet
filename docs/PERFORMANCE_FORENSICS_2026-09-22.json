@@ -1,0 +1,1317 @@
+{
+  "schema": 1,
+  "date": "2026-09-22",
+  "baselineCommit": "f6a7c3637f323703e9643475df691ebdcf0ad0b2",
+  "officialPluginsCommit": "fea979646dbd8da21e3925f47d42903d78c72cd7",
+  "environment": {
+    "os": "Windows 11 x64",
+    "desktop": "26.915.4065.0",
+    "node": "24.21.0",
+    "browser": {
+      "product": "Chrome/153.0.8010.48",
+      "revision": "@199a3a541d76237379e353b348e64045584db057",
+      "jsVersion": "15.3.76.12"
+    }
+  },
+  "binary": {
+    "before": "0DD242A1F0E229CAB1AA787551D3962D5F79EA678BD7177A01CDF126E3B9279B",
+    "after": "AC159E12D66B704D21C084AC52C5A21AB07449B5B9645289F1FDC8097A55B7B8",
+    "sdkOnlyFailedStartup": "85938E0FB4ABE1BB0AE48B2F3E29AAB29F3ABE31A2334D7D7276B5E19F742E16"
+  },
+  "sourceHashes": {
+    "frontend/src/react-document-events.js": "fd0da610e38c56724316663d1c7343f1518e3c713de467381580fa4c5b41ef93",
+    "frontend/src/runtime.jsx": "f4e16a92c2933359121ef00b3d12d403a1cf1f647af2247015fbce912b46351d",
+    "frontend/build.mjs": "6fc684dd22faf74a9bb91d974ee640f4878dc483e5fa5d88ae36e534a607d69d",
+    "bundled/runtime/ui.js": "199af50df07851a55ffb82c8948ffc9e0326af776d69ea0fa6d041f085308075",
+    "tests/ui_helpers.test.mjs": "15213b28416ca53cd1e8fb0b0573b122598f3a654eee83b2ec559c57fde859c1",
+    "src/lab/resume.rs": "badd0ba90b8024792139bb0d114cff6e32b895568830f49c35f963eb11c8114b"
+  },
+  "identityChecks": {
+    "before": {
+      "targetCount": 3,
+      "uniqueIsolates": 3
+    },
+    "after": {
+      "targetCount": 3,
+      "uniqueIsolates": 3
+    }
+  },
+  "idle": {
+    "from": "2026-09-22T03:53:38.514Z",
+    "to": "2026-09-22T04:23:36.244Z",
+    "initial": {
+      "core": {
+        "workingSetMiB": {
+          "samples": 101,
+          "min": 23.60546875,
+          "p50": 23.8359375,
+          "p95": 23.98046875,
+          "max": 24.02734375
+        },
+        "privateWorkingSetMiB": {
+          "samples": 101,
+          "min": 4.09765625,
+          "p50": 4.328125,
+          "p95": 4.46875,
+          "max": 4.515625
+        },
+        "privateCommitMiB": {
+          "samples": 101,
+          "min": 5.40625,
+          "p50": 6.03125,
+          "p95": 6.4140625,
+          "max": 6.4453125
+        },
+        "handles": {
+          "samples": 101,
+          "min": 691,
+          "p50": 692,
+          "p95": 695,
+          "max": 695
+        },
+        "threads": {
+          "samples": 101,
+          "min": 22,
+          "p50": 24,
+          "p95": 24,
+          "max": 24
+        }
+      },
+      "desktop": {
+        "workingSetMiB": {
+          "samples": 101,
+          "min": 1643.30078125,
+          "p50": 1648.44140625,
+          "p95": 1651.05859375,
+          "max": 1651.7421875
+        },
+        "privateWorkingSetMiB": {
+          "samples": 101,
+          "min": 986.3046875,
+          "p50": 991.56640625,
+          "p95": 994.05859375,
+          "max": 994.703125
+        },
+        "privateCommitMiB": {
+          "samples": 101,
+          "min": 1214.5390625,
+          "p50": 1218.3515625,
+          "p95": 1222.87890625,
+          "max": 1226.12890625
+        },
+        "handles": {
+          "samples": 101,
+          "min": 5715,
+          "p50": 5726,
+          "p95": 5762,
+          "max": 5769
+        },
+        "threads": {
+          "samples": 101,
+          "min": 331,
+          "p50": 333,
+          "p95": 346,
+          "max": 349
+        }
+      },
+      "backend": {
+        "workingSetMiB": {
+          "samples": 101,
+          "min": 120.9765625,
+          "p50": 121.0546875,
+          "p95": 121.0546875,
+          "max": 121.0546875
+        },
+        "privateWorkingSetMiB": {
+          "samples": 101,
+          "min": 29.41796875,
+          "p50": 29.49609375,
+          "p95": 29.49609375,
+          "max": 29.49609375
+        },
+        "privateCommitMiB": {
+          "samples": 101,
+          "min": 36.625,
+          "p50": 36.625,
+          "p95": 36.625,
+          "max": 36.625
+        },
+        "handles": {
+          "samples": 101,
+          "min": 375,
+          "p50": 375,
+          "p95": 375,
+          "max": 375
+        },
+        "threads": {
+          "samples": 101,
+          "min": 33,
+          "p50": 33,
+          "p95": 33,
+          "max": 33
+        }
+      },
+      "coordinator": {
+        "workingSetMiB": {
+          "samples": 101,
+          "min": 104.609375,
+          "p50": 105.12890625,
+          "p95": 105.37109375,
+          "max": 105.37109375
+        },
+        "privateWorkingSetMiB": {
+          "samples": 101,
+          "min": 39.15234375,
+          "p50": 39.546875,
+          "p95": 39.7890625,
+          "max": 39.7890625
+        },
+        "privateCommitMiB": {
+          "samples": 101,
+          "min": 83.59375,
+          "p50": 83.97265625,
+          "p95": 84.1015625,
+          "max": 84.58984375
+        },
+        "handles": {
+          "samples": 101,
+          "min": 413,
+          "p50": 413,
+          "p95": 415,
+          "max": 415
+        },
+        "threads": {
+          "samples": 101,
+          "min": 22,
+          "p50": 23,
+          "p95": 24,
+          "max": 24
+        }
+      }
+    },
+    "final": {
+      "core": {
+        "workingSetMiB": {
+          "samples": 102,
+          "min": 24.12109375,
+          "p50": 24.4140625,
+          "p95": 24.67578125,
+          "max": 24.71484375
+        },
+        "privateWorkingSetMiB": {
+          "samples": 102,
+          "min": 4.44921875,
+          "p50": 4.7421875,
+          "p95": 5.00390625,
+          "max": 5.04296875
+        },
+        "privateCommitMiB": {
+          "samples": 102,
+          "min": 5.77734375,
+          "p50": 6.3828125,
+          "p95": 6.390625,
+          "max": 6.390625
+        },
+        "handles": {
+          "samples": 102,
+          "min": 685,
+          "p50": 686,
+          "p95": 686,
+          "max": 686
+        },
+        "threads": {
+          "samples": 102,
+          "min": 21,
+          "p50": 21,
+          "p95": 21,
+          "max": 21
+        }
+      },
+      "desktop": {
+        "workingSetMiB": {
+          "samples": 102,
+          "min": 1616.328125,
+          "p50": 1620.51171875,
+          "p95": 1623.8373046875,
+          "max": 1624.0859375
+        },
+        "privateWorkingSetMiB": {
+          "samples": 102,
+          "min": 958.375,
+          "p50": 962.447265625,
+          "p95": 965.76015625,
+          "max": 966.046875
+        },
+        "privateCommitMiB": {
+          "samples": 102,
+          "min": 1197.40234375,
+          "p50": 1202.056640625,
+          "p95": 1207.652734375,
+          "max": 1210.67578125
+        },
+        "handles": {
+          "samples": 102,
+          "min": 5626,
+          "p50": 5635,
+          "p95": 5643,
+          "max": 5644
+        },
+        "threads": {
+          "samples": 102,
+          "min": 330,
+          "p50": 333,
+          "p95": 335,
+          "max": 335
+        }
+      },
+      "backend": {
+        "workingSetMiB": {
+          "samples": 102,
+          "min": 119.765625,
+          "p50": 119.90625,
+          "p95": 121.859375,
+          "max": 121.859375
+        },
+        "privateWorkingSetMiB": {
+          "samples": 102,
+          "min": 28.16796875,
+          "p50": 28.33984375,
+          "p95": 30.26171875,
+          "max": 30.26171875
+        },
+        "privateCommitMiB": {
+          "samples": 102,
+          "min": 33.14453125,
+          "p50": 34.73828125,
+          "p95": 35.29296875,
+          "max": 35.29296875
+        },
+        "handles": {
+          "samples": 102,
+          "min": 349,
+          "p50": 354,
+          "p95": 357,
+          "max": 357
+        },
+        "threads": {
+          "samples": 102,
+          "min": 27,
+          "p50": 28,
+          "p95": 29,
+          "max": 29
+        }
+      },
+      "coordinator": {
+        "workingSetMiB": {
+          "samples": 102,
+          "min": 106.8515625,
+          "p50": 106.9453125,
+          "p95": 106.9453125,
+          "max": 106.9453125
+        },
+        "privateWorkingSetMiB": {
+          "samples": 102,
+          "min": 40.609375,
+          "p50": 40.703125,
+          "p95": 40.703125,
+          "max": 40.703125
+        },
+        "privateCommitMiB": {
+          "samples": 102,
+          "min": 85.76171875,
+          "p50": 85.796875,
+          "p95": 85.796875,
+          "max": 85.796875
+        },
+        "handles": {
+          "samples": 102,
+          "min": 413,
+          "p50": 413,
+          "p95": 413,
+          "max": 413
+        },
+        "threads": {
+          "samples": 102,
+          "min": 22,
+          "p50": 23,
+          "p95": 23,
+          "max": 23
+        }
+      }
+    },
+    "curve": [
+      {
+        "minutes": 0,
+        "utc": "2026-09-22T03:53:38.514Z",
+        "label": "idle-0m",
+        "heapMiB": 262.52417755126953,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "minutes": 5,
+        "utc": "2026-09-22T03:58:38.980Z",
+        "label": "idle-5m",
+        "heapMiB": 262.3869171142578,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "minutes": 10,
+        "utc": "2026-09-22T04:03:39.388Z",
+        "label": "idle-10m",
+        "heapMiB": 251.76846313476562,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "minutes": 15,
+        "utc": "2026-09-22T04:08:39.820Z",
+        "label": "idle-15m",
+        "heapMiB": 251.85508346557617,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "minutes": 20,
+        "utc": "2026-09-22T04:13:40.349Z",
+        "label": "idle-20m",
+        "heapMiB": 251.91185760498047,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "minutes": 25,
+        "utc": "2026-09-22T04:18:35.832Z",
+        "label": "idle-25m",
+        "heapMiB": 252.1747817993164,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "minutes": 30,
+        "utc": "2026-09-22T04:23:36.244Z",
+        "label": "idle-30m",
+        "heapMiB": 252.23114013671875,
+        "nodes": 1144,
+        "listeners": 1619,
+        "contextCount": 8,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      }
+    ]
+  },
+  "background": {
+    "gui": {
+      "curve": [
+        {
+          "cycles": 50,
+          "utc": "2026-09-22T04:25:09.479Z",
+          "label": "gui-50-completed",
+          "heapMiB": 283.3091812133789,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 108,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 100,
+          "utc": "2026-09-22T04:25:59.583Z",
+          "label": "gui-100-completed",
+          "heapMiB": 303.58215713500977,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 208,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 150,
+          "utc": "2026-09-22T04:26:44.657Z",
+          "label": "gui-150-completed",
+          "heapMiB": 323.7885856628418,
+          "nodes": 1267,
+          "listeners": 1839,
+          "contextCount": 308,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 200,
+          "utc": "2026-09-22T04:27:29.790Z",
+          "label": "gui-200-completed",
+          "heapMiB": 343.9446678161621,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 408,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 250,
+          "utc": "2026-09-22T04:28:14.860Z",
+          "label": "gui-250-completed",
+          "heapMiB": 364.1362075805664,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 508,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 300,
+          "utc": "2026-09-22T04:28:59.928Z",
+          "label": "gui-300-completed",
+          "heapMiB": 383.65997314453125,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 608,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 350,
+          "utc": "2026-09-22T04:29:50.025Z",
+          "label": "gui-350-completed",
+          "heapMiB": 403.54509353637695,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 708,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 400,
+          "utc": "2026-09-22T04:30:35.129Z",
+          "label": "gui-400-completed",
+          "heapMiB": 423.73902893066406,
+          "nodes": 1267,
+          "listeners": 1842,
+          "contextCount": 808,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        }
+      ],
+      "delta": {
+        "start": 50,
+        "end": 400,
+        "heapMiB": 140.42984771728516,
+        "meanMiBPerCycle": 0.40122813633510046,
+        "nodes": 0,
+        "listeners": 0
+      }
+    },
+    "noop": {
+      "curve": [
+        {
+          "cycles": 0,
+          "utc": "2026-09-22T04:33:00.565Z",
+          "label": "noop-0",
+          "heapMiB": 426.2177848815918,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 810,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 50,
+          "utc": "2026-09-22T04:33:30.511Z",
+          "label": "noop-50-completed",
+          "heapMiB": 443.41357421875,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 910,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 100,
+          "utc": "2026-09-22T04:34:15.517Z",
+          "label": "noop-100-completed",
+          "heapMiB": 460.7386894226074,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1010,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 150,
+          "utc": "2026-09-22T04:35:00.577Z",
+          "label": "noop-150-completed",
+          "heapMiB": 477.90188217163086,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1110,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 200,
+          "utc": "2026-09-22T04:35:45.765Z",
+          "label": "noop-200-completed",
+          "heapMiB": 495.0450553894043,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1210,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        }
+      ],
+      "delta": {
+        "start": 0,
+        "end": 200,
+        "heapMiB": 68.8272705078125,
+        "meanMiBPerCycle": 0.3441363525390625,
+        "nodes": 0,
+        "listeners": 0
+      }
+    },
+    "desktop": {
+      "curve": [
+        {
+          "cycles": 0,
+          "utc": "2026-09-22T04:36:25.733Z",
+          "label": "desktop-0",
+          "heapMiB": 494.79251861572266,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1210,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 50,
+          "utc": "2026-09-22T04:36:55.775Z",
+          "label": "desktop-50-completed",
+          "heapMiB": 494.97594451904297,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1210,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 100,
+          "utc": "2026-09-22T04:37:40.932Z",
+          "label": "desktop-100-completed",
+          "heapMiB": 495.0399627685547,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1210,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        }
+      ],
+      "delta": {
+        "start": 0,
+        "end": 100,
+        "heapMiB": 0.24744415283203125,
+        "meanMiBPerCycle": 0.0024744415283203124,
+        "nodes": 0,
+        "listeners": 0
+      }
+    },
+    "uiadapter": {
+      "curve": [
+        {
+          "cycles": 0,
+          "utc": "2026-09-22T04:38:20.911Z",
+          "label": "uiadapter-0",
+          "heapMiB": 494.5112533569336,
+          "nodes": 1373,
+          "listeners": 2064,
+          "contextCount": 1210,
+          "guiMounted": true,
+          "uiContainers": 3,
+          "styles": 1
+        },
+        {
+          "cycles": 50,
+          "utc": "2026-09-22T04:39:01.048Z",
+          "label": "uiadapter-50-completed",
+          "heapMiB": 523.591609954834,
+          "nodes": 1495,
+          "listeners": 2426,
+          "contextCount": 1310,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        },
+        {
+          "cycles": 100,
+          "utc": "2026-09-22T04:39:51.081Z",
+          "label": "uiadapter-100-completed",
+          "heapMiB": 543.7744560241699,
+          "nodes": 1495,
+          "listeners": 2426,
+          "contextCount": 1410,
+          "guiMounted": false,
+          "uiContainers": 0,
+          "styles": 0
+        }
+      ],
+      "delta": {
+        "start": 0,
+        "end": 100,
+        "heapMiB": 49.26320266723633,
+        "meanMiBPerCycle": 0.4926320266723633,
+        "nodes": 122,
+        "listeners": 362
+      }
+    }
+  },
+  "foreground": {
+    "before": [
+      {
+        "cycles": 0,
+        "utc": "2026-09-22T04:41:26.238Z",
+        "label": "mounted-0",
+        "heapMiB": 540.5962867736816,
+        "nodes": 1571,
+        "listeners": 2649,
+        "contextCount": 1410,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 1,
+        "utc": "2026-09-22T04:42:21.293Z",
+        "label": "mounted-1",
+        "heapMiB": 545.6798973083496,
+        "nodes": 1764,
+        "listeners": 3095,
+        "contextCount": 1412,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 2,
+        "utc": "2026-09-22T04:45:21.717Z",
+        "label": "mounted-2",
+        "heapMiB": 550.8079872131348,
+        "nodes": 1957,
+        "listeners": 3541,
+        "contextCount": 1414,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      }
+    ],
+    "after": [
+      {
+        "cycles": 0,
+        "utc": "2026-09-22T05:28:25.334Z",
+        "label": "verified-mounted-0",
+        "heapMiB": 263.2617492675781,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 10,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 1,
+        "utc": "2026-09-22T05:29:05.439Z",
+        "label": "verified-mounted-1",
+        "heapMiB": 268.8374443054199,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 12,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 2,
+        "utc": "2026-09-22T05:29:55.470Z",
+        "label": "verified-mounted-2",
+        "heapMiB": 269.97444915771484,
+        "nodes": 1166,
+        "listeners": 1628,
+        "contextCount": 14,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 3,
+        "utc": "2026-09-22T05:30:30.539Z",
+        "label": "verified-mounted-3",
+        "heapMiB": 270.72866439819336,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 16,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 4,
+        "utc": "2026-09-22T05:30:55.569Z",
+        "label": "verified-mounted-4",
+        "heapMiB": 271.88139724731445,
+        "nodes": 1166,
+        "listeners": 1628,
+        "contextCount": 18,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 5,
+        "utc": "2026-09-22T05:31:20.582Z",
+        "label": "verified-mounted-5",
+        "heapMiB": 272.557430267334,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 20,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 6,
+        "utc": "2026-09-22T05:32:15.713Z",
+        "label": "verified-mounted-6",
+        "heapMiB": 266.9308891296387,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 22,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 7,
+        "utc": "2026-09-22T05:32:40.716Z",
+        "label": "verified-mounted-7",
+        "heapMiB": 267.6983108520508,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 24,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 8,
+        "utc": "2026-09-22T05:33:10.799Z",
+        "label": "verified-mounted-8",
+        "heapMiB": 269.0266990661621,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 26,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 9,
+        "utc": "2026-09-22T05:33:50.833Z",
+        "label": "verified-mounted-9",
+        "heapMiB": 268.55099868774414,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 28,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 10,
+        "utc": "2026-09-22T05:34:15.884Z",
+        "label": "verified-mounted-10",
+        "heapMiB": 269.1766128540039,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 30,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 11,
+        "utc": "2026-09-22T05:34:35.910Z",
+        "label": "verified-mounted-11",
+        "heapMiB": 269.8116760253906,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 32,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 12,
+        "utc": "2026-09-22T05:34:55.910Z",
+        "label": "verified-mounted-12",
+        "heapMiB": 270.3850555419922,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 34,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 13,
+        "utc": "2026-09-22T05:35:55.980Z",
+        "label": "verified-mounted-13",
+        "heapMiB": 270.96960830688477,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 36,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 14,
+        "utc": "2026-09-22T05:36:16.039Z",
+        "label": "verified-mounted-14",
+        "heapMiB": 271.5778694152832,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 38,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 15,
+        "utc": "2026-09-22T05:36:41.037Z",
+        "label": "verified-mounted-15",
+        "heapMiB": 272.17871475219727,
+        "nodes": 1166,
+        "listeners": 1624,
+        "contextCount": 40,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 16,
+        "utc": "2026-09-22T05:38:06.199Z",
+        "label": "verified-mounted-16",
+        "heapMiB": 274.53684997558594,
+        "nodes": 1168,
+        "listeners": 1624,
+        "contextCount": 42,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 17,
+        "utc": "2026-09-22T05:38:31.199Z",
+        "label": "verified-mounted-17",
+        "heapMiB": 275.212646484375,
+        "nodes": 1168,
+        "listeners": 1624,
+        "contextCount": 44,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 18,
+        "utc": "2026-09-22T05:38:56.244Z",
+        "label": "verified-mounted-18",
+        "heapMiB": 275.71034240722656,
+        "nodes": 1168,
+        "listeners": 1624,
+        "contextCount": 46,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 19,
+        "utc": "2026-09-22T05:39:46.277Z",
+        "label": "verified-mounted-19",
+        "heapMiB": 276.2226219177246,
+        "nodes": 1168,
+        "listeners": 1624,
+        "contextCount": 48,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "cycles": 20,
+        "utc": "2026-09-22T05:40:21.376Z",
+        "label": "verified-mounted-20",
+        "heapMiB": 276.78564834594727,
+        "nodes": 1168,
+        "listeners": 1624,
+        "contextCount": 50,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      }
+    ],
+    "beforeDelta": {
+      "start": 0,
+      "end": 2,
+      "heapMiB": 10.211700439453125,
+      "meanMiBPerCycle": 5.1058502197265625,
+      "nodes": 386,
+      "listeners": 892
+    },
+    "afterDelta": {
+      "start": 0,
+      "end": 20,
+      "heapMiB": 13.52389907836914,
+      "meanMiBPerCycle": 0.6761949539184571,
+      "nodes": 2,
+      "listeners": 0
+    },
+    "afterLaterDelta": {
+      "start": 10,
+      "end": 20,
+      "heapMiB": 7.609035491943359,
+      "meanMiBPerCycle": 0.7609035491943359,
+      "nodes": 2,
+      "listeners": 0
+    },
+    "afterCore": {
+      "initial": {
+        "samples": 16,
+        "workingSetMiB": 24.41796875,
+        "privateWorkingSetMiB": 4.92578125,
+        "privateCommitMiB": 6.310546875
+      },
+      "final": {
+        "samples": 16,
+        "workingSetMiB": 25.86328125,
+        "privateWorkingSetMiB": 5.9609375,
+        "privateCommitMiB": 7.2578125
+      }
+    }
+  },
+  "retainerEvidence": {
+    "before": [
+      {
+        "target": "document",
+        "type": "selectionchange",
+        "capture": false,
+        "passive": false,
+        "scriptId": "3738",
+        "lineNumber": 77,
+        "realm": {
+          "active": [],
+          "world": "isolated"
+        },
+        "removed": false
+      }
+    ],
+    "removed": [
+      {
+        "target": "document",
+        "type": "selectionchange",
+        "capture": false,
+        "passive": false,
+        "scriptId": "3738",
+        "lineNumber": 77,
+        "realm": {
+          "active": [],
+          "world": "isolated"
+        },
+        "removed": true
+      }
+    ],
+    "comparison": [
+      {
+        "utc": "2026-09-22T04:45:21.717Z",
+        "label": "mounted-2",
+        "heapMiB": 550.8079872131348,
+        "nodes": 1957,
+        "listeners": 3541,
+        "contextCount": 1414,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "utc": "2026-09-22T04:49:11.186Z",
+        "label": "after-selection-listener-removal",
+        "heapMiB": 546.3631401062012,
+        "nodes": 1764,
+        "listeners": 3095,
+        "contextCount": 1414,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      }
+    ],
+    "fixedListeners": [
+      {
+        "generation": 1,
+        "listeners": []
+      },
+      {
+        "generation": 10,
+        "listeners": []
+      },
+      {
+        "generation": 20,
+        "listeners": []
+      },
+      {
+        "generation": 21,
+        "listeners": [
+          {
+            "target": "document",
+            "type": "keydown",
+            "world": "isolated",
+            "active": [
+              {
+                "generation": 21,
+                "id": "codlet-gui"
+              }
+            ]
+          },
+          {
+            "target": "document",
+            "type": "visibilitychange",
+            "world": "isolated",
+            "active": [
+              {
+                "generation": 21,
+                "id": "codlet-gui"
+              }
+            ]
+          },
+          {
+            "target": "document",
+            "type": "selectionchange",
+            "world": "isolated",
+            "active": [
+              {
+                "generation": 21,
+                "id": "codlet-gui"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "fixedRetiredRuntimeScopes": [
+      {
+        "worldName": "codlet.plugin.codlet-gui.g1",
+        "contextId": 3,
+        "hasFacade": true,
+        "status": [],
+        "scopes": [
+          {
+            "scope": "Closure (forward)",
+            "method": "status"
+          },
+          {
+            "scope": "Closure",
+            "runtimeCleared": true,
+            "runtimeType": "null"
+          }
+        ]
+      },
+      {
+        "worldName": "codlet.plugin.codlet-gui.g10",
+        "contextId": 21,
+        "hasFacade": true,
+        "status": [],
+        "scopes": [
+          {
+            "scope": "Closure (forward)",
+            "method": "status"
+          },
+          {
+            "scope": "Closure",
+            "runtimeCleared": true,
+            "runtimeType": "null"
+          }
+        ]
+      },
+      {
+        "worldName": "codlet.plugin.codlet-gui.g20",
+        "contextId": 31,
+        "hasFacade": true,
+        "status": [],
+        "scopes": [
+          {
+            "scope": "Closure (forward)",
+            "method": "status"
+          },
+          {
+            "scope": "Closure",
+            "runtimeCleared": true,
+            "runtimeType": "null"
+          }
+        ]
+      },
+      {
+        "worldName": "codlet.plugin.codlet-gui.g21",
+        "contextId": 32,
+        "hasFacade": true,
+        "status": [
+          {
+            "id": "codlet-gui",
+            "generation": 21
+          }
+        ],
+        "scopes": [
+          {
+            "scope": "Closure (forward)",
+            "method": "status"
+          },
+          {
+            "scope": "Closure",
+            "runtimeCleared": false,
+            "runtimeType": "object"
+          }
+        ]
+      }
+    ],
+    "mainContextCountBeforeInspection": 24,
+    "mainContextCountAfterInspection": 24
+  },
+  "nativeWorldControl": {
+    "count": 100,
+    "targetDeltaMiB": 15.801509857177734,
+    "checkpoints": [
+      {
+        "utc": "2026-09-22T04:58:07.002Z",
+        "label": "native-worlds-0",
+        "heapMiB": 533.0296401977539,
+        "nodes": 1221,
+        "listeners": 1763,
+        "contextCount": 1414,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      },
+      {
+        "utc": "2026-09-22T04:59:32.115Z",
+        "label": "native-worlds-100-settled",
+        "heapMiB": 549.564769744873,
+        "nodes": 1221,
+        "listeners": 1763,
+        "contextCount": 1514,
+        "guiMounted": true,
+        "uiContainers": 3,
+        "styles": 1
+      }
+    ]
+  },
+  "pageReload": [
+    {
+      "utc": "2026-09-22T04:59:32.115Z",
+      "label": "native-worlds-100-settled",
+      "heapMiB": 549.564769744873,
+      "nodes": 1221,
+      "listeners": 1763,
+      "contextCount": 1514,
+      "guiMounted": true,
+      "uiContainers": 3,
+      "styles": 1
+    },
+    {
+      "utc": "2026-09-22T05:02:17.712Z",
+      "label": "after-page-reload-late",
+      "heapMiB": 764.5293617248535,
+      "nodes": 2080,
+      "listeners": 1556,
+      "contextCount": 1516,
+      "guiMounted": false,
+      "uiContainers": 0,
+      "styles": 0
+    }
+  ],
+  "validation": {
+    "coreJavaScriptPassed": 133,
+    "officialGuiPassed": 24,
+    "resumeTestsPassed": 12,
+    "newResumeTests": 2,
+    "clippy": "passed",
+    "releaseBuild": "codlet and codlet-lab passed",
+    "actualForegroundReloads": 20,
+    "searchAndEscape": "passed",
+    "longJournalResumeBytes": 6427172
+  },
+  "cleanup": {
+    "closed": true,
+    "hostExit": 0,
+    "registryByteExact": true,
+    "ownedProcessesAlive": 0,
+    "original": [
+      {
+        "pid": 39616,
+        "unchanged": true
+      },
+      {
+        "pid": 42500,
+        "unchanged": true
+      },
+      {
+        "pid": 4280,
+        "unchanged": true
+      }
+    ],
+    "originalIdentityBasis": "CIM creation timestamp and image, matching launcher snapshots"
+  },
+  "limitations": [
+    "Idle observation was approximately 30 minutes, not a multi-day conversation soak.",
+    "Foreground baseline has two verified cycles; fixed run has twenty. Report observed totals and means, not whole-client memory savings.",
+    "Rapid background reloads temporarily returned to the native page; they are separate from foreground remount testing.",
+    "DOMDebugger and closure inspection were performed only after the twenty-cycle measurement. An initial inspection addressed the auxiliary widget and created three empty worlds there; these post-measurement samples are excluded.",
+    "The retired GUI listener/tree leak is fixed. Per-generation Chromium world retention remains; no realm reuse or weaker authorization was introduced.",
+    "The test client was Windows x64; this is not macOS memory acceptance.",
+    "Installed Preview MSI was not replaced and no release package was produced."
+  ]
+}

@@ -1,6 +1,47 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {uiFixture,tick,deferred} from './support/ui-fixture.mjs';
+import {uiFixture,uiSource,tick,deferred} from './support/ui-fixture.mjs';
+function selectionListeners(document) {
+  const live=new Set(),add=document.addEventListener,remove=document.removeEventListener;
+  document.addEventListener=function(type,listener,...options){const result=Reflect.apply(add,this,[type,listener,...options]);if(this===document&&type==='selectionchange')live.add(listener);return result;};
+  document.removeEventListener=function(type,listener,...options){const result=Reflect.apply(remove,this,[type,listener,...options]);if(this===document&&type==='selectionchange')live.delete(listener);return result;};
+  return live;
+}
+async function selectInput(f,label){const input=f.control(label);input.focus();input.setSelectionRange(1,3);f.document.dispatchEvent(new f.window.Event('selectionchange'));await tick();}
+test('SDK document selection events follow the last owner and work after reopening',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const live=selectionListeners(f.document);let native=0,selected=0;
+  const host=()=>native++;f.document.addEventListener('selectionchange',host);
+  const a=f.context.ui.create(),b=f.context.ui.create(),h=a.React.createElement;
+  a.mount(a.container(),h(a.components.Button,null,'First'));
+  b.mount(b.container(),h(b.components.Input,{'aria-label':'Second',defaultValue:'abcdef',onSelect:()=>selected++}));
+  assert.equal(live.size,2,'two UI owners share one SDK document listener');
+  a.dispose();assert.equal(live.size,2,'another live owner still needs selection events');
+  await selectInput(f,'Second');assert.ok(selected>0);
+  b.dispose();assert.deepEqual([...live],[host],'retired SDK callback must not retain its React copy');
+  const before=native;f.document.dispatchEvent(new f.window.Event('selectionchange'));assert.equal(native,before+1);
+  const fresh=f.context.ui.create();let reopened=0;
+  fresh.mount(fresh.container(),h(fresh.components.Input,{'aria-label':'Reopened',defaultValue:'abcdef',onSelect:()=>reopened++}));
+  assert.equal(live.size,2,'the SDK listening marker must allow a fresh registration');
+  await selectInput(f,'Reopened');assert.ok(reopened>0);fresh.dispose();assert.deepEqual([...live],[host]);
+});
+test('independent React copies retain only their own document selection listener',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const live=selectionListeners(f.document);
+  const other=f.window.eval(uiSource)(f.context),ui=f.context.ui.create();let selected=0;
+  other.mount(other.container(),other.React.createElement(other.components.Input,{'aria-label':'Other React',defaultValue:'abcdef',onSelect:()=>selected++}));
+  const otherListener=[...live][0];
+  ui.mount(ui.container(),ui.React.createElement(ui.components.Button,null,'Plugin'));
+  assert.equal(live.size,2);ui.dispose();assert.deepEqual([...live],[otherListener]);
+  await selectInput(f,'Other React');assert.ok(selected>0);other.dispose();assert.equal(live.size,0);
+});
+test('throwing React teardown still releases the SDK document event and permits reopening',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());const live=selectionListeners(f.document),ui=f.context.ui.create(),h=ui.React.createElement;
+  function Broken(){ui.React.useLayoutEffect(()=>()=>{throw Error('Selection teardown failure');},[]);return h('p',null,'Broken');}
+  ui.mount(ui.container(),h(Broken));assert.equal(live.size,1);
+  assert.throws(()=>ui.dispose(),/Selection teardown failure/);assert.equal(live.size,0);
+  const fresh=f.context.ui.create();let selected=0;
+  fresh.mount(fresh.container(),h(fresh.components.Input,{'aria-label':'Fresh selection',defaultValue:'abcdef',onSelect:()=>selected++}));
+  await selectInput(f,'Fresh selection');assert.ok(selected>0);fresh.dispose();assert.equal(live.size,0);
+});
 test('actual official controls preserve independent owners and synchronous teardown',async t=>{
   const f=uiFixture();t.after(()=>f.dispose());const a=f.context.ui.create(),b=f.context.ui.create(),h=a.React.createElement;
   const node=a.container();a.mount(node,h(a.components.Switch,{checked:true,'aria-label':'Enabled'}));
