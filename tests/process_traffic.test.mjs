@@ -6,7 +6,7 @@ import tls from 'node:tls';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 const require = createRequire(import.meta.url);
-const { createTrafficRuntime } = require('../runtime/host-traffic-bundle.cjs');
+const { createTrafficRuntime, createTrafficInterceptors } = require('../runtime/host-traffic-bundle.cjs');
 const { WebSocket, WebSocketServer } = require('../frontend/node_modules/ws');
 const fixture = name => readFile(new URL(`./fixtures/process-traffic/${name}.pem`, import.meta.url));
 const [cert, key, ca] = await Promise.all(['cert', 'key', 'ca'].map(fixture));
@@ -98,8 +98,9 @@ test('WSS process ingress reuses bounded bidirectional text and binary transform
   for (const [value, expected] of [['hello', Buffer.from('request:hello:response')], [Buffer.from([8, 9]), Buffer.from([1, 8, 9, 2])]]) {
     const received = new Promise(resolve => client.once('message', resolve)); client.send(value); assert.deepEqual(await received, expected);
   }
-  const closed = new Promise(resolve => client.once('close', resolve)); await proxy.close(); await closed;
-  assert.equal(proxy.status().open, false);
+  const closed = new Promise(resolve => client.once('close', resolve)); proxy.disconnect(); await closed;
+  assert.equal(proxy.status().open, true);
+  assert.equal((await through(proxy.proxyUrl, 'http://codlet-probe.invalid/')).status, 405, 'new connections still reach the authenticated listener');
 });
 
 test('ingress lifetime cancels a stalled handler without waiting for plugin code', { timeout: 5000 }, async t => {
@@ -108,4 +109,58 @@ test('ingress lifetime cancels a stalled handler without waiting for plugin code
   const result = await through(proxy.proxyUrl, 'http://codlet-probe.invalid/');
   assert.equal(result.status, 502); assert.equal(signal.aborted, true);
   assert.equal(proxy.status().activeRequests, 0);
+});
+
+test('plain WS CONNECT is pinned to an HTTP origin and does not require a TLS handshake', { timeout: 5000 }, async t => {
+  const server = http.createServer(), ws = new WebSocketServer({ server });
+  ws.on('connection', socket => socket.on('message', data => socket.send(data)));
+  const port = await listen(server); t.after(() => { for (const client of ws.clients) client.terminate(); ws.close(); server.close(); });
+  const { proxy } = await setup(t, { webSocket: async (request, exchange) => { assert.equal(request.url, 'ws://codlet-probe.invalid/'); await exchange.forward({ url: `ws://127.0.0.1:${port}/` }); } });
+  const url = new URL(proxy.proxyUrl);
+  const socket = await new Promise((resolve, reject) => {
+    const request = http.request({ host: url.hostname, port: url.port, method: 'CONNECT', path: 'codlet-probe.invalid:80', headers: { 'Proxy-Authorization': auth(url) } });
+    request.once('error', reject); request.once('connect', (response, socket) => { assert.equal(response.statusCode, 200); resolve(socket); }); request.end();
+  });
+  const agent = new http.Agent(); agent.createConnection = () => socket;
+  const client = new WebSocket('ws://codlet-probe.invalid/', { agent }); t.after(() => client.terminate());
+  await new Promise((resolve, reject) => { client.once('open', resolve); client.once('error', reject); });
+  const message = new Promise(resolve => client.once('message', resolve)); client.send('plain WS');
+  assert.equal((await message).toString(), 'plain WS');
+});
+
+test('origin changes strip unknown vendor credentials even without the interceptor registry', async t => {
+  let received;
+  const server = http.createServer(async (request, response) => { received = request.headers; for await (const _chunk of request) {} response.end('ok'); });
+  const port = await listen(server); t.after(() => server.close());
+  const { proxy } = await setup(t, { http: (request, exchange) => exchange.forward({ url: `http://127.0.0.1:${port}/`, method: request.method, headers: request.headers, body: request.body }) });
+  assert.equal((await through(proxy.proxyUrl, 'http://codlet-probe.invalid/', { body: 'hello', headers: { Authorization: 'Bearer fixture', 'X-Vendor-Secret': 'fixture', 'Content-Type': 'text/plain' } })).body, 'ok');
+  assert.equal(received.authorization, undefined); assert.equal(received['x-vendor-secret'], undefined); assert.equal(received['content-type'], 'text/plain');
+});
+
+test('registry permission denials retain HTTP 403 and WSS handshake 403', { timeout: 5000 }, async t => {
+  const root = new AbortController(); t.after(() => root.abort());
+  const registry = createTrafficInterceptors({ rootSignal: root.signal, authorize: async () => false });
+  registry.register({ pluginId: 'denied', generation: 1, signal: root.signal }, { id: 'test', origins: ['http://codlet-probe.invalid', 'https://codlet-probe.invalid'] }, { request: () => null, webSocket: () => null });
+  const { proxy } = await setup(t, registry.handlers);
+  assert.equal((await through(proxy.proxyUrl, 'http://codlet-probe.invalid/')).status, 403);
+  const socket = await tunnel(proxy.proxyUrl), agent = new https.Agent(); agent.createConnection = () => socket;
+  const client = new WebSocket('wss://codlet-probe.invalid/', { agent });
+  await assert.rejects(new Promise((resolve, reject) => { client.once('open', resolve); client.once('error', reject); }), /403/);
+  assert.equal(registry.status().active, 0);
+});
+
+test('an inherited proxy pointing at the ingress fails without recursively opening tunnels', async t => {
+  const root = new AbortController(); let proxyUrl;
+  const runtime = createTrafficRuntime({ rootSignal: root.signal, makeError: fail, coreRequest: async (method, input) => {
+    if (method === 'host.network.authorizeChannel') return {};
+    if (method === 'host.network.authorizeForward') return { url: input.url };
+    if (method === 'services.network.resolve') return { proxyUrl };
+    throw new Error('unexpected RPC');
+  } });
+  t.after(() => root.abort());
+  const proxy = await runtime.openProcessIngress({}, { http: (request, exchange) => exchange.forward({ url: request.url, networkProfile: 'mistaken-child-environment' }) }, { origins: ['http://codlet-probe.invalid'], certificateFor: () => ({ key, cert }) });
+  t.after(() => proxy.close());
+  proxyUrl = `http://${new URL(proxy.proxyUrl).host}`;
+  const response = await through(proxy.proxyUrl, 'http://codlet-probe.invalid/');
+  assert.equal(response.status, 502); assert.equal(response.body, 'proxy_loop_detected'); assert.equal(proxy.status().activeRequests, 0);
 });

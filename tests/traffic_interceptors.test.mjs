@@ -32,7 +32,7 @@ test('request order is deterministic, response order reverses, sensitive headers
 });
 test('first terminal decision wins and later plugins never observe a blocked request', async t => {
   const value = setup(t);
-  value.register('a', { request: () => ({ block: true }) });
+  value.register('a', { request: () => ({ block: true }), response: (_response, context) => { assert.equal(context.source, 'synthetic'); } });
   value.register('b', { request: () => { assert.fail('must not run'); } });
   assert.equal((await value.registry.handlers.http(value.request, value.exchange)).status, 403);
   assert.equal(value.forwarded.length, 0);

@@ -42,6 +42,8 @@ export interface HttpForwardRequest {
 }
 export interface HttpChannelExchange {
   readonly signal: AbortSignal;
+  /** Cancels this owned exchange and releases its upstream streams. */
+  cancel(): void;
   /** Number of explicit forward calls charged to this exchange. */
   readonly forwardAttempts: number;
   readonly maxForwardAttempts: number;
@@ -83,6 +85,8 @@ export interface WebSocketForwardRequest {
 }
 export interface WebSocketChannelExchange {
   readonly signal: AbortSignal;
+  /** Cancels the handshake or both sides of an established bridge. */
+  cancel(): void;
   /** Connects upstream before accepting the downstream handshake; dispatches at most once. */
   forward(request: WebSocketForwardRequest): Promise<Readonly<{ protocol: string | null; closed: Promise<{ code: string }> }>>;
 }

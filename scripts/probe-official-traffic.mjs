@@ -26,6 +26,7 @@ const results = [];
 for (const scenario of [
   { name: 'http-default', secure: false, feature: null },
   { name: 'http-enabled', secure: false, feature: true },
+  { name: 'ws-default', secure: false, feature: null, websocket: true },
   { name: 'https-untrusted', secure: true, feature: null, trusted: false },
   { name: 'https-trusted', secure: true, feature: null, trusted: true },
   { name: 'wss-trusted', secure: true, feature: null, trusted: true, websocket: true },
@@ -66,14 +67,15 @@ for (const scenario of [
   const secure = tls.createServer({ cert: await fs.readFile(cert), key: await fs.readFile(key), ALPNProtocols: ['http/1.1'] }, socket => parser.emit('connection', socket));
   secure.on('tlsClientError', () => observed.tlsErrors++);
   const proxy = http.createServer(respond);
+  proxy.on('upgrade', (request, socket, head) => parser.emit('upgrade', request, socket, head));
   proxy.on('connection', socket => { sockets.add(socket); socket.on('error', () => {}); socket.once('close', () => sockets.delete(socket)); });
   proxy.on('connect', (req, socket, head) => {
     observed.connect++;
-    if (req.url !== `${target}:443`) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    if (req.url !== `${target}:${scenario.secure ? 443 : 80}`) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
     observed.fixtureConnect++;
     socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
     if (head.length) socket.unshift(head);
-    secure.emit('connection', socket);
+    (scenario.secure ? secure : parser).emit('connection', socket);
     socket.resume();
   });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
@@ -148,6 +150,6 @@ for (const scenario of [
 }
 const report = { schema: 1, date: new Date().toISOString(), mode: useCore ? 'core-ingress' : 'independent-proxy', adapter: !!adapter, binarySha256: createHash('sha256').update(await fs.readFile(cli)).digest('hex'), coverage: 'official-binary-controlled-fixtures-no-real-oauth', results };
 await fs.writeFile(path.join(run, 'report.json'), JSON.stringify(report, null, 2) + '\n');
-assert(results.filter(result => ['http-default', 'https-trusted', 'wss-trusted', 'builtin-api-key-fixture', 'builtin-chatgpt-fixture'].includes(result.scenario)).every(result => result.exit === 0 && !result.timedOut && result.originalDestination), 'A positive probe failed; coverage is unknown');
-assert(results.filter(result => result.scenario === 'wss-trusted').every(result => result.websocket > 0 && result.http === 0), 'WSS fell back to HTTP; not a WSS pass');
+assert(results.filter(result => ['http-default', 'ws-default', 'https-trusted', 'wss-trusted', 'builtin-api-key-fixture', 'builtin-chatgpt-fixture'].includes(result.scenario)).every(result => result.exit === 0 && !result.timedOut && result.originalDestination), 'A positive probe failed; coverage is unknown');
+assert(results.filter(result => ['ws-default', 'wss-trusted'].includes(result.scenario)).every(result => result.websocket > 0 && result.http === 0), 'WS/WSS fell back to HTTP; not a WebSocket pass');
 assert(results.filter(result => result.scenario === 'https-untrusted').every(result => result.fixtureConnect > 0 && result.http === 0 && result.websocket === 0), 'Untrusted certificate unexpectedly reached application traffic');

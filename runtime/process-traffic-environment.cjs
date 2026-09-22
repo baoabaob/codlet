@@ -52,10 +52,10 @@ async function prepareProcessTrafficEnvironment({ platform = process.platform, e
     next[key] = bundlePath;
   }
   // Preserve NO_PROXY exactly; a destination bypassed by the child is not covered.
-  let closed = false;
+  let closed = false, closing;
   return Object.freeze({ environment: Object.freeze(next), upstreamEnvironment, bundlePath,
-    status: () => ({ prepared: !closed, coverage: 'process-configuration-only', inheritedBypass: Object.keys(environment).some(key => /^no_proxy$/i.test(key) && environment[key]) }),
-    async close() { if (closed) return; await removeOwned(); closed = true; },
+    status: () => ({ prepared: !closed && !closing, coverage: 'process-configuration-only', inheritedBypass: Object.keys(environment).some(key => /^no_proxy$/i.test(key) && environment[key]) }),
+    close() { return closing ??= removeOwned().then(() => { closed = true; }); },
   });
 }
 module.exports = { prepareProcessTrafficEnvironment };

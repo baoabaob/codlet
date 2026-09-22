@@ -13,3 +13,10 @@ for (const trusted of [false, true]) test(`HTTPS/WSS ${trusted ? 'validate and u
   const result = await execute(process.execPath, [fileURLToPath(new URL('./fixtures/traffic-tls/runner.cjs', import.meta.url)), trusted ? 'trusted' : 'untrusted'], { env, timeout: 12000, windowsHide: true });
   assert.deepEqual(JSON.parse(result.stdout), { https: true, wss: true, trusted });
 });
+
+test('Host HTTPS/WSS still validate certificates when the inherited Node TLS default was disabled', { timeout: 15000 }, async () => {
+  const env = { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: '0' };
+  delete env.NODE_EXTRA_CA_CERTS;
+  const result = await execute(process.execPath, [fileURLToPath(new URL('./fixtures/traffic-tls/runner.cjs', import.meta.url)), 'untrusted'], { env, timeout: 12000, windowsHide: true });
+  assert.deepEqual(JSON.parse(result.stdout), { https: true, wss: true, trusted: false });
+});

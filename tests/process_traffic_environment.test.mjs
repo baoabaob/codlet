@@ -21,7 +21,7 @@ test('Windows and macOS child trust merges preserve saved proxy, bypass and unre
     assert.equal(result.environment.HTTPS_PROXY, 'http://codlet:fixture@127.0.0.1:8123');
     assert.equal((await fs.readFile(result.bundlePath, 'utf8')).match(/BEGIN CERTIFICATE/gu).length, 1);
     assert.equal(result.status().inheritedBypass, true);
-    await result.close(); await assert.rejects(fs.stat(result.bundlePath), { code: 'ENOENT' });
+    await Promise.all([result.close(), result.close()]); await assert.rejects(fs.stat(result.bundlePath), { code: 'ENOENT' });
   }
 });
 test('invalid trust and unsupported platforms fail before a launch environment is returned', async t => {

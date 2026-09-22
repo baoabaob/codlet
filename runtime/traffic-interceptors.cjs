@@ -91,6 +91,7 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
     }
     const url = new URL(next.url);
     if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.hash) throw failure('invalid_decision');
+    if (url.protocol.startsWith('ws') !== new URL(request.url).protocol.startsWith('ws')) throw failure('invalid_decision');
     return next;
   }
   async function http(request, exchange) {
@@ -112,17 +113,22 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
         if (!decision.request) throw failure('invalid_decision');
         current = await updateRequest(hook, item, current, decision.request, privileged);
       }
+      const source = response === undefined ? 'upstream' : 'synthetic';
       response ??= await exchange.forward({ url: current.url, method: current.method, headers: current.headers, body: ['GET', 'HEAD'].includes(current.method) ? undefined : current.body, ...(networkProfile ? { networkProfile } : {}) });
       for (const { hook } of participated.reverse()) {
         if (!hook.callbacks.response || !hook.origins.has(origin(current.url))) continue;
         const privileged = await check(hook, item, current.url);
-        const update = await bounded(hook, item, () => hook.callbacks.response(view(response, privileged), Object.freeze({ signal: exchange.signal })));
+        const update = await bounded(hook, item, () => hook.callbacks.response(view(response, privileged), Object.freeze({ signal: exchange.signal, source, request: Object.freeze({ id: request.id, url: current.url, method: current.method }) })));
         if (update == null) continue;
         fields(update, ['status', 'headers', 'body']);
         response = { ...response, ...update, ...(update.headers === undefined ? {} : { headers: headers(update.headers, response.headers, privileged) }) };
       }
       return response;
-    } catch (error) { exchange.cancel(); throw error; }
+    } catch (error) {
+      // The ingress retires the exchange after rendering the failure status.
+      // Aborting here races that error and changes a denial into a generic 502.
+      throw error;
+    }
   }
   async function webSocket(request, exchange) {
     const item = begin(request, exchange), transforms = [];
@@ -136,7 +142,7 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
         fields(decision, ['request', 'block', 'clientToServer', 'serverToClient']);
         if (decision.block === true) throw failure('permission_denied');
         const observedUrl = current.url;
-        if (decision.request) current = await updateRequest(hook, item, current, decision.request, privileged);
+        if (decision.request) { fields(decision.request, ['url', 'headers']); current = await updateRequest(hook, item, current, decision.request, privileged); }
         for (const direction of ['clientToServer', 'serverToClient']) if (decision[direction] != null && typeof decision[direction] !== 'function') throw failure('invalid_decision');
         transforms.push({ hook, url: observedUrl, ...decision });
       }
@@ -153,7 +159,7 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
         return value;
       };
       return await exchange.forward({ url: current.url, headers: current.headers, protocols: origin(current.url) === origin(request.url) ? request.protocols : [], clientToServer: transform('clientToServer'), serverToClient: transform('serverToClient'), ...(networkProfile ? { networkProfile } : {}) });
-    } catch (error) { exchange.cancel(); throw error; }
+    } catch (error) { throw error; }
   }
   function close() {
     if (retired) return;

@@ -251,6 +251,9 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
   }
 
   async function networkOptions(input, target, signal, headers) {
+    const ownListener = url => ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+      && [...channels.keys()].some(channel => new URL(channel.endpoint).port === (url.port || (['https:', 'wss:'].includes(url.protocol) ? '443' : '80')));
+    if (ownListener(target)) throw fail('proxy_loop_detected', 'forward target is an owned traffic listener');
     let route;
     if (input.networkProfile != null) {
       if (typeof input.networkProfile !== 'string') throw fail('invalid_argument', 'networkProfile must be a Core profile reference');
@@ -263,11 +266,12 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
       for (let index = headers.length - 1; index >= 0; index--) if (headers[index][0].toLowerCase() === 'authorization') headers.splice(index, 1);
       headers.push(['Authorization', `Bearer ${result.secret}`]);
     }
-    if (!route) return { agent: false };
+    if (!route) return { agent: false, rejectUnauthorized: true };
     const ca = [...tlsTraffic.getCACertificates('default'), ...tlsTraffic.getCACertificates('system'), ...(route.caPem ? [route.caPem] : [])];
-    if (!route.proxyUrl) return { agent: false, ca };
+    if (!route.proxyUrl) return { agent: false, ca, rejectUnauthorized: true };
     const proxy = new URL(route.proxyUrl);
     if (!['http:', 'https:'].includes(proxy.protocol) || proxy.username || proxy.password) throw fail('invalid_proxy', 'Core returned an invalid HTTP proxy');
+    if (ownListener(proxy)) throw fail('proxy_loop_detected', 'upstream proxy is an owned traffic listener');
     let authorization;
     if (route.proxyCredentialRef) {
       const result = await coreRequest('services.credentials.resolve', { reference: route.proxyCredentialRef, origin: proxy.origin }, signal);
@@ -285,7 +289,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
         if (reason) { request.destroy(); tunnel?.destroy(); reject(reason); } else resolve(value);
       };
       const request = (proxy.protocol === 'https:' ? httpsTraffic : httpTraffic).request(proxy, {
-        method: 'CONNECT', path: authority, agent: false, ca,
+        method: 'CONNECT', path: authority, agent: false, ca, rejectUnauthorized: true,
         headers: { Host: authority, ...(authorization ? { 'Proxy-Authorization': authorization } : {}) },
       });
       const abort = () => done(signal.reason ?? fail('request_cancelled', 'proxy connection cancelled'));
@@ -309,7 +313,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
     const abortSocket = () => { socket.destroy(); agent.destroy(); };
     signal.addEventListener('abort', abortSocket, { once: true });
     socket.once('close', () => { signal.removeEventListener('abort', abortSocket); agent.destroy(); });
-    return { agent, ca };
+    return { agent, ca, rejectUnauthorized: true };
   }
 
   async function forwardHttp(input, signal, requestLimit, responseLimit, responseFinished) {
@@ -659,6 +663,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
     server.on('connect', async (incoming, socket, head) => {
       const reject = status => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); };
       if (!ingress) return reject('405 Method Not Allowed');
+      if (tunnels.has(socket)) return reject('405 Method Not Allowed');
       if (!authorizedProxy(incoming)) return reject('407 Proxy Authentication Required');
       if (closed || retired || rootSignal.aborted) return reject('503 Service Unavailable');
       // Also bounds idle/handshake sockets, before any HTTP request is parsed.
@@ -673,9 +678,21 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
       let setupTimer;
       try {
         const target = new URL(`https://${incoming.url}`);
-        if (incoming.url !== `${target.hostname}:${target.port || '443'}` || target.username || target.password || target.pathname !== '/' || target.search || target.hash || !ingress.origins.has(target.origin)) throw fail('target_denied', 'CONNECT destination denied');
+        const plain = new URL(`http://${incoming.url}`);
+        const secureAllowed = ingress.origins.has(target.origin), plainAllowed = ingress.origins.has(plain.origin);
+        if (incoming.url !== `${target.hostname}:${target.port || '443'}` || target.username || target.password || target.pathname !== '/' || target.search || target.hash || secureAllowed === plainAllowed) throw fail('target_denied', 'CONNECT destination denied or ambiguous');
         setupTimer = setTimeout(() => controller.abort(fail('handler_timeout', 'certificate preparation expired')), handlerTimeout);
         await coreRequest('host.network.authorizeChannel', {}, controller.signal);
+        if (controller.signal.aborted || closed) throw fail('host_stopping', 'process proxy retired');
+        if (plainAllowed) {
+          clearTimeout(setupTimer);
+          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          if (head.length) socket.unshift(head);
+          tunnels.set(socket, plain.origin);
+          server.emit('connection', socket);
+          await new Promise(resolve => socket.once('close', resolve));
+          return;
+        }
         const material = await raceAbort(() => ingress.certificateFor(target.origin, controller.signal), controller.signal, 'certificate preparation cancelled');
         const certificate = new TrafficCertificate(material.cert);
         const hostname = target.hostname.replace(/^\[|\]$/gu, '');
@@ -784,7 +801,11 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
     function close() { return closeWithReason(fail('channel_closed', 'traffic channel was closed')); }
     const channel = Object.freeze({
       id: trafficRandomUUID(), endpoint: `http://127.0.0.1:${address.port}${prefix}`,
-      ...(ingress ? { proxyUrl: `http://codlet:${token}@127.0.0.1:${address.port}` } : {}),
+      ...(ingress ? { proxyUrl: `http://codlet:${token}@127.0.0.1:${address.port}`,
+        // Trusted owner only: retire pre-existing connections on an explicitly
+        // coordinated activation. This is disruptive and never replays a request.
+        disconnect() { for (const controller of active) controller.abort(fail('request_cancelled', 'process ingress connections retired by owner')); for (const socket of sockets) socket.destroy(); },
+      } : {}),
       protocols: Object.freeze([...(httpHandler ? ['http'] : []), ...(webSocketHandler ? ['websocket'] : [])]),
       status: () => Object.freeze({ open: !closed, activeRequests: concurrent, forwardAttempts, transport: 'loopback', coverage: ingress ? 'process-proxy-unverified' : 'explicit-endpoint', protocols: channel.protocols }),
       close,

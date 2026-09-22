@@ -4,6 +4,8 @@ Core 的 `context.traffic` 为 Host 插件提供显式接入的 HTTP(S)、流式
 
 此能力只处理流经已接入通道的请求。`cdp.raw` 的页面网络、Desktop 内部 RPC、官方登录服务和未接入线程的网络是不同范围。Core 不安装根证书、不改变系统代理，也不把一次成功的模型接入宣称为全客户端网络接管。
 
+2026-09-22 的[透明进程入口原型及真实后端验证](TRANSPARENT_TRAFFIC_RESULTS_2026-09-22.md)是另一条接入路径，目前仅供受控启动管理方使用，尚未发布到插件 API。本页接口及示例继续保留，不能替代透明接管验收。
+
 ## Core Host API
 
 类型以 `types/host.d.ts` 为准。Host 需声明并获授 `host.process`、`host.network`；每个上游 origin 还需在注册时获授 `--network-origin`。`ws://` 对应同一 `http://` origin，`wss://` 对应 `https://` origin。
