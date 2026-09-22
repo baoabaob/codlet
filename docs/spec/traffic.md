@@ -2,6 +2,8 @@
 
 This document is the stable contract for transparent traffic and the Host traffic API. It describes ownership and wire limits; client specific endpoint names stay in the official Adapter.
 
+The current process ingress below is the implemented proxy transport, not proof of Desktop coverage. The Adapter's [request-chain verification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/request-chain.md) establishes separate Desktop JS and model-provider plaintext paths on the reviewed Windows build. Their production integration remains pending. Further work should admit those sources through generic lifecycle/traffic contracts, without making Core depend on official plugins or granting them exclusive capabilities; do not extend the unsupported Desktop proxy workaround.
+
 ## Ownership
 
 Core creates one private Native traffic entrance for a launch. The entrance has two authenticated loopback peers: a Core owned gateway and one Host peer per plugin generation. Short service RPCs register policy and return status. Request bodies, response bodies and WebSocket frames use the separate bounded data peer. Renderer calls cannot create either peer or select an owner generation.
