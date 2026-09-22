@@ -32,7 +32,7 @@ namespace Codlet.Setup {
                     string fingerprint;
                     using (var sha = SHA256.Create()) fingerprint = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(catalog))).Replace("-", "");
                     if (!File.Exists(marker) || File.ReadAllText(marker) != fingerprint) {
-                        const string notice = "此安装包可能包含新的官方插件。更新 Core 不会覆盖已有插件目录。\n\n选择“确定”检查所选插件；版本不符时会提示手动迁移。选择“取消”继续使用当前插件。";
+                        const string notice = "此安装包包含新的官方插件。更新会校验已有官方文件，保留禁用状态和授权范围；新增权限单独确认，修改过的作者文件不会覆盖。\n\n选择“确定”选择并更新插件；选择“取消”继续使用当前插件。";
                         if (quiet) Log("Official plugin bundle changed. Existing plugins retained; run Codlet-Launcher.exe --configure to check versions.");
                         else {
                             configure = MessageBox.Show(notice, "Codlet · 检查官方插件版本", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK;
@@ -49,7 +49,7 @@ namespace Codlet.Setup {
                     form.Shown += async delegate {
                         try { result = await Task.Run(() => Start(data, configure, message => form.BeginInvoke((Action)(() => form.Status.Text = message)))); }
                         catch (Exception error) { Log(error.ToString()); form.Error = "启动失败：" + error.Message; }
-                        if (result == 20 && form.Error == null) form.Error = "官方插件未更新：已有注册或文件与安装包不同。本预览版保留现有目录、授权和禁用状态，请通过插件管理检查来源与权限差额后手动迁移。重新打开 Codlet 可以继续使用当前配置。";
+                        if (result == 20 && form.Error == null) form.Error = "官方插件未更新：已有来源或文件无法证明是未修改的官方安装包。作者文件、授权和禁用状态已保留，请通过插件管理检查来源。重新打开 Codlet 可以继续使用当前配置。";
                         if (result != 0 && form.Error == null) form.Error = "操作未完成（代码 " + result + "）。已启动的进程不会被强制关闭。";
                         form.Finish();
                     };

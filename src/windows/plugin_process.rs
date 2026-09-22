@@ -354,7 +354,7 @@ fn canonical(path: &Path, directory: bool) -> Result<PathBuf, PluginProcessError
     Ok(std::fs::canonicalize(path)?)
 }
 
-fn stdio_pair(
+pub(crate) fn stdio_pair(
     child_reads: bool,
     stop: Arc<OwnedHandle>,
 ) -> Result<(Channel, OwnedHandle), PluginProcessError> {

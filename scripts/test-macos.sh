@@ -15,5 +15,8 @@ codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | pyth
 python3 scripts/install-js-runtime.py --platform darwin-arm64 --destination "$codlet_target_root/aarch64-apple-darwin/debug"
 python3 scripts/install-js-runtime.py --platform darwin-arm64 --destination "$codlet_target_root/aarch64-apple-darwin/debug/deps"
 cargo clippy --locked --target aarch64-apple-darwin --all-targets --all-features -- -D warnings
+# The private process owner is an actual Core CLI mode, not a libtest mode.
+# Build this checkout's sibling binary before unit tests select that fixed path.
+cargo build --locked --target aarch64-apple-darwin --all-features --bin codlet
 cargo test --locked --target aarch64-apple-darwin --all-targets --all-features -- --test-threads=2
 echo 'Native Core tests passed; follow the macOS guide for actual client and visual acceptance'

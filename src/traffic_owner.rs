@@ -32,6 +32,13 @@ pub(crate) struct TrafficOwner {
     _invocation: JsInvocation,
     directory: tempfile::TempDir,
     environment: Vec<(OsString, OsString)>,
+    original_environment: Vec<(OsString, OsString)>,
+    descriptor: Value,
+    adapter: std::cell::RefCell<Option<crate::client_launch::LaunchAdapter>>,
+    launch_arguments: Vec<OsString>,
+    launch_provider: Option<crate::client_launch::LaunchAuthorization>,
+    last_authorization_check: std::cell::Cell<Option<Instant>>,
+    stderr: Option<crate::client_stderr::ClientStderr>,
 }
 
 fn failure(code: &'static str) -> HostError {
@@ -87,6 +94,13 @@ impl TrafficOwner {
             _invocation: invocation,
             directory,
             environment: Vec::new(),
+            original_environment: original.clone(),
+            descriptor: Value::Null,
+            adapter: std::cell::RefCell::new(None),
+            launch_arguments: Vec::new(),
+            launch_provider: None,
+            last_authorization_check: std::cell::Cell::new(None),
+            stderr: None,
         };
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
@@ -97,6 +111,7 @@ impl TrafficOwner {
             if let Some(descriptor) = owner.traffic.launch_descriptor() {
                 owner.environment =
                     apply_descriptor(original, &descriptor, owner.directory.path())?;
+                owner.descriptor = descriptor;
                 return Ok(owner);
             }
             if Instant::now() >= deadline {
@@ -110,8 +125,67 @@ impl TrafficOwner {
         &self.environment
     }
 
+    pub(crate) fn prepare_adapter(
+        &mut self,
+        provider: &crate::plugins::LoadedPlugin,
+        registry: &Path,
+        runtime: &JsRuntime,
+    ) -> Result<(), HostError> {
+        let adapter = crate::client_launch::LaunchAdapter::start(
+            provider,
+            registry,
+            runtime,
+            self.directory.path(),
+            self.descriptor.clone(),
+            &self.original_environment,
+        )?;
+        self.launch_arguments = adapter.arguments().to_vec();
+        self.adapter = std::cell::RefCell::new(Some(adapter));
+        self.launch_provider = Some(crate::client_launch::LaunchAuthorization::new(
+            provider, registry,
+        )?);
+        self.original_environment.clear();
+        self.descriptor = Value::Null;
+        self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
+        Ok(())
+    }
+
+    pub(crate) fn arguments(&self) -> &[OsString] {
+        &self.launch_arguments
+    }
+    pub(crate) fn stderr(&self) -> &crate::client_stderr::ClientStderr {
+        self.stderr
+            .as_ref()
+            .expect("private stderr prepared before spawning")
+    }
+
+    pub(crate) fn attach_client(
+        &self,
+        pid: u32,
+        executable: &Path,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), HostError> {
+        self.check_alive()?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let endpoint = self.stderr().endpoint(deadline, &cancelled)?;
+        if cancelled() {
+            return Err(failure("traffic_launch_cancelled"));
+        }
+        let adapter = self
+            .adapter
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| failure("client_launch_adapter_required"))?;
+        adapter.attach(&endpoint, pid, executable, deadline)?;
+        drop(adapter);
+        self.check_alive()?;
+        self.traffic.set_attached(true);
+        Ok(())
+    }
+
     /// This records installation of the backend's launch configuration only.
     /// Electron net and NO_PROXY bypasses are not covered by environment routing.
+    #[cfg(test)]
     pub(crate) fn client_launched(&self) -> Result<(), HostError> {
         self.check_alive()?;
         self.traffic.set_attached(true);
@@ -119,6 +193,15 @@ impl TrafficOwner {
     }
 
     pub(crate) fn check_alive(&self) -> Result<(), HostError> {
+        if let Some(provider) = &self.launch_provider
+            && self
+                .last_authorization_check
+                .get()
+                .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
+        {
+            provider.check()?;
+            self.last_authorization_check.set(Some(Instant::now()));
+        }
         if self
             .process
             .wait(Duration::ZERO)

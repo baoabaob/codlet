@@ -3,6 +3,10 @@
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
+pub mod official_seed;
+pub fn recover_official_seed_transactions(path: &std::path::Path) -> Result<(), PluginCliError> {
+    official_seed::recover(path).map_err(Into::into)
+}
 
 use crate::local_plugins::{LocalPluginError, load_local_plugin};
 use crate::platform::control_pipe::{
@@ -461,6 +465,7 @@ fn offline_lease(scope: &RegistryScope) -> Result<OfflineLease, PluginCliError> 
     };
     check_offline_evidence(scope.id(), &discovery, legacy_status)
         .map_err(PluginCliError::OfflineUnavailable)?;
+    official_seed::recover(scope.path())?;
     Ok(OfflineLease {
         _launch: launch,
         _scope: lease,

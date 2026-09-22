@@ -157,15 +157,42 @@ pub fn launch_with_cdp_pipes_in_environment(
         environment,
         current_directory,
         false,
+        None,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn launch_with_owned_traffic_environment(
     executable: &Path,
     arguments: &[OsString],
     environment: &ChildEnvironment,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
-    launch_cdp(executable, arguments, false, Some(environment), None, true)
+    launch_cdp(
+        executable,
+        arguments,
+        false,
+        Some(environment),
+        None,
+        true,
+        None,
+    )
+}
+
+pub(crate) fn launch_with_owned_traffic_capture(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: &ChildEnvironment,
+    stderr: &crate::client_stderr::ClientStderr,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_cdp(
+        executable,
+        arguments,
+        false,
+        Some(environment),
+        None,
+        true,
+        Some(stderr),
+    )
 }
 
 fn launch_cdp(
@@ -175,6 +202,7 @@ fn launch_cdp(
     environment: Option<&ChildEnvironment>,
     current_directory: Option<&Path>,
     own_scope: bool,
+    stderr: Option<&crate::client_stderr::ClientStderr>,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
     if !executable.is_absolute() {
         return Err(ProcessError::ExecutableNotAbsolute(executable.to_owned()));
@@ -206,11 +234,22 @@ fn launch_cdp(
 
     let application_name = wide_nul(executable.as_os_str(), "executable path")?;
     let mut command_line = build_command_line(executable.as_os_str(), &child_arguments)?;
-    let attribute_list = AttributeList::with_handle_list(&child_handles)?;
+    let mut inherited_handles = child_handles.to_vec();
+    if let Some(stderr) = stderr {
+        inherited_handles.extend(stderr.handles());
+    }
+    let attribute_list = AttributeList::with_handle_list(&inherited_handles)?;
     // SAFETY: Win32 STARTUPINFOEXW is initialized by zeroing before setting cb and attributes.
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attribute_list.pointer;
+    if let Some(stderr) = stderr {
+        let [stderr, null] = stderr.handles();
+        startup.StartupInfo.dwFlags |= windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdError = stderr;
+        startup.StartupInfo.hStdInput = null;
+        startup.StartupInfo.hStdOutput = null;
+    }
     // SAFETY: PROCESS_INFORMATION is an output-only POD structure for CreateProcessW.
     let mut process_information: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
     let mut creation_flags = EXTENDED_STARTUPINFO_PRESENT;

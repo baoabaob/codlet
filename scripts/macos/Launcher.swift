@@ -47,7 +47,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             if let data = try? Data(contentsOf: resources.appendingPathComponent("optional-plugins/catalog.json")) {
                 let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 if (try? String(contentsOf: marker, encoding: .utf8)) != fingerprint {
-                    let answer = alert("检查官方插件版本", "此应用可能包含新的官方插件。更新应用不会覆盖已有插件目录。检查所选插件时，版本不符会提示手动迁移。", buttons: ["检查所选插件", "继续使用当前插件"])
+                    let answer = alert("更新官方插件", "此应用包含新的官方插件。更新会校验已有官方文件并保留禁用状态和授权范围；新增权限将单独确认，修改过的作者文件不会覆盖。", buttons: ["选择并更新", "继续使用当前插件"])
                     try? fingerprint.write(to: marker, atomically: true, encoding: .utf8)
                     if answer == .alertFirstButtonReturn { configure(); return }
                 }
@@ -91,7 +91,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             label.font = .systemFont(ofSize: size); label.frame = NSRect(x: 28, y: y, width: 504, height: height); view.addSubview(label); return label
         }
         _ = label("按你的方式设置 Codlet", 373, 30, 24)
-        _ = label(firstSetup ? "选择需要的官方插件。全部取消可仅使用 Core 和 CLI。\n安装后也可以通过菜单栏重新选择。" : "勾选本次希望安装或检查版本的插件。已有目录不会覆盖。\n版本不符时提示手动迁移；取消勾选不会删除插件。", 317, 48, 14)
+        _ = label(firstSetup ? "选择需要的官方插件。全部取消可仅使用 Core 和 CLI。\n安装后也可以通过菜单栏重新选择。" : "勾选本次希望安装或更新的插件，已有授权与禁用状态保留。\n仅替换经校验的官方文件；取消勾选不会删除插件。", 317, 48, 14)
         func checkbox(_ text: String, _ y: CGFloat, _ checked: Bool) -> NSButton {
             let box = NSButton(checkboxWithTitle: text, target: self, action: #selector(syncDependencies))
             box.frame = NSRect(x: 28, y: y, width: 504, height: 30); box.state = checked ? .on : .off; view.addSubview(box); return box
@@ -130,7 +130,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             let pin = try JSONDecoder().decode(RuntimePin.self, from: Data(contentsOf: resources.appendingPathComponent("runtime/node-runtime.json")))
             let version = pin.platforms["darwin-arm64"]?.version ?? pin.version
             let process = Process(); process.executableURL = resources.appendingPathComponent("runtime/node-v\(version)-darwin-arm64/bin/node")
-            var arguments = [resources.appendingPathComponent("initialize.mjs").path]
+            var arguments = [resources.appendingPathComponent("initialize.mjs").path, "--interactive-permissions"]
             for (box, id) in [(ui!, "codex.ui.adapter"), (desktop!, "codex.desktop.adapter"), (gui!, "codlet-gui")] { if box.state == .on { arguments.append(id) } }
             process.arguments = arguments; process.environment = environment()
             let log = try logHandle("macos-setup.log"); process.standardOutput = log; process.standardError = log
@@ -145,7 +145,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
     private func setupFinished(_ result: Int32) {
         setup = nil; startButton.isEnabled = true
         if result != 0 {
-            let message = result == 20 ? "官方插件未更新：已有注册或文件与安装包不同。本预览版保留现有目录、授权和禁用状态。请通过插件管理检查来源与权限差额后手动迁移；重新打开应用可以继续使用当前配置。" : "详细原因保存在 macos-setup.log。已存在的插件设置会保留，可查看日志后重试。"
+            let message = result == 20 ? "官方插件未更新：已有来源或文件无法证明是未修改的官方安装包。作者文件、授权和禁用状态已保留。请通过插件管理检查来源；重新打开应用可继续使用当前配置。" : "详细原因保存在 macos-setup.log。未确认的新增权限不会授予；更新事务会在重试或下次启动时恢复。"
             if alert("初始化未完成", message, buttons: ["打开日志", "返回"]) == .alertFirstButtonReturn { openLogs() }
             return
         }

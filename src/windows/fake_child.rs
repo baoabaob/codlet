@@ -58,6 +58,12 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
             scenario_renderer_document_recovery(&mut input, &mut output, mode.ends_with("timeout"))
         }
         "lab-environment" => scenario_lab_environment(&mut input, &mut output, false),
+        "lab-inspector" => {
+            eprintln!(
+                "Debugger listening on ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc"
+            );
+            scenario_lab_environment(&mut input, &mut output, false)
+        }
         "lab-environment-updater" => scenario_lab_environment(&mut input, &mut output, true),
         "renderer-ready-handshake" => scenario_renderer_ready_handshake(&mut input, &mut output),
         "renderer-ready-rejection" => scenario_renderer_ready_rejection(&mut input, &mut output),

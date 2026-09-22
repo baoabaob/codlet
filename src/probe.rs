@@ -715,16 +715,17 @@ fn start_connected_codex_with_traffic(
                     traffic.environment().iter().cloned(),
                 )
                 .map_err(ProcessError::from)?;
-                crate::windows::process::launch_with_owned_traffic_environment(
+                crate::windows::process::launch_with_owned_traffic_capture(
                     &executable,
-                    &[],
+                    traffic.arguments(),
                     &environment,
+                    traffic.stderr(),
                 )?
             } else {
                 launch_with_cdp_pipes(&executable, &[], false)?
             };
             if let Some(traffic) = traffic {
-                traffic.client_launched()?;
+                traffic.attach_client(launched.0.process_id(), &executable, || false)?;
             }
             Ok((launched, server))
         },
@@ -762,6 +763,8 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
             other => ProbeError::from(other),
         })?;
     crate::runtime_log::initialize(scope.path());
+    crate::plugin_cli::official_seed::recover(scope.path())
+        .map_err(crate::plugin_cli::PluginCliError::from)?;
     let mut registry = PluginRegistry::load(scope.path())?;
     crate::managed_storage::prepare_installations(&mut registry)
         .map_err(crate::plugin_cli::PluginCliError::from)?;
@@ -776,12 +779,13 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         .map_err(|e| HostError::new(e.code, e.message))?;
     let traffic = crate::traffic_owner::required_for_plugins(&host_plugins)
         .then(|| {
-            crate::traffic_owner::TrafficOwner::start(
-                &plugin_services,
-                js_runtime
-                    .as_ref()
-                    .expect("traffic requires a Host runtime"),
-            )
+            let provider = crate::client_launch::select(&host_plugins)?;
+            let runtime = js_runtime
+                .as_ref()
+                .expect("traffic requires a Host runtime");
+            let mut owner = crate::traffic_owner::TrafficOwner::start(&plugin_services, runtime)?;
+            owner.prepare_adapter(provider, renderer.registry_path(), runtime)?;
+            Ok::<_, HostError>(owner)
         })
         .transpose()?;
     let status = StatusPublisher::new();

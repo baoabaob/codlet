@@ -24,6 +24,7 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     let scope = RegistryScope::for_path(&default_registry_path()?)?;
     let lease = scope.acquire(Duration::from_millis(1500))?;
     crate::runtime_log::initialize(scope.path());
+    crate::plugin_cli::official_seed::recover(scope.path())?;
     // Validate plugins and prepare the fixed JS runtime before launching a client.
     let prepared = if safe_mode {
         None
@@ -38,6 +39,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             .collect::<Vec<_>>();
         HostRuntime::validate_plugins(&host_plugins)?;
         let traffic_required = crate::traffic_owner::required_for_plugins(&host_plugins);
+        let launch_provider = traffic_required
+            .then(|| crate::client_launch::select(&host_plugins).cloned())
+            .transpose()?;
         let runtime = (!host_plugins.is_empty())
             .then(JsRuntime::discover)
             .transpose()?;
@@ -46,7 +50,7 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         renderer.enable_runtime_skill();
         let mut control = HostControl::new(scope.path().to_owned());
         control.seed_watch_sources(&renderer, &host_plugins);
-        Some((renderer, control, runtime, services, traffic_required))
+        Some((renderer, control, runtime, services, launch_provider))
     };
     let launch_lease = LaunchMutexGuard::acquire_current_user(Duration::from_secs(5))?;
     application.revalidate()?;
@@ -62,13 +66,15 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     // destroying its private proxy and trust directory. Safe mode has no owner.
     let traffic = prepared
         .as_ref()
-        .filter(|(_, _, _, _, required)| *required)
-        .map(|(_, _, runtime, services, _)| {
-            crate::traffic_owner::TrafficOwner::start_cancellable(
-                services,
-                runtime.as_ref().expect("traffic requires a Host runtime"),
-                || shutdown_signal.requested(),
-            )
+        .filter(|(_, _, _, _, provider)| provider.is_some())
+        .map(|(_, _, runtime, services, provider)| {
+            let runtime = runtime.as_ref().expect("traffic requires a Host runtime");
+            let mut owner =
+                crate::traffic_owner::TrafficOwner::start_cancellable(services, runtime, || {
+                    shutdown_signal.requested()
+                })?;
+            owner.prepare_adapter(provider.as_ref().unwrap(), scope.path(), runtime)?;
+            Ok::<_, crate::plugin_host::HostError>(owner)
         })
         .transpose()?;
     let status = StatusPublisher::new();
@@ -91,6 +97,10 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(traffic) = &traffic {
+        command.args(traffic.arguments());
+        traffic.stderr().configure(&mut command)?;
+    }
     for (key, _) in std::env::vars_os() {
         let key_text = key.to_string_lossy().to_ascii_uppercase();
         if key_text.starts_with("DYLD_")
@@ -108,7 +118,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         return Err("Launched application identity does not match the selected bundle".into());
     }
     if let Some(traffic) = &traffic {
-        traffic.client_launched()?;
+        traffic.attach_client(child.id(), &application.executable, || {
+            shutdown_signal.requested()
+        })?;
     }
     status.set_codex(CodexStatus {
         pid: child.id(),

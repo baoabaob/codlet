@@ -268,6 +268,34 @@ impl JsRuntime {
             _runtime: self.clone(),
         })
     }
+
+    pub(crate) fn prepare_client_launch(
+        &self,
+        host: &LoadedHost,
+        directory: &Path,
+    ) -> Result<JsInvocation, HostError> {
+        let mut invocation = self.prepare(host)?;
+        let mut bootstrap = tempfile::Builder::new()
+            .prefix("launch-adapter-")
+            .suffix(".cjs")
+            .tempfile_in(directory)
+            .map_err(io_error)?;
+        bootstrap
+            .write_all(include_bytes!("../runtime/client-launch.cjs"))
+            .map_err(io_error)?;
+        bootstrap.flush().map_err(io_error)?;
+        invocation.arguments = vec![
+            "--no-addons".into(),
+            "--no-experimental-strip-types".into(),
+            "--no-global-search-paths".into(),
+            "--no-experimental-require-module".into(),
+            bootstrap.path().to_string_lossy().into_owned(),
+            host.entry.to_string_lossy().into_owned(),
+            invocation._source.path().to_string_lossy().into_owned(),
+        ];
+        invocation._bootstrap = bootstrap;
+        Ok(invocation)
+    }
 }
 
 fn io_error(error: std::io::Error) -> HostError {

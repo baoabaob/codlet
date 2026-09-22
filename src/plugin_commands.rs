@@ -36,6 +36,48 @@ pub enum CommandError {
 
 pub fn run(arguments: &[OsString]) -> Result<(), CommandError> {
     match arguments {
+        [command, source, action, catalog, id, options @ ..]
+            if command == OsStr::new("plugin") && source == OsStr::new("seed") =>
+        {
+            let action = action.to_str().ok_or(ProbeError::Usage)?;
+            let id = id.to_str().ok_or(ProbeError::Usage)?;
+            let mut preview = None;
+            let mut grants = Vec::new();
+            let mut json = false;
+            let mut args = options.iter();
+            while let Some(option) = args.next() {
+                match option.to_str() {
+                    Some("--json") if !json => json = true,
+                    Some("--preview") if preview.is_none() => {
+                        preview = Some(
+                            args.next()
+                                .and_then(|a| a.to_str())
+                                .ok_or(ProbeError::Usage)?,
+                        )
+                    }
+                    Some("--grant") => {
+                        let value = args
+                            .next()
+                            .and_then(|a| a.to_str())
+                            .ok_or(ProbeError::Usage)?;
+                        grants.push(
+                            serde_json::from_value(Value::String(value.into()))
+                                .map_err(|_| ProbeError::UnknownPermission(value.into()))?,
+                        );
+                    }
+                    _ => return Err(ProbeError::Usage),
+                }
+            }
+            if !json
+                || !matches!(action, "preview" | "install")
+                || (action == "preview" && (preview.is_some() || !grants.is_empty()))
+                || (action == "install" && preview.is_none())
+            {
+                return Err(ProbeError::Usage);
+            }
+            crate::plugin_cli::official_seed::command(Path::new(catalog), id, preview, grants)?;
+            Ok(())
+        }
         [command, action] if command == OsStr::new("plugin") && action == OsStr::new("list") => {
             let registry = PluginRegistry::load_default()?;
             print_plugin_registry(&registry)

@@ -5,6 +5,10 @@ pub mod capabilities;
 pub mod catalog;
 pub mod cdp;
 #[cfg(any(windows, target_os = "macos"))]
+mod client_launch;
+#[cfg(any(windows, target_os = "macos"))]
+mod client_stderr;
+#[cfg(any(windows, target_os = "macos"))]
 mod control_validation;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod core_resources;

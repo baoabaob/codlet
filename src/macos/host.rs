@@ -37,7 +37,7 @@ impl Channel {
         socket.set_nonblocking(true)?;
         Ok(Self { socket, stop })
     }
-    fn pair(stop: &StopSignal) -> io::Result<(Self, OwnedFd)> {
+    pub(crate) fn pair(stop: &StopSignal) -> io::Result<(Self, OwnedFd)> {
         let (socket, child) = UnixStream::pair()?;
         socket.set_nonblocking(true)?;
         // Nonblocking is a property of this endpoint, not the peer inherited by
@@ -160,7 +160,7 @@ impl OwnedPluginProcess {
             return Err(io::Error::last_os_error());
         }
         let descriptor = unsafe { OwnedFd::from_raw_fd(fd) };
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = Command::new(process_owner_executable()?);
         command
             .arg("__codlet_process_owner")
             // Terminal signals may end Core, but its lease observer must remain
@@ -277,6 +277,33 @@ impl OwnedPluginProcess {
             Some(Err(e)) => Err(io::Error::other(e.clone())),
             None => Ok(false),
         }
+    }
+}
+
+fn process_owner_executable() -> io::Result<std::path::PathBuf> {
+    let executable = std::env::current_exe()?;
+    #[cfg(not(test))]
+    {
+        Ok(executable)
+    }
+    #[cfg(test)]
+    {
+        // libtest does not dispatch Core's private owner subcommand. Only the
+        // sibling binary built by Cargo is accepted; never an env/PATH override.
+        let deps = executable
+            .parent()
+            .filter(|path| path.file_name().is_some_and(|name| name == "deps"))
+            .ok_or_else(|| io::Error::other("Host unit test is outside Cargo's deps directory"))?;
+        let owner = deps
+            .parent()
+            .ok_or_else(|| io::Error::other("Cargo distribution directory is missing"))?
+            .join("codlet");
+        if !owner.is_file() {
+            return Err(io::Error::other(
+                "Build the sibling codlet binary before Host unit tests",
+            ));
+        }
+        owner.canonicalize()
     }
 }
 impl Owner {

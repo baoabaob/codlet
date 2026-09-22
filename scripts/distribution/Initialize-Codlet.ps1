@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([switch]$Configure,[switch]$NoLaunch,[string[]]$Plugins,[string]$DataDirectory)
+param([switch]$Configure,[switch]$NoLaunch,[string[]]$Plugins,[string]$DataDirectory,[string[]]$ApproveNewPermissions)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $utf8=[Text.UTF8Encoding]::new($false)
@@ -52,7 +52,7 @@ function Select-Plugins($Available){
   $form=[Windows.Forms.Form]::new();$form.Text='Codlet · 选择官方插件';$form.ClientSize=[Drawing.Size]::new(570,320);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.MaximizeBox=$false;$form.MinimizeBox=$false
   $form.Font=[Drawing.Font]::new('Microsoft YaHei UI',10)
   if([IO.File]::Exists((Join-Path $root 'codlet.ico'))){$form.Icon=[Drawing.Icon]::new((Join-Path $root 'codlet.ico'))}
-  $label=[Windows.Forms.Label]::new();$label.Text="选择希望安装或检查版本的官方插件。GUI 包含 UI Adapter。`n已有插件不会被覆盖；版本不符时会提示手动迁移。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
+  $label=[Windows.Forms.Label]::new();$label.Text="选择希望安装或更新的官方插件。GUI 包含 UI Adapter。`n仅更新经校验的官方文件；修改过的作者文件会保留。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
   $boxes=@{};$y=91
   foreach($package in $Available){
     $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codex.ui.adapter'{'UI Adapter — 接入侧栏与插件页面'};'codex.desktop.adapter'{'Desktop Adapter — 提供客户端与对话接口'};'codlet-gui'{'Codlet GUI — 图形化管理插件（包含 UI Adapter）'}}
@@ -117,40 +117,20 @@ try{
         $from=Join-Path $source $file.path;Within $from $source
         if((Hash $from) -ne $file.sha256){throw "Plugin payload changed: $id/$($file.path)"}
       }
-      if($existing.Count -gt 0){
-        $same=$false
-        try{
-          if($existing[0].source -eq 'local' -and (Full $existing[0].path) -eq (Full $destination)){
-            $same=$true
-            foreach($file in $package.files){if((Hash (Join-Path $destination $file.path)) -ne $file.sha256){$same=$false;break}}
-          }
-        }catch{$same=$false}
-        if($same){Write-Host "Official plugin payload already matches; existing settings retained: $id";continue}
-        throw "官方插件未更新：$id。当前注册或文件与安装包不同；本预览版不覆盖已有插件目录。请保留作者文件，并通过插件管理检查来源、权限差额后手动迁移。现有启用状态和授权未改变。"
-      }
-      if(-not [IO.Directory]::Exists($destination)){
-        $parent=[IO.Path]::GetDirectoryName($destination);[IO.Directory]::CreateDirectory($parent)|Out-Null
-        $stage=Join-Path $parent ('.setup-'+[Guid]::NewGuid().ToString('N'));Within $stage $parent
-        [IO.Directory]::CreateDirectory($stage)|Out-Null
-        foreach($file in $package.files){$to=Join-Path $stage $file.path;Within $to $stage;[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($to))|Out-Null;[IO.File]::Copy((Join-Path $source $file.path),$to,$false);if((Hash $to) -ne $file.sha256){throw 'Staged plugin failed verification'}}
-        [IO.Directory]::Move($stage,$destination)
-      }else{
-        foreach($file in $package.files){if((Hash (Join-Path $destination $file.path)) -ne $file.sha256){throw "Existing plugin directory differs; inspect it before installing: $destination"}}
-      }
-      $argsList=@('plugin','add',$destination,'--trust','--enable','--json')
-      $configPath=Join-Path $dataRoot 'config.json'
-      if([IO.File]::Exists($configPath)){
-        $config=[IO.File]::ReadAllText($configPath)|ConvertFrom-Json
-        $preference=$null
-        $preferences=$config.PSObject.Properties['plugins']
-        if($preferences){
-          $preference=$preferences.Value.PSObject.Properties[$id]
-          if(-not $preference -and $id -eq 'codlet-gui'){$preference=$preferences.Value.PSObject.Properties['codlet']}
+      $preview=Invoke-Cli -Arguments @('plugin','seed','preview',$catalogPath,$id,'--json')
+      $newPermissions=@($preview.addedPermissions)
+      if($preview.existing -and $newPermissions.Count -gt 0){
+        $unapproved=@($newPermissions|Where-Object{$_ -notin $ApproveNewPermissions})
+        if($unapproved.Count -gt 0){
+          if($PSBoundParameters.ContainsKey('Plugins')){throw "更新 $id 需要明确批准新增权限：$($unapproved -join ', ')。请使用图形设置，或通过 -ApproveNewPermissions 指定这些权限。"}
+          Add-Type -AssemblyName System.Windows.Forms
+          $answer=[Windows.Forms.MessageBox]::Show("更新 $id 将增加以下权限：`n`n$($unapproved -join "`n")`n`n现有禁用状态和授权范围保持不变。是否批准此次新增权限？",'Codlet · 新增插件权限',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Question)
+          if($answer -ne [Windows.Forms.DialogResult]::Yes){throw "未批准 $id 的新增权限；该插件未更新。"}
         }
-        if($preference -and -not $preference.Value.enabled){$argsList=@($argsList|Where-Object{$_ -ne '--enable'})}
       }
-      foreach($permission in $package.permissions){$argsList+=@('--grant',[string]$permission)}
-      $result=Invoke-Cli $argsList
+      $argsList=@('plugin','seed','install',$catalogPath,$id,'--preview',[string]$preview.preview,'--json')
+      foreach($permission in $newPermissions){$argsList+=@('--grant',[string]$permission)}
+      $result=Invoke-Cli -Arguments $argsList
       $state.decided[$id]=@{selected=$true;result='installed';version=$package.version;source='official-installer';path=(Full $destination);files=@($package.files);catalogSha256=(Hash $catalogPath)}
       Save-State
     }
@@ -160,4 +140,4 @@ try{
     Write-Host ('Codlet plugin setup ready: '+$dataRoot)
   }finally{if($setupLock){$setupLock.Dispose()}}
   if(-not $NoLaunch){& $exe launch;exit $LASTEXITCODE}
-}catch{Write-Error $_ -ErrorAction Continue;if($_.Exception.Message.StartsWith('官方插件未更新：')){exit 20};exit 1}
+}catch{Write-Error $_ -ErrorAction Continue;if($_.Exception.Message.Contains('官方插件未更新：')){exit 20};exit 1}

@@ -12,6 +12,101 @@ use tempfile::{TempDir, tempdir};
 
 const PLUGIN_ID: &str = "dev.test.local";
 
+#[test]
+fn official_seed_cli_binds_consent_to_preview_and_rejects_stale_or_modified_sources() {
+    use sha2::{Digest, Sha256};
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("seed data");
+    let bundle = directory.path().join("bundle");
+    let id = "codex.ui.adapter";
+    let source = bundle.join("packages").join(id);
+    fs::create_dir_all(&source).unwrap();
+    let catalog = bundle.join("catalog.json");
+    let make_package = |version: &str, permissions: &[&str]| {
+        fs::write(source.join("codlet.json"),serde_json::to_vec(&json!({"schema":1,"id":id,"version":version,"renderer":{"entry":"renderer.js","world":"isolated"},"permissions":permissions})).unwrap()).unwrap();
+        fs::write(
+            source.join("renderer.js"),
+            "module.exports={activate(){throw Error('never execute')}};",
+        )
+        .unwrap();
+        let files:Vec<_>=["codlet.json","renderer.js"].iter().map(|name|{let bytes=fs::read(source.join(name)).unwrap();json!({"path":name,"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(bytes))})}).collect();
+        fs::write(&catalog,serde_json::to_vec(&json!({"schema":1,"kind":"codlet-official-plugin-bundle","packages":[{"id":id,"version":version,"permissions":permissions,"files":files}]})).unwrap()).unwrap();
+    };
+    let run = |action: &str, flags: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_codlet"))
+            .env("CODLET_HOME", &home)
+            .args(["plugin", "seed", action])
+            .arg(&catalog)
+            .arg(id)
+            .args(flags)
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    make_package("1", &["ui.dom"]);
+    let preview: Value = serde_json::from_slice(&successful(run("preview", &[])).stdout).unwrap();
+    assert_eq!(preview["addedPermissions"], json!(["ui.dom"]));
+    assert!(
+        !run(
+            "install",
+            &["--preview", preview["preview"].as_str().unwrap()]
+        )
+        .status
+        .success()
+    );
+    successful(run(
+        "install",
+        &[
+            "--preview",
+            preview["preview"].as_str().unwrap(),
+            "--grant",
+            "ui.dom",
+        ],
+    ));
+    make_package("2", &["ui.dom", "core.events"]);
+    let preview: Value = serde_json::from_slice(&successful(run("preview", &[])).stdout).unwrap();
+    assert_eq!(preview["addedPermissions"], json!(["core.events"]));
+    let mut registry = PluginRegistry::load(home.join("config.json")).unwrap();
+    registry.set_enabled(id, false).unwrap();
+    registry.save().unwrap();
+    assert!(
+        !run(
+            "install",
+            &[
+                "--preview",
+                preview["preview"].as_str().unwrap(),
+                "--grant",
+                "core.events"
+            ]
+        )
+        .status
+        .success()
+    );
+    let preview: Value = serde_json::from_slice(&successful(run("preview", &[])).stdout).unwrap();
+    successful(run(
+        "install",
+        &[
+            "--preview",
+            preview["preview"].as_str().unwrap(),
+            "--grant",
+            "core.events",
+        ],
+    ));
+    let registry = PluginRegistry::load(home.join("config.json")).unwrap();
+    assert!(!registry.is_enabled(id));
+    assert_eq!(
+        registry.local_plugins()[id].path,
+        home.join("packages").join(id).canonicalize().unwrap()
+    );
+    assert!(registry.managed_plugins().is_empty());
+    fs::write(home.join("packages").join(id).join("author.txt"), "keep").unwrap();
+    assert!(!run("preview", &[]).status.success());
+    assert_eq!(
+        fs::read_to_string(home.join("packages").join(id).join("author.txt")).unwrap(),
+        "keep"
+    );
+}
+
 struct Fixture {
     directory: TempDir,
     plugin: PathBuf,

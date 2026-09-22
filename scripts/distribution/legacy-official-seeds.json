@@ -1,0 +1,238 @@
+[
+  {
+    "sourceRevision": "acba932b918839780bbf51a4c5601f7a6074727f",
+    "distributionVersion": "0.2.0-preview.2",
+    "distributionManifestSha256": "52c16617a0481093bddaeacee08525a37155b99639d2c1fa7cc0650ef7d77142",
+    "catalogSha256": "b499a08e33656b3766f21b320a7902ae95785d3374a29ed1cf584b2dd60ddb08",
+    "id": "codex.ui.adapter",
+    "version": "0.1.0",
+    "permissions": [
+      "ui.dom",
+      "ui.mainWorld"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 661,
+        "sha256": "01833a341b35a4cc6e823810c52c4c012cac03c1ce7f0cafe9712771236429f6"
+      },
+      {
+        "path": "dist/renderer.js",
+        "bytes": 143631,
+        "sha256": "58120ace50098584ade95a8e5cfde2097a1b837e751dcb5102edea50014a97bf"
+      },
+      {
+        "path": "README.md",
+        "bytes": 319,
+        "sha256": "27be08126dbd349e31b4a6b0454465c3ea2a78659642df6029eeac954e14872a"
+      }
+    ]
+  },
+  {
+    "sourceRevision": "acba932b918839780bbf51a4c5601f7a6074727f",
+    "distributionVersion": "0.2.0-preview.2",
+    "distributionManifestSha256": "52c16617a0481093bddaeacee08525a37155b99639d2c1fa7cc0650ef7d77142",
+    "catalogSha256": "b499a08e33656b3766f21b320a7902ae95785d3374a29ed1cf584b2dd60ddb08",
+    "id": "codex.desktop.adapter",
+    "version": "0.1.0",
+    "permissions": [
+      "ui.mainWorld"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 1004,
+        "sha256": "801e3e36fb75b0b947c915f6af01922564989fda456e2427d2fa1fe36ad53d4b"
+      },
+      {
+        "path": "README.md",
+        "bytes": 316,
+        "sha256": "f914adcaddd5fe1c3afd552bbef680720278fe8661413a14acb502f283d54831"
+      },
+      {
+        "path": "renderer.js",
+        "bytes": 78702,
+        "sha256": "63bf78106caa3c19d312cec02c71a84fa79dd5126024e9d8dc33b826359b1adc"
+      }
+    ]
+  },
+  {
+    "sourceRevision": "35e8d86f75054d21b01cca17811be7e636626c9e",
+    "distributionVersion": "0.2.0-preview.1",
+    "distributionManifestSha256": "10e1eb3dff05ba70953e0d1af82c5283e62ba9efefa411ad964a7f24c32342bf",
+    "catalogSha256": "6a6678289a11f8008ff21fa080a4e899e55f70e14791d169d9df8b35e02996f6",
+    "id": "codlet-gui",
+    "version": "0.1.0",
+    "permissions": [
+      "ui.dom",
+      "runtime.manage"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 883,
+        "sha256": "c26502ebffa434ac339deade3bc35b587c265cd9d4ea2a1df211e81daad2f8c7"
+      },
+      {
+        "path": "dist/renderer.js",
+        "bytes": 195778,
+        "sha256": "16e0c1b4e3fb92931f17e5f7a99e5e917a2f03ba2d661a779f2376a3b813f714"
+      },
+      {
+        "path": "README.md",
+        "bytes": 322,
+        "sha256": "27f672bc622a24ef3b369bd5cf2b3ba3c85034b3ed5c8c9c2a51cceae7e149fd"
+      }
+    ]
+  },
+  {
+    "sourceRevision": "acba932b918839780bbf51a4c5601f7a6074727f",
+    "distributionVersion": "0.2.0-preview.2",
+    "distributionManifestSha256": "52c16617a0481093bddaeacee08525a37155b99639d2c1fa7cc0650ef7d77142",
+    "catalogSha256": "b499a08e33656b3766f21b320a7902ae95785d3374a29ed1cf584b2dd60ddb08",
+    "id": "codlet-gui",
+    "version": "0.1.0",
+    "permissions": [
+      "ui.dom",
+      "runtime.manage"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 883,
+        "sha256": "c26502ebffa434ac339deade3bc35b587c265cd9d4ea2a1df211e81daad2f8c7"
+      },
+      {
+        "path": "dist/renderer.js",
+        "bytes": 195996,
+        "sha256": "546553bccdcbe3dcd74e3fd7a9a4a87b5c60d7415ae36b94dfcf0e1c507b90ab"
+      },
+      {
+        "path": "README.md",
+        "bytes": 322,
+        "sha256": "27f672bc622a24ef3b369bd5cf2b3ba3c85034b3ed5c8c9c2a51cceae7e149fd"
+      }
+    ]
+  },
+  {
+    "sourceRevision": "c4b1c221b365ce88b0dc260a394f3ea74f0f4494",
+    "distributionVersion": "0.2.0-preview.4",
+    "distributionManifestSha256": "81026c2e0d7d5d0926a53a2d2a680f1d40497007bfeab74ea7b4f2298e7ce7dc",
+    "catalogSha256": "015ba8db1791d849aae55e329d4b5f6ed462931e5598820e76defa2ffa9c54d1",
+    "id": "codex.ui.adapter",
+    "version": "0.1.1",
+    "permissions": [
+      "ui.dom",
+      "ui.mainWorld"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 661,
+        "sha256": "6a9f431ec9e892c4576161fa01af2551cb611eb89b30f441fcdfd4797016a14a"
+      },
+      {
+        "path": "dist/renderer.js",
+        "bytes": 25656,
+        "sha256": "afbbf9fe854571ec9422a1f3536a1d5e8a51d6661af1f07eaad4f94f5dfad9c6"
+      },
+      {
+        "path": "README.md",
+        "bytes": 1481,
+        "sha256": "9d341432515a948d830df5058985cad9103a30cf668aca67b1cab34f5cabc245"
+      }
+    ]
+  },
+  {
+    "sourceRevision": "c4b1c221b365ce88b0dc260a394f3ea74f0f4494",
+    "distributionVersion": "0.2.0-preview.4",
+    "distributionManifestSha256": "81026c2e0d7d5d0926a53a2d2a680f1d40497007bfeab74ea7b4f2298e7ce7dc",
+    "catalogSha256": "015ba8db1791d849aae55e329d4b5f6ed462931e5598820e76defa2ffa9c54d1",
+    "id": "codex.desktop.adapter",
+    "version": "0.1.0",
+    "permissions": [
+      "ui.mainWorld"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 1004,
+        "sha256": "801e3e36fb75b0b947c915f6af01922564989fda456e2427d2fa1fe36ad53d4b"
+      },
+      {
+        "path": "README.md",
+        "bytes": 1495,
+        "sha256": "92f985231c40afe9ccadb7ab44fc3506966d2b55d473a3b69df2646084ed6471"
+      },
+      {
+        "path": "renderer.js",
+        "bytes": 78702,
+        "sha256": "63bf78106caa3c19d312cec02c71a84fa79dd5126024e9d8dc33b826359b1adc"
+      }
+    ]
+  },
+  {
+    "sourceRevision": "c4b1c221b365ce88b0dc260a394f3ea74f0f4494",
+    "distributionVersion": "0.2.0-preview.4",
+    "distributionManifestSha256": "81026c2e0d7d5d0926a53a2d2a680f1d40497007bfeab74ea7b4f2298e7ce7dc",
+    "catalogSha256": "015ba8db1791d849aae55e329d4b5f6ed462931e5598820e76defa2ffa9c54d1",
+    "id": "codlet-gui",
+    "version": "0.1.1",
+    "permissions": [
+      "ui.dom",
+      "runtime.manage"
+    ],
+    "files": [
+      {
+        "path": "codlet-package.json",
+        "bytes": 374,
+        "sha256": "4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"
+      },
+      {
+        "path": "codlet.json",
+        "bytes": 883,
+        "sha256": "2afe81eec0bf853ae7573fc280366c78725103cf87964c735556e8b644b62809"
+      },
+      {
+        "path": "dist/renderer.js",
+        "bytes": 200821,
+        "sha256": "5b560795905098f8c5700dfd229242dede98806c30b482eedb0ff0fb29d54229"
+      },
+      {
+        "path": "README.md",
+        "bytes": 1511,
+        "sha256": "d81707b63ff8d14eb95f1536aef6bf90c6b3a5176fb8c711d3ada386d9d96da5"
+      }
+    ]
+  }
+]
