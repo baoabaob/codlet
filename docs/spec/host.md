@@ -41,10 +41,13 @@ Core can forcibly end its process scope (Windows Job / macOS process group) and 
 | `system.info` | OS, architecture and logical CPU count only |
 | `services` | Shared storage, credentials, files, tasks, events, streaming processes, network and desktop APIs; see [services](services.md) |
 | `traffic.openChannel/openHttpChannel` | Private explicit HTTP/SSE or WebSocket channels; see [traffic](traffic.md) |
+| `traffic.registerInterceptor/inspect` | Generation-bound interception and current attachment status; exact-origin grants required |
 
 The legacy fetch does not follow redirects, use inherited system/environment proxies or accept hop-by-hop/proxy overrides. The newer Core network profile API is separate. Legacy reads, HTTP bodies and combined process output default to 64 KiB and allow at most 256 KiB; the full encoded broker request/response is also bounded. `readDir` defaults to 128 entries, maximum 256, with a truncation flag. Legacy `process.run` has no interactive stdin or arbitrary cwd/env override; use `services.processes` for approved streaming process control.
 
 Raw flattened sessions obtained through Core attach are owned by this Host generation. Cancellation after attach dispatch does not forget a late session: Core retains the receipt and detaches it. If the remote attach never returns or a known session cannot be reclaimed within the absolute retirement budget, Core reports incomplete cleanup and may close the shared CDP connection to end its remote session namespace. That failure affects the current Core session, not merely one plugin.
+
+A Host that provides `codlet.client.launch@1` at Runtime scope may additionally export `prepareClientLaunch` and `attachClientLaunch`. Only a selected, enabled provider with `host.process` and `cdp.raw` receives the private launch context. These optional phases use the same immutable Host source snapshot in a short-lived executor before ordinary activation; they have no general Core RPC endpoint. See [traffic](traffic.md) for deadlines, allowed arguments, exact-child verification, and revocation behavior. Ordinary Host plugins need only their existing activation exports.
 
 ## Resource bounds and observations
 

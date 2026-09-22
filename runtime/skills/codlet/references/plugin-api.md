@@ -49,6 +49,8 @@ module.exports = {
 
 官方适配层的确切能力、方法和限制以随运行附带的 `types` 与清单为准，先检查实际可用版本。依赖官方适配层仍需在技能工作流中让用户选择；没有对应能力时才讨论直接操作底层接口的代价。
 
-涉及实际网络请求/响应或 API 接入时，先查 `types/host.d.ts` 的 `context.traffic.openChannel` 和 `types/codex-desktop.d.ts` 的 `codex.backend.transport@1`。Core 提供 HTTP(S)/SSE 与 WS/WSS 的受管通道，Adapter 使用统一 `{endpoint, protocols}` 描述接到客户端支持的新建/恢复线程入口。详细流、权限、生效时机与示例在 `docs/spec/traffic.md`（由 `runtime.json.docsDirectory` 定位）；按需读取，不把全部网络细节加进普通插件流程。
+涉及实际网络请求/响应或 API 接入时，先读 `docs/spec/traffic.md` 和 `types/host.d.ts`。`context.traffic.registerInterceptor` 为已授权 Host 提供 HTTP(S)/SSE 与 WS/WSS 拦截；`traffic.intercept` 只作用于明确授权的来源，敏感头与改换来源另需 `traffic.sensitiveHeaders`、`traffic.redirect`。优先使用已安装且兼容的官方 Desktop Adapter 抽象，注册始终保留当前消费者身份。首次启用接管插件需要重启客户端，运行时探针会报告实际入口是否已附接；不能把 worker 正在监听说成全客户端均已验证。
+
+`context.traffic.openChannel` 仍提供显式通道；`codex.backend.transport@1` 可用 `{endpoint, protocols}` 接到支持的新建/恢复线程入口。编写启动适配层时才查看 `codlet.client.launch@1` 的额外 Host 阶段及 `cdp.raw` 权限；普通拦截插件不必自己实现启动注入。配置隔离、一次性流、取消和协议覆盖按当前规范处理，不为捕获流量关闭 TLS 校验或修改系统代理/根证书。
 
 提交文本拦截、页面 CDP 和实际模型网络通道是不同范围。选服务、重试和恢复是插件策略，不是 Core 默认行为；已加载任务和现有连接是否能切换，以 Adapter 的实际兼容探针为准。

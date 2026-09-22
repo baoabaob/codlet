@@ -187,9 +187,30 @@ export interface HostContext {
     inspect(): Promise<Readonly<{ available: boolean; listening: boolean; attached: boolean; registered: number; active: number; pending: number }>>;
   };
 }
+/** Private to one authorized codlet.client.launch@1 provider; never log this DTO. */
+export interface ClientLaunchContext {
+  readonly signal: AbortSignal;
+  readonly originalEnvironment: Readonly<Record<string, string>>;
+  readonly traffic: Readonly<{
+    proxyUrl: string;
+    bundlePath: string;
+    environmentPatch: Readonly<{ set: Readonly<Record<string, string>>; removeCaseInsensitive: readonly string[] }>;
+    trust: Readonly<{ outputs: readonly string[]; launchCaPem: string; inheritedInputsMerged: true; systemStoreModified: false }>;
+    bypass: 'preserve-original-no-proxy';
+  }>;
+}
+export interface ClientAttachContext extends ClientLaunchContext {
+  readonly inspectorUrl: string;
+  readonly expectedPid: number;
+  readonly executable: string;
+}
 export interface HostPlugin {
   activate(context: HostContext): void | Promise<void>;
   deactivate(cleanup: HostCleanupContext): void | Promise<void>;
+  /** Optional startup ABI. Requires host.process + cdp.raw and the exact launch capability. */
+  prepareClientLaunch?(context: ClientLaunchContext): { arguments: readonly string[] } | Promise<{ arguments: readonly string[] }>;
+  /** Bounded, exact-child handshake. Success does not claim verified coverage of every request path. */
+  attachClientLaunch?(context: ClientAttachContext): Promise<{ installed: true; exactChildVerified: true; configuredSessions: number }>;
 }
 
 /** A separate, generation-scoped phase; no subscriptions or renewed deadline.
