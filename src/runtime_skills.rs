@@ -218,40 +218,27 @@ impl RuntimeSkills {
                 include_str!("../types/runtime-manage.d.ts"),
             ),
             (
-                "docs/LOCAL_PLUGINS.md",
-                include_str!("../docs/LOCAL_PLUGINS.md"),
+                "docs/spec/plugin-format.md",
+                include_str!("../docs/spec/plugin-format.md"),
+            ),
+            ("docs/spec/ui.md", include_str!("../docs/spec/ui.md")),
+            (
+                "docs/spec/management.md",
+                include_str!("../docs/spec/management.md"),
+            ),
+            ("docs/spec/host.md", include_str!("../docs/spec/host.md")),
+            ("docs/spec/rpc.md", include_str!("../docs/spec/rpc.md")),
+            (
+                "docs/spec/permissions.md",
+                include_str!("../docs/spec/permissions.md"),
             ),
             (
-                "docs/UI_COMPONENTS_2026-09-13.md",
-                include_str!("../docs/UI_COMPONENTS_2026-09-13.md"),
+                "docs/spec/traffic.md",
+                include_str!("../docs/spec/traffic.md"),
             ),
             (
-                "docs/OFFICIAL_UI_STYLE_2026-09-13.md",
-                include_str!("../docs/OFFICIAL_UI_STYLE_2026-09-13.md"),
-            ),
-            (
-                "docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md",
-                include_str!("../docs/DESKTOP_ADAPTER_DEVELOPMENT_2026-09-10.md"),
-            ),
-            (
-                "docs/CORE_RPC_2026-09-10.md",
-                include_str!("../docs/CORE_RPC_2026-09-10.md"),
-            ),
-            (
-                "docs/OS_BROKER_2026-09-10.md",
-                include_str!("../docs/OS_BROKER_2026-09-10.md"),
-            ),
-            (
-                "docs/TRAFFIC_CHANNELS.md",
-                include_str!("../docs/TRAFFIC_CHANNELS.md"),
-            ),
-            (
-                "docs/CORE_SERVICES.md",
-                include_str!("../docs/CORE_SERVICES.md"),
-            ),
-            (
-                "docs/JS_PLUGIN_RUNTIME_2026-09-09.md",
-                include_str!("../docs/JS_PLUGIN_RUNTIME_2026-09-09.md"),
+                "docs/spec/services.md",
+                include_str!("../docs/spec/services.md"),
             ),
         ];
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -558,8 +545,33 @@ mod tests {
             "references/management.md",
             "references/overview.md",
             "references/creation.md",
+            "docs/spec/plugin-format.md",
+            "docs/spec/host.md",
+            "docs/spec/rpc.md",
+            "docs/spec/permissions.md",
+            "docs/spec/services.md",
+            "docs/spec/ui.md",
+            "docs/spec/management.md",
+            "docs/spec/traffic.md",
         ] {
-            assert!(root.join("codlet").join(resource).is_file(), "{resource}");
+            let path = root.join("codlet").join(resource);
+            assert!(path.is_file(), "{resource}");
+            if resource.ends_with(".md") {
+                let body = std::fs::read_to_string(&path).unwrap();
+                for link in body.split("](").skip(1) {
+                    let target = link.split(')').next().unwrap().split('#').next().unwrap();
+                    if target.is_empty()
+                        || target.starts_with("https://")
+                        || target.starts_with("http://")
+                    {
+                        continue;
+                    }
+                    assert!(
+                        path.parent().unwrap().join(target).is_file(),
+                        "runtime skill link does not resolve: {resource} -> {target}"
+                    );
+                }
+            }
         }
         assert!(
             data["cliCommands"]

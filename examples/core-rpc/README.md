@@ -27,4 +27,4 @@ Host 的 async 调用自动继承父预算。renderer provider 显式使用 `inv
 
 对应源码验收为 `src/cdp/client/core_rpc_vm_tests.rs`。其隔离 peer 执行这些实际源码和生产
 bootstrap，验证两窗口启动、全部调用方向、原预算/取消、导航、关闭与 reload/补偿；不声称
-模拟真实 DOM。API、资源上限和授权细节见 [Core RPC 合同](../../docs/CORE_RPC_2026-09-10.md)。
+模拟真实 DOM。API、资源上限和授权细节见 [Core RPC 合同](../../docs/spec/rpc.md)。

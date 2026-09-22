@@ -302,7 +302,9 @@ export interface RuntimeManageMethods {
   githubPrepare: { params: { repositoryUrl: string; releaseId: number; assetId: number } & ({ operation?: 'install'; pluginId?: string } | { operation: 'update'; pluginId: string }); result: GitHubJob };
   githubJob: { params: { jobId: string }; result: GitHubJob };
   cancelGitHubJob: { params: { jobId: string }; result: GitHubJob };
+  /** Compatibility records only; successful normal installs retain one current package. */
   managedHistory: { params: { pluginId: string; cursor?: number }; result: ManagedHistory };
+  /** Requires an actually retained record and an existing, revalidated package directory. */
   previewRollback: { params: { pluginId: string; versionKey: string }; result: ManagedPreview };
 }
 
@@ -346,8 +348,10 @@ export interface ManagedVersion {
   source: GitHubSource; manifest: LocalImportPreview['manifest'];
   metadata?: PackageMetadata | null;
 }
-/** A bounded page of at most eight retained versions. History entries omit metadata;
- * previewRollback rereads the selected package and returns its complete metadata. */
+/** At most eight records actually retained by a compatible registry; not a promise
+ * of a multi-version installation archive. Normal successful installs keep only
+ * the current package. History entries omit metadata; previewRollback requires
+ * the selected source directory to exist and pass current validation. */
 export interface ManagedHistory { pluginId: string; currentVersion: string | null; history: ManagedVersion[]; nextCursor: number | null; }
 export interface ManagedPreview {
   schema: 1; kind: 'codlet.managed-preview'; operation: 'install' | 'update' | 'rollback';
@@ -355,7 +359,7 @@ export interface ManagedPreview {
   manifest: LocalImportPreview['manifest']; source: GitHubSource; metadata: PackageMetadata | null;
   existingRegistration: LocalPluginRegistration | null; existingEnabled: boolean;
   currentVersion: ManagedVersion | null;
-  /** Full history remains available in CLI previews and older public replies. */
+  /** Records present in CLI previews or older replies; may contain only the current version. */
   history?: ManagedVersion[];
   /** Public RPC previews omit full history to stay within the response budget. */
   historyCount?: number;

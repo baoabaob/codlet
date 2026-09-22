@@ -32,5 +32,5 @@ ownership through enable, reload, failure restoration and disable.
 Both entries have one receipt and generation. Saving either main JS file triggers
 one whole-package watch selection; failed candidates restore both previous source
 snapshots at a fresh generation when current trust permits. The manifest remains
-schema 1. See [the combined package contract](../../docs/COMBINED_PACKAGES_2026-09-10.md)
+schema 1. See [the combined package contract](../../docs/spec/plugin-format.md)
 for declaration ownership, dependent closures, source guards and diagnostics.

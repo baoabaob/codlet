@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$MsiPath,[Parameter(Mandatory=$true)][string]$ArtifactsDirectory)
+param([Parameter(Mandatory=$true)][string]$MsiPath,[Parameter(Mandatory=$true)][string]$ArtifactsDirectory,[switch]$StructureOnly)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $msi=[IO.Path]::GetFullPath($MsiPath)
@@ -10,6 +10,34 @@ $install=Join-Path $artifacts 'installed'
 $data=Join-Path $artifacts 'user-data'
 foreach($path in @($install,$data)){if(-not ([IO.Path]::GetFullPath($path)).StartsWith($artifacts+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Test target escaped owned root'}}
 $installer=New-Object -ComObject WindowsInstaller.Installer
+if($StructureOnly){
+  $database=$installer.OpenDatabase($msi,0)
+  function Rows([string]$Sql,[int]$Columns){
+    $query=$database.OpenView($Sql);$null=$query.Execute()
+    try{while($record=$query.Fetch()){$values=@();for($column=1;$column -le $Columns;$column++){$values+=$record.StringData($column)};,$values}}finally{$null=$query.Close()}
+  }
+  try{
+    $featureRows=@(Rows 'SELECT `Feature`,`Level` FROM `Feature`' 2)
+    $featureNames=@($featureRows|ForEach-Object{$_[0]})
+    foreach($name in @('Core','UiAdapter','DesktopAdapter','GUI','StartMenu','DesktopShortcut')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
+    $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
+    if($shortcuts.Count -ne 3 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe'}).Count){throw 'Shortcuts must target the native launcher'}
+    $sequences=@(Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)
+    $preflight=[int](@($sequences|Where-Object{$_[0] -eq 'CheckRunningApplications'})[0][1])
+    $validate=[int](@($sequences|Where-Object{$_[0] -eq 'InstallValidate'})[0][1])
+    if($preflight -le 0 -or $preflight -ge $validate){throw 'Process check must precede file validation and the transaction'}
+    $action=@(Rows "SELECT ``Type``,``Target`` FROM ``CustomAction`` WHERE ``Action``='CheckRunningApplications'" 2)[0]
+    if([int]$action[0] -ne 2 -or $action[1] -notlike '*[[]UILevel[]]*' -or $action[1] -notlike '*Codlet-Installer-*'){throw 'MSI preflight must pass UI level and a diagnostic log path'}
+    $restart=@(Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MSIRESTARTMANAGERCONTROL'" 1)[0][0]
+    if($restart -ne 'DisableShutdown'){throw 'MSI may automatically close user applications'}
+    $launch=@(Rows "SELECT ``Condition`` FROM ``ControlEvent`` WHERE ``Event``='DoAction' AND ``Argument``='LaunchCodletAfterInstall'" 1)[0][0]
+    if($launch -notlike '*WIXUI_EXITDIALOGOPTIONALCHECKBOX*'){throw 'Post-install launch is not opt-in'}
+    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
+    $report|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $artifacts 'report.json') -Encoding UTF8
+    $report|ConvertTo-Json -Compress
+  }finally{[Runtime.InteropServices.Marshal]::ReleaseComObject($database)|Out-Null;[Runtime.InteropServices.Marshal]::ReleaseComObject($installer)|Out-Null}
+  return
+}
 $related=@($installer.RelatedProducts('{941C0F18-D41F-46E9-A3D1-A9562D75BF76}'))
 if($related.Count -gt 0){throw 'A Codlet Preview MSI is already installed; refuse to replace it during testing'}
 $database=$installer.OpenDatabase($msi,0)

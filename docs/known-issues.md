@@ -1,0 +1,80 @@
+# Known issues and current limits
+
+This page describes limitations of the current implementation. They are not
+implemented features or reasons to weaken authorization boundaries.
+
+## Renderer environments after repeated reloads
+
+**Accepted Preview limitation.** A new isolated renderer generation creates a new
+Chromium world. Core can revoke its capabilities, clear managed resources and
+release SDK references, but the current CDP interface does not individually
+destroy the old parent-page world. Repeated updates/reloads can therefore retain
+memory until the owning client exits. Reusing the same world would weaken the
+old/new-instance boundary and is not used as a workaround.
+
+The separate UI SDK `selectionchange` listener leak has been fixed. Windows x64
+measurements on Core `3acf85c`, Codex `26.915.4065.0` found:
+
+| Workload | Observation |
+| --- | --- |
+| 30 minutes idle | No clear continuing leak; collected JS heap 262.52 → 252.23 MiB |
+| 20 actual GUI reloads, opening the UI each time | +13.52 MiB collected JS heap; no per-cycle DOM/listener accumulation |
+| 100 empty browser worlds | About 16 MiB retained in controlled measurements |
+| Core while GUI is open | About 5 MiB private resident memory; distinct from the desktop's renderer memory |
+
+These are bounded Windows observations, not multi-day or macOS acceptance.
+Normal UI interaction is not a plugin-generation replacement. Occasional reloads
+are expected to have modest impact; sustained development hot reloads can
+accumulate enough memory to matter. Close the owned client completely and restart
+it when needed. Ordinary `Page.reload` did not reclaim the worlds in the prior
+stress experiment and is not a guaranteed remedy.
+
+Disposable Worker/UI-container experiments are deferred research. The runtime
+and full plugin capabilities are retained; no hidden automatic restart or
+restricted replacement UI is introduced. Detailed historical measurements are
+available in Git at `3acf85c` and `fdd31cd`, rather than copied as permanent reports.
+
+## Client and platform compatibility
+
+Adapters depend on reviewed official-client builds. A compatible OS and a passing
+Rust test do not prove that a new private frontend export or backend build is
+supported. Capability probes fail explicitly on unknown/mismatched builds.
+See [compatibility](compatibility.md) for the current platform and evidence rules.
+
+Windows x64 has local desktop evidence. Windows ARM64 and macOS desktop behavior
+still need acceptance on their corresponding devices. CI/native packaging tests
+and a generated Mac disk image are not a substitute for a Mac user's full desktop
+session. Linux is not in the current implementation scope.
+
+## Processes, updates and external effects
+
+- A Core crash does not universally guarantee that the official desktop exits.
+- An official launch can reuse an already extended main instance; Codlet does not
+  claim to control every launch through the official shortcut.
+- macOS process groups cannot guarantee cleanup of an arbitrary descendant that
+  deliberately detaches itself. They are not an OS security sandbox.
+- Native requests, disk writes and remote network effects cannot generally be
+  undone by cancelling a local callback. Treat uncertain outcomes as uncertain.
+- Arbitrary main-world/DOM patches may require complete window/client recreation
+  for strong cleanup, even when managed permissions have already been revoked.
+
+## Features awaiting product acceptance
+
+Transparent traffic interception is being integrated separately. Explicit
+`openChannel`/thread transport tests do not mean every official-client request
+is transparently intercepted. The [traffic contract](spec/traffic.md) records the
+actual attached paths and protocols; desktop attachments and macOS acceptance
+must be reported separately.
+
+The official GUI repository contains a marketplace interaction prototype and
+specification, but that is not yet a production-backed searchable marketplace.
+Existing local/GitHub import and update paths remain available. The accepted
+marketplace requirements are retained in its
+[specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/marketplace.md).
+
+## Preview signing
+
+Local Preview installers are not presented as signed, notarized stable releases.
+Windows may show an unsigned-publisher prompt. The Mac app may use an ad-hoc
+integrity signature; that is not a Developer ID signature or Apple notarization.
+See the artifact's distribution manifest and [installation guide](distribution.md).

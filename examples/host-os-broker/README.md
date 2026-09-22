@@ -46,5 +46,5 @@ reactivated.
 The example writes its report with ordinary Node filesystem access. Node runs as
 the current user and is not an OS sandbox. Broker grants constrain these managed
 endpoints; they do not reverse external effects already performed by code. See
-[the OS broker contract](../../docs/OS_BROKER_2026-09-10.md) for exact limits and
+[the OS broker contract](../../docs/spec/permissions.md) for exact limits and
 the isolated acceptance cases.

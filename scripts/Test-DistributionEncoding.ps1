@@ -14,8 +14,10 @@ using System.Text;
 public static class Utf8CliFixture {
   public static int Main(string[] args) {
     bool failed = args.Length == 1 && args[0] == "fail";
-    if (!failed && !(args.Length == 3 && args[0] == "plugin" && args[1] == "list" && args[2] == "--json")) return 8;
+    bool echo = args.Length > 0 && args[0] == "echo";
+    if (!echo && !failed && !(args.Length == 3 && args[0] == "plugin" && args[1] == "list" && args[2] == "--json")) return 8;
     string json = "{\"plugins\":[{\"id\":\"codlet-gui\",\"manifest\":{\"name\":\"\u63d2\u4ef6\u3002\"}}],\"path\":\"C:\\\\\u6d4b\u8bd5\\\\plug in\\\\\"}";
+    if (echo) json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { arguments = args });
     byte[] bytes = new UTF8Encoding(false).GetBytes(json);
     var output = Console.OpenStandardOutput();
     output.Write(bytes, 0, bytes.Length);
@@ -27,7 +29,7 @@ public static class Utf8CliFixture {
 [IO.File]::WriteAllText($fixtureSource,$fixtureCode,[Text.UTF8Encoding]::new($false))
 $fixtureFramework=if([Environment]::Is64BitOperatingSystem){'Framework64'}else{'Framework'}
 $fixtureCompiler=Join-Path ([Environment]::GetFolderPath('Windows')) "Microsoft.NET\$fixtureFramework\v4.0.30319\csc.exe"
-& $fixtureCompiler /nologo /target:exe ("/out:"+$fixtureExecutable) $fixtureSource
+& $fixtureCompiler /nologo /target:exe /reference:System.Web.Extensions.dll ("/out:"+$fixtureExecutable) $fixtureSource
 if($LASTEXITCODE -ne 0){throw 'UTF-8 CLI fixture compilation failed'}
 $fixtureInitializer=Join-Path $fixtureApp 'Initialize-Codlet.ps1'
 [IO.File]::WriteAllText($fixtureInitializer,[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'distribution/Initialize-Codlet.ps1')),[Text.UTF8Encoding]::new($true))
@@ -51,6 +53,9 @@ try{
     try{$null=Invoke-Cli -Arguments @('fail')}catch{$fixtureFailed=$true}
     if(-not $fixtureFailed){throw 'A failed CLI was accepted'}
     if([Console]::OutputEncoding.CodePage -ne $fixtureCodePage){throw 'Failed CLI read changed the caller encoding'}
+    $fixtureArguments=@('echo',('C:\path with spaces\'+[char]0x6d4b+'\'),'quote"inside','backslash\"quote')
+    $fixtureEcho=Invoke-Cli -Arguments $fixtureArguments
+    if(@(Compare-Object $fixtureArguments $fixtureEcho.arguments -SyncWindow 0).Count -ne 0){throw 'CLI argument quoting changed spaces, Unicode, quotes or trailing slashes'}
     $fixtureChecks+=@{codePage=$fixtureCodePage;unicodePreserved=$true;callerEncodingRestored=$true;failureRejected=$true}
   }
 }finally{

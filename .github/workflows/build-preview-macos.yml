@@ -1,0 +1,112 @@
+name: Build macOS preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_commit:
+        description: Full 40-character Core commit SHA to build
+        required: true
+        type: string
+      plugins_commit:
+        description: Full 40-character commit SHA from baoabaob/codlet-plugins
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apple-silicon:
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+          ref: ${{ inputs.core_commit }}
+          persist-credentials: false
+      - name: Require an immutable plugin revision and native Apple Silicon
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          [[ "$CORE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PLUGINS_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CORE_COMMIT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read the checked-in macOS Node pin
+        id: runtime
+        run: |
+          python3 - <<'PY'
+          import json, os
+          with open('runtime/node-runtime.json', encoding='utf-8') as source:
+              pin = json.load(source)
+          version = pin['platforms']['darwin-arm64'].get('version', pin['version'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('node_version=' + version + '\n')
+          PY
+      - name: Check out independently maintained official plugins
+        uses: actions/checkout@v4
+        with:
+          repository: baoabaob/codlet-plugins
+          ref: ${{ inputs.plugins_commit }}
+          path: plugins
+          ssh-key: ${{ secrets.CODLET_PLUGINS_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: |
+            core/frontend/package-lock.json
+            plugins/frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core -> target
+      - name: Build reviewed frontend and plugin payloads
+        run: |
+          npm ci --prefix frontend
+          node frontend/build.mjs
+          npm ci --prefix ../plugins/frontend
+          node ../plugins/frontend/build.mjs
+          node ../plugins/scripts/package.mjs
+      - name: Run native Core and packaging contract tests
+        run: |
+          xcrun swiftc -swift-version 5 -typecheck -target arm64-apple-macos13.0 -framework AppKit scripts/macos/Launcher.swift
+          node --test tests/macos-installer.test.mjs
+          PYTHONDONTWRITEBYTECODE=1 python3 tests/test_macos_distribution.py
+          sh scripts/test-macos.sh
+      - name: Build release Core and pinned runtime
+        run: sh scripts/build-macos.sh release
+      - name: Assemble app and preview disk image
+        env:
+          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
+          NODE_VERSION: ${{ steps.runtime.outputs.node_version }}
+        run: |
+          test "$(git -C ../plugins rev-parse HEAD)" = "$PLUGINS_COMMIT"
+          codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+          python3 scripts/build-preview-macos.py \
+            --executable "$codlet_target_root/aarch64-apple-darwin/release/codlet" \
+            --node-directory "$codlet_target_root/aarch64-apple-darwin/release/runtime/node-v$NODE_VERSION-darwin-arm64" \
+            --plugin-distribution ../plugins/dist \
+            --source-commit "$(git rev-parse HEAD)" \
+            --plugins-commit "$PLUGINS_COMMIT" \
+            --output .codlet-artifacts/installer-refresh-2026-09-22/macos/package
+      - name: Upload native preview and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: codlet-macos-arm64-preview
+          path: core/.codlet-artifacts/installer-refresh-2026-09-22/macos/package/
+          if-no-files-found: error
+          retention-days: 14

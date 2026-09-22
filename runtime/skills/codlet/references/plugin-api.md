@@ -1,6 +1,6 @@
 # 必要开发契约
 
-读取上一层 `runtime.json`，里面提供本次运行的 CLI 包装脚本、默认目录，以及随 Core 分发的类型文件和详细文档路径。PowerShell 使用 `& '<cliScript>' -Command @('plugin','list','--json')`，或在新 PowerShell 进程中调用；包装脚本固定本次运行的注册表范围，不要改它来选择另一个注册表。
+读取上一层 `runtime.json`，里面提供本次运行的 CLI 包装脚本、默认目录，以及随 Core 分发的类型文件和详细文档路径。当前规范位于 `docs/spec/`：包格式看 `plugin-format.md`，完整权限/范围看 `permissions.md`，生命周期管理看 `management.md`，Host 与调用链分别看 `host.md`、`rpc.md`。PowerShell 使用 `& '<cliScript>' -Command @('plugin','list','--json')`，或在新 PowerShell 进程中调用；包装脚本固定本次运行的注册表范围，不要改它来选择另一个注册表。
 
 最小的界面插件：
 
@@ -24,7 +24,7 @@ module.exports = {
 
 后台入口为 `host: {"entry":"host.cjs"}`，需要 `host.process`。Host 是以当前用户身份运行的 Node 代码，Core 的授权检查并不是操作系统沙箱。无需后台功能时不要添加 Host 入口。
 
-保存设置、凭据、读写文件、文件选择框、订阅事件、后台任务、流式子程序、代理配置、通知、剪贴板和指定全局快捷键，先查 `types/core-services.d.ts` 和 `docs/CORE_SERVICES.md`。它们通过 `context.services` 直接调用 Core，纯 Renderer 插件也可使用；声明 Runtime `codlet.core.services@1` 依赖和对应的独立权限，不借用 `runtime.manage`，也不为存储配置添加空 Host。文件写入需要单独的 `host.fs.write` 与 writeRoots，不能把只读授权当作写权限。凭据使用系统存储和 origin 绑定引用，默认不把密钥放进普通配置。对用户按实际用途解释本次新增权限，保留既有确认流程。
+保存设置、凭据、读写文件、文件选择框、订阅事件、后台任务、流式子程序、代理配置、通知、剪贴板和指定全局快捷键，先查 `types/core-services.d.ts` 和 `docs/spec/services.md`。它们通过 `context.services` 直接调用 Core，纯 Renderer 插件也可使用；声明 Runtime `codlet.core.services@1` 依赖和对应的独立权限，不借用 `runtime.manage`，也不为存储配置添加空 Host。文件写入需要单独的 `host.fs.write` 与 writeRoots，不能把只读授权当作写权限。凭据使用系统存储和 origin 绑定引用，默认不把密钥放进普通配置。对用户按实际用途解释本次新增权限，保留既有确认流程。
 
 分类使用顶层可选 `tags`，例如 `"tags":["UI","Enhancement"]`。推荐 `UI`、`Adapter`、`Tool`、`Enhancement`，也允许自定义。名称不做 i18n，不包含界面自动绘制的 `#`；最多 8 个不区分大小写的唯一标签，每个 1–32 个字母、数字、连字符或下划线。标签不授予权限，也不声明依赖，不要根据标签推断插件能力。旧版 Core 可能不支持该字段，以运行时提供的类型和 `plugin preview` 结果为准。
 
@@ -49,6 +49,6 @@ module.exports = {
 
 官方适配层的确切能力、方法和限制以随运行附带的 `types` 与清单为准，先检查实际可用版本。依赖官方适配层仍需在技能工作流中让用户选择；没有对应能力时才讨论直接操作底层接口的代价。
 
-涉及实际网络请求/响应或 API 接入时，先查 `types/host.d.ts` 的 `context.traffic.openChannel` 和 `types/codex-desktop.d.ts` 的 `codex.backend.transport@1`。Core 提供 HTTP(S)/SSE 与 WS/WSS 的受管通道，Adapter 使用统一 `{endpoint, protocols}` 描述接到客户端支持的新建/恢复线程入口。详细流、权限、生效时机与示例在 `docs/TRAFFIC_CHANNELS.md`（由 `runtime.json.docsDirectory` 定位）；按需读取，不把全部网络细节加进普通插件流程。
+涉及实际网络请求/响应或 API 接入时，先查 `types/host.d.ts` 的 `context.traffic.openChannel` 和 `types/codex-desktop.d.ts` 的 `codex.backend.transport@1`。Core 提供 HTTP(S)/SSE 与 WS/WSS 的受管通道，Adapter 使用统一 `{endpoint, protocols}` 描述接到客户端支持的新建/恢复线程入口。详细流、权限、生效时机与示例在 `docs/spec/traffic.md`（由 `runtime.json.docsDirectory` 定位）；按需读取，不把全部网络细节加进普通插件流程。
 
 提交文本拦截、页面 CDP 和实际模型网络通道是不同范围。选服务、重试和恢复是插件策略，不是 Core 默认行为；已加载任务和现有连接是否能切换，以 Adapter 的实际兼容探针为准。

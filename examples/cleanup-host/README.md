@@ -26,5 +26,5 @@ starts another generation.
 The example can remove only the state it deliberately owns. A detached target,
 unresponsive CDP peer or exhausted deadline can prevent page cleanup; Codlet does
 not promise automatic rollback of arbitrary plugin effects or a safety sandbox.
-See [the cleanup contract](../../docs/HOST_CLEANUP_2026-09-10.md) and
+See [the cleanup contract](../../docs/spec/host.md) and
 [the TypeScript declarations](../../types/host.d.ts).

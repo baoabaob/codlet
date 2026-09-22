@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$true)][string]$LabExecutable,
     [Parameter(Mandatory=$true)][string]$RuntimeDirectory,
     [Parameter(Mandatory=$true)][string]$OfficialCli,
-    [string]$ExpectedPackageVersion = '26.908.4834.0'
+    [Parameter(Mandatory=$true)][string]$ExpectedPackageVersion
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -40,15 +40,11 @@ Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/node-runtime.json') -De
 Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/update-channel.json') -Destination (Join-Path $codletOutput 'runtime/update-channel.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Export-Diagnostics.ps1') -Destination $codletOutput
-$codletDocsOutput = Join-Path $codletOutput 'docs'
-$null = New-Item -ItemType Directory -Path $codletDocsOutput
-foreach ($codletDocument in (Get-ChildItem -LiteralPath (Join-Path $codletSource 'docs') -Filter '*.md' -File)) {
-    Copy-Item -LiteralPath $codletDocument.FullName -Destination $codletDocsOutput
+Copy-Item -LiteralPath (Join-Path $codletSource 'docs') -Destination (Join-Path $codletOutput 'docs') -Recurse
+Copy-Item -LiteralPath (Join-Path $codletSource 'types') -Destination (Join-Path $codletOutput 'types') -Recurse
+foreach ($codletFile in @('LICENSE', 'NOTICE')) {
+    Copy-Item -LiteralPath (Join-Path $codletSource $codletFile) -Destination $codletOutput
 }
-Copy-Item -LiteralPath (Join-Path $codletSource 'docs/THIRD_PARTY_UI_LICENSES.txt') -Destination $codletDocsOutput
-[IO.File]::WriteAllText((Join-Path $codletOutput 'M5-ManualTest.md'), '[Open the M5a manual test guide](docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md)', (New-Object Text.UTF8Encoding($false)))
-[IO.File]::WriteAllText((Join-Path $codletOutput 'M5-GitHubManualTest.md'), '[Open the M5b GitHub manual test guide](docs/GITHUB_PLUGIN_MANUAL_TEST_2026-09-12.md)', (New-Object Text.UTF8Encoding($false)))
-[IO.File]::WriteAllText((Join-Path $codletOutput 'Remaining-Acceptance.md'), '[Open the remaining approval and release acceptance guide](docs/REMAINING_ACCEPTANCE_MANUAL_2026-09-12.md)', (New-Object Text.UTF8Encoding($false)))
 $codletConfiguration = [ordered]@{
     schema = 1; labRoot = $codletLabRoot; labBinary = 'codlet-lab.exe'
     labBinarySha256 = (Get-FileHash -LiteralPath (Join-Path $codletOutput 'codlet-lab.exe') -Algorithm SHA256).Hash

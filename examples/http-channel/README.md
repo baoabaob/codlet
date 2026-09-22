@@ -33,4 +33,4 @@ codlet plugin enable example.http-channel
 - 作用范围：renderer 的 `draft` 包含新建/恢复来源、threadId、cwd、model、provider，可由普通插件决定是否接入
 - 策略：默认只允许一次 forward；需要多次 HTTP 尝试时显式配置 maxForwardAttempts，并由插件消费或取消前一响应再发起下一次；Core 不自动重试或重连
 
-通道描述含私有路径，勿写入日志或长期保存。可用范围、取消/关闭限制及测试证据见[实施计划](../../docs/TRAFFIC_INTERCEPTION_PLAN_2026-09-20.md)和 [Host 类型](../../types/host.d.ts)。
+通道描述含私有路径，勿写入日志或长期保存。可用范围、取消/关闭限制及测试边界见[流量契约](../../docs/spec/traffic.md)和 [Host 类型](../../types/host.d.ts)。

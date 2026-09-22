@@ -8,4 +8,4 @@
 - 将 `renderer.js` 中的 `v1` 改成 `v2` 后点击 Reload，可验证重载。
 
 测试前复制整个目录，修改副本。测试客户端附带的副本在 `plugins/local-management-check`。
-步骤见发行包的 `docs/LOCAL_PLUGIN_MANUAL_TEST_2026-09-11.md`，或测试客户端的 `M5-ManualTest.md`。
+导入、授权及移除行为见[管理契约](../../docs/spec/management.md)；独立测试客户端的启动与恢复见[开发指南](../../docs/development.md)。

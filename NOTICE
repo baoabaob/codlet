@@ -1,0 +1,15 @@
+Codlet
+Copyright 2026 cccake and Codlet contributors
+
+Codlet source code is licensed under the Apache License, Version 2.0.
+See LICENSE for the terms that apply to this project.
+
+Codlet is an independent extension runtime. It is not an OpenAI product and is
+not endorsed by OpenAI. Codex and OpenAI names identify the products with which
+Codlet interoperates. The official desktop application and model services are
+not part of the Codlet distribution.
+
+Third-party software retains its own copyright and license terms. Distributed
+UI bundles include the notices in THIRD_PARTY_NOTICES.txt (generated from
+docs/THIRD_PARTY_UI_LICENSES.txt). The managed Node runtime includes its LICENSE.
+Individual plugins and their dependencies carry their own applicable notices.

@@ -9,9 +9,9 @@ codlet plugin add .\examples\raw-m2 --trust --grant host.process --grant cdp.raw
 codlet launch
 ```
 
-To exercise the independent path, disable the optional bundled GUI and UI adapter
+To exercise the independent path, disable the optional GUI and UI adapter
 before launch, or use a separate development registration as described in the
-[M2 acceptance record](../../docs/M2_ACCEPTANCE_2026-09-10.md). The example selects
+[development guide](../../docs/development.md). The example selects
 page targets without depending on Codex private URLs. It adds no visible page UI.
 
 In a page's main execution context, this example exposes:
@@ -44,6 +44,6 @@ the plugin can no longer remove. Node remains an ordinary user process.
 The actual-JavaScript M2 fixture executes this exact Host source and its injected
 page code through activation, two windows, navigation, target creation/destruction,
 and shutdown. Its Node VM peer does not emulate Chromium or DOM compatibility.
-See [Core RPC](../../docs/CORE_RPC_2026-09-10.md) for the optional managed protocol,
-and [OS brokers](../../docs/OS_BROKER_2026-09-10.md) for separately approved system
+See [Core RPC](../../docs/spec/rpc.md) for the optional managed protocol,
+and [OS brokers](../../docs/spec/permissions.md) for separately approved system
 access.

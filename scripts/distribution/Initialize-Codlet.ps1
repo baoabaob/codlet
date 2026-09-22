@@ -28,15 +28,22 @@ function Save-State {
   if([IO.File]::Exists($statePath)){[IO.File]::Replace($temporary,$statePath,[NullString]::Value)}else{[IO.File]::Move($temporary,$statePath)}
 }
 function Invoke-Cli([string[]]$Arguments){
-  # Windows PowerShell uses the console output encoding to decode native stdout.
-  # Codlet emits UTF-8 JSON even when the launching console uses GBK or an OEM page.
-  $previousConsoleEncoding=[Console]::OutputEncoding
+  # Decode the pipe explicitly, independently of the console's OEM/ANSI page.
+  # Only this short-lived CLI child is terminated on timeout, never the runtime.
+  $info=[Diagnostics.ProcessStartInfo]::new($exe)
+  $quoted=@($Arguments|ForEach-Object{'"'+[regex]::Replace([regex]::Replace($_,'(\\*)"','$1$1\"'),'(\\+)$','$1$1')+'"'})
+  $info.Arguments=$quoted -join ' ';$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+  $info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+  $info.StandardOutputEncoding=$utf8;$info.StandardErrorEncoding=$utf8
+  $process=[Diagnostics.Process]::Start($info)
   try{
-    [Console]::OutputEncoding=$utf8
-    $text=(& $exe @Arguments | Out-String)
-    if($LASTEXITCODE -ne 0){throw "Codlet CLI failed ($LASTEXITCODE): $text"}
+    $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
+    if(-not $process.WaitForExit(30000)){try{$process.Kill()}catch{};throw 'Codlet CLI timed out after 30 seconds. No existing client was closed.'}
+    if(-not $stdout.Wait(1000) -or -not $stderr.Wait(1000)){throw 'Codlet CLI output did not close'}
+    $text=$stdout.Result
+    if($process.ExitCode -ne 0){throw "Codlet CLI failed ($($process.ExitCode)): $text $($stderr.Result)"}
     $text|ConvertFrom-Json
-  }finally{[Console]::OutputEncoding=$previousConsoleEncoding}
+  }finally{$process.Dispose()}
 }
 function Select-Plugins($Available){
   Add-Type -AssemblyName System.Windows.Forms

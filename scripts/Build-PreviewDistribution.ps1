@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory=$true)][string]$NodeDirectory,
   [Parameter(Mandatory=$true)][string]$PluginDistribution,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
-  [ValidatePattern('^[0-9a-fA-F]{7,64}$')][string]$SourceCommit,
+  [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$SourceCommit,
+  [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$PluginsCommit,
   [switch]$Zip
 )
 Set-StrictMode -Version Latest
@@ -51,6 +52,7 @@ function Copy-Payload([string]$Source,[string]$Relative){
   else{[IO.File]::Copy($Source,$target,$false)}
 }
 Copy-Payload $CodletExecutable 'codlet.exe'
+& (Join-Path $PSScriptRoot 'Build-WindowsLauncher.ps1') -OutputDirectory $stage | Out-Null
 Copy-Payload (Join-Path $root 'runtime/node-runtime.json') 'runtime/node-runtime.json'
 Copy-Payload (Join-Path $root 'runtime/update-channel.json') 'runtime/update-channel.json'
 $nodeRelative='runtime/node-v'+$pin.version+'-win-x64'
@@ -74,16 +76,17 @@ foreach($package in $catalog.packages){
 }
 Get-ChildItem -LiteralPath (Join-Path $root 'types') -Filter '*.d.ts' -File | ForEach-Object{Copy-Payload $_.FullName ('sdk/types/'+$_.Name)}
 Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_UI_LICENSES.txt') 'THIRD_PARTY_NOTICES.txt'
+foreach($name in @('LICENSE','NOTICE')){Copy-Payload (Join-Path $root $name) $name}
 [IO.File]::WriteAllText((Join-Path $stage 'portable.mode'),"Codlet-only data lives in ./data; official Codex data is unchanged.`n",$utf8)
 $readme=@'
 # Codlet Windows x64 Preview
 
 1. Extract the complete directory to a writable location
-2. Close existing Codex instances, then run Start-Codlet.cmd
+2. Run Codlet-Launcher.exe; it lists running applications before launch
 3. On first portable launch, choose the official plugins you want
 
 GUI automatically includes UI Adapter. Desktop Adapter is independently optional.
-Choose-Plugins.cmd can install an omitted plugin later. Existing registrations,
+Codlet-Launcher.exe --configure can install an omitted plugin later. Existing registrations,
 disabled states and grants are preserved. To remove a plugin, use GUI or:
 
     Codlet-CLI.cmd plugin remove PLUGIN_ID --cascade --json
@@ -96,8 +99,11 @@ The MSI installs for the current user and provides a feature selection page.
 Uninstall removes application files and shortcuts; plugin/config/data are retained.
 MSI repair does not overwrite plugins copied into the user data directory.
 
-This local preview is unsigned. Current acceptance targets Windows x64 and the
-reviewed Codex build 26.915.31945 / 9922. macOS and Windows ARM64 are not included.
+This unsigned package targets Windows x64. Install the official Codex client
+separately. Check the compatibility evidence and known issues at the Core revision
+recorded in distribution-manifest.json; a package version does not certify every
+official client build. Use Codlet-CLI.cmd doctor --json for local diagnostics.
+macOS packages are distributed separately; Windows ARM64 is not included here.
 Official launches may reuse an already extended instance; a Core crash does not
 guarantee the official client closes. Real cross-version official update acceptance
 is still pending. The update source is not yet published.
@@ -109,11 +115,13 @@ Offline presets remain local installations; this does not enable GitHub updates
 for existing local registrations or grant access to private/draft releases.
 
 No real account information, registry files or dev-client data is included.
-The manifest records each distributed file and its SHA-256.
+The manifest records the full Core and plugin source commits, each distributed
+file and its SHA-256. License and attribution terms are included in LICENSE,
+NOTICE, THIRD_PARTY_NOTICES.txt and the bundled Node and plugin license files.
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.md'),$readme.Replace("`r`n","`n")+"`n",$utf8)
 $records=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName | ForEach-Object{[ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');bytes=$_.Length;sha256=Hash $_.FullName}})
-$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';sourceCommit=$SourceCommit;officialPlugins=$pluginOrigins;files=$records}
+$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';sourceCommit=$SourceCommit.ToLowerInvariant();pluginsCommit=$PluginsCommit.ToLowerInvariant();officialPlugins=$pluginOrigins;files=$records}
 [IO.File]::WriteAllText((Join-Path $stage 'distribution-manifest.json'),($manifest|ConvertTo-Json -Depth 8),$utf8)
 [IO.Directory]::Move($stage,$output)
 $zipPath=$null

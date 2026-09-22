@@ -4,4 +4,4 @@ Codlet 的 `context.ui` API 2 直接复用 `@openai/apps-sdk-ui` 的组件和图
 
 `runtime.json` 指向的 `types/renderer-ui.d.ts` 是当前完整类型和可用组件清单。需要主导航整页时声明 `codex.ui.navigation.page@1` 的 Target 依赖并用 `ui.page()`；普通 DOM 挂载不必依赖导航适配器。
 
-按需读取 `docs/UI_COMPONENTS_2026-09-13.md` 和 `docs/OFFICIAL_UI_STYLE_2026-09-13.md`；具体 API 以附带类型为准。遵循客户端字号、页面宽度、间距、焦点、悬浮、键盘与深色模式。CSS 仅处理布局并使用现有变量，说明文字末尾不加句号。
+按需读取 `docs/spec/ui.md`；具体 API 以附带类型为准，原生导航适配的语义由该规范链接到官方插件仓。遵循客户端字号、页面宽度、间距、焦点、悬浮、键盘与深色模式。CSS 仅处理布局并使用现有变量，说明文字末尾不加句号。

@@ -22,7 +22,7 @@ codlet plugin disable example.raw-host
 ```
 
 Reload requires an enabled plugin; use `enable` to start a disabled one. Commands
-use the existing lifecycle receipts described in [the host control contract](../../docs/M2B_HOST_CONTROL_2026-09-10.md).
+use the existing lifecycle receipts described in [the host control contract](../../docs/spec/management.md).
 
 The example uses `context.cdp` to discover any target, attach a flattened session,
 subscribe to that session, enable Runtime, evaluate an expression, unsubscribe
@@ -61,4 +61,4 @@ cargo build --locked --bin codlet
 Use the actual target directory if `CARGO_TARGET_DIR` is set. The staging script
 downloads and verifies the official Node runtime for the distribution; it runs
 no plugin or dependency install scripts and changes no system Node installation.
-See [the full JS runtime contract](../../docs/JS_PLUGIN_RUNTIME_2026-09-09.md).
+See [the full JS runtime contract](../../docs/spec/host.md).
