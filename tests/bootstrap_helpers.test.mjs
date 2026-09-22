@@ -6,6 +6,8 @@ import {uiFixture,uiSource,tick} from './support/ui-fixture.mjs';
 
 const bootstrap=readFileSync(new URL('../bundled/runtime/bootstrap.js',import.meta.url),'utf8');
 const helpers=readFileSync(new URL('../bundled/runtime/helpers.js',import.meta.url),'utf8');
+const facade=readFileSync(new URL('../bundled/runtime/facade.js',import.meta.url),'utf8');
+const page=readFileSync(new URL('../bundled/runtime/page.js',import.meta.url),'utf8');
 test('retiring the real UI SDK closes its scheduler ports and preserves the native client channel',async t=>{
   const f=uiFixture(),channels=[];
   class MeasuredChannel extends MessageChannel{
@@ -16,8 +18,8 @@ test('retiring the real UI SDK closes its scheduler ports and preserves the nati
   native.port1.onmessage=event=>{received=event.data;};
   t.after(()=>{for(const {channel} of channels)for(const port of [channel.port1,channel.port2]){port.onmessage=null;port.close();}f.dispose();});
   const stage=()=>{
-    f.window.eval(`(${helpers})((MessageChannel)=>(${uiSource}))`);
-    return f.window.eval(`(()=>{const helpers=globalThis.__codletRendererHelpersV1;delete globalThis.__codletRendererHelpersV1;return (${bootstrap})({world:'isolated',lazyUI:true,retireOnEmpty:true},helpers.ui,helpers.i18n,helpers.services,helpers.dispose);})()`);
+    f.window.eval(`(${helpers})((MessageChannel)=>(${uiSource}),null,null,(${page}),(${bootstrap}))`);
+    return f.window.eval(`(${facade})({world:'isolated',lazyUI:true,retireOnEmpty:true})`);
   };
   assert.equal(stage().ok,true);await tick();assert.equal(channels.reduce((n,x)=>n+x.open,0),2,'unused helpers must not start a scheduler');
   assert.equal((await f.window.eval(`__codletRendererV1.activate({id:'ui-owner',generation:1},{activate(ctx){globalThis.ownedUi=ctx.ui.create();ownedUi.mount(ownedUi.container(),ownedUi.React.createElement(ownedUi.components.Button,{color:'primary'},'Actual SDK'));},deactivate(){ownedUi.dispose();delete globalThis.ownedUi;}})`)).ok,true);

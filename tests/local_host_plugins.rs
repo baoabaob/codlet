@@ -221,6 +221,11 @@ fn combined_loader_retains_both_snapshots_and_separates_entry_capability_declara
     let loaded = fixture.load(&[Permission::HostProcess, Permission::UiDom]);
     assert_eq!(loaded.generation, 7);
     assert_eq!(loaded.source.as_deref(), Some(renderer_source));
+    let retained = loaded.clone();
+    assert!(std::sync::Arc::ptr_eq(
+        loaded.source.as_ref().unwrap(),
+        retained.source.as_ref().unwrap()
+    ));
     assert_eq!(&*loaded.host.as_ref().unwrap().source, SOURCE);
     assert_eq!(loaded.manifest.host_provides().len(), 1);
     assert!(loaded.manifest.renderer_provides().is_empty());

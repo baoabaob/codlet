@@ -30,7 +30,7 @@ export interface RendererUiPageOptions {
   label: string;
   icon?: 'Cube' | 'CodeSquareSlash' | 'Codlet';
   /** Called on each native route entry; the React tree is unmounted on exit. */
-  render(surface: { readonly toolbar: HTMLDivElement | null }): React.ReactNode;
+  render(surface: { readonly ui: RendererUi; readonly toolbar: HTMLDivElement | null }): React.ReactNode;
   /** Requests an owned portal container in the reviewed native page toolbar. */
   toolbar?: boolean;
   onActivate?(): void;
@@ -53,7 +53,14 @@ export interface RendererUi {
   /** Aborts the owner, unregisters pages and synchronously unmounts every root. */
   dispose(): void;
 }
-export interface RendererUiFactory { readonly api: 2; create(): RendererUi }
+export interface RendererUiFactory {
+  readonly api: 2;
+  create(): RendererUi;
+  /** Registers navigation without loading the UI SDK. The render callback receives
+   * a page-scoped UI owner; leaving the page disposes that owner. Feature-detect
+   * for compatibility with earlier API 2 runtimes. */
+  page?(options: RendererUiPageOptions): Promise<Readonly<{ path: string | null; dispose(): void }>>;
+}
 
 /** codex.ui.navigation.page@1 RPC; only callable by its active page owner.
  * Opens Native's editable local-task composer without submitting a turn. */

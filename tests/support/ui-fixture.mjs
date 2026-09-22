@@ -4,6 +4,7 @@ const require=createRequire(new URL('../../frontend/package.json',import.meta.ur
 const {JSDOM,VirtualConsole}=require('jsdom');
 export const uiSource=readFileSync(new URL('../../bundled/runtime/ui.js',import.meta.url),'utf8');
 const i18nSource=readFileSync(new URL('../../bundled/runtime/i18n.js',import.meta.url),'utf8');
+const pageSource=readFileSync(new URL('../../bundled/runtime/page.js',import.meta.url),'utf8');
 export const tick=async()=>{for(let i=0;i<4;i++)await new Promise(resolve=>setTimeout(resolve,0));};
 export const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 export function uiFixture({locale='en',request=async()=>({plugins:[]})}={}){
@@ -31,8 +32,9 @@ export function uiFixture({locale='en',request=async()=>({plugins:[]})}={}){
     }
     return request(capability,method,args);
   }}};
-  const factory=window.eval(uiSource);
-  context.i18n=window.eval(i18nSource)(context);context.ui={api:2,create:()=>factory(context)};
+  let factory;
+  const page=window.eval(pageSource);
+  context.i18n=window.eval(i18nSource)(context);context.ui={api:2,create:()=>{factory??=window.eval(uiSource);return factory(context);},page:options=>page(context,options,()=>context.ui.create())};
   const load=path=>{window.module={exports:{}};window.exports=window.module.exports;window.eval(readFileSync(new URL('../../'+path,import.meta.url),'utf8'));return window.module.exports;};
   const control=label=>[...document.querySelectorAll('[aria-label]')].find(el=>el.getAttribute('aria-label')===label) ?? document.getElementById([...document.querySelectorAll('label[for]')].find(el=>el.textContent===label)?.htmlFor) ?? [...document.querySelectorAll('button:not([aria-label]),[role=menuitem]:not([aria-label])')].find(el=>el.textContent.trim()===label);
   return {dom,window,document,errors,context,calls,overrides,load,control,observers,mediaListeners,cleanups,

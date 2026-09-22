@@ -45,3 +45,18 @@ assert.equal(Object.getOwnPropertyDescriptor(isolated,'__codletRendererV1').conf
 assert.equal((await once.activate({id:'generation',generation:2},{activate(){},deactivate(){}})).ok,false,'Core generation context must never be revived');
 assert.equal(isolated.loads,1);
 console.log('lazy UI lifecycle passed');
+const helpers=readFileSync(new URL('../../bundled/runtime/helpers.js',import.meta.url),'utf8');
+const facadeSource=readFileSync(new URL('../../bundled/runtime/facade.js',import.meta.url),'utf8');
+const facadeContext=vm.createContext({setTimeout,clearTimeout,TextEncoder,AbortController,performance});
+vm.runInContext(`globalThis.retiredRefs=[];(${helpers})(()=>()=>({}),null,null,null,(...args)=>{
+  const publish=args[6];args[6]=value=>{retiredRefs.push(new WeakRef(value));return publish(value);};return (${source})(...args);
+});`,facadeContext);
+vm.runInContext(`(${facadeSource})({world:'isolated',lazyUI:true,retireOnEmpty:true})`,facadeContext);
+const facade=facadeContext.__codletRendererV1;
+assert.equal((await facade.activate({id:'facade-owner',generation:1},{activate(){},deactivate(){}})).ok,true);
+await facade.deactivate('facade-owner',1);await collect();
+assert.equal(facadeContext.retiredRefs[0].deref(),undefined,'the permanent ABI must release the whole retired runtime, not only its UI factory');
+assert.equal(facadeContext.__codletRendererV1,facade);
+assert.equal(Object.getOwnPropertyDescriptor(facadeContext,'__codletRendererV1').configurable,false);
+assert.equal((await facade.activate({id:'facade-owner',generation:2},{activate(){}})).ok,false);
+assert.equal(facade.status().length,0);

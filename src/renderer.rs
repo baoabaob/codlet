@@ -31,6 +31,8 @@ use crate::runtime_status::{
 const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
 const UI_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/ui.js");
 const HELPERS_OWNER_SOURCE: &str = include_str!("../bundled/runtime/helpers.js");
+const FACADE_SOURCE: &str = include_str!("../bundled/runtime/facade.js");
+const PAGE_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/page.js");
 const I18N_SOURCE: &str = include_str!("../bundled/runtime/i18n.js");
 const CORE_SERVICES_SOURCE: &str = include_str!("../runtime/core-services.cjs");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -2221,11 +2223,9 @@ fn bootstrap_expressions(world: RendererWorld) -> [String; 2] {
     // source; inlining helpers would pin the SDK source even after its functions
     // were released. Both persisted scripts belong to the same generation.
     let helpers = format!(
-        "({HELPERS_OWNER_SOURCE})((MessageChannel) => ({UI_HELPERS_SOURCE}), {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})())"
+        "({HELPERS_OWNER_SOURCE})((MessageChannel) => ({UI_HELPERS_SOURCE}), {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})(), {PAGE_HELPERS_SOURCE}, {BOOTSTRAP_SOURCE})"
     );
-    let bootstrap = format!(
-        "(() => {{ const helpers=globalThis.__codletRendererHelpersV1; delete globalThis.__codletRendererHelpersV1; if(!helpers) return {{ok:false,error:'renderer helpers unavailable'}}; const result=({BOOTSTRAP_SOURCE})({options}, helpers.ui, helpers.i18n, helpers.services, helpers.dispose); if(result.reused || !result.ok) helpers.dispose(); return result; }})()"
-    );
+    let bootstrap = format!("({FACADE_SOURCE})({options})");
     [helpers, bootstrap]
 }
 
@@ -3139,7 +3139,7 @@ mod tests {
         let plugin = LoadedPlugin {
             authorization: None,
             manifest,
-            source: Some("module.exports = {};".to_owned()),
+            source: Some("module.exports = {};".into()),
             host: None,
             generation: 1,
         };
@@ -3334,7 +3334,7 @@ mod tests {
         let (ordered, _) = order_plugins(vec![LoadedPlugin {
             authorization: None,
             manifest,
-            source: Some("module.exports = {};".to_owned()),
+            source: Some("module.exports = {};".into()),
             host: None,
             generation: 1,
         }])
