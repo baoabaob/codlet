@@ -75,7 +75,7 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
     const existing = exchange.leases.get(item.registration); if (existing) return existing;
     let installed;
     await peer.request('open', { registration: item.registration, url }, {
-      signal: context.signal, timeoutMs: 2000,
+      signal: context.signal, timeoutMs: 2000, cancelOpen: true,
       // Install before processing a coalesced leaseClosed notification.
       prepareResult(result) {
         const id = result.lease;

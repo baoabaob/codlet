@@ -88,6 +88,7 @@ struct Registration {
 #[derive(Clone)]
 struct Lease {
     registration: Arc<Registration>,
+    opening_request: Value,
     url: String,
     expires: Instant,
 }

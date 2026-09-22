@@ -61,3 +61,29 @@ test('peer installs response receipts before a coalesced retirement and rejects 
   assert.deepEqual(order,['receipt','leaseClosed']);
   await assert.rejects(peer.request('bad'),{code:'invalid_frame'}); assert.equal(peer.status().pending,0); assert.equal(peer.status().queuedBytes,0);
 });
+
+test('aborted open sends ordered cancellation even before the Native lease result is delivered', { timeout: 5000 }, async t => {
+  const root = new AbortController(), requestAbort = new AbortController();
+  let opening, notified; const cancellation = new Promise(resolve => { notified = resolve; });
+  const server = net.createServer(socket => {
+    t.after(() => socket.destroy()); let buffer = Buffer.alloc(0), authenticated = false;
+    socket.on('data', bytes => {
+      buffer = Buffer.concat([buffer, bytes]);
+      while (buffer.length >= 4 && buffer.length >= buffer.readUInt32BE() + 4) {
+        const size = buffer.readUInt32BE(), value = JSON.parse(buffer.subarray(4, size + 4)); buffer = buffer.subarray(size + 4);
+        if (!authenticated) { authenticated = true; socket.write(packet({ event: 'connected' })); }
+        else if (value.method === 'open') { opening = value.id; requestAbort.abort(); }
+        else if (value.method === 'cancelOpen') {
+          assert.equal(value.params.request, opening);
+          socket.write(packet({ id: opening, result: { lease: 'never-delivered' } })); notified();
+        }
+      }
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const peer = await connectTrafficPeer({ host: '127.0.0.1', port: server.address().port, token: 'fixture' }, { signal: root.signal });
+  t.after(() => root.abort()); let delivered = false;
+  await assert.rejects(peer.request('open', {}, { cancelOpen: true, signal: requestAbort.signal, prepareResult: () => { delivered = true; } }), { code: 'request_cancelled' });
+  await cancellation; await delay(10);
+  assert.equal(delivered, false); assert.equal(peer.status().pending, 0);
+});

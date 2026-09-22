@@ -122,6 +122,21 @@ fn native_interceptor_disable_closes_streams_but_keeps_the_other_owners_registra
 }
 
 #[test]
+fn native_cancelled_open_releases_unreceived_lease_without_waiting_for_expiry() {
+    let fixture=Fixture::new(); let mut gateway=fixture.gateway(); let mut host=fixture.host("test.traffic-a"); let registration=fixture.registration("test.traffic-a");
+    host.call("activate",json!({"registration":registration}));
+    // Cancel before reading the response, exactly as an aborted JS caller does.
+    for _ in 0..(MAX_LEASES+8) {
+        let open=gateway.request("open",json!({"registration":registration,"url":"https://allowed.invalid/"}));
+        let cancelled=gateway.call("cancelOpen",json!({"request":open}));
+        assert_eq!(cancelled["result"]["cancelled"],true);
+        assert_eq!(fixture.traffic.resources()["leases"],0);
+    }
+    assert!(gateway.call("open",json!({"registration":registration,"url":"https://allowed.invalid/"}))["result"]["lease"].is_string());
+    assert_eq!(host.call("cancelOpen",json!({"request":1}))["error"]["code"],"permission_denied");
+}
+
+#[test]
 fn native_data_plane_round_trips_host_callbacks_streams_and_websocket_frames() {
     use std::io::{BufRead, BufReader};
     let Some(node) = std::env::var_os("CODLET_TRAFFIC_TEST_NODE") else { return; };
