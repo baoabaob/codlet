@@ -23,9 +23,10 @@ const TRAFFIC_HOP_HEADERS = new Set([
   'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade',
 ]);
 
-function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState }) {
+function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState, detach }) {
   if (typeof coreRequest !== 'function' || typeof makeError !== 'function') throw new TypeError('traffic runtime dependencies are required');
   const channels = new Map();
+  const interceptors = require('./host-interceptors.cjs').createHostedInterceptors({ coreRequest, rootSignal, detach });
   let retired = false, opening = 0;
   let reporting = false, reportVersion = 0;
   function changed() {
@@ -513,15 +514,17 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
   // Private Core launcher entry: deliberately absent from the plugin-facing api.
   // Trust material and allowed origins must be prepared before a child is created.
   async function openProcessIngress(options, handlers, configuration) {
-    if (!ownObject(configuration) || !Array.isArray(configuration.origins) || !configuration.origins.length || configuration.origins.length > 64
+    if (!ownObject(configuration) || !Array.isArray(configuration.origins) || configuration.origins.length > 64
+      || !configuration.origins.length && typeof configuration.matchesOrigin !== 'function'
       || typeof configuration.certificateFor !== 'function') throw fail('invalid_argument', 'process ingress requires bounded origins and a certificate provider');
+    if (configuration.matchesOrigin != null && typeof configuration.matchesOrigin !== 'function' || configuration.openTunnel != null && typeof configuration.openTunnel !== 'function') throw fail('invalid_argument', 'invalid private process route');
     const origins = new Set(configuration.origins.map(value => {
       const url = new URL(value);
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.href !== `${url.origin}/`) throw fail('invalid_argument', 'process ingress requires exact HTTP(S) origins');
       return url.origin;
     }));
     const lifetimeMs = integer(configuration.lifetimeMs, 300000, 3600000, 'lifetimeMs');
-    return openChannel(options, handlers, { origins, certificateFor: configuration.certificateFor, lifetimeMs });
+    return openChannel(options, handlers, { origins, matchesOrigin: configuration.matchesOrigin ?? (origin => origins.has(origin)), openTunnel: configuration.openTunnel, certificateFor: configuration.certificateFor, lifetimeMs });
   }
 
   async function openChannel(options = {}, handlers, ingress = null) {
@@ -563,7 +566,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
       const raw = incoming.url ?? '';
       if (tunnel ? !raw.startsWith('/') || raw.startsWith('//') : !/^http:\/\//u.test(raw)) throw fail('invalid_target', 'invalid proxy target form');
       const target = tunnel ? new URL(raw, tunnel) : new URL(raw);
-      if (target.username || target.password || target.hash || !ingress.origins.has(target.origin)
+      if (target.username || target.password || target.hash || !ingress.openTunnel && !ingress.matchesOrigin(target.origin)
         || tunnel && target.origin !== tunnel || incoming.headers.host !== target.host) throw fail('target_denied', 'proxy destination is outside its launch scope');
       if (websocket) target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
       return { path: target.pathname + target.search, url: target.href };
@@ -679,11 +682,28 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
       try {
         const target = new URL(`https://${incoming.url}`);
         const plain = new URL(`http://${incoming.url}`);
-        const secureAllowed = ingress.origins.has(target.origin), plainAllowed = ingress.origins.has(plain.origin);
-        if (incoming.url !== `${target.hostname}:${target.port || '443'}` || target.username || target.password || target.pathname !== '/' || target.search || target.hash || secureAllowed === plainAllowed) throw fail('target_denied', 'CONNECT destination denied or ambiguous');
+        const secureAllowed = ingress.matchesOrigin(target.origin), plainAllowed = ingress.matchesOrigin(plain.origin);
+        if (incoming.url !== `${target.hostname}:${target.port || '443'}` || target.username || target.password || target.pathname !== '/' || target.search || target.hash || secureAllowed && plainAllowed || !secureAllowed && !plainAllowed && !ingress.openTunnel) throw fail('target_denied', 'CONNECT destination denied or ambiguous');
         setupTimer = setTimeout(() => controller.abort(fail('handler_timeout', 'certificate preparation expired')), handlerTimeout);
         await coreRequest('host.network.authorizeChannel', {}, controller.signal);
         if (controller.signal.aborted || closed) throw fail('host_stopping', 'process proxy retired');
+        if (!secureAllowed && !plainAllowed) {
+          // Unmatched TLS stays encrypted end to end. The private Native route
+          // resolves from the pre-launch proxy state; no plugin sees a byte.
+          const upstream = await raceAbort(() => ingress.openTunnel(target, controller.signal), controller.signal, 'tunnel setup cancelled');
+          const destroyUpstream = () => upstream.destroy();
+          controller.signal.addEventListener('abort', destroyUpstream, { once: true });
+          try {
+            if (controller.signal.aborted || closed) throw fail('host_stopping', 'process proxy retired');
+            clearTimeout(setupTimer);
+            upstream.on('error', abort); socket.on('error', destroyUpstream);
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head.length) upstream.write(head);
+            socket.pipe(upstream); upstream.pipe(socket);
+            await new Promise(resolve => { upstream.once('close', resolve); socket.once('close', resolve); });
+          } finally { controller.signal.removeEventListener('abort', destroyUpstream); socket.off('error', destroyUpstream); upstream.destroy(); }
+          return;
+        }
         if (plainAllowed) {
           clearTimeout(setupTimer);
           socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -819,12 +839,13 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
   function closeAll(reason = fail('host_stopping', 'Host traffic runtime retired')) {
     if (retired) return;
     retired = true;
+    interceptors.closeAll();
     for (const close of [...channels.values()]) close(reason).catch(() => {});
   }
   function openHttpChannel(options, handler) { return openChannel(options, { http: handler }); }
   rootSignal.addEventListener('abort', () => closeAll(rootSignal.reason), { once: true });
   // Do not allow a plugin to pass the private third argument through openChannel.
-  return Object.freeze({ api: Object.freeze({ openChannel: (options, handlers) => openChannel(options, handlers), openHttpChannel }), openProcessIngress, closeAll });
+  return Object.freeze({ api: Object.freeze({ openChannel: (options, handlers) => openChannel(options, handlers), openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), openProcessIngress, closeAll });
 }
 
 module.exports = { createTrafficRuntime, createTrafficInterceptors: require('./traffic-interceptors.cjs').createTrafficInterceptors, prepareProcessTrafficEnvironment: require('./process-traffic-environment.cjs').prepareProcessTrafficEnvironment };

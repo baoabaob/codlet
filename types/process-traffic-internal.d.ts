@@ -1,4 +1,4 @@
-/** INTERNAL prototype: not part of ctx.host or the renderer plugin ABI. */
+/** INTERNAL Native gateway interfaces. Public Host registration lives in host.d.ts. */
 import type { HttpChannelRequest, HttpChannelResponse, HttpForwardRequest, HttpChannelExchange, WebSocketChannelRequest, WebSocketChannelExchange, WebSocketFrameTransform, TrafficChannelOptions } from './host';
 type MaybePromise<T> = T | Promise<T>;
 export interface ProcessTrafficOwner {
@@ -30,6 +30,8 @@ export interface InterceptorCallbacks {
 }
 export interface ProcessIngressConfiguration {
   origins: string[];
+  matchesOrigin?: (origin: string) => boolean;
+  openTunnel?: (target: URL, signal: AbortSignal) => Promise<import('node:net').Socket>;
   /** A private per-launch certificate provider, never a public test key. */
   certificateFor(origin: string, signal: AbortSignal): MaybePromise<{ key: string | Uint8Array; cert: string | Uint8Array }>;
   /** Hard lifetime for a request or tunnel. Default 5 minutes; ceiling 1 hour. */
@@ -73,6 +75,7 @@ export declare function prepareProcessTrafficEnvironment(options: {
   trustOutputs: string[];
 }): Promise<Readonly<{
   environment: Readonly<Record<string, string | undefined>>;
+  environmentPatch: Readonly<{ set: Readonly<Record<string, string>>; removeCaseInsensitive: readonly string[] }>;
   upstreamEnvironment: Readonly<Record<string, string | undefined>>;
   bundlePath: string;
   status(): { prepared: boolean; coverage: 'process-configuration-only'; inheritedBypass: boolean };

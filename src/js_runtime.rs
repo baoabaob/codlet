@@ -64,6 +64,23 @@ pub(crate) struct JsInvocation {
 }
 
 impl JsRuntime {
+    /// Fixed Core-owned entry point. Neither script text nor invocation flags
+    /// originate in a plugin manifest or renderer request.
+    pub(crate) fn prepare_traffic_worker(&self, config: &serde_json::Value, directory: &Path) -> Result<JsInvocation, HostError> {
+        let mut source = tempfile::Builder::new().prefix("launch-").suffix(".json").tempfile_in(directory).map_err(io_error)?;
+        source.write_all(&serde_json::to_vec(config).expect("traffic configuration serializes")).map_err(io_error)?;
+        source.flush().map_err(io_error)?;
+        let mut bootstrap = tempfile::Builder::new().prefix("traffic-").suffix(".cjs").tempfile_in(directory).map_err(io_error)?;
+        bootstrap.write_all(include_bytes!("../runtime/traffic-worker-bundle.cjs")).map_err(io_error)?;
+        bootstrap.flush().map_err(io_error)?;
+        let arguments=vec!["--no-addons".into(),"--no-experimental-strip-types".into(),"--no-global-search-paths".into(),"--no-experimental-require-module".into(),bootstrap.path().to_string_lossy().into_owned(),source.path().to_string_lossy().into_owned()];
+        let environment=std::env::vars_os().filter(|(key,_)| {
+            let name=key.to_string_lossy().to_ascii_uppercase();
+            !name.starts_with("NODE_") && !name.starts_with("OPENSSL_") && !name.starts_with("DYLD_") && name!="ELECTRON_RUN_AS_NODE"
+        }).collect();
+        Ok(JsInvocation { executable:self.0.executable.clone(),arguments,cwd:directory.into(),environment,_source:source,_bootstrap:bootstrap,_runtime:self.clone() })
+    }
+
     pub fn discover() -> Result<Self, HostError> {
         let executable = std::env::current_exe().map_err(io_error)?;
         Self::from_distribution(executable.parent().ok_or_else(|| {

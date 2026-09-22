@@ -3,7 +3,7 @@
 use super::*;
 
 #[cfg(windows)]
-pub(super) fn system_proxy(target: &url::Url) -> Result<Option<String>> {
+pub(crate) fn system_proxy(target: &url::Url) -> Result<Option<String>> {
     use std::ptr::null;
     use windows_sys::Win32::{Foundation::GlobalFree, Networking::WinHttp::*};
     unsafe fn text(ptr: *const u16) -> Result<String> {
@@ -201,7 +201,7 @@ fn wildcard(pattern: &str, value: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn system_proxy(target: &url::Url) -> Result<Option<String>> {
+pub(crate) fn system_proxy(target: &url::Url) -> Result<Option<String>> {
     mac::resolve(target)
 }
 

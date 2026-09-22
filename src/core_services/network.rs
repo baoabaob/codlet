@@ -1,7 +1,7 @@
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
-mod proxy;
+pub(super) mod proxy;
 
 #[derive(Clone, Default)]
 pub(super) struct Network(Arc<Mutex<State>>);
@@ -329,7 +329,7 @@ fn authorized_url(p: &Principal, value: &str) -> Result<url::Url> {
     authorize_url(p, url.as_str())?;
     Ok(url)
 }
-fn authorize_url(p: &Principal, value: &str) -> Result<()> {
+pub(super) fn authorize_url(p: &Principal, value: &str) -> Result<()> {
     let url = url::Url::parse(value)
         .map_err(|_| error("invalid_url", "absolute HTTP(S) URL required"))?;
     if !matches!(url.scheme(), "http" | "https")

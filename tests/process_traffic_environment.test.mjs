@@ -19,6 +19,11 @@ test('Windows and macOS child trust merges preserve saved proxy, bypass and unre
     assert.deepEqual(environment, original); assert.deepEqual(result.upstreamEnvironment, original);
     assert.equal(result.environment.no_proxy, original.no_proxy); assert.equal(result.environment.UNRELATED, 'unchanged');
     assert.equal(result.environment.HTTPS_PROXY, 'http://codlet:fixture@127.0.0.1:8123');
+    const patched = Object.fromEntries(Object.entries(original).filter(([key]) => !result.environmentPatch.removeCaseInsensitive.includes(key.toLowerCase())));
+    Object.assign(patched, result.environmentPatch.set);
+    assert.deepEqual(patched, result.environment);
+    assert.equal(result.environmentPatch.set.UNRELATED, undefined);
+    assert.equal(result.environmentPatch.set.no_proxy, undefined);
     assert.equal((await fs.readFile(result.bundlePath, 'utf8')).match(/BEGIN CERTIFICATE/gu).length, 1);
     assert.equal(result.status().inheritedBypass, true);
     await Promise.all([result.close(), result.close()]); await assert.rejects(fs.stat(result.bundlePath), { code: 'ENOENT' });

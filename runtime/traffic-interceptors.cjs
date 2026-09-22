@@ -2,7 +2,7 @@
 
 // Core-owned dispatch. Principals, their abort signals, and authorization come
 // from the owner, never from renderer/plugin-supplied registration options.
-// This is not yet exposed on ctx.host: process launch integration must precede it.
+// Public Host registration is authenticated by Native before reaching this layer.
 function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
   if (typeof authorize !== 'function' || !rootSignal) throw new TypeError('trusted authorization and lifecycle are required');
   const hooks = new Map(), active = new Set();

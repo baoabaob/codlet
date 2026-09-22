@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
+import net from 'node:net';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 const require = createRequire(import.meta.url);
@@ -12,6 +13,20 @@ const fixture = name => readFile(new URL(`./fixtures/process-traffic/${name}.pem
 const [cert, key, ca] = await Promise.all(['cert', 'key', 'ca'].map(fixture));
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const auth = url => `Basic ${Buffer.from(`${url.username}:${url.password}`).toString('base64')}`;
+test('unmatched CONNECT forwards opaque TLS without calling certificate or plugin handlers', { timeout: 5000 }, async t => {
+  let certificates = 0, callbacks = 0;
+  const upstream = https.createServer({ cert, key }, (_request, response) => response.end('opaque'));
+  const port = await listen(upstream); t.after(() => upstream.close());
+  const { proxy } = await setup(t, { http() { callbacks++; throw new Error('not reached'); } }, {
+    origins: [], matchesOrigin: () => false,
+    certificateFor() { certificates++; throw new Error('not reached'); },
+    openTunnel: () => new Promise((resolve, reject) => {
+      const socket = net.connect({ host: '127.0.0.1', port }); socket.once('connect', () => resolve(socket)); socket.once('error', reject);
+    }),
+  });
+  assert.equal((await through(proxy.proxyUrl, 'https://codlet-probe.invalid/')).body, 'opaque');
+  assert.equal(certificates, 0); assert.equal(callbacks, 0);
+});
 async function listen(server) { await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); return server.address().port; }
 
 export async function tunnel(proxy, hostname = 'codlet-probe.invalid', trusted = true) {

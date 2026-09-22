@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod desktop;
 mod files;
 mod network;
+pub(crate) mod traffic;
 
 pub const CAPABILITY: &str = "codlet.core.services";
 #[cfg(target_os = "macos")]
@@ -48,6 +49,7 @@ struct Shared {
     documents: Mutex<BTreeMap<DocumentKey, DocumentRunners>>,
     log: Mutex<(u64, VecDeque<Value>)>,
     traffic: Mutex<BTreeMap<String, Value>>,
+    entrance: Mutex<Option<traffic::Traffic>>,
     sender: mpsc::SyncSender<Work>,
     pending: AtomicUsize,
 }
@@ -112,6 +114,7 @@ impl SharedCoreServices {
             documents: Mutex::new(BTreeMap::new()),
             log: Mutex::new((0, VecDeque::new())),
             traffic: Mutex::new(BTreeMap::new()),
+            entrance: Mutex::new(None),
             sender,
             pending: AtomicUsize::new(0),
         });
@@ -264,6 +267,9 @@ impl SharedCoreServices {
         }
     }
     fn retire_resources(&self, principal: &Principal) {
+        if let Some(traffic) = self.0.entrance.lock().unwrap_or_else(|p|p.into_inner()).as_ref() {
+            traffic.retire(&owner_key(principal));
+        }
         let _ = self.0.resources.retire(&principal.resources);
         self.0.files.retire(principal);
         self.0.desktop.retire(principal);
@@ -412,6 +418,9 @@ impl SharedCoreServices {
     }
 
     fn current(&self, principal: &Principal) -> Result<()> {
+        self.current_checked(principal, false)
+    }
+    fn current_checked(&self, principal: &Principal, require_active: bool) -> Result<()> {
         if !self
             .0
             .owners
@@ -438,11 +447,15 @@ impl SharedCoreServices {
                     "the plugin's complete trust record changed",
                 ));
             }
+            if require_active && !registry.is_enabled(&principal.owner.plugin_id) {
+                self.retire_host_traffic(&principal.owner.plugin_id, principal.plugin.generation);
+                return Err(error("authorization_revoked", "the traffic owner is disabled"));
+            }
         }
         Ok(())
     }
     fn check(&self, principal: &Principal, method: &str, host: bool, params: &Value) -> Result<()> {
-        self.current(principal)?;
+        self.current_checked(principal, method.starts_with("traffic."))?;
         let permission = if params.get("reference").and_then(Value::as_str).is_some()
             && matches!(
                 method,
@@ -476,7 +489,42 @@ impl SharedCoreServices {
                 "traffic resource observations must originate from the Host",
             ));
         }
+        if method.starts_with("traffic.") && !host {
+            return Err(error("permission_denied", "traffic data connections require an authenticated Host entry"));
+        }
         Ok(())
+    }
+
+    /// Called by Native before creating its client, never by a plugin RPC.
+    pub(crate) fn prepare_traffic(&self) -> Result<traffic::Traffic> {
+        let mut entrance = self.0.entrance.lock().unwrap_or_else(|p|p.into_inner());
+        if entrance.is_none() { *entrance = Some(traffic::Traffic::bind()?); }
+        Ok(entrance.as_ref().unwrap().clone())
+    }
+
+    pub(crate) fn retire_host_traffic(&self, id: &str, generation: u64) {
+        let principal = self.0.owners.lock().unwrap_or_else(|p|p.into_inner()).get(id)
+            .filter(|p|p.plugin.generation == generation).cloned();
+        if let Some(p) = principal
+            && let Some(traffic) = self.0.entrance.lock().unwrap_or_else(|p|p.into_inner()).as_ref()
+        { traffic.retire(&owner_key(&p)); }
+    }
+
+    fn traffic_check(&self, p: &Principal, action: &str, target: &str) -> Result<bool> {
+        self.current_checked(p, true)?;
+        let granted = |permission| p.plugin.manifest.permissions.contains(&permission)
+            && p.plugin.authorization.as_ref().is_some_and(|a|a.grants.contains(&permission));
+        if !granted(Permission::TrafficIntercept) { return Ok(false); }
+        let mut url = url::Url::parse(target).map_err(|_|error("invalid_url", "invalid traffic destination"))?;
+        if url.scheme() == "ws" { let _ = url.set_scheme("http"); }
+        else if url.scheme() == "wss" { let _ = url.set_scheme("https"); }
+        network::authorize_url(p, url.as_str())?;
+        match action {
+            "intercept" => Ok(true),
+            "sensitiveHeaders" => Ok(granted(Permission::TrafficSensitiveHeaders)),
+            "redirect" => Ok(granted(Permission::TrafficRedirect)),
+            _ => Err(error("permission_denied", "unsupported traffic authority action")),
+        }
     }
     fn execute(&self, work: &Work) -> Result<Value> {
         let check = || {
@@ -541,6 +589,16 @@ impl SharedCoreServices {
                 self.0
                     .network
                     .invoke(p, method, params, &self.0.persistent, &check)
+            }
+            Some(("traffic", method)) => {
+                let entrance = self.0.entrance.lock().unwrap_or_else(|p|p.into_inner()).clone()
+                    .ok_or_else(||error("traffic_unavailable", "Native did not prepare a process traffic entrance"))?;
+                let weak = Arc::downgrade(&self.0);
+                let snapshot = p.clone();
+                entrance.invoke(p, method, params, Arc::new(move |action, target| {
+                    let shared = weak.upgrade().ok_or_else(||error("runtime_stopped", "Core traffic authority retired"))?;
+                    SharedCoreServices(shared).traffic_check(&snapshot, action, target)
+                }))
             }
             Some(("resources", "list")) => {
                 let jobs = self
@@ -781,6 +839,16 @@ impl SharedCoreServices {
                     &|| Ok(()),
                 );
             }
+            "traffic.register" => {
+                if let Some(traffic) = self.0.entrance.lock().unwrap_or_else(|p|p.into_inner()).as_ref() {
+                    let _ = traffic.invoke(p, "unregister", json!({"registration":value["registration"]}), Arc::new(|_,_|Ok(false)));
+                }
+            }
+            "traffic.connect" => {
+                if let Some(traffic) = self.0.entrance.lock().unwrap_or_else(|p|p.into_inner()).as_ref()
+                    && let Some(token) = value["token"].as_str()
+                { traffic.revoke_ticket(&owner_key(p), token); }
+            }
             "files.watch" => {
                 let _ = self
                     .0
@@ -853,7 +921,7 @@ fn monitor(weak: Weak<Shared>) {
             .cloned()
             .collect::<Vec<_>>();
         for owner in owners {
-            if service.current(&owner).is_err() {
+            if service.current_checked(&owner, owner.plugin.manifest.permissions.contains(&Permission::TrafficIntercept)).is_err() {
                 service.retire(&owner.owner.plugin_id, owner.plugin.generation);
             }
         }
@@ -878,6 +946,7 @@ fn permission(method: &str) -> Result<Permission> {
         Some(("resources", "reportTraffic")) => HostNetwork,
         Some(("network", "fetch")) => HostNetwork,
         Some(("network", _)) => CoreNetwork,
+        Some(("traffic", _)) => TrafficIntercept,
         Some(("desktop", "notify" | "dismissNotification" | "notificationEvents")) => {
             CoreNotifications
         }

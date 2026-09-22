@@ -51,9 +51,15 @@ async function prepareProcessTrafficEnvironment({ platform = process.platform, e
     if (platform === 'win32') for (const existing of Object.keys(next)) if (existing.toUpperCase() === key) delete next[existing];
     next[key] = bundlePath;
   }
+  const environmentPatch = Object.freeze({
+    set: Object.freeze(Object.fromEntries([...['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'], ...trustOutputs].map(name => [name, next[name]]))),
+    // Apply these removals to the original client environment BEFORE `set`.
+    // Never copy the worker's unrelated environment or credentials to a client.
+    removeCaseInsensitive: Object.freeze([...new Set(['http_proxy', 'https_proxy', 'all_proxy', ...trustOutputs.map(name => name.toLowerCase())])]),
+  });
   // Preserve NO_PROXY exactly; a destination bypassed by the child is not covered.
   let closed = false, closing;
-  return Object.freeze({ environment: Object.freeze(next), upstreamEnvironment, bundlePath,
+  return Object.freeze({ environment: Object.freeze(next), environmentPatch, upstreamEnvironment, bundlePath,
     status: () => ({ prepared: !closed && !closing, coverage: 'process-configuration-only', inheritedBypass: Object.keys(environment).some(key => /^no_proxy$/i.test(key) && environment[key]) }),
     close() { return closing ??= removeOwned().then(() => { closed = true; }); },
   });

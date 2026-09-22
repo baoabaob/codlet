@@ -142,6 +142,12 @@ pub enum Permission {
     CoreShortcuts,
     #[serde(rename = "core.diagnostics")]
     CoreDiagnostics,
+    #[serde(rename = "traffic.intercept")]
+    TrafficIntercept,
+    #[serde(rename = "traffic.sensitiveHeaders")]
+    TrafficSensitiveHeaders,
+    #[serde(rename = "traffic.redirect")]
+    TrafficRedirect,
 }
 
 impl Permission {
@@ -170,6 +176,9 @@ impl Permission {
             Self::CoreClipboardWrite => "core.clipboard.write",
             Self::CoreShortcuts => "core.shortcuts",
             Self::CoreDiagnostics => "core.diagnostics",
+            Self::TrafficIntercept => "traffic.intercept",
+            Self::TrafficSensitiveHeaders => "traffic.sensitiveHeaders",
+            Self::TrafficRedirect => "traffic.redirect",
         }
     }
 
@@ -186,6 +195,9 @@ impl Permission {
                 | Self::CoreTasks
                 | Self::HostProcessSpawn
                 | Self::CoreNetwork
+                | Self::TrafficIntercept
+                | Self::TrafficSensitiveHeaders
+                | Self::TrafficRedirect
                 | Self::CoreNotifications
                 | Self::CoreClipboardRead
                 | Self::CoreClipboardWrite
