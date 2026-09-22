@@ -52,6 +52,7 @@ struct State {
     pending: BTreeMap<String, Pending>,
     sequence: u64,
     revision: u64,
+    applied_revision: u64,
     order: u64,
     change_queued: bool,
     ready: bool,

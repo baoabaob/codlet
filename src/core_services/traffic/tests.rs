@@ -143,3 +143,24 @@ fn native_data_plane_round_trips_host_callbacks_streams_and_websocket_frames() {
     let resources=fixture.traffic.resources();
     assert_eq!(resources["leases"],0); assert_eq!(resources["pending"],0);
 }
+
+#[test]
+fn native_worker_serves_verified_tls_and_removes_its_private_trust_bundle() {
+    use std::io::{BufRead, BufReader};
+    let Some(node)=std::env::var_os("CODLET_TRAFFIC_TEST_NODE") else { return; };
+    let fixture=Fixture::new();
+    let mut child=std::process::Command::new(node).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/traffic-native-worker.cjs"))
+        .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut input=child.stdin.take().unwrap(); let mut output=BufReader::new(child.stdout.take().unwrap());
+    writeln!(input,"{}",json!({"gateway":fixture.traffic.gateway_endpoint().unwrap(),"host":fixture.invoke("test.traffic-a","connect",json!({}),true).unwrap(),"directory":fixture._directory.path()})).unwrap();
+    let mut line=String::new(); output.read_line(&mut line).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["ready"],true,"{line}");
+    let registration=fixture.registration("test.traffic-a");
+    let descriptor=fixture.traffic.launch_descriptor().unwrap();
+    assert_eq!(descriptor["environmentPatch"]["set"]["CODEX_CA_CERTIFICATE"],descriptor["bundlePath"]);
+    assert_eq!(descriptor["trust"]["systemStoreModified"],false);
+    writeln!(input,"{}",json!({"registration":registration,"descriptor":descriptor})).unwrap();
+    line.clear(); output.read_line(&mut line).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["completed"],true,"{line}");
+    assert!(child.wait().unwrap().success());
+}

@@ -139,7 +139,7 @@ async function startTrafficWorker(configuration, { signal: rootSignal, environme
     prepared = await prepareProcessTrafficEnvironment({ environment: original, directory: configuration.directory, proxyUrl: ingress.proxyUrl, additionalCaPem, trustInputs: configuration.trustInputs ?? [], trustOutputs: configuration.trustOutputs });
     if (signal.aborted) { await prepared.close(); throw failure('host_stopping'); }
     await gateway.native('launched', { proxyUrl: ingress.proxyUrl, bundlePath: prepared.bundlePath, environmentPatch: prepared.environmentPatch,
-      trust: { outputs: [...configuration.trustOutputs], inheritedInputsMerged: true, systemStoreModified: false }, bypass: 'preserve-original-no-proxy' });
+      trust: { outputs: [...configuration.trustOutputs], launchCaPem: additionalCaPem, inheritedInputsMerged: true, systemStoreModified: false }, bypass: 'preserve-original-no-proxy' });
     return Object.freeze({ close, status: () => ({ gateway: gateway.status(), ingress: ingress.status() }) });
   } catch (error) { await close(); throw error; }
 }

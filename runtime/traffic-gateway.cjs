@@ -64,6 +64,7 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
           hooks.set(item.registration, { controller: ownerController, origins: item.options.origins });
         }
         await onOrigins([...new Set([...hooks.values()].flatMap(hook => hook.origins))]);
+        await peer.request('applied', { revision: snapshot.revision }, { signal: controller.signal, timeoutMs: 2000 });
       }
     })().finally(() => { refreshing = null; });
     return refreshing;
