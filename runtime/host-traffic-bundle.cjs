@@ -3700,12 +3700,310 @@ var require_ws = __commonJS({
   }
 });
 
+// ../runtime/traffic-interceptors.cjs
+var require_traffic_interceptors = __commonJS({
+  "../runtime/traffic-interceptors.cjs"(exports2, module2) {
+    "use strict";
+    function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
+      if (typeof authorize !== "function" || !rootSignal) throw new TypeError("trusted authorization and lifecycle are required");
+      const hooks = /* @__PURE__ */ new Map(), active = /* @__PURE__ */ new Set();
+      const failure = (code) => Object.assign(new Error(code), { code });
+      const sensitive = (name) => !["accept", "accept-encoding", "accept-language", "content-type", "content-encoding", "content-length", "cache-control", "user-agent"].includes(name.toLowerCase());
+      const origin = (value) => {
+        const url = new URL(value);
+        if (url.protocol === "ws:") url.protocol = "http:";
+        if (url.protocol === "wss:") url.protocol = "https:";
+        return url.origin;
+      };
+      const fields = (value, allowed) => {
+        if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !allowed.includes(key))) throw failure("invalid_decision");
+      };
+      const ordered = () => [...hooks.values()].sort((a, b) => a.priority - b.priority || (a.owner.pluginId < b.owner.pluginId ? -1 : a.owner.pluginId > b.owner.pluginId ? 1 : 0) || a.sequence - b.sequence);
+      let sequence = 0, retired = false;
+      const requireLive = () => {
+        if (retired || rootSignal.aborted) throw failure("interceptors_retired");
+      };
+      function register(owner, options, callbacks) {
+        requireLive();
+        fields(options, ["id", "origins", "priority", "timeoutMs"]);
+        fields(callbacks, ["request", "response", "webSocket"]);
+        if (!owner || typeof owner.pluginId !== "string" || !Number.isSafeInteger(owner.generation) || !owner.signal || owner.signal.aborted) throw failure("invalid_owner");
+        if (typeof options.id !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/u.test(options.id) || !Array.isArray(options.origins) || !options.origins.length || options.origins.length > 64) throw failure("invalid_registration");
+        if (!Object.values(callbacks).length || Object.values(callbacks).some((value) => typeof value !== "function")) throw failure("invalid_registration");
+        const origins = new Set(options.origins.map((value) => {
+          const url = new URL(value);
+          if (!["http:", "https:"].includes(url.protocol) || url.href !== `${url.origin}/` || url.username || url.password) throw failure("invalid_registration");
+          return url.origin;
+        }));
+        const priority = options.priority ?? 0, timeoutMs = options.timeoutMs ?? 1e3;
+        if (!Number.isSafeInteger(priority) || Math.abs(priority) > 1e3 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2e3) throw failure("invalid_registration");
+        const key = `${owner.pluginId}:${owner.generation}:${options.id}`;
+        if (hooks.has(key) || hooks.size >= 32) throw failure("interceptor_limit");
+        const hook = { owner, key, origins, priority, timeoutMs, callbacks: { ...callbacks }, sequence: ++sequence, alive: true, enabled: true };
+        function dispose() {
+          if (!hook.alive) return;
+          hook.alive = false;
+          hooks.delete(key);
+          owner.signal.removeEventListener("abort", dispose);
+          for (const item of active) if (item.selected.includes(hook)) item.exchange.cancel();
+        }
+        hook.dispose = dispose;
+        hooks.set(key, hook);
+        owner.signal.addEventListener("abort", dispose, { once: true });
+        return Object.freeze({ dispose, setEnabled(value) {
+          requireLive();
+          if (!hook.alive || typeof value !== "boolean") throw failure("invalid_registration");
+          hook.enabled = value;
+          if (!value) {
+            for (const item of active) if (item.selected.includes(hook)) item.exchange.cancel();
+          }
+        } });
+      }
+      async function bounded(hook, item, operation) {
+        const signal = item.exchange.signal;
+        if (!hook.alive || !hook.enabled || signal.aborted) throw failure("interceptor_retired");
+        let timer, abort;
+        try {
+          const result = await new Promise((resolve, reject) => {
+            abort = () => reject(failure("interceptor_retired"));
+            signal.addEventListener("abort", abort, { once: true });
+            timer = setTimeout(() => {
+              reject(failure("interceptor_timeout"));
+              item.exchange.cancel();
+            }, hook.timeoutMs);
+            Promise.resolve().then(operation).then(resolve, () => reject(failure("interceptor_failed")));
+          });
+          if (!hook.alive || !hook.enabled || signal.aborted) throw failure("interceptor_retired");
+          return result;
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", abort);
+        }
+      }
+      async function access(hook, item, action, url) {
+        return bounded(hook, item, () => authorize(hook.owner, action, url, item.exchange.signal));
+      }
+      async function check(hook, item, url) {
+        if (!await access(hook, item, "intercept", url)) throw failure("permission_denied");
+        return !!await access(hook, item, "sensitiveHeaders", url);
+      }
+      function view(value, privileged) {
+        return Object.freeze({ ...value, ...value.protocols && !privileged ? { protocols: Object.freeze([]) } : {}, headers: Object.freeze((value.headers ?? []).filter(([name]) => privileged || !sensitive(name)).map((pair) => Object.freeze([...pair]))) });
+      }
+      function headers(value, previous, privileged) {
+        if (!Array.isArray(value) || value.length > 128 || value.some((pair) => !Array.isArray(pair) || pair.length !== 2 || pair.some((part) => typeof part !== "string"))) throw failure("invalid_decision");
+        if (privileged) return value;
+        if (value.some(([name]) => sensitive(name))) throw failure("permission_denied");
+        return [...value, ...(previous ?? []).filter(([name]) => sensitive(name))];
+      }
+      function begin(request, exchange) {
+        requireLive();
+        if (!request.url || typeof exchange.cancel !== "function") throw failure("ingress_required");
+        if (active.size >= 4) throw failure("interceptor_busy");
+        const selected = ordered().filter((hook) => hook.enabled && hook.origins.has(origin(request.url)));
+        const item = { selected, exchange };
+        const done = () => {
+          active.delete(item);
+          exchange.signal.removeEventListener("abort", done);
+        };
+        active.add(item);
+        exchange.signal.addEventListener("abort", done, { once: true });
+        if (exchange.signal.aborted) {
+          done();
+          throw failure("interceptor_retired");
+        }
+        return item;
+      }
+      async function updateRequest(hook, item, request, update, privileged) {
+        fields(update, ["url", "method", "headers", "body"]);
+        let next = { ...request, ...update };
+        if (update.headers !== void 0) next.headers = headers(update.headers, request.headers, privileged);
+        if (origin(next.url) !== origin(request.url)) {
+          if (!await access(hook, item, "redirect", next.url)) throw failure("permission_denied");
+          next.headers = (next.headers ?? []).filter(([name]) => ["accept", "content-type", "content-encoding"].includes(name.toLowerCase()));
+        }
+        const url = new URL(next.url);
+        if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.hash) throw failure("invalid_decision");
+        return next;
+      }
+      async function http(request, exchange) {
+        const item = begin(request, exchange), participated = [];
+        let current = request, response;
+        try {
+          for (const hook of item.selected) {
+            if (!hook.origins.has(origin(current.url))) continue;
+            const privileged = await check(hook, item, current.url);
+            participated.push({ hook, privileged, url: current.url });
+            if (!hook.callbacks.request) continue;
+            const decision = await bounded(hook, item, () => hook.callbacks.request(view(current, privileged), Object.freeze({ signal: exchange.signal })));
+            if (decision == null) continue;
+            fields(decision, ["request", "respond", "block"]);
+            if (Object.keys(decision).length !== 1) throw failure("invalid_decision");
+            if (decision.block === true) {
+              response = { status: 403, body: "blocked_by_interceptor" };
+              break;
+            }
+            if (decision.respond !== void 0) {
+              fields(decision.respond, ["status", "headers", "body"]);
+              response = decision.respond;
+              break;
+            }
+            if (!decision.request) throw failure("invalid_decision");
+            current = await updateRequest(hook, item, current, decision.request, privileged);
+          }
+          response ??= await exchange.forward({ url: current.url, method: current.method, headers: current.headers, body: ["GET", "HEAD"].includes(current.method) ? void 0 : current.body, ...networkProfile ? { networkProfile } : {} });
+          for (const { hook } of participated.reverse()) {
+            if (!hook.callbacks.response || !hook.origins.has(origin(current.url))) continue;
+            const privileged = await check(hook, item, current.url);
+            const update = await bounded(hook, item, () => hook.callbacks.response(view(response, privileged), Object.freeze({ signal: exchange.signal })));
+            if (update == null) continue;
+            fields(update, ["status", "headers", "body"]);
+            response = { ...response, ...update, ...update.headers === void 0 ? {} : { headers: headers(update.headers, response.headers, privileged) } };
+          }
+          return response;
+        } catch (error) {
+          exchange.cancel();
+          throw error;
+        }
+      }
+      async function webSocket(request, exchange) {
+        const item = begin(request, exchange), transforms = [];
+        let current = { ...request, method: "GET" };
+        try {
+          for (const hook of item.selected) {
+            if (!hook.origins.has(origin(current.url)) || !hook.callbacks.webSocket) continue;
+            const privileged = await check(hook, item, current.url);
+            const decision = await bounded(hook, item, () => hook.callbacks.webSocket(view(current, privileged), Object.freeze({ signal: exchange.signal })));
+            if (decision == null) continue;
+            fields(decision, ["request", "block", "clientToServer", "serverToClient"]);
+            if (decision.block === true) throw failure("permission_denied");
+            const observedUrl = current.url;
+            if (decision.request) current = await updateRequest(hook, item, current, decision.request, privileged);
+            for (const direction of ["clientToServer", "serverToClient"]) if (decision[direction] != null && typeof decision[direction] !== "function") throw failure("invalid_decision");
+            transforms.push({ hook, url: observedUrl, ...decision });
+          }
+          const transform = (direction) => async (frame, context) => {
+            let value = frame;
+            const chain = direction === "clientToServer" ? transforms : [...transforms].reverse();
+            for (const entry of chain) if (entry[direction] && value != null && entry.hook.origins.has(origin(current.url))) {
+              await check(entry.hook, item, current.url);
+              value = await bounded(entry.hook, item, () => entry[direction](value, context));
+              if (typeof value === "string") value = { data: value, binary: false };
+              else if (value instanceof Uint8Array) value = { data: value, binary: true };
+              if (value != null && (typeof value.binary !== "boolean" || (value.binary ? !(value.data instanceof Uint8Array) : typeof value.data !== "string") || Buffer.byteLength(value.data) > 8 * 1024 * 1024)) throw failure("invalid_decision");
+            }
+            return value;
+          };
+          return await exchange.forward({ url: current.url, headers: current.headers, protocols: origin(current.url) === origin(request.url) ? request.protocols : [], clientToServer: transform("clientToServer"), serverToClient: transform("serverToClient"), ...networkProfile ? { networkProfile } : {} });
+        } catch (error) {
+          exchange.cancel();
+          throw error;
+        }
+      }
+      function close() {
+        if (retired) return;
+        retired = true;
+        rootSignal.removeEventListener("abort", close);
+        for (const hook of [...hooks.values()]) hook.dispose();
+        for (const item of active) item.exchange.cancel();
+      }
+      rootSignal.addEventListener("abort", close, { once: true });
+      return Object.freeze({ register, handlers: Object.freeze({ http, webSocket }), close, status: () => ({ registered: hooks.size, active: active.size, retired }) });
+    }
+    module2.exports = { createTrafficInterceptors };
+  }
+});
+
+// ../runtime/process-traffic-environment.cjs
+var require_process_traffic_environment = __commonJS({
+  "../runtime/process-traffic-environment.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs/promises");
+    var path = require("node:path");
+    var { X509Certificate } = require("node:crypto");
+    var proxyNames = /^(https?_proxy|all_proxy|no_proxy)$/i;
+    var error = (code) => Object.assign(new Error(code), { code });
+    async function prepareProcessTrafficEnvironment({ platform = process.platform, environment, directory, proxyUrl, additionalCaPem, trustInputs = [], trustOutputs = [] }) {
+      if (!["win32", "darwin"].includes(platform)) throw error("platform_unsupported");
+      if (!environment || !path.isAbsolute(directory) || !Array.isArray(trustInputs) || !Array.isArray(trustOutputs) || !trustOutputs.length || trustInputs.length > 8 || trustOutputs.length > 8) throw error("invalid_launch_configuration");
+      const proxy = new URL(proxyUrl);
+      if (proxy.protocol !== "http:" || proxy.hostname !== "127.0.0.1" || !proxy.port || !proxy.username || !proxy.password || proxy.pathname !== "/" || proxy.search || proxy.hash) throw error("invalid_process_proxy");
+      if (trustOutputs.some((name) => !/^[A-Z][A-Z0-9_]{0,127}$/u.test(name) || proxyNames.test(name))) throw error("invalid_trust_variable");
+      const upstreamEnvironment = Object.freeze({ ...environment });
+      const certificates = /* @__PURE__ */ new Map();
+      const append = (pem) => {
+        if (typeof pem !== "string" || Buffer.byteLength(pem) > 128 * 1024) throw error("invalid_ca_bundle");
+        const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu);
+        if (!blocks?.length || pem.replace(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu, "").trim()) throw error("invalid_ca_bundle");
+        for (const block of blocks) {
+          let cert;
+          try {
+            cert = new X509Certificate(block);
+          } catch {
+            throw error("invalid_ca_bundle");
+          }
+          certificates.set(cert.fingerprint256, block);
+        }
+      };
+      for (const input of new Set(trustInputs)) {
+        if (typeof input !== "string" || !path.isAbsolute(input)) throw error("invalid_ca_bundle");
+        const handle = await fs.open(input, "r");
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > 128 * 1024) throw error("invalid_ca_bundle");
+          append(await handle.readFile("utf8"));
+        } finally {
+          await handle.close();
+        }
+      }
+      append(additionalCaPem);
+      const merged = [...certificates.values()].join("\n") + "\n";
+      if (Buffer.byteLength(merged) > 128 * 1024) throw error("invalid_ca_bundle");
+      await fs.mkdir(directory, { recursive: true, mode: 448 });
+      const owned = await fs.mkdtemp(path.join(directory, "process-trust-"));
+      const bundlePath = path.join(owned, "ca.pem");
+      const removeOwned = async () => {
+        await fs.rm(bundlePath, { force: true });
+        await fs.rmdir(owned);
+      };
+      try {
+        await fs.writeFile(bundlePath, merged, { flag: "wx", mode: 384 });
+      } catch (reason) {
+        await removeOwned();
+        throw reason;
+      }
+      const next = { ...environment };
+      for (const key of Object.keys(next)) if (/^(https?_proxy|all_proxy)$/i.test(key)) delete next[key];
+      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]) next[key] = proxyUrl;
+      for (const key of trustOutputs) {
+        if (platform === "win32") {
+          for (const existing of Object.keys(next)) if (existing.toUpperCase() === key) delete next[existing];
+        }
+        next[key] = bundlePath;
+      }
+      let closed = false;
+      return Object.freeze({
+        environment: Object.freeze(next),
+        upstreamEnvironment,
+        bundlePath,
+        status: () => ({ prepared: !closed, coverage: "process-configuration-only", inheritedBypass: Object.keys(environment).some((key) => /^no_proxy$/i.test(key) && environment[key]) }),
+        async close() {
+          if (closed) return;
+          await removeOwned();
+          closed = true;
+        }
+      });
+    }
+    module2.exports = { prepareProcessTrafficEnvironment };
+  }
+});
+
 // ../runtime/host-traffic.cjs
 var httpTraffic = require("node:http");
 var httpsTraffic = require("node:https");
 var tlsTraffic = require("node:tls");
 var netTraffic = require("node:net");
-var { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID } = require("node:crypto");
+var { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID, timingSafeEqual: trafficEqual, X509Certificate: TrafficCertificate } = require("node:crypto");
 var { WebSocket: TrafficWebSocket, WebSocketServer: TrafficWebSocketServer } = require_ws();
 var TRAFFIC_MAX_BYTES = 64 * 1024 * 1024;
 var TRAFFIC_MAX_HEADERS = 128;
@@ -4278,7 +4576,17 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
     }, signal, initialServerFrames);
     return Object.freeze({ protocol: upstream.protocol || null, closed });
   }
-  async function openChannel(options = {}, handlers) {
+  async function openProcessIngress(options, handlers, configuration) {
+    if (!ownObject(configuration) || !Array.isArray(configuration.origins) || !configuration.origins.length || configuration.origins.length > 64 || typeof configuration.certificateFor !== "function") throw fail("invalid_argument", "process ingress requires bounded origins and a certificate provider");
+    const origins = new Set(configuration.origins.map((value) => {
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.href !== `${url.origin}/`) throw fail("invalid_argument", "process ingress requires exact HTTP(S) origins");
+      return url.origin;
+    }));
+    const lifetimeMs = integer(configuration.lifetimeMs, 3e5, 36e5, "lifetimeMs");
+    return openChannel(options, handlers, { origins, certificateFor: configuration.certificateFor, lifetimeMs });
+  }
+  async function openChannel(options = {}, handlers, ingress = null) {
     if (retired || rootSignal.aborted) throw fail("host_stopping", "Host traffic runtime has retired");
     if (!ownObject(options) || Object.keys(options).some((key) => !["maxConcurrent", "maxRequestBytes", "maxResponseBytes", "maxForwardAttempts", "handlerTimeoutMs", "maxWebSocketMessageBytes", "maxWebSocketQueueBytes", "maxWebSocketQueueFrames"].includes(key))) throw fail("invalid_argument", "unsupported traffic channel option");
     if (!ownObject(handlers) || Object.keys(handlers).some((key) => !["http", "webSocket"].includes(key))) throw fail("invalid_handler", "traffic channel handlers must be an object");
@@ -4295,27 +4603,53 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
     if (channels.size + opening >= TRAFFIC_MAX_CHANNELS) throw fail("channel_limit", `a Host generation may own at most ${TRAFFIC_MAX_CHANNELS} traffic channels`);
     opening += 1;
     try {
-      let close = function() {
+      let resolveIncoming = function(incoming, websocket = false) {
+        if (!ingress) {
+          const value = new URL(incoming.url ?? "/", "http://127.0.0.1");
+          if (!(value.pathname === prefix || value.pathname.startsWith(`${prefix}/`))) throw fail("target_not_found", "unknown channel");
+          return { path: (value.pathname.slice(prefix.length) || "/") + value.search };
+        }
+        const tunnel = tunnels.get(incoming.socket);
+        if (!tunnel && !authorizedProxy(incoming)) throw fail("proxy_authentication_required", "process proxy authentication required");
+        const raw = incoming.url ?? "";
+        if (tunnel ? !raw.startsWith("/") || raw.startsWith("//") : !/^http:\/\//u.test(raw)) throw fail("invalid_target", "invalid proxy target form");
+        const target = tunnel ? new URL(raw, tunnel) : new URL(raw);
+        if (target.username || target.password || target.hash || !ingress.origins.has(target.origin) || tunnel && target.origin !== tunnel || incoming.headers.host !== target.host) throw fail("target_denied", "proxy destination is outside its launch scope");
+        if (websocket) target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+        return { path: target.pathname + target.search, url: target.href };
+      }, scopedForward = function(input, destination) {
+        if (!ingress) return input;
+        const origin = (value) => {
+          const url = new URL(value);
+          if (url.protocol === "wss:") url.protocol = "https:";
+          if (url.protocol === "ws:") url.protocol = "http:";
+          return url.origin;
+        };
+        if (origin(input.url) === origin(destination.url)) return input;
+        const headers = headerPairs(input.headers, "forward headers").filter(([name]) => ["accept", "content-type", "content-encoding"].includes(name.toLowerCase()));
+        return { ...input, headers, ...Object.hasOwn(input, "protocols") ? { protocols: [] } : {} };
+      }, close = function() {
         return closeWithReason(fail("channel_closed", "traffic channel was closed"));
       };
       await coreRequest("host.network.authorizeChannel", {}, rootSignal);
       if (retired || rootSignal.aborted) throw fail("host_stopping", "Host traffic runtime retired before listener creation");
       const token = trafficRandomBytes(32).toString("base64url");
       const prefix = `/${token}`;
+      const proxyAuthorization = Buffer.from(`Basic ${Buffer.from(`codlet:${token}`).toString("base64")}`);
+      const tunnels = /* @__PURE__ */ new WeakMap();
+      const authorizedProxy = (incoming) => {
+        const value = Buffer.from(String(incoming.headers["proxy-authorization"] ?? ""));
+        return value.length === proxyAuthorization.length && trafficEqual(value, proxyAuthorization);
+      };
       const sockets = /* @__PURE__ */ new Set(), active = /* @__PURE__ */ new Set();
       let concurrent = 0, forwardAttempts = 0, closed = false, closePromise;
       const server = httpTraffic.createServer({ maxHeaderSize: TRAFFIC_MAX_HEADER_BYTES }, async (incoming, outgoing) => {
-        let requestUrl;
+        let destination;
         try {
-          requestUrl = new URL(incoming.url ?? "/", "http://127.0.0.1");
-        } catch {
-          outgoing.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-          outgoing.end("invalid request target");
-          return;
-        }
-        if (!(requestUrl.pathname === prefix || requestUrl.pathname.startsWith(`${prefix}/`))) {
-          outgoing.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-          outgoing.end("not found");
+          destination = resolveIncoming(incoming);
+        } catch (reason) {
+          outgoing.writeHead(reason.code === "proxy_authentication_required" ? 407 : reason.code === "target_not_found" ? 404 : 400, { connection: "close" });
+          outgoing.end("proxy_target_rejected");
           return;
         }
         if (!httpHandler) {
@@ -4337,6 +4671,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
         changed();
         const controller = new AbortController();
         active.add(controller);
+        const lifetime = ingress ? setTimeout(() => controller.abort(fail("exchange_timeout", "process exchange expired")), ingress.lifetimeMs) : null;
         const unlinkRoot = linkAbort(controller, rootSignal, fail("host_stopping", "Host traffic runtime retired"));
         const cancelled = () => {
           if (!controller.signal.aborted) controller.abort(fail("request_cancelled", "downstream client cancelled the request"));
@@ -4348,18 +4683,18 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
         let wroteHead = false;
         try {
           await coreRequest("host.network.authorizeChannel", {}, controller.signal);
-          const suffix = requestUrl.pathname.slice(prefix.length) || "/";
           const requestBody = onceBody(incoming, requestLimit, controller.signal, "incoming request", () => incoming.resume());
           const request = Object.freeze({
             id: trafficRandomUUID(),
             method: String(incoming.method ?? "GET"),
-            path: suffix + requestUrl.search,
+            ...destination,
             headers: Object.freeze(rawHeaderPairs(incoming.rawHeaders).map((pair) => Object.freeze(pair))),
             body: requestBody
           });
           let attempts = 0, responsePending = false;
           const exchange = Object.freeze({
             signal: controller.signal,
+            cancel: () => controller.abort(fail("request_cancelled", "HTTP exchange cancelled by its owner")),
             get forwardAttempts() {
               return attempts;
             },
@@ -4371,7 +4706,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
               forwardAttempts += 1;
               responsePending = true;
               try {
-                return await forwardHttp(input, controller.signal, requestLimit, responseLimit, () => {
+                return await forwardHttp(scopedForward(input, destination), controller.signal, requestLimit, responseLimit, () => {
                   responsePending = false;
                 });
               } catch (reason) {
@@ -4410,6 +4745,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
             outgoing.end(code);
           } else if (!outgoing.destroyed) outgoing.destroy();
         } finally {
+          clearTimeout(lifetime);
           incoming.off("aborted", cancelled);
           unlinkRoot();
           active.delete(controller);
@@ -4426,8 +4762,62 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState 
         sockets.add(socket);
         socket.once("close", () => sockets.delete(socket));
       });
-      server.on("connect", (_request, socket) => {
-        socket.end("HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n");
+      server.on("connect", async (incoming, socket, head) => {
+        const reject = (status) => {
+          if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r
+Connection: close\r
+Content-Length: 0\r
+\r
+`);
+        };
+        if (!ingress) return reject("405 Method Not Allowed");
+        if (!authorizedProxy(incoming)) return reject("407 Proxy Authentication Required");
+        if (closed || retired || rootSignal.aborted) return reject("503 Service Unavailable");
+        if (sockets.size > maximumConcurrent + 4) return reject("503 Service Unavailable");
+        const controller = new AbortController();
+        active.add(controller);
+        const unlink = linkAbort(controller, rootSignal);
+        const abort = () => socket.destroy();
+        controller.signal.addEventListener("abort", abort, { once: true });
+        const expired = setTimeout(() => controller.abort(fail("exchange_timeout", "process tunnel expired")), ingress.lifetimeMs);
+        const disconnected = () => controller.abort(fail("request_cancelled", "process tunnel closed"));
+        socket.once("close", disconnected);
+        let setupTimer;
+        try {
+          const target = new URL(`https://${incoming.url}`);
+          if (incoming.url !== `${target.hostname}:${target.port || "443"}` || target.username || target.password || target.pathname !== "/" || target.search || target.hash || !ingress.origins.has(target.origin)) throw fail("target_denied", "CONNECT destination denied");
+          setupTimer = setTimeout(() => controller.abort(fail("handler_timeout", "certificate preparation expired")), handlerTimeout);
+          await coreRequest("host.network.authorizeChannel", {}, controller.signal);
+          const material = await raceAbort(() => ingress.certificateFor(target.origin, controller.signal), controller.signal, "certificate preparation cancelled");
+          const certificate = new TrafficCertificate(material.cert);
+          const hostname = target.hostname.replace(/^\[|\]$/gu, "");
+          if (!(netTraffic.isIP(hostname) ? certificate.checkIP(hostname) : certificate.checkHost(hostname))) throw fail("certificate_mismatch", "process certificate does not cover its destination");
+          const secureContext = tlsTraffic.createSecureContext({ key: material.key, cert: material.cert, minVersion: "TLSv1.2" });
+          if (controller.signal.aborted || closed) throw fail("host_stopping", "process proxy retired");
+          socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+          if (head.length) socket.unshift(head);
+          const secure = new tlsTraffic.TLSSocket(socket, { isServer: true, secureContext, ALPNProtocols: ["http/1.1"] });
+          secure.on("error", () => socket.destroy());
+          secure.once("secure", () => {
+            clearTimeout(setupTimer);
+          });
+          tunnels.set(secure, target.origin);
+          server.emit("connection", secure);
+          await new Promise((resolve) => {
+            secure.once("close", resolve);
+            socket.once("close", resolve);
+          });
+        } catch {
+          reject("502 Bad Gateway");
+        } finally {
+          clearTimeout(setupTimer);
+          clearTimeout(expired);
+          unlink();
+          active.delete(controller);
+          controller.signal.removeEventListener("abort", abort);
+          socket.off("close", disconnected);
+          socket.destroy();
+        }
       });
       const webSocketServer = new TrafficWebSocketServer({
         noServer: true,
@@ -4445,14 +4835,13 @@ Content-Length: ${Buffer.byteLength(reason)}\r
 \r
 ${reason}`);
         };
-        let requestUrl;
+        let destination;
         try {
-          requestUrl = new URL(incoming.url ?? "/", "http://127.0.0.1");
-        } catch {
-          reject("400 Bad Request", "invalid request target");
+          destination = resolveIncoming(incoming, true);
+        } catch (reason) {
+          reject(reason.code === "proxy_authentication_required" ? "407 Proxy Authentication Required" : reason.code === "target_not_found" ? "404 Not Found" : "400 Bad Request", "proxy_target_rejected");
           return;
         }
-        if (!(requestUrl.pathname === prefix || requestUrl.pathname.startsWith(`${prefix}/`))) return reject("404 Not Found", "not found");
         if (!webSocketHandler) return reject("426 Upgrade Required", "WebSocket handler unavailable");
         if (closed || retired || rootSignal.aborted) return reject("503 Service Unavailable", "channel unavailable");
         if (concurrent >= maximumConcurrent) return reject("503 Service Unavailable", "channel busy");
@@ -4461,6 +4850,7 @@ ${reason}`);
         changed();
         const controller = new AbortController();
         active.add(controller);
+        const lifetime = ingress ? setTimeout(() => controller.abort(fail("exchange_timeout", "process exchange expired")), ingress.lifetimeMs) : null;
         const unlinkRoot = linkAbort(controller, rootSignal, fail("host_stopping", "Host traffic runtime retired"));
         let forwarded = false, bridge;
         try {
@@ -4468,16 +4858,17 @@ ${reason}`);
           const offered = websocketProtocols(String(incoming.headers["sec-websocket-protocol"] ?? "").split(",").map((value) => value.trim()).filter(Boolean));
           const request = Object.freeze({
             id: trafficRandomUUID(),
-            path: (requestUrl.pathname.slice(prefix.length) || "/") + requestUrl.search,
+            ...destination,
             headers: Object.freeze(rawHeaderPairs(incoming.rawHeaders).map((pair) => Object.freeze(pair))),
             protocols: Object.freeze(offered)
           });
           const exchange = Object.freeze({
             signal: controller.signal,
+            cancel: () => controller.abort(fail("request_cancelled", "WebSocket exchange cancelled by its owner")),
             async forward(input) {
               if (forwarded) throw fail("forward_already_dispatched", "a WebSocket exchange can dispatch upstream at most once");
               forwarded = true;
-              bridge = await forwardWebSocket(input, request, incoming, socket, head, webSocketServer, controller.signal, { handlerTimeout, maxMessageBytes, maxQueueBytes, maxQueueFrames });
+              bridge = await forwardWebSocket(scopedForward(input, destination), request, incoming, socket, head, webSocketServer, controller.signal, { handlerTimeout, maxMessageBytes, maxQueueBytes, maxQueueFrames });
               return bridge;
             }
           });
@@ -4504,6 +4895,7 @@ ${reason}`);
             reject(status, String(reason?.code ?? "websocket_failed"));
           } else if (!socket.destroyed) socket.destroy();
         } finally {
+          clearTimeout(lifetime);
           unlinkRoot();
           active.delete(controller);
           concurrent -= 1;
@@ -4542,8 +4934,9 @@ ${reason}`);
       const channel = Object.freeze({
         id: trafficRandomUUID(),
         endpoint: `http://127.0.0.1:${address.port}${prefix}`,
+        ...ingress ? { proxyUrl: `http://codlet:${token}@127.0.0.1:${address.port}` } : {},
         protocols: Object.freeze([...httpHandler ? ["http"] : [], ...webSocketHandler ? ["websocket"] : []]),
-        status: () => Object.freeze({ open: !closed, activeRequests: concurrent, forwardAttempts, transport: "loopback", coverage: "explicit-endpoint", protocols: channel.protocols }),
+        status: () => Object.freeze({ open: !closed, activeRequests: concurrent, forwardAttempts, transport: "loopback", coverage: ingress ? "process-proxy-unverified" : "explicit-endpoint", protocols: channel.protocols }),
         close
       });
       channels.set(channel, closeWithReason);
@@ -4563,6 +4956,6 @@ ${reason}`);
     return openChannel(options, { http: handler });
   }
   rootSignal.addEventListener("abort", () => closeAll(rootSignal.reason), { once: true });
-  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel }), closeAll });
+  return Object.freeze({ api: Object.freeze({ openChannel: (options, handlers) => openChannel(options, handlers), openHttpChannel }), openProcessIngress, closeAll });
 }
-module.exports = { createTrafficRuntime };
+module.exports = { createTrafficRuntime, createTrafficInterceptors: require_traffic_interceptors().createTrafficInterceptors, prepareProcessTrafficEnvironment: require_process_traffic_environment().prepareProcessTrafficEnvironment };
