@@ -111,7 +111,7 @@ impl RendererRuntime {
     }
 
     pub(crate) fn package_is_active(&self, plugin: &LoadedPlugin) -> bool {
-        let host_ready = plugin.manifest.host.is_none()
+        let host_ready = !plugin.manifest.has_runtime_host()
             || self.external_observations.iter().any(|observation| {
                 observation.plugin.manifest.id == plugin.manifest.id
                     && observation.plugin.generation == plugin.generation
@@ -178,7 +178,7 @@ impl RendererRuntime {
             if let Err(error) = self.capabilities.register_provider(
                 &host_provider_id(&plugin.manifest.id),
                 plugin.generation,
-                plugin.manifest.host_provides(),
+                &plugin.manifest.runtime_host_provides(),
                 plugin.manifest.host_requires(),
                 &grants,
             ) {
@@ -239,7 +239,7 @@ impl RendererRuntime {
         authorizations: &TargetAuthorizations,
     ) -> Result<(), RendererError> {
         let mut dependencies = BTreeSet::new();
-        if plugin.manifest.host.is_some() {
+        if plugin.manifest.has_runtime_host() {
             dependencies.insert((plugin.manifest.id.clone(), plugin.generation));
         }
         if let Some((principal, leases)) = authorizations.get(&plugin.manifest.id) {
@@ -270,5 +270,49 @@ fn failure(plugin_id: &str, stage: &str, error: String) -> PluginTargetFailure {
         plugin_id: plugin_id.into(),
         stage: stage.into(),
         error,
+    }
+}
+
+#[cfg(test)]
+mod native_launch_tests {
+    use super::*;
+
+    #[test]
+    fn native_launch_only_combined_renderer_never_waits_for_a_host_ready_receipt() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("plugins.json")).unwrap();
+        let mut plugin = LoadedPlugin { authorization: None,
+            manifest: crate::plugins::PluginManifest::parse(&serde_json::json!({"schema":1,"id":"dev.launch","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[{"name":"codlet.client.launch","api":1,"scope":"runtime"}]},"permissions":["host.process"]}).to_string()).unwrap(),
+            source: Some("module.exports={activate(){},deactivate(){}};".into()),
+            host: Some(crate::plugins::LoadedHost { root: directory.path().into(), entry: directory.path().join("host.js"), source: "module.exports={};".into(), authorization: None }), generation: 1 };
+        let mut runtime = RendererRuntime::new(vec![plugin.clone()], registry).unwrap();
+        assert!(runtime.external_observations.is_empty());
+        assert!(
+            runtime
+                .require_native_dependencies_ready(&plugin, &TargetAuthorizations::default())
+                .is_ok()
+        );
+        assert_eq!(
+            runtime.logical_plugins().len(),
+            1,
+            "Native snapshot stays in the logical catalog"
+        );
+        assert!(
+            !runtime.package_is_active(&plugin),
+            "a real renderer target must still activate"
+        );
+        plugin.manifest.host.as_mut().unwrap().provides.push(
+            serde_json::from_value(
+                serde_json::json!({"name":"dev.other","api":1,"scope":"runtime"}),
+            )
+            .unwrap(),
+        );
+        assert!(plugin.manifest.has_runtime_host());
+        assert!(
+            runtime
+                .require_native_ready(&plugin.manifest.id, plugin.generation)
+                .is_err(),
+            "ordinary mixed Host still requires its generation's Ready receipt"
+        );
     }
 }

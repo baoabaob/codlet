@@ -129,7 +129,10 @@ impl HostRuntime {
 
     pub fn start(plugins: Vec<LoadedPlugin>, client: CdpClient) -> Result<Self, HostError> {
         Self::validate_plugins(&plugins)?;
-        let runtime = if plugins.is_empty() {
+        let runtime = if !plugins
+            .iter()
+            .any(|plugin| plugin.manifest.has_runtime_host())
+        {
             None
         } else {
             Some(JsRuntime::discover()?)
@@ -143,6 +146,10 @@ impl HostRuntime {
         runtime: Option<JsRuntime>,
     ) -> Result<Self, HostError> {
         Self::validate_plugins(&plugins)?;
+        let plugins = plugins
+            .into_iter()
+            .filter(|plugin| plugin.manifest.has_runtime_host())
+            .collect();
         lifecycle::launch(plugins, client, runtime, services::CoreServices::default())
     }
 
@@ -379,7 +386,7 @@ impl HostOwner {
                 json!({
                     "protocolVersion":1, "coreVersion":env!("CARGO_PKG_VERSION"), "pluginVersion":plugin.manifest.version,
                     "permissions":plugin.manifest.permissions,
-                    "provides":plugin.manifest.host_provides(),
+                    "provides":plugin.manifest.runtime_host_provides(),
                     "requires":plugin.manifest.host_requires(),
                     "methods":["cdp.request","cdp.subscribe","cdp.unsubscribe"],
                 }),
@@ -1033,6 +1040,35 @@ fn cdp_error(error: ClientError) -> HostRpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn native_launch_only_catalog_starts_without_a_node_runtime_or_host_process() {
+        let pipes = crate::windows::pipes::CdpPipes::create().unwrap();
+        let _peer_read = pipes.child_reader.try_clone().unwrap();
+        let _peer_write = pipes.child_writer.try_clone().unwrap();
+        let (client, _events) = CdpClient::spawn(pipes.into_parent()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let plugin = LoadedPlugin { authorization: None,
+            manifest: crate::plugins::PluginManifest::parse(&json!({"schema":1,"id":"dev.launch","version":"1","host":{"entry":"host.js"},"provides":[{"name":"codlet.client.launch","api":1,"scope":"runtime"}],"permissions":["host.process"]}).to_string()).unwrap(),
+            source: None,
+            host: Some(crate::plugins::LoadedHost { root: directory.path().into(), entry: directory.path().join("host.js"), source: "throw new Error('Native-only snapshot must not execute during ordinary startup');".into(), authorization: None }), generation: 1 };
+        let mut hosts = HostRuntime::start_with_services(
+            vec![plugin.clone()],
+            client.clone(),
+            None,
+            HostCoreServices::default(),
+        )
+        .unwrap();
+        assert!(hosts.observations().is_empty());
+        assert!(!hosts.is_starting());
+        assert!(hosts.begin_start(plugin.clone()).is_err());
+        assert!(hosts.stop().unwrap().is_empty());
+        let mut standalone = HostRuntime::start(vec![plugin], client.clone()).unwrap();
+        assert!(standalone.observations().is_empty());
+        assert!(standalone.stop().unwrap().is_empty());
+        client.shutdown().unwrap();
+    }
 
     #[test]
     fn oversized_remote_errors_drop_data_without_retiring_the_host() {

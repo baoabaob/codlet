@@ -1,6 +1,6 @@
 # Managed Node Host
 
-Each active Host generation runs in its own Core-owned Node process. A [directory package](plugin-format.md) declares `host.entry` and obtains `host.process`; Host-only packages need no Renderer, GUI or Codex adapter. [host.d.ts](../../types/host.d.ts) is the public method/DTO reference.
+Each ordinary active Host generation runs in its own Core-owned Node process. A [directory package](plugin-format.md) declares `host.entry` and obtains `host.process`; Host-only packages need no Renderer, GUI or Codex adapter. A dedicated Native launch entry uses only the short-lived launch executor described below. [host.d.ts](../../types/host.d.ts) is the public method/DTO reference.
 
 ## Runtime and lifecycle
 
@@ -47,7 +47,9 @@ The legacy fetch does not follow redirects, use inherited system/environment pro
 
 Raw flattened sessions obtained through Core attach are owned by this Host generation. Cancellation after attach dispatch does not forget a late session: Core retains the receipt and detaches it. If the remote attach never returns or a known session cannot be reclaimed within the absolute retirement budget, Core reports incomplete cleanup and may close the shared CDP connection to end its remote session namespace. That failure affects the current Core session, not merely one plugin.
 
-A Host that provides `codlet.client.launch@1` at Runtime scope may additionally export `prepareClientLaunch` and `attachClientLaunch`. Only a selected, enabled provider with `host.process` and `cdp.raw` receives the private launch context. These optional phases use the same immutable Host source snapshot in a short-lived executor before ordinary activation; they have no general Core RPC endpoint. See [traffic](traffic.md) for deadlines, allowed arguments, exact-child verification, and revocation behavior. Ordinary Host plugins need only their existing activation exports.
+A Host that provides `codlet.client.launch@1` at Runtime scope may additionally export `prepareClientLaunch` and `attachClientLaunch`. Only a selected, enabled provider with `host.process` and `cdp.raw` receives the private launch context. These optional phases use the same immutable Host source snapshot in a short-lived executor before client entry; they have no general Core RPC endpoint.
+
+If its effective Host provides contain exactly that launch capability and its effective Host requirements are empty, Core treats it as a dedicated Native launch entry. It starts no ordinary Host process and skips ordinary Host activation/readiness, including when the same package has a renderer. Its snapshot, grants, management identity and reload coordination remain checked. A combined package's renderer retains its ordinary capability dependencies and lifecycle. Adding another Host capability or requirement opts back into the existing ordinary Host lifecycle; launch capability selection remains private to Native. See [traffic](traffic.md) for deadlines, allowed arguments, exact-child verification, and revocation behavior. Ordinary Host plugins need only their existing activation exports.
 
 ## Resource bounds and observations
 

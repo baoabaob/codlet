@@ -60,11 +60,12 @@ session. Linux is not in the current implementation scope.
 
 ## Features awaiting product acceptance
 
-Transparent traffic interception is being integrated separately. Explicit
-`openChannel`/thread transport tests do not mean every official-client request
-is transparently intercepted. The [traffic contract](spec/traffic.md) records the
-actual attached paths and protocols; desktop attachments and macOS acceptance
-must be reported separately.
+Core includes the transparent traffic gateway and Windows/macOS Native launch
+owner. Client-specific hooks remain subject to the Adapter's build and capability
+checks. Explicit `openChannel`/thread transport tests do not mean every
+official-client request is transparently intercepted. The
+[traffic contract](spec/traffic.md) records the actual attached paths and
+protocols; desktop attachments and macOS acceptance must be reported separately.
 
 The official GUI repository contains a marketplace interaction prototype and
 specification, but that is not yet a production-backed searchable marketplace.

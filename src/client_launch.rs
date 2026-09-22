@@ -265,6 +265,7 @@ fn validate_arguments(plan: &Value, traffic: &Value) -> Result<Vec<OsString>, Ho
     let expected = [
         "--inspect-brk=127.0.0.1:0".to_owned(),
         format!("--proxy-server=http=127.0.0.1:{port};https=127.0.0.1:{port}"),
+        "--proxy-bypass-list=<-loopback>".to_owned(),
     ];
     let arguments = plan["arguments"]
         .as_array()
@@ -287,7 +288,7 @@ mod tests {
     const SOURCE: &str = r#"
 exports.prepareClientLaunch = ({traffic}) => {
  const port = new URL(traffic.proxyUrl).port;
- return {arguments:['--inspect-brk=127.0.0.1:0',`--proxy-server=http=127.0.0.1:${port};https=127.0.0.1:${port}`]};
+ return {arguments:['--inspect-brk=127.0.0.1:0',`--proxy-server=http=127.0.0.1:${port};https=127.0.0.1:${port}`,'--proxy-bypass-list=<-loopback>']};
 };
 exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
  if (!Number.isInteger(expectedPid) || expectedPid < 1 || !executable || !inspectorUrl.startsWith('ws://127.0.0.1:')) throw Error('identity');
@@ -346,6 +347,35 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
     }
 
     #[test]
+    fn launch_plan_requires_exact_loopback_bypass_without_arbitrary_exclusions() {
+        let traffic = json!({"proxyUrl":"http://u:p@127.0.0.1:49152/"});
+        let base = [
+            "--inspect-brk=127.0.0.1:0",
+            "--proxy-server=http=127.0.0.1:49152;https=127.0.0.1:49152",
+        ];
+        assert!(validate_arguments(&json!({"arguments":base}), &traffic).is_err());
+        for bypass in [
+            "--proxy-bypass-list=*",
+            "--proxy-bypass-list=<-loopback>;example.com",
+            "--proxy-bypass-list=<local>",
+        ] {
+            assert!(
+                validate_arguments(&json!({"arguments":[base[0],base[1],bypass]}), &traffic)
+                    .is_err()
+            );
+        }
+        let accepted = validate_arguments(
+            &json!({"arguments":[base[0],base[1],"--proxy-bypass-list=<-loopback>"]}),
+            &traffic,
+        )
+        .unwrap();
+        assert_eq!(
+            accepted[2],
+            OsString::from("--proxy-bypass-list=<-loopback>")
+        );
+    }
+
+    #[test]
     fn launch_plan_rejects_tls_bypass_arbitrary_flags_and_different_proxy() {
         let traffic = json!({"proxyUrl":"http://u:p@127.0.0.1:49152/"});
         for args in [
@@ -354,6 +384,7 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
             vec![
                 "--inspect-brk=127.0.0.1:0",
                 "--proxy-server=http=127.0.0.1:49153;https=127.0.0.1:49153",
+                "--proxy-bypass-list=<-loopback>",
             ],
             vec!["--no-sandbox"],
         ] {
@@ -379,7 +410,7 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
             &[],
         )
         .unwrap();
-        assert_eq!(adapter.arguments().len(), 2);
+        assert_eq!(adapter.arguments().len(), 3);
         adapter
             .attach(
                 "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",

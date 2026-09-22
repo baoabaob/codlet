@@ -83,6 +83,12 @@ impl HostRuntime {
     /// Enqueues a validated source snapshot. Registry/grant reads, generation
     /// allocation and persistence belong to the caller, never this executor.
     pub fn begin_start(&self, plugin: LoadedPlugin) -> Result<HostOperation, HostError> {
+        if plugin.manifest.native_launch_only() {
+            return Err(HostError::new(
+                "native_launch_only",
+                "this Host entry is loaded only for the Native client launch phase",
+            ));
+        }
         Self::validate_plugins(std::slice::from_ref(&plugin))?;
         self.submit(|completion| Command::Start(Box::new(plugin), completion))
     }

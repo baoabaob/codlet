@@ -386,7 +386,7 @@ impl HostOwner {
                 .observation
                 .plugin
                 .manifest
-                .host_provides()
+                .runtime_host_provides()
                 .contains(&request.capability)
             {
                 return Err(HostError::new(

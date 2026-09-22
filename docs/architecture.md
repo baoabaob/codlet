@@ -10,7 +10,7 @@ official feature plugins live in [codlet-plugins](https://github.com/baoabaob/co
 | Component | Owns | Does not own |
 | --- | --- | --- |
 | Core | Session transport, target/session identity, registry, permissions, capability graph, operation receipts and bounded resources | Codex DOM selectors, private React objects, conversation semantics |
-| Host | A pinned, supervised Node process per plugin generation; background/OS work | Automatic rollback of arbitrary OS/network/page side effects |
+| Host | A pinned, supervised Node process per ordinary plugin generation; background/OS work | Automatic rollback of arbitrary OS/network/page side effects |
 | Renderer | Plugin code in an isolated or explicitly permitted main world, SDK and target-scoped lifecycle | A separate OS process or a universal security sandbox |
 | Official adapters | Reviewed client-build mappings, navigation, native objects and backend semantics | Exclusive access to Core primitives |
 | GUI | An optional consumer of public management APIs | A privileged built-in management path unavailable to other plugins |
@@ -27,6 +27,12 @@ generation, registered source, grants and enabled preference. Dependencies are
 exact capability descriptors rather than a whitelist of official providers.
 CLI, GUI and other authorized managers use the same prepare/submit/operation
 transactions and observe the same ownership state.
+
+A dedicated client-launch Host uses its existing entry, snapshot and grants in a
+short-lived Native executor only when traffic interception requires it. It adds
+no plugin registry or permanent idle Node process. Hosts with ordinary capability
+providers or dependencies retain the existing Host lifecycle. The exact rule is
+part of the [Host contract](spec/host.md).
 
 The Core controls admission, provider dispatch and delivery against current
 authorization. Calls pin their provider and document generation; a late result

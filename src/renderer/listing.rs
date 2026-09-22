@@ -115,7 +115,7 @@ pub(super) fn plugin_list(
             "enabled":registry.is_enabled(id),
             "active":metadata.is_some_and(|plugin| {
                 let renderer_active = plugin.manifest.renderer.is_none() || (active_plugin_ids.contains(id) && runtime.is_some_and(|runtime| runtime.generation == plugin.generation));
-                let host_active = plugin.manifest.host.is_none() || observation.is_some_and(|observation| observation.state == ExecutionState::Active && observation.plugin.generation == plugin.generation);
+                let host_active = if plugin.manifest.native_launch_only() { runtime.is_some() } else { plugin.manifest.host.is_none() || observation.is_some_and(|observation| observation.state == ExecutionState::Active && observation.plugin.generation == plugin.generation) };
                 renderer_active && host_active
             }),
             "registered":bundled || registration.is_some(),
@@ -235,6 +235,45 @@ mod tests {
         let failed = list(&plugin, &observation);
         assert_eq!(row(&failed, "dev.combined")["loaded"], true);
         assert_eq!(row(&failed, "dev.combined")["active"], false);
+    }
+
+    #[test]
+    fn native_launch_only_combined_row_uses_renderer_readiness_without_a_fake_host() {
+        let directory = tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        let plugin = LoadedPlugin { authorization: None,
+            manifest: crate::plugins::PluginManifest::parse(&json!({"schema":1,"id":"dev.launch","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[{"name":"codlet.client.launch","api":1,"scope":"runtime"}]},"permissions":["host.process"]}).to_string()).unwrap(),
+            source: Some("module.exports={};".into()), host: None, generation: 1 };
+        let catalog = PluginCatalog::from_bundled(vec![plugin.clone()]);
+        let ready = plugin_list(
+            &catalog,
+            std::slice::from_ref(&plugin),
+            &registry,
+            &BTreeSet::from(["dev.launch".into()]),
+            &[],
+        );
+        assert_eq!(row(&ready, "dev.launch")["active"], true);
+        assert_eq!(row(&ready, "dev.launch")["loaded"], true);
+        assert!(row(&ready, "dev.launch").get("execution").is_none());
+        let waiting = plugin_list(
+            &catalog,
+            std::slice::from_ref(&plugin),
+            &registry,
+            &BTreeSet::new(),
+            &[],
+        );
+        assert_eq!(row(&waiting, "dev.launch")["active"], false);
+        let mut host_only = plugin;
+        host_only.manifest.provides = host_only.manifest.host.as_ref().unwrap().provides.clone();
+        host_only.manifest.host.as_mut().unwrap().provides.clear();
+        host_only.manifest.renderer = None;
+        let catalog = PluginCatalog::from_bundled(vec![host_only]);
+        let idle = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
+        assert_eq!(
+            row(&idle, "dev.launch")["active"],
+            false,
+            "a catalog-only Native adapter is not a running Host"
+        );
     }
 
     #[test]

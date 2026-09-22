@@ -772,12 +772,16 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
     renderer.enable_runtime_skill();
     host_control.seed_watch_sources(&renderer, &host_plugins);
-    let js_runtime = (!host_plugins.is_empty())
+    let traffic_required = crate::traffic_owner::required_for_plugins(&host_plugins);
+    let has_hosts = host_plugins
+        .iter()
+        .any(|plugin| plugin.manifest.has_runtime_host());
+    let js_runtime = (has_hosts || traffic_required)
         .then(JsRuntime::discover)
         .transpose()?;
     let plugin_services = crate::core_services::SharedCoreServices::new(renderer.registry_path())
         .map_err(|e| HostError::new(e.code, e.message))?;
-    let traffic = crate::traffic_owner::required_for_plugins(&host_plugins)
+    let traffic = traffic_required
         .then(|| {
             let provider = crate::client_launch::select(&host_plugins)?;
             let runtime = js_runtime
@@ -799,7 +803,6 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         }),
         traffic.as_ref(),
     )?;
-    let has_hosts = !host_plugins.is_empty();
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
@@ -866,10 +869,9 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     {
         let logical = renderer.logical_plugins();
         let mut affected = std::collections::BTreeSet::new();
-        for plugin in logical
-            .iter()
-            .filter(|plugin| plugin.manifest.renderer.is_some() && plugin.manifest.host.is_some())
-        {
+        for plugin in logical.iter().filter(|plugin| {
+            plugin.manifest.renderer.is_some() && plugin.manifest.has_runtime_host()
+        }) {
             affected.extend(crate::plugin_lifecycle::dependent_closure(
                 &logical,
                 &plugin.manifest.id,
@@ -946,7 +948,7 @@ pub fn prepare_renderer_runtime(registry: PluginRegistry) -> Result<RendererRunt
         .enabled_plugins(&registry)
         .map_err(RendererError::from)?
         .into_iter()
-        .find(|plugin| plugin.manifest.host.is_some())
+        .find(|plugin| plugin.manifest.has_runtime_host())
     {
         return Err(RendererError::UnsupportedEntry {
             plugin_id: plugin.manifest.id,

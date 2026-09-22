@@ -87,7 +87,7 @@ impl HostRuntime {
         services.rpc.register_plugins(&all_enabled_plugins)?;
         let plugins = all_enabled_plugins
             .into_iter()
-            .filter(|plugin| plugin.manifest.host.is_some())
+            .filter(|plugin| plugin.manifest.has_runtime_host())
             .collect::<Vec<_>>();
         Self::validate_plugins(&plugins)?;
         lifecycle::launch(plugins, client, runtime, services)

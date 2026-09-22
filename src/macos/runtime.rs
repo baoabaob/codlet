@@ -42,9 +42,12 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         let launch_provider = traffic_required
             .then(|| crate::client_launch::select(&host_plugins).cloned())
             .transpose()?;
-        let runtime = (!host_plugins.is_empty())
-            .then(JsRuntime::discover)
-            .transpose()?;
+        let runtime = (traffic_required
+            || host_plugins
+                .iter()
+                .any(|plugin| plugin.manifest.has_runtime_host()))
+        .then(JsRuntime::discover)
+        .transpose()?;
         let services = crate::core_services::SharedCoreServices::new(scope.path())?;
         let mut renderer = RendererRuntime::from_catalog(catalog, registry)?;
         renderer.enable_runtime_skill();

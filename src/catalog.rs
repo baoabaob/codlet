@@ -254,6 +254,7 @@ pub(crate) fn capability_graph(
         &[],
         &[],
     )?;
+    let mut launch_provider = None;
     for plugin in plugins {
         let grants: Vec<_> = plugin
             .manifest
@@ -262,10 +263,26 @@ pub(crate) fn capability_graph(
             .map(|permission| permission.as_str().to_owned())
             .collect();
         if plugin.manifest.host.is_some() {
+            for capability in plugin.manifest.host_provides().iter().filter(|capability| {
+                crate::plugins::PluginManifest::is_native_launch_capability(capability)
+            }) {
+                if let Some(existing_provider) =
+                    launch_provider.replace(host_provider_id(&plugin.manifest.id))
+                {
+                    return Err(CapabilityRegistryError::CapabilityConflict {
+                        name: capability.name.clone(),
+                        scope: capability.scope,
+                        existing_provider,
+                        conflicting_provider: host_provider_id(&plugin.manifest.id),
+                    });
+                }
+            }
+            // Keep the package's planning identity even for a Host-only Native
+            // adapter, without registering its private launch ABI as RPC.
             graph.register_provider(
                 &host_provider_id(&plugin.manifest.id),
                 plugin.generation,
-                plugin.manifest.host_provides(),
+                &plugin.manifest.runtime_host_provides(),
                 plugin.manifest.host_requires(),
                 &grants,
             )?;
@@ -282,7 +299,7 @@ pub(crate) fn capability_graph(
     }
     for plugin in plugins
         .iter()
-        .filter(|plugin| plugin.manifest.host.is_some() && plugin.manifest.renderer.is_some())
+        .filter(|plugin| plugin.manifest.has_runtime_host() && plugin.manifest.renderer.is_some())
     {
         graph
             .require_provider_before(&plugin.manifest.id, &host_provider_id(&plugin.manifest.id))?;
@@ -346,5 +363,67 @@ mod combined_graph_tests {
             json!({"schema":1,"id":"dev.combined","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[descriptor]},"provides":[descriptor],"permissions":["host.process"]}),
         );
         assert!(capability_graph(&[combined]).is_err());
+    }
+
+    #[test]
+    fn native_launch_only_entries_are_not_rpc_providers_or_renderer_dependencies() {
+        let launch = json!({"name":"codlet.client.launch","api":1,"scope":"runtime"});
+        let adapter = plugin(
+            json!({"schema":1,"id":"dev.launch","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[launch]},"permissions":["host.process"]}),
+        );
+        assert!(adapter.manifest.native_launch_only());
+        assert!(!adapter.manifest.has_runtime_host());
+        assert!(adapter.manifest.runtime_host_provides().is_empty());
+        let graph = capability_graph(std::slice::from_ref(&adapter)).unwrap();
+        assert!(graph.resolve_activation_order().is_ok());
+        let ordered = crate::plugin_lifecycle::order(vec![adapter.clone()]).unwrap();
+        assert_eq!(ordered.len(), 1);
+
+        let consumer = plugin(
+            json!({"schema":1,"id":"dev.consumer","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"requires":[launch]}),
+        );
+        assert!(matches!(
+            capability_graph(&[adapter.clone(), consumer])
+                .unwrap()
+                .resolve_activation_order(),
+            Err(CapabilityRegistryError::MissingRequirement { .. })
+        ));
+        let mut duplicate = adapter.clone();
+        duplicate.manifest.id = "dev.other".into();
+        assert!(matches!(
+            capability_graph(&[adapter.clone(), duplicate]),
+            Err(CapabilityRegistryError::CapabilityConflict { .. })
+        ));
+
+        let mut host_only = adapter.clone();
+        host_only.manifest.renderer = None;
+        host_only.manifest.provides = host_only.manifest.host.as_ref().unwrap().provides.clone();
+        host_only.manifest.host.as_mut().unwrap().provides.clear();
+        assert!(host_only.manifest.native_launch_only());
+        assert_eq!(
+            crate::plugin_lifecycle::order(vec![host_only])
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut mixed = adapter.clone();
+        mixed.manifest.host.as_mut().unwrap().provides.push(
+            serde_json::from_value(json!({"name":"dev.other","api":1,"scope":"runtime"})).unwrap(),
+        );
+        assert!(mixed.manifest.has_runtime_host());
+        assert_eq!(mixed.manifest.runtime_host_provides().len(), 1);
+        let mut required = adapter;
+        required.manifest.host.as_mut().unwrap().requires.push(
+            serde_json::from_value(json!({"name":"dev.required","api":1,"scope":"runtime"}))
+                .unwrap(),
+        );
+        assert!(required.manifest.has_runtime_host());
+        assert!(matches!(
+            capability_graph(&[required])
+                .unwrap()
+                .resolve_activation_order(),
+            Err(CapabilityRegistryError::MissingRequirement { .. })
+        ));
     }
 }

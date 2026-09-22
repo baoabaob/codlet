@@ -766,7 +766,7 @@ impl HostBatch {
         Self {
             queued: plugins
                 .iter()
-                .filter(|plugin| plugin.manifest.host.is_some())
+                .filter(|plugin| plugin.manifest.has_runtime_host())
                 .cloned()
                 .map(|plugin| Work {
                     plugin,
@@ -857,5 +857,47 @@ impl HostBatch {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod native_launch_tests {
+    use super::*;
+
+    #[test]
+    fn native_launch_only_hot_updates_do_not_queue_a_host_process() {
+        let mut plugin = LoadedPlugin { authorization: None,
+            manifest: crate::plugins::PluginManifest::parse(&serde_json::json!({"schema":1,"id":"dev.launch","version":"1","host":{"entry":"host.js"},"provides":[{"name":"codlet.client.launch","api":1,"scope":"runtime"}],"permissions":["host.process"]}).to_string()).unwrap(),
+            source: None, host: None, generation: 1 };
+        assert!(
+            HostBatch::start(std::slice::from_ref(&plugin), "activate")
+                .queued
+                .is_empty()
+        );
+        plugin.manifest.provides.push(
+            serde_json::from_value(
+                serde_json::json!({"name":"dev.ordinary","api":1,"scope":"runtime"}),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            HostBatch::start(std::slice::from_ref(&plugin), "activate")
+                .queued
+                .len(),
+            1
+        );
+        plugin.manifest.provides.pop();
+        plugin.manifest.requires.push(
+            serde_json::from_value(
+                serde_json::json!({"name":"dev.required","api":1,"scope":"runtime"}),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            HostBatch::start(&[plugin], "rollback_activate")
+                .queued
+                .len(),
+            1
+        );
     }
 }

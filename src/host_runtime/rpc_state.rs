@@ -226,10 +226,11 @@ impl CoreRpcShared {
                 .map(|permission| permission.as_str().to_owned())
                 .collect::<Vec<_>>();
             let mut entries = Vec::new();
-            if plugin.manifest.host.is_some() {
+            let runtime_provides = plugin.manifest.runtime_host_provides();
+            if plugin.manifest.has_runtime_host() {
                 entries.push((
                     host_provider_id(&plugin.manifest.id),
-                    plugin.manifest.host_provides(),
+                    runtime_provides.as_slice(),
                     plugin.manifest.host_requires(),
                 ));
             }
@@ -1116,6 +1117,51 @@ mod tests {
     }
     fn descriptor(scope: CapabilityScope) -> CapabilityDescriptor {
         CapabilityDescriptor::new("dev.rpc.kernel", 1, scope).unwrap()
+    }
+
+    #[test]
+    fn native_launch_only_has_no_rpc_entry_and_mixed_hosts_keep_ordinary_routes() {
+        let shared = CoreRpcShared::default();
+        let launch =
+            CapabilityDescriptor::new("codlet.client.launch", 1, CapabilityScope::Runtime).unwrap();
+        let ordinary = descriptor(CapabilityScope::Runtime);
+        let adapter = plugin("dev.launch", 1, std::slice::from_ref(&launch), &[]);
+        shared
+            .register_plugins(std::slice::from_ref(&adapter))
+            .unwrap();
+        assert!(
+            !shared
+                .0
+                .lock()
+                .unwrap()
+                .declarations
+                .contains_key("dev.launch:host")
+        );
+        let mixed = plugin("dev.mixed", 1, &[launch.clone(), ordinary.clone()], &[]);
+        let consumer = plugin("dev.consumer", 1, &[], &[launch.clone(), ordinary.clone()]);
+        shared.register_plugins(&[mixed, consumer.clone()]).unwrap();
+        assert!(
+            shared
+                .resolve_host(
+                    &consumer,
+                    &launch,
+                    None,
+                    None,
+                    Instant::now() + Duration::from_secs(1)
+                )
+                .is_err()
+        );
+        assert!(
+            shared
+                .resolve_host(
+                    &consumer,
+                    &ordinary,
+                    None,
+                    None,
+                    Instant::now() + Duration::from_secs(1)
+                )
+                .is_ok()
+        );
     }
     fn attach(shared: &CoreRpcShared, owner: &str, generation: u64, session: &str) -> String {
         let permit = shared.reserve_raw_attach().unwrap();

@@ -1066,7 +1066,7 @@ impl RendererRuntime {
             .filter(|plugin| {
                 plugin.manifest.renderer.is_some()
                     && plugin.source.is_some()
-                    && plugin.manifest.host.is_none()
+                    && !plugin.manifest.has_runtime_host()
                     && self
                         .plugin_registry
                         .managed_plugins()

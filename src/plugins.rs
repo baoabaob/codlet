@@ -388,6 +388,32 @@ impl PluginManifest {
         }
     }
 
+    /// The launch phase uses this entry's existing snapshot and grants, but is
+    /// consumed privately by Native and is never a managed RPC endpoint.
+    pub(crate) fn is_native_launch_capability(capability: &CapabilityDescriptor) -> bool {
+        capability.name.as_str() == "codlet.client.launch"
+            && capability.api.get() == 1
+            && capability.scope == crate::capabilities::CapabilityScope::Runtime
+    }
+
+    pub(crate) fn native_launch_only(&self) -> bool {
+        self.host.is_some()
+            && self.host_requires().is_empty()
+            && matches!(self.host_provides(), [capability] if Self::is_native_launch_capability(capability))
+    }
+
+    pub(crate) fn has_runtime_host(&self) -> bool {
+        self.host.is_some() && !self.native_launch_only()
+    }
+
+    pub(crate) fn runtime_host_provides(&self) -> Vec<CapabilityDescriptor> {
+        self.host_provides()
+            .iter()
+            .filter(|capability| !Self::is_native_launch_capability(capability))
+            .cloned()
+            .collect()
+    }
+
     pub fn all_requires(&self) -> impl Iterator<Item = &CapabilityDescriptor> {
         self.renderer_requires().iter().chain(self.host_requires())
     }
