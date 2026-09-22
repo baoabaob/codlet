@@ -796,8 +796,19 @@ fn real_windows_junction_escape_is_rejected_but_explicit_junction_root_is_allowe
 #[test]
 fn unix_special_file_is_rejected_before_opening() {
     use std::os::unix::net::UnixListener;
-    let fixture = Fixture::new();
-    fs::remove_file(fixture.entry()).unwrap();
-    let _listener = UnixListener::bind(fixture.entry()).unwrap();
-    rejected(&fixture.root, "read renderer entry", "ordinary file");
+    // Darwin's socket address is at most 104 bytes; its default TMPDIR plus
+    // the Unicode-path fixture can exceed that before plugin inspection runs.
+    let directory = tempfile::Builder::new()
+        .prefix("codlet-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let root = directory.path();
+    fs::write(
+        root.join("codlet.json"),
+        serde_json::to_vec(&manifest()).unwrap(),
+    )
+    .unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    let _listener = UnixListener::bind(root.join("dist/renderer.js")).unwrap();
+    rejected(root, "read renderer entry", "ordinary file");
 }

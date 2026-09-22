@@ -676,7 +676,9 @@ fn require_file_type(
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        linked |= !directory && metadata.nlink() != 1;
+        // Directories legitimately have multiple links on APFS. Classify an
+        // incorrect entry type below; hard-link rejection applies to files.
+        linked |= metadata.is_file() && metadata.nlink() != 1;
     }
     if linked {
         return Err(reject(
