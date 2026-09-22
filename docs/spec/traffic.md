@@ -1,55 +1,47 @@
-# Traffic channels
+# Traffic contract
 
-Core's Host `context.traffic` provides explicit HTTP(S), streaming HTTP/SSE, and WS/WSS channels. It handles traffic that enters a registered channel; page CDP traffic, Desktop's internal RPC, login traffic, and other backend requests are separate scopes. Transparent process-wide ingress is under integration and is not implied by this API.
+This document is the stable contract for transparent traffic and the Host traffic API. It describes ownership and wire limits; client specific endpoint names stay in the official Adapter.
 
-See [host.d.ts](../../types/host.d.ts) for signatures, [Host](host.md) for process ownership, and [permissions](permissions.md) for authorization. Declare and obtain `host.process`, `host.network`, and explicit upstream origins. A `ws://` origin maps to its `http://` origin; `wss://` maps to `https://`.
+## Ownership
 
-```js
-const channel = await context.traffic.openChannel({}, {
-  async http(request, exchange) {
-    const response = await exchange.forward({
-      url: upstreamOrigin + request.path,
-      method: request.method,
-      headers: [['content-type', 'application/json']],
-      body: ['GET', 'HEAD'].includes(request.method) ? null : request.body
-    });
-    return {status: response.status, headers: response.headers, body: response.body};
-  },
-  async webSocket(request, exchange) {
-    await exchange.forward({
-      url: upstreamWebSocketOrigin + request.path,
-      protocols: request.protocols,
-      clientToServer: frame => frame,
-      serverToClient: frame => frame
-    });
-  }
-});
-```
+Core creates one private Native traffic entrance for a launch. The entrance has two authenticated loopback peers: a Core owned gateway and one Host peer per plugin generation. Short service RPCs register policy and return status. Request bodies, response bodies and WebSocket frames use the separate bounded data peer. Renderer calls cannot create either peer or select an owner generation.
 
-`upstreamOrigin` and `upstreamWebSocketOrigin` must be approved destinations. Either handler may be omitted; `channel.protocols` reports actual support. The returned endpoint has a dynamic loopback port and a private random path. It expires with the Host generation and must not be persistently stored, logged, or shared.
+The launch owner must create the gateway before the official client and retain its process lifetime. This branch supplies the gateway/Host SDK and Native authority; Windows/macOS normal-launch ownership is integrated separately. Plugin disable, revocation, generation replacement or peer failure retires the affected registrations and exchanges. A request already sent upstream is never replayed after retirement.
 
-## Requests and streams
+## Registration
 
-HTTP requests expose ID, method, path without the private prefix, header pairs, and a one-use body stream. Plugins can change the destination, method, headers, and body before forwarding or return their own response. Header arrays preserve repeated fields. SSE remains a byte stream: a transport chunk is not necessarily a complete event.
+Host code calls `context.traffic.registerInterceptor({ id, origins, priority?, timeoutMs? }, handlers)`. Origins are exact `http://` or `https://` origins with no path, credentials, query or fragment. Their `ws://` and `wss://` forms use the corresponding HTTP(S) origin grant. A registration is pending until its Host generation activates it on the data peer.
 
-WebSocket handlers bridge after the upstream handshake. Per-direction callbacks receive `{data, binary}` and may return the original message, replacement text/bytes/frame, or `null` to drop it. Each direction remains ordered. Business-event parsing, protocol conversion, provider selection, and response recovery belong to plugins; Core does not interpret messages as model turns or tool results.
+Core permits at most 32 registrations, 8 registrations per owner, 128 live leases, 512 pending data calls and 4 active intercepted exchanges per gateway. Registration metadata is at most 1024 bytes; handler timeout is 1–2000 ms. Priority is an integer from -1000 through 1000. Await `setEnabled(false)` to disable a registration and cancel its leases. `close()` and `dispose()` are equivalent asynchronous removals. `inspect()` is a synchronous local registration snapshot.
 
-Each `forward` checks current generation, permissions, and upstream origin. It does not implicitly copy incoming authentication, follow redirects, retry, or reconnect. HTTP defaults to one dispatch; a plugin may explicitly set a bounded `maxForwardAttempts` and must consume or cancel the previous response before deciding to dispatch again. Reusing a consumed incoming body requires an explicitly budgeted replay buffer.
+Request handlers run in ascending priority, plugin id and registration order. Response handlers run in reverse participation order. A handler may return one request rewrite, a synthetic response or a block. Redirects require `traffic.redirect` and a grant for the destination. Cross-origin rewrites carry only `Accept`, `Content-Type` and `Content-Encoding`. The transparent rewrite API does not accept `credentialRef`; the separate explicit channel forwarding API does.
 
-Channel limits bound bodies, concurrency, handler decision time, and WebSocket message/queue sizes. Long streams do not occupy an endless JSON RPC. The Host generation owns actual sockets; revoke, disable, reload, exit, or channel close cancels owned resources. Local cancellation does not prove a remote request had no side effects.
+Sensitive headers and WebSocket subprotocols are hidden unless the matching grant is declared and granted. The callback receives a frozen request view and an abort signal. Callback failures are reduced to finite public error codes; URLs, headers, credentials, body contents and callback error text are never written to diagnostics.
 
-TLS validates upstream certificates normally. This API does not offer ignored certificate errors, CONNECT interception, or system trust-store modification. Trusted Node code still has the user's OS privileges; managed permissions are not an OS sandbox.
+## Data limits and cancellation
 
-## Optional Desktop Adapter integration
+Frames are length-prefixed JSON records no larger than 64 KiB. Each peer has at most 512 queued frames or 512 KiB queued bytes. Body sources have at most 8 live streams and 64 MiB per body; chunks are at most 32 KiB. WebSocket frames are at most 8 MiB. Reads, callback execution and leases have bounded deadlines. A cancelled, retired or expired lease rejects pending calls with `stream_retired` or `traffic_timeout` and sends no late result to a new generation.
 
-The independent Desktop Adapter's `codex.backend.transport@1` can attach an explicit channel to supported thread start/resume requests. The Renderer declares the exact Target capability and `ui.mainWorld`, probes availability, obtains its one-use API ticket, and registers a transport callback. See the adapter's current types and specification in the [official plugin repository](https://github.com/baoabaob/codlet-plugins).
+## Process ingress
 
-A selected channel supplies `{endpoint, protocols}` with optional path (default `/v1`) and model. No selection leaves the native request unchanged. The adapter maps protocol support to private client configuration; a WebSocket-only channel does not silently claim HTTP fallback. Configuration goes through the existing native connection and does not change global client settings or start a second production backend.
+The Native owner gives the child a random authenticated loopback proxy and a launch-only CA bundle. The bundle is merged with the selected system and user trust inputs in the child environment; the parent process and system proxy settings are unchanged. TLS interception is created only for an exact registered origin and uses TLS 1.2 or newer with HTTP/1.1. Upstream certificate verification remains enabled.
 
-Selection is bounded to two seconds per callback and five seconds overall, with 32 registrations and 16 pending requests. Tickets bind the requesting plugin and generation; retirement cancels pending choices. Multiple selections produce a conflict rather than duplicate dispatch. Diagnostics omit private endpoint paths, request bodies, and arbitrary callback errors.
+CONNECT traffic whose origin has no active registration stays opaque and is forwarded end to end by the Native route. It never reaches plugin callbacks. Proxy loops, malformed destinations, credentials in target URLs and unsupported protocols are rejected. `NO_PROXY` is preserved for the child and system/PAC resolution is performed by Core with bounded time and no ambient credential forwarding.
 
-Existing loaded threads, in-flight turns, and established sockets do not migrate automatically when a registration changes. Plugins must distinguish a changed setting from the effective transport of an active request. `examples/http-channel` demonstrates explicit opt-in and authentication filtering; it is not a complete gateway product.
+## Native launch descriptor
 
-## Validation boundary
+The fixed worker accepts `{endpoint,directory,trustInputs,trustOutputs}`. Native issues `endpoint` through `Traffic::gateway_endpoint()` and prepares the fixed script with `JsRuntime::prepare_traffic_worker()`. Wait for `Traffic::launch_descriptor()` before creating the client. The descriptor contains `proxyUrl`, `bundlePath`, `environmentPatch: {set, removeCaseInsensitive}`, `trust: {outputs,inheritedInputsMerged,systemStoreModified}` and `bypass: 'preserve-original-no-proxy'`.
 
-Tests cover real local sockets, permissions/lifecycle, same-connection adapter selection, and isolated official AppServer HTTP/WS requests. Fixtures, standalone AppServer evidence, and real Desktop UI acceptance are distinct and must be reported separately. Transparent interception requires its own source classification, ingress ownership, trust, cancellation, and actual-client acceptance before delivery.
+Apply removals to the original client environment before the `set` entries. Only proxy and selected CA variables change; no full worker environment is returned. `NO_PROXY` and unrelated original client variables remain intact. The proxy URL contains a secret, so the descriptor is private and must not enter diagnostics. Native must validate that the bundle remains inside its private launch directory and remove that directory after reaping the worker, including crashes. `set_attached(true)` is a Native-only confirmation after actual child integration, never a plugin registration result.
+
+Standard proxy variables do not establish Electron `session`/`net` coverage. Electron main-process routing and temporary CA trust, and restoration of the original environment for backend tool children, are separate Adapter integrations. They must be completed and verified before claiming those coverage areas. Never use a global certificate verification bypass.
+
+## Official Adapter
+
+The official Adapter owns endpoint classification and launch compatibility. Core does not know thread ids, providers or model names. The Adapter may expose a capability such as `codex.backend.transport@1` and select a Core channel only for a verified client build. It applies changes at the client’s supported thread start/resume boundary. Existing loaded threads, active turns and established WebSockets are not migrated automatically.
+
+The Adapter must report `available: false` until the Native gateway, child environment and protocol profile are all attached. Fixture hashes and isolated probes are evidence only; they do not upgrade OAuth, Desktop, attachment or everyday-provider coverage.
+
+## Validation
+
+Core tests exercise authenticated peer roles, exact-origin grants, cross-owner lease rejection, revocation and the real local TCP data plane. Runtime tests exercise bounded one-shot streams, cancellation, body/frame limits and callback ordering. Adapter tests exercise build gates, endpoint classification, compressed JSON rewriting and conflict-free thread configuration. A real client acceptance run must use a fresh private home and emit only bounded counters and finite error codes.

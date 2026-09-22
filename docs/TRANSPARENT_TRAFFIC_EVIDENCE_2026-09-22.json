@@ -1,0 +1,546 @@
+{
+  "schema": 1,
+  "collectedAt": "2026-09-22T04:22:12.977Z",
+  "productAutomaticInterceptionReady": false,
+  "identity": {
+    "backendVersion": "0.155.0-alpha.9.2",
+    "backendSha256": "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226",
+    "windowsPackage": "26.915.4065.0",
+    "desktopVersion": "26.915.31945",
+    "asarSha256": "b8aeb817cd1ee6ef50efe8a97985d3be41de89688a5addfe0a444e1e52348096"
+  },
+  "sourceHashesAtCollection": {
+    "runtime/host-traffic.cjs": "1a98217990b98ff1c1f94a7fec3a921a69d7bac1543bcb2ca825ca6f26cf5201",
+    "runtime/traffic-interceptors.cjs": "d93e7042bbd4216f23fca52a1610f32f4a8f147095ef91f19fd0c882ca5135d9",
+    "runtime/process-traffic-environment.cjs": "a77d3f1477473f87038b7cb6bd6a9c7fbb08db3a0bdc9c15e278486befee87d5",
+    "runtime/host-traffic-bundle.cjs": "8a029a0c8d9bf3593fdcfdc65fb2646fa6ab04bd14262598f8a6c619c8e0dd1f"
+  },
+  "validation": {
+    "coreNode": "24.21.0",
+    "core": {
+      "tests": 147,
+      "pass": 147,
+      "fail": 0,
+      "skipped": 0
+    },
+    "adapter": {
+      "tests": 38,
+      "pass": 38,
+      "fail": 0,
+      "skipped": 0
+    },
+    "systemNodeIssue": {
+      "node": "24.18.1",
+      "test": "bootstrap_idle",
+      "result": "V8 DisallowJavascriptExecutionScope fatal; bundled Node full suite passed"
+    }
+  },
+  "controlled": {
+    "source": "probe-VNUPxE",
+    "schema": 1,
+    "date": "2026-09-22T04:05:51.537Z",
+    "mode": "core-ingress",
+    "adapter": true,
+    "binarySha256": "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226",
+    "coverage": "official-binary-controlled-fixtures-no-real-oauth",
+    "results": [
+      {
+        "scenario": "http-default",
+        "connect": 0,
+        "fixtureConnect": 0,
+        "http": 1,
+        "websocket": 0,
+        "modelList": 0,
+        "otherRequests": 0,
+        "bytes": 33858,
+        "originalDestination": true,
+        "authenticationHeaderPresent": false,
+        "providerOverridden": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "ws-default",
+        "connect": 0,
+        "fixtureConnect": 0,
+        "http": 0,
+        "websocket": 1,
+        "modelList": 0,
+        "otherRequests": 0,
+        "bytes": 61062,
+        "originalDestination": true,
+        "authenticationHeaderPresent": false,
+        "providerOverridden": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "https-untrusted",
+        "connect": 0,
+        "fixtureConnect": 1,
+        "http": 0,
+        "websocket": 0,
+        "modelList": 0,
+        "otherRequests": 0,
+        "bytes": 0,
+        "originalDestination": true,
+        "authenticationHeaderPresent": false,
+        "providerOverridden": true,
+        "tlsErrors": 0,
+        "exit": null,
+        "timedOut": true,
+        "errorEvents": 1,
+        "outputBytes": 209
+      },
+      {
+        "scenario": "https-trusted",
+        "connect": 0,
+        "fixtureConnect": 1,
+        "http": 1,
+        "websocket": 0,
+        "modelList": 0,
+        "otherRequests": 0,
+        "bytes": 33861,
+        "originalDestination": true,
+        "authenticationHeaderPresent": false,
+        "providerOverridden": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "wss-trusted",
+        "connect": 0,
+        "fixtureConnect": 1,
+        "http": 0,
+        "websocket": 1,
+        "modelList": 0,
+        "otherRequests": 0,
+        "bytes": 61065,
+        "originalDestination": true,
+        "authenticationHeaderPresent": false,
+        "providerOverridden": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "builtin-api-key-fixture",
+        "connect": 0,
+        "fixtureConnect": 1,
+        "http": 0,
+        "websocket": 1,
+        "modelList": 0,
+        "otherRequests": 0,
+        "bytes": 61658,
+        "originalDestination": true,
+        "authenticationHeaderPresent": true,
+        "providerOverridden": false,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "builtin-chatgpt-fixture",
+        "connect": 0,
+        "fixtureConnect": 15,
+        "http": 0,
+        "websocket": 1,
+        "modelList": 2,
+        "otherRequests": 13,
+        "bytes": 70905,
+        "originalDestination": true,
+        "authenticationHeaderPresent": true,
+        "providerOverridden": false,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      }
+    ]
+  },
+  "independentProxy": {
+    "source": "probe-WSFyPv",
+    "schema": 1,
+    "date": "2026-09-22T03:21:59.910Z",
+    "binarySha256": "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226",
+    "coverage": "official-binary-controlled-fixture-custom-provider-no-oauth",
+    "results": [
+      {
+        "scenario": "http-default",
+        "connect": 2,
+        "fixtureConnect": 0,
+        "http": 1,
+        "websocket": 0,
+        "bytes": 33858,
+        "originalDestination": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "http-enabled",
+        "connect": 1,
+        "fixtureConnect": 0,
+        "http": 0,
+        "websocket": 0,
+        "bytes": 0,
+        "originalDestination": true,
+        "tlsErrors": 0,
+        "exit": 1,
+        "timedOut": false,
+        "errorEvents": 2,
+        "outputBytes": 800
+      },
+      {
+        "scenario": "https-untrusted",
+        "connect": 5,
+        "fixtureConnect": 1,
+        "http": 0,
+        "websocket": 0,
+        "bytes": 0,
+        "originalDestination": true,
+        "tlsErrors": 0,
+        "exit": null,
+        "timedOut": true,
+        "errorEvents": 1,
+        "outputBytes": 209
+      },
+      {
+        "scenario": "https-trusted",
+        "connect": 3,
+        "fixtureConnect": 1,
+        "http": 1,
+        "websocket": 0,
+        "bytes": 33861,
+        "originalDestination": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      },
+      {
+        "scenario": "wss-trusted",
+        "connect": 3,
+        "fixtureConnect": 1,
+        "http": 0,
+        "websocket": 1,
+        "bytes": 61065,
+        "originalDestination": true,
+        "tlsErrors": 0,
+        "exit": 0,
+        "timedOut": false,
+        "errorEvents": 0,
+        "outputBytes": 253
+      }
+    ]
+  },
+  "live": {
+    "execWss": {
+      "source": "live-bkwwP7",
+      "date": "2026-09-22T03:42:00.723Z",
+      "scope": "isolated-official-backend-live-access-token-no-refresh-no-desktop",
+      "diagnostic": "completed",
+      "inheritedProxy": true,
+      "tlsValidationDisabled": false,
+      "providerOverridden": false,
+      "credentialsRemoved": true,
+      "selectedModel": "gpt-6-astra",
+      "modelCandidates": 7,
+      "responseStatuses": {
+        "200": 2,
+        "403": 5
+      },
+      "upstreamErrorKinds": {},
+      "nativeErrorKinds": {
+        "model_unavailable": 1
+      },
+      "requests": 8,
+      "responseHeaders": 7,
+      "responseBytes": 845745,
+      "clientFrames": 2,
+      "serverFrames": 18,
+      "modifiedRequests": 2,
+      "authenticatedRequests": 8,
+      "modelRequests": 1,
+      "modelLists": 2,
+      "upstreamCompleted": 2,
+      "otherBlocked": 5,
+      "turnCompleted": true,
+      "toolEvents": 0,
+      "childExit": 0,
+      "timedOut": false,
+      "resourcesAfterClose": {
+        "registered": 0,
+        "active": 0,
+        "retired": true
+      }
+    },
+    "execHttpsHistory": {
+      "source": "live-Czghb4",
+      "date": "2026-09-22T03:55:37.121Z",
+      "scope": "isolated-official-backend-live-access-token-no-refresh-no-desktop",
+      "httpFallbackForced": true,
+      "diagnostic": "completed",
+      "inheritedProxy": true,
+      "tlsValidationDisabled": false,
+      "providerOverridden": false,
+      "credentialsRemoved": true,
+      "selectedModel": "gpt-6-astra",
+      "modelCandidates": 7,
+      "requestEncodings": {
+        "zstd": 1
+      },
+      "requestDecodeFailures": {},
+      "responseStatuses": {
+        "200": 2,
+        "403": 5
+      },
+      "upstreamErrorKinds": {},
+      "nativeErrorKinds": {
+        "unclassified": 5
+      },
+      "requests": 14,
+      "responseHeaders": 7,
+      "responseBytes": 477702,
+      "clientFrames": 0,
+      "serverFrames": 0,
+      "modifiedRequests": 1,
+      "authenticatedRequests": 14,
+      "modelRequests": 8,
+      "modelLists": 1,
+      "upstreamCompleted": 0,
+      "otherBlocked": 5,
+      "blockedWebsocketAttempts": 7,
+      "turnCompleted": true,
+      "turnsCompleted": 2,
+      "resumedAfterEnablingInterceptor": true,
+      "toolEvents": 0,
+      "childExit": 0,
+      "timedOut": false,
+      "resourcesAfterClose": {
+        "registered": 0,
+        "active": 0,
+        "retired": true
+      }
+    },
+    "appServerLoadedThread": {
+      "source": "live-kJ0uLp",
+      "date": "2026-09-22T04:09:15.562Z",
+      "scope": "isolated-official-backend-live-access-token-no-refresh-no-desktop",
+      "backendMode": "app-server-stdio",
+      "historyMode": "same-loaded-thread",
+      "httpFallbackForced": false,
+      "diagnostic": "completed",
+      "inheritedProxy": true,
+      "tlsValidationDisabled": false,
+      "providerOverridden": false,
+      "credentialsRemoved": true,
+      "selectedModel": null,
+      "modelCandidates": 0,
+      "requestEncodings": {},
+      "requestDecodeFailures": {},
+      "responseStatuses": {},
+      "upstreamHttpStatuses": {},
+      "upstreamErrorKinds": {},
+      "nativeErrorKinds": {},
+      "requests": 1,
+      "responseHeaders": 0,
+      "responseBytes": 118514,
+      "clientFrames": 1,
+      "serverFrames": 12,
+      "modifiedRequests": 1,
+      "authenticatedRequests": 1,
+      "modelRequests": 1,
+      "modelLists": 0,
+      "upstreamCompleted": 1,
+      "otherBlocked": 0,
+      "blockedWebsocketAttempts": 0,
+      "turnCompleted": true,
+      "turnsCompleted": 2,
+      "resumedAfterEnablingInterceptor": true,
+      "toolEvents": 0,
+      "childExit": 0,
+      "timedOut": false,
+      "modifiedResponseFrames": 3,
+      "clientSawResponseMarker": true,
+      "effectiveSystemProxyFeature": null,
+      "builtinProviderPreserved": true,
+      "connectionsReopenedOnEnable": true,
+      "resourcesAfterClose": {
+        "registered": 0,
+        "active": 0,
+        "retired": true
+      }
+    }
+  },
+  "performance": {
+    "date": "2026-09-22T03:33:10.497Z",
+    "scope": "synthetic-node-http-only-not-native-private-memory",
+    "node": "v24.18.1",
+    "gc": true,
+    "results": [
+      {
+        "mode": "direct",
+        "iterations": 40,
+        "concurrency": 1,
+        "bodyBytes": 32768,
+        "p50Ms": 1.21,
+        "p95Ms": 5.4,
+        "p99Ms": 14.465,
+        "cpuUserMs": 31,
+        "cpuSystemMs": 16,
+        "before": {
+          "rss": 53624832,
+          "heapTotal": 13541376,
+          "heapUsed": 8100560,
+          "external": 4146816,
+          "arrayBuffers": 212219
+        },
+        "after": {
+          "rss": 55873536,
+          "heapTotal": 13541376,
+          "heapUsed": 9611864,
+          "external": 5557720,
+          "arrayBuffers": 1688655
+        },
+        "released": {
+          "rss": 55767040,
+          "heapTotal": 13803520,
+          "heapUsed": 8437856,
+          "external": 5557720,
+          "arrayBuffers": 1130855
+        },
+        "registryActiveAfterClose": 0,
+        "queuePeakBytes": null
+      },
+      {
+        "mode": "ingress-no-interceptors",
+        "iterations": 40,
+        "concurrency": 1,
+        "bodyBytes": 32768,
+        "p50Ms": 2.631,
+        "p95Ms": 3.935,
+        "p99Ms": 26.131,
+        "cpuUserMs": 47,
+        "cpuSystemMs": 47,
+        "before": {
+          "rss": 58519552,
+          "heapTotal": 18948096,
+          "heapUsed": 9076000,
+          "external": 5853928,
+          "arrayBuffers": 1458131
+        },
+        "after": {
+          "rss": 66912256,
+          "heapTotal": 20520960,
+          "heapUsed": 11675832,
+          "external": 6739228,
+          "arrayBuffers": 2868115
+        },
+        "released": {
+          "rss": 66715648,
+          "heapTotal": 19210240,
+          "heapUsed": 9299136,
+          "external": 6739228,
+          "arrayBuffers": 2245159
+        },
+        "registryActiveAfterClose": 0,
+        "queuePeakBytes": null
+      },
+      {
+        "mode": "passthrough-interceptor",
+        "iterations": 40,
+        "concurrency": 1,
+        "bodyBytes": 32768,
+        "p50Ms": 2.77,
+        "p95Ms": 3.466,
+        "p99Ms": 3.958,
+        "cpuUserMs": 47,
+        "cpuSystemMs": 78,
+        "before": {
+          "rss": 66064384,
+          "heapTotal": 19472384,
+          "heapUsed": 9300920,
+          "external": 5919464,
+          "arrayBuffers": 1523667
+        },
+        "after": {
+          "rss": 68927488,
+          "heapTotal": 20520960,
+          "heapUsed": 12335376,
+          "external": 7788524,
+          "arrayBuffers": 3917411
+        },
+        "released": {
+          "rss": 68763648,
+          "heapTotal": 19210240,
+          "heapUsed": 9347976,
+          "external": 7788524,
+          "arrayBuffers": 3196035
+        },
+        "registryActiveAfterClose": 0,
+        "queuePeakBytes": null
+      },
+      {
+        "mode": "body-transform",
+        "iterations": 40,
+        "concurrency": 1,
+        "bodyBytes": 32768,
+        "p50Ms": 2.603,
+        "p95Ms": 4.293,
+        "p99Ms": 9.865,
+        "cpuUserMs": 62,
+        "cpuSystemMs": 62,
+        "before": {
+          "rss": 67624960,
+          "heapTotal": 18948096,
+          "heapUsed": 9383128,
+          "external": 6312680,
+          "arrayBuffers": 1818579
+        },
+        "after": {
+          "rss": 70447104,
+          "heapTotal": 27598848,
+          "heapUsed": 11413976,
+          "external": 8345464,
+          "arrayBuffers": 4474351
+        },
+        "released": {
+          "rss": 70144000,
+          "heapTotal": 27598848,
+          "heapUsed": 9456184,
+          "external": 8345464,
+          "arrayBuffers": 3753091
+        },
+        "registryActiveAfterClose": 0,
+        "queuePeakBytes": null
+      }
+    ]
+  },
+  "limitations": [
+    "Native launch owner, permissions store, plugin Host IPC and generation bridge are not integrated",
+    "Desktop Electron traffic and attachments are not validated",
+    "macOS has no native runtime or live verification",
+    "Live runs use a current access-token snapshot in an isolated built-in-provider profile; no login-refresh or everyday custom-provider claim",
+    "Existing WebSocket connections retain their interceptor snapshot until explicitly disconnected or restarted",
+    "HTTP live history verification deliberately rejects WS and exercises fallback",
+    "Performance is synthetic Node HTTP only; queue peak and native private memory are not measured"
+  ]
+}

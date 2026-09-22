@@ -283,6 +283,9 @@ impl HostOwner {
             return;
         }
         self.services_active = false;
+        if let Some(services) = &self.services.config.plugin_services {
+            services.retire_host_traffic(&self.observation.plugin.manifest.id, self.observation.plugin.generation);
+        }
         self.services.rpc.retire_plugin(
             &self.observation.plugin.manifest.id,
             self.observation.plugin.generation,

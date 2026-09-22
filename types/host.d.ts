@@ -42,6 +42,8 @@ export interface HttpForwardRequest {
 }
 export interface HttpChannelExchange {
   readonly signal: AbortSignal;
+  /** Cancels this owned exchange and releases its upstream streams. */
+  cancel(): void;
   /** Number of explicit forward calls charged to this exchange. */
   readonly forwardAttempts: number;
   readonly maxForwardAttempts: number;
@@ -83,9 +85,21 @@ export interface WebSocketForwardRequest {
 }
 export interface WebSocketChannelExchange {
   readonly signal: AbortSignal;
+  /** Cancels the handshake or both sides of an established bridge. */
+  cancel(): void;
   /** Connects upstream before accepting the downstream handshake; dispatches at most once. */
   forward(request: WebSocketForwardRequest): Promise<Readonly<{ protocol: string | null; closed: Promise<{ code: string }> }>>;
 }
+export interface TrafficInterceptorOptions { id: string; origins: readonly string[]; priority?: number; timeoutMs?: number; }
+export type TrafficRequestDecision = { request: Partial<Pick<HttpForwardRequest, 'url' | 'method' | 'headers' | 'body'>> } | { respond: HttpChannelResponse } | { block: true } | null | undefined;
+export interface TrafficInterceptorContext { readonly signal: AbortSignal }
+export interface TrafficResponseContext extends TrafficInterceptorContext { readonly source: 'upstream' | 'synthetic'; readonly request: Readonly<{ id: string; url: string; method: string }>; }
+export interface TrafficInterceptorHandlers {
+  request?(request: Readonly<HttpChannelRequest & { url: string }>, context: TrafficInterceptorContext): TrafficRequestDecision | Promise<TrafficRequestDecision>;
+  response?(response: Readonly<HttpChannelResponse>, context: TrafficResponseContext): Partial<HttpChannelResponse> | null | undefined | Promise<Partial<HttpChannelResponse> | null | undefined>;
+  webSocket?(request: Readonly<WebSocketChannelRequest & { url: string }>, context: TrafficInterceptorContext): { request?: Partial<Pick<WebSocketForwardRequest, 'url' | 'headers'>>; block?: true; clientToServer?: WebSocketFrameTransform; serverToClient?: WebSocketFrameTransform } | null | undefined | Promise<{ request?: Partial<Pick<WebSocketForwardRequest, 'url' | 'headers'>>; block?: true; clientToServer?: WebSocketFrameTransform; serverToClient?: WebSocketFrameTransform } | null | undefined>;
+}
+export interface TrafficInterceptor { readonly id: string; close(): Promise<void>; dispose(): Promise<void>; setEnabled(enabled: boolean): Promise<void>; inspect(): Readonly<{ registered: boolean; enabled: boolean; exchanges: number }>; }
 export interface TrafficChannelHandlers {
   http?: (request: HttpChannelRequest, exchange: HttpChannelExchange) => HttpChannelResponse | Promise<HttpChannelResponse>;
   webSocket?: (request: WebSocketChannelRequest, exchange: WebSocketChannelExchange) => void | Promise<void>;
@@ -168,6 +182,9 @@ export interface HostContext {
     openChannel(options: TrafficChannelOptions, handlers: TrafficChannelHandlers): Promise<TrafficChannel>;
     /** Requires host.network and an explicit origin grant for every forward call. */
     openHttpChannel(options: HttpChannelOptions, handler: (request: HttpChannelRequest, exchange: HttpChannelExchange) => HttpChannelResponse | Promise<HttpChannelResponse>): Promise<HttpChannel>;
+    /** Registers a Core-authorized interceptor for exact origins in this Host generation. */
+    registerInterceptor(options: TrafficInterceptorOptions, handlers: TrafficInterceptorHandlers): Promise<TrafficInterceptor>;
+    inspect(): Promise<Readonly<{ available: boolean; listening: boolean; attached: boolean; registered: number; active: number; pending: number }>>;
   };
 }
 export interface HostPlugin {

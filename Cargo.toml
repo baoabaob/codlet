@@ -21,9 +21,11 @@ sha2 = "0.10"
 base64 = "0.22"
 thiserror = "2.0"
 tempfile = "3.20"
+rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
 url = "2.5"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "hickory-dns", "system-proxy"] }
-tokio = { version = "1", features = ["rt", "time", "net", "sync", "macros"] }
+tokio = { version = "1", features = ["rt", "time", "net", "sync", "macros", "io-util"] }
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

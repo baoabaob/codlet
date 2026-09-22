@@ -141,6 +141,7 @@ function retire() {
 }
 
 const trafficRuntime = createEmbeddedTrafficRuntime({
+  detach: callback => invocationContext.run(undefined, callback),
   rootSignal: abort.signal,
   makeError: error,
   reportState(channels) {
