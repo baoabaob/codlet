@@ -68,6 +68,26 @@ pub struct RunningProcess {
 pub struct ChildProcess {
     handle: OwnedHandle,
     process_id: u32,
+    // Only the exact newly launched traffic client grants failure cleanup.
+    // Official updater descendants must never enter a kill-on-close job.
+    traffic_owned: bool,
+}
+
+impl Drop for ChildProcess {
+    fn drop(&mut self) {
+        if self.traffic_owned && self.wait(Duration::ZERO).ok().flatten().is_none() {
+            use windows_sys::Win32::System::Threading::TerminateProcess;
+            unsafe {
+                TerminateProcess(raw_handle(&self.handle), 1);
+            }
+            if self.wait(Duration::from_secs(2)).ok().flatten().is_none() {
+                crate::runtime_log::error(
+                    "traffic_client_cleanup_incomplete",
+                    "The owned official client did not confirm exit within its cleanup budget",
+                );
+            }
+        }
+    }
 }
 
 impl ChildProcess {
@@ -129,6 +149,32 @@ pub fn launch_with_cdp_pipes_in_environment(
     no_window: bool,
     environment: Option<&ChildEnvironment>,
     current_directory: Option<&Path>,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_cdp(
+        executable,
+        arguments,
+        no_window,
+        environment,
+        current_directory,
+        false,
+    )
+}
+
+pub(crate) fn launch_with_owned_traffic_environment(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: &ChildEnvironment,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_cdp(executable, arguments, false, Some(environment), None, true)
+}
+
+fn launch_cdp(
+    executable: &Path,
+    arguments: &[OsString],
+    no_window: bool,
+    environment: Option<&ChildEnvironment>,
+    current_directory: Option<&Path>,
+    own_scope: bool,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
     if !executable.is_absolute() {
         return Err(ProcessError::ExecutableNotAbsolute(executable.to_owned()));
@@ -207,6 +253,7 @@ pub fn launch_with_cdp_pipes_in_environment(
         ChildProcess {
             handle: process,
             process_id: process_information.dwProcessId,
+            traffic_owned: own_scope,
         },
         parent_pipes,
     ))

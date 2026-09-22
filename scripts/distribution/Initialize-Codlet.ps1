@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$Configure,[switch]$NoLaunch,[string[]]$Plugins,[string]$DataDirectory)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -52,7 +52,7 @@ function Select-Plugins($Available){
   $form=[Windows.Forms.Form]::new();$form.Text='Codlet · 选择官方插件';$form.ClientSize=[Drawing.Size]::new(570,320);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.MaximizeBox=$false;$form.MinimizeBox=$false
   $form.Font=[Drawing.Font]::new('Microsoft YaHei UI',10)
   if([IO.File]::Exists((Join-Path $root 'codlet.ico'))){$form.Icon=[Drawing.Icon]::new((Join-Path $root 'codlet.ico'))}
-  $label=[Windows.Forms.Label]::new();$label.Text="选择希望一起安装的官方插件。也可以全部取消，仅使用 Core 和 CLI。`nGUI 会自动安装所需的 UI Adapter。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
+  $label=[Windows.Forms.Label]::new();$label.Text="选择希望安装或检查版本的官方插件。GUI 包含 UI Adapter。`n已有插件不会被覆盖；版本不符时会提示手动迁移。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
   $boxes=@{};$y=91
   foreach($package in $Available){
     $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codex.ui.adapter'{'UI Adapter — 接入侧栏与插件页面'};'codex.desktop.adapter'{'Desktop Adapter — 提供客户端与对话接口'};'codlet-gui'{'Codlet GUI — 图形化管理插件（包含 UI Adapter）'}}
@@ -61,7 +61,7 @@ function Select-Plugins($Available){
   if($boxes.ContainsKey('codlet-gui') -and $boxes.ContainsKey('codex.ui.adapter')){
     $gui=$boxes['codlet-gui'];$ui=$boxes['codex.ui.adapter'];$sync={if($gui.Checked){$ui.Checked=$true;$ui.Enabled=$false}else{$ui.Enabled=$true}}.GetNewClosure();$gui.Add_CheckedChanged($sync);&$sync
   }
-  $notice=[Windows.Forms.Label]::new();$notice.Text='所选插件会获得其声明的界面访问或插件管理权限';$notice.SetBounds(22,223,525,32);$form.Controls.Add($notice)
+  $notice=[Windows.Forms.Label]::new();$notice.Text='新安装插件获得声明的权限；已有插件的授权与禁用状态保留';$notice.SetBounds(22,223,525,32);$form.Controls.Add($notice)
   $ok=[Windows.Forms.Button]::new();$ok.Text='确认';$ok.SetBounds(354,273,90,30);$ok.DialogResult=[Windows.Forms.DialogResult]::OK;$form.Controls.Add($ok);$form.AcceptButton=$ok
   $cancel=[Windows.Forms.Button]::new();$cancel.Text='取消';$cancel.SetBounds(455,273,90,30);$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$form.Controls.Add($cancel);$form.CancelButton=$cancel
   try{if($form.ShowDialog() -ne [Windows.Forms.DialogResult]::OK){throw 'Plugin selection cancelled'};@($Available|Where-Object{$boxes[$_.id].Checked}|ForEach-Object{$_.id})}finally{$form.Dispose()}
@@ -102,8 +102,9 @@ try{
     foreach($package in $available){
       $id=[string]$package.id
       if($id -notin $selected){if(-not $state.decided.ContainsKey($id)){$state.decided[$id]=@{selected=$false}};continue}
-      # Existing registrations retain their source, grants and enabled state.
-      if(@($listing.plugins|Where-Object{$_.id -eq $id}).Count -gt 0){$state.decided[$id]=@{selected=$true;result='existing-preserved'};continue}
+      # Ordinary launches do not revive removed plugins or replace existing sources.
+      $existing=@($listing.plugins|Where-Object{$_.id -eq $id})
+      if($existing.Count -gt 0 -and -not $explicit){continue}
       if(-not $explicit -and $state.decided.ContainsKey($id)){continue}
       $source=Join-Path $root ('optional-plugins/packages/'+$id)
       $destination=Join-Path $dataRoot ('packages/'+$id)
@@ -115,6 +116,17 @@ try{
         if($file.path -notmatch '^[a-zA-Z0-9._/-]+$' -or $file.path.Split('/') -contains '..'){throw 'Invalid package file path'}
         $from=Join-Path $source $file.path;Within $from $source
         if((Hash $from) -ne $file.sha256){throw "Plugin payload changed: $id/$($file.path)"}
+      }
+      if($existing.Count -gt 0){
+        $same=$false
+        try{
+          if($existing[0].source -eq 'local' -and (Full $existing[0].path) -eq (Full $destination)){
+            $same=$true
+            foreach($file in $package.files){if((Hash (Join-Path $destination $file.path)) -ne $file.sha256){$same=$false;break}}
+          }
+        }catch{$same=$false}
+        if($same){Write-Host "Official plugin payload already matches; existing settings retained: $id";continue}
+        throw "官方插件未更新：$id。当前注册或文件与安装包不同；本预览版不覆盖已有插件目录。请保留作者文件，并通过插件管理检查来源、权限差额后手动迁移。现有启用状态和授权未改变。"
       }
       if(-not [IO.Directory]::Exists($destination)){
         $parent=[IO.Path]::GetDirectoryName($destination);[IO.Directory]::CreateDirectory($parent)|Out-Null
@@ -139,11 +151,13 @@ try{
       }
       foreach($permission in $package.permissions){$argsList+=@('--grant',[string]$permission)}
       $result=Invoke-Cli $argsList
-      $state.decided[$id]=@{selected=$true;result='installed';version=$package.version}
+      $state.decided[$id]=@{selected=$true;result='installed';version=$package.version;source='official-installer';path=(Full $destination);files=@($package.files);catalogSha256=(Hash $catalogPath)}
       Save-State
     }
     Save-State
+    $reviewedPath=Join-Path $dataRoot 'plugin-bundle-reviewed.txt';Plain $reviewedPath
+    [IO.File]::WriteAllText($reviewedPath,(Hash $catalogPath).ToUpperInvariant(),$utf8)
     Write-Host ('Codlet plugin setup ready: '+$dataRoot)
   }finally{if($setupLock){$setupLock.Dispose()}}
   if(-not $NoLaunch){& $exe launch;exit $LASTEXITCODE}
-}catch{Write-Error $_;exit 1}
+}catch{Write-Error $_ -ErrorAction Continue;if($_.Exception.Message.StartsWith('官方插件未更新：')){exit 20};exit 1}

@@ -780,12 +780,7 @@ impl RuntimeManageService {
                     })?;
                 if let Some(selection) = &mut request.local_import {
                     selection.broker_policy =
-                        crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
-                            &selection.broker_policy.read_roots,
-                            &selection.broker_policy.network_origins,
-                            &selection.broker_policy.executables,
-                        )
-                        .map_err(|error| {
+                        selection.broker_policy.canonicalized().map_err(|error| {
                             RuntimeManageError::new("invalid_params", error.to_string())
                         })?;
                 }
@@ -1123,6 +1118,43 @@ mod tests {
                 .code,
             "invalid_params"
         );
+    }
+
+    #[test]
+    fn prepare_retains_all_explicit_broker_scopes_and_validates_their_grants() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let executable = root.join("selected.exe");
+        std::fs::write(&executable, "not executed").unwrap();
+        let broker = ControlBroker::new([7; 16], "full-policy-scope".into());
+        broker.set_ready();
+        let service = RuntimeManageService::new(broker.clone());
+        let policy = json!({
+            "readRoots": [root], "networkOrigins": ["https://example.com"],
+            "executables": [executable], "writeRoots": [root], "watchRoots": [root],
+            "cwdRoots": [root], "envKeys": ["SELECTED_VALUE"], "shortcuts": ["Ctrl+Shift+K"]
+        });
+        let request = json!({"action":"import","plugin_id":"dev.policy","local_import":{
+            "path":root,"contentDigest":"a".repeat(64),"registrationDigest":"b".repeat(64),
+            "trusted":true,"enable":false,"brokerPolicy":policy,
+            "grants":["host.fs","host.network","host.fs.write","host.fs.watch","host.process.spawn","core.shortcuts"]
+        }});
+        let prepared = service.invoke("prepare", request.clone()).unwrap();
+        let id = prepared["operation"]["operation_id"].as_str().unwrap();
+        service.invoke("submit", json!({"operationId":id})).unwrap();
+        let selection = broker.take_next().unwrap().request.local_import.unwrap();
+        assert_eq!(
+            serde_json::to_value(selection.broker_policy).unwrap(),
+            policy
+        );
+        let mut missing_grant = request;
+        missing_grant["local_import"]["grants"] =
+            json!(["host.fs", "host.network", "host.process.spawn"]);
+        assert_eq!(
+            service.invoke("prepare", missing_grant).unwrap_err().code,
+            "invalid_params"
+        );
+        assert!(broker.take_next().is_none());
     }
 
     #[test]

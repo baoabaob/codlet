@@ -194,6 +194,8 @@ struct CodletRuntime {
     package: InstalledPackage,
     executable: PathBuf,
     process: ChildProcess,
+    // Field order retires the owned client scope before its proxy/trust files.
+    traffic: Option<crate::traffic_owner::TrafficOwner>,
     client: CdpClient,
     targets: Option<TargetController>,
     hosts: HostRuntime,
@@ -678,6 +680,13 @@ fn start_attached_codex() -> Result<AttachedCodex, ProbeError> {
 fn start_connected_codex_with_services(
     services: Option<PreparedServices>,
 ) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError> {
+    start_connected_codex_with_traffic(services, None)
+}
+
+fn start_connected_codex_with_traffic(
+    services: Option<PreparedServices>,
+    traffic: Option<&crate::traffic_owner::TrafficOwner>,
+) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError> {
     let status = services.as_ref().map(|services| services.status.clone());
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
@@ -700,7 +709,25 @@ fn start_connected_codex_with_services(
                 })
                 .transpose()
         },
-        |server| Ok((launch_with_cdp_pipes(&executable, &[], false)?, server)),
+        |server| {
+            let launched = if let Some(traffic) = traffic {
+                let environment = crate::windows::environment::ChildEnvironment::from_entries(
+                    traffic.environment().iter().cloned(),
+                )
+                .map_err(ProcessError::from)?;
+                crate::windows::process::launch_with_owned_traffic_environment(
+                    &executable,
+                    &[],
+                    &environment,
+                )?
+            } else {
+                launch_with_cdp_pipes(&executable, &[], false)?
+            };
+            if let Some(traffic) = traffic {
+                traffic.client_launched()?;
+            }
+            Ok((launched, server))
+        },
     )?;
     if let Some(status) = status {
         status.set_codex(CodexStatus {
@@ -742,19 +769,32 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
     renderer.enable_runtime_skill();
     host_control.seed_watch_sources(&renderer, &host_plugins);
-    let js_runtime = if host_plugins.is_empty() {
-        None
-    } else {
-        Some(JsRuntime::discover()?)
-    };
+    let js_runtime = (!host_plugins.is_empty())
+        .then(JsRuntime::discover)
+        .transpose()?;
+    let plugin_services = crate::core_services::SharedCoreServices::new(renderer.registry_path())
+        .map_err(|e| HostError::new(e.code, e.message))?;
+    let traffic = crate::traffic_owner::required_for_plugins(&host_plugins)
+        .then(|| {
+            crate::traffic_owner::TrafficOwner::start(
+                &plugin_services,
+                js_runtime
+                    .as_ref()
+                    .expect("traffic requires a Host runtime"),
+            )
+        })
+        .transpose()?;
     let status = StatusPublisher::new();
     if renderer.needs_renderer_targets() {
         renderer.set_status_publisher(status.clone());
     }
-    let (connected, servers) = start_connected_codex_with_services(Some(PreparedServices {
-        status: status.clone(),
-        lease,
-    }))?;
+    let (connected, servers) = start_connected_codex_with_traffic(
+        Some(PreparedServices {
+            status: status.clone(),
+            lease,
+        }),
+        traffic.as_ref(),
+    )?;
     let has_hosts = !host_plugins.is_empty();
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
@@ -771,8 +811,6 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     client_versions::publish(&manage_service, &connected.package.version.to_string());
     renderer.set_manage_service(manage_service.clone());
     let os_broker = crate::os_broker::OsBroker::for_registry(renderer.registry_path().to_owned())?;
-    let plugin_services = crate::core_services::SharedCoreServices::new(renderer.registry_path())
-        .map_err(|e| HostError::new(e.code, e.message))?;
     renderer.set_core_services(plugin_services.clone())?;
     let hosts = HostRuntime::start_with_services(
         renderer.logical_plugins(),
@@ -880,6 +918,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         package: connected.package,
         executable: connected.executable,
         process: connected.process,
+        traffic,
         client: connected.client,
         targets,
         hosts,
@@ -1016,6 +1055,9 @@ impl CodletRuntime {
         let exit_code = loop {
             if let Some(exit_code) = self.process.wait(Duration::ZERO)? {
                 break exit_code;
+            }
+            if let Some(traffic) = &self.traffic {
+                traffic.check_alive()?;
             }
             // The installer may close CDP before Windows retires the process.
             // Preserve the owner and its kernel registration event until exit.
@@ -1311,6 +1353,10 @@ fn print_watch_result(plugin_id: &str, result: Result<PluginControlReport, Plugi
 impl Drop for CodletRuntime {
     fn drop(&mut self) {
         self.control.stop();
+        if self.traffic.is_some() && self.process.wait(Duration::ZERO).ok().flatten().is_none() {
+            self.runtime_update.request_client_quit();
+            let _ = self.process.wait(Duration::from_secs(2));
+        }
         let _ = self.stop_hosts();
         self.status.terminate("host_dropped");
     }

@@ -69,3 +69,42 @@ test('cancelling a stalled proxy CONNECT closes its socket before the tunnel exi
   const channel=await runtime.api.openChannel({handlerTimeoutMs:5000},{http:(_,exchange)=>exchange.forward({url:'https://example.invalid/',networkProfile:'proxy'})});
   t.after(()=>runtime.closeAll());const response=read(channel.endpoint).catch(()=>{});await open;await channel.close();await Promise.race([close,new Promise((_,reject)=>setTimeout(()=>reject(new Error('proxy socket leaked')),1500))]);await response;
 });
+
+for (const protocol of ['http', 'webSocket']) for (const stage of ['route', 'originCredential', 'proxyCredential']) {
+  test(`${protocol} cancellation during ${stage} resolution never creates an upstream socket`, { timeout: 3000 }, async t => {
+    let connections = 0, exchange, cancelled = false;
+    const upstream = http.createServer((_request, response) => response.end('unexpected dispatch'));
+    upstream.on('connection', () => connections++);
+    const upstreamUrl = await listen(upstream, t), root = new AbortController();
+    const cancelBeforeResult = () => { queueMicrotask(() => { cancelled = true; exchange.cancel(); }); };
+    const managed = createTrafficRuntime({ rootSignal: root.signal, makeError: error, async coreRequest(method, params) {
+      if (method === 'host.network.authorizeChannel') return {};
+      if (method === 'host.network.authorizeForward') return { url: params.url };
+      if (method === 'services.network.resolve') {
+        if (stage === 'route') cancelBeforeResult();
+        return stage === 'proxyCredential' ? { proxyUrl: upstreamUrl, proxyCredentialRef: 'proxy-fixture' } : {};
+      }
+      if (method === 'services.credentials.resolve') { cancelBeforeResult(); return { secret: 'fixture' }; }
+      throw new Error(method);
+    } });
+    const channel = await managed.api.openChannel({}, { [protocol]: (_request, current) => {
+      exchange = current;
+      return current.forward({ url: protocol === 'http' ? upstreamUrl : upstreamUrl.replace('http:', 'ws:'), networkProfile: 'fixture', ...(stage === 'originCredential' ? { credentialRef: 'origin-fixture' } : {}) });
+    } });
+    t.after(async () => { root.abort(); await channel.close(); managed.closeAll(); });
+    if (protocol === 'http') assert.equal((await read(channel.endpoint)).status, 502);
+    else {
+      const client = new WebSocket(channel.endpoint.replace('http:', 'ws:'));
+      t.after(() => client.terminate());
+      client.on('error', () => {});
+      const status = await new Promise(resolve => {
+        client.once('unexpected-response', (_request, response) => { response.resume(); resolve(response.statusCode); });
+        client.once('open', () => resolve(101));
+      });
+      assert.equal(status, 502);
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert(cancelled && exchange.signal.aborted);
+    assert.equal(connections, 0, 'cancelled setup must not connect to either an upstream or a proxy');
+  });
+}

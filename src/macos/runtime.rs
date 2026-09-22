@@ -37,16 +37,16 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             .filter(|p| p.manifest.host.is_some())
             .collect::<Vec<_>>();
         HostRuntime::validate_plugins(&host_plugins)?;
-        let runtime = if host_plugins.is_empty() {
-            None
-        } else {
-            Some(JsRuntime::discover()?)
-        };
+        let traffic_required = crate::traffic_owner::required_for_plugins(&host_plugins);
+        let runtime = (!host_plugins.is_empty())
+            .then(JsRuntime::discover)
+            .transpose()?;
+        let services = crate::core_services::SharedCoreServices::new(scope.path())?;
         let mut renderer = RendererRuntime::from_catalog(catalog, registry)?;
         renderer.enable_runtime_skill();
         let mut control = HostControl::new(scope.path().to_owned());
         control.seed_watch_sources(&renderer, &host_plugins);
-        Some((renderer, control, runtime))
+        Some((renderer, control, runtime, services, traffic_required))
     };
     let launch_lease = LaunchMutexGuard::acquire_current_user(Duration::from_secs(5))?;
     application.revalidate()?;
@@ -58,6 +58,19 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         )
         .into());
     }
+    // Declare before the child: every return retires that exact client before
+    // destroying its private proxy and trust directory. Safe mode has no owner.
+    let traffic = prepared
+        .as_ref()
+        .filter(|(_, _, _, _, required)| *required)
+        .map(|(_, _, runtime, services, _)| {
+            crate::traffic_owner::TrafficOwner::start_cancellable(
+                services,
+                runtime.as_ref().expect("traffic requires a Host runtime"),
+                || shutdown_signal.requested(),
+            )
+        })
+        .transpose()?;
     let status = StatusPublisher::new();
     let server = ControlServer::bind_current_user(lease, status.clone())?;
     let control = server.broker();
@@ -66,6 +79,11 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         return Err("Codlet startup was interrupted".into());
     }
     let mut command = Command::new(&application.executable);
+    if let Some(traffic) = &traffic {
+        command
+            .env_clear()
+            .envs(traffic.environment().iter().cloned());
+    }
     command
         .arg("--remote-debugging-pipe")
         .process_group(0)
@@ -89,6 +107,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     if identity.executable != application.executable || identity.uid != unsafe { libc::geteuid() } {
         return Err("Launched application identity does not match the selected bundle".into());
     }
+    if let Some(traffic) = &traffic {
+        traffic.client_launched()?;
+    }
     status.set_codex(CodexStatus {
         pid: child.id(),
         package_full_name: application.identifier.clone(),
@@ -104,7 +125,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         application.build,
         child.id()
     );
-    let result = if let Some((mut renderer, host_control, js_runtime)) = prepared {
+    let result = if let Some((mut renderer, host_control, js_runtime, plugin_services, _)) =
+        prepared
+    {
         renderer.set_status_publisher(status.clone());
         let manage = RuntimeManageService::new(control.clone())
             .with_local_management(scope.path().to_owned(), watch);
@@ -122,7 +145,6 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         super::client_versions::publish(&manage, &application.version);
         renderer.set_manage_service(manage.clone());
         let os = OsBroker::for_registry(scope.path().to_owned())?;
-        let plugin_services = crate::core_services::SharedCoreServices::new(scope.path())?;
         renderer.set_core_services(plugin_services.clone())?;
         let hosts = HostRuntime::start_with_services(
             renderer.logical_plugins(),
@@ -160,6 +182,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             session.control.set_ready();
             println!("runtime-state: ready");
             loop {
+                if let Some(traffic) = &traffic {
+                    traffic.check_alive()?;
+                }
                 if shutdown_signal.requested() {
                     session.stop()?;
                     request_quit(&sessions);

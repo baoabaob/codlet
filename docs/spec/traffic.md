@@ -30,11 +30,15 @@ CONNECT traffic whose origin has no active registration stays opaque and is forw
 
 ## Native launch descriptor
 
+Normal launch prepares traffic only when its enabled Host catalog contains a plugin that both declares and has an explicit grant for `traffic.intercept`. Otherwise Native creates no traffic worker, applies no proxy or CA override, and preserves the ordinary client launch path. Installing or enabling the first traffic Host during that session requires restarting the client; the unavailable service error explains this requirement. An already prepared entrance supports handler registration, retirement and hot updates. Safe mode never prepares an entrance.
+
 The fixed worker accepts `{endpoint,directory,trustInputs,trustOutputs}`. Native issues `endpoint` through `Traffic::gateway_endpoint()` and prepares the fixed script with `JsRuntime::prepare_traffic_worker()`. Wait for `Traffic::launch_descriptor()` before creating the client. The descriptor contains `proxyUrl`, `bundlePath`, `environmentPatch: {set, removeCaseInsensitive}`, `trust: {outputs,inheritedInputsMerged,systemStoreModified}` and `bypass: 'preserve-original-no-proxy'`.
 
 Apply removals to the original client environment before the `set` entries. Only proxy and selected CA variables change; no full worker environment is returned. `NO_PROXY` and unrelated original client variables remain intact. The proxy URL contains a secret, so the descriptor is private and must not enter diagnostics. Native must validate that the bundle remains inside its private launch directory and remove that directory after reaping the worker, including crashes. `set_attached(true)` is a Native-only confirmation after actual child integration, never a plugin registration result.
 
 Standard proxy variables do not establish Electron `session`/`net` coverage. Electron main-process routing and temporary CA trust, and restoration of the original environment for backend tool children, are separate Adapter integrations. They must be completed and verified before claiming those coverage areas. Never use a global certificate verification bypass.
+
+Rust error unwinding retains the private worker and trust directory until the exact newly spawned client has been asked to quit and its retained process handle has been checked; failure cleanup may terminate that exact client. The official client is not put in a kill-on-close Job, so independent updater descendants survive the normal update handoff. A hard Core crash or external kill does not execute Rust destructors: gateway disconnection stops the worker, but the existing client can survive with a dead proxy configuration. Automatic client recovery after such a crash is not currently verified or promised.
 
 ## Official Adapter
 
@@ -42,6 +46,16 @@ The official Adapter owns endpoint classification and launch compatibility. Core
 
 The Adapter must report `available: false` until the Native gateway, child environment and protocol profile are all attached. Fixture hashes and isolated probes are evidence only; they do not upgrade OAuth, Desktop, attachment or everyday-provider coverage.
 
+## Explicit channels
+
+The existing `context.traffic.openChannel` and `openHttpChannel` APIs remain supported. A plugin may provide HTTP/SSE and WebSocket handlers and return its channel descriptor to an authorized consumer. Channel endpoints use a private random loopback path, expire with the Host generation, and must not be logged or persisted. Declare/grant `host.process`, `host.network`, and each exact upstream origin.
+
+HTTP handlers receive a one-use body stream and may forward or return `{status, headers, body}`. Repeated headers remain arrays; SSE chunks are arbitrary byte chunks, not complete events. Each forward verifies current authority, has no implicit retry or redirect, and does not automatically copy incoming authentication. An explicit bounded `maxForwardAttempts` permits plugin-managed retries only after consuming/cancelling the prior response; replaying a consumed body requires the plugin's own bounded buffer.
+
+WebSocket forwarding preserves ordering separately in each direction. Frame callbacks may pass, replace, or drop a message. Protocol conversion, model/provider routing and response repair belong to plugins. Cancellation reclaims local resources but cannot undo remote effects. The minimal [HTTP channel example](https://github.com/baoabaob/codlet/tree/main/examples/http-channel) and [Host types](../../types/host.d.ts) document usage.
+
 ## Validation
 
 Core tests exercise authenticated peer roles, exact-origin grants, cross-owner lease rejection, revocation and the real local TCP data plane. Runtime tests exercise bounded one-shot streams, cancellation, body/frame limits and callback ordering. Adapter tests exercise build gates, endpoint classification, compressed JSON rewriting and conflict-free thread configuration. A real client acceptance run must use a fresh private home and emit only bounded counters and finite error codes.
+
+Historical controlled/live AppServer evidence is retained in Git at `d109d54`. It used independent profiles and verifies a backend path, not installed Desktop coverage. Repeatable drivers are `scripts/probe-official-traffic.mjs`, `scripts/verify-live-backend-traffic.mjs` (explicit live opt-in), and `scripts/benchmark-process-traffic.mjs`. Do not copy credentials, raw traffic, dated run journals, or memory reports into the source repository.

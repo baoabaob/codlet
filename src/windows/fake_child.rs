@@ -57,7 +57,8 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         mode @ ("renderer-document-recovery" | "renderer-document-recovery-timeout") => {
             scenario_renderer_document_recovery(&mut input, &mut output, mode.ends_with("timeout"))
         }
-        "lab-environment" => scenario_lab_environment(&mut input, &mut output),
+        "lab-environment" => scenario_lab_environment(&mut input, &mut output, false),
+        "lab-environment-updater" => scenario_lab_environment(&mut input, &mut output, true),
         "renderer-ready-handshake" => scenario_renderer_ready_handshake(&mut input, &mut output),
         "renderer-ready-rejection" => scenario_renderer_ready_rejection(&mut input, &mut output),
         "renderer-ready-timeout" => scenario_renderer_ready_timeout(&mut input, &mut output),
@@ -1129,15 +1130,34 @@ fn scenario_renderer_document_recovery(
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
-fn scenario_lab_environment(input: &mut File, output: &mut File) -> Result<(), FakeChildError> {
+fn scenario_lab_environment(
+    input: &mut File,
+    output: &mut File,
+    updater: bool,
+) -> Result<(), FakeChildError> {
     let mut reader = RequestReader::new(input);
     let id = expect_method(reader.next()?, "Fake.environment", None)?;
+    let updater = if updater {
+        use std::process::{Command, Stdio};
+        Some(
+            Command::new(std::env::current_exe()?.with_file_name("codlet-fake-host.exe"))
+                .arg("sleep")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?,
+        )
+    } else {
+        None
+    };
     let values: serde_json::Map<String, Value> = [
         "SystemRoot",
         "CODLET_LAB_FIXTURE",
         "CODLET_LAB_REMOVE",
         "环境_变量",
         "EMPTY",
+        "HTTPS_PROXY",
+        "CODEX_CA_CERTIFICATE",
     ]
     .into_iter()
     .map(|name| {
@@ -1155,6 +1175,7 @@ fn scenario_lab_environment(input: &mut File, output: &mut File) -> Result<(), F
             "environment":values,
             "cwd":std::env::current_dir()?.to_string_lossy(),
             "pid":std::process::id()
+            ,"updaterPid":updater.as_ref().map(std::process::Child::id)
         }}),
     )?;
     let close = expect_method(reader.next()?, "Browser.close", None)?;

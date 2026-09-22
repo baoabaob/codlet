@@ -42,6 +42,8 @@ pub mod runtime_update;
 #[cfg(any(windows, target_os = "macos"))]
 mod safe_mode;
 pub mod source_removal;
+#[cfg(any(windows, target_os = "macos"))]
+mod traffic_owner;
 
 #[cfg(any(windows, target_os = "macos"))]
 pub mod host_control;

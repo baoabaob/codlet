@@ -58,13 +58,24 @@ export function initialize(selected) {
     for (const id of allowed) {
       const pkg = packages.find(entry => entry.id === id);
       if (!pkg || !selected.includes(id)) { state.decided[id] ??= { selected: false }; continue; }
-      if (existing.some(entry => entry.id === id)) { state.decided[id] = { selected: true, result: 'existing-preserved' }; continue; }
+      const registered = existing.find(entry => entry.id === id);
       const source = path.join(root, 'optional-plugins/packages', id);
       const manifest = read(path.join(source, 'codlet.json'));
       if (manifest.id !== id || manifest.version !== pkg.version || JSON.stringify([...manifest.permissions].sort()) !== JSON.stringify([...pkg.permissions].sort())) throw new Error('Plugin manifest/catalog mismatch');
       checkFiles(source, pkg);
       const destination = path.join(home, 'packages', id);
       plain(destination);
+      if (registered) {
+        let same = false;
+        try {
+          if (registered.source === 'local' && path.resolve(registered.path) === path.resolve(destination)) {
+            checkFiles(destination, pkg);
+            same = true;
+          }
+        } catch { /* Unverifiable or modified source requires manual migration. */ }
+        if (same) { console.log(`Official plugin payload already matches; existing settings retained: ${id}`); continue; }
+        throw new Error(`官方插件未更新：${id}。当前注册或文件与安装包不同；本预览版不覆盖已有插件目录。请保留作者文件，并通过插件管理检查来源、权限差额后手动迁移。现有启用状态和授权未改变。`);
+      }
       if (!fs.existsSync(destination)) {
         fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
         const stage = fs.mkdtempSync(path.join(path.dirname(destination), '.setup-'));
@@ -83,16 +94,19 @@ export function initialize(selected) {
       if (preference?.enabled !== false) args.push('--enable');
       for (const permission of pkg.permissions) args.push('--grant', permission);
       cli(args);
-      state.decided[id] = { selected: true, result: 'installed', version: pkg.version };
+      state.decided[id] = { selected: true, result: 'installed', version: pkg.version, source: 'official-installer', path: destination, files: pkg.files, catalogSha256: hash(path.join(root, 'optional-plugins/catalog.json')) };
     }
     plain(statePath);
     const temporary = `${statePath}.${crypto.randomUUID()}.tmp`;
     fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
     fs.renameSync(temporary, statePath);
+    const reviewedPath = path.join(home, 'plugin-bundle-reviewed.txt');
+    plain(reviewedPath);
+    fs.writeFileSync(reviewedPath, hash(path.join(root, 'optional-plugins/catalog.json')), { mode: 0o600 });
     console.log('Codlet initialization completed. Existing registrations and preferences were preserved.');
   } finally { fs.closeSync(lockFd); fs.unlinkSync(lock); }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { initialize(process.argv.slice(2)); }
-  catch (error) { console.error(error.message); process.exitCode = 1; }
+  catch (error) { console.error(error.message); process.exitCode = error.message.startsWith('官方插件未更新：') ? 20 : 1; }
 }

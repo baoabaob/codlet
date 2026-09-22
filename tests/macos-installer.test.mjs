@@ -43,7 +43,10 @@ const native = { skip: process.platform === 'win32' ? 'Requires a POSIX executab
 
 test('GUI includes UI Adapter; existing registrations and disabled preferences survive setup', native, () => {
   const f = fixture();
-  fs.writeFileSync(path.join(f.home, 'existing.json'), JSON.stringify({ plugins: [{ id: 'codex.ui.adapter', enabled: false }] }));
+  const existingPath = path.join(f.home, 'packages/codex.ui.adapter');
+  fs.mkdirSync(existingPath, { recursive: true });
+  fs.copyFileSync(path.join(f.app, 'optional-plugins/packages/codex.ui.adapter/codlet.json'), path.join(existingPath, 'codlet.json'));
+  fs.writeFileSync(path.join(f.home, 'existing.json'), JSON.stringify({ plugins: [{ id: 'codex.ui.adapter', enabled: false, source: 'local', path: existingPath }] }));
   fs.writeFileSync(path.join(f.home, 'config.json'), JSON.stringify({ plugins: { 'codlet-gui': { enabled: false } } }));
   const result = f.invoke(['codlet-gui']);
   assert.equal(result.status, 0, result.stderr);
@@ -51,8 +54,32 @@ test('GUI includes UI Adapter; existing registrations and disabled preferences s
   assert.equal(added.length, 1); assert.equal(path.basename(added[0][2]), 'codlet-gui');
   assert.ok(!added[0].includes('--enable')); assert.ok(added[0].includes('runtime.manage'));
   const state = JSON.parse(fs.readFileSync(path.join(f.home, 'macos-setup.json')));
-  assert.equal(state.decided['codex.ui.adapter'].result, 'existing-preserved');
+  assert.match(result.stdout, /payload already matches/);
+  assert.equal(state.decided['codlet-gui'].source, 'official-installer');
+  assert.deepEqual(state.decided['codlet-gui'].files, f.catalog.packages.find(pkg => pkg.id === 'codlet-gui').files);
+  assert.equal(state.decided['codlet-gui'].catalogSha256, sha(fs.readFileSync(f.catalogPath)));
   assert.equal(state.decided['codex.desktop.adapter'].selected, false);
+});
+
+test('explicitly selected legacy and author registrations report migration instead of success', native, () => {
+  for (const source of ['local', 'github']) {
+    const f = fixture();
+    const existingPath = path.join(f.home, 'packages/codex.ui.adapter');
+    fs.mkdirSync(existingPath, { recursive: true });
+    fs.writeFileSync(path.join(existingPath, 'codlet.json'), 'author changes');
+    const config = JSON.stringify({ plugins: { 'codex.ui.adapter': { enabled: false } }, localPlugins: { 'codex.ui.adapter': { path: existingPath, grants: [] } } });
+    fs.writeFileSync(path.join(f.home, 'config.json'), config);
+    const previousState = JSON.stringify({ schema: 1, decided: { 'codex.ui.adapter': { selected: true, result: 'installed', version: '0.1.0' } } });
+    fs.writeFileSync(path.join(f.home, 'macos-setup.json'), previousState);
+    fs.writeFileSync(path.join(f.home, 'existing.json'), JSON.stringify({ plugins: [{ id: 'codex.ui.adapter', source, path: existingPath }] }));
+    const result = f.invoke(['codex.ui.adapter']);
+    assert.equal(result.status, 20);
+    assert.match(result.stderr, /官方插件未更新.*手动迁移/);
+    assert.equal(fs.readFileSync(path.join(existingPath, 'codlet.json'), 'utf8'), 'author changes');
+    assert.equal(fs.readFileSync(path.join(f.home, 'config.json'), 'utf8'), config);
+    assert.equal(fs.readFileSync(path.join(f.home, 'macos-setup.json'), 'utf8'), previousState);
+    assert.equal(fs.existsSync(path.join(f.home, 'added.jsonl')), false);
+  }
 });
 
 test('all optional plugins can be declined without registration', native, () => {

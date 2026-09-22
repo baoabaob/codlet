@@ -109,7 +109,11 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
         fields(decision, ['request', 'respond', 'block']);
         if (Object.keys(decision).length !== 1) throw failure('invalid_decision');
         if (decision.block === true) { response = { status: 403, body: 'blocked_by_interceptor' }; break; }
-        if (decision.respond !== undefined) { fields(decision.respond, ['status', 'headers', 'body']); response = decision.respond; break; }
+        if (decision.respond !== undefined) {
+          fields(decision.respond, ['status', 'headers', 'body']);
+          response = { ...decision.respond, ...(decision.respond.headers === undefined ? {} : { headers: headers(decision.respond.headers, [], privileged) }) };
+          break;
+        }
         if (!decision.request) throw failure('invalid_decision');
         current = await updateRequest(hook, item, current, decision.request, privileged);
       }

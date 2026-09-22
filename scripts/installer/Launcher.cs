@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,6 +27,19 @@ namespace Codlet.Setup {
                 string logs = Path.Combine(data, "launcher-logs"); Directory.CreateDirectory(logs);
                 logFile = Path.Combine(logs, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".log");
                 Log("Codlet launcher: " + root);
+                if (!configure && !check && File.Exists(Path.Combine(data, "plugin-setup.json"))) {
+                    string catalog = Path.Combine(root, "optional-plugins", "catalog.json"), marker = Path.Combine(data, "plugin-bundle-reviewed.txt");
+                    string fingerprint;
+                    using (var sha = SHA256.Create()) fingerprint = BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(catalog))).Replace("-", "");
+                    if (!File.Exists(marker) || File.ReadAllText(marker) != fingerprint) {
+                        const string notice = "此安装包可能包含新的官方插件。更新 Core 不会覆盖已有插件目录。\n\n选择“确定”检查所选插件；版本不符时会提示手动迁移。选择“取消”继续使用当前插件。";
+                        if (quiet) Log("Official plugin bundle changed. Existing plugins retained; run Codlet-Launcher.exe --configure to check versions.");
+                        else {
+                            configure = MessageBox.Show(notice, "Codlet · 检查官方插件版本", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK;
+                            File.WriteAllText(marker, fingerprint, new UTF8Encoding(false));
+                        }
+                    }
+                }
                 if (quiet && (configure || (!check && File.Exists(Path.Combine(root, "portable.mode")) && !File.Exists(Path.Combine(data, "plugin-setup.json"))))) { Log("Interactive plugin selection is required; run without --quiet first."); return 87; }
                 int gate = ProcessGate.Check(root, !quiet, !configure, Log);
                 if (gate != 0 || check) return gate;
@@ -35,6 +49,7 @@ namespace Codlet.Setup {
                     form.Shown += async delegate {
                         try { result = await Task.Run(() => Start(data, configure, message => form.BeginInvoke((Action)(() => form.Status.Text = message)))); }
                         catch (Exception error) { Log(error.ToString()); form.Error = "启动失败：" + error.Message; }
+                        if (result == 20 && form.Error == null) form.Error = "官方插件未更新：已有注册或文件与安装包不同。本预览版保留现有目录、授权和禁用状态，请通过插件管理检查来源与权限差额后手动迁移。重新打开 Codlet 可以继续使用当前配置。";
                         if (result != 0 && form.Error == null) form.Error = "操作未完成（代码 " + result + "）。已启动的进程不会被强制关闭。";
                         form.Finish();
                     };

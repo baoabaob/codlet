@@ -4357,7 +4357,7 @@ var require_traffic_interceptors = __commonJS({
             }
             if (decision.respond !== void 0) {
               fields(decision.respond, ["status", "headers", "body"]);
-              response = decision.respond;
+              response = { ...decision.respond, ...decision.respond.headers === void 0 ? {} : { headers: headers(decision.respond.headers, [], privileged) } };
               break;
             }
             if (!decision.request) throw failure("invalid_decision");
@@ -4799,17 +4799,23 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     return () => signal.removeEventListener("abort", abort);
   }
   async function networkOptions(input, target, signal, headers) {
+    const checkCancelled = () => {
+      if (signal.aborted) throw signal.reason ?? fail("request_cancelled", "network setup was cancelled");
+    };
+    checkCancelled();
     const ownListener = (url) => ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) && [...channels.keys()].some((channel) => new URL(channel.endpoint).port === (url.port || (["https:", "wss:"].includes(url.protocol) ? "443" : "80")));
     if (ownListener(target)) throw fail("proxy_loop_detected", "forward target is an owned traffic listener");
     let route;
     if (input.networkProfile != null) {
       if (typeof input.networkProfile !== "string") throw fail("invalid_argument", "networkProfile must be a Core profile reference");
       route = await coreRequest("services.network.resolve", { url: target.href, profile: input.networkProfile }, signal);
+      checkCancelled();
     }
     if (input.credentialRef != null) {
       const origin = new URL(target.href);
       origin.protocol = origin.protocol === "wss:" ? "https:" : origin.protocol === "ws:" ? "http:" : origin.protocol;
       const result = await coreRequest("services.credentials.resolve", { reference: input.credentialRef, origin: origin.origin }, signal);
+      checkCancelled();
       if (typeof result?.secret !== "string" || /[\r\n]/u.test(result.secret)) throw fail("invalid_credential", "credential is not a valid Authorization value");
       for (let index = headers.length - 1; index >= 0; index--) if (headers[index][0].toLowerCase() === "authorization") headers.splice(index, 1);
       headers.push(["Authorization", `Bearer ${result.secret}`]);
@@ -4823,6 +4829,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     let authorization;
     if (route.proxyCredentialRef) {
       const result = await coreRequest("services.credentials.resolve", { reference: route.proxyCredentialRef, origin: proxy.origin }, signal);
+      checkCancelled();
       authorization = `Basic ${Buffer.from(result.secret).toString("base64")}`;
     }
     const secure = ["https:", "wss:"].includes(target.protocol);
@@ -4898,6 +4905,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     if (body != null && ["GET", "HEAD"].includes(method.toUpperCase())) throw fail("invalid_argument", `${method.toUpperCase()} forward requests cannot have a body`);
     const headers = stripHeaders(headerPairs(input.headers, "forward headers"), { outbound: true });
     const network = await networkOptions(input, target, signal, headers);
+    if (signal.aborted) throw signal.reason ?? fail("request_cancelled", "HTTP exchange was cancelled before dispatch");
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (failure, value) => {
@@ -4917,7 +4925,9 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       signal.addEventListener("abort", abort, { once: true });
       upstream.once("error", (reason) => finish(fail("upstream_failed", `upstream request failed: ${reason?.message ?? reason}`)));
       Promise.resolve().then(async () => {
+        if (signal.aborted) throw signal.reason ?? fail("request_cancelled", "HTTP exchange was cancelled before sending");
         if (body != null) await pipeBody(body, upstream, signal, requestLimit, "upstream request");
+        if (signal.aborted) throw signal.reason ?? fail("request_cancelled", "HTTP exchange was cancelled before sending");
         upstream.end();
       }).catch((reason) => {
         upstream.destroy(reason);
@@ -4952,6 +4962,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       socket.once("error", errored);
       socket.once("unexpected-response", unexpected);
       signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
     });
   }
   function bridgeWebSockets(downstream, upstream, options, signal, initialServerFrames) {
@@ -5049,6 +5060,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     if (!["ws:", "wss:"].includes(target.protocol)) throw fail("protocol_error", "Core authorized a non-WebSocket URL for WebSocket forwarding");
     const headers = stripHeaders(headerPairs(input.headers, "WebSocket forward headers"), { outbound: true }).filter(([name]) => !name.toLowerCase().startsWith("sec-websocket-"));
     const network = await networkOptions(input, target, signal, headers);
+    if (signal.aborted) throw signal.reason ?? fail("request_cancelled", "WebSocket exchange was cancelled before dispatch");
     const upstream = new TrafficWebSocket(target, protocols, {
       headers: headerObject(headers),
       followRedirects: false,

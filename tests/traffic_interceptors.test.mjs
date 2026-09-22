@@ -58,6 +58,20 @@ test('unprivileged header rewrites preserve hidden headers and cannot inject cre
   denied.register('b', { request: () => ({ request: { headers: [['Authorization', 'other']] } }) });
   await assert.rejects(denied.registry.handlers.http(denied.request, denied.exchange), { code: 'permission_denied' });
 });
+test('synthetic responses enforce the same sensitive-header grant as response rewrites', async t => {
+  const denied = setup(t);
+  denied.register('a', { request: () => ({ respond: { status: 200, headers: [['Set-Cookie', 'session=fixture; HttpOnly']] } }) });
+  await assert.rejects(denied.registry.handlers.http(denied.request, denied.exchange), { code: 'permission_denied' });
+  assert.equal(denied.forwarded.length, 0);
+
+  const ordinary = setup(t);
+  ordinary.register('a', { request: () => ({ respond: { status: 200, headers: [['Content-Type', 'text/plain']], body: 'synthetic' } }) });
+  assert.deepEqual((await ordinary.registry.handlers.http(ordinary.request, ordinary.exchange)).headers, [['Content-Type', 'text/plain']]);
+
+  const privileged = setup(t, async () => true);
+  privileged.register('a', { request: () => ({ respond: { status: 200, headers: [['Set-Cookie', 'session=fixture; HttpOnly']] } }) });
+  assert.deepEqual((await privileged.registry.handlers.http(privileged.request, privileged.exchange)).headers, [['Set-Cookie', 'session=fixture; HttpOnly']]);
+});
 test('disable, generation retirement and timeout cancel exchanges and release their slots', async t => {
   for (const mode of ['disable', 'retire', 'timeout']) {
     const value = setup(t); let entered;

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CryptoKit
 
 private struct RuntimePin: Decodable {
     struct Platform: Decodable { let version: String? }
@@ -41,7 +42,18 @@ final class Launcher: NSObject, NSApplicationDelegate {
         if let existing = duplicates.first { existing.activate(options: [.activateIgnoringOtherApps]); NSApp.terminate(nil); return }
         makeMenu()
         if !FileManager.default.fileExists(atPath: home.appendingPathComponent("macos-setup.json").path) { configure() }
-        else { prepareLaunch() }
+        else {
+            let marker = home.appendingPathComponent("plugin-bundle-reviewed.txt")
+            if let data = try? Data(contentsOf: resources.appendingPathComponent("optional-plugins/catalog.json")) {
+                let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                if (try? String(contentsOf: marker, encoding: .utf8)) != fingerprint {
+                    let answer = alert("检查官方插件版本", "此应用可能包含新的官方插件。更新应用不会覆盖已有插件目录。检查所选插件时，版本不符会提示手动迁移。", buttons: ["检查所选插件", "继续使用当前插件"])
+                    try? fingerprint.write(to: marker, atomically: true, encoding: .utf8)
+                    if answer == .alertFirstButtonReturn { configure(); return }
+                }
+            }
+            prepareLaunch()
+        }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
@@ -79,7 +91,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             label.font = .systemFont(ofSize: size); label.frame = NSRect(x: 28, y: y, width: 504, height: height); view.addSubview(label); return label
         }
         _ = label("按你的方式设置 Codlet", 373, 30, 24)
-        _ = label(firstSetup ? "选择需要的官方插件。全部取消可仅使用 Core 和 CLI。\n安装后也可以通过菜单栏重新选择。" : "仅勾选本次希望补装的插件。已安装插件的设置会保留。\n取消勾选不会删除插件，已移除插件不会自动恢复。", 317, 48, 14)
+        _ = label(firstSetup ? "选择需要的官方插件。全部取消可仅使用 Core 和 CLI。\n安装后也可以通过菜单栏重新选择。" : "勾选本次希望安装或检查版本的插件。已有目录不会覆盖。\n版本不符时提示手动迁移；取消勾选不会删除插件。", 317, 48, 14)
         func checkbox(_ text: String, _ y: CGFloat, _ checked: Bool) -> NSButton {
             let box = NSButton(checkboxWithTitle: text, target: self, action: #selector(syncDependencies))
             box.frame = NSRect(x: 28, y: y, width: 504, height: 30); box.state = checked ? .on : .off; view.addSubview(box); return box
@@ -88,7 +100,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         ui = checkbox("UI Adapter · 侧栏与插件页面（GUI 必需）", 235, firstSetup)
         desktop = checkbox("Desktop Adapter · 客户端与对话接口", 199, firstSetup)
         shortcut = checkbox("在桌面创建 Codlet 快捷入口", 153, false)
-        setupLabel = label("所选插件将获得其声明的界面访问或插件管理权限。\n这是未经 Apple 公证的预览版，使用前请确认来源。", 86, 55, 12)
+        setupLabel = label("新安装插件获得声明的权限；已有授权与禁用状态保留。\n这是未经 Apple 公证的预览版，使用前请确认来源。", 86, 55, 12)
         setupLabel.textColor = .secondaryLabelColor
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelSetup))
         cancel.frame = NSRect(x: 324, y: 28, width: 92, height: 32); view.addSubview(cancel)
@@ -133,7 +145,8 @@ final class Launcher: NSObject, NSApplicationDelegate {
     private func setupFinished(_ result: Int32) {
         setup = nil; startButton.isEnabled = true
         if result != 0 {
-            if alert("初始化未完成", "详细原因保存在 macos-setup.log。已存在的插件设置会保留，可查看日志后重试。", buttons: ["打开日志", "返回"]) == .alertFirstButtonReturn { openLogs() }
+            let message = result == 20 ? "官方插件未更新：已有注册或文件与安装包不同。本预览版保留现有目录、授权和禁用状态。请通过插件管理检查来源与权限差额后手动迁移；重新打开应用可以继续使用当前配置。" : "详细原因保存在 macos-setup.log。已存在的插件设置会保留，可查看日志后重试。"
+            if alert("初始化未完成", message, buttons: ["打开日志", "返回"]) == .alertFirstButtonReturn { openLogs() }
             return
         }
         if shortcut.state == .on {

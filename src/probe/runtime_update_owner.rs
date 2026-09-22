@@ -34,6 +34,12 @@ pub(super) struct RuntimeUpdateOwner {
 }
 
 impl RuntimeUpdateOwner {
+    pub(super) fn request_client_quit(&self) {
+        if let Some(session) = self.sessions.values().find(|session| session.is_live()) {
+            let _ = request_quit(session);
+        }
+    }
+
     pub fn start(
         manage: &RuntimeManageService,
         registry_path: &Path,
