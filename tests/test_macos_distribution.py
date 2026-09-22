@@ -31,7 +31,7 @@ class PackagingTests(unittest.TestCase):
         pin = {"version": "24.0.0", "platforms": {"darwin-arm64": {"version": "22.0.0", "executableSha256": self.hash(self.runtime / "bin/node"), "licenseSha256": self.hash(self.runtime / "LICENSE")}}}
         self.write(self.source / "runtime/node-runtime.json", json.dumps(pin))
         self.write(self.source / "LICENSE", "Fixture license text; never distributed.\n" * 10)
-        for name in ["runtime/update-channel.json", "scripts/macos/initialize.mjs", "NOTICE", "docs/THIRD_PARTY_UI_LICENSES.txt", "types/host.d.ts"]:
+        for name in ["runtime/update-channel.json", "scripts/macos/initialize.mjs", "NOTICE", "docs/THIRD_PARTY_UI_LICENSES.txt", "docs/THIRD_PARTY_RUST_LICENSES.txt", "types/host.d.ts"]:
             self.write(self.source / name, "fixture")
         packages = []
         for identifier in builder.ALLOWED:

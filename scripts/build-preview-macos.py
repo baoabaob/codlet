@@ -112,12 +112,13 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
         manifest = json.loads((resources / "optional-plugins/packages" / pkg["id"] / "codlet.json").read_text())
         if manifest["id"] != pkg["id"] or manifest["version"] != pkg["version"] or sorted(manifest["permissions"]) != sorted(pkg["permissions"]):
             raise ValueError("Plugin manifest/catalog mismatch")
-    license_names = [name for name in ("LICENSE", "LICENSE-MIT", "LICENSE-APACHE") if (ROOT / name).is_file()]
+    license_names = [name for name in ("LICENSE",) if (ROOT / name).is_file()]
     if not license_names or any((ROOT / name).stat().st_size < 200 for name in license_names):
         raise ValueError("A complete repository license text is required")
     for name in [*license_names, "NOTICE"]:
         copy(ROOT / name, resources / "licenses" / name)
     copy(ROOT / "docs/THIRD_PARTY_UI_LICENSES.txt", resources / "licenses/THIRD_PARTY_UI_LICENSES.txt")
+    copy(ROOT / "docs/THIRD_PARTY_RUST_LICENSES.txt", resources / "licenses/THIRD_PARTY_RUST_LICENSES.txt")
     for source in (ROOT / "types").glob("*.d.ts"):
         copy(source, resources / "sdk/types" / source.name)
     info = {
@@ -138,7 +139,7 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
         "platform": "darwin-arm64", "sourceCommit": core_commit,
         "pluginsSourceCommit": plugin_commit, "appleDeveloperSigned": False,
         "notarized": False, "signature": "ad-hoc launcher; pinned runtime bytes preserved",
-        "license": license_expression, "licenseFiles": [f"Contents/Resources/licenses/{name}" for name in [*license_names, "NOTICE", "THIRD_PARTY_UI_LICENSES.txt"]],
+        "license": license_expression, "licenseFiles": [f"Contents/Resources/licenses/{name}" for name in [*license_names, "NOTICE", "THIRD_PARTY_UI_LICENSES.txt", "THIRD_PARTY_RUST_LICENSES.txt"]],
         "officialPlugins": [{key: pkg[key] for key in ("id", "version", "repository", "tag", "sha256")} for pkg in packages],
     }
 

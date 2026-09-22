@@ -76,6 +76,7 @@ foreach($package in $catalog.packages){
 }
 Get-ChildItem -LiteralPath (Join-Path $root 'types') -Filter '*.d.ts' -File | ForEach-Object{Copy-Payload $_.FullName ('sdk/types/'+$_.Name)}
 Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_UI_LICENSES.txt') 'THIRD_PARTY_NOTICES.txt'
+Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_RUST_LICENSES.txt') 'THIRD_PARTY_RUST_LICENSES.txt'
 foreach($name in @('LICENSE','NOTICE')){Copy-Payload (Join-Path $root $name) $name}
 [IO.File]::WriteAllText((Join-Path $stage 'portable.mode'),"Codlet-only data lives in ./data; official Codex data is unchanged.`n",$utf8)
 $readme=@'

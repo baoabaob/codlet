@@ -51,4 +51,6 @@ For actual acceptance, use a normal release build, record the official package/f
 
 See [architecture](architecture.md) for source ownership. `frontend/build.mjs` regenerates the embedded SDK bundles and UI attribution. Do not edit generated bundles by hand. Versioned compatibility profiles and repeatable tests belong in Git; local account data, logs, heap snapshots, downloaded runtimes, and experiment reports belong outside tracked source.
 
+After changing Rust dependencies, run `python scripts/collect-rust-licenses.py`. It collects actual locked crate notices and Rust standard-library attribution for the distributed platforms; `--check` detects stale output. The resulting `THIRD_PARTY_RUST_LICENSES.txt` ships with both installers.
+
 Current contracts live in `docs/spec/`; older decisions and experiments are available in Git history. Keep ongoing limitations in [known-issues](known-issues.md), rather than copying historical progress reports into each release.

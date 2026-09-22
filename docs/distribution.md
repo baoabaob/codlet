@@ -50,6 +50,6 @@ Current Preview signing is ad-hoc integrity signing. Developer ID signing, notar
 
 ## Licensing and release checks
 
-Ship root `LICENSE` (Apache-2.0), `NOTICE`, third-party UI notices, pinned Node's license, and each optional plugin's license/notice. Third-party plugins keep their author's actual licenses and are not automatically relicensed to Apache-2.0.
+Ship root `LICENSE` (Apache-2.0), `NOTICE`, third-party UI and Rust notices, pinned Node's license, and each optional plugin's license/notice. Third-party plugins keep their author's actual licenses and are not automatically relicensed to Apache-2.0.
 
 Before delivery, verify the source revisions, package version, architecture, file hashes, installed/portable data scope, cancellation, existing data, optional components, and shortcuts. Record remaining limitations honestly in [known issues](known-issues.md). Public release, signing credentials, publication policy, and multi-platform real-client acceptance are outside a local test build.

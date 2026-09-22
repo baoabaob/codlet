@@ -7,6 +7,10 @@ fi
 codlet_source_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$codlet_source_root"
 export MACOSX_DEPLOYMENT_TARGET=13.0
+# macOS exposes /var through a system symlink. Fixtures must start from the
+# physical temporary root so path-ownership checks still reject real symlinks.
+TMPDIR=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
+export TMPDIR
 codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 python3 scripts/install-js-runtime.py --platform darwin-arm64 --destination "$codlet_target_root/aarch64-apple-darwin/debug"
 python3 scripts/install-js-runtime.py --platform darwin-arm64 --destination "$codlet_target_root/aarch64-apple-darwin/debug/deps"

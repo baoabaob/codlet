@@ -12,4 +12,6 @@ not part of the Codlet distribution.
 Third-party software retains its own copyright and license terms. Distributed
 UI bundles include the notices in THIRD_PARTY_NOTICES.txt (generated from
 docs/THIRD_PARTY_UI_LICENSES.txt). The managed Node runtime includes its LICENSE.
+Rust dependencies and standard-library attribution are included in
+THIRD_PARTY_RUST_LICENSES.txt (generated from the same-named docs file).
 Individual plugins and their dependencies carry their own applicable notices.

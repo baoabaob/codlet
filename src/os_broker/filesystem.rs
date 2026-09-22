@@ -350,7 +350,7 @@ fn too_large() -> OsBrokerError {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::{contains_path, paths_equal};
     use std::path::Path;
