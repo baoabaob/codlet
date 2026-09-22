@@ -67,6 +67,15 @@ official-client request is transparently intercepted. The
 [traffic contract](spec/traffic.md) records the actual attached paths and
 protocols; desktop attachments and macOS acceptance must be reported separately.
 
+On Windows Codex `26.915.4065.0`, the isolated main-process handshake and backend
+spawn preparation were observed, but actual Desktop requests did not pass the
+proxy authentication and certificate checks. This build does not expose the
+required Session proxy/certificate APIs. The Adapter must reject transparent
+Desktop launch for it rather than report attachment and leave requests broken.
+The ordinary Codlet launch, explicit channels, and independently tested backend
+transport are separate paths. No global TLS bypass or system certificate change
+is used to work around this incompatibility.
+
 The official GUI repository contains a marketplace interaction prototype and
 specification, but that is not yet a production-backed searchable marketplace.
 Existing local/GitHub import and update paths remain available. The accepted
