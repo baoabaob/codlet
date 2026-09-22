@@ -355,54 +355,6 @@ impl OwnedPluginProcess {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    #[ignore = "private same-executable process owner entry; invoked only by Host spawn tests"]
-    fn process_owner_fixture() {
-        // An ordinary test run does not select this function exclusively.
-        // No env override, alternate executable, or parent-auth bypass exists.
-        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        if arguments
-            != [
-                "--exact",
-                "macos::host::tests::process_owner_fixture",
-                "--ignored",
-                "--nocapture",
-            ]
-        {
-            return;
-        }
-        for (source, target) in [(6, 1), (7, 2)] {
-            if unsafe { libc::dup2(source, target) } < 0 {
-                std::process::exit(120);
-            }
-            unsafe {
-                libc::close(source);
-            }
-        }
-        // Exit directly so no libtest trailer enters the plugin's output pipe.
-        std::process::exit(if super::super::process_owner::run().is_ok() {
-            0
-        } else {
-            121
-        });
-    }
-
-    #[test]
-    fn spawn_diagnostics_do_not_include_arbitrary_error_text() {
-        let error = std::io::Error::other("secret-token /private/config.json");
-        let failure = super::spawn_failure("spawn_failed", &error);
-        assert!(!failure.message.contains("secret-token"));
-        assert!(!failure.message.contains("/private"));
-        let error = std::io::Error::other("owner_stage=parent_identity_rejected");
-        assert!(
-            super::spawn_failure("spawn_failed", &error)
-                .message
-                .contains("parent_identity_rejected")
-        );
-    }
-}
 impl Owner {
     fn refresh(&mut self) -> io::Result<()> {
         if self.result.is_some() {
@@ -461,5 +413,51 @@ impl Drop for OwnedPluginProcess {
                 "macOS Host owner did not confirm retirement",
             );
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "private same-executable process owner entry; invoked only by Host spawn tests"]
+    fn process_owner_fixture() {
+        let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+        if arguments
+            != [
+                "--exact",
+                "macos::host::tests::process_owner_fixture",
+                "--ignored",
+                "--nocapture",
+            ]
+        {
+            return;
+        }
+        for (source, target) in [(6, 1), (7, 2)] {
+            if unsafe { libc::dup2(source, target) } < 0 {
+                std::process::exit(120);
+            }
+            unsafe {
+                libc::close(source);
+            }
+        }
+        // No libtest trailer may enter the plugin's output pipe.
+        std::process::exit(if super::super::process_owner::run().is_ok() {
+            0
+        } else {
+            121
+        });
+    }
+
+    #[test]
+    fn spawn_diagnostics_do_not_include_arbitrary_error_text() {
+        let error = std::io::Error::other("secret-token /private/config.json");
+        let failure = super::spawn_failure("spawn_failed", &error);
+        assert!(!failure.message.contains("secret-token"));
+        assert!(!failure.message.contains("/private"));
+        let error = std::io::Error::other("owner_stage=parent_identity_rejected");
+        assert!(
+            super::spawn_failure("spawn_failed", &error)
+                .message
+                .contains("parent_identity_rejected")
+        );
     }
 }
