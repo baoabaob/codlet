@@ -73,7 +73,7 @@ ${components.join('\n')}
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动与插件选择入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>
 <Feature Id="UiAdapter" Title="UI Adapter" Description="接入 Codex 侧栏和插件页面。需要界面访问权限。" Level="1">${refs(features.UiAdapter)}</Feature>
-<Feature Id="DesktopAdapter" Title="Desktop Adapter" Description="提供客户端、对话和流量接入接口。需要主界面访问权限。" Level="1">${refs(features.DesktopAdapter)}</Feature>
+<Feature Id="DesktopAdapter" Title="Desktop Adapter" Description="提供客户端、对话和流量接入接口。需要主界面访问、Host 进程及客户端调试权限。" Level="1">${refs(features.DesktopAdapter)}</Feature>
 <Feature Id="GUI" Title="Codlet GUI（包含 UI Adapter）" Description="图形化插件管理。自动包含 UI Adapter；需要插件管理与界面访问权限。" Level="1">${refs([...features.GUI,...features.UiAdapter])}</Feature>
 <UIRef Id="WixUI_FeatureTree"/><WixVariable Id="WixUILicenseRtf" Value="${xml(resolve(build,'notice.rtf'))}"/>
 <WixVariable Id="WixUIBannerBmp" Value="${xml(resolve(build,'banner.bmp'))}"/><WixVariable Id="WixUIDialogBmp" Value="${xml(resolve(build,'dialog.bmp'))}"/>
