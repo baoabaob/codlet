@@ -664,17 +664,21 @@ impl Hub {
         }
         let pending = state.pending.remove(key).unwrap();
         let reply = if let Some(failure) = frame.get("error") {
-            let code = match failure.get("code").and_then(Value::as_str) {
-                Some(
-                    code @ ("body_too_large"
-                    | "body_already_consumed"
-                    | "stream_retired"
-                    | "request_cancelled"
-                    | "invalid_frame"
-                    | "invalid_body"),
-                ) => code,
-                _ => "traffic_callback_failed",
-            };
+            let code = failure
+                .get("code")
+                .and_then(Value::as_str)
+                .filter(|code| {
+                    matches!(
+                        *code,
+                        "body_too_large"
+                            | "body_already_consumed"
+                            | "stream_retired"
+                            | "request_cancelled"
+                            | "invalid_frame"
+                            | "invalid_body"
+                    )
+                })
+                .unwrap_or("traffic_callback_failed");
             json!({"id":pending.id,"error":{"code":code}})
         } else {
             json!({"id":pending.id,"result":frame.get("result")})
