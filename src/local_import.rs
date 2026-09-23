@@ -70,12 +70,13 @@ impl LocalImportRequest {
                 "Use the digests returned by a fresh local import preview.",
             ));
         }
-        if self.grants.len() > 8
-            || self
-                .grants
-                .iter()
-                .enumerate()
-                .any(|(i, grant)| self.grants[..i].contains(grant))
+        // Deserialization accepts only the finite Permission enum. Requiring
+        // uniqueness bounds this list without freezing the old permission count.
+        if self
+            .grants
+            .iter()
+            .enumerate()
+            .any(|(i, grant)| self.grants[..i].contains(grant))
         {
             return Err(error(
                 "invalid_import_grants",
@@ -326,6 +327,55 @@ mod tests {
         );
         assert_eq!(std::fs::read(root.join("entry.js")).unwrap(), before);
         assert_eq!(std::fs::read_dir(root).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn imports_many_declared_permissions_without_relaxing_duplicate_or_enum_checks() {
+        let (_directory, registry, root) = fixture();
+        let grants = vec![
+            Permission::UiDom,
+            Permission::HostProcess,
+            Permission::CoreStorage,
+            Permission::CoreEvents,
+            Permission::CoreTasks,
+            Permission::CoreDiagnostics,
+            Permission::HostSystem,
+            Permission::HostFs,
+            Permission::HostFsWrite,
+            Permission::HostFsWatch,
+            Permission::HostNetwork,
+            Permission::CoreNetwork,
+            Permission::HostProcessSpawn,
+            Permission::CoreNotifications,
+        ];
+        let manifest_path = root.join("codlet.json");
+        let mut manifest: PluginManifest =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.permissions = grants.clone();
+        manifest.host = Some(serde_json::from_value(json!({"entry": "host.cjs"})).unwrap());
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(
+            root.join("host.cjs"),
+            "throw new Error('registration must not execute the Host entry');",
+        )
+        .unwrap();
+        let candidate = preview(&registry, &root).unwrap();
+        let mut request = candidate.request(grants.clone(), BrokerPolicy::default(), false);
+        let (mut staged, entry) = stage(&registry, "dev.import", &request).unwrap();
+        assert_eq!(entry.plugin.unwrap().manifest.permissions, grants);
+        staged.save().unwrap();
+        let saved = PluginRegistry::load(registry.path()).unwrap();
+        assert_eq!(saved.local_plugins()["dev.import"].grants, grants);
+        assert!(!saved.is_enabled("dev.import"));
+
+        request.grants.push(Permission::UiDom);
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            "invalid_import_grants"
+        );
+        let mut invalid = serde_json::to_value(&request).unwrap();
+        invalid["grants"] = json!(["permission.not.supported"]);
+        assert!(serde_json::from_value::<LocalImportRequest>(invalid).is_err());
     }
 
     #[test]

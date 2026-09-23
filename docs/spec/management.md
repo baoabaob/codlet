@@ -10,7 +10,7 @@ plugin add ABSOLUTE_PLUGIN_DIRECTORY --trust --grant ui.dom --enable --json
 plugin permissions dev.notes --json
 ```
 
-Preview inspects the manifest and built entries without executing JavaScript, compiling code or installing dependencies. Add without trust does not register or activate code. A confirmed import selects every grant and [broker scope](permissions.md); omitted `--enable` means disabled. A directory inside the default packages folder is not automatically trusted or loaded.
+Preview inspects the manifest and built entries without executing JavaScript, compiling code or installing dependencies. Add without trust does not register or activate code. A confirmed import selects every grant and [broker scope](permissions.md); omitted `--enable` means disabled. Each supported permission may be granted once. Unknown and duplicate grants are rejected. A directory inside the default packages folder is not automatically trusted or loaded.
 
 The canonical path, logical ID, complete grants/policy and enabled preference form the reviewed state. Reusing an ID at another development path conflicts; remove the prior registration and explicitly trust the new source. A stopped same-ID/same-path registration can be replaced with the complete confirmed trust record. Dependency inspection is an observation; activation still validates the actual entry graph. Core does not automatically download missing providers.
 
