@@ -4,7 +4,7 @@ const MAC_HELPER: &[u8] = include_bytes!("../../../scripts/runtime-update-helper
 
 /// A restarted Core reclaims only completed helper copies, after the exact
 /// helper process has disappeared. Receipts and the small plan remain for audit.
-pub(super) fn cleanup_completed_helper(
+pub(crate) fn cleanup_completed_helper(
     receipt_path: &Path,
     plan_sha256: &str,
     identity: &RuntimeProcessIdentity,
