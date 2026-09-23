@@ -54,3 +54,19 @@ See [architecture](architecture.md) for source ownership. `frontend/build.mjs` r
 After changing Rust dependencies, run `python scripts/collect-rust-licenses.py`. It collects actual locked crate notices and Rust standard-library attribution for the distributed platforms; `--check` detects stale output on the same build toolchain. Standard-library/build-host dependencies can differ across toolchains, so native packaging regenerates the notices in its own build environment. The resulting `THIRD_PARTY_RUST_LICENSES.txt` ships with both installers.
 
 Current contracts live in `docs/spec/`; older decisions and experiments are available in Git history. Keep ongoing limitations in [known-issues](known-issues.md), rather than copying historical progress reports into each release.
+
+Keep the primary checkout on the current `main` branch after integrating work.
+Temporary worktrees are for concurrent changes, not permanent alternate project
+directories; preserve useful uncommitted source in Git before removing them with
+`git worktree remove`. Core and `codlet-plugins` remain separate repositories and
+can be moved together as sibling directories. Move the primary checkout, including
+its `.git` directory, rather than copying a linked worktree's `.git` pointer.
+
+Use one build-output directory per active platform/toolchain instead of one cache
+for every experiment. Cargo's normal `target/` follows the checkout; alternatively,
+set `CARGO_TARGET_DIR` to a single directory on the development drive. Stop build
+and test processes before clearing it with `cargo clean` (or `cargo clean
+--target-dir <directory>` for an explicit cache). Build output, `node_modules`, old
+client copies and experiment downloads can be regenerated. Keep current source,
+lockfiles and compiler installations; retain only the latest useful installers
+locally. Clearing caches makes the next build slower but does not remove source.

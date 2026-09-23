@@ -90,6 +90,18 @@ can switch to a verified GitHub release through an explicit adoption review;
 merely publishing a repository never silently changes an installed plugin's source.
 See the [marketplace specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/marketplace.md).
 
+## Next Preview: Windows CLI discovery
+
+Preview 6 installs `codlet.exe` but does not add its directory to the user's
+`PATH`. Until this is implemented, invoke it by its full installation path.
+
+- [ ] Add a default-selected MSI option to add Codlet to the current user's
+  `PATH`, without administrator privileges or changes to the system `PATH`.
+- [ ] Preserve existing entries, avoid duplicates on upgrades, and remove only
+  the installer's own entry on uninstall.
+- [ ] Notify Windows about the environment change and explain that existing
+  terminals must be reopened before the `codlet` command becomes available.
+
 ## Preview signing
 
 Local Preview installers are not presented as signed, notarized stable releases.
