@@ -25,8 +25,8 @@ jobs:
     timeout-minutes: 35
     env:
       CODLET_CORE_ROOT: ${{ github.workspace }}/core
-      CODEX_DMG_SHA256: 6b1f9abd5bc73962e503efc2ec1af38d5a4d18eeb769a80083d60025be02a81d
-      CODEX_BACKEND_SHA256: 3faf4499d4044cae5285f8548eb54ddedd5fd75694ec3f394c91543655662ae5
+      CODEX_ZIP_SHA256: ca4a4443f41e9fc5762eeda60254ff57cc8b9ef7b990c31ae58bddfbb9d0b6b3
+      CODEX_BACKEND_SHA256: c67698d0990aae05211d9c43ab343ad9517e406824dea77eca103a2806232b3a
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,16 +77,17 @@ jobs:
           node plugins/frontend/build.mjs
       - name: Stage the source-reviewed official client
         run: |
-          curl --fail --location --retry 2 --output "$RUNNER_TEMP/Codex.dmg" \
-            https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
-          printf '%s  %s\n' "$CODEX_DMG_SHA256" "$RUNNER_TEMP/Codex.dmg" | shasum -a 256 --check
-          mkdir "$RUNNER_TEMP/codlet-mac-dmg"
-          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/codlet-mac-dmg" "$RUNNER_TEMP/Codex.dmg"
-          trap 'hdiutil detach "$RUNNER_TEMP/codlet-mac-dmg"' EXIT
-          ditto "$RUNNER_TEMP/codlet-mac-dmg/ChatGPT.app" "$RUNNER_TEMP/ChatGPT.app"
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/ChatGPT-26.917.62051.zip" \
+            https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.917.62051.zip
+          printf '%s  %s\n' "$CODEX_ZIP_SHA256" "$RUNNER_TEMP/ChatGPT-26.917.62051.zip" | shasum -a 256 --check
+          mkdir "$RUNNER_TEMP/codlet-mac-zip"
+          ditto -x -k "$RUNNER_TEMP/ChatGPT-26.917.62051.zip" "$RUNNER_TEMP/codlet-mac-zip"
+          ditto "$RUNNER_TEMP/codlet-mac-zip/ChatGPT.app" "$RUNNER_TEMP/ChatGPT.app"
           codesign --verify --deep --strict --test-requirement \
             '=anchor apple generic and identifier "com.openai.codex" and certificate leaf[subject.OU] = "2DC432GLL2"' \
             "$RUNNER_TEMP/ChatGPT.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RUNNER_TEMP/ChatGPT.app/Contents/Info.plist")" = 26.917.62051
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RUNNER_TEMP/ChatGPT.app/Contents/Info.plist")" = 10789
       - name: Verify native model-provider behavior
         id: backend
         continue-on-error: true
@@ -104,8 +105,8 @@ jobs:
             --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol http \
-            --bootstrap-bundle bootstrap-CbmE0G_n.js --main-bundle main-DOn0I1A9.js \
-            --app-server-module src-mOb8On4V.js --fetch-wrapper-symbol ZTe --application-network-factory x
+            --bootstrap-bundle bootstrap-C4dRql4x.js --main-bundle main-C-Mhak1n.js \
+            --app-server-module src-DldfpmrL.js --fetch-wrapper-symbol ZTe --application-network-factory x
       - name: Verify Desktop and model WebSocket paths
         id: ws
         continue-on-error: true
@@ -115,8 +116,8 @@ jobs:
             --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol ws \
-            --bootstrap-bundle bootstrap-CbmE0G_n.js --main-bundle main-DOn0I1A9.js \
-            --app-server-module src-mOb8On4V.js --fetch-wrapper-symbol ZTe --application-network-factory x
+            --bootstrap-bundle bootstrap-C4dRql4x.js --main-bundle main-C-Mhak1n.js \
+            --app-server-module src-DldfpmrL.js --fetch-wrapper-symbol ZTe --application-network-factory x
       - name: Upload bounded acceptance reports
         if: always()
         uses: actions/upload-artifact@v4

@@ -81,6 +81,19 @@
         "client": "app://-/assets/app-shared-6d89d53e1c60.js", "primary": "app://-/assets/app-initial-e1f6333a805b.js",
         "exports": { "react": "e6", "dom": "P3", "client": "N3", "sidebar": "MC", "headerInit": "T7", "header": "w7", "newTaskInit": "C2", "newTask": "D2" }
       }
+    },
+    {
+      "appVersion": "26.917.62051", "buildNumber": "10789", "appServerVersion": "0.155.0-alpha.16.3", "navigation": true, "runtimeSkill": true, "threadConfiguration": true,
+      "officialUpdates": { "stateSelector": "Pet" },
+      "entry": "app://-/assets/index-88e5ba1e2117.js", "module": "app://-/assets/app-initial-37097744327a.js",
+      "scopeModule": "app://-/assets/app-shared-70a4f71efb70.js",
+      "postboxModule": "app://-/assets/app-shared-70a4f71efb70.js",
+      "exports": { "scope": "ZI", "manager": "vZt", "client": "yZt", "services": "pnt", "postbox": "X3" },
+      "page": {
+        "react": "app://-/assets/app-shared-70a4f71efb70.js", "dom": "app://-/assets/app-shared-70a4f71efb70.js",
+        "client": "app://-/assets/app-shared-70a4f71efb70.js", "primary": "app://-/assets/app-initial-37097744327a.js",
+        "exports": { "react": "e6", "dom": "P3", "client": "N3", "sidebar": "bC", "headerInit": "p7", "header": "f7", "newTaskInit": "d2", "newTask": "h2" }
+      }
     }
   ]
 }
