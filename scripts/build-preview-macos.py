@@ -219,7 +219,7 @@ def build(args):
         update_environment = {**os.environ, "CODLET_MAC_UPDATE_APP": str(app), "CODLET_MAC_UPDATE_ZIP": str(update_zip)}
         subprocess.run(["cargo", "test", "--locked", "--target", "aarch64-apple-darwin", "--lib", "macos_signed_bundle_update_archive", "--", "--nocapture"],
                        cwd=ROOT, env=update_environment, check=True, timeout=900)
-        run(app / node_relative, ROOT / "tests/runtime_update_macos.test.mjs", app, version)
+        run(app / node_relative, ROOT / "tests/runtime_update_macos.native.mjs", app, version)
         os.symlink("/Applications", volume / "Applications")
         (volume / "开始使用.txt").write_text(
             f"Codlet {version} · macOS Apple Silicon Preview\n\n"

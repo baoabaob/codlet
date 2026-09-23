@@ -1,4 +1,4 @@
-// Run on a real Apple Silicon runner with an already sealed preview Codlet.app.
+// Invoked by the Mac packager with an already sealed preview Codlet.app.
 // Every transaction uses disposable copies and never launches the official client.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
