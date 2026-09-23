@@ -5,7 +5,6 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::thread::JoinHandle;
 use tokio::sync::{mpsc as async_mpsc, watch};
 
-mod certificates;
 #[cfg(test)]
 mod tests;
 mod wire;
@@ -40,7 +39,6 @@ impl Drop for Lifetime {
 struct Hub {
     address: SocketAddr,
     state: Mutex<State>,
-    certificates: Mutex<certificates::Certificates>,
     resolvers: Arc<tokio::sync::Semaphore>,
 }
 #[derive(Default)]
@@ -57,6 +55,8 @@ struct State {
     change_queued: bool,
     ready: bool,
     attached: bool,
+    activated_sources: Vec<Value>,
+    unsupported_sources: Vec<Value>,
     launch: Option<Value>,
     peak_pending: usize,
 }
@@ -116,7 +116,6 @@ impl Traffic {
         let hub = Arc::new(Hub {
             address,
             state: Mutex::new(State::default()),
-            certificates: Mutex::new(certificates::Certificates::new()?),
             resolvers: Arc::new(tokio::sync::Semaphore::new(4)),
         });
         let (stop, stopped) = watch::channel(false);
@@ -166,6 +165,18 @@ impl Traffic {
     pub(crate) fn set_attached(&self, attached: bool) {
         let mut state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
         state.attached = attached;
+        if !attached {
+            state.activated_sources.clear();
+            state.unsupported_sources.clear();
+        }
+        self.hub.changed(&mut state);
+    }
+
+    pub(crate) fn set_source_activation(&self, activated: Value, unsupported: Value) {
+        let mut state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.activated_sources = activated.as_array().cloned().unwrap_or_default();
+        state.unsupported_sources = unsupported.as_array().cloned().unwrap_or_default();
+        state.attached = !state.activated_sources.is_empty();
         self.hub.changed(&mut state);
     }
 
@@ -338,7 +349,7 @@ impl Traffic {
             "status" => {
                 let state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
                 Ok(
-                    json!({"available":state.ready && state.attached,"listening":state.ready,"attached":state.attached,"registered":state.registrations.values().filter(|r|r.owner==owner).count(),"active":state.leases.values().filter(|l|l.registration.owner==owner).count(),"pending":state.pending.values().filter(|call|state.leases.get(&call.lease).is_some_and(|l|l.registration.owner==owner)).count()}),
+                    json!({"available":state.ready && state.attached,"listening":state.ready,"attached":state.attached,"activatedSources":state.activated_sources,"unsupportedSources":state.unsupported_sources,"registered":state.registrations.values().filter(|r|r.owner==owner).count(),"active":state.leases.values().filter(|l|l.registration.owner==owner).count(),"pending":state.pending.values().filter(|call|state.leases.get(&call.lease).is_some_and(|l|l.registration.owner==owner)).count()}),
                 )
             }
             _ => Err(error(
@@ -508,6 +519,8 @@ impl Hub {
             Role::Gateway => {
                 state.ready = false;
                 state.attached = false;
+                state.activated_sources.clear();
+                state.unsupported_sources.clear();
                 state.launch = None;
                 state.registrations.keys().cloned().collect::<Vec<_>>()
             }

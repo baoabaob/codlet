@@ -3,8 +3,9 @@
 // Core-owned dispatch. Principals, their abort signals, and authorization come
 // from the owner, never from renderer/plugin-supplied registration options.
 // Public Host registration is authenticated by Native before reaching this layer.
-function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
+function createTrafficInterceptors({ authorize, rootSignal, networkProfile, maxActiveWebSocket = 4 }) {
   if (typeof authorize !== 'function' || !rootSignal) throw new TypeError('trusted authorization and lifecycle are required');
+  if (!Number.isInteger(maxActiveWebSocket) || maxActiveWebSocket < 1 || maxActiveWebSocket > 32) throw new TypeError('invalid WebSocket concurrency');
   const hooks = new Map(), active = new Set();
   const failure = code => Object.assign(new Error(code), { code });
   const sensitive = name => !['accept', 'accept-encoding', 'accept-language', 'content-type', 'content-encoding', 'content-length', 'cache-control', 'user-agent'].includes(name.toLowerCase());
@@ -69,12 +70,13 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
     if (value.some(([name]) => sensitive(name))) throw failure('permission_denied');
     return [...value, ...(previous ?? []).filter(([name]) => sensitive(name))];
   }
-  function begin(request, exchange) {
+  function begin(request, exchange, kind) {
     requireLive();
     if (!request.url || typeof exchange.cancel !== 'function') throw failure('ingress_required');
-    if (active.size >= 4) throw failure('interceptor_busy');
+    const maximum = kind === 'webSocket' ? maxActiveWebSocket : 4;
+    if ([...active].filter(item => item.kind === kind).length >= maximum) throw failure('interceptor_busy');
     const selected = ordered().filter(hook => hook.enabled && hook.origins.has(origin(request.url)));
-    const item = { selected, exchange };
+    const item = { selected, exchange, kind };
     const done = () => { active.delete(item); exchange.signal.removeEventListener('abort', done); };
     active.add(item); exchange.signal.addEventListener('abort', done, { once: true });
     if (exchange.signal.aborted) { done(); throw failure('interceptor_retired'); }
@@ -95,7 +97,7 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
     return next;
   }
   async function http(request, exchange) {
-    const item = begin(request, exchange), participated = [];
+    const item = begin(request, exchange, 'http'), participated = [];
     let current = request, response;
     try {
       for (const hook of item.selected) {
@@ -119,10 +121,15 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
       }
       const source = response === undefined ? 'upstream' : 'synthetic';
       response ??= await exchange.forward({ url: current.url, method: current.method, headers: current.headers, body: ['GET', 'HEAD'].includes(current.method) ? undefined : current.body, ...(networkProfile ? { networkProfile } : {}) });
+      // A delegated source can follow a redirect in its original transport.
+      // Response observation is scoped to the actual final destination.
+      const responseUrl = response.finalUrl ?? current.url;
+      const responseOrigin = origin(responseUrl);
       for (const { hook } of participated.reverse()) {
-        if (!hook.callbacks.response || !hook.origins.has(origin(current.url))) continue;
-        const privileged = await check(hook, item, current.url);
-        const update = await bounded(hook, item, () => hook.callbacks.response(view(response, privileged), Object.freeze({ signal: exchange.signal, source, request: Object.freeze({ id: request.id, url: current.url, method: current.method }) })));
+        if (!hook.callbacks.response || !hook.origins.has(responseOrigin)) continue;
+        const privileged = await check(hook, item, responseUrl);
+        const { finalUrl: ignored, ...visibleResponse } = response;
+        const update = await bounded(hook, item, () => hook.callbacks.response(view(visibleResponse, privileged), Object.freeze({ signal: exchange.signal, source, request: Object.freeze({ id: request.id, url: current.url, method: current.method }) })));
         if (update == null) continue;
         fields(update, ['status', 'headers', 'body']);
         response = { ...response, ...update, ...(update.headers === undefined ? {} : { headers: headers(update.headers, response.headers, privileged) }) };
@@ -135,7 +142,7 @@ function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
     }
   }
   async function webSocket(request, exchange) {
-    const item = begin(request, exchange), transforms = [];
+    const item = begin(request, exchange, 'webSocket'), transforms = [];
     let current = { ...request, method: 'GET' };
     try {
       for (const hook of item.selected) {

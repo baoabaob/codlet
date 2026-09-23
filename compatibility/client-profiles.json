@@ -45,7 +45,7 @@
       }
     },
     {
-      "appVersion": "26.915.31945", "buildNumber": "9922", "appServerVersion": "0.155.0-alpha.9.2", "navigation": true, "runtimeSkill": true, "threadTransport": true,
+      "appVersion": "26.915.31945", "buildNumber": "9922", "appServerVersion": "0.155.0-alpha.9.2", "navigation": true, "runtimeSkill": true, "threadConfiguration": true,
       "officialUpdates": { "stateSelector": "s7" },
       "entry": "app://-/assets/index-399eac8299b8.js", "module": "app://-/assets/app-initial-6c4523b43a11.js",
       "postboxModule": "app://-/assets/app-shared-8f4fbb856ceb.js",
@@ -54,6 +54,19 @@
         "react": "app://-/assets/app-shared-8f4fbb856ceb.js", "dom": "app://-/assets/app-shared-8f4fbb856ceb.js",
         "client": "app://-/assets/app-shared-8f4fbb856ceb.js", "primary": "app://-/assets/app-initial-6c4523b43a11.js",
         "exports": { "react": "qB", "dom": "jB", "client": "AB", "sidebar": "PS", "headerInit": "a8", "header": "i8", "newTaskInit": "n1", "newTask": "a1" }
+      }
+    },
+    {
+      "appVersion": "26.917.51856", "buildNumber": "10492", "appServerVersion": "0.155.0-alpha.16", "navigation": true, "runtimeSkill": true, "threadConfiguration": true,
+      "officialUpdates": { "stateSelector": "Ket" },
+      "entry": "app://-/assets/index-aa24a76f5d14.js", "module": "app://-/assets/app-initial-78d977413c37.js",
+      "scopeModule": "app://-/assets/app-shared-4d3eb8fed85c.js",
+      "postboxModule": "app://-/assets/app-shared-4d3eb8fed85c.js",
+      "exports": { "scope": "ZI", "manager": "AZt", "client": "jZt", "services": "Tnt", "postbox": "X3" },
+      "page": {
+        "react": "app://-/assets/app-shared-4d3eb8fed85c.js", "dom": "app://-/assets/app-shared-4d3eb8fed85c.js",
+        "client": "app://-/assets/app-shared-4d3eb8fed85c.js", "primary": "app://-/assets/app-initial-78d977413c37.js",
+        "exports": { "react": "e6", "dom": "P3", "client": "N3", "sidebar": "MC", "headerInit": "T7", "header": "w7", "newTaskInit": "C2", "newTask": "D2" }
       }
     }
   ]

@@ -1,8 +1,8 @@
 # HTTP、SSE 与 WebSocket 通道示例
 
-本示例展示 Core `context.traffic.openChannel` 和官方 `codex.backend.transport@1` 的组合。它没有供应商选择、自动重试或错误恢复策略，也不会自动安装/启用。
+本示例展示 Core `context.traffic.openChannel` 和官方 `codex.backend.write@1` 通用任务配置接口的组合。它适用于插件提供自己的本地服务，不是透明流量接管的必需步骤，也不会自动安装/启用。
 
-Host 创建一个带随机私有路径的 loopback 端点，HTTP(S) 请求/响应和 SSE 流通过 `exchange.forward`，WS/WSS 通过同名方法双向传递。renderer 只返回 `{channel: {endpoint, protocols}}`；Adapter 根据协议能力设置当前客户端的 provider 配置，插件无需处理 `supports_websockets` 等私有字段。
+Host 创建带随机私有路径的 loopback 端点，HTTP(S)/SSE 和 WS/WSS 通过 `exchange.forward` 转发。renderer 使用 `registerThreadConfiguration` 返回本地 provider 的 `baseUrl` 与 `supportsWebSockets`；Adapter 设置这一任务的临时 provider 配置，保留无官方账号使用自建服务的能力。
 
 ## 配置
 
@@ -34,3 +34,5 @@ codlet plugin enable example.http-channel
 - 策略：默认只允许一次 forward；需要多次 HTTP 尝试时显式配置 maxForwardAttempts，并由插件消费或取消前一响应再发起下一次；Core 不自动重试或重连
 
 通道描述含私有路径，勿写入日志或长期保存。可用范围、取消/关闭限制及测试边界见[流量契约](../../docs/spec/traffic.md)和 [Host 类型](../../types/host.d.ts)。
+
+只需要拦截现有模型请求时，直接使用 Host `context.traffic.registerInterceptor` 及官方 Adapter 的会话元数据；无需创建通道或更改 provider。旧 `codex.backend.transport` / `registerThreadTransport` 已由通用任务配置与明文流量源替代。

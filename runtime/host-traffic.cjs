@@ -6,19 +6,19 @@ const httpTraffic = require('node:http');
 const httpsTraffic = require('node:https');
 const tlsTraffic = require('node:tls');
 const netTraffic = require('node:net');
-const { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID, timingSafeEqual: trafficEqual, X509Certificate: TrafficCertificate } = require('node:crypto');
+const { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID } = require('node:crypto');
 const { WebSocket: TrafficWebSocket, WebSocketServer: TrafficWebSocketServer } = require('ws');
 
 const TRAFFIC_MAX_BYTES = 64 * 1024 * 1024;
 const TRAFFIC_MAX_HEADERS = 128;
 const TRAFFIC_MAX_HEADER_BYTES = 32 * 1024;
 const TRAFFIC_MAX_CONCURRENT = 4;
+const TRAFFIC_MAX_WEBSOCKET_CONCURRENT = 32;
 const TRAFFIC_MAX_CHANNELS = 4;
-const TRAFFIC_MAX_TIMEOUT = 15000;
+const TRAFFIC_MAX_TIMEOUT = 300000;
 const TRAFFIC_MAX_WS_MESSAGE = 8 * 1024 * 1024;
 const TRAFFIC_MAX_WS_QUEUE = 16 * 1024 * 1024;
 const TRAFFIC_MAX_WS_QUEUE_FRAMES = 256;
-const TRAFFIC_PROXY_CHALLENGE = 'Basic realm="Codlet"';
 const TRAFFIC_HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade',
@@ -522,29 +522,14 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     return Object.freeze({ protocol: upstream.protocol || null, closed });
   }
 
-  // Private Core launcher entry: deliberately absent from the plugin-facing api.
-  // Trust material and allowed origins must be prepared before a child is created.
-  async function openProcessIngress(options, handlers, configuration) {
-    if (!ownObject(configuration) || !Array.isArray(configuration.origins) || configuration.origins.length > 64
-      || !configuration.origins.length && typeof configuration.matchesOrigin !== 'function'
-      || typeof configuration.certificateFor !== 'function') throw fail('invalid_argument', 'process ingress requires bounded origins and a certificate provider');
-    if (configuration.matchesOrigin != null && typeof configuration.matchesOrigin !== 'function' || configuration.openTunnel != null && typeof configuration.openTunnel !== 'function') throw fail('invalid_argument', 'invalid private process route');
-    const origins = new Set(configuration.origins.map(value => {
-      const url = new URL(value);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.href !== `${url.origin}/`) throw fail('invalid_argument', 'process ingress requires exact HTTP(S) origins');
-      return url.origin;
-    }));
-    const lifetimeMs = integer(configuration.lifetimeMs, 300000, 3600000, 'lifetimeMs');
-    return openChannel(options, handlers, { origins, matchesOrigin: configuration.matchesOrigin ?? (origin => origins.has(origin)), openTunnel: configuration.openTunnel, certificateFor: configuration.certificateFor, lifetimeMs });
-  }
-
-  async function openChannel(options = {}, handlers, ingress = null) {
+  async function openChannel(options = {}, handlers) {
     if (retired || rootSignal.aborted) throw fail('host_stopping', 'Host traffic runtime has retired');
-    if (!ownObject(options) || Object.keys(options).some(key => !['maxConcurrent', 'maxRequestBytes', 'maxResponseBytes', 'maxForwardAttempts', 'handlerTimeoutMs', 'maxWebSocketMessageBytes', 'maxWebSocketQueueBytes', 'maxWebSocketQueueFrames'].includes(key))) throw fail('invalid_argument', 'unsupported traffic channel option');
+    if (!ownObject(options) || Object.keys(options).some(key => !['maxConcurrent', 'maxWebSocketConcurrent', 'maxRequestBytes', 'maxResponseBytes', 'maxForwardAttempts', 'handlerTimeoutMs', 'maxWebSocketMessageBytes', 'maxWebSocketQueueBytes', 'maxWebSocketQueueFrames'].includes(key))) throw fail('invalid_argument', 'unsupported traffic channel option');
     if (!ownObject(handlers) || Object.keys(handlers).some(key => !['http', 'webSocket'].includes(key))) throw fail('invalid_handler', 'traffic channel handlers must be an object');
     const httpHandler = handlers.http, webSocketHandler = handlers.webSocket;
     if ((httpHandler != null && typeof httpHandler !== 'function') || (webSocketHandler != null && typeof webSocketHandler !== 'function') || (!httpHandler && !webSocketHandler)) throw fail('invalid_handler', 'traffic channel needs an HTTP or WebSocket handler');
     const maximumConcurrent = integer(options.maxConcurrent, 4, TRAFFIC_MAX_CONCURRENT, 'maxConcurrent');
+    const maximumWebSocketConcurrent = integer(options.maxWebSocketConcurrent, maximumConcurrent, TRAFFIC_MAX_WEBSOCKET_CONCURRENT, 'maxWebSocketConcurrent');
     const requestLimit = integer(options.maxRequestBytes, 8 * 1024 * 1024, TRAFFIC_MAX_BYTES, 'maxRequestBytes');
     const responseLimit = integer(options.maxResponseBytes, 32 * 1024 * 1024, TRAFFIC_MAX_BYTES, 'maxResponseBytes');
     const maxForwardAttempts = integer(options.maxForwardAttempts, 1, 8, 'maxForwardAttempts');
@@ -560,48 +545,28 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
 
     const token = trafficRandomBytes(32).toString('base64url');
     const prefix = `/${token}`;
-    const proxyAuthorization = Buffer.from(`Basic ${Buffer.from(`codlet:${token}`).toString('base64')}`);
-    const tunnels = new WeakMap();
-    const authorizedProxy = incoming => {
-      const value = Buffer.from(String(incoming.headers['proxy-authorization'] ?? ''));
-      return value.length === proxyAuthorization.length && trafficEqual(value, proxyAuthorization);
-    };
-    function resolveIncoming(incoming, websocket = false) {
-      if (!ingress) {
-        const value = new URL(incoming.url ?? '/', 'http://127.0.0.1');
+    function resolveIncoming(incoming) {
+        const raw = incoming.url ?? '/';
+        const rawPath = typeof raw === 'string' ? raw.split('?')[0] : '';
+        // Preserve the private path boundary before WHATWG URL normalization
+        // can fold dot segments or encoded separators across a route token.
+        if (typeof raw !== 'string' || !raw.startsWith('/') || raw.startsWith('//')
+          || /\\|%2e|%2f|%5c|%25/iu.test(rawPath)
+          || rawPath.split('/').some(segment => segment === '.' || segment === '..')) {
+          throw fail('invalid_target', 'invalid channel path');
+        }
+        const value = new URL(raw, 'http://127.0.0.1');
         if (!(value.pathname === prefix || value.pathname.startsWith(`${prefix}/`))) throw fail('target_not_found', 'unknown channel');
         return { path: (value.pathname.slice(prefix.length) || '/') + value.search };
-      }
-      const tunnel = tunnels.get(incoming.socket);
-      if (!tunnel && !authorizedProxy(incoming)) throw fail('proxy_authentication_required', 'process proxy authentication required');
-      const raw = incoming.url ?? '';
-      if (tunnel ? !raw.startsWith('/') || raw.startsWith('//') : !/^http:\/\//u.test(raw)) throw fail('invalid_target', 'invalid proxy target form');
-      const target = tunnel ? new URL(raw, tunnel) : new URL(raw);
-      if (target.username || target.password || target.hash || !ingress.openTunnel && !ingress.matchesOrigin(target.origin)
-        || tunnel && target.origin !== tunnel || incoming.headers.host !== target.host) throw fail('target_denied', 'proxy destination is outside its launch scope');
-      if (websocket) target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
-      return { path: target.pathname + target.search, url: target.href };
-    }
-    function scopedForward(input, destination) {
-      if (!ingress) return input;
-      const origin = value => { const url = new URL(value); if (url.protocol === 'wss:') url.protocol = 'https:'; if (url.protocol === 'ws:') url.protocol = 'http:'; return url.origin; };
-      if (origin(input.url) === origin(destination.url)) return input;
-      // Default-deny carry-over headers on origin changes, including unknown
-      // vendor authentication headers. New credentials require credentialRef.
-      const headers = headerPairs(input.headers, 'forward headers').filter(([name]) => ['accept', 'content-type', 'content-encoding'].includes(name.toLowerCase()));
-      return { ...input, headers, ...(Object.hasOwn(input, 'protocols') ? { protocols: [] } : {}) };
     }
     const sockets = new Set(), active = new Set();
-    let concurrent = 0, forwardAttempts = 0, closed = false, closePromise;
+    let httpConcurrent = 0, webSocketConcurrent = 0, forwardAttempts = 0, closed = false, closePromise;
 
     const server = httpTraffic.createServer({ maxHeaderSize: TRAFFIC_MAX_HEADER_BYTES }, async (incoming, outgoing) => {
       let destination;
       try { destination = resolveIncoming(incoming); }
       catch (reason) {
-        const authenticationRequired = reason.code === 'proxy_authentication_required';
-        outgoing.writeHead(authenticationRequired ? 407 : reason.code === 'target_not_found' ? 404 : 400, {
-          connection: 'close', ...(authenticationRequired ? { 'proxy-authenticate': TRAFFIC_PROXY_CHALLENGE } : {}),
-        });
+        outgoing.writeHead(reason.code === 'target_not_found' ? 404 : 400, { connection: 'close' });
         outgoing.end('proxy_target_rejected'); return;
       }
       if (!httpHandler) {
@@ -610,13 +575,12 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       if (closed || retired || rootSignal.aborted) {
         outgoing.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' }); outgoing.end('channel unavailable'); return;
       }
-      if (concurrent >= maximumConcurrent) {
+      if (httpConcurrent >= maximumConcurrent) {
         outgoing.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'retry-after': '1' }); outgoing.end('channel busy'); return;
       }
-      concurrent += 1;
+      httpConcurrent += 1;
       changed();
       const controller = new AbortController(); active.add(controller);
-      const lifetime = ingress ? setTimeout(() => controller.abort(fail('exchange_timeout', 'process exchange expired')), ingress.lifetimeMs) : null;
       const unlinkRoot = linkAbort(controller, rootSignal, fail('host_stopping', 'Host traffic runtime retired'));
       const cancelled = () => { if (!controller.signal.aborted) controller.abort(fail('request_cancelled', 'downstream client cancelled the request')); };
       incoming.once('aborted', cancelled); outgoing.once('close', () => { if (!outgoing.writableFinished) cancelled(); });
@@ -639,7 +603,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
             if (attempts >= maxForwardAttempts) throw fail('forward_attempt_limit', `HTTP exchange exhausted its ${maxForwardAttempts} forward attempt(s)`);
             attempts += 1; forwardAttempts += 1; responsePending = true;
             try {
-              return await forwardHttp(scopedForward(input, destination), controller.signal, requestLimit, responseLimit, () => { responsePending = false; });
+              return await forwardHttp(input, controller.signal, requestLimit, responseLimit, () => { responsePending = false; });
             } catch (reason) {
               responsePending = false;
               throw reason;
@@ -669,8 +633,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
           outgoing.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }); outgoing.end(code);
         } else if (!outgoing.destroyed) outgoing.destroy();
       } finally {
-        clearTimeout(lifetime);
-        incoming.off('aborted', cancelled); unlinkRoot(); active.delete(controller); concurrent -= 1;
+        incoming.off('aborted', cancelled); unlinkRoot(); active.delete(controller); httpConcurrent -= 1;
         changed();
         if (!controller.signal.aborted) controller.abort(fail('request_complete', 'HTTP exchange completed'));
       }
@@ -678,98 +641,25 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     server.requestTimeout = 30000;
     server.headersTimeout = 10000;
     server.keepAliveTimeout = 5000;
-    server.maxConnections = maximumConcurrent + 8;
+    server.maxConnections = maximumConcurrent + maximumWebSocketConcurrent + 8;
     server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
-    server.on('connect', async (incoming, socket, head) => {
-      const reject = status => {
-        const challenge = status === '407 Proxy Authentication Required' ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r\n` : '';
-        if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\n${challenge}Connection: close\r\nContent-Length: 0\r\n\r\n`);
-      };
-      if (!ingress) return reject('405 Method Not Allowed');
-      if (tunnels.has(socket)) return reject('405 Method Not Allowed');
-      if (!authorizedProxy(incoming)) return reject('407 Proxy Authentication Required');
-      if (closed || retired || rootSignal.aborted) return reject('503 Service Unavailable');
-      // Also bounds idle/handshake sockets, before any HTTP request is parsed.
-      if (sockets.size > maximumConcurrent + 4) return reject('503 Service Unavailable');
-      const controller = new AbortController(); active.add(controller);
-      const unlink = linkAbort(controller, rootSignal);
-      const abort = () => socket.destroy();
-      controller.signal.addEventListener('abort', abort, { once: true });
-      const expired = setTimeout(() => controller.abort(fail('exchange_timeout', 'process tunnel expired')), ingress.lifetimeMs);
-      const disconnected = () => controller.abort(fail('request_cancelled', 'process tunnel closed'));
-      socket.once('close', disconnected);
-      let setupTimer;
-      try {
-        const target = new URL(`https://${incoming.url}`);
-        const plain = new URL(`http://${incoming.url}`);
-        const secureAllowed = ingress.matchesOrigin(target.origin), plainAllowed = ingress.matchesOrigin(plain.origin);
-        if (incoming.url !== `${target.hostname}:${target.port || '443'}` || target.username || target.password || target.pathname !== '/' || target.search || target.hash || secureAllowed && plainAllowed || !secureAllowed && !plainAllowed && !ingress.openTunnel) throw fail('target_denied', 'CONNECT destination denied or ambiguous');
-        setupTimer = setTimeout(() => controller.abort(fail('handler_timeout', 'certificate preparation expired')), handlerTimeout);
-        await coreRequest('host.network.authorizeChannel', {}, controller.signal);
-        if (controller.signal.aborted || closed) throw fail('host_stopping', 'process proxy retired');
-        if (!secureAllowed && !plainAllowed) {
-          // Unmatched TLS stays encrypted end to end. The private Native route
-          // resolves from the pre-launch proxy state; no plugin sees a byte.
-          const upstream = await raceAbort(() => ingress.openTunnel(target, controller.signal), controller.signal, 'tunnel setup cancelled');
-          const destroyUpstream = () => upstream.destroy();
-          controller.signal.addEventListener('abort', destroyUpstream, { once: true });
-          try {
-            if (controller.signal.aborted || closed) throw fail('host_stopping', 'process proxy retired');
-            clearTimeout(setupTimer);
-            upstream.on('error', abort); socket.on('error', destroyUpstream);
-            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-            if (head.length) upstream.write(head);
-            socket.pipe(upstream); upstream.pipe(socket);
-            await new Promise(resolve => { upstream.once('close', resolve); socket.once('close', resolve); });
-          } finally { controller.signal.removeEventListener('abort', destroyUpstream); socket.off('error', destroyUpstream); upstream.destroy(); }
-          return;
-        }
-        if (plainAllowed) {
-          clearTimeout(setupTimer);
-          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          if (head.length) socket.unshift(head);
-          tunnels.set(socket, plain.origin);
-          server.emit('connection', socket);
-          await new Promise(resolve => socket.once('close', resolve));
-          return;
-        }
-        const material = await raceAbort(() => ingress.certificateFor(target.origin, controller.signal), controller.signal, 'certificate preparation cancelled');
-        const certificate = new TrafficCertificate(material.cert);
-        const hostname = target.hostname.replace(/^\[|\]$/gu, '');
-        if (!(netTraffic.isIP(hostname) ? certificate.checkIP(hostname) : certificate.checkHost(hostname))) throw fail('certificate_mismatch', 'process certificate does not cover its destination');
-        const secureContext = tlsTraffic.createSecureContext({ key: material.key, cert: material.cert, minVersion: 'TLSv1.2' });
-        if (controller.signal.aborted || closed) throw fail('host_stopping', 'process proxy retired');
-        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        if (head.length) socket.unshift(head);
-        const secure = new tlsTraffic.TLSSocket(socket, { isServer: true, secureContext, ALPNProtocols: ['http/1.1'] });
-        secure.on('error', () => socket.destroy());
-        secure.once('secure', () => { clearTimeout(setupTimer); });
-        tunnels.set(secure, target.origin);
-        server.emit('connection', secure);
-        // The raw and TLS sockets share lifetime ownership. Retire both on close.
-        await new Promise(resolve => { secure.once('close', resolve); socket.once('close', resolve); });
-      } catch { reject('502 Bad Gateway'); }
-      finally { clearTimeout(setupTimer); clearTimeout(expired); unlink(); active.delete(controller); controller.signal.removeEventListener('abort', abort); socket.off('close', disconnected); socket.destroy(); }
-    });
     const webSocketServer = new TrafficWebSocketServer({
       noServer: true, maxPayload: maxMessageBytes, perMessageDeflate: false,
       handleProtocols(_protocols, request) { return request.__codletProtocol; },
     });
     server.on('upgrade', async (incoming, socket, head) => {
       const reject = (status, reason) => {
-        const challenge = status === '407 Proxy Authentication Required' ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r\n` : '';
-        if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\n${challenge}Connection: close\r\nContent-Length: ${Buffer.byteLength(reason)}\r\n\r\n${reason}`);
+        if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(reason)}\r\n\r\n${reason}`);
       };
       let destination;
-      try { destination = resolveIncoming(incoming, true); }
-      catch (reason) { reject(reason.code === 'proxy_authentication_required' ? '407 Proxy Authentication Required' : reason.code === 'target_not_found' ? '404 Not Found' : '400 Bad Request', 'proxy_target_rejected'); return; }
+      try { destination = resolveIncoming(incoming); }
+      catch (reason) { reject(reason.code === 'target_not_found' ? '404 Not Found' : '400 Bad Request', 'channel_target_rejected'); return; }
       if (!webSocketHandler) return reject('426 Upgrade Required', 'WebSocket handler unavailable');
       if (closed || retired || rootSignal.aborted) return reject('503 Service Unavailable', 'channel unavailable');
-      if (concurrent >= maximumConcurrent) return reject('503 Service Unavailable', 'channel busy');
-      concurrent += 1; socket.pause();
+      if (webSocketConcurrent >= maximumWebSocketConcurrent) return reject('503 Service Unavailable', 'channel busy');
+      webSocketConcurrent += 1; socket.pause();
       changed();
       const controller = new AbortController(); active.add(controller);
-      const lifetime = ingress ? setTimeout(() => controller.abort(fail('exchange_timeout', 'process exchange expired')), ingress.lifetimeMs) : null;
       const unlinkRoot = linkAbort(controller, rootSignal, fail('host_stopping', 'Host traffic runtime retired'));
       let forwarded = false, bridge;
       try {
@@ -786,7 +676,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
           async forward(input) {
             if (forwarded) throw fail('forward_already_dispatched', 'a WebSocket exchange can dispatch upstream at most once');
             forwarded = true;
-            bridge = await forwardWebSocket(scopedForward(input, destination), request, incoming, socket, head, webSocketServer, controller.signal, { handlerTimeout, maxMessageBytes, maxQueueBytes, maxQueueFrames });
+            bridge = await forwardWebSocket(input, request, incoming, socket, head, webSocketServer, controller.signal, { handlerTimeout, maxMessageBytes, maxQueueBytes, maxQueueFrames });
             return bridge;
           },
         });
@@ -811,8 +701,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
         }
         else if (!socket.destroyed) socket.destroy();
       } finally {
-        clearTimeout(lifetime);
-        unlinkRoot(); active.delete(controller); concurrent -= 1;
+        unlinkRoot(); active.delete(controller); webSocketConcurrent -= 1;
         changed();
         if (!controller.signal.aborted) controller.abort(fail('request_complete', 'WebSocket exchange completed'));
       }
@@ -844,13 +733,8 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     function close() { return closeWithReason(fail('channel_closed', 'traffic channel was closed')); }
     const channel = Object.freeze({
       id: trafficRandomUUID(), endpoint: `http://127.0.0.1:${address.port}${prefix}`,
-      ...(ingress ? { proxyUrl: `http://codlet:${token}@127.0.0.1:${address.port}`,
-        // Trusted owner only: retire pre-existing connections on an explicitly
-        // coordinated activation. This is disruptive and never replays a request.
-        disconnect() { for (const controller of active) controller.abort(fail('request_cancelled', 'process ingress connections retired by owner')); for (const socket of sockets) socket.destroy(); },
-      } : {}),
       protocols: Object.freeze([...(httpHandler ? ['http'] : []), ...(webSocketHandler ? ['websocket'] : [])]),
-      status: () => Object.freeze({ open: !closed, activeRequests: concurrent, forwardAttempts, transport: 'loopback', coverage: ingress ? 'process-proxy-unverified' : 'explicit-endpoint', protocols: channel.protocols }),
+      status: () => Object.freeze({ open: !closed, activeRequests: httpConcurrent + webSocketConcurrent, forwardAttempts, transport: 'loopback', coverage: 'explicit-endpoint', protocols: channel.protocols }),
       close,
     });
     channels.set(channel, closeWithReason);
@@ -867,8 +751,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
   }
   function openHttpChannel(options, handler) { return openChannel(options, { http: handler }); }
   rootSignal.addEventListener('abort', () => closeAll(rootSignal.reason), { once: true });
-  // Do not allow a plugin to pass the private third argument through openChannel.
-  return Object.freeze({ api: Object.freeze({ openChannel: (options, handlers) => openChannel(options, handlers), openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), openProcessIngress, closeAll });
+  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
 }
 
-module.exports = { createTrafficRuntime, createTrafficInterceptors: require('./traffic-interceptors.cjs').createTrafficInterceptors, prepareProcessTrafficEnvironment: require('./process-traffic-environment.cjs').prepareProcessTrafficEnvironment };
+module.exports = { createTrafficRuntime, createTrafficInterceptors: require('./traffic-interceptors.cjs').createTrafficInterceptors };

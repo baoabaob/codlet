@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-const source=readFileSync(new URL('../runtime/skill-bridge.js',import.meta.url),'utf8').replace('import(profile.module)','loadModule(profile.module)');
+const source=readFileSync(new URL('../runtime/skill-bridge.js',import.meta.url),'utf8').replaceAll('import(','loadModule(');
 const profiles=JSON.parse(readFileSync(new URL('../compatibility/client-profiles.json',import.meta.url),'utf8')).builds.filter(p=>p.runtimeSkill);
 const settle=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setTimeout(r,0));};
 
@@ -12,8 +12,10 @@ function fixture(t,profile,{entry=true,version=profile.appVersion}={}){
   const original=client.sendRequest,token={id:'scope'},family={read:()=>client},node={token,familyBindings:new Map([[family,new Map([['local',client]])]])};
   const root={__reactContainer$test:{memoizedProps:{value:new Map([['scope',node]])}}};
   const document={scripts:entry?[{src:profile.entry}]:[],readyState:'loading',getElementById:()=>root};
-  const nativeModule={[profile.exports.scope]:token,[profile.exports.client]:family};
-  const context=vm.createContext({console,setTimeout,clearTimeout,Map,Set,Symbol,location:{origin:'app://-',pathname:'/index.html'},document,electronBridge:{getSentryInitOptions:()=>({appVersion:version,buildNumber:profile.buildNumber})},loadModule:async resource=>{imports.push(resource);assert.equal(resource,profile.module);return nativeModule;}});
+  const nativeModule={[profile.exports.client]:family};
+  const scopeModule=profile.scopeModule?{[profile.exports.scope]:token}:nativeModule;
+  if(!profile.scopeModule)nativeModule[profile.exports.scope]=token;
+  const context=vm.createContext({console,setTimeout,clearTimeout,Map,Set,Symbol,location:{origin:'app://-',pathname:'/index.html'},document,electronBridge:{getSentryInitOptions:()=>({appVersion:version,buildNumber:profile.buildNumber})},loadModule:async resource=>{imports.push(resource);if(resource===profile.module)return nativeModule;assert.equal(resource,profile.scopeModule);return scopeModule;}});
   const config={marker:'test.skill',binding:'skillBinding',root:'/runtime',skillPath:'/runtime/codlet/SKILL.md',profiles};
   const state=()=>vm.runInContext('globalThis[Symbol.for("test.skill")]',context);
   context.skillBinding=text=>{const input=JSON.parse(text);coreCalls.push(input.action);let reply;
@@ -24,15 +26,15 @@ function fixture(t,profile,{entry=true,version=profile.appVersion}={}){
   };
   const install=vm.runInContext('('+source+')',context);install(config);
   t.after(()=>state()?.dispose([]));
-  return {client,original,nativeModule,context,config,calls,coreCalls,imports,document,state};
+  return {client,original,nativeModule,scopeModule,context,config,calls,coreCalls,imports,document,state};
 }
 for(const profile of profiles)test(`${profile.appVersion}: runtime skill reuses the native connection without a GUI and only adds an explicitly invoked skill`,async t=>{
   const f=fixture(t,profile),{client,calls,coreCalls,config}=f;
-  const exports={...f.nativeModule};Object.keys(f.nativeModule).forEach(k=>delete f.nativeModule[k]);
+  const exports={...f.nativeModule},scopeExports={...f.scopeModule};Object.keys(f.nativeModule).forEach(k=>delete f.nativeModule[k]);Object.keys(f.scopeModule).forEach(k=>delete f.scopeModule[k]);
   await settle();assert.equal(f.state().status,'starting');
-  Object.assign(f.nativeModule,exports);await new Promise(resolve=>setTimeout(resolve,130));await settle();
+  Object.assign(f.nativeModule,exports);Object.assign(f.scopeModule,scopeExports);await new Promise(resolve=>setTimeout(resolve,130));await settle();
   assert.equal(f.state().status,'ready');assert.equal(calls[0].method,'skills/extraRoots/set');
-  assert.deepEqual(f.imports,[profile.module]);
+  assert.deepEqual(f.imports,profile.scopeModule?[profile.module,profile.scopeModule]:[profile.module]);
   await client.sendRequest('skills/list',{cwds:['/project']});assert.equal(calls.filter(c=>c.method==='skills/extraRoots/set').length,1);
   await client.sendRequest('skills/extraRoots/set',{extraRoots:['/another-root']});assert.deepEqual([...calls.at(-1).params.extraRoots],['/another-root','/runtime']);
   await client.sendRequest('turn/start',{threadId:'one',input:[{type:'text',text:'/codlet 帮我创建一个插件：'}]});

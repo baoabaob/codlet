@@ -60,21 +60,24 @@ session. Linux is not in the current implementation scope.
 
 ## Features awaiting product acceptance
 
-Core includes the transparent traffic gateway and Windows/macOS Native launch
+Core includes the plaintext traffic gateway and Windows/macOS Native launch
 owner. Client-specific hooks remain subject to the Adapter's build and capability
-checks. Explicit `openChannel`/thread transport tests do not mean every
-official-client request is transparently intercepted. The
+checks. Generic channel tests do not mean every official-client request is
+intercepted. The
 [traffic contract](spec/traffic.md) records the actual attached paths and
 protocols; desktop attachments and macOS acceptance must be reported separately.
 
-On Windows Codex `26.915.4065.0`, the isolated main-process handshake and backend
-spawn preparation were observed, but actual Desktop requests did not pass the
-proxy authentication and certificate checks. This build does not expose the
-required Session proxy/certificate APIs. The Adapter must reject transparent
-Desktop launch for it rather than report attachment and leave requests broken.
-The ordinary Codlet launch, explicit channels, and independently tested backend
-transport are separate paths. No global TLS bypass or system certificate change
-is used to work around this incompatibility.
+The former CONNECT/proxy-authentication/temporary-certificate launch path has
+been removed. The Windows Adapter uses separate Desktop HTTP hooks
+and owned AppServer provider routes. Their protocol and lifecycle evidence is in
+the [Adapter request-chain specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/request-chain.md).
+Inspect `activatedSources` and `unsupportedSources`; generic attachment does not
+imply browser WebSockets, remote/cloud model sockets, Realtime/WebRTC, attachments,
+live OAuth refresh or macOS are accepted. If traffic interception is explicitly
+requested and no source can attach, launch fails rather than silently sending
+traffic past the interceptors. Ordinary launches without traffic consumers are
+unaffected. Changing real providers still requires plugin policy for server-owned
+continuation IDs and already-executed tool operations.
 
 The official GUI repository contains a marketplace interaction prototype and
 specification, but that is not yet a production-backed searchable marketplace.

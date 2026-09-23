@@ -8,6 +8,6 @@
   "permissions": ["host.process", "host.network", "ui.mainWorld"],
   "requires": [
     { "name": "example.traffic.channel", "api": 1, "scope": "runtime" },
-    { "name": "codex.backend.transport", "api": 1, "scope": "target" }
+    { "name": "codex.backend.write", "api": 1, "scope": "target" }
   ]
 }

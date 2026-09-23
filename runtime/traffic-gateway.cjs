@@ -12,7 +12,7 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
   signal.addEventListener('abort', stop, { once: true });
   if (signal.aborted) stop();
   let peer, refreshing, dirty = true, retired = false;
-  const registry = createTrafficInterceptors({ rootSignal: controller.signal, networkProfile,
+  const registry = createTrafficInterceptors({ rootSignal: controller.signal, networkProfile, maxActiveWebSocket: 32,
     authorize: async (owner, action, url, requestSignal) => {
       const result = await peer.request('authorize', { registration: owner.registration, action, url }, { signal: requestSignal, timeoutMs: 2000 });
       return result.allowed === true;

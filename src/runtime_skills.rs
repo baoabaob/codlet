@@ -297,7 +297,7 @@ impl RuntimeSkills {
                 .expect("checked-in client profiles are valid");
         let profiles = catalog["builds"].as_array().unwrap().iter()
             .filter(|profile| profile["runtimeSkill"] == true)
-            .map(|profile| json!({"appVersion":profile["appVersion"],"buildNumber":profile["buildNumber"],"appServerVersion":profile["appServerVersion"],"module":profile["module"],"entry":profile["entry"],"exports":{"scope":profile["exports"]["scope"],"client":profile["exports"]["client"]}}))
+            .map(|profile| json!({"appVersion":profile["appVersion"],"buildNumber":profile["buildNumber"],"appServerVersion":profile["appServerVersion"],"module":profile["module"],"scopeModule":profile.get("scopeModule"),"entry":profile["entry"],"exports":{"scope":profile["exports"]["scope"],"client":profile["exports"]["client"]}}))
             .collect::<Vec<_>>();
         let config = json!({"root":root,"skillPath":skill.join("SKILL.md"),"binding":BINDING,"marker":MARKER,"profiles":profiles});
         let script = format!("({BRIDGE})({config});");

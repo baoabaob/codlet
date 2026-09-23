@@ -1,6 +1,6 @@
 'use strict';
 const net = require('node:net');
-const { randomBytes } = require('node:crypto');
+const { randomBytes, timingSafeEqual } = require('node:crypto');
 const MAX_FRAME = 64 * 1024, CHUNK = 32 * 1024, MAX_BODY = 64 * 1024 * 1024;
 const failure = code => Object.assign(new Error(code), { code });
 
@@ -74,7 +74,7 @@ async function connectTrafficPeer(endpoint, { signal, handle, event = () => {}, 
   function request(method, params = {}, { timeoutMs = 30000, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
     if (closed || requestSignal?.aborted) return Promise.reject(failure('peer_closed'));
     if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure('resource_limit'));
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) return Promise.reject(failure('invalid_timeout'));
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) return Promise.reject(failure('invalid_timeout'));
     return new Promise((resolve, reject) => {
       const id = ++sequence;
       const abort = () => {
@@ -137,7 +137,7 @@ function createTrafficStreams(peer, lease, signal) {
             if (reference.inline !== undefined) { if (typeof reference.inline !== 'string' || reference.inline.length > 1368) throw failure('invalid_body'); bytes = Buffer.from(reference.inline, 'base64'); ended = true; finish(); }
             else {
               if (typeof reference.stream !== 'string' || !/^[a-f0-9]{32}$/u.test(reference.stream)) throw failure('invalid_body');
-              const value = await peer.request('relay', { lease, operation: 'stream.read', payload: { stream: reference.stream } }, { signal: controller.signal });
+              const value = await peer.request('relay', { lease, operation: 'stream.read', payload: { stream: reference.stream } }, { signal: controller.signal, timeoutMs: 300000 });
               check(); if (value.done === true) { ended = true; finish(); return { done: true }; }
               if (typeof value.bytes !== 'string' || !value.bytes.length || value.bytes.length > Math.ceil(CHUNK / 3) * 4) throw failure('invalid_body');
               bytes = Buffer.from(value.bytes, 'base64'); if (bytes.length > CHUNK || bytes.toString('base64') !== value.bytes) throw failure('invalid_body');
@@ -196,4 +196,109 @@ function createTrafficStreams(peer, lease, signal) {
   return Object.freeze({ exportBody, importBody, exportFrame, importFrame, handle, dispose, status: () => ({ streams: sources.size, retired: disposed }) });
 }
 
-module.exports = { connectTrafficPeer, createTrafficStreams };
+// The source endpoint is a private, single-owner companion to the Native data
+// peer. It uses the same frame bound, pending-call bound and stream relay shape.
+async function listenTrafficPeer({ signal, handle, onConnect = () => {}, onClose = () => {} }) {
+  if (signal?.aborted) throw failure('host_stopping');
+  const token = randomBytes(32).toString('base64url');
+  let active = null, closed = false;
+  const sockets = new Set();
+  const server = net.createServer(socket => {
+    if (closed || active || sockets.size >= 4) { socket.destroy(); return; }
+    sockets.add(socket); socket.once('close', () => sockets.delete(socket));
+    socket.setNoDelay(true);
+    let buffer = Buffer.alloc(0), authenticated = false, retired = false, sequence = 0;
+    const pending = new Map(), inbound = new Set();
+    const handshake = setTimeout(() => retire(), 5000);
+    function retire() {
+      if (retired) return;
+      retired = true; clearTimeout(handshake); socket.destroy();
+      for (const item of pending.values()) { clearTimeout(item.timer); item.signal?.removeEventListener('abort', item.abort); item.reject(failure('peer_closed')); }
+      pending.clear(); inbound.clear(); buffer = Buffer.alloc(0);
+      if (active === peer) { active = null; onClose(peer); }
+    }
+    function send(value) {
+      if (retired) throw failure('peer_closed');
+      const encoded = Buffer.from(JSON.stringify(value));
+      if (!encoded.length || encoded.length > MAX_FRAME) throw failure('frame_too_large');
+      if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure('traffic_backpressure');
+      const packet = Buffer.allocUnsafe(encoded.length + 4); packet.writeUInt32BE(encoded.length); encoded.copy(packet, 4); socket.write(packet);
+    }
+    function request(method, params = {}, { signal: requestSignal, timeoutMs = 30000 } = {}) {
+      if (retired || requestSignal?.aborted) return Promise.reject(failure('peer_closed'));
+      if (pending.size >= 64) return Promise.reject(failure('resource_limit'));
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) return Promise.reject(failure('invalid_timeout'));
+      return new Promise((resolve, reject) => {
+        const id = ++sequence;
+        const abort = () => {
+          if (!pending.has(id)) return;
+          pending.delete(id); clearTimeout(timer); requestSignal?.removeEventListener('abort', abort);
+          reject(failure('request_cancelled'));
+        };
+        const timer = setTimeout(abort, timeoutMs);
+        pending.set(id, { resolve, reject, timer, signal: requestSignal, abort });
+        requestSignal?.addEventListener('abort', abort, { once: true });
+        try { send({ id, method, params }); } catch (error) { abort(); retire(); }
+      });
+    }
+    const peer = Object.freeze({ request, close: retire, status: () => ({ open: !retired, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });
+    socket.on('error', retire); socket.on('close', retire);
+    socket.on('data', chunk => {
+      try {
+        let offset = 0;
+        while (offset < chunk.length) {
+          const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;
+          if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure('invalid_frame');
+          const take = Math.min(required - buffer.length, chunk.length - offset);
+          buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]); offset += take;
+          if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure('invalid_frame');
+          if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;
+          const message = JSON.parse(buffer.subarray(4).toString('utf8')); buffer = Buffer.alloc(0);
+          if (!authenticated) {
+            const offered = typeof message?.token === 'string' ? Buffer.from(message.token) : Buffer.alloc(0);
+            const expected = Buffer.from(token);
+            if (active || offered.length !== expected.length || !timingSafeEqual(offered, expected) || Object.keys(message).length !== 1) throw failure('permission_denied');
+            authenticated = true; clearTimeout(handshake); active = peer; send({ event: 'connected' }); onConnect(peer); continue;
+          }
+          if (typeof message.method === 'string') {
+            if (inbound.size >= 256 || inbound.has(message.id)) throw failure('traffic_backpressure');
+            inbound.add(message.id);
+            let operation;
+            try { operation = handle(peer, message.method, message.params); } catch (error) { operation = Promise.reject(error); }
+            Promise.resolve(operation).then(result => {
+              if (!retired && inbound.has(message.id)) send({ id: message.id, result: result ?? null });
+            }, error => {
+              if (!retired && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : 'traffic_callback_failed' } });
+            }).catch(retire).finally(() => inbound.delete(message.id));
+            continue;
+          }
+          const item = pending.get(message.id); if (!item) continue;
+          pending.delete(message.id); clearTimeout(item.timer); item.signal?.removeEventListener('abort', item.abort);
+          if (message.error) item.reject(failure(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : 'traffic_callback_failed'));
+          else item.resolve(message.result);
+        }
+      } catch { retire(); }
+    });
+  });
+  const stopped = () => close();
+  signal?.addEventListener('abort', stopped, { once: true });
+  try {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => { server.off('error', failed); signal?.removeEventListener('abort', aborted); };
+      const failed = () => { cleanup(); reject(failure('channel_listen_failed')); };
+      const aborted = () => { cleanup(); reject(failure('host_stopping')); };
+      server.once('error', failed); signal?.addEventListener('abort', aborted, { once: true });
+      server.listen(0, '127.0.0.1', () => { cleanup(); if (closed) { close(); reject(failure('host_stopping')); } else resolve(); });
+    });
+  } catch (error) { close(); throw error; }
+  const address = server.address();
+  function close() {
+    if (!closed) { closed = true; signal?.removeEventListener('abort', stopped); }
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) server.close();
+  }
+  if (closed || signal?.aborted) { close(); throw failure('host_stopping'); }
+  return Object.freeze({ endpoint: Object.freeze({ host: '127.0.0.1', port: address.port, token }), close, status: () => ({ open: !closed, connected: !!active, peer: active?.status() ?? null }) });
+}
+
+module.exports = { connectTrafficPeer, listenTrafficPeer, createTrafficStreams };

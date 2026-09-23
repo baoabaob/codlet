@@ -3705,7 +3705,7 @@ var require_traffic_wire = __commonJS({
   "../runtime/traffic-wire.cjs"(exports2, module2) {
     "use strict";
     var net = require("node:net");
-    var { randomBytes } = require("node:crypto");
+    var { randomBytes, timingSafeEqual } = require("node:crypto");
     var MAX_FRAME = 64 * 1024;
     var CHUNK = 32 * 1024;
     var MAX_BODY = 64 * 1024 * 1024;
@@ -3825,7 +3825,7 @@ var require_traffic_wire = __commonJS({
       function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
         if (closed || requestSignal?.aborted) return Promise.reject(failure("peer_closed"));
         if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure("resource_limit"));
-        if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e4) return Promise.reject(failure("invalid_timeout"));
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure("invalid_timeout"));
         return new Promise((resolve, reject) => {
           const id = ++sequence;
           const abort = () => {
@@ -3918,7 +3918,7 @@ var require_traffic_wire = __commonJS({
                   finish();
                 } else {
                   if (typeof reference.stream !== "string" || !/^[a-f0-9]{32}$/u.test(reference.stream)) throw failure("invalid_body");
-                  const value = await peer.request("relay", { lease, operation: "stream.read", payload: { stream: reference.stream } }, { signal: controller.signal });
+                  const value = await peer.request("relay", { lease, operation: "stream.read", payload: { stream: reference.stream } }, { signal: controller.signal, timeoutMs: 3e5 });
                   check();
                   if (value.done === true) {
                     ended = true;
@@ -4031,7 +4031,178 @@ var require_traffic_wire = __commonJS({
       signal.addEventListener("abort", dispose, { once: true });
       return Object.freeze({ exportBody, importBody, exportFrame, importFrame, handle, dispose, status: () => ({ streams: sources.size, retired: disposed }) });
     }
-    module2.exports = { connectTrafficPeer, createTrafficStreams };
+    async function listenTrafficPeer({ signal, handle, onConnect = () => {
+    }, onClose = () => {
+    } }) {
+      if (signal?.aborted) throw failure("host_stopping");
+      const token = randomBytes(32).toString("base64url");
+      let active = null, closed = false;
+      const sockets = /* @__PURE__ */ new Set();
+      const server = net.createServer((socket) => {
+        if (closed || active || sockets.size >= 4) {
+          socket.destroy();
+          return;
+        }
+        sockets.add(socket);
+        socket.once("close", () => sockets.delete(socket));
+        socket.setNoDelay(true);
+        let buffer = Buffer.alloc(0), authenticated = false, retired = false, sequence = 0;
+        const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();
+        const handshake = setTimeout(() => retire(), 5e3);
+        function retire() {
+          if (retired) return;
+          retired = true;
+          clearTimeout(handshake);
+          socket.destroy();
+          for (const item of pending.values()) {
+            clearTimeout(item.timer);
+            item.signal?.removeEventListener("abort", item.abort);
+            item.reject(failure("peer_closed"));
+          }
+          pending.clear();
+          inbound.clear();
+          buffer = Buffer.alloc(0);
+          if (active === peer) {
+            active = null;
+            onClose(peer);
+          }
+        }
+        function send(value) {
+          if (retired) throw failure("peer_closed");
+          const encoded = Buffer.from(JSON.stringify(value));
+          if (!encoded.length || encoded.length > MAX_FRAME) throw failure("frame_too_large");
+          if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure("traffic_backpressure");
+          const packet = Buffer.allocUnsafe(encoded.length + 4);
+          packet.writeUInt32BE(encoded.length);
+          encoded.copy(packet, 4);
+          socket.write(packet);
+        }
+        function request(method, params = {}, { signal: requestSignal, timeoutMs = 3e4 } = {}) {
+          if (retired || requestSignal?.aborted) return Promise.reject(failure("peer_closed"));
+          if (pending.size >= 64) return Promise.reject(failure("resource_limit"));
+          if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure("invalid_timeout"));
+          return new Promise((resolve, reject) => {
+            const id = ++sequence;
+            const abort = () => {
+              if (!pending.has(id)) return;
+              pending.delete(id);
+              clearTimeout(timer);
+              requestSignal?.removeEventListener("abort", abort);
+              reject(failure("request_cancelled"));
+            };
+            const timer = setTimeout(abort, timeoutMs);
+            pending.set(id, { resolve, reject, timer, signal: requestSignal, abort });
+            requestSignal?.addEventListener("abort", abort, { once: true });
+            try {
+              send({ id, method, params });
+            } catch (error) {
+              abort();
+              retire();
+            }
+          });
+        }
+        const peer = Object.freeze({ request, close: retire, status: () => ({ open: !retired, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });
+        socket.on("error", retire);
+        socket.on("close", retire);
+        socket.on("data", (chunk) => {
+          try {
+            let offset = 0;
+            while (offset < chunk.length) {
+              const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;
+              if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure("invalid_frame");
+              const take = Math.min(required - buffer.length, chunk.length - offset);
+              buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);
+              offset += take;
+              if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure("invalid_frame");
+              if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;
+              const message = JSON.parse(buffer.subarray(4).toString("utf8"));
+              buffer = Buffer.alloc(0);
+              if (!authenticated) {
+                const offered = typeof message?.token === "string" ? Buffer.from(message.token) : Buffer.alloc(0);
+                const expected = Buffer.from(token);
+                if (active || offered.length !== expected.length || !timingSafeEqual(offered, expected) || Object.keys(message).length !== 1) throw failure("permission_denied");
+                authenticated = true;
+                clearTimeout(handshake);
+                active = peer;
+                send({ event: "connected" });
+                onConnect(peer);
+                continue;
+              }
+              if (typeof message.method === "string") {
+                if (inbound.size >= 256 || inbound.has(message.id)) throw failure("traffic_backpressure");
+                inbound.add(message.id);
+                let operation;
+                try {
+                  operation = handle(peer, message.method, message.params);
+                } catch (error) {
+                  operation = Promise.reject(error);
+                }
+                Promise.resolve(operation).then((result) => {
+                  if (!retired && inbound.has(message.id)) send({ id: message.id, result: result ?? null });
+                }, (error) => {
+                  if (!retired && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });
+                }).catch(retire).finally(() => inbound.delete(message.id));
+                continue;
+              }
+              const item = pending.get(message.id);
+              if (!item) continue;
+              pending.delete(message.id);
+              clearTimeout(item.timer);
+              item.signal?.removeEventListener("abort", item.abort);
+              if (message.error) item.reject(failure(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));
+              else item.resolve(message.result);
+            }
+          } catch {
+            retire();
+          }
+        });
+      });
+      const stopped = () => close();
+      signal?.addEventListener("abort", stopped, { once: true });
+      try {
+        await new Promise((resolve, reject) => {
+          const cleanup = () => {
+            server.off("error", failed);
+            signal?.removeEventListener("abort", aborted);
+          };
+          const failed = () => {
+            cleanup();
+            reject(failure("channel_listen_failed"));
+          };
+          const aborted = () => {
+            cleanup();
+            reject(failure("host_stopping"));
+          };
+          server.once("error", failed);
+          signal?.addEventListener("abort", aborted, { once: true });
+          server.listen(0, "127.0.0.1", () => {
+            cleanup();
+            if (closed) {
+              close();
+              reject(failure("host_stopping"));
+            } else resolve();
+          });
+        });
+      } catch (error) {
+        close();
+        throw error;
+      }
+      const address = server.address();
+      function close() {
+        if (!closed) {
+          closed = true;
+          signal?.removeEventListener("abort", stopped);
+        }
+        for (const socket of sockets) socket.destroy();
+        if (server.listening) server.close();
+      }
+      if (closed || signal?.aborted) {
+        close();
+        throw failure("host_stopping");
+      }
+      return Object.freeze({ endpoint: Object.freeze({ host: "127.0.0.1", port: address.port, token }), close, status: () => ({ open: !closed, connected: !!active, peer: active?.status() ?? null }) });
+    }
+    module2.exports = { connectTrafficPeer, listenTrafficPeer, createTrafficStreams };
   }
 });
 
@@ -4235,8 +4406,9 @@ var require_host_interceptors = __commonJS({
 var require_traffic_interceptors = __commonJS({
   "../runtime/traffic-interceptors.cjs"(exports2, module2) {
     "use strict";
-    function createTrafficInterceptors({ authorize, rootSignal, networkProfile }) {
+    function createTrafficInterceptors({ authorize, rootSignal, networkProfile, maxActiveWebSocket = 4 }) {
       if (typeof authorize !== "function" || !rootSignal) throw new TypeError("trusted authorization and lifecycle are required");
+      if (!Number.isInteger(maxActiveWebSocket) || maxActiveWebSocket < 1 || maxActiveWebSocket > 32) throw new TypeError("invalid WebSocket concurrency");
       const hooks = /* @__PURE__ */ new Map(), active = /* @__PURE__ */ new Set();
       const failure = (code) => Object.assign(new Error(code), { code });
       const sensitive = (name) => !["accept", "accept-encoding", "accept-language", "content-type", "content-encoding", "content-length", "cache-control", "user-agent"].includes(name.toLowerCase());
@@ -4327,12 +4499,13 @@ var require_traffic_interceptors = __commonJS({
         if (value.some(([name]) => sensitive(name))) throw failure("permission_denied");
         return [...value, ...(previous ?? []).filter(([name]) => sensitive(name))];
       }
-      function begin(request, exchange) {
+      function begin(request, exchange, kind) {
         requireLive();
         if (!request.url || typeof exchange.cancel !== "function") throw failure("ingress_required");
-        if (active.size >= 4) throw failure("interceptor_busy");
+        const maximum = kind === "webSocket" ? maxActiveWebSocket : 4;
+        if ([...active].filter((item2) => item2.kind === kind).length >= maximum) throw failure("interceptor_busy");
         const selected = ordered().filter((hook) => hook.enabled && hook.origins.has(origin(request.url)));
-        const item = { selected, exchange };
+        const item = { selected, exchange, kind };
         const done = () => {
           active.delete(item);
           exchange.signal.removeEventListener("abort", done);
@@ -4359,7 +4532,7 @@ var require_traffic_interceptors = __commonJS({
         return next;
       }
       async function http(request, exchange) {
-        const item = begin(request, exchange), participated = [];
+        const item = begin(request, exchange, "http"), participated = [];
         let current = request, response;
         try {
           for (const hook of item.selected) {
@@ -4385,10 +4558,13 @@ var require_traffic_interceptors = __commonJS({
           }
           const source = response === void 0 ? "upstream" : "synthetic";
           response ??= await exchange.forward({ url: current.url, method: current.method, headers: current.headers, body: ["GET", "HEAD"].includes(current.method) ? void 0 : current.body, ...networkProfile ? { networkProfile } : {} });
+          const responseUrl = response.finalUrl ?? current.url;
+          const responseOrigin = origin(responseUrl);
           for (const { hook } of participated.reverse()) {
-            if (!hook.callbacks.response || !hook.origins.has(origin(current.url))) continue;
-            const privileged = await check(hook, item, current.url);
-            const update = await bounded(hook, item, () => hook.callbacks.response(view(response, privileged), Object.freeze({ signal: exchange.signal, source, request: Object.freeze({ id: request.id, url: current.url, method: current.method }) })));
+            if (!hook.callbacks.response || !hook.origins.has(responseOrigin)) continue;
+            const privileged = await check(hook, item, responseUrl);
+            const { finalUrl: ignored, ...visibleResponse } = response;
+            const update = await bounded(hook, item, () => hook.callbacks.response(view(visibleResponse, privileged), Object.freeze({ signal: exchange.signal, source, request: Object.freeze({ id: request.id, url: current.url, method: current.method }) })));
             if (update == null) continue;
             fields(update, ["status", "headers", "body"]);
             response = { ...response, ...update, ...update.headers === void 0 ? {} : { headers: headers(update.headers, response.headers, privileged) } };
@@ -4399,7 +4575,7 @@ var require_traffic_interceptors = __commonJS({
         }
       }
       async function webSocket(request, exchange) {
-        const item = begin(request, exchange), transforms = [];
+        const item = begin(request, exchange, "webSocket"), transforms = [];
         let current = { ...request, method: "GET" };
         try {
           for (const hook of item.selected) {
@@ -4448,114 +4624,23 @@ var require_traffic_interceptors = __commonJS({
   }
 });
 
-// ../runtime/process-traffic-environment.cjs
-var require_process_traffic_environment = __commonJS({
-  "../runtime/process-traffic-environment.cjs"(exports2, module2) {
-    "use strict";
-    var fs = require("node:fs/promises");
-    var path = require("node:path");
-    var { X509Certificate } = require("node:crypto");
-    var proxyNames = /^(https?_proxy|all_proxy|no_proxy)$/i;
-    var error = (code) => Object.assign(new Error(code), { code });
-    async function prepareProcessTrafficEnvironment({ platform = process.platform, environment, directory, proxyUrl, additionalCaPem, trustInputs = [], trustOutputs = [] }) {
-      if (!["win32", "darwin"].includes(platform)) throw error("platform_unsupported");
-      if (!environment || !path.isAbsolute(directory) || !Array.isArray(trustInputs) || !Array.isArray(trustOutputs) || !trustOutputs.length || trustInputs.length > 8 || trustOutputs.length > 8) throw error("invalid_launch_configuration");
-      const proxy = new URL(proxyUrl);
-      if (proxy.protocol !== "http:" || proxy.hostname !== "127.0.0.1" || !proxy.port || !proxy.username || !proxy.password || proxy.pathname !== "/" || proxy.search || proxy.hash) throw error("invalid_process_proxy");
-      if (trustOutputs.some((name) => !/^[A-Z][A-Z0-9_]{0,127}$/u.test(name) || proxyNames.test(name))) throw error("invalid_trust_variable");
-      const upstreamEnvironment = Object.freeze({ ...environment });
-      const certificates = /* @__PURE__ */ new Map();
-      const append = (pem) => {
-        if (typeof pem !== "string" || Buffer.byteLength(pem) > 128 * 1024) throw error("invalid_ca_bundle");
-        const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu);
-        if (!blocks?.length || pem.replace(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/gu, "").trim()) throw error("invalid_ca_bundle");
-        for (const block of blocks) {
-          let cert;
-          try {
-            cert = new X509Certificate(block);
-          } catch {
-            throw error("invalid_ca_bundle");
-          }
-          certificates.set(cert.fingerprint256, block);
-        }
-      };
-      for (const input of new Set(trustInputs)) {
-        if (typeof input !== "string" || !path.isAbsolute(input)) throw error("invalid_ca_bundle");
-        const handle = await fs.open(input, "r");
-        try {
-          const stat = await handle.stat();
-          if (!stat.isFile() || stat.size > 128 * 1024) throw error("invalid_ca_bundle");
-          append(await handle.readFile("utf8"));
-        } finally {
-          await handle.close();
-        }
-      }
-      append(additionalCaPem);
-      const merged = [...certificates.values()].join("\n") + "\n";
-      if (Buffer.byteLength(merged) > 128 * 1024) throw error("invalid_ca_bundle");
-      await fs.mkdir(directory, { recursive: true, mode: 448 });
-      const owned = await fs.mkdtemp(path.join(directory, "process-trust-"));
-      const bundlePath = path.join(owned, "ca.pem");
-      const removeOwned = async () => {
-        await fs.rm(bundlePath, { force: true });
-        await fs.rmdir(owned);
-      };
-      try {
-        await fs.writeFile(bundlePath, merged, { flag: "wx", mode: 384 });
-      } catch (reason) {
-        await removeOwned();
-        throw reason;
-      }
-      const next = { ...environment };
-      for (const key of Object.keys(next)) if (/^(https?_proxy|all_proxy)$/i.test(key)) delete next[key];
-      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]) next[key] = proxyUrl;
-      for (const key of trustOutputs) {
-        if (platform === "win32") {
-          for (const existing of Object.keys(next)) if (existing.toUpperCase() === key) delete next[existing];
-        }
-        next[key] = bundlePath;
-      }
-      const environmentPatch = Object.freeze({
-        set: Object.freeze(Object.fromEntries([...["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"], ...trustOutputs].map((name) => [name, next[name]]))),
-        // Apply these removals to the original client environment BEFORE `set`.
-        // Never copy the worker's unrelated environment or credentials to a client.
-        removeCaseInsensitive: Object.freeze([.../* @__PURE__ */ new Set(["http_proxy", "https_proxy", "all_proxy", ...trustOutputs.map((name) => name.toLowerCase())])])
-      });
-      let closed = false, closing;
-      return Object.freeze({
-        environment: Object.freeze(next),
-        environmentPatch,
-        upstreamEnvironment,
-        bundlePath,
-        status: () => ({ prepared: !closed && !closing, coverage: "process-configuration-only", inheritedBypass: Object.keys(environment).some((key) => /^no_proxy$/i.test(key) && environment[key]) }),
-        close() {
-          return closing ??= removeOwned().then(() => {
-            closed = true;
-          });
-        }
-      });
-    }
-    module2.exports = { prepareProcessTrafficEnvironment };
-  }
-});
-
 // ../runtime/host-traffic.cjs
 var httpTraffic = require("node:http");
 var httpsTraffic = require("node:https");
 var tlsTraffic = require("node:tls");
 var netTraffic = require("node:net");
-var { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID, timingSafeEqual: trafficEqual, X509Certificate: TrafficCertificate } = require("node:crypto");
+var { randomBytes: trafficRandomBytes, randomUUID: trafficRandomUUID } = require("node:crypto");
 var { WebSocket: TrafficWebSocket, WebSocketServer: TrafficWebSocketServer } = require_ws();
 var TRAFFIC_MAX_BYTES = 64 * 1024 * 1024;
 var TRAFFIC_MAX_HEADERS = 128;
 var TRAFFIC_MAX_HEADER_BYTES = 32 * 1024;
 var TRAFFIC_MAX_CONCURRENT = 4;
+var TRAFFIC_MAX_WEBSOCKET_CONCURRENT = 32;
 var TRAFFIC_MAX_CHANNELS = 4;
-var TRAFFIC_MAX_TIMEOUT = 15e3;
+var TRAFFIC_MAX_TIMEOUT = 3e5;
 var TRAFFIC_MAX_WS_MESSAGE = 8 * 1024 * 1024;
 var TRAFFIC_MAX_WS_QUEUE = 16 * 1024 * 1024;
 var TRAFFIC_MAX_WS_QUEUE_FRAMES = 256;
-var TRAFFIC_PROXY_CHALLENGE = 'Basic realm="Codlet"';
 var TRAFFIC_HOP_HEADERS = /* @__PURE__ */ new Set([
   "connection",
   "keep-alive",
@@ -5135,24 +5220,14 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     }, signal, initialServerFrames);
     return Object.freeze({ protocol: upstream.protocol || null, closed });
   }
-  async function openProcessIngress(options, handlers, configuration) {
-    if (!ownObject(configuration) || !Array.isArray(configuration.origins) || configuration.origins.length > 64 || !configuration.origins.length && typeof configuration.matchesOrigin !== "function" || typeof configuration.certificateFor !== "function") throw fail("invalid_argument", "process ingress requires bounded origins and a certificate provider");
-    if (configuration.matchesOrigin != null && typeof configuration.matchesOrigin !== "function" || configuration.openTunnel != null && typeof configuration.openTunnel !== "function") throw fail("invalid_argument", "invalid private process route");
-    const origins = new Set(configuration.origins.map((value) => {
-      const url = new URL(value);
-      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.href !== `${url.origin}/`) throw fail("invalid_argument", "process ingress requires exact HTTP(S) origins");
-      return url.origin;
-    }));
-    const lifetimeMs = integer(configuration.lifetimeMs, 3e5, 36e5, "lifetimeMs");
-    return openChannel(options, handlers, { origins, matchesOrigin: configuration.matchesOrigin ?? ((origin) => origins.has(origin)), openTunnel: configuration.openTunnel, certificateFor: configuration.certificateFor, lifetimeMs });
-  }
-  async function openChannel(options = {}, handlers, ingress = null) {
+  async function openChannel(options = {}, handlers) {
     if (retired || rootSignal.aborted) throw fail("host_stopping", "Host traffic runtime has retired");
-    if (!ownObject(options) || Object.keys(options).some((key) => !["maxConcurrent", "maxRequestBytes", "maxResponseBytes", "maxForwardAttempts", "handlerTimeoutMs", "maxWebSocketMessageBytes", "maxWebSocketQueueBytes", "maxWebSocketQueueFrames"].includes(key))) throw fail("invalid_argument", "unsupported traffic channel option");
+    if (!ownObject(options) || Object.keys(options).some((key) => !["maxConcurrent", "maxWebSocketConcurrent", "maxRequestBytes", "maxResponseBytes", "maxForwardAttempts", "handlerTimeoutMs", "maxWebSocketMessageBytes", "maxWebSocketQueueBytes", "maxWebSocketQueueFrames"].includes(key))) throw fail("invalid_argument", "unsupported traffic channel option");
     if (!ownObject(handlers) || Object.keys(handlers).some((key) => !["http", "webSocket"].includes(key))) throw fail("invalid_handler", "traffic channel handlers must be an object");
     const httpHandler = handlers.http, webSocketHandler = handlers.webSocket;
     if (httpHandler != null && typeof httpHandler !== "function" || webSocketHandler != null && typeof webSocketHandler !== "function" || !httpHandler && !webSocketHandler) throw fail("invalid_handler", "traffic channel needs an HTTP or WebSocket handler");
     const maximumConcurrent = integer(options.maxConcurrent, 4, TRAFFIC_MAX_CONCURRENT, "maxConcurrent");
+    const maximumWebSocketConcurrent = integer(options.maxWebSocketConcurrent, maximumConcurrent, TRAFFIC_MAX_WEBSOCKET_CONCURRENT, "maxWebSocketConcurrent");
     const requestLimit = integer(options.maxRequestBytes, 8 * 1024 * 1024, TRAFFIC_MAX_BYTES, "maxRequestBytes");
     const responseLimit = integer(options.maxResponseBytes, 32 * 1024 * 1024, TRAFFIC_MAX_BYTES, "maxResponseBytes");
     const maxForwardAttempts = integer(options.maxForwardAttempts, 1, 8, "maxForwardAttempts");
@@ -5163,31 +5238,15 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     if (channels.size + opening >= TRAFFIC_MAX_CHANNELS) throw fail("channel_limit", `a Host generation may own at most ${TRAFFIC_MAX_CHANNELS} traffic channels`);
     opening += 1;
     try {
-      let resolveIncoming = function(incoming, websocket = false) {
-        if (!ingress) {
-          const value = new URL(incoming.url ?? "/", "http://127.0.0.1");
-          if (!(value.pathname === prefix || value.pathname.startsWith(`${prefix}/`))) throw fail("target_not_found", "unknown channel");
-          return { path: (value.pathname.slice(prefix.length) || "/") + value.search };
+      let resolveIncoming = function(incoming) {
+        const raw = incoming.url ?? "/";
+        const rawPath = typeof raw === "string" ? raw.split("?")[0] : "";
+        if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//") || /\\|%2e|%2f|%5c|%25/iu.test(rawPath) || rawPath.split("/").some((segment) => segment === "." || segment === "..")) {
+          throw fail("invalid_target", "invalid channel path");
         }
-        const tunnel = tunnels.get(incoming.socket);
-        if (!tunnel && !authorizedProxy(incoming)) throw fail("proxy_authentication_required", "process proxy authentication required");
-        const raw = incoming.url ?? "";
-        if (tunnel ? !raw.startsWith("/") || raw.startsWith("//") : !/^http:\/\//u.test(raw)) throw fail("invalid_target", "invalid proxy target form");
-        const target = tunnel ? new URL(raw, tunnel) : new URL(raw);
-        if (target.username || target.password || target.hash || !ingress.openTunnel && !ingress.matchesOrigin(target.origin) || tunnel && target.origin !== tunnel || incoming.headers.host !== target.host) throw fail("target_denied", "proxy destination is outside its launch scope");
-        if (websocket) target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-        return { path: target.pathname + target.search, url: target.href };
-      }, scopedForward = function(input, destination) {
-        if (!ingress) return input;
-        const origin = (value) => {
-          const url = new URL(value);
-          if (url.protocol === "wss:") url.protocol = "https:";
-          if (url.protocol === "ws:") url.protocol = "http:";
-          return url.origin;
-        };
-        if (origin(input.url) === origin(destination.url)) return input;
-        const headers = headerPairs(input.headers, "forward headers").filter(([name]) => ["accept", "content-type", "content-encoding"].includes(name.toLowerCase()));
-        return { ...input, headers, ...Object.hasOwn(input, "protocols") ? { protocols: [] } : {} };
+        const value = new URL(raw, "http://127.0.0.1");
+        if (!(value.pathname === prefix || value.pathname.startsWith(`${prefix}/`))) throw fail("target_not_found", "unknown channel");
+        return { path: (value.pathname.slice(prefix.length) || "/") + value.search };
       }, close = function() {
         return closeWithReason(fail("channel_closed", "traffic channel was closed"));
       };
@@ -5195,24 +5254,14 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       if (retired || rootSignal.aborted) throw fail("host_stopping", "Host traffic runtime retired before listener creation");
       const token = trafficRandomBytes(32).toString("base64url");
       const prefix = `/${token}`;
-      const proxyAuthorization = Buffer.from(`Basic ${Buffer.from(`codlet:${token}`).toString("base64")}`);
-      const tunnels = /* @__PURE__ */ new WeakMap();
-      const authorizedProxy = (incoming) => {
-        const value = Buffer.from(String(incoming.headers["proxy-authorization"] ?? ""));
-        return value.length === proxyAuthorization.length && trafficEqual(value, proxyAuthorization);
-      };
       const sockets = /* @__PURE__ */ new Set(), active = /* @__PURE__ */ new Set();
-      let concurrent = 0, forwardAttempts = 0, closed = false, closePromise;
+      let httpConcurrent = 0, webSocketConcurrent = 0, forwardAttempts = 0, closed = false, closePromise;
       const server = httpTraffic.createServer({ maxHeaderSize: TRAFFIC_MAX_HEADER_BYTES }, async (incoming, outgoing) => {
         let destination;
         try {
           destination = resolveIncoming(incoming);
         } catch (reason) {
-          const authenticationRequired = reason.code === "proxy_authentication_required";
-          outgoing.writeHead(authenticationRequired ? 407 : reason.code === "target_not_found" ? 404 : 400, {
-            connection: "close",
-            ...authenticationRequired ? { "proxy-authenticate": TRAFFIC_PROXY_CHALLENGE } : {}
-          });
+          outgoing.writeHead(reason.code === "target_not_found" ? 404 : 400, { connection: "close" });
           outgoing.end("proxy_target_rejected");
           return;
         }
@@ -5226,16 +5275,15 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
           outgoing.end("channel unavailable");
           return;
         }
-        if (concurrent >= maximumConcurrent) {
+        if (httpConcurrent >= maximumConcurrent) {
           outgoing.writeHead(503, { "content-type": "text/plain; charset=utf-8", "retry-after": "1" });
           outgoing.end("channel busy");
           return;
         }
-        concurrent += 1;
+        httpConcurrent += 1;
         changed();
         const controller = new AbortController();
         active.add(controller);
-        const lifetime = ingress ? setTimeout(() => controller.abort(fail("exchange_timeout", "process exchange expired")), ingress.lifetimeMs) : null;
         const unlinkRoot = linkAbort(controller, rootSignal, fail("host_stopping", "Host traffic runtime retired"));
         const cancelled = () => {
           if (!controller.signal.aborted) controller.abort(fail("request_cancelled", "downstream client cancelled the request"));
@@ -5270,7 +5318,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
               forwardAttempts += 1;
               responsePending = true;
               try {
-                return await forwardHttp(scopedForward(input, destination), controller.signal, requestLimit, responseLimit, () => {
+                return await forwardHttp(input, controller.signal, requestLimit, responseLimit, () => {
                   responsePending = false;
                 });
               } catch (reason) {
@@ -5309,11 +5357,10 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
             outgoing.end(code);
           } else if (!outgoing.destroyed) outgoing.destroy();
         } finally {
-          clearTimeout(lifetime);
           incoming.off("aborted", cancelled);
           unlinkRoot();
           active.delete(controller);
-          concurrent -= 1;
+          httpConcurrent -= 1;
           changed();
           if (!controller.signal.aborted) controller.abort(fail("request_complete", "HTTP exchange completed"));
         }
@@ -5321,106 +5368,10 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       server.requestTimeout = 3e4;
       server.headersTimeout = 1e4;
       server.keepAliveTimeout = 5e3;
-      server.maxConnections = maximumConcurrent + 8;
+      server.maxConnections = maximumConcurrent + maximumWebSocketConcurrent + 8;
       server.on("connection", (socket) => {
         sockets.add(socket);
         socket.once("close", () => sockets.delete(socket));
-      });
-      server.on("connect", async (incoming, socket, head) => {
-        const reject = (status) => {
-          const challenge = status === "407 Proxy Authentication Required" ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r
-` : "";
-          if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r
-${challenge}Connection: close\r
-Content-Length: 0\r
-\r
-`);
-        };
-        if (!ingress) return reject("405 Method Not Allowed");
-        if (tunnels.has(socket)) return reject("405 Method Not Allowed");
-        if (!authorizedProxy(incoming)) return reject("407 Proxy Authentication Required");
-        if (closed || retired || rootSignal.aborted) return reject("503 Service Unavailable");
-        if (sockets.size > maximumConcurrent + 4) return reject("503 Service Unavailable");
-        const controller = new AbortController();
-        active.add(controller);
-        const unlink = linkAbort(controller, rootSignal);
-        const abort = () => socket.destroy();
-        controller.signal.addEventListener("abort", abort, { once: true });
-        const expired = setTimeout(() => controller.abort(fail("exchange_timeout", "process tunnel expired")), ingress.lifetimeMs);
-        const disconnected = () => controller.abort(fail("request_cancelled", "process tunnel closed"));
-        socket.once("close", disconnected);
-        let setupTimer;
-        try {
-          const target = new URL(`https://${incoming.url}`);
-          const plain = new URL(`http://${incoming.url}`);
-          const secureAllowed = ingress.matchesOrigin(target.origin), plainAllowed = ingress.matchesOrigin(plain.origin);
-          if (incoming.url !== `${target.hostname}:${target.port || "443"}` || target.username || target.password || target.pathname !== "/" || target.search || target.hash || secureAllowed && plainAllowed || !secureAllowed && !plainAllowed && !ingress.openTunnel) throw fail("target_denied", "CONNECT destination denied or ambiguous");
-          setupTimer = setTimeout(() => controller.abort(fail("handler_timeout", "certificate preparation expired")), handlerTimeout);
-          await coreRequest("host.network.authorizeChannel", {}, controller.signal);
-          if (controller.signal.aborted || closed) throw fail("host_stopping", "process proxy retired");
-          if (!secureAllowed && !plainAllowed) {
-            const upstream = await raceAbort(() => ingress.openTunnel(target, controller.signal), controller.signal, "tunnel setup cancelled");
-            const destroyUpstream = () => upstream.destroy();
-            controller.signal.addEventListener("abort", destroyUpstream, { once: true });
-            try {
-              if (controller.signal.aborted || closed) throw fail("host_stopping", "process proxy retired");
-              clearTimeout(setupTimer);
-              upstream.on("error", abort);
-              socket.on("error", destroyUpstream);
-              socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-              if (head.length) upstream.write(head);
-              socket.pipe(upstream);
-              upstream.pipe(socket);
-              await new Promise((resolve) => {
-                upstream.once("close", resolve);
-                socket.once("close", resolve);
-              });
-            } finally {
-              controller.signal.removeEventListener("abort", destroyUpstream);
-              socket.off("error", destroyUpstream);
-              upstream.destroy();
-            }
-            return;
-          }
-          if (plainAllowed) {
-            clearTimeout(setupTimer);
-            socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-            if (head.length) socket.unshift(head);
-            tunnels.set(socket, plain.origin);
-            server.emit("connection", socket);
-            await new Promise((resolve) => socket.once("close", resolve));
-            return;
-          }
-          const material = await raceAbort(() => ingress.certificateFor(target.origin, controller.signal), controller.signal, "certificate preparation cancelled");
-          const certificate = new TrafficCertificate(material.cert);
-          const hostname = target.hostname.replace(/^\[|\]$/gu, "");
-          if (!(netTraffic.isIP(hostname) ? certificate.checkIP(hostname) : certificate.checkHost(hostname))) throw fail("certificate_mismatch", "process certificate does not cover its destination");
-          const secureContext = tlsTraffic.createSecureContext({ key: material.key, cert: material.cert, minVersion: "TLSv1.2" });
-          if (controller.signal.aborted || closed) throw fail("host_stopping", "process proxy retired");
-          socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-          if (head.length) socket.unshift(head);
-          const secure = new tlsTraffic.TLSSocket(socket, { isServer: true, secureContext, ALPNProtocols: ["http/1.1"] });
-          secure.on("error", () => socket.destroy());
-          secure.once("secure", () => {
-            clearTimeout(setupTimer);
-          });
-          tunnels.set(secure, target.origin);
-          server.emit("connection", secure);
-          await new Promise((resolve) => {
-            secure.once("close", resolve);
-            socket.once("close", resolve);
-          });
-        } catch {
-          reject("502 Bad Gateway");
-        } finally {
-          clearTimeout(setupTimer);
-          clearTimeout(expired);
-          unlink();
-          active.delete(controller);
-          controller.signal.removeEventListener("abort", abort);
-          socket.off("close", disconnected);
-          socket.destroy();
-        }
       });
       const webSocketServer = new TrafficWebSocketServer({
         noServer: true,
@@ -5432,30 +5383,27 @@ Content-Length: 0\r
       });
       server.on("upgrade", async (incoming, socket, head) => {
         const reject = (status, reason) => {
-          const challenge = status === "407 Proxy Authentication Required" ? `Proxy-Authenticate: ${TRAFFIC_PROXY_CHALLENGE}\r
-` : "";
           if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r
-${challenge}Connection: close\r
+Connection: close\r
 Content-Length: ${Buffer.byteLength(reason)}\r
 \r
 ${reason}`);
         };
         let destination;
         try {
-          destination = resolveIncoming(incoming, true);
+          destination = resolveIncoming(incoming);
         } catch (reason) {
-          reject(reason.code === "proxy_authentication_required" ? "407 Proxy Authentication Required" : reason.code === "target_not_found" ? "404 Not Found" : "400 Bad Request", "proxy_target_rejected");
+          reject(reason.code === "target_not_found" ? "404 Not Found" : "400 Bad Request", "channel_target_rejected");
           return;
         }
         if (!webSocketHandler) return reject("426 Upgrade Required", "WebSocket handler unavailable");
         if (closed || retired || rootSignal.aborted) return reject("503 Service Unavailable", "channel unavailable");
-        if (concurrent >= maximumConcurrent) return reject("503 Service Unavailable", "channel busy");
-        concurrent += 1;
+        if (webSocketConcurrent >= maximumWebSocketConcurrent) return reject("503 Service Unavailable", "channel busy");
+        webSocketConcurrent += 1;
         socket.pause();
         changed();
         const controller = new AbortController();
         active.add(controller);
-        const lifetime = ingress ? setTimeout(() => controller.abort(fail("exchange_timeout", "process exchange expired")), ingress.lifetimeMs) : null;
         const unlinkRoot = linkAbort(controller, rootSignal, fail("host_stopping", "Host traffic runtime retired"));
         let forwarded = false, bridge;
         try {
@@ -5473,7 +5421,7 @@ ${reason}`);
             async forward(input) {
               if (forwarded) throw fail("forward_already_dispatched", "a WebSocket exchange can dispatch upstream at most once");
               forwarded = true;
-              bridge = await forwardWebSocket(scopedForward(input, destination), request, incoming, socket, head, webSocketServer, controller.signal, { handlerTimeout, maxMessageBytes, maxQueueBytes, maxQueueFrames });
+              bridge = await forwardWebSocket(input, request, incoming, socket, head, webSocketServer, controller.signal, { handlerTimeout, maxMessageBytes, maxQueueBytes, maxQueueFrames });
               return bridge;
             }
           });
@@ -5500,10 +5448,9 @@ ${reason}`);
             reject(status, String(reason?.code ?? "websocket_failed"));
           } else if (!socket.destroyed) socket.destroy();
         } finally {
-          clearTimeout(lifetime);
           unlinkRoot();
           active.delete(controller);
-          concurrent -= 1;
+          webSocketConcurrent -= 1;
           changed();
           if (!controller.signal.aborted) controller.abort(fail("request_complete", "WebSocket exchange completed"));
         }
@@ -5539,17 +5486,8 @@ ${reason}`);
       const channel = Object.freeze({
         id: trafficRandomUUID(),
         endpoint: `http://127.0.0.1:${address.port}${prefix}`,
-        ...ingress ? {
-          proxyUrl: `http://codlet:${token}@127.0.0.1:${address.port}`,
-          // Trusted owner only: retire pre-existing connections on an explicitly
-          // coordinated activation. This is disruptive and never replays a request.
-          disconnect() {
-            for (const controller of active) controller.abort(fail("request_cancelled", "process ingress connections retired by owner"));
-            for (const socket of sockets) socket.destroy();
-          }
-        } : {},
         protocols: Object.freeze([...httpHandler ? ["http"] : [], ...webSocketHandler ? ["websocket"] : []]),
-        status: () => Object.freeze({ open: !closed, activeRequests: concurrent, forwardAttempts, transport: "loopback", coverage: ingress ? "process-proxy-unverified" : "explicit-endpoint", protocols: channel.protocols }),
+        status: () => Object.freeze({ open: !closed, activeRequests: httpConcurrent + webSocketConcurrent, forwardAttempts, transport: "loopback", coverage: "explicit-endpoint", protocols: channel.protocols }),
         close
       });
       channels.set(channel, closeWithReason);
@@ -5570,6 +5508,6 @@ ${reason}`);
     return openChannel(options, { http: handler });
   }
   rootSignal.addEventListener("abort", () => closeAll(rootSignal.reason), { once: true });
-  return Object.freeze({ api: Object.freeze({ openChannel: (options, handlers) => openChannel(options, handlers), openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), openProcessIngress, closeAll });
+  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
 }
-module.exports = { createTrafficRuntime, createTrafficInterceptors: require_traffic_interceptors().createTrafficInterceptors, prepareProcessTrafficEnvironment: require_process_traffic_environment().prepareProcessTrafficEnvironment };
+module.exports = { createTrafficRuntime, createTrafficInterceptors: require_traffic_interceptors().createTrafficInterceptors };

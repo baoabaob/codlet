@@ -51,7 +51,10 @@ export interface HttpChannelExchange {
   forward(request: HttpForwardRequest): Promise<Readonly<Required<Pick<HttpChannelResponse, 'status' | 'headers'>> & { body: HttpBody }>>;
 }
 export interface TrafficChannelOptions {
+  /** Active HTTP exchanges, default and maximum 4. */
   maxConcurrent?: number;
+  /** Active WebSocket exchanges, defaulting to maxConcurrent and bounded by 32. */
+  maxWebSocketConcurrent?: number;
   maxRequestBytes?: number;
   maxResponseBytes?: number;
   /** Explicit forward calls allowed per inbound HTTP exchange. Defaults to 1; maximum 8. Core never retries automatically. */
@@ -184,19 +187,39 @@ export interface HostContext {
     openHttpChannel(options: HttpChannelOptions, handler: (request: HttpChannelRequest, exchange: HttpChannelExchange) => HttpChannelResponse | Promise<HttpChannelResponse>): Promise<HttpChannel>;
     /** Registers a Core-authorized interceptor for exact origins in this Host generation. */
     registerInterceptor(options: TrafficInterceptorOptions, handlers: TrafficInterceptorHandlers): Promise<TrafficInterceptor>;
-    inspect(): Promise<Readonly<{ available: boolean; listening: boolean; attached: boolean; registered: number; active: number; pending: number }>>;
+    inspect(): Promise<Readonly<{ available: boolean; listening: boolean; attached: boolean; activatedSources: readonly ClientActivatedSource[]; unsupportedSources: readonly ClientUnsupportedSource[]; registered: number; active: number; pending: number }>>;
   };
+}
+export type ClientSourceProtocol = 'http' | 'sse' | 'webSocket';
+/** route.update changes future exchanges on the same local route; active exchanges keep their selected upstream. */
+export type ClientSourceOperation = 'route.register' | 'route.update' | 'route.close' | 'http.intercept';
+/** Private to one authorized launch provider. Both addresses and tokens are launch-scoped. */
+export interface ClientPlaintextSource {
+  readonly version: 1;
+  readonly kind: 'plaintext';
+  readonly protocols: readonly ClientSourceProtocol[];
+  readonly operations: readonly ClientSourceOperation[];
+  readonly endpoint: Readonly<{ host: '127.0.0.1'; port: number; token: string }>;
+  readonly routeBaseUrl: string;
+}
+export interface ClientActivatedSource {
+  readonly id: string;
+  readonly operations: readonly ClientSourceOperation[];
+  readonly protocols: readonly ClientSourceProtocol[];
+  /** Opaque, path-specific labels supplied by the launch plugin; Core does not infer full coverage. */
+  readonly coverage: readonly string[];
+}
+export interface ClientUnsupportedSource {
+  readonly id: string;
+  readonly reason: 'unsupported_build' | 'hook_unavailable' | 'child_unavailable' | 'route_unavailable' | 'timeout';
 }
 /** Private to one authorized codlet.client.launch@1 provider; never log this DTO. */
 export interface ClientLaunchContext {
   readonly signal: AbortSignal;
   readonly originalEnvironment: Readonly<Record<string, string>>;
   readonly traffic: Readonly<{
-    proxyUrl: string;
-    bundlePath: string;
-    environmentPatch: Readonly<{ set: Readonly<Record<string, string>>; removeCaseInsensitive: readonly string[] }>;
-    trust: Readonly<{ outputs: readonly string[]; launchCaPem: string; inheritedInputsMerged: true; systemStoreModified: false }>;
-    bypass: 'preserve-original-no-proxy';
+    source: Readonly<ClientPlaintextSource>;
+    environmentPatch: Readonly<{ set: Readonly<Record<string, never>>; removeCaseInsensitive: readonly [] }>;
   }>;
 }
 export interface ClientAttachContext extends ClientLaunchContext {
@@ -210,7 +233,7 @@ export interface HostPlugin {
   /** Optional startup ABI. Requires host.process + cdp.raw and the exact launch capability. */
   prepareClientLaunch?(context: ClientLaunchContext): { arguments: readonly string[] } | Promise<{ arguments: readonly string[] }>;
   /** Bounded, exact-child handshake. Success does not claim verified coverage of every request path. */
-  attachClientLaunch?(context: ClientAttachContext): Promise<{ installed: true; exactChildVerified: true; configuredSessions: number }>;
+  attachClientLaunch?(context: ClientAttachContext): Promise<{ installed: true; exactChildVerified: true; activatedSources: readonly ClientActivatedSource[]; unsupportedSources: readonly ClientUnsupportedSource[] }>;
 }
 
 /** A separate, generation-scoped phase; no subscriptions or renewed deadline.

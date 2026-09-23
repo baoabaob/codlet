@@ -4,9 +4,16 @@ import { createRequire } from 'node:module';
 import { getEventListeners } from 'node:events';
 import test from 'node:test';
 const require = createRequire(import.meta.url);
-const { createTrafficStreams, connectTrafficPeer } = require('../runtime/traffic-wire.cjs');
+const { createTrafficStreams, connectTrafficPeer, listenTrafficPeer } = require('../runtime/traffic-wire.cjs');
 const packet = value => { const bytes=Buffer.from(JSON.stringify(value)), result=Buffer.alloc(bytes.length+4); result.writeUInt32BE(bytes.length); bytes.copy(result,4); return result; };
 const delay = ms => new Promise(resolve=>setTimeout(resolve,ms));
+
+test('aborting a source listener while it binds retires the listener', async () => {
+  const root = new AbortController();
+  const opening = listenTrafficPeer({ signal: root.signal, handle: () => null });
+  root.abort();
+  await assert.rejects(opening, { code: 'host_stopping' });
+});
 
 test('data stream handles are one-shot, chunk bounded, binary exact and released at EOF', async () => {
   const root = new AbortController();

@@ -5,6 +5,7 @@ use crate::platform::host::{OwnedPluginProcess, PluginStdio};
 use crate::plugin_host::HostError;
 use crate::plugins::{LoadedPlugin, Permission, PluginRegistry};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -59,6 +60,12 @@ pub(crate) struct LaunchAuthorization {
     id: String,
     registration: crate::plugins::LocalPluginRegistration,
     registry: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) struct SourceActivation {
+    pub(crate) activated: Value,
+    pub(crate) unsupported: Value,
 }
 
 impl LaunchAuthorization {
@@ -149,7 +156,7 @@ impl LaunchAdapter {
             adapter.context.clone(),
             Instant::now() + Duration::from_secs(10),
         )?;
-        adapter.arguments = validate_arguments(&plan, &adapter.context["traffic"])?;
+        adapter.arguments = validate_arguments(&plan)?;
         revalidate(&adapter.provider, &adapter.registry)?;
         Ok(adapter)
     }
@@ -164,23 +171,16 @@ impl LaunchAdapter {
         pid: u32,
         executable: &Path,
         deadline: Instant,
-    ) -> Result<(), HostError> {
+    ) -> Result<SourceActivation, HostError> {
         revalidate(&self.provider, &self.registry)?;
         let mut context = self.context.clone();
         context["inspectorUrl"] = json!(inspector_url);
         context["expectedPid"] = json!(pid);
         context["executable"] = json!(executable);
         let reply = self.call("attach", context, deadline)?;
-        if reply["installed"] != true
-            || reply["exactChildVerified"] != true
-            || !reply["configuredSessions"]
-                .as_u64()
-                .is_some_and(|n| (1..=32).contains(&n))
-        {
-            return Err(error("client_launch_adapter_unconfirmed"));
-        }
+        let activation = validate_activation(&reply, &self.context["traffic"]["source"])?;
         revalidate(&self.provider, &self.registry)?;
-        Ok(())
+        Ok(activation)
     }
 
     fn call(&self, phase: &str, context: Value, deadline: Instant) -> Result<Value, HostError> {
@@ -252,32 +252,133 @@ pub(crate) fn revalidate(provider: &LoadedPlugin, registry: &Path) -> Result<(),
     Ok(())
 }
 
-fn validate_arguments(plan: &Value, traffic: &Value) -> Result<Vec<OsString>, HostError> {
-    let proxy = url::Url::parse(
-        traffic["proxyUrl"]
-            .as_str()
-            .ok_or_else(|| error("client_launch_adapter_protocol"))?,
-    )
-    .map_err(|_| error("client_launch_adapter_protocol"))?;
-    let port = proxy
-        .port()
-        .ok_or_else(|| error("client_launch_adapter_protocol"))?;
-    let expected = [
-        "--inspect-brk=127.0.0.1:0".to_owned(),
-        format!("--proxy-server=http=127.0.0.1:{port};https=127.0.0.1:{port}"),
-        "--proxy-bypass-list=<-loopback>".to_owned(),
-    ];
+fn validate_arguments(plan: &Value) -> Result<Vec<OsString>, HostError> {
+    const INSPECTOR: &str = "--inspect-brk=127.0.0.1:0";
     let arguments = plan["arguments"]
         .as_array()
         .ok_or_else(|| error("client_launch_arguments_denied"))?;
-    if arguments.len() != expected.len()
-        || expected
-            .iter()
-            .any(|arg| !arguments.iter().any(|v| v.as_str() == Some(arg)))
-    {
+    if arguments.len() != 1 || arguments[0].as_str() != Some(INSPECTOR) {
         return Err(error("client_launch_arguments_denied"));
     }
-    Ok(expected.into_iter().map(OsString::from).collect())
+    Ok(vec![OsString::from(INSPECTOR)])
+}
+
+fn validate_activation(reply: &Value, source: &Value) -> Result<SourceActivation, HostError> {
+    let invalid = || error("client_launch_adapter_unconfirmed");
+    let object = reply.as_object().ok_or_else(invalid)?;
+    if reply["installed"] != true
+        || reply["exactChildVerified"] != true
+        || object.keys().any(|key| {
+            ![
+                "installed",
+                "exactChildVerified",
+                "activatedSources",
+                "unsupportedSources",
+            ]
+            .contains(&key.as_str())
+        })
+    {
+        return Err(invalid());
+    }
+    let activated = reply["activatedSources"].as_array().ok_or_else(invalid)?;
+    let unsupported = match reply.get("unsupportedSources") {
+        Some(value) => value.as_array().ok_or_else(invalid)?,
+        None => return Err(invalid()),
+    };
+    if activated.is_empty() || activated.len() > 8 || unsupported.len() > 8 {
+        return Err(invalid());
+    }
+    let offered_operations = source["operations"].as_array().ok_or_else(invalid)?;
+    let offered_protocols = source["protocols"].as_array().ok_or_else(invalid)?;
+    let mut ids = BTreeSet::new();
+    for entry in activated {
+        let record = entry.as_object().ok_or_else(invalid)?;
+        if record.len() != 4
+            || !record.contains_key("id")
+            || !record.contains_key("operations")
+            || !record.contains_key("protocols")
+            || !record.contains_key("coverage")
+        {
+            return Err(invalid());
+        }
+        let id = entry["id"]
+            .as_str()
+            .filter(|id| label(id))
+            .ok_or_else(invalid)?;
+        if !ids.insert(id) {
+            return Err(invalid());
+        }
+        for (field, offered) in [
+            ("operations", offered_operations),
+            ("protocols", offered_protocols),
+        ] {
+            let values = entry[field]
+                .as_array()
+                .filter(|values| !values.is_empty() && values.len() <= offered.len())
+                .ok_or_else(invalid)?;
+            let mut seen = BTreeSet::new();
+            for value in values {
+                let value = value.as_str().ok_or_else(invalid)?;
+                if !offered
+                    .iter()
+                    .any(|allowed| allowed.as_str() == Some(value))
+                    || !seen.insert(value)
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+        let coverage = entry["coverage"]
+            .as_array()
+            .filter(|values| !values.is_empty() && values.len() <= 8)
+            .ok_or_else(invalid)?;
+        let mut seen = BTreeSet::new();
+        for value in coverage {
+            let value = value
+                .as_str()
+                .filter(|value| label(value))
+                .ok_or_else(invalid)?;
+            if !seen.insert(value) {
+                return Err(invalid());
+            }
+        }
+    }
+    for entry in unsupported {
+        let record = entry.as_object().ok_or_else(invalid)?;
+        if record.len() != 2 || !record.contains_key("id") || !record.contains_key("reason") {
+            return Err(invalid());
+        }
+        let id = entry["id"]
+            .as_str()
+            .filter(|id| label(id))
+            .ok_or_else(invalid)?;
+        if !ids.insert(id)
+            || !matches!(
+                entry["reason"].as_str(),
+                Some(
+                    "unsupported_build"
+                        | "hook_unavailable"
+                        | "child_unavailable"
+                        | "route_unavailable"
+                        | "timeout"
+                )
+            )
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(SourceActivation {
+        activated: Value::Array(activated.clone()),
+        unsupported: Value::Array(unsupported.clone()),
+    })
+}
+
+fn label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 }
 
 #[cfg(test)]
@@ -286,13 +387,10 @@ mod tests {
     use crate::plugins::LocalPluginRegistration;
 
     const SOURCE: &str = r#"
-exports.prepareClientLaunch = ({traffic}) => {
- const port = new URL(traffic.proxyUrl).port;
- return {arguments:['--inspect-brk=127.0.0.1:0',`--proxy-server=http=127.0.0.1:${port};https=127.0.0.1:${port}`,'--proxy-bypass-list=<-loopback>']};
-};
+exports.prepareClientLaunch = () => ({arguments:['--inspect-brk=127.0.0.1:0']});
 exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
  if (!Number.isInteger(expectedPid) || expectedPid < 1 || !executable || !inspectorUrl.startsWith('ws://127.0.0.1:')) throw Error('identity');
- return {installed:true,exactChildVerified:true,configuredSessions:1};
+ return {installed:true,exactChildVerified:true,activatedSources:[{id:'test-http',operations:['http.intercept'],protocols:['http'],coverage:['test-http-path']}],unsupportedSources:[{id:'test-ws',reason:'hook_unavailable'}]};
 };
 "#;
 
@@ -330,6 +428,10 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
         (directory, registry_path, provider, runtime)
     }
 
+    fn traffic() -> Value {
+        json!({"source":{"version":1,"kind":"plaintext","operations":["route.register","route.update","route.close","http.intercept"],"protocols":["http","sse","webSocket"],"endpoint":{"host":"127.0.0.1","port":49152,"token":"0123456789abcdef0123456789abcdef"},"routeBaseUrl":"http://127.0.0.1:49153/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"},"environmentPatch":{"set":{},"removeCaseInsensitive":[]}})
+    }
+
     #[test]
     fn provider_uses_existing_host_grants_and_rejects_ambiguity() {
         let (_, _, provider, _) = fixture();
@@ -347,48 +449,52 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
     }
 
     #[test]
-    fn launch_plan_requires_exact_loopback_bypass_without_arbitrary_exclusions() {
-        let traffic = json!({"proxyUrl":"http://u:p@127.0.0.1:49152/"});
-        let base = [
-            "--inspect-brk=127.0.0.1:0",
-            "--proxy-server=http=127.0.0.1:49152;https=127.0.0.1:49152",
-        ];
-        assert!(validate_arguments(&json!({"arguments":base}), &traffic).is_err());
-        for bypass in [
-            "--proxy-bypass-list=*",
-            "--proxy-bypass-list=<-loopback>;example.com",
-            "--proxy-bypass-list=<local>",
-        ] {
-            assert!(
-                validate_arguments(&json!({"arguments":[base[0],base[1],bypass]}), &traffic)
-                    .is_err()
-            );
-        }
-        let accepted = validate_arguments(
-            &json!({"arguments":[base[0],base[1],"--proxy-bypass-list=<-loopback>"]}),
-            &traffic,
+    fn launch_plan_requires_only_the_exact_private_inspector_flag() {
+        let accepted =
+            validate_arguments(&json!({"arguments":["--inspect-brk=127.0.0.1:0"]})).unwrap();
+        assert_eq!(accepted, vec![OsString::from("--inspect-brk=127.0.0.1:0")]);
+        assert!(validate_arguments(&json!({"arguments":[]})).is_err());
+        assert!(validate_arguments(
+            &json!({"arguments":["--inspect-brk=127.0.0.1:0","--proxy-bypass-list=<-loopback>"]})
         )
-        .unwrap();
-        assert_eq!(
-            accepted[2],
-            OsString::from("--proxy-bypass-list=<-loopback>")
-        );
+        .is_err());
     }
 
     #[test]
-    fn launch_plan_rejects_tls_bypass_arbitrary_flags_and_different_proxy() {
-        let traffic = json!({"proxyUrl":"http://u:p@127.0.0.1:49152/"});
+    fn launch_plan_rejects_ambient_inspectors_and_unsafe_flags() {
         for args in [
             vec!["--ignore-certificate-errors"],
             vec!["--inspect-brk=0.0.0.0:9229"],
-            vec![
-                "--inspect-brk=127.0.0.1:0",
-                "--proxy-server=http=127.0.0.1:49153;https=127.0.0.1:49153",
-                "--proxy-bypass-list=<-loopback>",
-            ],
+            vec!["--inspect=127.0.0.1:9229"],
             vec!["--no-sandbox"],
         ] {
-            assert!(validate_arguments(&json!({"arguments":args}), &traffic).is_err());
+            assert!(validate_arguments(&json!({"arguments":args})).is_err());
+        }
+    }
+
+    #[test]
+    fn activation_requires_explicit_bounded_per_source_coverage() {
+        let descriptor = traffic();
+        let source = &descriptor["source"];
+        let valid = json!({"installed":true,"exactChildVerified":true,"activatedSources":[{"id":"example-http","operations":["route.register","route.update","route.close","http.intercept"],"protocols":["http","sse"],"coverage":["example-fetch-path"]}],"unsupportedSources":[{"id":"example-backend","reason":"child_unavailable"}]});
+        assert_eq!(
+            validate_activation(&valid, source)
+                .unwrap()
+                .activated
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        for change in [
+            json!({"installed":true,"exactChildVerified":true,"activatedSources":[],"unsupportedSources":[]}),
+            json!({"installed":true,"exactChildVerified":true,"configuredSessions":1,"activatedSources":valid["activatedSources"],"unsupportedSources":valid["unsupportedSources"]}),
+            json!({"installed":true,"exactChildVerified":true,"activatedSources":[{"id":"example-http","operations":["tls.bypass"],"protocols":["http"],"coverage":["all"]}],"unsupportedSources":[]}),
+            json!({"installed":true,"exactChildVerified":true,"activatedSources":[{"id":"example-http","operations":["http.intercept"],"protocols":["http2"],"coverage":["all"]}],"unsupportedSources":[]}),
+            json!({"installed":true,"exactChildVerified":true,"activatedSources":valid["activatedSources"],"unsupportedSources":[{"id":"example-http","reason":"child_unavailable"}]}),
+            json!({"installed":true,"exactChildVerified":true,"activatedSources":valid["activatedSources"],"unsupportedSources":[{"id":"example-backend","reason":"arbitrary message"}]}),
+        ] {
+            assert!(validate_activation(&change, source).is_err(), "{change}");
         }
     }
 
@@ -406,11 +512,11 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
             &registry,
             &runtime,
             directory.path(),
-            json!({"proxyUrl":"http://u:p@127.0.0.1:49152/"}),
+            traffic(),
             &[],
         )
         .unwrap();
-        assert_eq!(adapter.arguments().len(), 3);
+        assert_eq!(adapter.arguments().len(), 1);
         adapter
             .attach(
                 "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
@@ -425,7 +531,7 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
             &registry,
             &runtime,
             directory.path(),
-            json!({"proxyUrl":"http://u:p@127.0.0.1:49152/"}),
+            traffic(),
             &[],
         )
         .unwrap();

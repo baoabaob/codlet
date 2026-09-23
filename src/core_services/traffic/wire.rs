@@ -323,46 +323,6 @@ impl Hub {
                 state.launch = Some(params);
                 json!({"accepted":true})
             }
-            "certificateAuthority" if role == Role::Gateway => {
-                json!({"caPem":self.certificates.lock().unwrap_or_else(|p|p.into_inner()).pem()})
-            }
-            "certificate" if role == Role::Gateway => {
-                let url = string(&params, "url")?;
-                let target = url::Url::parse(url)
-                    .map_err(|_| error("invalid_url", "invalid certificate origin"))?;
-                if target.scheme() != "https"
-                    || !target.username().is_empty()
-                    || target.password().is_some()
-                    || target.as_str() != format!("{}/", target.origin().ascii_serialization())
-                {
-                    return Err(error(
-                        "invalid_url",
-                        "certificate needs an exact HTTPS origin",
-                    ));
-                }
-                let registrations = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .registrations
-                    .values()
-                    .filter(|r| r.active.load(Ordering::Acquire) && r.matches(url))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if !registrations
-                    .iter()
-                    .any(|r| (r.check)("intercept", url).unwrap_or(false))
-                {
-                    return Err(error(
-                        "permission_denied",
-                        "no active interceptor covers this certificate",
-                    ));
-                }
-                self.certificates
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .leaf(target.host_str().unwrap().trim_matches(['[', ']']))?
-            }
             "ready" if role == Role::Gateway => {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 state.ready = true;

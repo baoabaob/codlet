@@ -1,4 +1,4 @@
-//! Native owner for the fixed traffic worker and its per-client trust files.
+//! Native owner for the fixed plaintext traffic worker and private launch data.
 //! Launch configuration is private process data; errors never print it.
 use crate::core_services::{SharedCoreServices, traffic::Traffic};
 use crate::js_runtime::{JsInvocation, JsRuntime};
@@ -6,11 +6,10 @@ use crate::platform::host::{OwnedPluginProcess, PluginStdio};
 use crate::plugin_host::HostError;
 use serde_json::{Value, json};
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 const START_TIMEOUT: Duration = Duration::from_secs(15);
-const TRUST_OUTPUT: &str = "CODEX_CA_CERTIFICATE";
 
 /// Input is the launch catalog's enabled plugins, after normal validation.
 pub(crate) fn required_for_plugins(plugins: &[crate::plugins::LoadedPlugin]) -> bool {
@@ -71,14 +70,13 @@ impl TrafficOwner {
             .map_err(|_| failure("traffic_directory_failed"))?;
         secure_directory(directory.path())?;
         let original = original_environment()?;
-        let trust_inputs = selected_trust_inputs(&original)?;
         let traffic = services
             .prepare_traffic()
             .map_err(|e| HostError::new(e.code, e.message))?;
         let endpoint = traffic
             .gateway_endpoint()
             .map_err(|e| HostError::new(e.code, e.message))?;
-        let config = json!({"endpoint": endpoint, "directory": directory.path(), "trustInputs": trust_inputs, "trustOutputs": [TRUST_OUTPUT]});
+        let config = json!({"endpoint": endpoint, "directory": directory.path()});
         let invocation = runtime.prepare_traffic_worker(&config, directory.path())?;
         let (process, stdio) = OwnedPluginProcess::spawn(
             &invocation.executable,
@@ -119,8 +117,7 @@ impl TrafficOwner {
             }
             owner.check_alive()?;
             if let Some(descriptor) = owner.traffic.launch_descriptor() {
-                owner.environment =
-                    apply_descriptor(original, &descriptor, owner.directory.path())?;
+                owner.environment = apply_descriptor(original, &descriptor)?;
                 owner.descriptor = descriptor;
                 return Ok(owner);
             }
@@ -186,10 +183,11 @@ impl TrafficOwner {
             .borrow_mut()
             .take()
             .ok_or_else(|| failure("client_launch_adapter_required"))?;
-        adapter.attach(&endpoint, pid, executable, deadline)?;
+        let activation = adapter.attach(&endpoint, pid, executable, deadline)?;
         drop(adapter);
         self.check_alive()?;
-        self.traffic.set_attached(true);
+        self.traffic
+            .set_source_activation(activation.activated, activation.unsupported);
         Ok(())
     }
 
@@ -229,7 +227,7 @@ impl Drop for TrafficOwner {
     fn drop(&mut self) {
         self.traffic.set_attached(false);
         // The official client owner must retire before this owner. Terminate the
-        // private worker job/group and reap it before deleting trust/config files.
+        // private worker job/group and reap it before deleting launch files.
         let _ = self.process.terminate();
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
@@ -259,108 +257,76 @@ fn original_environment() -> Result<Vec<(OsString, OsString)>, HostError> {
     }
 }
 
-fn selected_trust_inputs(environment: &[(OsString, OsString)]) -> Result<Vec<PathBuf>, HostError> {
-    for name in [TRUST_OUTPUT, "SSL_CERT_FILE"] {
-        if let Some((_, value)) = environment.iter().find(|(key, value)| {
-            key.to_string_lossy().eq_ignore_ascii_case(name) && !value.is_empty()
-        }) {
-            let path = PathBuf::from(value);
-            if !path.is_absolute() {
-                return Err(failure("traffic_trust_input_invalid"));
-            }
-            return Ok(vec![path]);
-        }
-    }
-    Ok(Vec::new())
-}
-
 fn apply_descriptor(
-    mut original: Vec<(OsString, OsString)>,
+    original: Vec<(OsString, OsString)>,
     descriptor: &Value,
-    directory: &Path,
 ) -> Result<Vec<(OsString, OsString)>, HostError> {
     let invalid = || failure("traffic_launch_descriptor_invalid");
-    let proxy_text = descriptor["proxyUrl"].as_str().ok_or_else(invalid)?;
-    let proxy = url::Url::parse(proxy_text).map_err(|_| invalid())?;
-    if proxy.scheme() != "http"
-        || proxy.host_str() != Some("127.0.0.1")
-        || proxy.port().is_none()
-        || proxy.username().is_empty()
-        || proxy.password().is_none_or(str::is_empty)
-        || proxy.path() != "/"
-        || proxy.query().is_some()
-        || proxy.fragment().is_some()
+    let top = descriptor.as_object().ok_or_else(invalid)?;
+    if top.len() != 2 || !top.contains_key("source") || !top.contains_key("environmentPatch") {
+        return Err(invalid());
+    }
+    let source = descriptor["source"].as_object().ok_or_else(invalid)?;
+    if source.len() != 6
+        || source.get("version") != Some(&json!(1))
+        || source.get("kind") != Some(&json!("plaintext"))
+        || source.get("protocols") != Some(&json!(["http", "sse", "webSocket"]))
+        || source.get("operations")
+            != Some(&json!([
+                "route.register",
+                "route.update",
+                "route.close",
+                "http.intercept"
+            ]))
     {
         return Err(invalid());
     }
-    let bundle = PathBuf::from(descriptor["bundlePath"].as_str().ok_or_else(invalid)?);
-    if !bundle.is_absolute()
-        || bundle.file_name().is_none_or(|n| n != "ca.pem")
-        || !bundle.starts_with(directory)
+    let endpoint = source["endpoint"].as_object().ok_or_else(invalid)?;
+    let token = endpoint
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;
+    if endpoint.len() != 3
+        || endpoint.get("host") != Some(&json!("127.0.0.1"))
+        || !endpoint
+            .get("port")
+            .and_then(Value::as_u64)
+            .is_some_and(|port| (1..=65535).contains(&port))
+        || !(32..=256).contains(&token.len())
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
     {
         return Err(invalid());
     }
-    let canonical = bundle.canonicalize().map_err(|_| invalid())?;
-    if !canonical.starts_with(directory.canonicalize().map_err(|_| invalid())?)
-        || !canonical.is_file()
+    let route_base = url::Url::parse(source["routeBaseUrl"].as_str().ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    let route_prefix = route_base.path().strip_prefix('/').ok_or_else(invalid)?;
+    if route_base.scheme() != "http"
+        || route_base.host_str() != Some("127.0.0.1")
+        || route_base.port().is_none_or(|port| port == 0)
+        || !route_base.username().is_empty()
+        || route_base.password().is_some()
+        || route_base.query().is_some()
+        || route_base.fragment().is_some()
+        || route_prefix.len() != 43
+        || !route_prefix
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
     {
         return Err(invalid());
     }
-    let allowed = [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        TRUST_OUTPUT,
-    ];
     let patch = &descriptor["environmentPatch"];
+    if patch.as_object().is_none_or(|patch| patch.len() != 2) {
+        return Err(invalid());
+    }
     let set = patch["set"].as_object().ok_or_else(invalid)?;
     let remove = patch["removeCaseInsensitive"]
         .as_array()
         .ok_or_else(invalid)?;
-    let expected_remove = [
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "codex_ca_certificate",
-    ];
-    if set.len() != allowed.len()
-        || remove.len() != expected_remove.len()
-        || expected_remove
-            .iter()
-            .any(|name| !remove.iter().any(|v| v.as_str() == Some(name)))
-    {
+    if !set.is_empty() || !remove.is_empty() {
         return Err(invalid());
     }
-    for name in allowed {
-        let value = set.get(name).and_then(Value::as_str).ok_or_else(invalid)?;
-        let expected = if name == TRUST_OUTPUT {
-            bundle.to_str().ok_or_else(invalid)?
-        } else {
-            proxy_text
-        };
-        if value != expected || value.contains('\0') {
-            return Err(invalid());
-        }
-    }
-    if descriptor["trust"]["outputs"] != json!([TRUST_OUTPUT])
-        || descriptor["trust"]["inheritedInputsMerged"] != true
-        || descriptor["trust"]["systemStoreModified"] != false
-        || descriptor["bypass"] != "preserve-original-no-proxy"
-    {
-        return Err(invalid());
-    }
-    original.retain(|(key, _)| {
-        !expected_remove
-            .iter()
-            .any(|name| key.to_string_lossy().eq_ignore_ascii_case(name))
-    });
-    original.extend(
-        set.iter()
-            .map(|(key, value)| (OsString::from(key), OsString::from(value.as_str().unwrap()))),
-    );
     Ok(original)
 }
 
@@ -466,75 +432,51 @@ mod tests {
         assert!(!required_for_plugins(&[plugin]));
     }
 
-    fn descriptor(directory: &Path) -> Value {
-        let bundle = directory.join("ca.pem");
-        std::fs::write(&bundle, b"synthetic public certificate").unwrap();
-        let proxy = "http://synthetic:secret@127.0.0.1:49152/";
-        json!({"proxyUrl":proxy,"bundlePath":bundle,"environmentPatch":{
-            "set":{"HTTP_PROXY":proxy,"HTTPS_PROXY":proxy,"ALL_PROXY":proxy,"http_proxy":proxy,"https_proxy":proxy,"all_proxy":proxy,"CODEX_CA_CERTIFICATE":bundle},
-            "removeCaseInsensitive":["http_proxy","https_proxy","all_proxy","codex_ca_certificate"]},
-            "trust":{"outputs":[TRUST_OUTPUT],"inheritedInputsMerged":true,"systemStoreModified":false},"bypass":"preserve-original-no-proxy"})
+    fn descriptor() -> Value {
+        json!({"source":{"version":1,"kind":"plaintext","protocols":["http","sse","webSocket"],
+            "operations":["route.register","route.update","route.close","http.intercept"],
+            "endpoint":{"host":"127.0.0.1","port":49152,"token":"0123456789abcdef0123456789abcdef"},
+            "routeBaseUrl":"http://127.0.0.1:49153/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"},
+            "environmentPatch":{"set":{},"removeCaseInsensitive":[]}})
     }
 
     #[test]
-    fn launch_patch_preserves_original_bypass_and_unrelated_environment() {
-        let directory = tempfile::tempdir().unwrap();
-        let original = [
+    fn plaintext_descriptor_preserves_the_exact_original_environment() {
+        let original: Vec<_> = [
             ("Http_Proxy", "http://old:password@example.invalid"),
             ("NO_PROXY", "local.test"),
             ("KEEP_UNICODE", "值"),
-            (TRUST_OUTPUT, "old-ca.pem"),
+            ("CODEX_CA_CERTIFICATE", "old-ca.pem"),
         ]
         .into_iter()
         .map(|(k, v)| (OsString::from(k), OsString::from(v)))
         .collect();
-        let environment =
-            apply_descriptor(original, &descriptor(directory.path()), directory.path()).unwrap();
-        assert!(environment.contains(&("NO_PROXY".into(), "local.test".into())));
-        assert!(environment.contains(&("KEEP_UNICODE".into(), "值".into())));
-        assert!(!environment.iter().any(|(key, _)| key == "Http_Proxy"));
-        assert_eq!(
-            environment
-                .iter()
-                .filter(|(key, _)| key == TRUST_OUTPUT)
-                .count(),
-            1
-        );
-        assert_eq!(environment.len(), 9);
+        let environment = apply_descriptor(original.clone(), &descriptor()).unwrap();
+        assert_eq!(environment, original);
     }
 
     #[test]
-    fn launch_patch_rejects_extra_variables_remote_proxy_and_escaped_bundle() {
-        let directory = tempfile::tempdir().unwrap();
-        let valid = descriptor(directory.path());
+    fn plaintext_descriptor_rejects_environment_modification_or_remote_source() {
+        let valid = descriptor();
         let mut extra = valid.clone();
         extra["environmentPatch"]["set"]["NODE_OPTIONS"] = json!("--require attacker");
-        assert!(apply_descriptor(Vec::new(), &extra, directory.path()).is_err());
+        assert!(apply_descriptor(Vec::new(), &extra).is_err());
+        let mut remove = valid.clone();
+        remove["environmentPatch"]["removeCaseInsensitive"] = json!(["https_proxy"]);
+        assert!(apply_descriptor(Vec::new(), &remove).is_err());
         let mut remote = valid.clone();
-        remote["proxyUrl"] = json!("http://u:p@remote.invalid:80/");
-        assert!(apply_descriptor(Vec::new(), &remote, directory.path()).is_err());
-        let outside = tempfile::tempdir().unwrap();
-        let escaped = descriptor(outside.path());
-        assert!(apply_descriptor(Vec::new(), &escaped, directory.path()).is_err());
-        let mut false_claim = valid;
-        false_claim["trust"]["systemStoreModified"] = json!(true);
-        assert!(apply_descriptor(Vec::new(), &false_claim, directory.path()).is_err());
-    }
-
-    #[test]
-    fn official_backend_trust_precedence_is_explicit() {
-        let primary = std::env::temp_dir().join("primary.pem");
-        let fallback = std::env::temp_dir().join("fallback.pem");
-        let environment = vec![
-            ("SSL_CERT_FILE".into(), fallback.as_os_str().to_owned()),
-            (TRUST_OUTPUT.into(), primary.as_os_str().to_owned()),
-        ];
-        assert_eq!(selected_trust_inputs(&environment).unwrap(), vec![primary]);
-        assert_eq!(
-            selected_trust_inputs(&environment[..1]).unwrap(),
-            vec![fallback]
-        );
-        assert!(selected_trust_inputs(&[(TRUST_OUTPUT.into(), "relative.pem".into())]).is_err());
+        remote["source"]["endpoint"]["host"] = json!("remote.invalid");
+        assert!(apply_descriptor(Vec::new(), &remote).is_err());
+        let mut remote_route = valid.clone();
+        remote_route["source"]["routeBaseUrl"] =
+            json!("http://remote.invalid:49153/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ");
+        assert!(apply_descriptor(Vec::new(), &remote_route).is_err());
+        let mut legacy = valid.clone();
+        legacy["proxyUrl"] = json!("http://u:p@127.0.0.1:49152/");
+        assert!(apply_descriptor(Vec::new(), &legacy).is_err());
+        let mut false_coverage = valid;
+        false_coverage["source"]["protocols"] = json!(["http", "sse", "webSocket", "http2"]);
+        assert!(apply_descriptor(Vec::new(), &false_coverage).is_err());
     }
 
     #[test]
@@ -553,20 +495,17 @@ mod tests {
         let parent_before: Vec<_> = std::env::vars_os().collect();
         let owner = TrafficOwner::start(&services, &runtime).unwrap();
         let owned_directory = owner.directory.path().to_owned();
-        let bundle = owner
-            .environment()
-            .iter()
-            .find(|(key, _)| key == TRUST_OUTPUT)
-            .unwrap()
-            .1
-            .clone();
-        assert!(Path::new(&bundle).is_file());
+        assert_eq!(owner.environment(), owner.original_environment.as_slice());
+        assert!(
+            owner.descriptor["source"]["endpoint"]["token"]
+                .as_str()
+                .is_some()
+        );
         owner.client_launched().unwrap();
         owner.check_alive().unwrap();
         assert_eq!(std::env::vars_os().collect::<Vec<_>>(), parent_before);
         drop(owner);
         assert!(!owned_directory.exists());
-        assert!(!Path::new(&bundle).exists());
     }
 
     #[test]
@@ -649,20 +588,35 @@ mod tests {
             .unwrap()
             .result
             .unwrap();
-        let bundle = report["environment"][TRUST_OUTPUT].as_str().unwrap();
-        assert!(Path::new(bundle).is_file());
-        assert!(
-            report["environment"]["HTTPS_PROXY"]
-                .as_str()
-                .is_some_and(|v| v.starts_with("http://"))
-        );
+        for name in [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NO_PROXY",
+            "CODEX_CA_CERTIFICATE",
+        ] {
+            let inherited = owner
+                .environment()
+                .iter()
+                .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case(name));
+            let actual = report["environment"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .and_then(|(_, value)| value.as_str());
+            assert_eq!(
+                actual,
+                inherited.and_then(|(_, value)| value.to_str()),
+                "{name}"
+            );
+        }
         drop(child); // Simulated failure after spawn; no ambient process lookup.
         assert_eq!(
             unsafe { WaitForSingleObject(handle.as_raw_handle().cast(), 0) },
             WAIT_OBJECT_0
         );
         owner.check_alive().unwrap();
-        assert!(Path::new(bundle).is_file());
+        assert!(owner.directory.path().exists());
         assert_eq!(unrelated.wait(Duration::ZERO).unwrap(), None);
         unrelated_client
             .request("Browser.close", None, None, Duration::from_secs(3))
@@ -670,8 +624,9 @@ mod tests {
         assert_eq!(unrelated.wait(Duration::from_secs(3)).unwrap(), Some(0));
         let _ = client.shutdown();
         unrelated_client.shutdown().unwrap();
+        let owned_directory = owner.directory.path().to_owned();
         drop(owner);
-        assert!(!Path::new(bundle).exists());
+        assert!(!owned_directory.exists());
     }
 
     #[cfg(windows)]

@@ -104,6 +104,40 @@ impl Fixture {
         peer
     }
 }
+
+#[test]
+fn status_reports_only_explicit_source_activation_and_clears_it_on_retirement() {
+    let fixture = Fixture::new();
+    let _gateway = fixture.gateway();
+    let before = fixture
+        .invoke("test.traffic-a", "status", json!({}), true)
+        .unwrap();
+    assert_eq!(before["available"], false);
+    assert_eq!(before["activatedSources"], json!([]));
+    fixture.traffic.set_source_activation(
+        json!([{"id":"example-http","operations":["http.intercept"],"protocols":["http"],"coverage":["example-fetch-path"]}]),
+        json!([{"id":"example-secondary","reason":"child_unavailable"}]),
+    );
+    let active = fixture
+        .invoke("test.traffic-a", "status", json!({}), true)
+        .unwrap();
+    assert_eq!(active["available"], true);
+    assert_eq!(
+        active["activatedSources"][0]["coverage"],
+        json!(["example-fetch-path"])
+    );
+    assert_eq!(
+        active["unsupportedSources"][0]["reason"],
+        "child_unavailable"
+    );
+    fixture.traffic.set_attached(false);
+    let retired = fixture
+        .invoke("test.traffic-a", "status", json!({}), true)
+        .unwrap();
+    assert_eq!(retired["available"], false);
+    assert_eq!(retired["activatedSources"], json!([]));
+    assert_eq!(retired["unsupportedSources"], json!([]));
+}
 struct Wire {
     socket: TcpStream,
     next: u64,
@@ -254,19 +288,9 @@ fn native_authority_rejects_renderer_forgery_ungranted_scopes_and_cross_owner_le
             .unwrap()["available"],
         true
     );
-    let ca = gateway.call("certificateAuthority", json!({}));
-    assert!(
-        ca["result"]["caPem"]
-            .as_str()
-            .unwrap()
-            .contains("BEGIN CERTIFICATE")
-    );
-    let leaf = gateway.call("certificate", json!({"url":"https://allowed.invalid/"}));
-    assert!(
-        leaf["result"]["cert"]
-            .as_str()
-            .unwrap()
-            .contains("BEGIN CERTIFICATE")
+    assert_eq!(
+        gateway.call("certificateAuthority", json!({}))["error"]["code"],
+        "permission_denied"
     );
 }
 
@@ -411,51 +435,4 @@ fn native_data_plane_round_trips_host_callbacks_streams_and_websocket_frames() {
     let resources = fixture.traffic.resources();
     assert_eq!(resources["leases"], 0);
     assert_eq!(resources["pending"], 0);
-}
-
-#[test]
-fn native_worker_serves_verified_tls_and_removes_its_private_trust_bundle() {
-    use std::io::{BufRead, BufReader};
-    let Some(node) = std::env::var_os("CODLET_TRAFFIC_TEST_NODE") else {
-        return;
-    };
-    let fixture = Fixture::new();
-    let mut child = std::process::Command::new(node)
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/traffic-native-worker.cjs"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut input = child.stdin.take().unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    writeln!(input,"{}",json!({"gateway":fixture.traffic.gateway_endpoint().unwrap(),"host":fixture.invoke("test.traffic-a","connect",json!({}),true).unwrap(),"directory":fixture._directory.path()})).unwrap();
-    let mut line = String::new();
-    output.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["ready"],
-        true,
-        "{line}"
-    );
-    let registration = fixture.registration("test.traffic-a");
-    let descriptor = fixture.traffic.launch_descriptor().unwrap();
-    assert_eq!(
-        descriptor["environmentPatch"]["set"]["CODEX_CA_CERTIFICATE"],
-        descriptor["bundlePath"]
-    );
-    assert_eq!(descriptor["trust"]["systemStoreModified"], false);
-    writeln!(
-        input,
-        "{}",
-        json!({"registration":registration,"descriptor":descriptor})
-    )
-    .unwrap();
-    line.clear();
-    output.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&line).unwrap()["completed"],
-        true,
-        "{line}"
-    );
-    assert!(child.wait().unwrap().success());
 }

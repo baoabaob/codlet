@@ -16,8 +16,8 @@ function installCodletSkill(config) {
     });
   }
   state.receive=(id,value)=>{const pending=state.requests.get(id);if(!pending)return;clearTimeout(pending.timer);state.requests.delete(id);value.error?pending.reject(Error(value.error)):pending.resolve(value);};
-  function findClient(module,profile){
-    const token=module[profile.exports.scope],family=module[profile.exports.client],root=document.getElementById('root');
+  function findClient(module,scopeModule,profile){
+    const token=scopeModule[profile.exports.scope],family=module[profile.exports.client],root=document.getElementById('root');
     if(!token||!family||!root)return null;
     const container=root&&root[Object.keys(root).find(k=>k.startsWith('__reactContainer$'))];
     const pending=[container?.stateNode?.current??container],seen=new Set();
@@ -61,8 +61,8 @@ function installCodletSkill(config) {
       await delay(50);
     }
     if(!state.alive)return;
-    const module=await import(profile.module);
-    while(state.alive&&!state.client){const client=findClient(module,profile);if(client?.getAppServerVersion?.()===profile.appServerVersion)state.client=client;else{if(Date.now()>deadline)throw Error('The local App Server is not ready for the Codlet skill');await delay(100);}}
+    const module=await import(profile.module),scopeModule=profile.scopeModule?await import(profile.scopeModule):module;
+    while(state.alive&&!state.client){const client=findClient(module,scopeModule,profile);if(client?.getAppServerVersion?.()===profile.appServerVersion)state.client=client;else{if(Date.now()>deadline)throw Error('The local App Server is not ready for the Codlet skill');await delay(100);}}
     if(!state.alive)return;
     const client=state.client;if(typeof client.sendRequest!=='function'||typeof client.setAppServerVersion!=='function')throw Error('The native skill connection changed');
     state.original=client.sendRequest;state.versionSetter=client.setAppServerVersion;

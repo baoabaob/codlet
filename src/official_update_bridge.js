@@ -5,7 +5,8 @@
   const detected = globalThis.electronBridge?.getSentryInitOptions?.();
   const profile = profiles.builds.find(p => p.appVersion === detected?.appVersion && p.buildNumber === String(detected?.buildNumber));
   if (window !== window.top || location.origin !== 'app://-' || location.pathname !== '/index.html' || !profile?.officialUpdates || !Array.from(document.scripts).some(s => s.src === profile.entry)) return {available:false,reason:'profile'};
-  const module = await import(profile.module), token = module[profile.exports.scope];
+  const module = await import(profile.module), scopeModule = profile.scopeModule ? await import(profile.scopeModule) : module;
+  const token = scopeModule[profile.exports.scope];
   const root = document.getElementById('root'), key = root && Object.keys(root).find(k => k.startsWith('__reactContainer$'));
   const container = key && root[key], pending = [container?.stateNode?.current ?? container], seen = new Set();
   let node,chain;

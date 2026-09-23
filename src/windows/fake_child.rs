@@ -1163,6 +1163,8 @@ fn scenario_lab_environment(
         "环境_变量",
         "EMPTY",
         "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
         "CODEX_CA_CERTIFICATE",
     ]
     .into_iter()
