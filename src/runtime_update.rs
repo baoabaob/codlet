@@ -879,7 +879,7 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
     } else {
         install_root.join("runtime/update-channel.json")
     };
-    let channel = match package::read_file(&path, 32 * 1024) {
+    let mut channel = match package::read_file(&path, 32 * 1024) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| error("runtime_update_channel_invalid", e.to_string()))?,
         Err(_) if !path.exists() => RuntimeUpdateChannel {
@@ -898,6 +898,20 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
             "runtime_update_channel_invalid",
             "Invalid update channel schema, name or check interval.",
         ));
+    }
+    // Preview 5's installed channel file cannot be replaced by the Windows
+    // updater. Only migrate that exact built-in source to the managed asset;
+    // an explicitly configured third-party source keeps its chosen manifest.
+    if channel.channel == "preview"
+        && channel.check_interval_seconds == 900
+        && let Some(RuntimeUpdateSource::Github {
+            repository_url,
+            manifest_asset,
+        }) = &mut channel.source
+        && repository_url == "https://github.com/baoabaob/codlet"
+        && manifest_asset == "codlet-update.json"
+    {
+        *manifest_asset = "codlet-update-managed.json".into();
     }
     Ok(channel)
 }

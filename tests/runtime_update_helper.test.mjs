@@ -16,43 +16,50 @@ const temporaryRoot = fs.realpathSync.native(os.tmpdir());
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const record = (root, relative) => { const bytes = fs.readFileSync(path.join(root, relative)); return { path: relative, bytes: bytes.length, sha256: sha(bytes) }; };
 const checked = file => { const bytes = fs.readFileSync(file); return { path: file, bytes: bytes.length, sha256: sha(bytes) }; };
-function materialize(root, nodeVersion, label, profile = 'isolatedClient') {
+function materialize(root, nodeVersion, label, profile = 'isolatedClient', mode = 'bundled') {
   const node = Buffer.from('fixture Node payload ' + nodeVersion), license = Buffer.from('fixture license');
-  const runtime = { version: nodeVersion, executableSha256: sha(node), licenseSha256: sha(license) };
-  const pin = { schema: 1, version: nodeVersion, platforms: { 'win-x64': { executableSha256: runtime.executableSha256, licenseSha256: runtime.licenseSha256 } } };
-  const files = new Map([[profile === 'portable' ? 'codlet.exe' : 'codlet-lab.exe', Buffer.from(label)], ['runtime/node-runtime.json', Buffer.from(JSON.stringify(pin))], [`runtime/node-v${nodeVersion}-win-x64/node.exe`, node], [`runtime/node-v${nodeVersion}-win-x64/LICENSE`, license]]);
+  const runtime = { version: nodeVersion, executableSha256: sha(node), licenseSha256: sha(license), ...(mode === 'managed' ? { mode } : {}) };
+  const pin = { schema: 1, version: nodeVersion, ...(mode === 'managed' ? { mode } : {}), platforms: { 'win-x64': { executableSha256: runtime.executableSha256, licenseSha256: runtime.licenseSha256 } } };
+  const files = new Map([[profile === 'portable' ? 'codlet.exe' : 'codlet-lab.exe', Buffer.from(label)], ['runtime/node-runtime.json', Buffer.from(JSON.stringify(pin))], ...(mode === 'bundled' ? [[`runtime/node-v${nodeVersion}-win-x64/node.exe`, node], [`runtime/node-v${nodeVersion}-win-x64/LICENSE`, license]] : [])]);
   fs.mkdirSync(root, { recursive: true });
   for (const [relative, bytes] of files) { const file = path.join(root, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, bytes); }
-  return { runtime, files: [...files.keys()].sort().map(name => record(root, name)) };
+  return { runtime, files: [...files.keys()].sort().map(name => record(root, name)), node, license };
 }
-async function fixture(mode = 'success') {
+async function fixture(mode = 'success', profile = 'isolatedClient', nextMode = 'bundled', oldMode = 'bundled') {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(temporaryRoot, 'codlet-update-helper-')));
   const state = path.join(root, 'updates'), install = path.join(root, 'installed'), id = 'runtime-install-' + randomUUID(), job = path.join(state, id), staged = path.join(state, 'runtime-payload-' + randomUUID());
   fs.mkdirSync(job, { recursive: true });
-  const old = materialize(install, '24.21.0', 'old runtime'), next = materialize(staged, '25.0.0', 'new runtime');
+  const old = materialize(install, '24.21.0', 'old runtime', profile, oldMode), next = materialize(staged, '25.0.0', 'new runtime', profile, nextMode);
+  const binary = profile === 'portable' ? 'codlet.exe' : 'codlet-lab.exe';
   const configPath = path.join(install, 'lab-config.json');
-  const originalConfig = Buffer.from(JSON.stringify({ schema: 1, labBinary: 'codlet-lab.exe', labBinarySha256: old.files.find(f => f.path === 'codlet-lab.exe').sha256.toUpperCase(), nodeRelative: 'runtime/node-v24.21.0-win-x64/node.exe', officialCli: 'never-touched', userData: { theme: 'dark', plugins: ['user plugin'] } }, null, 4));
+  const originalConfig = Buffer.from(JSON.stringify({ schema: 1, labBinary: binary, labBinarySha256: old.files.find(f => f.path === binary).sha256.toUpperCase(), nodeRelative: 'runtime/node-v24.21.0-win-x64/node.exe', officialCli: 'never-touched', userData: { theme: 'dark', plugins: ['user plugin'] } }, null, 4));
   fs.writeFileSync(configPath, originalConfig);
   fs.mkdirSync(path.join(install, 'plugins')); fs.writeFileSync(path.join(install, 'plugins/user.txt'), 'author files stay unchanged'); fs.writeFileSync(path.join(install, 'auth.json'), 'user authentication stays unchanged');
   const launcher = path.join(job, 'restart-fixture.mjs'), log = path.join(root, 'restarts.jsonl');
-  fs.writeFileSync(launcher, `import fs from 'node:fs';import path from 'node:path';const [root,config,log,mode]=process.argv.slice(2);const current=fs.readFileSync(path.join(root,'codlet-lab.exe'),'utf8');fs.appendFileSync(log,JSON.stringify({current,config:JSON.parse(fs.readFileSync(config,'utf8')),inherited:process.env.CODLET_UPDATE_FIXTURE_INHERITED,override:process.env.CODLET_UPDATE_FIXTURE_OVERRIDE})+'\\n');if(current==='new runtime'&&mode==='fail')process.exitCode=1;if(current==='new runtime'&&mode==='unknown')process.exitCode=42;`);
+  fs.writeFileSync(launcher, `import fs from 'node:fs';import path from 'node:path';const [root,config,log,mode]=process.argv.slice(2);const current=fs.readFileSync(path.join(root,'${binary}'),'utf8');fs.appendFileSync(log,JSON.stringify({current,config:JSON.parse(fs.readFileSync(config,'utf8')),inherited:process.env.CODLET_UPDATE_FIXTURE_INHERITED,override:process.env.CODLET_UPDATE_FIXTURE_OVERRIDE})+'\\n');if(current==='new runtime'&&mode==='fail')process.exitCode=1;if(current==='new runtime'&&mode==='unknown')process.exitCode=42;`);
   const owner = spawn(process.execPath, ['-e', "process.stdin.resume(); process.stdin.on('end',()=>process.exit(0)); setInterval(()=>{},1000);"], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
   await new Promise((resolve, reject) => { owner.once('spawn', resolve); owner.once('error', reject); });
   const ownerExited = new Promise(resolve => owner.once('exit', resolve));
   const identity = await captureProcessIdentity(owner.pid); assert.ok(identity);
-  const manifest = { schema: 1, kind: 'codlet-runtime-update', version: '9.0.0', platform: 'win-x64', profile: 'isolatedClient', runtime: next.runtime, files: next.files };
+  const manifest = { schema: 1, kind: 'codlet-runtime-update', version: '9.0.0', platform: 'win-x64', profile, runtime: next.runtime, files: next.files };
   const manifestBytes = Buffer.from(JSON.stringify(manifest)); fs.writeFileSync(path.join(staged, 'runtime-update-manifest.json'), manifestBytes);
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => /^(SYSTEMROOT|WINDIR|PATH|TEMP|TMP|SYSTEMDRIVE|COMSPEC)$/i.test(name)));
   // One clock sample: two Date.now() calls can make this exceed the helper's
   // strict 30-minute maximum by a millisecond under concurrent test load.
   const createdAt = Date.now();
-  const plan = { schema: 1, kind: 'codlet-runtime-install-plan', id, version: '9.0.0', currentVersion: '0.1.0', platform: 'win-x64', profile: 'isolatedClient', installRoot: install, stateRoot: state, stagedRoot: staged, backupRoot: path.join(job, 'backup'), manifestSha256: sha(manifestBytes), currentFiles: old.files, newFiles: next.files, currentRuntime: old.runtime, newRuntime: next.runtime, helperNode: checked(process.execPath), helperScript: checked(helper), restart: { program: process.execPath, args: [launcher, install, configPath, log, mode], workingDirectory: install, environment, timeoutSeconds: 15 }, restartProgramSha256: checked(process.execPath).sha256, launcherFiles: [checked(launcher), checked(configPath)], configPin: { ...checked(configPath), field: 'labBinarySha256', oldValue: JSON.parse(originalConfig).labBinarySha256, newValue: next.files.find(f => f.path === 'codlet-lab.exe').sha256, oldNodeRelative: 'runtime/node-v24.21.0-win-x64/node.exe', newNodeRelative: 'runtime/node-v25.0.0-win-x64/node.exe' }, waitFor: [identity], handoffAckPath: path.join(job, 'handoff-ack.json'), installReceiptPath: path.join(job, 'install-receipt.json'), summaryReceiptPath: path.join(state, 'runtime-update-install-receipt.json'), createdAt, expiresAt: createdAt + 30 * 60 * 1000 };
+  const plan = { schema: 1, kind: 'codlet-runtime-install-plan', id, version: '9.0.0', currentVersion: '0.1.0', platform: 'win-x64', profile, installRoot: install, stateRoot: state, stagedRoot: staged, backupRoot: path.join(job, 'backup'), manifestSha256: sha(manifestBytes), currentFiles: old.files, newFiles: next.files, currentRuntime: old.runtime, newRuntime: next.runtime, helperNode: checked(process.execPath), helperScript: checked(helper), restart: { program: process.execPath, args: [launcher, install, configPath, log, mode], workingDirectory: install, environment, timeoutSeconds: 15 }, restartProgramSha256: checked(process.execPath).sha256, launcherFiles: [checked(launcher), checked(configPath)], configPin: profile === 'isolatedClient' ? { ...checked(configPath), field: 'labBinarySha256', oldValue: JSON.parse(originalConfig).labBinarySha256, newValue: next.files.find(f => f.path === 'codlet-lab.exe').sha256, oldNodeRelative: 'runtime/node-v24.21.0-win-x64/node.exe', newNodeRelative: 'runtime/node-v25.0.0-win-x64/node.exe' } : null, waitFor: [identity], handoffAckPath: path.join(job, 'handoff-ack.json'), installReceiptPath: path.join(job, 'install-receipt.json'), summaryReceiptPath: path.join(state, 'runtime-update-install-receipt.json'), createdAt, expiresAt: createdAt + 30 * 60 * 1000 };
+  if (nextMode === 'managed') {
+    const cache = path.join(root, 'private-cache'); fs.mkdirSync(cache);
+    const node = path.join(cache, 'node.exe'), license = path.join(cache, 'LICENSE');
+    fs.writeFileSync(node, next.node); fs.writeFileSync(license, next.license);
+    plan.preparedNode = checked(node); plan.preparedLicense = checked(license);
+  }
   const planPath = path.join(job, 'install-plan.json'); let planSha;
   function save() { const bytes = Buffer.from(JSON.stringify(plan)); fs.writeFileSync(planPath, bytes); planSha = sha(bytes); return planSha; }
   save();
-  function armed(message) { assert.equal(message.event, 'runtime-update-helper-ready'); assert.equal(message.id, id); assert.equal(message.planSha256, planSha); assert.equal(fs.readFileSync(path.join(install, 'codlet-lab.exe'), 'utf8'), 'old runtime'); fs.writeFileSync(plan.handoffAckPath, JSON.stringify({ id, planSha256: planSha }), { flag: 'wx' }); owner.stdin.end(); }
+  function armed(message) { assert.equal(message.event, 'runtime-update-helper-ready'); assert.equal(message.id, id); assert.equal(message.planSha256, planSha); assert.equal(fs.readFileSync(path.join(install, binary), 'utf8'), 'old runtime'); fs.writeFileSync(plan.handoffAckPath, JSON.stringify({ id, planSha256: planSha }), { flag: 'wx' }); owner.stdin.end(); }
   async function cleanup() { owner.stdin.end(); await ownerExited; assert.ok(path.resolve(root).startsWith(path.resolve(temporaryRoot) + path.sep)); fs.rmSync(root, { recursive: true, force: true }); }
-  return { root, install, state, job, staged, owner, ownerExited, originalConfig, configPath, plan, planPath, get planSha() { return planSha; }, save, armed, cleanup, log };
+  return { root, install, state, job, staged, owner, ownerExited, originalConfig, configPath, binary, plan, planPath, get planSha() { return planSha; }, save, armed, cleanup, log };
 }
 
 test('helper waits for checked owner exit, replaces payload, patches only fixed pins and confirms the owner restart', async () => {
@@ -196,6 +203,75 @@ test('tampered staged bytes and arbitrary non-owned paths fail before helper rea
       await assert.rejects(runInstall(f.planPath, f.planSha, () => { ready = true; })); assert.equal(ready, false); assert.equal(fs.readFileSync(path.join(f.install, 'codlet-lab.exe'), 'utf8'), 'old runtime'); assert.deepEqual(fs.readFileSync(f.configPath), f.originalConfig); assert.equal(fs.existsSync(f.log), false);
     } finally { await f.cleanup(); }
   }
+});
+
+test('managed portable update keeps Node in verified cache and removes only old bundled Node after success', async () => {
+  const f = await fixture('success', 'portable', 'managed');
+  try {
+    const custom = path.join(f.install, 'runtime/node-v24.21.0-win-x64/custom.note');
+    fs.writeFileSync(custom, 'owner file, not in the runtime manifest');
+    const result = await runInstall(f.planPath, f.planSha, f.armed);
+    assert.equal(result.phase, 'installed');
+    assert.equal(fs.readFileSync(path.join(f.install, f.binary), 'utf8'), 'new runtime');
+    assert.equal(fs.existsSync(path.join(f.install, 'runtime/node-v25.0.0-win-x64/node.exe')), false);
+    assert.equal(fs.existsSync(path.join(f.install, 'runtime/node-v24.21.0-win-x64/node.exe')), false);
+    assert.equal(fs.existsSync(path.join(f.plan.backupRoot, 'runtime/node-v24.21.0-win-x64/node.exe')), false);
+    assert.equal(fs.readFileSync(custom, 'utf8'), 'owner file, not in the runtime manifest');
+    assert.equal(fs.readFileSync(f.plan.preparedNode.path, 'utf8'), 'fixture Node payload 25.0.0');
+    assert.deepEqual(fs.readFileSync(f.configPath), f.originalConfig);
+    assert.equal(fs.readFileSync(path.join(f.install, 'plugins/user.txt'), 'utf8'), 'author files stay unchanged');
+    assert.equal(fs.readFileSync(path.join(f.install, 'auth.json'), 'utf8'), 'user authentication stays unchanged');
+  } finally { await f.cleanup(); }
+});
+
+test('managed portable update rolls back old bundled Node when new owner readiness fails', async () => {
+  const f = await fixture('fail', 'portable', 'managed');
+  try {
+    await assert.rejects(runInstall(f.planPath, f.planSha, f.armed), error => error.code === 'restart_failed' && error.receipt.phase === 'rolledBack');
+    assert.equal(fs.readFileSync(path.join(f.install, f.binary), 'utf8'), 'old runtime');
+    assert.equal(fs.readFileSync(path.join(f.install, 'runtime/node-v24.21.0-win-x64/node.exe'), 'utf8'), 'fixture Node payload 24.21.0');
+    assert.deepEqual(fs.readFileSync(f.configPath), f.originalConfig);
+    assert.equal(fs.readFileSync(f.plan.preparedNode.path, 'utf8'), 'fixture Node payload 25.0.0');
+  } finally { await f.cleanup(); }
+});
+
+test('managed cache tampering or missing cache pin blocks handoff before owner exit', async () => {
+  for (const change of ['tamper', 'missing', 'wrong-path']) {
+    const f = await fixture('success', 'portable', 'managed'); let ready = false;
+    try {
+      if (change === 'tamper') fs.writeFileSync(f.plan.preparedNode.path, 'modified');
+      if (change === 'missing') { delete f.plan.preparedLicense; f.save(); }
+      if (change === 'wrong-path') { f.plan.preparedNode.path = path.join(f.install, 'runtime/node-v24.21.0-win-x64/node.exe'); f.save(); }
+      await assert.rejects(runInstall(f.planPath, f.planSha, () => { ready = true; }));
+      assert.equal(ready, false);
+      assert.equal(fs.readFileSync(path.join(f.install, f.binary), 'utf8'), 'old runtime');
+      assert.equal(fs.existsSync(f.log), false);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test('managed-to-managed portable update has no install-root Node path dependency', async () => {
+  const f = await fixture('success', 'portable', 'managed', 'managed');
+  try {
+    assert.equal((await runInstall(f.planPath, f.planSha, f.armed)).phase, 'installed');
+    assert.equal(fs.readFileSync(path.join(f.install, f.binary), 'utf8'), 'new runtime');
+    assert.equal(fs.existsSync(path.join(f.install, 'runtime/node-v24.21.0-win-x64/node.exe')), false);
+  } finally { await f.cleanup(); }
+});
+
+test('helper binds a Core-verified client Node whose bytes differ from the fallback pin', async () => {
+  const f = await fixture('success', 'portable', 'managed');
+  try {
+    fs.writeFileSync(f.plan.preparedNode.path, 'reviewed client Node fixture');
+    fs.writeFileSync(f.plan.preparedLicense.path, 'reviewed client license fixture');
+    f.plan.preparedNode = checked(f.plan.preparedNode.path);
+    f.plan.preparedLicense = checked(f.plan.preparedLicense.path);
+    assert.notEqual(f.plan.preparedNode.sha256, f.plan.newRuntime.executableSha256);
+    assert.notEqual(f.plan.preparedLicense.sha256, f.plan.newRuntime.licenseSha256);
+    f.save();
+    assert.equal((await runInstall(f.planPath, f.planSha, f.armed)).phase, 'installed');
+    assert.equal(fs.readFileSync(path.join(f.install, f.binary), 'utf8'), 'new runtime');
+  } finally { await f.cleanup(); }
 });
 
 test('combined install requires a matching successful official result before replacing any payload or restarting',async()=>{

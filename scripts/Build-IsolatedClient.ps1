@@ -17,6 +17,8 @@ $codletNodeRelative = 'runtime/node-v' + $codletNodePin.version + '-win-x64'
 $codletNodeSource = Join-Path $RuntimeDirectory ('node-v' + $codletNodePin.version + '-win-x64')
 $codletNodeHash = (Get-FileHash -LiteralPath (Join-Path $codletNodeSource 'node.exe') -Algorithm SHA256).Hash
 if ($codletNodeHash -ne $codletNodePin.platforms.'win-x64'.executableSha256) { throw 'Managed Node does not match the checked-in runtime pin.' }
+$codletNodeLicenseHash = (Get-FileHash -LiteralPath (Join-Path $codletNodeSource 'LICENSE') -Algorithm SHA256).Hash
+if ($codletNodeLicenseHash -ne $codletNodePin.platforms.'win-x64'.licenseSha256) { throw 'Node LICENSE does not match the checked-in runtime pin.' }
 if ((Get-AuthenticodeSignature -LiteralPath $OfficialCli).Status -ne 'Valid') { throw 'Official CLI signature is not valid.' }
 $codletMarkerFile = [IO.File]::Open((Join-Path $codletLabRoot '.codlet-lab-owner.json'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
 try {
@@ -36,7 +38,10 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.ps1') -Destina
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.cmd') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Restart-TestClient.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-UpdateRestart.ps1') -Destination $codletOutput
-Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/node-runtime.json') -Destination (Join-Path $codletOutput 'runtime/node-runtime.json')
+# The isolated lab launches its packaged Node by nodeRelative. Keep its output
+# pin in the legacy bundled shape even when the product source pin is managed.
+$null = $codletNodePin.PSObject.Properties.Remove('mode')
+[IO.File]::WriteAllText((Join-Path $codletOutput 'runtime/node-runtime.json'), ($codletNodePin | ConvertTo-Json -Depth 12) + "`n", [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $codletSource 'runtime/update-channel.json') -Destination (Join-Path $codletOutput 'runtime/update-channel.json')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Test-Doctor.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Export-Diagnostics.ps1') -Destination $codletOutput

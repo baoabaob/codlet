@@ -25,13 +25,15 @@ class PackagingTests(unittest.TestCase):
         self.binary.write_bytes(bytes.fromhex("cffaedfe0c00000100000000"))
         self.original_root = builder.ROOT
         builder.ROOT = self.source
-        self.write(self.source / "Cargo.toml", 'version = "0.2.0-preview.5"\nlicense = "Apache-2.0"\n')
+        self.write(self.source / "Cargo.toml", 'version = "0.2.0-preview.6"\nlicense = "Apache-2.0"\n')
         self.write(self.runtime / "bin/node", b"fixture node")
         self.write(self.runtime / "LICENSE", "fixture license")
-        pin = {"version": "24.0.0", "platforms": {"darwin-arm64": {"version": "22.0.0", "executableSha256": self.hash(self.runtime / "bin/node"), "licenseSha256": self.hash(self.runtime / "LICENSE")}}}
+        pin = {"version": "24.0.0", "mode": "managed", "platforms": {"darwin-arm64": {"version": "22.0.0", "executableSha256": self.hash(self.runtime / "bin/node"), "licenseSha256": self.hash(self.runtime / "LICENSE")}}}
         self.write(self.source / "runtime/node-runtime.json", json.dumps(pin))
+        self.write(self.source / "runtime/client-node-profiles.json", '{"schema":1,"profiles":[]}')
         self.write(self.source / "LICENSE", "Fixture license text; never distributed.\n" * 10)
-        for name in ["runtime/update-channel.json", "scripts/macos/initialize.mjs", "NOTICE", "docs/THIRD_PARTY_UI_LICENSES.txt", "docs/THIRD_PARTY_RUST_LICENSES.txt", "types/host.d.ts"]:
+        self.write(self.source / "runtime/update-channel.json", '{"schema":1,"channel":"preview","source":{"manifestAsset":"codlet-update-managed.json"}}')
+        for name in ["scripts/macos/initialize.mjs", "NOTICE", "docs/THIRD_PARTY_UI_LICENSES.txt", "docs/THIRD_PARTY_RUST_LICENSES.txt", "types/host.d.ts"]:
             self.write(self.source / name, "fixture")
         packages = []
         for identifier in builder.ALLOWED:
@@ -60,20 +62,31 @@ class PackagingTests(unittest.TestCase):
     def stage(self):
         return builder.stage_payload(self.binary, self.runtime, self.plugins, self.directory / "output", "a" * 40, "b" * 40)
 
-    def test_bundle_has_provenance_licenses_and_untouched_runtime(self):
+    def test_managed_bundle_has_provenance_licenses_and_no_embedded_node(self):
         app, version, manifest = self.stage()
-        self.assertEqual(version, "0.2.0-preview.5")
+        self.assertEqual(version, "0.2.0-preview.6")
         self.assertEqual(manifest["sourceCommit"], "a" * 40)
         self.assertEqual(manifest["pluginsSourceCommit"], "b" * 40)
         self.assertFalse(manifest["notarized"])
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
         self.assertEqual(info["LSArchitecturePriority"], ["arm64"])
         resources = app / "Contents/Resources"
-        self.assertEqual(self.hash(resources / "runtime/node-v22.0.0-darwin-arm64/bin/node"), self.hash(self.runtime / "bin/node"))
+        self.assertFalse((resources / "runtime/node-v22.0.0-darwin-arm64/bin/node").exists())
+        self.assertTrue((resources / "runtime/client-node-profiles.json").is_file())
+        self.assertTrue((resources / "initialize.mjs").is_file())
         self.assertTrue((resources / "licenses/LICENSE").is_file())
         self.assertEqual(manifest["license"], "Apache-2.0")
         self.assertIn("Contents/Resources/licenses/LICENSE", manifest["licenseFiles"])
         self.assertFalse((resources / "config.json").exists())
+
+    def test_legacy_bridge_restores_old_reader_node_contract(self):
+        app, _, _ = self.stage()
+        bridge = builder.stage_legacy_bridge(app, self.runtime, self.directory / "bridge/Codlet.app")
+        pin = json.loads((bridge / "Contents/Resources/runtime/node-runtime.json").read_text())
+        self.assertNotIn("mode", pin)
+        self.assertEqual(self.hash(bridge / "Contents/Resources/runtime/node-v22.0.0-darwin-arm64/bin/node"), self.hash(self.runtime / "bin/node"))
+        self.assertEqual(self.hash(bridge / "Contents/Resources/runtime/node-v22.0.0-darwin-arm64/LICENSE"), self.hash(self.runtime / "LICENSE"))
+        self.assertFalse((app / "Contents/Resources/runtime/node-v22.0.0-darwin-arm64/bin/node").exists())
 
     def test_rejects_incorrect_architecture_and_runtime(self):
         self.binary.write_bytes(b"MZ" + b"\x00" * 12)

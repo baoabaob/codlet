@@ -9,13 +9,75 @@ fn macos_signed_bundle_update_archive() {
     let Ok(app) = std::env::var("CODLET_MAC_UPDATE_APP") else {
         return;
     };
-    let zip = PathBuf::from(std::env::var("CODLET_MAC_UPDATE_ZIP").expect("update ZIP path"));
-    let app = PathBuf::from(app).canonicalize().unwrap();
+    let managed_app = PathBuf::from(app).canonicalize().unwrap();
+    let managed_zip =
+        PathBuf::from(std::env::var("CODLET_MAC_UPDATE_ZIP").expect("managed ZIP path"));
+    let bridge_app =
+        PathBuf::from(std::env::var("CODLET_MAC_LEGACY_APP").expect("legacy bridge app path"))
+            .canonicalize()
+            .unwrap();
+    let bridge_zip =
+        PathBuf::from(std::env::var("CODLET_MAC_LEGACY_ZIP").expect("legacy bridge ZIP path"));
+    for (app, zip, mode) in [
+        (
+            &managed_app,
+            &managed_zip,
+            package::NodeRuntimeMode::Managed,
+        ),
+        (&bridge_app, &bridge_zip, package::NodeRuntimeMode::Bundled),
+    ] {
+        verify_signed_archive(app, zip, mode);
+    }
+    let resources = managed_app.join("Contents/Resources");
+    assert!(
+        !Path::new("/Applications/ChatGPT.app").exists()
+            && std::env::var_os("HOME")
+                .map(|home| !PathBuf::from(home)
+                    .join("Applications/ChatGPT.app")
+                    .exists())
+                .unwrap_or(true),
+        "the fallback fixture needs a runner without an installed official client"
+    );
+    let isolated_home =
+        PathBuf::from(std::env::var("CODLET_HOME").expect("isolated test Codlet home"));
+    assert!(
+        !isolated_home.join("js-runtimes").exists(),
+        "the first runtime preparation must start without a cache"
+    );
+    let first = crate::js_runtime::JsRuntime::ensure_from_distribution(&resources)
+        .expect("managed app stages the pinned fallback before replacing any installed app");
+    let first_cache = first
+        .cached_executable_path()
+        .expect("persistent managed Node cache")
+        .to_owned();
+    let first_license = first
+        .cached_license_path()
+        .expect("persistent managed Node license")
+        .to_owned();
+    let pin: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(resources.join("runtime/node-runtime.json")).unwrap(),
+    )
+    .unwrap();
+    let expected = pin["platforms"]["darwin-arm64"]["executableSha256"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        package::file_record(&first_cache, "").unwrap().sha256,
+        expected
+    );
+    let second = crate::js_runtime::JsRuntime::ensure_from_distribution(&resources)
+        .expect("a later app generation can reuse the fixed Node cache");
+    assert_eq!(second.cached_executable_path(), Some(first_cache.as_path()));
+    assert_eq!(second.cached_license_path(), Some(first_license.as_path()));
+}
+
+fn verify_signed_archive(app: &Path, zip: &Path, mode: package::NodeRuntimeMode) {
     assert_eq!(app.file_name(), Some(std::ffi::OsStr::new("Codlet.app")));
     let root = app.parent().unwrap();
     let current =
         package::inspect_installation(root, RuntimePayloadProfile::MacApp, false).unwrap();
-    let mut input = std::fs::File::open(&zip).unwrap();
+    assert_eq!(current.runtime.mode, mode);
+    let mut input = std::fs::File::open(zip).unwrap();
     let mut digest = Sha256::new();
     let mut bytes = 0u64;
     let mut buffer = [0u8; 64 * 1024];
@@ -44,8 +106,9 @@ fn macos_signed_bundle_update_archive() {
         origins: BTreeSet::new(),
     };
     let state = tempfile::tempdir_in(root.parent().unwrap()).unwrap();
-    let staged = package::stage_archive(&zip, &candidate, state.path()).unwrap();
+    let staged = package::stage_archive(zip, &candidate, state.path()).unwrap();
     assert_eq!(staged.manifest.files, current.files);
+    assert_eq!(staged.manifest.runtime.mode, mode);
     package::recheck_staged(&staged).unwrap();
     let core = staged
         .directory

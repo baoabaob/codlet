@@ -7,10 +7,109 @@ use crate::diagnostics::{
 };
 use crate::plugins::{PluginRegistry, bundled_plugins, default_registry_path};
 use crate::runtime_control::ControlStatus;
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const USAGE: &str = "Use codlet launch [--app /Applications/ChatGPT.app] [--watch | --safe-mode], doctor [--json], status [--json], diagnostics --output <absolute.zip> [--json], or plugin <command>";
+
+#[derive(Debug)]
+pub struct InitializationExit(pub i32);
+impl std::fmt::Display for InitializationExit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "official plugin initialization exited with status {}",
+            self.0
+        )
+    }
+}
+impl std::error::Error for InitializationExit {}
+
+fn initialize_plugins(options: &[OsString]) -> Result<()> {
+    let home = std::env::var_os("CODLET_HOME").ok_or("Codlet setup requires its private home")?;
+    if !Path::new(&home).is_absolute() {
+        return Err("Codlet setup home must be absolute".into());
+    }
+    let mut selected = BTreeSet::new();
+    let mut interactive = false;
+    for option in options {
+        match option.to_str() {
+            Some("--interactive-permissions") if !interactive => interactive = true,
+            Some("codex.ui.adapter" | "codex.desktop.adapter" | "codlet-gui") => {
+                if !selected.insert(option.clone()) {
+                    return Err("Duplicate Codlet setup plugin".into());
+                }
+            }
+            _ => return Err("Unsupported Codlet setup choice".into()),
+        }
+    }
+    let executable = std::env::current_exe()?.canonicalize()?;
+    let resources = executable
+        .parent()
+        .ok_or("Codlet Core has no resources directory")?;
+    let contents = resources
+        .parent()
+        .ok_or("Codlet Core is outside an app bundle")?;
+    let app = contents
+        .parent()
+        .ok_or("Codlet Core is outside an app bundle")?;
+    if executable.file_name() != Some(OsStr::new("codlet"))
+        || resources.file_name() != Some(OsStr::new("Resources"))
+        || contents.file_name() != Some(OsStr::new("Contents"))
+        || app.file_name() != Some(OsStr::new("Codlet.app"))
+    {
+        return Err("Codlet setup must run from its own signed app".into());
+    }
+    let initializer = resources.join("initialize.mjs");
+    if !std::fs::symlink_metadata(&initializer)?
+        .file_type()
+        .is_file()
+        || initializer.canonicalize()? != initializer
+    {
+        return Err("Codlet setup script is not an ordinary app resource".into());
+    }
+    super::command::output(
+        Command::new("/usr/bin/codesign")
+            .args(["--verify", "--strict"])
+            .arg(app),
+        Duration::from_secs(30),
+    )?;
+    // Keep the verified private generation alive until the fixed initializer
+    // exits. The Swift launcher never receives a transient Node snapshot path.
+    let runtime = crate::js_runtime::JsRuntime::discover()?;
+    let environment = std::env::vars_os().filter(|(key, _)| {
+        let name = key.to_string_lossy().to_ascii_uppercase();
+        !name.starts_with("NODE_")
+            && !name.starts_with("OPENSSL_")
+            && !name.starts_with("DYLD_")
+            && name != "ELECTRON_RUN_AS_NODE"
+    });
+    let mut command = Command::new(runtime.executable_path());
+    command
+        .args([
+            "--no-addons",
+            "--no-experimental-strip-types",
+            "--no-global-search-paths",
+            "--no-experimental-require-module",
+        ])
+        .arg(initializer)
+        .env_clear()
+        .envs(environment);
+    if interactive {
+        command.arg("--interactive-permissions");
+    }
+    command.args(selected);
+    let status = command.status()?;
+    drop(runtime);
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(20) => Err(Box::new(InitializationExit(20))),
+        _ => Err(format!("Codlet setup exited with status {status}").into()),
+    }
+}
 
 pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<()> {
     let arguments = arguments.collect::<Vec<_>>();
@@ -59,6 +158,9 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<()> {
                 .collect::<Vec<_>>();
             println!("{}", serde_json::to_string(&processes)?);
             Ok(())
+        }
+        [command, options @ ..] if command == "__codlet_initialize_plugins" => {
+            initialize_plugins(options)
         }
         [command, ..] if command == "plugin" => Ok(crate::plugin_commands::run(&arguments)?),
         [command, options @ ..] if command == "launch" => {

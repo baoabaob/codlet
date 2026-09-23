@@ -7,7 +7,8 @@ param(
     [ValidateSet('stable', 'preview')][string]$Channel = 'stable',
     [string]$ArtifactBaseUrl,
     [string]$MergeChannelManifest,
-    [switch]$IncludeOtherExecutable
+    [switch]$IncludeOtherExecutable,
+    [string]$LegacyBundledBridgeNodeDirectory
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,11 @@ function Hash([string]$Value) {
     try { [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() }
     finally { $stream.Dispose(); $algorithm.Dispose() }
 }
+function HashBytes([byte[]]$Value) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { [BitConverter]::ToString($algorithm.ComputeHash($Value)).Replace('-', '').ToLowerInvariant() }
+    finally { $algorithm.Dispose() }
+}
 function X64([string]$Value) {
     $file = [IO.File]::OpenRead((Plain $Value))
     try {
@@ -53,36 +59,62 @@ $pinPath = Plain (Join-Path $inputRoot 'runtime/node-runtime.json')
 if ((Get-Item -LiteralPath $pinPath).Length -gt 64KB) { throw 'Node pin metadata is too large.' }
 $pin = [IO.File]::ReadAllText($pinPath) | ConvertFrom-Json
 if ($pin.schema -ne 1 -or $pin.version -notmatch '^[0-9A-Za-z.-]{1,64}$' -or $pin.version.Contains('..')) { throw 'Invalid Node runtime pin.' }
+$mode = if ($pin.PSObject.Properties['mode']) { [string]$pin.mode } else { 'bundled' }
+if ($mode -notin @('managed', 'bundled')) { throw 'Invalid Node runtime mode.' }
+$bridge = $PSBoundParameters.ContainsKey('LegacyBundledBridgeNodeDirectory')
+if ($bridge -and $mode -ne 'managed') { throw 'Legacy bridge requires a managed input distribution.' }
+if ($PayloadProfile -eq 'isolatedClient' -and $mode -eq 'managed' -and -not $bridge) { throw 'The isolatedClient lab requires a bundled Node runtime.' }
 $node = $pin.platforms.$platform
 if ($node.executableSha256 -notmatch '^[0-9a-f]{64}$' -or $node.licenseSha256 -notmatch '^[0-9a-f]{64}$') { throw 'Node executable/license must be pinned.' }
 $nodeDirectory = 'runtime/node-v' + $pin.version + '-' + $platform
 $executable = if ($PayloadProfile -eq 'portable') { 'codlet.exe' } else { 'codlet-lab.exe' }
 $otherExecutable = if ($PayloadProfile -eq 'portable') { 'codlet-lab.exe' } else { 'codlet.exe' }
-$files = @($executable, 'runtime/node-runtime.json', ($nodeDirectory + '/node.exe'), ($nodeDirectory + '/LICENSE'))
+$files = @($executable, 'runtime/node-runtime.json')
+if ($mode -eq 'bundled' -or $bridge) { $files += @(($nodeDirectory + '/node.exe'), ($nodeDirectory + '/LICENSE')) }
 if ($IncludeOtherExecutable) { $files += $otherExecutable }
 $files = @($files | Sort-Object)
+$bridgeNodeRoot = $null
+$bridgePinBytes = $null
+if ($bridge) {
+    $bridgeNodeRoot = Plain $LegacyBundledBridgeNodeDirectory $true
+    $bridgeNode = Plain (Join-Path $bridgeNodeRoot 'node.exe')
+    $bridgeLicense = Plain (Join-Path $bridgeNodeRoot 'LICENSE')
+    X64 $bridgeNode
+    if ((Hash $bridgeNode) -ne $node.executableSha256 -or (Hash $bridgeLicense) -ne $node.licenseSha256) { throw 'Legacy bridge Node files differ from their pins.' }
+    $legacyPin = [IO.File]::ReadAllText($pinPath) | ConvertFrom-Json
+    $null = $legacyPin.PSObject.Properties.Remove('mode')
+    $bridgePinBytes = $utf8.GetBytes(($legacyPin | ConvertTo-Json -Depth 12) + "`n")
+}
+function PayloadSource([string]$Relative) {
+    if ($bridge -and $Relative -eq ($nodeDirectory + '/node.exe')) { return (Join-Path $bridgeNodeRoot 'node.exe') }
+    if ($bridge -and $Relative -eq ($nodeDirectory + '/LICENSE')) { return (Join-Path $bridgeNodeRoot 'LICENSE') }
+    return (Join-Path $inputRoot $Relative)
+}
 $records = @()
 $total = [long]0
 foreach ($relative in $files) {
-    $source = Plain (Join-Path $inputRoot $relative)
+    if ($bridge -and $relative -eq 'runtime/node-runtime.json') {
+        $bytes = $bridgePinBytes.Length; $total += $bytes
+        $records += [ordered]@{ path = $relative; bytes = $bytes; sha256 = HashBytes $bridgePinBytes }
+        continue
+    }
+    $source = Plain (PayloadSource $relative)
     if ($relative.EndsWith('.exe')) { X64 $source }
     $bytes = (Get-Item -LiteralPath $source).Length; $total += $bytes
     $records += [ordered]@{ path = $relative; bytes = $bytes; sha256 = Hash $source }
 }
 if ($total -gt 1GB) { throw 'Expanded runtime update exceeds 1 GiB.' }
-if ((Hash (Join-Path $inputRoot ($nodeDirectory + '/node.exe'))) -ne $node.executableSha256 -or (Hash (Join-Path $inputRoot ($nodeDirectory + '/LICENSE'))) -ne $node.licenseSha256) { throw 'Node files differ from their pins.' }
+if ($mode -eq 'bundled' -and ((Hash (Join-Path $inputRoot ($nodeDirectory + '/node.exe'))) -ne $node.executableSha256 -or (Hash (Join-Path $inputRoot ($nodeDirectory + '/LICENSE'))) -ne $node.licenseSha256)) { throw 'Node files differ from their pins.' }
 if ($ArtifactBaseUrl) {
     $origin = New-Object Uri($ArtifactBaseUrl)
     if ($origin.Scheme -ne 'https' -or $origin.UserInfo -or $origin.Query -or $origin.Fragment) { throw 'ArtifactBaseUrl must be HTTPS without credentials/query/fragment.' }
 }
-$manifest = [ordered]@{
-    schema = 1; kind = 'codlet-runtime-update'; version = $Version; platform = $platform; profile = $PayloadProfile
-    runtime = [ordered]@{ version = $pin.version; executableSha256 = $node.executableSha256; licenseSha256 = $node.licenseSha256 }
-    files = $records
-}
+$runtime = [ordered]@{ version = $pin.version; executableSha256 = $node.executableSha256; licenseSha256 = $node.licenseSha256 }
+if ($mode -eq 'managed' -and -not $bridge) { $runtime.mode = 'managed' }
+$manifest = [ordered]@{ schema = 1; kind = 'codlet-runtime-update'; version = $Version; platform = $platform; profile = $PayloadProfile; runtime = $runtime; files = $records }
 $temporary = Join-Path $parent ('.codlet-runtime-publish-' + [Guid]::NewGuid().ToString('N'))
 $null = [IO.Directory]::CreateDirectory($temporary)
-$zipName = 'codlet-' + $Version + '-' + $platform + '-' + $PayloadProfile + '.zip'
+$zipName = 'codlet-' + $Version + '-' + $platform + '-' + $PayloadProfile + $(if ($bridge) { '-legacy-bundled' } else { '' }) + '.zip'
 $zipPath = Join-Path $temporary $zipName
 $manifestBytes = $utf8.GetBytes(($manifest | ConvertTo-Json -Depth 12) + "`n")
 Add-Type -AssemblyName System.IO.Compression
@@ -92,8 +124,12 @@ try {
     foreach ($relative in $files) {
         $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
         $entry.LastWriteTime = New-Object DateTimeOffset(2000, 1, 1, 0, 0, 0, ([TimeSpan]::Zero))
-        $source = [IO.File]::OpenRead((Join-Path $inputRoot $relative)); $target = $entry.Open()
-        try { $source.CopyTo($target) } finally { $source.Dispose(); $target.Dispose() }
+        if ($bridge -and $relative -eq 'runtime/node-runtime.json') {
+            $target = $entry.Open(); try { $target.Write($bridgePinBytes, 0, $bridgePinBytes.Length) } finally { $target.Dispose() }
+        } else {
+            $source = [IO.File]::OpenRead((PayloadSource $relative)); $target = $entry.Open()
+            try { $source.CopyTo($target) } finally { $source.Dispose(); $target.Dispose() }
+        }
     }
     $entry = $archive.CreateEntry('runtime-update-manifest.json', [IO.Compression.CompressionLevel]::Optimal)
     $entry.LastWriteTime = New-Object DateTimeOffset(2000, 1, 1, 0, 0, 0, ([TimeSpan]::Zero))

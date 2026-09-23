@@ -24,25 +24,51 @@ const BOOTSTRAP: &str = concat!(
     include_str!("../runtime/host.cjs")
 );
 const MAX_NODE_BYTES: u64 = 160 * 1024 * 1024;
+const MAX_LICENSE_BYTES: u64 = 2 * 1024 * 1024;
 
-#[derive(Deserialize)]
+mod provision;
+#[cfg(test)]
+mod tests;
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct RuntimePin {
+pub(super) struct RuntimePin {
+    schema: u32,
     version: String,
+    base_url: String,
+    #[serde(default)]
+    mode: Option<String>,
     platforms: BTreeMap<String, PlatformPin>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct PlatformPin {
+pub(super) struct PlatformPin {
+    archive: String,
+    archive_sha256: String,
+    #[serde(default)]
+    mirror_url: Option<String>,
     executable_sha256: String,
+    license_sha256: String,
     version: Option<String>,
+    base_url: Option<String>,
 }
 
 struct RuntimeFiles {
     executable: PathBuf,
+    license: PathBuf,
+    #[allow(dead_code)] // Mac native update proof records the checked Node version.
+    version: String,
+    executable_sha256: String,
+    license_sha256: String,
+    #[allow(dead_code)]
+    // Mac installer records persistent cache paths; Windows tests inspect them.
+    cached_executable: Option<PathBuf>,
+    #[cfg(target_os = "macos")]
+    cached_license: Option<PathBuf>,
     // Hold the checked binary against replacement while any plugin uses it.
     _file: File,
+    _license_file: File,
     #[cfg(target_os = "macos")]
     _snapshot: tempfile::TempDir,
 }
@@ -119,12 +145,19 @@ impl JsRuntime {
 
     pub fn discover() -> Result<Self, HostError> {
         let executable = std::env::current_exe().map_err(io_error)?;
-        Self::from_distribution(executable.parent().ok_or_else(|| {
+        let directory = executable.parent().ok_or_else(|| {
             HostError::new(
                 "js_runtime_missing",
                 "Codlet executable has no distribution directory",
             )
-        })?)
+        })?;
+        if directory.join("runtime/node-runtime.json").exists() {
+            provision::ensure_current(directory)
+        } else {
+            // Existing unit/isolated-client fixtures stage only the embedded
+            // bundled Node; production slim packages always carry the pin.
+            Self::from_distribution(directory)
+        }
     }
 
     /// A packaging/test seam selecting a Codlet distribution directory. The
@@ -132,6 +165,47 @@ impl JsRuntime {
     pub fn from_distribution(directory: &Path) -> Result<Self, HostError> {
         let pin: RuntimePin = serde_json::from_str(include_str!("../runtime/node-runtime.json"))
             .expect("checked-in Node runtime pin is valid");
+        Self::checked_bundled(directory, &pin)
+    }
+
+    /// Production resolver for a Core-owned current or already-verified staged
+    /// distribution. The caller, never a plugin, selects this directory.
+    pub(crate) fn ensure_from_distribution(directory: &Path) -> Result<Self, HostError> {
+        provision::ensure(directory)
+    }
+
+    pub(crate) fn executable_path(&self) -> &Path {
+        &self.0.executable
+    }
+
+    pub(crate) fn license_path(&self) -> &Path {
+        &self.0.license
+    }
+
+    pub(crate) fn verified_executable_sha256(&self) -> &str {
+        &self.0.executable_sha256
+    }
+
+    pub(crate) fn verified_license_sha256(&self) -> &str {
+        &self.0.license_sha256
+    }
+
+    #[allow(dead_code)] // Used by the Mac native fixture and staged update checks.
+    pub(crate) fn verified_node_version(&self) -> &str {
+        &self.0.version
+    }
+
+    #[allow(dead_code)] // Mac staged updates use this path; Windows tests inspect cache reuse.
+    pub(crate) fn cached_executable_path(&self) -> Option<&Path> {
+        self.0.cached_executable.as_deref()
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn cached_license_path(&self) -> Option<&Path> {
+        self.0.cached_license.as_deref()
+    }
+
+    fn checked_bundled(directory: &Path, pin: &RuntimePin) -> Result<Self, HostError> {
         let target = crate::platform::DesktopTarget::current().ok_or_else(|| {
             HostError::new(
                 "js_runtime_platform",
@@ -139,68 +213,93 @@ impl JsRuntime {
             )
         })?;
         let platform = target.node_platform();
-        let platform_pin = &pin.platforms[platform];
+        let platform_pin = pin.platforms.get(platform).ok_or_else(|| {
+            HostError::new(
+                "js_runtime_platform",
+                "Node runtime pin has no current platform",
+            )
+        })?;
         let version = platform_pin.version.as_deref().unwrap_or(&pin.version);
-        let expected = &platform_pin.executable_sha256;
-        let path = directory
+        let root = directory
             .join("runtime")
-            .join(format!("node-v{version}-{platform}"))
-            .join(target.node_executable());
+            .join(format!("node-v{version}-{platform}"));
+        Self::checked_pair(
+            &root.join(target.node_executable()),
+            &root.join("LICENSE"),
+            &platform_pin.executable_sha256,
+            &platform_pin.license_sha256,
+            version,
+            None,
+        )
+    }
+
+    fn checked_pair(
+        path: &Path,
+        license_path: &Path,
+        executable_sha256: &str,
+        license_sha256: &str,
+        version: &str,
+        cached: Option<(PathBuf, PathBuf)>,
+    ) -> Result<Self, HostError> {
         let missing = |error| {
             HostError::new(
                 "js_runtime_missing",
                 format!(
-                    "managed Node {} is unavailable at {}: {error}; stage the pinned runtime using the platform setup instructions",
-                    version,
+                    "Node {version} at {} is unavailable: {error}",
                     path.display()
                 ),
             )
         };
         #[cfg(windows)]
-        let file = {
-            let metadata = std::fs::symlink_metadata(&path).map_err(missing)?;
-            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-            use windows_sys::Win32::Storage::FileSystem::{
-                FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-            };
-            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            {
-                return Err(HostError::new(
-                    "js_runtime_invalid",
-                    "managed Node must be an ordinary file",
-                ));
-            }
-            OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(&path)
-                .map_err(missing)?
-        };
+        let (file, license_file) = (
+            open_plain_windows(path).map_err(&missing)?,
+            open_plain_windows(license_path).map_err(&missing)?,
+        );
         #[cfg(target_os = "macos")]
-        let (file, executable, snapshot) = snapshot_runtime(&path).map_err(missing)?;
-        if file.metadata().map_err(io_error)?.len() > MAX_NODE_BYTES {
+        let (file, license_file, executable, license, snapshot) =
+            snapshot_runtime(path, license_path).map_err(&missing)?;
+        let node_size = file.metadata().map_err(io_error)?.len();
+        let license_size = license_file.metadata().map_err(io_error)?.len();
+        if node_size == 0
+            || node_size > MAX_NODE_BYTES
+            || license_size == 0
+            || license_size > MAX_LICENSE_BYTES
+        {
             return Err(HostError::new(
                 "js_runtime_invalid",
-                "managed Node exceeds the runtime file limit",
+                "Node or LICENSE exceeds its runtime file limit",
             ));
         }
-        if sha256(&file)? != *expected {
+        if sha256(&file)? != executable_sha256 || sha256(&license_file)? != license_sha256 {
             return Err(HostError::new(
                 "js_runtime_mismatch",
                 format!(
-                    "{} does not match Codlet's pinned Node {}; repair the runtime package",
+                    "{} or LICENSE does not match the pinned Node {}; repair the runtime package",
                     path.display(),
                     version
                 ),
             ));
         }
+        let (cached_executable, cached_license) = cached.unzip();
+        #[cfg(windows)]
+        let _ = cached_license;
         Ok(Self(Arc::new(RuntimeFiles {
             #[cfg(windows)]
-            executable: std::fs::canonicalize(&path).map_err(io_error)?,
+            executable: std::fs::canonicalize(path).map_err(io_error)?,
             #[cfg(target_os = "macos")]
             executable,
+            #[cfg(windows)]
+            license: std::fs::canonicalize(license_path).map_err(io_error)?,
+            #[cfg(target_os = "macos")]
+            license,
+            cached_executable,
+            #[cfg(target_os = "macos")]
+            cached_license,
+            version: version.into(),
+            executable_sha256: executable_sha256.into(),
+            license_sha256: license_sha256.into(),
             _file: file,
+            _license_file: license_file,
             #[cfg(target_os = "macos")]
             _snapshot: snapshot,
         })))
@@ -302,39 +401,68 @@ fn io_error(error: std::io::Error) -> HostError {
     HostError::new("js_runtime_io", error.to_string())
 }
 
-#[cfg(target_os = "macos")]
-fn snapshot_runtime(path: &Path) -> std::io::Result<(File, PathBuf, tempfile::TempDir)> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-    let source = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
-    let metadata = source.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_NODE_BYTES || metadata.nlink() != 1 {
-        return Err(std::io::Error::other(
-            "Managed Node must be an ordinary bounded executable",
-        ));
+#[cfg(windows)]
+fn open_plain_windows(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::other("Node runtime file must be ordinary"));
     }
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(target_os = "macos")]
+fn snapshot_runtime(
+    path: &Path,
+    license_path: &Path,
+) -> std::io::Result<(File, File, PathBuf, PathBuf, tempfile::TempDir)> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     // A Unix open descriptor does not prevent a pathname replacement or an
-    // in-place write. Execute a private generation-owned copy, hash that copy,
-    // and keep it until the last Host generation has retired.
+    // in-place write. Use a private generation-owned copy of both pinned files.
     let directory = tempfile::Builder::new().prefix("codlet-node-").tempdir()?;
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
     let executable = directory.path().join("node");
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o500)
-        .open(&executable)?;
-    if std::io::copy(&mut source.take(MAX_NODE_BYTES + 1), &mut output)? > MAX_NODE_BYTES {
-        return Err(std::io::Error::other(
-            "Managed Node exceeded its size limit during snapshot",
-        ));
+    let license = directory.path().join("LICENSE");
+    for (source_path, target_path, maximum, mode) in [
+        (path, &executable, MAX_NODE_BYTES, 0o500),
+        (license_path, &license, MAX_LICENSE_BYTES, 0o400),
+    ] {
+        let mut source = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(source_path)?;
+        let metadata = source.metadata()?;
+        if !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > maximum
+            || metadata.nlink() != 1
+        {
+            return Err(std::io::Error::other(
+                "Node runtime source is not an ordinary bounded file",
+            ));
+        }
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(target_path)?;
+        if std::io::copy(&mut source.take(maximum + 1), &mut output)? > maximum {
+            return Err(std::io::Error::other(
+                "Node runtime exceeded its snapshot size limit",
+            ));
+        }
+        output.sync_all()?;
     }
-    output.sync_all()?;
-    drop(output);
     let file = File::open(&executable)?;
-    Ok((file, executable, directory))
+    let license_file = File::open(&license)?;
+    Ok((file, license_file, executable, license, directory))
 }
 
 #[cfg(target_os = "macos")]

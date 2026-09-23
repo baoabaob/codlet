@@ -12,14 +12,13 @@ import tempfile
 import time
 from urllib.error import HTTPError
 from urllib.parse import quote
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 REPOSITORY = "baoabaob/codlet"
 TAG = "node-runtimes"
 TITLE = "Automated Node.js runtime dependencies (not Codlet installers)"
 PLATFORMS = {"win-x64": ".zip", "win-arm64": ".zip", "darwin-arm64": ".tar.gz"}
-API = f"https://api.github.com/repos/{REPOSITORY}"
 MAX_ARCHIVE_BYTES = 150 * 1024 * 1024
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
@@ -27,7 +26,7 @@ VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, message, headers, new_url):
-        raise ValueError(f"Unexpected redirect from the pinned official URL: {request.full_url}")
+        raise ValueError(f"Unexpected redirect from the fixed publication URL: {request.full_url}")
 
 
 def pinned_archives(pin_path):
@@ -90,7 +89,7 @@ def github_request(method, path, token, payload=None, missing=False, upload=None
         headers["Content-Type"] = "application/octet-stream" if upload is not None else "application/json"
     request = Request(url, data=data, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=120) as response:
+        with build_opener(NoRedirect()).open(request, timeout=120) as response:
             body = response.read()
             return json.loads(body) if body else None
     except HTTPError as error:

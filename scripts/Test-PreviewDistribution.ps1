@@ -9,6 +9,12 @@ if(Test-Path -LiteralPath $artifacts){throw 'Use a new owned test output directo
 $checks=[Collections.Generic.List[string]]::new()
 $exe=Join-Path $root 'codlet.exe'
 function Assert([bool]$Condition,[string]$Message){if(-not $Condition){throw $Message}}
+$manifest=[IO.File]::ReadAllText((Join-Path $root 'distribution-manifest.json'))|ConvertFrom-Json
+$runtime=[IO.File]::ReadAllText((Join-Path $root 'runtime/node-runtime.json'))|ConvertFrom-Json
+Assert ($runtime.mode -eq 'managed' -and $manifest.runtime.mode -eq 'managed') 'Distribution must declare a managed runtime'
+Assert (@($manifest.files|Where-Object{$_.path -match '^runtime/node-v[^/]+/'}).Count -eq 0) 'Distribution manifest includes bundled Node files'
+Assert (@(Get-ChildItem -LiteralPath (Join-Path $root 'runtime') -Recurse -File | Where-Object{$_.Name -in @('node.exe','LICENSE')}).Count -eq 0) 'Distribution includes bundled Node files'
+$checks.Add('portable distribution declares managed runtime and contains no bundled Node executable or license')
 function Invoke-CodletTestCli([string[]]$Arguments){
   $before=[Console]::OutputEncoding
   try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$output=& $exe @Arguments;if($LASTEXITCODE -ne 0){throw "CLI failed: $output"};($output|Out-String)|ConvertFrom-Json}

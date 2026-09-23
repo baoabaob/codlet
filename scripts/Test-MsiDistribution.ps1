@@ -20,6 +20,8 @@ if($StructureOnly){
     $featureRows=@(Rows 'SELECT `Feature`,`Level` FROM `Feature`' 2)
     $featureNames=@($featureRows|ForEach-Object{$_[0]})
     foreach($name in @('Core','UiAdapter','DesktopAdapter','GUI','StartMenu','DesktopShortcut')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
+    $installedFiles=@(Rows 'SELECT `FileName` FROM `File`' 1|ForEach-Object{$_[0]})
+    if(@($installedFiles|Where-Object{$_ -match '(^|\|)node\.exe$'}).Count){throw 'Managed MSI contains a bundled Node executable'}
     $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
     if($shortcuts.Count -ne 3 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe'}).Count){throw 'Shortcuts must target the native launcher'}
     $sequences=@(Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)
@@ -32,7 +34,7 @@ if($StructureOnly){
     if($restart -ne 'DisableShutdown'){throw 'MSI may automatically close user applications'}
     $launch=@(Rows "SELECT ``Condition`` FROM ``ControlEvent`` WHERE ``Event``='DoAction' AND ``Argument``='LaunchCodletAfterInstall'" 1)[0][0]
     if($launch -notlike '*WIXUI_EXITDIALOGOPTIONALCHECKBOX*'){throw 'Post-install launch is not opt-in'}
-    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
+    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;bundledNode=$false;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
     $report|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $artifacts 'report.json') -Encoding UTF8
     $report|ConvertTo-Json -Compress
   }finally{[Runtime.InteropServices.Marshal]::ReleaseComObject($database)|Out-Null;[Runtime.InteropServices.Marshal]::ReleaseComObject($installer)|Out-Null}

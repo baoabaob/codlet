@@ -30,7 +30,7 @@ While Core runs, the `/codlet` skill can explain Codlet, manage plugins through 
 A plugin directory contains `codlet.json`, built JavaScript entrypoints, and optional resources. Renderer and Host entrypoints export CommonJS `activate(context)` and `deactivate()` functions. Combined entries share one lifecycle generation.
 
 - Renderer code uses the public DOM/UI SDK, or explicitly granted main-world/CDP access.
-- Host code runs in Codlet's pinned Node runtime and can use managed storage, process, network, and traffic services.
+- Host code runs in Codlet's verified Node runtime and can use managed storage, process, network, and traffic services.
 - Capabilities let plugins depend on adapters instead of duplicating private client integration.
 
 Start with the [plugin format](docs/spec/plugin-format.md), [Host contract](docs/spec/host.md), and [examples](examples). Public declarations are in [types](types). Trusted Host code has the user's OS privileges: broker permissions do not make ordinary Node code an OS sandbox.
@@ -43,7 +43,7 @@ node frontend/build.mjs
 cargo build --locked --bin codlet
 ```
 
-Stage the pinned Node runtime before launch or Host tests. Follow the [development guide](docs/development.md) for Windows/macOS commands, targeted tests, and the independent test client. Release builds reject the synthetic `test-fixtures` catalog.
+Normal launches prepare the verified Node runtime automatically. Isolated lab and Host fixtures still stage their pinned runtime explicitly. Follow the [development guide](docs/development.md) for Windows/macOS commands, targeted tests, and the independent test client. Release builds reject the synthetic `test-fixtures` catalog.
 
 The [documentation index](docs/README.md) covers architecture, maintained contracts, diagnostics, and delivery. [CONTRIBUTING.md](CONTRIBUTING.md) explains contribution and validation expectations; [SECURITY.md](SECURITY.md) explains the trust boundary and reporting route.
 

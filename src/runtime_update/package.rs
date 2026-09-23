@@ -26,12 +26,26 @@ pub(super) struct RuntimeFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum NodeRuntimeMode {
+    #[default]
+    Bundled,
+    Managed,
+}
+impl NodeRuntimeMode {
+    fn is_bundled(&self) -> bool {
+        *self == Self::Bundled
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct NodeRuntime {
     pub version: String,
     pub executable_sha256: String,
     pub license_sha256: String,
+    #[serde(default, skip_serializing_if = "NodeRuntimeMode::is_bundled")]
+    pub mode: NodeRuntimeMode,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -143,6 +157,8 @@ pub(super) fn restore_staged(
 struct NodePin {
     schema: u32,
     version: String,
+    #[serde(default)]
+    mode: NodeRuntimeMode,
     platforms: BTreeMap<String, NodePlatform>,
 }
 #[derive(Deserialize)]
@@ -371,20 +387,7 @@ fn expected_paths(
             "Mac app files are enumerated from the signed bundle.",
         ));
     }
-    if !valid_sha(&runtime.executable_sha256)
-        || !valid_sha(&runtime.license_sha256)
-        || runtime.version.len() > 64
-        || !runtime
-            .version
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
-        || runtime.version.contains("..")
-    {
-        return Err(error(
-            "runtime_update_manifest_invalid",
-            "Invalid bundled Node identity.",
-        ));
-    }
+    validate_node_identity(runtime)?;
     let node = format!("runtime/node-v{}-{PLATFORM}", runtime.version);
     let primary = if profile == RuntimePayloadProfile::Portable {
         "codlet.exe"
@@ -396,16 +399,32 @@ fn expected_paths(
     } else {
         "codlet.exe"
     };
-    let mut paths = BTreeSet::from([
-        primary.into(),
-        "runtime/node-runtime.json".into(),
-        format!("{node}/node.exe"),
-        format!("{node}/LICENSE"),
-    ]);
+    let mut paths = BTreeSet::from([primary.into(), "runtime/node-runtime.json".into()]);
+    if runtime.mode == NodeRuntimeMode::Bundled {
+        paths.insert(format!("{node}/node.exe"));
+        paths.insert(format!("{node}/LICENSE"));
+    }
     if include_other {
         paths.insert(other.into());
     }
     Ok(paths)
+}
+fn validate_node_identity(runtime: &NodeRuntime) -> Result<()> {
+    if !valid_sha(&runtime.executable_sha256)
+        || !valid_sha(&runtime.license_sha256)
+        || runtime.version.len() > 64
+        || !runtime
+            .version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+        || runtime.version.contains("..")
+    {
+        return Err(error(
+            "runtime_update_manifest_invalid",
+            "Invalid pinned Node identity.",
+        ));
+    }
+    Ok(())
 }
 fn pin_at(root: &Path) -> Result<NodeRuntime> {
     let pin_path = if PLATFORM == "darwin-arm64" {
@@ -436,6 +455,7 @@ fn pin_at(root: &Path) -> Result<NodeRuntime> {
                 "Node license is not pinned.",
             )
         })?,
+        mode: pin.mode,
     })
 }
 #[cfg(target_os = "macos")]
@@ -602,6 +622,15 @@ fn verify_payload(
             "Unsupported runtime package format/platform.",
         ));
     }
+    validate_node_identity(&manifest.runtime)?;
+    if manifest.profile == RuntimePayloadProfile::IsolatedClient
+        && manifest.runtime.mode == NodeRuntimeMode::Managed
+    {
+        return Err(error(
+            "runtime_update_manifest_invalid",
+            "The isolated-client launcher still requires a bundled Node runtime.",
+        ));
+    }
     if manifest.profile == RuntimePayloadProfile::MacApp {
         #[cfg(not(target_os = "macos"))]
         return Err(error(
@@ -616,22 +645,47 @@ fn verify_payload(
                 "Codlet.app/Contents/Resources/runtime/node-v{}-{PLATFORM}/bin/node",
                 manifest.runtime.version
             );
+            let license = format!(
+                "Codlet.app/Contents/Resources/runtime/node-v{}-{PLATFORM}/LICENSE",
+                manifest.runtime.version
+            );
             for required in [
                 "Codlet.app/Contents/Info.plist",
                 "Codlet.app/Contents/MacOS/Codlet",
                 "Codlet.app/Contents/Resources/codlet",
                 "Codlet.app/Contents/Resources/runtime/node-runtime.json",
                 "Codlet.app/Contents/Resources/runtime/update-channel.json",
-                &node,
-                &format!(
-                    "Codlet.app/Contents/Resources/runtime/node-v{}-{PLATFORM}/LICENSE",
-                    manifest.runtime.version
-                ),
             ] {
                 if !declared.contains(required) {
                     return Err(error(
                         "runtime_update_manifest_invalid",
                         "Mac app update omits a required bundle file.",
+                    ));
+                }
+            }
+            if manifest.runtime.mode == NodeRuntimeMode::Bundled {
+                if !declared.contains(&node) || !declared.contains(&license) {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Bundled Mac update omits its pinned Node files.",
+                    ));
+                }
+            } else {
+                if !declared
+                    .contains("Codlet.app/Contents/Resources/runtime/client-node-profiles.json")
+                {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Managed Mac update omits its signed client Node profile.",
+                    ));
+                }
+                if declared
+                    .iter()
+                    .any(|path| path.starts_with("Codlet.app/Contents/Resources/runtime/node-v"))
+                {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Managed Mac update must not contain bundled Node files.",
                     ));
                 }
             }
@@ -668,16 +722,24 @@ fn verify_payload(
             if pin.version != manifest.runtime.version
                 || pin.executable_sha256 != manifest.runtime.executable_sha256
                 || pin.license_sha256 != manifest.runtime.license_sha256
-                || manifest
-                    .files
-                    .iter()
-                    .find(|f| f.path == node)
-                    .map(|f| &f.sha256)
-                    != Some(&pin.executable_sha256)
+                || pin.mode != manifest.runtime.mode
+                || (pin.mode == NodeRuntimeMode::Bundled
+                    && (manifest
+                        .files
+                        .iter()
+                        .find(|f| f.path == node)
+                        .map(|f| &f.sha256)
+                        != Some(&pin.executable_sha256)
+                        || manifest
+                            .files
+                            .iter()
+                            .find(|f| f.path == license)
+                            .map(|f| &f.sha256)
+                            != Some(&pin.license_sha256)))
             {
                 return Err(error(
                     "runtime_update_digest_mismatch",
-                    "Mac bundled Node identity differs from its pin.",
+                    "Mac Node identity differs from its pin or payload mode.",
                 ));
             }
             verify_mac_app(root)?;
@@ -754,32 +816,31 @@ fn verify_payload(
     if pin.version != manifest.runtime.version
         || pin.executable_sha256 != manifest.runtime.executable_sha256
         || pin.license_sha256 != manifest.runtime.license_sha256
+        || pin.mode != manifest.runtime.mode
     {
         return Err(error(
             "runtime_update_digest_mismatch",
-            "Bundled Node metadata and runtime manifest disagree.",
+            "Node metadata and runtime manifest disagree.",
         ));
     }
-    let node = format!("runtime/node-v{}-{PLATFORM}", pin.version);
-    if manifest
-        .files
-        .iter()
-        .find(|f| f.path == format!("{node}/node.exe"))
-        .unwrap()
-        .sha256
-        != pin.executable_sha256
-        || manifest
+    if pin.mode == NodeRuntimeMode::Bundled {
+        let node = format!("runtime/node-v{}-{PLATFORM}", pin.version);
+        if manifest
             .files
             .iter()
-            .find(|f| f.path == format!("{node}/LICENSE"))
-            .unwrap()
-            .sha256
-            != pin.license_sha256
-    {
-        return Err(error(
-            "runtime_update_digest_mismatch",
-            "Bundled Node files do not match their pins.",
-        ));
+            .find(|f| f.path == format!("{node}/node.exe"))
+            .is_none_or(|f| f.sha256 != pin.executable_sha256)
+            || manifest
+                .files
+                .iter()
+                .find(|f| f.path == format!("{node}/LICENSE"))
+                .is_none_or(|f| f.sha256 != pin.license_sha256)
+        {
+            return Err(error(
+                "runtime_update_digest_mismatch",
+                "Bundled Node files do not match their pins.",
+            ));
+        }
     }
     if no_extra_files {
         let mut found = BTreeSet::new();

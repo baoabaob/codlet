@@ -10,6 +10,9 @@ if(compiler.error||compiler.status!==0)throw Error('Windows installer helper com
 const manifest=JSON.parse(await readFile(resolve(root,'distribution-manifest.json'),'utf8'));
 if(manifest.platform!=='win-x64'||manifest.kind!=='codlet-portable-distribution')throw Error('Expected Windows x64 portable input');
 if(!/^[0-9a-f]{40}$/i.test(manifest.sourceCommit??'')||!/^[0-9a-f]{40}$/i.test(manifest.pluginsCommit??''))throw Error('Portable manifest must record full 40-hex Core and plugin commits');
+const runtime=JSON.parse(await readFile(resolve(root,'runtime/node-runtime.json'),'utf8'));
+if(runtime.mode!=='managed'||manifest.runtime?.mode!=='managed'||manifest.runtime.version!==runtime.version)throw Error('MSI requires a managed-runtime portable distribution');
+if(manifest.files.some(file=>/^runtime\/node-v[^/]+\/[^/]+$/.test(file.path)))throw Error('Managed-runtime MSI may not bundle Node files');
 const xml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const id=(prefix,value)=>prefix+digest(value).slice(0,24);
@@ -48,7 +51,7 @@ const msiVersion=`${parts[1]}.${parts[2]}.${Number(parts[4])}`;
 if(Number(parts[4])>65535)throw Error('Preview sequence exceeds MSI version range');
 const licenseText=await readFile(resolve(root,'LICENSE'),'utf8');
 const rtfText=value=>value.replaceAll('\\','\\\\').replaceAll('{','\\{').replaceAll('}','\\}').replaceAll('\r','').replaceAll('\n','\\par\n');
-const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet local Preview\n\nCore and official plugins are licensed under Apache-2.0. Installation is per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE for attribution and THIRD_PARTY_NOTICES.txt and the Node LICENSE for third-party terms.\n\n')+rtfText(licenseText)+'}';
+const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet local Preview\n\nCore and official plugins are licensed under Apache-2.0. Installation is per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
 await writeFile(resolve(build,'notice.rtf'),license);
 const source=`<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="*" Name="Codlet Preview ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
@@ -69,7 +72,7 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 ${components.join('\n')}
 <DirectoryRef Id="CodletMenu"><Component Id="StartMenu" Guid="${guid('start-menu')}" Win64="yes"><Shortcut Id="LaunchCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><Shortcut Id="ChoosePlugins" Name="选择 Codlet 官方插件" Target="[INSTALLFOLDER]Codlet-Launcher.exe" Arguments="--configure" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RemoveFolder Id="RemoveMenu" On="uninstall"/><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
 <DirectoryRef Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="${guid('desktop-shortcut')}" Win64="yes"><Shortcut Id="DesktopCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
-<Feature Id="Core" Title="Codlet Core（必需）" Description="运行时、CLI 与 codlet 技能。仅当前用户安装；不会修改官方客户端的数据目录。" Level="1" Absent="disallow" ConfigurableDirectory="INSTALLFOLDER">${refs(features.Core)}</Feature>
+<Feature Id="Core" Title="Codlet Core（必需）" Description="CLI 与 codlet 技能。运行时首次使用时由 Codlet 自动准备；仅当前用户安装，不修改官方客户端的数据目录。" Level="1" Absent="disallow" ConfigurableDirectory="INSTALLFOLDER">${refs(features.Core)}</Feature>
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动与插件选择入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>
 <Feature Id="UiAdapter" Title="UI Adapter" Description="接入 Codex 侧栏和插件页面。需要界面访问权限。" Level="1">${refs(features.UiAdapter)}</Feature>

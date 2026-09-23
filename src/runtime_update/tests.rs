@@ -30,6 +30,7 @@ fn payload(
         version: node_version.into(),
         executable_sha256: sha(&node),
         license_sha256: sha(&license),
+        mode: package::NodeRuntimeMode::Bundled,
     };
     let pin = serde_json::json!({"schema":1,"version":node_version,"baseUrl":"https://nodejs.org/fixture","platforms":{"win-x64":{"executableSha256":runtime.executable_sha256,"licenseSha256":runtime.license_sha256}}});
     let executable = if profile == RuntimePayloadProfile::Portable {
@@ -72,6 +73,28 @@ fn payload(
         },
         files,
     )
+}
+#[cfg(windows)]
+fn managed_payload(
+    profile: RuntimePayloadProfile,
+) -> (package::RuntimePackageManifest, BTreeMap<String, Vec<u8>>) {
+    let (mut manifest, mut files) = payload(profile, "9.0.0", "25.0.0", "new");
+    manifest.runtime.mode = package::NodeRuntimeMode::Managed;
+    let pin_path = "runtime/node-runtime.json";
+    let mut pin: serde_json::Value = serde_json::from_slice(&files[pin_path]).unwrap();
+    pin["mode"] = "managed".into();
+    files.insert(pin_path.into(), serde_json::to_vec(&pin).unwrap());
+    files.retain(|path, _| !path.starts_with("runtime/node-v"));
+    manifest.files = files
+        .iter()
+        .map(|(path, bytes)| package::RuntimeFile {
+            path: path.clone(),
+            bytes: bytes.len() as u64,
+            sha256: sha(bytes),
+            mode: None,
+        })
+        .collect();
+    (manifest, files)
 }
 fn zip_payload(
     manifest: &package::RuntimePackageManifest,
@@ -163,6 +186,51 @@ fn unconfigured_development_is_truthful_offline_and_creates_no_update_directory(
     assert_eq!(
         read_channel(root.path()).unwrap().check_interval_seconds,
         900
+    );
+}
+
+#[test]
+fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
+    let root = tempfile::tempdir().unwrap();
+    let path = if PLATFORM == "darwin-arm64" {
+        root.path()
+            .join("Codlet.app/Contents/Resources/runtime/update-channel.json")
+    } else {
+        root.path().join("runtime/update-channel.json")
+    };
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut channel = RuntimeUpdateChannel {
+        schema: 1,
+        channel: "preview".into(),
+        check_interval_seconds: 900,
+        source: Some(RuntimeUpdateSource::Github {
+            repository_url: "https://github.com/baoabaob/codlet".into(),
+            manifest_asset: "codlet-update.json".into(),
+        }),
+    };
+    let selected_asset = |channel: RuntimeUpdateChannel| match channel.source.unwrap() {
+        RuntimeUpdateSource::Github { manifest_asset, .. } => manifest_asset,
+        _ => panic!("expected GitHub release source"),
+    };
+    std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(
+        selected_asset(read_channel(root.path()).unwrap()),
+        "codlet-update-managed.json"
+    );
+    channel.check_interval_seconds = 901;
+    std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(
+        selected_asset(read_channel(root.path()).unwrap()),
+        "codlet-update.json"
+    );
+    channel.check_interval_seconds = 900;
+    if let Some(RuntimeUpdateSource::Github { repository_url, .. }) = &mut channel.source {
+        *repository_url = "https://github.com/community/codlet".into();
+    }
+    std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(
+        selected_asset(read_channel(root.path()).unwrap()),
+        "codlet-update.json"
     );
 }
 
@@ -320,6 +388,125 @@ fn runtime_profiles_stage_only_their_own_executable_and_resume_after_restart() {
             "runtime_update_digest_mismatch"
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn managed_portable_package_has_exact_slim_layout_and_pin_mode() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("updates");
+    let (manifest, files) = managed_payload(RuntimePayloadProfile::Portable);
+    let zip = zip_payload(&manifest, &files, None);
+    let staged = stage(&zip, RuntimePayloadProfile::Portable, &state).unwrap();
+    assert_eq!(
+        staged.manifest.runtime.mode,
+        package::NodeRuntimeMode::Managed
+    );
+    assert_eq!(staged.manifest.files.len(), 2);
+    package::recheck_staged(&staged).unwrap();
+    assert_eq!(
+        package::inspect_installation(&staged.directory, RuntimePayloadProfile::Portable, false)
+            .unwrap()
+            .runtime
+            .mode,
+        package::NodeRuntimeMode::Managed
+    );
+    package::persist_staged(&state, &staged, &channel()).unwrap();
+    assert!(
+        package::restore_staged(&state, &channel(), Some(RuntimePayloadProfile::Portable))
+            .unwrap()
+            .is_some()
+    );
+
+    let (mut wrong, files) = managed_payload(RuntimePayloadProfile::Portable);
+    wrong.runtime.mode = package::NodeRuntimeMode::Bundled;
+    assert!(
+        stage(
+            &zip_payload(&wrong, &files, None),
+            RuntimePayloadProfile::Portable,
+            &state
+        )
+        .is_err()
+    );
+    let (mut wrong, mut files) = managed_payload(RuntimePayloadProfile::Portable);
+    let mut pin: serde_json::Value =
+        serde_json::from_slice(&files["runtime/node-runtime.json"]).unwrap();
+    pin.as_object_mut().unwrap().remove("mode");
+    let bytes = serde_json::to_vec(&pin).unwrap();
+    files.insert("runtime/node-runtime.json".into(), bytes.clone());
+    let record = wrong
+        .files
+        .iter_mut()
+        .find(|f| f.path == "runtime/node-runtime.json")
+        .unwrap();
+    record.bytes = bytes.len() as u64;
+    record.sha256 = sha(&bytes);
+    assert!(
+        stage(
+            &zip_payload(&wrong, &files, None),
+            RuntimePayloadProfile::Portable,
+            &state
+        )
+        .is_err()
+    );
+    let (wrong, mut files) = managed_payload(RuntimePayloadProfile::Portable);
+    files.insert(
+        "runtime/node-v25.0.0-win-x64/node.exe".into(),
+        pe("unexpected"),
+    );
+    assert!(
+        stage(
+            &zip_payload(&wrong, &files, None),
+            RuntimePayloadProfile::Portable,
+            &state
+        )
+        .is_err()
+    );
+    let (mut wrong, files) = managed_payload(RuntimePayloadProfile::Portable);
+    wrong.runtime.executable_sha256 = "0".repeat(64);
+    assert!(
+        stage(
+            &zip_payload(&wrong, &files, None),
+            RuntimePayloadProfile::Portable,
+            &state
+        )
+        .is_err()
+    );
+    let (wrong, files) = managed_payload(RuntimePayloadProfile::IsolatedClient);
+    assert!(
+        stage(
+            &zip_payload(&wrong, &files, None),
+            RuntimePayloadProfile::IsolatedClient,
+            &state
+        )
+        .is_err()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn legacy_bundled_package_cannot_omit_its_pinned_node() {
+    let temp = tempfile::tempdir().unwrap();
+    let (manifest, mut files) = payload(RuntimePayloadProfile::Portable, "9.0.0", "24.21.0", "new");
+    files.remove("runtime/node-v24.21.0-win-x64/node.exe");
+    assert!(
+        stage(
+            &zip_payload(&manifest, &files, None),
+            RuntimePayloadProfile::Portable,
+            &temp.path().join("updates")
+        )
+        .is_err()
+    );
+    let (mut manifest, files) = payload(RuntimePayloadProfile::Portable, "9.0.0", "24.21.0", "new");
+    manifest.files.retain(|f| !f.path.ends_with("/node.exe"));
+    assert!(
+        stage(
+            &zip_payload(&manifest, &files, None),
+            RuntimePayloadProfile::Portable,
+            &temp.path().join("updates")
+        )
+        .is_err()
+    );
 }
 
 #[cfg(windows)]

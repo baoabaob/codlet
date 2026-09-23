@@ -275,6 +275,7 @@ fn missing_or_replaced_managed_runtime_is_rejected_without_a_path_fallback() {
     let runtime = directory.path().join("runtime/node-v24.21.0-win-x64");
     std::fs::create_dir_all(&runtime).unwrap();
     std::fs::write(runtime.join("node.exe"), b"MZ-not-the-pinned-runtime").unwrap();
+    std::fs::write(runtime.join("LICENSE"), b"not-the-pinned-license").unwrap();
     assert_eq!(
         JsRuntime::from_distribution(directory.path())
             .err()

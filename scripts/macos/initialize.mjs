@@ -1,4 +1,4 @@
-// Invoked by the native launcher using the bundled, pinned Node runtime.
+// Invoked by Core's fixed setup command with a held, verified Node runtime.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';

@@ -46,7 +46,7 @@ function digest(file) {
   return { bytes: data.length, sha256: hash(data), mode: before.mode & 0o777 };
 }
 function verify(file, record) {
-  if (!sha(record.sha256) || !Number.isSafeInteger(record.bytes) || record.bytes < 0 || ![0o644, 0o755].includes(record.mode)) throw fail('plan_invalid', 'Invalid app file identity.');
+  if (!sha(record.sha256) || !Number.isSafeInteger(record.bytes) || record.bytes < 0 || ![0o400, 0o500, 0o600, 0o700, 0o644, 0o755].includes(record.mode)) throw fail('plan_invalid', 'Invalid file identity.');
   const actual = digest(file);
   if (actual.bytes !== record.bytes || actual.sha256 !== record.sha256 || actual.mode !== record.mode) throw fail('payload_changed', 'App bytes or permissions differ from the checked manifest.');
 }
@@ -73,15 +73,46 @@ function inventory(root) {
   }
   return found.sort();
 }
+function runtimeMode(runtime) {
+  const mode = runtime?.mode ?? 'bundled';
+  if (!['bundled', 'managed'].includes(mode)) throw fail('plan_invalid', 'Unknown app Node runtime mode.');
+  return mode;
+}
 function records(files, runtime) {
   if (!Array.isArray(files) || files.length < 7 || files.length > 4096 || !runtime || !/^[0-9A-Za-z.-]{1,64}$/.test(runtime.version) || runtime.version.includes('..') || !sha(runtime.executableSha256) || !sha(runtime.licenseSha256)) throw fail('plan_invalid', 'Invalid app inventory or Node identity.');
+  const mode = runtimeMode(runtime);
   const paths = files.map(f => f.path);
   if (JSON.stringify(paths) !== JSON.stringify([...new Set(paths)].sort()) || paths.some(p => !/^Codlet\.app\/[A-Za-z0-9._/-]+$/.test(p) || p.split('/').some(s => !s || s === '.' || s === '..'))) throw fail('plan_path_invalid', 'App files must have unique sorted bundle paths.');
   const node = `Codlet.app/Contents/Resources/runtime/node-v${runtime.version}-darwin-arm64/bin/node`;
   const license = `Codlet.app/Contents/Resources/runtime/node-v${runtime.version}-darwin-arm64/LICENSE`;
-  for (const required of ['Codlet.app/Contents/Info.plist', 'Codlet.app/Contents/MacOS/Codlet', 'Codlet.app/Contents/Resources/codlet', 'Codlet.app/Contents/Resources/runtime/node-runtime.json', 'Codlet.app/Contents/Resources/runtime/update-channel.json', node, license]) if (!paths.includes(required)) throw fail('plan_invalid', 'Signed app is missing a required file.');
+  for (const required of ['Codlet.app/Contents/Info.plist', 'Codlet.app/Contents/MacOS/Codlet', 'Codlet.app/Contents/Resources/codlet', 'Codlet.app/Contents/Resources/runtime/node-runtime.json', 'Codlet.app/Contents/Resources/runtime/update-channel.json']) if (!paths.includes(required)) throw fail('plan_invalid', 'Signed app is missing a required file.');
   for (const file of files) if (!sha(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > 512 * 1024 * 1024 || ![0o644, 0o755].includes(file.mode)) throw fail('plan_invalid', 'Invalid app file record.');
-  if (files.find(f => f.path === node).sha256 !== runtime.executableSha256 || files.find(f => f.path === license).sha256 !== runtime.licenseSha256) throw fail('plan_invalid', 'Node files differ from their checked pins.');
+  if (mode === 'bundled') {
+    if (!paths.includes(node) || !paths.includes(license)) throw fail('plan_invalid', 'Bundled app is missing its Node runtime.');
+    if (files.find(f => f.path === node).sha256 !== runtime.executableSha256 || files.find(f => f.path === license).sha256 !== runtime.licenseSha256) throw fail('plan_invalid', 'Node files differ from their checked pins.');
+  } else if (paths.some(p => p.startsWith('Codlet.app/Contents/Resources/runtime/node-v'))) throw fail('plan_invalid', 'Managed app must not carry a second Node runtime.');
+}
+function inside(file, root) {
+  const relative = path.relative(root, file);
+  return !relative || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+}
+function verifyPrepared(plan) {
+  if (runtimeMode(plan.newRuntime) !== 'managed') {
+    if (plan.preparedNode || plan.preparedLicense) throw fail('plan_invalid', 'Bundled update has unexpected managed runtime records.');
+    return;
+  }
+  if (!plan.preparedNode || !plan.preparedLicense) throw fail('plan_invalid', 'Managed update has no prepared Node runtime.');
+  const node = absolute(plan.preparedNode.path), license = absolute(plan.preparedLicense.path);
+  for (const file of [node, license]) {
+    if (inside(file, path.join(plan.installRoot, 'Codlet.app')) || inside(file, path.join(plan.stagedRoot, 'Codlet.app')) || inside(file, plan.backupRoot)) throw fail('plan_path_invalid', 'Prepared Node would move with an app bundle.');
+  }
+  if (same(node, license)) throw fail('plan_path_invalid', 'Prepared Node and license paths overlap.');
+  verify(node, plan.preparedNode); verify(license, plan.preparedLicense);
+  const fallback = plan.preparedNode.sha256 === plan.newRuntime.executableSha256 && plan.preparedLicense.sha256 === plan.newRuntime.licenseSha256;
+  const profileFile = path.join(plan.stagedRoot, 'Codlet.app/Contents/Resources/runtime/client-node-profiles.json');
+  const profiles = JSON.parse(read(profileFile, 65536));
+  const client = profiles.schema === 1 && Array.isArray(profiles.profiles) && profiles.profiles.some(p => p.enabled === true && p.platform === 'darwin-arm64' && p.nodeSha256 === plan.preparedNode.sha256 && p.licenseSha256 === plan.preparedLicense.sha256);
+  if (!fallback && !client) throw fail('plan_invalid', 'Prepared Node does not match the signed candidate fallback or enabled client profile.');
 }
 async function codesign(root) {
   await exec('/usr/bin/codesign', ['--verify', '--strict', path.join(root, 'Codlet.app')], { timeout: 30000, maxBuffer: 1024 * 1024 });
@@ -91,7 +122,8 @@ async function verifyApp(root, files, runtime) {
   for (const file of files) verify(path.join(root, file.path), file);
   const pin = JSON.parse(read(path.join(root, 'Codlet.app/Contents/Resources/runtime/node-runtime.json'), 65536));
   const platform = pin.platforms?.['darwin-arm64'];
-  if (pin.schema !== 1 || (platform?.version ?? pin.version) !== runtime.version || platform?.executableSha256 !== runtime.executableSha256 || platform?.licenseSha256 !== runtime.licenseSha256) throw fail('payload_changed', 'Bundled Node metadata changed.');
+  if (pin.schema !== 1 || runtimeMode(pin) !== runtimeMode(runtime) || (platform?.version ?? pin.version) !== runtime.version || platform?.executableSha256 !== runtime.executableSha256 || platform?.licenseSha256 !== runtime.licenseSha256) throw fail('payload_changed', 'Node runtime metadata changed.');
+  if (runtimeMode(runtime) === 'managed' && !inventory(root).includes('Codlet.app/Contents/Resources/runtime/client-node-profiles.json')) throw fail('payload_changed', 'Signed client Node profiles are missing.');
   await codesign(root);
 }
 async function probe(plan, pid) {
@@ -142,7 +174,7 @@ function validate(plan, planPath, expectedSha) {
   if (!plan.restart || !same(plan.restart.program, path.join(plan.installRoot, 'Codlet.app/Contents/MacOS/Codlet')) || plan.restart.args.length || !Number.isInteger(plan.restart.timeoutSeconds) || plan.restart.timeoutSeconds < 5 || plan.restart.timeoutSeconds > 180) throw fail('plan_invalid', 'Restart command is not the owned app launcher.');
   if (!same(plan.helperNode.path, process.execPath) || !same(plan.helperScript.path, self) || !same(plan.identityProbe.path, path.join(job, 'identity-core'))) throw fail('plan_invalid', 'Update helper paths changed.');
   for (const helper of [plan.helperNode, plan.helperScript, plan.identityProbe]) verify(helper.path, helper);
-  if (plan.helperNode.sha256 !== plan.currentRuntime.executableSha256 || plan.identityProbe.sha256 !== plan.currentFiles.find(f => f.path === 'Codlet.app/Contents/Resources/codlet').sha256) throw fail('plan_invalid', 'Helper copies differ from the installed app.');
+  if ((runtimeMode(plan.currentRuntime) === 'bundled' && plan.helperNode.sha256 !== plan.currentRuntime.executableSha256) || plan.identityProbe.sha256 !== plan.currentFiles.find(f => f.path === 'Codlet.app/Contents/Resources/codlet').sha256) throw fail('plan_invalid', 'Helper copies differ from their verified owner.');
   const manifestBytes = read(path.join(plan.stagedRoot, 'runtime-update-manifest.json'), 2 * 1024 * 1024);
   if (hash(manifestBytes) !== plan.manifestSha256) throw fail('payload_changed', 'Downloaded manifest changed.');
   const manifest = JSON.parse(manifestBytes);
@@ -187,6 +219,7 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}, opti
     receipt.helperIdentity = { pid: helperIdentity.pid, creationTime: helperIdentity.creationTime };
     await verifyApp(plan.installRoot, plan.currentFiles, plan.currentRuntime);
     await verifyApp(plan.stagedRoot, plan.newFiles, plan.newRuntime);
+    verifyPrepared(plan);
     if (digest(plan.restart.program).sha256 !== plan.restartProgramSha256) throw fail('launcher_changed', 'Installed app launcher changed.');
     const writabilityProbe = path.join(plan.installRoot, '.codlet-update-probe-' + randomUUID());
     fs.writeFileSync(writabilityProbe, '', { flag: 'wx' }); fs.unlinkSync(writabilityProbe);
@@ -219,6 +252,7 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}, opti
     ownerCleanupConfirmed(plan, expectedSha);
     await verifyApp(plan.installRoot, plan.currentFiles, plan.currentRuntime);
     await verifyApp(plan.stagedRoot, plan.newFiles, plan.newRuntime);
+    verifyPrepared(plan);
     if ((await bundleProcesses(plan)).length) throw fail('owner_still_running', 'An original Codlet process appeared during final verification; no bundle was replaced.');
     fs.mkdirSync(plan.backupRoot); ordinary(plan.backupRoot, true);
     receipt.phase = 'replacing'; persist();

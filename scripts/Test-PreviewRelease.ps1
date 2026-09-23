@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$TestLegacyBridge)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -188,12 +188,12 @@ try {
     foreach ($directory in @($portable, $msiBuild, $mac)) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
 
     Make-Pe (Join-Path $portable 'codlet.exe') 'portable core fixture'
-    $nodeDirectory = Join-Path $portable 'runtime/node-v24.21.0-win-x64'
+    $nodeDirectory = Join-Path $root 'bridge-win-node'
     [IO.Directory]::CreateDirectory($nodeDirectory) | Out-Null
     Make-Pe (Join-Path $nodeDirectory 'node.exe') 'pinned win node fixture'
     [IO.File]::WriteAllText((Join-Path $nodeDirectory 'LICENSE'), 'fixture Node license' + "`n", $utf8)
     $winPin = [ordered]@{
-        schema = 1; version = '24.21.0'; platforms = [ordered]@{
+        schema = 1; mode = 'managed'; version = '24.21.0'; platforms = [ordered]@{
             'win-x64' = [ordered]@{
                 executableSha256 = Hash-File (Join-Path $nodeDirectory 'node.exe')
                 licenseSha256 = Hash-File (Join-Path $nodeDirectory 'LICENSE')
@@ -202,7 +202,7 @@ try {
     }
     [IO.Directory]::CreateDirectory((Join-Path $portable 'runtime')) | Out-Null
     Write-Json (Join-Path $portable 'runtime/node-runtime.json') $winPin
-    $portablePaths = @('codlet.exe', 'runtime/node-runtime.json', 'runtime/node-v24.21.0-win-x64/node.exe', 'runtime/node-v24.21.0-win-x64/LICENSE')
+    $portablePaths = @('codlet.exe', 'runtime/node-runtime.json')
     $portableRecords = @($portablePaths | ForEach-Object { File-Record (Join-Path $portable $_) $_ })
     $coreCommit = 'a' * 40
     $pluginCommit = 'b' * 40
@@ -229,7 +229,7 @@ try {
 
     $app = Join-Path $mac 'Codlet.app'
     $macNodeVersion = '22.23.2'
-    $macNodeRoot = Join-Path $app "Contents/Resources/runtime/node-v$macNodeVersion-darwin-arm64"
+    $macNodeRoot = Join-Path $root 'bridge-mac-node'
     [IO.Directory]::CreateDirectory((Join-Path $app 'Contents/MacOS')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $app 'Contents/Resources/runtime')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $macNodeRoot 'bin')) | Out-Null
@@ -238,7 +238,7 @@ try {
     [IO.File]::WriteAllBytes($macNode, $utf8.GetBytes('synthetic pinned arm64 node fixture'))
     [IO.File]::WriteAllText($macLicense, 'fixture macOS Node license' + "`n", $utf8)
     $macPin = [ordered]@{
-        schema = 1; version = '24.21.0'; platforms = [ordered]@{
+        schema = 1; mode = 'managed'; version = '24.21.0'; platforms = [ordered]@{
             'darwin-arm64' = [ordered]@{
                 version = $macNodeVersion
                 executableSha256 = Hash-File $macNode
@@ -256,10 +256,20 @@ try {
     $fileSpecs = @(
         @{ source = $launcher; relative = 'Contents/MacOS/Codlet'; mode = 493 },
         @{ source = $codlet; relative = 'Contents/Resources/codlet'; mode = 493 },
-        @{ source = $macPinPath; relative = 'Contents/Resources/runtime/node-runtime.json'; mode = 420 },
-        @{ source = $macLicense; relative = "Contents/Resources/runtime/node-v$macNodeVersion-darwin-arm64/LICENSE"; mode = 420 },
-        @{ source = $macNode; relative = "Contents/Resources/runtime/node-v$macNodeVersion-darwin-arm64/bin/node"; mode = 493 }
+        @{ source = $macPinPath; relative = 'Contents/Resources/runtime/node-runtime.json'; mode = 420 }
     )
+    $slimMacRecords = @($fileSpecs | ForEach-Object { File-Record $_.source $_.relative $_.mode })
+    if ($TestLegacyBridge) {
+        $legacyPin = ($macPin | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+        $legacyPin.PSObject.Properties.Remove('mode')
+        $legacyPinPath = Join-Path $mac 'legacy-node-runtime.json'
+        Write-Json $legacyPinPath $legacyPin
+        $fileSpecs[2].source = $legacyPinPath
+        $fileSpecs += @(
+            @{ source = $macLicense; relative = "Contents/Resources/runtime/node-v$macNodeVersion-darwin-arm64/LICENSE"; mode = 420 },
+            @{ source = $macNode; relative = "Contents/Resources/runtime/node-v$macNodeVersion-darwin-arm64/bin/node"; mode = 493 }
+        )
+    }
     $sorter = [Collections.Generic.List[string]]::new()
     foreach ($spec in $fileSpecs) { $sorter.Add($spec.relative) }
     $sorter.Sort([StringComparer]::Ordinal)
@@ -276,7 +286,8 @@ try {
         runtime = [ordered]@{ version = $macNodeVersion; executableSha256 = $macPin.platforms.'darwin-arm64'.executableSha256; licenseSha256 = $macPin.platforms.'darwin-arm64'.licenseSha256 }
         files = @($updateRecords.ToArray())
     }
-    $updateZipName = "Codlet-$version-darwin-arm64-update.zip"
+    if (-not $TestLegacyBridge) { $update.runtime.mode = 'managed' }
+    $updateZipName = if ($TestLegacyBridge) { "Codlet-$version-darwin-arm64-legacy-update.zip" } else { "Codlet-$version-darwin-arm64-update.zip" }
     $updateZipPath = Join-Path $mac $updateZipName
     $zipFile = [IO.File]::Create($updateZipPath)
     $archive = [IO.Compression.ZipArchive]::new($zipFile, [IO.Compression.ZipArchiveMode]::Create, $false)
@@ -297,9 +308,14 @@ try {
     $macManifest = [ordered]@{
         schema = 1; kind = 'codlet-macos-preview'; version = $version; platform = 'darwin-arm64'
         sourceCommit = $coreCommit; pluginsSourceCommit = $pluginCommit; appleDeveloperSigned = $false; notarized = $false
-        files = @($macRecords.ToArray())
+        files = $slimMacRecords
         dmg = [ordered]@{ file = $dmgName; bytes = [long](Get-Item -LiteralPath $dmgPath).Length; sha256 = Hash-File $dmgPath }
         updateZip = [ordered]@{ file = $updateZipName; bytes = [long](Get-Item -LiteralPath $updateZipPath).Length; sha256 = Hash-File $updateZipPath }
+    }
+    if ($TestLegacyBridge) {
+        $macManifest.legacyUpdateZip = $macManifest.updateZip
+        $macManifest.legacyUpdateZip.files = @($macRecords.ToArray())
+        $macManifest.Remove('updateZip')
     }
     $macManifestPath = Join-Path $mac 'distribution-manifest.json'
     Write-Json $macManifestPath $macManifest
@@ -311,6 +327,7 @@ try {
         '-MacDmg', $dmgPath, '-MacDistributionManifest', $macManifestPath, '-MacUpdateZip', $updateZipPath,
         '-OutputDirectory', $outputDirectory
     )
+    if ($TestLegacyBridge) { $arguments += @('-LegacyUpdateBridge', '-WindowsBridgeNodeDirectory', $nodeDirectory) }
     $resultText = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Preview release fixture was rejected by the publisher.' }
     $report = ($resultText -join "`n") | ConvertFrom-Json
@@ -323,11 +340,12 @@ try {
         "Codlet-$version-macos-arm64.dmg",
         "codlet-runtime-$version-win-x64-portable.zip",
         "Codlet-$version-darwin-arm64-update.zip",
-        'codlet-update.json',
+        'codlet-update-managed.json',
         'SHA256SUMS.txt'
     )
+    if ($TestLegacyBridge) { $expectedAssets += 'codlet-update.json' }
     if ($plan.assets.Count -ne $expectedAssets.Count -or @($expectedAssets | Where-Object { $_ -notin $plan.assets.name }).Count -ne 0) {
-        throw 'Preview plan must contain exactly the seven downloadable assets, without separate distribution manifests.'
+        throw 'Preview plan must contain only downloads and the required updater channels, without separate distribution manifests.'
     }
     foreach ($spec in @(
         @{ key = 'windowsPortable'; file = '.verification/windows-portable-distribution-manifest.json' },
@@ -342,15 +360,16 @@ try {
         }
     }
     $summary = [IO.File]::ReadAllText((Join-Path $outputDirectory 'SHA256SUMS.txt'))
-    if ($summary -match 'distribution-manifest\.json' -or @($summary.Trim().Split("`n")).Count -ne 6) {
-        throw 'SHA256SUMS must contain only the six other public assets.'
+    if ($summary -match 'distribution-manifest\.json' -or @($summary.Trim().Split("`n")).Count -ne ($expectedAssets.Count - 1)) {
+        throw 'SHA256SUMS must contain only the other public assets.'
     }
     $releaseNotes = [IO.File]::ReadAllText((Join-Path $outputDirectory 'release-notes.md'))
-    foreach ($expectedText in @('Windows x64 portable ZIP', 'Windows x64 MSI', 'Apple Silicon DMG', 'marketplace', 'traffic hooks', 'runtime updater', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
+    foreach ($expectedText in @('Windows x64 portable ZIP', 'Windows x64 MSI', 'Apple Silicon DMG', 'Host plugins', 'traffic hooks', 'runtime updater', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
         if ($releaseNotes -notmatch [regex]::Escape($expectedText)) { throw "Release notes omitted expected reader-facing detail: $expectedText" }
     }
     if ($releaseNotes -match '(?m)^\| Asset \|' -or $releaseNotes -match '(?m)^\| ``[^|]+`` \|') { throw 'Release notes duplicate the per-asset hash table instead of directing readers to SHA256SUMS.txt.' }
-    $channel = [IO.File]::ReadAllText((Join-Path $outputDirectory 'codlet-update.json')) | ConvertFrom-Json
+    $channel = [IO.File]::ReadAllText((Join-Path $outputDirectory 'codlet-update-managed.json')) | ConvertFrom-Json
+    if ($TestLegacyBridge -and (Hash-File (Join-Path $outputDirectory 'codlet-update.json')) -ne (Hash-File (Join-Path $outputDirectory 'codlet-update-managed.json'))) { throw 'Bridge channels disagree about the update payloads.' }
     if ($plan.version -ne $version -or $plan.prerelease -ne $true -or $channel.channel -ne 'preview' -or $channel.version -ne $version -or $channel.artifacts.Count -ne 2) { throw 'Versioned Preview channel contract is incorrect.' }
     foreach ($artifact in $channel.artifacts) {
         $asset = @($plan.assets | Where-Object { $_.name -eq $artifact.assetName })
@@ -389,13 +408,18 @@ try {
     }
     finally { $ErrorActionPreference = $priorErrorAction }
     if ($tamperExitCode -eq 0) { throw 'Publisher accepted a changed same-version local asset.' }
+    if (-not $TestLegacyBridge) {
+        $bridgeOutput = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -TestLegacyBridge
+        if ($LASTEXITCODE -ne 0 -or -not (($bridgeOutput -join "`n" | ConvertFrom-Json).passed)) { throw 'Legacy bridge publication fixture failed.' }
+    }
     [pscustomobject]@{
         schema = 1
         passed = $true
         version = $version
         checks = @(
             'portable package, MSI, Mac DMG, and both updater packages verify against their distribution/build metadata',
-            'codlet-update.json contains the updater-supported version/channel/platform/profile and exact asset digests',
+            'managed and transition channels contain the correct version, profiles and exact updater asset digests',
+            'a Preview 5 transition uses full legacy-compatible updater ZIPs while ordinary downloads stay thin',
             'draft preparation tag creation is exact-commit, idempotent, retryable after interruption, and refuses conflicting refs',
             'synthetic draft creation interruption recovers through PrepareDraft and Publish without remote network access',
             'release notes explain package choices, preview improvements, checksums, and the precise macOS signing status',

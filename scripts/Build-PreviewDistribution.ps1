@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$CodletExecutable,
-  [Parameter(Mandatory=$true)][string]$NodeDirectory,
+  [string]$NodeDirectory,
   [Parameter(Mandatory=$true)][string]$PluginDistribution,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
   [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$SourceCommit,
   [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$PluginsCommit,
-  [switch]$Zip
+  [switch]$Zip,
+  [switch]$BundleNodeForTests
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -16,10 +17,16 @@ if(Test-Path -LiteralPath $output){throw 'Choose a new output directory'}
 function Plain([string]$Path){for($current=[IO.Path]::GetFullPath($Path);$current;$current=[IO.Path]::GetDirectoryName($current)){if((Test-Path -LiteralPath $current) -and (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw "Linked distribution path: $current"}}}
 function Hash([string]$Path){$algorithm=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::OpenRead($Path);try{[BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose();$algorithm.Dispose()}}
 $utf8=[Text.UTF8Encoding]::new($false)
-Plain $output;Plain $CodletExecutable;Plain $NodeDirectory;Plain $PluginDistribution
+Plain $output;Plain $CodletExecutable;Plain $PluginDistribution
 $pin=[IO.File]::ReadAllText((Join-Path $root 'runtime/node-runtime.json'))|ConvertFrom-Json
+$pinMode=if($BundleNodeForTests){'bundled'}else{'managed'}
+if($BundleNodeForTests -and -not $NodeDirectory){throw 'BundleNodeForTests requires NodeDirectory'}
 $spec=$pin.platforms.'win-x64'
-if((Hash (Join-Path $NodeDirectory 'node.exe')) -ne $spec.executableSha256 -or (Hash (Join-Path $NodeDirectory 'LICENSE')) -ne $spec.licenseSha256){throw 'Node does not match the pinned Windows x64 runtime'}
+if($spec.executableSha256 -notmatch '^[0-9a-f]{64}$' -or $spec.licenseSha256 -notmatch '^[0-9a-f]{64}$'){throw 'Invalid pinned Windows x64 runtime'}
+if($BundleNodeForTests){
+  Plain $NodeDirectory
+  if((Hash (Join-Path $NodeDirectory 'node.exe')) -ne $spec.executableSha256 -or (Hash (Join-Path $NodeDirectory 'LICENSE')) -ne $spec.licenseSha256){throw 'Node does not match the pinned Windows x64 runtime'}
+}
 $exeStream=[IO.File]::OpenRead($CodletExecutable)
 try{$reader=[IO.BinaryReader]::new($exeStream);if($reader.ReadUInt16() -ne 0x5a4d){throw 'Expected PE executable'};$exeStream.Position=60;$peOffset=$reader.ReadUInt32();$exeStream.Position=$peOffset;if($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664){throw 'Expected Windows x64 executable'}}finally{$exeStream.Dispose()}
 $cargo=[IO.File]::ReadAllText((Join-Path $root 'Cargo.toml'))
@@ -53,11 +60,15 @@ function Copy-Payload([string]$Source,[string]$Relative){
 }
 Copy-Payload $CodletExecutable 'codlet.exe'
 & (Join-Path $PSScriptRoot 'Build-WindowsLauncher.ps1') -OutputDirectory $stage | Out-Null
-Copy-Payload (Join-Path $root 'runtime/node-runtime.json') 'runtime/node-runtime.json'
+[IO.Directory]::CreateDirectory((Join-Path $stage 'runtime'))|Out-Null
+$pin|Add-Member -NotePropertyName mode -NotePropertyValue $pinMode -Force
+[IO.File]::WriteAllText((Join-Path $stage 'runtime/node-runtime.json'),($pin|ConvertTo-Json -Depth 12)+"`n",$utf8)
 Copy-Payload (Join-Path $root 'runtime/update-channel.json') 'runtime/update-channel.json'
-$nodeRelative='runtime/node-v'+$pin.version+'-win-x64'
-Copy-Payload (Join-Path $NodeDirectory 'node.exe') ($nodeRelative+'/node.exe')
-Copy-Payload (Join-Path $NodeDirectory 'LICENSE') ($nodeRelative+'/LICENSE')
+if($BundleNodeForTests){
+  $nodeRelative='runtime/node-v'+$pin.version+'-win-x64'
+  Copy-Payload (Join-Path $NodeDirectory 'node.exe') ($nodeRelative+'/node.exe')
+  Copy-Payload (Join-Path $NodeDirectory 'LICENSE') ($nodeRelative+'/LICENSE')
+}
 foreach($name in @('Start-Codlet.cmd','Choose-Plugins.cmd','Codlet-CLI.cmd','Initialize-Codlet.ps1')){Copy-Payload (Join-Path $root ('scripts/distribution/'+$name)) $name}
 Copy-Payload (Join-Path $root 'scripts/Restart-Codlet.ps1') 'Restart-Codlet.ps1'
 Copy-Payload (Join-Path $root 'scripts/Export-Diagnostics.ps1') 'Export-Diagnostics.ps1'
@@ -85,6 +96,10 @@ $readme=@'
 1. Extract the complete directory to a writable location
 2. Run Codlet-Launcher.exe; it lists running applications before launch
 3. On first portable launch, choose the official plugins you want
+
+Codlet prepares its private JavaScript runtime from a verified official Codex
+installation when available. Otherwise it downloads the pinned official Node
+archive into its private cache. A system Node installation is not required.
 
 GUI automatically includes UI Adapter. Desktop Adapter is independently optional.
 Codlet-Launcher.exe --configure can install an omitted plugin later. Existing registrations,
@@ -118,11 +133,12 @@ for existing local registrations or grant access to private/draft releases.
 No real account information, registry files or dev-client data is included.
 The manifest records the full Core and plugin source commits, each distributed
 file and its SHA-256. License and attribution terms are included in LICENSE,
-NOTICE, THIRD_PARTY_NOTICES.txt and the bundled Node and plugin license files.
+NOTICE and THIRD_PARTY_NOTICES.txt. The JavaScript runtime's LICENSE is stored
+with the prepared runtime in Codlet's private cache.
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.md'),$readme.Replace("`r`n","`n")+"`n",$utf8)
 $records=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName | ForEach-Object{[ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');bytes=$_.Length;sha256=Hash $_.FullName}})
-$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';sourceCommit=$SourceCommit.ToLowerInvariant();pluginsCommit=$PluginsCommit.ToLowerInvariant();officialPlugins=$pluginOrigins;files=$records}
+$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';runtime=[ordered]@{mode=$pinMode;version=$pin.version;executableSha256=$spec.executableSha256;licenseSha256=$spec.licenseSha256};sourceCommit=$SourceCommit.ToLowerInvariant();pluginsCommit=$PluginsCommit.ToLowerInvariant();officialPlugins=$pluginOrigins;files=$records}
 [IO.File]::WriteAllText((Join-Path $stage 'distribution-manifest.json'),($manifest|ConvertTo-Json -Depth 8),$utf8)
 [IO.Directory]::Move($stage,$output)
 $zipPath=$null

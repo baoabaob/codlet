@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "enabled": true,
+      "platform": "win-x64",
+      "nodeVersion": "24.21.0",
+      "nodeSha256": "4c6ee8bb682014018b0360b3434baf11d60c5e6130bc3414f602c92568536b96",
+      "licenseSha256": "5888dbb9a1d2b18f2c3e6c5f6af1b39de658372b402a0577b002777f14c62ace",
+      "source": {
+        "kind": "windowsPackage",
+        "family": "OpenAI.Codex_2p2nqsd0c76g0",
+        "fullName": "OpenAI.Codex_26.917.6896.0_x64__2p2nqsd0c76g0",
+        "nodePath": "app/resources/cua_node/bin/node.exe",
+        "licensePath": "app/resources/cua_node/bin/LICENSE"
+      }
+    },
+    {
+      "enabled": false,
+      "platform": "darwin-arm64",
+      "nodeVersion": "24.21.0",
+      "nodeSha256": "185e384f0784005202c0ad19c569f6764c6109f1c9903a36417578d28322f68a",
+      "licenseSha256": "5888dbb9a1d2b18f2c3e6c5f6af1b39de658372b402a0577b002777f14c62ace",
+      "source": {
+        "kind": "macBundle",
+        "bundleId": "com.openai.codex",
+        "appVersion": "26.917.62051",
+        "teamId": "2DC432GLL2",
+        "nodePath": "Contents/Resources/cua_node/bin/node",
+        "licensePath": "Contents/Resources/cua_node/LICENSE"
+      }
+    }
+  ]
+}

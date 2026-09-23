@@ -91,12 +91,12 @@ namespace Codlet.Setup {
         static int Start(string data, bool configure, Action<string> progress) {
             if (progress != null) progress("正在准备所选插件…");
             int initialized = Initialize(data, configure); if (initialized != 0 || configure) return initialized;
-            if (progress != null) progress("正在启动 Codex 并等待就绪（最多 90 秒）…");
+            if (progress != null) progress("正在准备运行环境并启动 Codex。首次启动可能需要下载运行时（最多等待 5 分钟）…");
             // Core is a long-lived host. Its exit is not launch readiness.
             Log("Core stdout/stderr: " + logFile + ".core.log");
             var process = DetachedHost.Start(root, data, logFile);
             int pid = process.Id; long created = process.StartTime.ToUniversalTime().Ticks;
-            DateTime deadline = DateTime.UtcNow.AddSeconds(90);
+            DateTime deadline = DateTime.UtcNow.AddMinutes(5);
             while (DateTime.UtcNow < deadline) {
                 if (process.HasExited) { Log("Core exited before readiness: " + process.ExitCode); process.Dispose(); return 42; }
                 var value = Status(data); object status, raw;
@@ -108,7 +108,7 @@ namespace Codlet.Setup {
                 }
                 Thread.Sleep(400);
             }
-            Log("Readiness timed out after 90 seconds. Core PID " + pid + " retained; do not start another instance before inspecting this log.");
+            Log("Readiness timed out after 5 minutes. Core PID " + pid + " retained; do not start another instance before inspecting this log.");
             return 42;
         }
     }

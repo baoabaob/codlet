@@ -73,15 +73,35 @@ function parentFor(file, root) {
 }
 function expectedPaths(profile, runtime, includeOther = false) {
   if (!['portable', 'isolatedClient'].includes(profile) || typeof runtime?.version !== 'string' || !/^[0-9A-Za-z.-]{1,64}$/.test(runtime.version) || runtime.version.includes('..') || !sha(runtime.executableSha256) || !sha(runtime.licenseSha256)) throw fail('plan_invalid', 'Invalid runtime profile or Node identity.');
+  const mode = runtime.mode ?? 'bundled';
+  if (!['bundled', 'managed'].includes(mode) || (profile === 'isolatedClient' && mode === 'managed')) throw fail('plan_invalid', 'Invalid Node runtime mode for this launcher.');
   const node = `runtime/node-v${runtime.version}-win-x64`;
-  return [profile === 'portable' ? 'codlet.exe' : 'codlet-lab.exe', 'runtime/node-runtime.json', `${node}/node.exe`, `${node}/LICENSE`, ...(includeOther ? [profile === 'portable' ? 'codlet-lab.exe' : 'codlet.exe'] : [])].sort();
+  return [profile === 'portable' ? 'codlet.exe' : 'codlet-lab.exe', 'runtime/node-runtime.json', ...(mode === 'bundled' ? [`${node}/node.exe`, `${node}/LICENSE`] : []), ...(includeOther ? [profile === 'portable' ? 'codlet-lab.exe' : 'codlet.exe'] : [])].sort();
 }
 function records(files, profile, runtime) {
   const other = profile === 'portable' ? 'codlet-lab.exe' : 'codlet.exe';
   if (!Array.isArray(files) || files.length > 8 || JSON.stringify(files.map(f => f.path).sort()) !== JSON.stringify(expectedPaths(profile, runtime, files.some(f => f.path === other)))) throw fail('plan_path_invalid', 'Update plan must name exactly the owned runtime files.');
   for (const file of files) if (!sha(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_FILE) throw fail('plan_invalid', 'Invalid runtime payload record.');
-  const node = files.find(f => f.path.endsWith('/node.exe')), license = files.find(f => f.path.endsWith('/LICENSE'));
-  if (node.sha256 !== runtime.executableSha256 || license.sha256 !== runtime.licenseSha256) throw fail('plan_invalid', 'Runtime records differ from the checked Node pins.');
+  if ((runtime.mode ?? 'bundled') === 'bundled') {
+    const node = files.find(f => f.path.endsWith('/node.exe')), license = files.find(f => f.path.endsWith('/LICENSE'));
+    if (node.sha256 !== runtime.executableSha256 || license.sha256 !== runtime.licenseSha256) throw fail('plan_invalid', 'Runtime records differ from the checked Node pins.');
+  }
+}
+function preparedRuntime(plan) {
+  if ((plan.newRuntime.mode ?? 'bundled') !== 'managed') {
+    if (plan.preparedNode != null || plan.preparedLicense != null) throw fail('plan_invalid', 'Bundled update must not reference a managed runtime cache.');
+    return;
+  }
+  const node = plan.preparedNode, license = plan.preparedLicense;
+  // The manifest pins the official fallback; a reviewed CUA profile can select
+  // different Node bytes. Core's resolver validates that choice before sealing
+  // this plan, and the helper binds the exact resolved files by their digests.
+  if (!node || !license || typeof node.path !== 'string' || typeof license.path !== 'string' || !sha(node.sha256) || !sha(license.sha256) || key(node.path) === key(license.path)) throw fail('plan_invalid', 'Managed Node cache identity is invalid.');
+  for (const file of [node, license]) {
+    absolute(file.path);
+    if (inside(file.path, plan.installRoot) || inside(file.path, plan.stagedRoot)) throw fail('plan_path_invalid', 'Managed Node cache must remain outside the installation and staged payload.');
+    verify(file.path, file);
+  }
 }
 function fileIn(root, relative) {
   const file = path.join(root, relative);
@@ -100,6 +120,7 @@ function validatePlan(plan, planPath, planSha) {
   if (key(path.dirname(plan.stagedRoot)) !== key(plan.stateRoot) || !path.basename(plan.stagedRoot).startsWith('runtime-payload-') || key(plan.installRoot) === key(path.parse(plan.installRoot).root)) throw fail('plan_path_invalid', 'Runtime payload roots are not valid owned directories.');
   if (!Number.isSafeInteger(plan.createdAt) || !Number.isSafeInteger(plan.expiresAt) || plan.expiresAt <= Date.now() || plan.createdAt > Date.now() + 30000 || plan.expiresAt - plan.createdAt > 30 * 60 * 1000) throw fail('plan_expired', 'Runtime installation plan expired.');
   records(plan.currentFiles, plan.profile, plan.currentRuntime); records(plan.newFiles, plan.profile, plan.newRuntime);
+  preparedRuntime(plan);
   const otherExecutable = plan.profile === 'portable' ? 'codlet-lab.exe' : 'codlet.exe';
   if (plan.newFiles.some(f => f.path === otherExecutable) && !plan.currentFiles.some(f => f.path === otherExecutable)) throw fail('plan_invalid', 'Update cannot add another executable outside the existing owner profile.');
   if (!Array.isArray(plan.waitFor) || !plan.waitFor.length || plan.waitFor.length > 17 || new Set(plan.waitFor.map(p => p.pid)).size !== plan.waitFor.length || plan.waitFor.some(p => !Number.isSafeInteger(p.pid) || p.pid <= 0 || !/^[0-9]{1,32}$/.test(p.creationTime))) throw fail('plan_invalid', 'Invalid owner process identities.');
@@ -117,7 +138,7 @@ function validatePlan(plan, planPath, planSha) {
   if (hashBytes(manifestBytes) !== plan.manifestSha256) throw fail('payload_changed', 'Runtime ZIP manifest changed after download.');
   const manifest = JSON.parse(manifestBytes);
   const fileValues = files => files.map(f => [f.path, f.bytes, f.sha256]);
-  const runtimeValues = runtime => [runtime.version, runtime.executableSha256, runtime.licenseSha256];
+  const runtimeValues = runtime => [runtime.version, runtime.executableSha256, runtime.licenseSha256, runtime.mode ?? 'bundled'];
   if (manifest.schema !== 1 || manifest.kind !== 'codlet-runtime-update' || manifest.version !== plan.version || manifest.platform !== plan.platform || manifest.profile !== plan.profile || JSON.stringify(fileValues(manifest.files)) !== JSON.stringify(fileValues(plan.newFiles)) || JSON.stringify(runtimeValues(manifest.runtime)) !== JSON.stringify(runtimeValues(plan.newRuntime))) throw fail('plan_invalid', 'Release manifest no longer matches the checked plan.');
   if (plan.configPin) {
     const pin = plan.configPin, oldLab = plan.currentFiles.find(f => f.path === 'codlet-lab.exe'), newLab = plan.newFiles.find(f => f.path === 'codlet-lab.exe');
@@ -271,7 +292,7 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}) {
   let armed = false, mutated = false, ownersRetired = false, restartMayBeRunning = false, installLock = null;
   try {
     installLock = await acquireInstallLock(plan, expectedSha);
-    verifyCurrent(plan); verifyStaged(plan); verifyLauncher(plan, false, receipt); probeWritable(plan.installRoot);
+    verifyCurrent(plan); verifyStaged(plan); preparedRuntime(plan); verifyLauncher(plan, false, receipt); probeWritable(plan.installRoot);
     receipt.phase = 'ready'; persist(); onReady({ schema: 1, event: 'runtime-update-helper-ready', id: plan.id, planSha256: expectedSha });
     const ackDeadline = Date.now() + 15000;
     while (Date.now() < ackDeadline) {
@@ -292,7 +313,7 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}) {
     }
     officialResult(plan, expectedSha, true);
     ownersRetired = true;
-    verifyCurrent(plan); verifyStaged(plan); verifyLauncher(plan, false, receipt);
+    verifyCurrent(plan); verifyStaged(plan); preparedRuntime(plan); verifyLauncher(plan, false, receipt);
     fs.mkdirSync(plan.backupRoot); ordinary(plan.backupRoot, true);
     receipt.phase = 'replacing'; persist();
     for (const file of plan.currentFiles) {
@@ -314,7 +335,16 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}) {
     restartMayBeRunning = result === 0 || result === 42;
     if (result === 42) { receipt.phase = 'rollbackBlocked'; receipt.error = { code: 'restart_owner_unknown', message: 'The new launcher could not prove all owned processes are stopped. No rollback or second launcher was attempted.' }; persist(); return receipt; }
     if (result !== 0) throw fail('restart_failed', 'New runtime failed the owner readiness check.');
-    receipt.phase = 'installed'; persist(); return receipt;
+    receipt.phase = 'installed'; persist();
+    // Old bundled Node files are no longer needed after successful readiness.
+    // Delete only their verified backup copies; unknown files in either tree stay.
+    if ((plan.currentRuntime.mode ?? 'bundled') === 'bundled' && plan.newRuntime.mode === 'managed') {
+      for (const file of plan.currentFiles.filter(f => f.path.endsWith('/node.exe') || f.path.endsWith('/LICENSE'))) {
+        try { const backup = fileIn(plan.backupRoot, file.path); verify(backup, file); fs.unlinkSync(backup); } catch { /* retain uncertain files for owner inspection */ }
+      }
+      try { fs.rmdirSync(path.join(plan.installRoot, `runtime/node-v${plan.currentRuntime.version}-win-x64`)); } catch { /* preserve unexpected content */ }
+    }
+    return receipt;
   } catch (error) {
     receipt.error = { code: error.code ?? 'runtime_update_failed', message: String(error.message ?? error).slice(0,4096) };
     if (restartMayBeRunning) {

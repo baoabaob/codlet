@@ -5,6 +5,6 @@
   "source": {
     "kind": "github",
     "repositoryUrl": "https://github.com/baoabaob/codlet",
-    "manifestAsset": "codlet-update.json"
+    "manifestAsset": "codlet-update-managed.json"
   }
 }

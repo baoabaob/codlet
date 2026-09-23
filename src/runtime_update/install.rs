@@ -55,6 +55,10 @@ struct InstallPlan<'a> {
     new_files: Vec<package::RuntimeFile>,
     current_runtime: package::NodeRuntime,
     new_runtime: package::NodeRuntime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prepared_node: Option<CheckedPath>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prepared_license: Option<CheckedPath>,
     helper_node: CheckedPath,
     helper_script: CheckedPath,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,6 +135,31 @@ pub(super) fn prepare_install_plan_with_official(
             "Update package profile differs from this launcher's installation.",
         ));
     }
+    // Resolve the future pin while the current owner is still available. A
+    // failed download/cache verification must never hand off an update helper.
+    let prepared_runtime = if staged.manifest.runtime.mode == package::NodeRuntimeMode::Managed {
+        Some(
+            crate::js_runtime::JsRuntime::ensure_from_distribution(&staged.directory)
+                .map_err(|e| error("runtime_update_runtime_unavailable", e.message))?,
+        )
+    } else {
+        None
+    };
+    let (prepared_node, prepared_license) = if let Some(runtime) = &prepared_runtime {
+        let node = checked(runtime.executable_path())?;
+        let license = checked(runtime.license_path())?;
+        if node.sha256 != runtime.verified_executable_sha256()
+            || license.sha256 != runtime.verified_license_sha256()
+        {
+            return Err(error(
+                "runtime_update_runtime_unavailable",
+                "Prepared Node files changed after the runtime resolver verified them.",
+            ));
+        }
+        (Some(node), Some(license))
+    } else {
+        (None, None)
+    };
     #[cfg(not(test))]
     {
         let executable = std::env::current_exe()
@@ -353,18 +382,44 @@ pub(super) fn prepare_install_plan_with_official(
     let id = job.file_name().unwrap().to_string_lossy().into_owned();
     let node_path = job.join("helper-node.exe");
     let helper_path = job.join("runtime-update-helper.mjs");
-    let current_node = root.join(format!(
-        "runtime/node-v{}-{PLATFORM}/node.exe",
-        current.runtime.version
-    ));
+    let current_managed_runtime = if current.runtime.mode == package::NodeRuntimeMode::Managed {
+        Some(
+            crate::js_runtime::JsRuntime::ensure_from_distribution(&root)
+                .map_err(|e| error("runtime_update_runtime_unavailable", e.message))?,
+        )
+    } else {
+        None
+    };
+    let current_node = current_managed_runtime
+        .as_ref()
+        .map(|runtime| runtime.executable_path().to_path_buf())
+        .unwrap_or_else(|| {
+            root.join(format!(
+                "runtime/node-v{}-{PLATFORM}/node.exe",
+                current.runtime.version
+            ))
+        });
+    let current_node_identity = checked(&current_node)?;
+    if current_managed_runtime
+        .as_ref()
+        .is_some_and(|runtime| current_node_identity.sha256 != runtime.verified_executable_sha256())
+    {
+        return Err(error(
+            "runtime_update_runtime_unavailable",
+            "Current managed Node changed after the runtime resolver verified it.",
+        ));
+    }
     std::fs::copy(&current_node, &node_path).map_err(io_error)?;
     std::fs::write(&helper_path, HELPER).map_err(io_error)?;
     let helper_node = checked(&node_path)?;
     let helper_script = checked(&helper_path)?;
-    if helper_node.sha256 != current.runtime.executable_sha256 {
+    if helper_node.sha256 != current_node_identity.sha256
+        || (current.runtime.mode == package::NodeRuntimeMode::Bundled
+            && helper_node.sha256 != current.runtime.executable_sha256)
+    {
         return Err(error(
             "runtime_update_identity_changed",
-            "The copied helper Node runtime does not match its pin.",
+            "The copied helper Node runtime does not match its checked source.",
         ));
     }
     let handoff_ack_path = job.join("handoff-ack.json");
@@ -386,6 +441,8 @@ pub(super) fn prepare_install_plan_with_official(
         new_files: staged.manifest.files.clone(),
         current_runtime: current.runtime,
         new_runtime: staged.manifest.runtime.clone(),
+        prepared_node,
+        prepared_license,
         helper_node,
         helper_script,
         identity_probe: None,

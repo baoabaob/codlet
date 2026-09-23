@@ -1,4 +1,6 @@
 use super::*;
+use crate::js_runtime::JsRuntime;
+use std::os::unix::fs::PermissionsExt;
 
 const MAC_HELPER: &[u8] = include_bytes!("../../../scripts/runtime-update-helper-macos.mjs");
 
@@ -239,6 +241,42 @@ pub(super) fn prepare(
             "The installed app is read-only.",
         ));
     }
+    // Prepare both generations while the original signed app and its Core are
+    // still running. A managed candidate may need to stage its fixed fallback
+    // runtime; any failure here leaves the installed bundle untouched.
+    let staged_resources = staged.directory.join("Codlet.app/Contents/Resources");
+    let current_js = JsRuntime::discover()
+        .map_err(|e| error(e.code, format!("Current app Node runtime: {}", e.message)))?;
+    let candidate_js = JsRuntime::ensure_from_distribution(&staged_resources)
+        .map_err(|e| error(e.code, format!("Candidate app Node runtime: {}", e.message)))?;
+    let (prepared_node, prepared_license) =
+        if staged.manifest.runtime.mode == package::NodeRuntimeMode::Managed {
+            let node = candidate_js.cached_executable_path().ok_or_else(|| {
+                error(
+                    "install_unavailable",
+                    "Managed candidate has no persistent Node cache.",
+                )
+            })?;
+            let license = candidate_js.cached_license_path().ok_or_else(|| {
+                error(
+                    "install_unavailable",
+                    "Managed candidate has no persistent Node license.",
+                )
+            })?;
+            let node = checked(node)?;
+            let license = checked(license)?;
+            if node.sha256 != candidate_js.verified_executable_sha256()
+                || license.sha256 != candidate_js.verified_license_sha256()
+            {
+                return Err(error(
+                    "runtime_update_identity_changed",
+                    "Prepared Node cache differs from the verified candidate.",
+                ));
+            }
+            (Some(node), Some(license))
+        } else {
+            (None, None)
+        };
     let mut wait_for = restart.wait_for.clone();
     let current_process = current_process_identity()?;
     if !wait_for.contains(&current_process) {
@@ -283,17 +321,28 @@ pub(super) fn prepare(
     let node_path = job.join("helper-node");
     let helper_path = job.join("runtime-update-helper-macos.mjs");
     let probe_path = job.join("identity-core");
-    let current_node = root.join(format!(
-        "Codlet.app/Contents/Resources/runtime/node-v{}-{PLATFORM}/bin/node",
-        current.runtime.version
-    ));
+    // tempfile may report /var/folders on macOS, where /var is the system
+    // symlink to /private/var. Record its canonical private snapshot path.
+    let current_node = current_js
+        .executable_path()
+        .canonicalize()
+        .map_err(io_error)?;
+    let source_node = checked(&current_node)?;
+    if source_node.sha256 != current_js.verified_executable_sha256() {
+        return Err(error(
+            "runtime_update_identity_changed",
+            "Current Node snapshot differs from its verified identity.",
+        ));
+    }
     std::fs::copy(&current_node, &node_path).map_err(io_error)?;
+    std::fs::set_permissions(&node_path, std::fs::Permissions::from_mode(0o755))
+        .map_err(io_error)?;
     std::fs::copy(&executable, &probe_path).map_err(io_error)?;
     std::fs::write(&helper_path, MAC_HELPER).map_err(io_error)?;
     let helper_node = checked(&node_path)?;
     let helper_script = checked(&helper_path)?;
     let identity_probe = checked(&probe_path)?;
-    if helper_node.sha256 != current.runtime.executable_sha256
+    if helper_node.sha256 != source_node.sha256
         || identity_probe.sha256
             != current
                 .files
@@ -338,6 +387,8 @@ pub(super) fn prepare(
         new_files: staged.manifest.files.clone(),
         current_runtime: current.runtime,
         new_runtime: staged.manifest.runtime.clone(),
+        prepared_node,
+        prepared_license,
         helper_node,
         helper_script,
         identity_probe: Some(identity_probe),

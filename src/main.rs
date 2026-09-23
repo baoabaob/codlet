@@ -10,9 +10,12 @@ fn main() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() {
     if let Err(error) = codlet::macos::cli::run(std::env::args_os().skip(1)) {
+        let exit_code = error
+            .downcast_ref::<codlet::macos::cli::InitializationExit>()
+            .map_or(1, |status| status.0);
         eprintln!("codlet: {error}");
         codlet::runtime_log::error("core_failed", &error.to_string());
-        std::process::exit(1);
+        std::process::exit(exit_code);
     }
 }
 

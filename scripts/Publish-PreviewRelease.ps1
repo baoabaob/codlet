@@ -8,6 +8,8 @@ param(
     [string]$MacDmg,
     [string]$MacDistributionManifest,
     [string]$MacUpdateZip,
+    [switch]$LegacyUpdateBridge,
+    [string]$WindowsBridgeNodeDirectory,
     [string]$OutputDirectory,
     [string]$PlanPath,
     [string]$Repository = 'baoabaob/codlet',
@@ -189,13 +191,21 @@ function Read-ZipEntryBytes($Entry, [long]$Maximum = 1MB) {
     finally { $memory.Dispose(); $stream.Dispose() }
 }
 
-function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version) {
+function Get-NodeRuntimeMode($Value) {
+    if (-not $Value.PSObject.Properties['mode']) { return 'bundled' }
+    if ($Value.mode -notin @('managed', 'bundled')) { Fail 'Unsupported Node runtime distribution mode.' }
+    [string]$Value.mode
+}
+
+function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version, [switch]$LegacyBridge) {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $expectedName = "Codlet-$Version-darwin-arm64-update.zip"
-    if ([IO.Path]::GetFileName($ZipPath) -ne $expectedName -or $null -eq $MacManifest.updateZip -or
-        $MacManifest.updateZip.file -ne $expectedName -or [long]$MacManifest.updateZip.bytes -ne (Get-Item -LiteralPath $ZipPath).Length -or
-        $MacManifest.updateZip.sha256 -notmatch '^[0-9a-f]{64}$' -or (Get-Sha256 $ZipPath) -ne $MacManifest.updateZip.sha256) {
+    $publicName = "Codlet-$Version-darwin-arm64-update.zip"
+    $expectedName = if ($LegacyBridge) { "Codlet-$Version-darwin-arm64-legacy-update.zip" } else { $publicName }
+    $declaration = if ($LegacyBridge) { $MacManifest.legacyUpdateZip } else { $MacManifest.updateZip }
+    if ([IO.Path]::GetFileName($ZipPath) -notin @($expectedName, $publicName) -or $null -eq $declaration -or
+        $declaration.file -ne $expectedName -or [long]$declaration.bytes -ne (Get-Item -LiteralPath $ZipPath).Length -or
+        $declaration.sha256 -notmatch '^[0-9a-f]{64}$' -or (Get-Sha256 $ZipPath) -ne $declaration.sha256) {
         Fail 'macOS updater ZIP does not match its distribution manifest or versioned filename.'
     }
     $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
@@ -220,7 +230,7 @@ function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version) {
             Fail 'macOS updater manifest is not compatible with the Core runtime updater.'
         }
         $files = @($update.files)
-        $distributionFiles = @($MacManifest.files)
+        $distributionFiles = if ($LegacyBridge) { @($declaration.files) } else { @($MacManifest.files) }
         if ($files.Count -lt 1 -or $files.Count -gt 8192 -or $files.Count -ne $distributionFiles.Count -or $entries.Count -ne ($files.Count + 1)) {
             Fail 'macOS updater ZIP has missing or undeclared files or a mismatched distribution inventory.'
         }
@@ -245,7 +255,7 @@ function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version) {
             finally { $stream.Dispose() }
         }
         $pinPath = 'Codlet.app/Contents/Resources/runtime/node-runtime.json'
-        if (-not $entries.ContainsKey($pinPath)) { Fail 'macOS updater ZIP has no bundled Node runtime pin.' }
+        if (-not $entries.ContainsKey($pinPath)) { Fail 'macOS updater ZIP has no Node runtime pin.' }
         $pinBytes = Read-ZipEntryBytes $entries[$pinPath] 64KB
         $pin = $script:utf8.GetString($pinBytes) | ConvertFrom-Json
         $macPin = $pin.platforms.'darwin-arm64'
@@ -256,9 +266,16 @@ function Assert-MacUpdateZip([string]$ZipPath, $MacManifest, [string]$Version) {
         $nodeBase = "Codlet.app/Contents/Resources/runtime/node-v$($macPin.version)-darwin-arm64"
         $nodePath = $nodeBase + '/bin/node'
         $licensePath = $nodeBase + '/LICENSE'
-        if (-not $entries.ContainsKey($nodePath) -or -not $entries.ContainsKey($licensePath)) { Fail 'macOS updater ZIP is missing the pinned Node files.' }
-        if ((Get-StreamHash $entries[$nodePath]) -ne $macPin.executableSha256 -or (Get-StreamHash $entries[$licensePath]) -ne $macPin.licenseSha256) {
-            Fail 'macOS updater ZIP does not contain the pinned Node executable and license.'
+        if ($LegacyBridge) {
+            if ($pin.PSObject.Properties['mode'] -or $update.runtime.PSObject.Properties['mode']) { Fail 'Legacy bridge must omit runtime mode for Preview 5.' }
+            if (-not $entries.ContainsKey($nodePath) -or -not $entries.ContainsKey($licensePath)) { Fail 'macOS bridge ZIP is missing the pinned Node files.' }
+            if ((Get-StreamHash $entries[$nodePath]) -ne $macPin.executableSha256 -or (Get-StreamHash $entries[$licensePath]) -ne $macPin.licenseSha256) {
+                Fail 'macOS bridge ZIP does not contain the pinned Node executable and license.'
+            }
+        }
+        elseif ((Get-NodeRuntimeMode $pin) -ne 'managed' -or (Get-NodeRuntimeMode $update.runtime) -ne 'managed' -or
+            @($entries.Keys | Where-Object { $_ -like 'Codlet.app/Contents/Resources/runtime/node-v*/*' }).Count -ne 0) {
+            Fail 'Managed macOS updater must declare managed Node without embedding its runtime files.'
         }
     }
     finally { $archive.Dispose() }
@@ -269,7 +286,7 @@ function Get-StreamHash($Entry) {
     try { Get-StreamSha256 $stream } finally { $stream.Dispose() }
 }
 
-function Assert-WindowsUpdateZip([string]$ZipPath, [string]$Version) {
+function Assert-WindowsUpdateZip([string]$ZipPath, [string]$Version, [switch]$LegacyBridge) {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
@@ -319,9 +336,20 @@ function Assert-WindowsUpdateZip([string]$ZipPath, [string]$Version) {
         $nodeBase = "runtime/node-v$($pin.version)-win-x64"
         $nodePath = $nodeBase + '/node.exe'
         $licensePath = $nodeBase + '/LICENSE'
-        if (-not $entries.ContainsKey($nodePath) -or -not $entries.ContainsKey($licensePath) -or
-            (Get-StreamHash $entries[$nodePath]) -ne $nodePin.executableSha256 -or (Get-StreamHash $entries[$licensePath]) -ne $nodePin.licenseSha256) {
-            Fail 'Windows updater ZIP does not contain its pinned Node executable and license.'
+        $expectedFiles = @('codlet.exe', 'runtime/node-runtime.json')
+        if ($LegacyBridge) {
+            if ($pin.PSObject.Properties['mode'] -or $manifest.runtime.PSObject.Properties['mode']) { Fail 'Legacy bridge must omit runtime mode for Preview 5.' }
+            $expectedFiles += @($nodePath, $licensePath)
+            if (-not $entries.ContainsKey($nodePath) -or -not $entries.ContainsKey($licensePath) -or
+                (Get-StreamHash $entries[$nodePath]) -ne $nodePin.executableSha256 -or (Get-StreamHash $entries[$licensePath]) -ne $nodePin.licenseSha256) {
+                Fail 'Windows bridge ZIP does not contain its pinned Node executable and license.'
+            }
+        }
+        elseif ((Get-NodeRuntimeMode $pin) -ne 'managed' -or (Get-NodeRuntimeMode $manifest.runtime) -ne 'managed') {
+            Fail 'Managed Windows updater must declare managed Node.'
+        }
+        if ($files.Count -ne $expectedFiles.Count -or @($files | Where-Object { $_.path -cnotin $expectedFiles }).Count -ne 0) {
+            Fail 'Windows updater file layout differs from its runtime distribution mode.'
         }
     }
     finally { $archive.Dispose() }
@@ -420,7 +448,8 @@ function New-PreviewPlan {
         (Get-Sha256 $dmgPath) -ne $macManifest.dmg.sha256) {
         Fail 'macOS DMG does not match its distribution manifest.'
     }
-    Assert-MacUpdateZip $macUpdateZipPath $macManifest $version
+    Assert-MacUpdateZip $macUpdateZipPath $macManifest $version -LegacyBridge:$LegacyUpdateBridge
+    if ($LegacyUpdateBridge) { $bridgeNode = Assert-PlainPath $WindowsBridgeNodeDirectory $true }
 
     $output = Get-Absolute $OutputDirectory
     if (Test-Path -LiteralPath $output) { Fail 'OutputDirectory must be fresh; existing content is never replaced.' }
@@ -447,9 +476,11 @@ function New-PreviewPlan {
         $runtimeBuild = Join-Path $stage '.runtime-update-build'
         $builder = Join-Path $PSScriptRoot 'Build-RuntimeUpdate.ps1'
         if (-not (Test-Path -LiteralPath $builder)) { Fail 'Build-RuntimeUpdate.ps1 is missing.' }
-        $buildResult = & $builder -InputDirectory $portableRoot -PayloadProfile portable -Version $version -Channel preview -OutputDirectory $runtimeBuild
+        $buildArguments = @{ InputDirectory = $portableRoot; PayloadProfile = 'portable'; Version = $version; Channel = 'preview'; OutputDirectory = $runtimeBuild }
+        if ($LegacyUpdateBridge) { $buildArguments.LegacyBundledBridgeNodeDirectory = $bridgeNode }
+        $buildResult = & $builder @buildArguments
         if ($null -eq $buildResult -or -not $buildResult.archive) { Fail 'Runtime update packager did not return an archive.' }
-        Assert-WindowsUpdateZip $buildResult.archive $version
+        Assert-WindowsUpdateZip $buildResult.archive $version -LegacyBridge:$LegacyUpdateBridge
         $runtimeAssetName = "codlet-runtime-$version-win-x64-portable.zip"
         $assets.Add((Add-CopiedAsset $stage $runtimeAssetName $buildResult.archive 'runtime-update-windows-portable'))
         [IO.Directory]::Delete((Assert-OutputStage $runtimeBuild $stage), $true)
@@ -476,9 +507,14 @@ function New-PreviewPlan {
         }
         # The shipped runtime/update-channel.json pins this stable asset name;
         # only the manifest's channel/version vary across Preview releases.
-        $channelName = 'codlet-update.json'
+        $channelName = 'codlet-update-managed.json'
         Write-Utf8 (Join-Path $stage $channelName) (($channelManifest | ConvertTo-Json -Depth 12) + "`n")
         $assets.Add((Add-GeneratedAsset $stage $channelName 'runtime-channel-manifest'))
+        if ($LegacyUpdateBridge) {
+            $legacyChannelName = 'codlet-update.json'
+            Write-Utf8 (Join-Path $stage $legacyChannelName) (($channelManifest | ConvertTo-Json -Depth 12) + "`n")
+            $assets.Add((Add-GeneratedAsset $stage $legacyChannelName 'legacy-runtime-channel-manifest'))
+        }
 
         $sumLines = @($assets | Sort-Object name | ForEach-Object { "$($_.sha256)  $($_.name)" })
         $sumName = 'SHA256SUMS.txt'
@@ -492,21 +528,22 @@ function New-PreviewPlan {
             '',
             '## Downloads',
             '',
-            '- **Windows x64 portable ZIP** - extract and run Codlet; portable data stays alongside the extracted app.',
-            '- **Windows x64 MSI** - per-user installation under LocalAppData, with selectable features.',
-            '- **Apple Silicon DMG** - drag `Codlet.app` to Applications. The separate updater ZIP is used by the in-app runtime updater.',
+            "- **[Windows x64 portable ZIP](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-portable.zip)** - extract and run Codlet; portable data stays alongside the extracted app.",
+            "- **[Windows x64 MSI](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64.msi)** - per-user installation under LocalAppData, with selectable features.",
+            "- **[Apple Silicon DMG](https://github.com/$Repository/releases/download/v$version/Codlet-$version-macos-arm64.dmg)** - drag Codlet.app to Applications.",
             '',
-            'The release includes `codlet-update.json` and platform-specific Windows portable and macOS app update packages. `SHA256SUMS.txt` lists the downloadable asset digests.',
+            'Choose one installation download above. The update ZIPs and `codlet-update-managed.json` are used by the in-app updater. `SHA256SUMS.txt` lists download checksums.',
+            $(if ($LegacyUpdateBridge) { 'This transition release also provides `codlet-update.json` and full updater payloads so Preview 5 can upgrade. New installations use the smaller packages; later updates use the managed-runtime channel.' } else { 'Node is prepared automatically from a verified official-client runtime or the pinned fallback download, then reused from the managed cache.' }),
             '',
             '## Preview changes',
             '',
-            '- Marketplace releases now carry a compact publisher declaration so listings can show the plugin version, supported platforms, and ZIP download count. Core still verifies package contents before installation.',
-            '- Desktop and provider traffic hooks route supported HTTP, SSE, and Responses WebSocket requests through authorized local plugin routes.',
-            '- The in-app runtime updater now has versioned Windows portable and Apple Silicon app packages on the preview channel.',
+            '- Smaller installers reuse a verified official-client Node runtime or prepare a pinned fallback automatically.',
+            '- Host plugins and HTTP/WebSocket traffic hooks keep their existing APIs and permissions.',
+            '- Release builds omit unused symbol tables. The runtime updater verifies and prepares the next runtime before replacing the current installation.',
             '',
             '## Signing and verification',
             '',
-            'The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.',
+            'Windows packages are unsigned. The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.',
             '',
             'This is preview software; see [known issues](https://github.com/baoabaob/codlet/blob/main/docs/known-issues.md) for current platform and acceptance limits.'
         )
@@ -522,6 +559,7 @@ function New-PreviewPlan {
             tag = 'v' + $version
             channel = 'preview'
             prerelease = $true
+            legacyUpdateBridge = [bool]$LegacyUpdateBridge
             sourceCommit = $portableManifest.sourceCommit
             pluginsCommit = $portableManifest.pluginsCommit
             releaseName = "Codlet $version Preview"
@@ -602,9 +640,17 @@ function Read-ReleasePlan([string]$Path) {
         }
         if ($spec.key -eq 'macos') { $macManifestPath = $file }
     }
-    $channelAsset = @($plan.assets | Where-Object { $_.name -eq 'codlet-update.json' })
-    if ($channelAsset.Count -ne 1) { Fail 'Release plan must contain codlet-update.json.' }
-    $channel = Read-JsonFile (Resolve-PlanAsset $root 'codlet-update.json') 256KB
+    if (-not $plan.PSObject.Properties['legacyUpdateBridge'] -or $plan.legacyUpdateBridge -isnot [bool]) { Fail 'Release plan must identify whether this is a legacy update bridge.' }
+    $channelAsset = @($plan.assets | Where-Object { $_.name -eq 'codlet-update-managed.json' })
+    if ($channelAsset.Count -ne 1) { Fail 'Release plan must contain codlet-update-managed.json.' }
+    $channel = Read-JsonFile (Resolve-PlanAsset $root 'codlet-update-managed.json') 256KB
+    $legacyChannelAsset = @($plan.assets | Where-Object { $_.name -eq 'codlet-update.json' })
+    if ($plan.legacyUpdateBridge) {
+        if ($legacyChannelAsset.Count -ne 1 -or $legacyChannelAsset[0].sha256 -ne $channelAsset[0].sha256) {
+            Fail 'The transition channels must reference the same legacy-compatible updater payloads.'
+        }
+    }
+    elseif ($legacyChannelAsset.Count -ne 0) { Fail 'A managed-only release must not advertise its ZIPs to Preview 5.' }
     if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'preview' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne 2) { Fail 'Preview channel manifest is not compatible with the runtime updater.' }
     foreach ($supported in @(@{ platform = 'win-x64'; profile = 'portable' }, @{ platform = 'darwin-arm64'; profile = 'macApp' })) {
         $matches = @($channel.artifacts | Where-Object { $_.platform -eq $supported.platform -and $_.profile -eq $supported.profile })
@@ -617,7 +663,7 @@ function Read-ReleasePlan([string]$Path) {
         }
         $zipPath = Resolve-PlanAsset $root ([string]$artifact.assetName)
         if ($supported.platform -eq 'win-x64') {
-            Assert-WindowsUpdateZip $zipPath ([string]$plan.version)
+            Assert-WindowsUpdateZip $zipPath ([string]$plan.version) -LegacyBridge:$plan.legacyUpdateBridge
         }
         else {
             $macManifest = Read-JsonFile $macManifestPath
@@ -625,7 +671,7 @@ function Read-ReleasePlan([string]$Path) {
                 $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginsSourceCommit -ne $plan.pluginsCommit) {
                 Fail 'Saved macOS distribution manifest has different release provenance.'
             }
-            Assert-MacUpdateZip $zipPath $macManifest ([string]$plan.version)
+            Assert-MacUpdateZip $zipPath $macManifest ([string]$plan.version) -LegacyBridge:$plan.legacyUpdateBridge
         }
     }
     if ($plan.releaseNotesFile -ne 'release-notes.md') { Fail 'Release notes path is not supported.' }

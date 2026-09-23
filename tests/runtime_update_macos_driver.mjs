@@ -25,10 +25,10 @@ const onReady = message => {
 try {
   const result = await runInstall(planPath, digest, onReady, { restartApp });
   send({ event: 'result', phase: result.phase, calls });
-  if (mode === 'rollback' || mode === 'unclean') process.exitCode = 1;
+  if (mode === 'rollback' || mode === 'unclean' || mode === 'unprepared') process.exitCode = 1;
 } catch (error) {
   send({ event: 'error', phase: error.receipt?.phase, code: error.code, message: String(error.message ?? error).slice(0, 512), calls });
-  if (mode !== 'rollback' && mode !== 'unclean') {
+  if (mode !== 'rollback' && mode !== 'unclean' && mode !== 'unprepared') {
     console.error(error);
     process.exitCode = 1;
   }

@@ -73,6 +73,16 @@ fn handoff(request: &RuntimeInstallRequest, ack_sent: &mut bool) -> Result<(), S
     command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
     #[cfg(target_os = "macos")]
     command.process_group(0);
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy().to_ascii_uppercase();
+        if name.starts_with("NODE_")
+            || name.starts_with("OPENSSL_")
+            || name.starts_with("DYLD_")
+            || name == "ELECTRON_RUN_AS_NODE"
+        {
+            command.env_remove(key);
+        }
+    }
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start the update helper: {error}"))?;

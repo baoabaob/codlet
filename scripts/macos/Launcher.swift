@@ -30,6 +30,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
             do {
                 let pin = try JSONDecoder().decode(RuntimePin.self, from: Data(contentsOf: resources.appendingPathComponent("runtime/node-runtime.json")))
                 guard pin.platforms["darwin-arm64"] != nil, FileManager.default.isExecutableFile(atPath: resources.appendingPathComponent("codlet").path) else { exit(2) }
+                let setup = setupCommand(selected: ["codlet-gui"], interactivePermissions: true)
+                guard setup.0 == resources.appendingPathComponent("codlet"), setup.1 == ["__codlet_initialize_plugins", "--interactive-permissions", "codlet-gui"] else { exit(2) }
+                guard setupCommand(selected: [], interactivePermissions: false).1 == ["__codlet_initialize_plugins"] else { exit(2) }
                 print("Native launcher resources verified; no client or user configuration was opened.")
                 exit(0)
             } catch { fputs("\(error)\n", stderr); exit(2) }
@@ -124,15 +127,17 @@ final class Launcher: NSObject, NSApplicationDelegate {
         if !FileManager.default.fileExists(atPath: file.path) { FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
         let handle = try FileHandle(forWritingTo: file); try handle.seekToEnd(); return handle
     }
+    private func setupCommand(selected: [String], interactivePermissions: Bool) -> (URL, [String]) {
+        (resources.appendingPathComponent("codlet"), ["__codlet_initialize_plugins"] + (interactivePermissions ? ["--interactive-permissions"] : []) + selected)
+    }
     @objc private func initialize() {
         guard setup == nil else { return }
         do {
-            let pin = try JSONDecoder().decode(RuntimePin.self, from: Data(contentsOf: resources.appendingPathComponent("runtime/node-runtime.json")))
-            let version = pin.platforms["darwin-arm64"]?.version ?? pin.version
-            let process = Process(); process.executableURL = resources.appendingPathComponent("runtime/node-v\(version)-darwin-arm64/bin/node")
-            var arguments = [resources.appendingPathComponent("initialize.mjs").path, "--interactive-permissions"]
-            for (box, id) in [(ui!, "codex.ui.adapter"), (desktop!, "codex.desktop.adapter"), (gui!, "codlet-gui")] { if box.state == .on { arguments.append(id) } }
-            process.arguments = arguments; process.environment = environment()
+            var selected: [String] = []
+            for (box, id) in [(ui!, "codex.ui.adapter"), (desktop!, "codex.desktop.adapter"), (gui!, "codlet-gui")] { if box.state == .on { selected.append(id) } }
+            let command = setupCommand(selected: selected, interactivePermissions: true)
+            let process = Process(); process.executableURL = command.0
+            process.arguments = command.1; process.environment = environment()
             let log = try logHandle("macos-setup.log"); process.standardOutput = log; process.standardError = log
             process.terminationHandler = { [weak self] process in
                 try? log.close()

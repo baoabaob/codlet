@@ -88,6 +88,28 @@ jobs:
           # Standard-library and build-host notices can differ between GNU
           # Windows and Apple toolchains. Ship this build's actual attribution.
           python3 scripts/collect-rust-licenses.py
+      - name: Cache one reviewed official Apple Silicon client fixture
+        uses: actions/cache@v4
+        with:
+          path: core/.codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip
+          key: official-mac-client-26.917.62051-ca4a4443f41e9fc5
+      - name: Download and verify the reviewed official client archive
+        run: |
+          archive=.codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip
+          mkdir -p "$(dirname "$archive")"
+          if [ ! -f "$archive" ]; then
+            curl --fail --location --retry 3 --connect-timeout 15 \
+              --output "$archive.part" \
+              https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.917.62051.zip
+            mv "$archive.part" "$archive"
+          fi
+          echo "ca4a4443f41e9fc5762eeda60254ff57cc8b9ef7b990c31ae58bddfbb9d0b6b3  $archive" | shasum -a 256 -c -
+      - name: Validate official independent CUA Node without launching its GUI
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 tests/verify_mac_client_node.py \
+            --archive .codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip \
+            --plugins ../plugins \
+            --export-runtime .codlet-artifacts/official-mac/validated-cua-node
       - name: Run native Core and packaging contract tests
         run: |
           xcrun swiftc -swift-version 5 -typecheck -target arm64-apple-macos13.0 -framework AppKit scripts/macos/Launcher.swift
@@ -106,6 +128,7 @@ jobs:
           python3 scripts/build-preview-macos.py \
             --executable "$codlet_target_root/aarch64-apple-darwin/release/codlet" \
             --node-directory "$codlet_target_root/aarch64-apple-darwin/release/runtime/node-v$NODE_VERSION-darwin-arm64" \
+            --reviewed-client-node-directory .codlet-artifacts/official-mac/validated-cua-node \
             --plugin-distribution ../plugins/dist \
             --source-commit "$(git rev-parse HEAD)" \
             --plugins-commit "$PLUGINS_COMMIT" \

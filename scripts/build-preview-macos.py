@@ -50,6 +50,11 @@ def build_update_zip(app, destination, version):
         "executableSha256": node["executableSha256"],
         "licenseSha256": node["licenseSha256"],
     }
+    mode = pin.get("mode", "bundled")
+    if mode not in ("bundled", "managed"):
+        raise ValueError("Unknown macOS Node runtime mode")
+    if mode == "managed":
+        runtime["mode"] = "managed"
     files = []
     for source in sorted(app.rglob("*")):
         plain(source)
@@ -80,6 +85,37 @@ def build_update_zip(app, destination, version):
     return {"file": destination.name, "bytes": destination.stat().st_size, "sha256": digest(destination)}
 
 
+def signed_inventory(app):
+    return [{"path": str(file.relative_to(app)).replace(os.sep, "/"),
+             "bytes": file.stat().st_size, "sha256": digest(file),
+             "mode": file.stat().st_mode & 0o777}
+            for file in sorted(app.rglob("*")) if file.is_file()]
+
+
+def stage_legacy_bridge(app, node_directory, destination):
+    """Give the already-shipped Preview 5 reader its exact bundled contract."""
+    if destination.exists():
+        raise ValueError("Legacy bridge destination already exists")
+    shutil.copytree(app, destination, symlinks=False)
+    runtime_file = destination / "Contents/Resources/runtime/node-runtime.json"
+    pin = json.loads(runtime_file.read_text(encoding="utf-8"))
+    if pin.pop("mode", None) != "managed":
+        raise ValueError("Legacy bridge requires a managed source app")
+    channel = json.loads((destination / "Contents/Resources/runtime/update-channel.json").read_text(encoding="utf-8"))
+    if channel.get("source", {}).get("manifestAsset") != "codlet-update-managed.json":
+        raise ValueError("Legacy bridge must switch to managed updates after installation")
+    runtime_file.write_text(json.dumps(pin, indent=2) + "\n", encoding="utf-8")
+    node = pin["platforms"]["darwin-arm64"]
+    basename = f"node-v{node.get('version', pin['version'])}-darwin-arm64"
+    target = destination / "Contents/Resources/runtime" / basename
+    for name in ("bin/node", "LICENSE"):
+        copy(node_directory / name, target / name)
+    (target / "bin/node").chmod(0o755)
+    if digest(target / "bin/node") != node["executableSha256"] or digest(target / "LICENSE") != node["licenseSha256"]:
+        raise ValueError("Legacy bridge Node copy differs from the fixed pin")
+    return destination
+
+
 def stage_payload(executable, node_directory, plugin_distribution, output, core_commit, plugin_commit):
     """Validate and assemble only declared payloads; also used by portable tests."""
     for value in (executable, node_directory, plugin_distribution, output):
@@ -99,6 +135,11 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
     license_match = re.search(r'^license = "([^"]+)"', cargo, re.MULTILINE)
     license_expression = license_match[1] if license_match else "See bundled license files"
     pin = json.loads((ROOT / "runtime/node-runtime.json").read_text())
+    if pin.get("mode") != "managed":
+        raise ValueError("The default Mac preview app requires managed Node mode")
+    channel = json.loads((ROOT / "runtime/update-channel.json").read_text(encoding="utf-8"))
+    if channel.get("source", {}).get("manifestAsset") != "codlet-update-managed.json":
+        raise ValueError("Managed Mac preview requires the managed update channel")
     spec = pin["platforms"]["darwin-arm64"]
     for name, checksum in (("bin/node", spec["executableSha256"]), ("LICENSE", spec["licenseSha256"])):
         plain(node_directory / name)
@@ -128,12 +169,8 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
     resources = app / "Contents/Resources"
     copy(executable, resources / "codlet")
     (resources / "codlet").chmod(0o755)
-    for name in ("node-runtime.json", "update-channel.json"):
+    for name in ("node-runtime.json", "client-node-profiles.json", "update-channel.json"):
         copy(ROOT / "runtime" / name, resources / "runtime" / name)
-    node_name = f"node-v{spec.get('version', pin['version'])}-darwin-arm64"
-    for name in ("bin/node", "LICENSE"):
-        copy(node_directory / name, resources / "runtime" / node_name / name)
-    (resources / "runtime" / node_name / "bin/node").chmod(0o755)
     copy(ROOT / "scripts/macos/initialize.mjs", resources / "initialize.mjs")
     (resources / "optional-plugins").mkdir()
     (resources / "optional-plugins/catalog.json").write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
@@ -178,7 +215,7 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
         "schema": 1, "kind": "codlet-macos-preview", "version": version,
         "platform": "darwin-arm64", "sourceCommit": core_commit,
         "pluginsSourceCommit": plugin_commit, "appleDeveloperSigned": False,
-        "notarized": False, "signature": "ad-hoc launcher; pinned runtime bytes preserved",
+        "notarized": False, "signature": "ad-hoc app seal; managed Node verified outside the bundle",
         "license": license_expression, "licenseFiles": [f"Contents/Resources/licenses/{name}" for name in [*license_names, "NOTICE", "THIRD_PARTY_UI_LICENSES.txt", "THIRD_PARTY_RUST_LICENSES.txt"]],
         "officialPlugins": [{key: pkg[key] for key in ("id", "version", "repository", "tag", "sha256")} for pkg in packages],
     }
@@ -210,16 +247,31 @@ def build(args):
         run("codesign", "--verify", "--strict", app)
         run(app / "Contents/MacOS/Codlet", "--packaging-smoke-test")
         run(app / "Contents/Resources/codlet", "--version")
-        pin = json.loads((app / "Contents/Resources/runtime/node-runtime.json").read_text())
-        node_version = pin["platforms"]["darwin-arm64"].get("version", pin["version"])
-        node_relative = Path(f"Contents/Resources/runtime/node-v{node_version}-darwin-arm64/bin/node")
-        run(app / node_relative, "--version")
+        fallback_node = Path(args.node_directory).absolute() / "bin/node"
+        run(fallback_node, "--version")
+        reviewed_client_node = Path(args.reviewed_client_node_directory).absolute() if args.reviewed_client_node_directory else None
+        if reviewed_client_node is not None:
+            profiles = json.loads((ROOT / "runtime/client-node-profiles.json").read_text(encoding="utf-8"))
+            candidates = [entry for entry in profiles["profiles"] if entry["platform"] == "darwin-arm64"]
+            if len(candidates) != 1 or digest(reviewed_client_node / "bin/node") != candidates[0]["nodeSha256"] or digest(reviewed_client_node / "LICENSE") != candidates[0]["licenseSha256"]:
+                raise ValueError("Native-reviewed client Node copy differs from the fixed profile")
+            run("codesign", "--verify", "--strict", reviewed_client_node / "bin/node")
         update_zip = temporary / f"Codlet-{version}-darwin-arm64-update.zip"
         update_asset = build_update_zip(app, update_zip, version)
-        update_environment = {**os.environ, "CODLET_MAC_UPDATE_APP": str(app), "CODLET_MAC_UPDATE_ZIP": str(update_zip)}
+        bridge_app = stage_legacy_bridge(app, Path(args.node_directory).absolute(), temporary / "legacy-bridge" / "Codlet.app")
+        run("codesign", "--force", "--sign", "-", bridge_app)
+        run("codesign", "--verify", "--strict", bridge_app)
+        bridge_zip = temporary / f"Codlet-{version}-darwin-arm64-legacy-update.zip"
+        bridge_asset = build_update_zip(bridge_app, bridge_zip, version)
+        update_environment = {**os.environ, "CODLET_MAC_UPDATE_APP": str(app), "CODLET_MAC_UPDATE_ZIP": str(update_zip),
+                              "CODLET_MAC_LEGACY_APP": str(bridge_app), "CODLET_MAC_LEGACY_ZIP": str(bridge_zip),
+                              "CODLET_HOME": str(temporary / "runtime-acceptance-home")}
         subprocess.run(["cargo", "test", "--locked", "--target", "aarch64-apple-darwin", "--lib", "macos_signed_bundle_update_archive", "--", "--nocapture"],
                        cwd=ROOT, env=update_environment, check=True, timeout=900)
-        run(app / node_relative, ROOT / "tests/runtime_update_macos.native.mjs", app, version)
+        native = [fallback_node, ROOT / "tests/runtime_update_macos.native.mjs", app, version, bridge_app, Path(args.node_directory).absolute()]
+        if reviewed_client_node is not None:
+            native.append(reviewed_client_node)
+        run(*native)
         os.symlink("/Applications", volume / "Applications")
         (volume / "开始使用.txt").write_text(
             f"Codlet {version} · macOS Apple Silicon Preview\n\n"
@@ -230,6 +282,7 @@ def build(args):
             "确认下载来源和 SHA-256 后，可使用 macOS 系统设置中的隐私与安全性页\n"
             "允许这一个应用；不要关闭系统安全保护。工作与视觉验收仍需真实 Mac 客户端。\n\n"
             "配置、插件和日志在 ~/Library/Application Support/Codlet。\n"
+            "首次启用主机插件时，若没有可复用的已验证运行时，Codlet 需要联网准备固定 Node；之后会复用缓存。\n"
             "拖走 Codlet.app 不删除这些用户数据。菜单栏可补选官方插件或打开日志。\n"
             "安装到 Applications 后，可在 Codlet GUI 中检查并安装预览版更新。更新会先校验整个应用包，请按提示正常退出，完成后 Codlet 会重新打开。\n",
             encoding="utf-8",
@@ -248,20 +301,24 @@ def build(args):
             run(installed / "Contents/MacOS/Codlet", "--packaging-smoke-test")
             # Validate the shipped initializer with the real native Core using
             # disposable Codlet data. This does not launch the official client.
-            environment = {**os.environ, "CODLET_HOME": str(temporary / "acceptance-data")}
-            subprocess.run([str(installed / node_relative), str(installed / "Contents/Resources/initialize.mjs"), *ALLOWED], env=environment, check=True, timeout=120)
+            environment = {**os.environ, "CODLET_HOME": str(temporary / "runtime-acceptance-home")}
+            subprocess.run([str(installed / "Contents/Resources/codlet"), "__codlet_initialize_plugins", *ALLOWED], env=environment, check=True, timeout=180)
             listing = subprocess.run([str(installed / "Contents/Resources/codlet"), "plugin", "list", "--json"], env=environment, check=True, timeout=30, capture_output=True, text=True, encoding="utf-8")
             if {entry["id"] for entry in json.loads(listing.stdout)["plugins"]} != set(ALLOWED):
                 raise ValueError("Mounted package failed real Core plugin initialization")
             manifest["nativePackagingChecks"] = ["arm64-host", "launcher-smoke", "codesign-ad-hoc-integrity", "signed-update-zip-stage", "native-app-update-swap-rollback", "dmg-verify", "mounted-launcher-smoke", "mounted-real-core-plugin-initialization"]
+            if reviewed_client_node is not None:
+                manifest["nativePackagingChecks"].append("official-client-node-helper")
         finally:
             if os.path.ismount(mounted):
                 run("hdiutil", "detach", mounted)
         manifest["dmg"] = {"file": dmg.name, "bytes": dmg.stat().st_size, "sha256": digest(dmg)}
         shutil.copy2(update_zip, output / update_zip.name)
         manifest["updateZip"] = update_asset
+        shutil.copy2(bridge_zip, output / bridge_zip.name)
+        manifest["legacyUpdateZip"] = {**bridge_asset, "files": signed_inventory(bridge_app)}
         (output / "distribution-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        (output / "SHA256SUMS.txt").write_text(f"{digest(dmg)}  {dmg.name}\n{update_asset['sha256']}  {update_zip.name}\n", encoding="utf-8")
+        (output / "SHA256SUMS.txt").write_text(f"{digest(dmg)}  {dmg.name}\n{update_asset['sha256']}  {update_zip.name}\n{bridge_asset['sha256']}  {bridge_zip.name}\n", encoding="utf-8")
         shutil.copy2(volume / "开始使用.txt", output / "开始使用.txt")
         print(json.dumps({"dmg": str(dmg), "sha256": digest(dmg), "version": version}))
 
@@ -270,4 +327,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("executable", "node-directory", "plugin-distribution", "output", "source-commit", "plugins-commit"):
         parser.add_argument("--" + option, required=True)
+    parser.add_argument("--reviewed-client-node-directory")
     build(parser.parse_args())
