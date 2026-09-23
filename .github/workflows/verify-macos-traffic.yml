@@ -1,0 +1,139 @@
+name: Verify macOS traffic
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_commit:
+        description: Full Core commit SHA
+        required: true
+        type: string
+      plugins_commit:
+        description: Full official-plugin commit SHA containing the candidate driver
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-traffic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plaintext:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      CODLET_CORE_ROOT: ${{ github.workspace }}/core
+      CODEX_DMG_SHA256: 6b1f9abd5bc73962e503efc2ec1af38d5a4d18eeb769a80083d60025be02a81d
+      CODEX_BACKEND_SHA256: 3faf4499d4044cae5285f8548eb54ddedd5fd75694ec3f394c91543655662ae5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: core
+          ref: ${{ inputs.core_commit }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: baoabaob/codlet-plugins
+          path: plugins
+          ref: ${{ inputs.plugins_commit }}
+          persist-credentials: false
+      - name: Verify native architecture and source revisions
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          [[ "$CORE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PLUGINS_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C core rev-parse HEAD)" = "$CORE_COMMIT"
+          test "$(git -C plugins rev-parse HEAD)" = "$PLUGINS_COMMIT"
+      - name: Read the production Mac runtime version
+        id: runtime
+        run: |
+          python3 - <<'PY'
+          import json, os
+          with open('core/runtime/node-runtime.json', encoding='utf-8') as source:
+              pin = json.load(source)
+          version = pin['platforms']['darwin-arm64'].get('version', pin['version'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('node_version=' + version + '\n')
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: |
+            core/frontend/package-lock.json
+            plugins/frontend/package-lock.json
+      - name: Build matching SDK and production Host
+        run: |
+          npm ci --prefix core/frontend
+          node core/frontend/build.mjs
+          npm ci --prefix plugins/frontend
+          node plugins/scripts/prepare-core-sdk.mjs "$CODLET_CORE_ROOT"
+          node plugins/frontend/build.mjs
+      - name: Stage the source-reviewed official client
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/Codex.dmg" \
+            https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
+          printf '%s  %s\n' "$CODEX_DMG_SHA256" "$RUNNER_TEMP/Codex.dmg" | shasum -a 256 --check
+          mkdir "$RUNNER_TEMP/codlet-mac-dmg"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/codlet-mac-dmg" "$RUNNER_TEMP/Codex.dmg"
+          trap 'hdiutil detach "$RUNNER_TEMP/codlet-mac-dmg"' EXIT
+          ditto "$RUNNER_TEMP/codlet-mac-dmg/ChatGPT.app" "$RUNNER_TEMP/ChatGPT.app"
+          codesign --verify --deep --strict --test-requirement \
+            'anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"' \
+            "$RUNNER_TEMP/ChatGPT.app"
+      - name: Verify native model-provider behavior
+        id: backend
+        continue-on-error: true
+        working-directory: plugins
+        run: |
+          node scripts/verify-plaintext-backend.mjs --run-owned yes \
+            --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
+            --expected-sha256 "$CODEX_BACKEND_SHA256"
+      - name: Verify Desktop and model HTTP paths
+        id: http
+        continue-on-error: true
+        working-directory: plugins
+        run: |
+          node scripts/verify-official-main-owned.mjs --run-owned yes --mac-candidate yes \
+            --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
+            --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
+            --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol http \
+            --bootstrap-bundle bootstrap-CbmE0G_n.js --main-bundle main-DOn0I1A9.js \
+            --app-server-module src-mOb8On4V.js --fetch-wrapper-symbol ZTe --application-network-factory x
+      - name: Verify Desktop and model WebSocket paths
+        id: ws
+        continue-on-error: true
+        working-directory: plugins
+        run: |
+          node scripts/verify-official-main-owned.mjs --run-owned yes --mac-candidate yes \
+            --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
+            --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
+            --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol ws \
+            --bootstrap-bundle bootstrap-CbmE0G_n.js --main-bundle main-DOn0I1A9.js \
+            --app-server-module src-mOb8On4V.js --fetch-wrapper-symbol ZTe --application-network-factory x
+      - name: Upload bounded acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-traffic-candidate
+          path: |
+            plugins/.artifacts/request-chain/macos-backend-plaintext.json
+            plugins/.artifacts/request-chain/macos-candidate/owned-acceptance/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Require every native check to pass
+        if: always()
+        env:
+          BACKEND: ${{ steps.backend.outcome }}
+          HTTP: ${{ steps.http.outcome }}
+          WS: ${{ steps.ws.outcome }}
+        run: |
+          test "$BACKEND" = success
+          test "$HTTP" = success
+          test "$WS" = success
