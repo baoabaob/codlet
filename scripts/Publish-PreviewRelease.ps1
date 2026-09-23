@@ -672,7 +672,10 @@ function Invoke-ReleaseApi([string]$Method, [string]$Path, $Body = $null, [switc
                 $memory.Write($buffer, 0, $read)
             }
             if ($memory.Length -eq 0) { return $null }
-            try { $script:utf8.GetString($memory.ToArray()) | ConvertFrom-Json }
+            try {
+                $decoded = $script:utf8.GetString($memory.ToArray()) | ConvertFrom-Json
+                return $decoded
+            }
             catch { Fail 'GitHub returned invalid JSON.' }
         }
         finally { $memory.Dispose(); $stream.Dispose() }
