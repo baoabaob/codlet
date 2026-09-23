@@ -251,13 +251,13 @@ fn preview_checked(
                 ));
             }
         }
-        ManagedOperation::Adopt => {
-            if !crate::plugin_cli::official_seed::verified_installer_source(registry, id) {
-                return Err(control_error(
-                    "installer_source_required",
-                    "This registration is not a verified installer package. Review it as a separate local source; Core will not take over its ID.",
-                ));
-            }
+        ManagedOperation::Adopt
+            if !crate::plugin_cli::official_seed::verified_installer_source(registry, id) =>
+        {
+            return Err(control_error(
+                "installer_source_required",
+                "This registration is not a verified installer package. Review it as a separate local source; Core will not take over its ID.",
+            ));
         }
         _ => {}
     }

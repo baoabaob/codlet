@@ -291,10 +291,9 @@ impl GitHubJobs {
             }
             if let Some(key) = entry.cache_key.clone() && entry.result["status"] == "completed" {
                 let result = entry.result.clone();
-                if table.discovery_cache.len() >= MAX_RETAINED_JOBS {
-                    if let Some(oldest) = table.discovery_cache.iter().min_by_key(|(_, (time, _))| *time).map(|(key, _)| key.clone()) {
-                        table.discovery_cache.remove(&oldest);
-                    }
+                if table.discovery_cache.len() >= MAX_RETAINED_JOBS
+                    && let Some(oldest) = table.discovery_cache.iter().min_by_key(|(_, (time, _))| *time).map(|(key, _)| key.clone()) {
+                    table.discovery_cache.remove(&oldest);
                 }
                 table.discovery_cache.insert(key, (Instant::now(), result));
             }

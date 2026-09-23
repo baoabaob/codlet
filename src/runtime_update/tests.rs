@@ -121,6 +121,7 @@ fn channel() -> RuntimeUpdateChannel {
         }),
     }
 }
+#[cfg(windows)]
 fn stage(
     bytes: &[u8],
     profile: RuntimePayloadProfile,
@@ -532,6 +533,7 @@ fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
     data.extend_from_slice(body);
     data
 }
+#[cfg(windows)]
 fn release(bytes: &[u8]) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"schema":1,"kind":"codlet-runtime-channel","channel":"stable","version":"9.0.0","artifacts":[{"platform":"win-x64","profile":"portable","bytes":bytes.len(),"sha256":sha(bytes),"url":"https://cdn.example/runtime.zip","assetName":null}]})).unwrap()
 }

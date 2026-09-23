@@ -72,22 +72,18 @@ impl UpdateClient {
         channel: &RuntimeUpdateChannel,
         profile: Option<RuntimePayloadProfile>,
     ) -> Result<Option<Candidate>> {
+        #[cfg(target_os = "macos")]
+        let selected_profile = profile.unwrap_or(RuntimePayloadProfile::MacApp);
+        #[cfg(not(target_os = "macos"))]
         let selected_profile = profile.unwrap_or_else(|| {
-            #[cfg(target_os = "macos")]
+            if std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_owned()))
+                .is_some_and(|n| n.eq_ignore_ascii_case("codlet-lab.exe"))
             {
-                RuntimePayloadProfile::MacApp
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                if std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_owned()))
-                    .is_some_and(|n| n.eq_ignore_ascii_case("codlet-lab.exe"))
-                {
-                    RuntimePayloadProfile::IsolatedClient
-                } else {
-                    RuntimePayloadProfile::Portable
-                }
+                RuntimePayloadProfile::IsolatedClient
+            } else {
+                RuntimePayloadProfile::Portable
             }
         });
         match channel.source.as_ref().ok_or_else(|| {
