@@ -434,7 +434,7 @@ fn snapshot_runtime(
         (path, &executable, MAX_NODE_BYTES, 0o500),
         (license_path, &license, MAX_LICENSE_BYTES, 0o400),
     ] {
-        let mut source = OpenOptions::new()
+        let source = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(source_path)?;

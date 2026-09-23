@@ -903,7 +903,6 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
     // updater. Only migrate that exact built-in source to the managed asset;
     // an explicitly configured third-party source keeps its chosen manifest.
     if channel.channel == "preview"
-        && channel.check_interval_seconds == 900
         && let Some(RuntimeUpdateSource::Github {
             repository_url,
             manifest_asset,

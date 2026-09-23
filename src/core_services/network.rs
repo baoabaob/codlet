@@ -167,6 +167,7 @@ impl Network {
         check: &dyn Fn() -> Result<()>,
     ) -> Result<Value> {
         let mut builder = reqwest::Client::builder()
+            .use_rustls_tls()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))

@@ -143,7 +143,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
                 try? log.close()
                 DispatchQueue.main.async { self?.setupFinished(process.terminationStatus) }
             }
-            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在校验并初始化所选插件…"
+            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在准备运行环境并初始化插件；首次使用可能需要下载，请稍候…"
             try process.run()
         } catch { setup = nil; startButton.isEnabled = true; _ = alert("无法初始化 Codlet", error.localizedDescription) }
     }

@@ -219,9 +219,11 @@ fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
     );
     channel.check_interval_seconds = 901;
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    let migrated = read_channel(root.path()).unwrap();
+    assert_eq!(migrated.check_interval_seconds, 901);
     assert_eq!(
-        selected_asset(read_channel(root.path()).unwrap()),
-        "codlet-update.json"
+        selected_asset(migrated),
+        "codlet-update-managed.json"
     );
     channel.check_interval_seconds = 900;
     if let Some(RuntimeUpdateSource::Github { repository_url, .. }) = &mut channel.source {
@@ -231,6 +233,19 @@ fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
     assert_eq!(
         selected_asset(read_channel(root.path()).unwrap()),
         "codlet-update.json"
+    );
+    if let Some(RuntimeUpdateSource::Github {
+        repository_url,
+        manifest_asset,
+    }) = &mut channel.source
+    {
+        *repository_url = "https://github.com/baoabaob/codlet".into();
+        *manifest_asset = "custom-update.json".into();
+    }
+    std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(
+        selected_asset(read_channel(root.path()).unwrap()),
+        "custom-update.json"
     );
 }
 

@@ -55,6 +55,7 @@ impl UpdateClient {
     pub fn new(channel: &RuntimeUpdateChannel) -> Result<Self> {
         validate_channel_source(channel.source.as_ref())?;
         let client = reqwest::Client::builder()
+            .use_rustls_tls()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(600))

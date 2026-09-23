@@ -157,7 +157,7 @@ pub(super) fn allowed_mirror_asset_url(raw: &str, archive: &str) -> bool {
         return false;
     };
     if url.scheme() != "https"
-        || url.host_str() != Some("github.com")
+        || !matches!(url.host_str(), Some("github.com" | "api.github.com"))
         || url.port().is_some_and(|port| port != 443)
         || !url.username().is_empty()
         || url.password().is_some()
@@ -167,11 +167,25 @@ pub(super) fn allowed_mirror_asset_url(raw: &str, archive: &str) -> bool {
         return false;
     }
     let parts: Vec<_> = url.path().split('/').collect();
-    parts.len() == 7
-        && parts[0].is_empty()
-        && parts[1..5] == ["baoabaob", "codlet", "releases", "download"]
-        && parts[5] == "node-runtimes"
-        && parts[6] == archive
+    match url.host_str() {
+        Some("github.com") => {
+            parts.len() == 7
+                && parts[0].is_empty()
+                && parts[1..5] == ["baoabaob", "codlet", "releases", "download"]
+                && parts[5] == "node-runtimes"
+                && parts[6] == archive
+        }
+        Some("api.github.com") => {
+            parts.len() == 7
+                && parts[0].is_empty()
+                && parts[1..6] == ["repos", "baoabaob", "codlet", "releases", "assets"]
+                && !parts[6].is_empty()
+                && parts[6].len() <= 20
+                && parts[6].bytes().all(|byte| byte.is_ascii_digit())
+                && parts[6].parse::<u64>().is_ok_and(|id| id > 0)
+        }
+        _ => false,
+    }
 }
 
 fn plain(path: &Path) -> Result<(), HostError> {
@@ -1276,15 +1290,36 @@ async fn download_archive_async(
         DownloadSource::Official => Duration::from_secs(75),
         DownloadSource::CodletMirror => Duration::from_secs(180),
     };
-    tokio::time::timeout(
-        total_timeout,
-        download_archive_attempt(url, path, source, total_timeout),
-    )
+    tokio::time::timeout(total_timeout, async {
+        let started = Instant::now();
+        for attempt in 0..3 {
+            let remaining = total_timeout.saturating_sub(started.elapsed());
+            let result = download_archive_attempt(url, path, source, remaining).await;
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error) if error.code != "js_runtime_download" || attempt == 2 => {
+                    return Err(error);
+                }
+                Err(_) => {
+                    if path.exists() {
+                        fs::remove_file(path).map_err(io_error)?;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
+                }
+            }
+        }
+        unreachable!()
+    })
     .await
     .map_err(|_| {
+        let received = fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
         HostError::new(
             "js_runtime_download",
-            "Fixed Node source exceeded its total download deadline",
+            format!(
+                "Fixed Node source exceeded its total download deadline after {received} bytes"
+            ),
         )
     })?
 }
@@ -1295,11 +1330,15 @@ async fn download_archive_attempt(
     source: DownloadSource,
     total_timeout: Duration,
 ) -> Result<(), HostError> {
-    let client = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
+        .http1_only()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
         .timeout(total_timeout)
-        .user_agent("Codlet-managed-Node/1")
+        .user_agent("Codlet-managed-Node/1");
+    #[cfg(windows)]
+    let builder = builder.use_native_tls();
+    let client = builder
         .build()
         .map_err(network_error)?;
     let mut current = url::Url::parse(url).map_err(|_| invalid("Official Node URL is invalid"))?;
@@ -1315,6 +1354,9 @@ async fn download_archive_attempt(
         }
         let response = client
             .get(current.clone())
+            .header("Accept", "application/octet-stream")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .header("Accept-Encoding", "identity")
             .send()
             .await
             .map_err(network_error)?;
@@ -1448,7 +1490,7 @@ pub(super) fn extract_exact(
         let mut seen = [false; 2];
         for entry in tar.entries().map_err(io_error)? {
             let mut entry = entry.map_err(io_error)?;
-            let name = entry.path().map_err(io_error)?;
+            let name = entry.path().map_err(io_error)?.into_owned();
             for index in 0..2 {
                 if name == Path::new(&names[index]) {
                     if seen[index] || !entry.header().entry_type().is_file() {
@@ -1469,7 +1511,8 @@ pub(super) fn extract_exact(
                         .create_new(true)
                         .open(destination)
                         .map_err(io_error)?;
-                    if std::io::copy(&mut entry.take(maximum + 1), &mut output).map_err(io_error)?
+                    if std::io::copy(&mut (&mut entry).take(maximum + 1), &mut output)
+                        .map_err(io_error)?
                         > maximum
                     {
                         return Err(invalid(

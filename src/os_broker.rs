@@ -505,6 +505,7 @@ impl OsBroker {
                 .build()
                 .map_err(|error| OsBrokerError::new("broker_start_failed", error.to_string()))?;
             let client = reqwest::Client::builder()
+                .use_rustls_tls()
                 .hickory_dns(true)
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()

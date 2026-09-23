@@ -418,6 +418,7 @@ impl GitHubClient {
         // reqwest's system-proxy feature also reads Windows Internet Settings.
         // Keep TLS verification and the explicit GitHub redirect allowlist.
         reqwest::Client::builder()
+            .use_rustls_tls()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(90))

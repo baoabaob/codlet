@@ -2,6 +2,7 @@ use super::*;
 use crate::platform::DesktopTarget;
 use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(windows)]
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -390,11 +391,19 @@ fn node_mirror_policy_rejects_other_repositories_and_unsafe_redirects() {
         "https://github.com/baoabaob/codlet/releases/download/node-runtimes/node-v24.21.0-win-x64.zip",
         archive,
     ));
+    assert!(provision::allowed_mirror_asset_url(
+        "https://api.github.com/repos/baoabaob/codlet/releases/assets/583501211",
+        archive,
+    ));
     for url in [
         "https://github.com/another/codlet/releases/download/node-runtimes/node-v24.21.0-win-x64.zip",
         "https://github.com/baoabaob/codlet/releases/download/node-runtimes/other.zip",
         "http://github.com/baoabaob/codlet/releases/download/node-runtimes/node-v24.21.0-win-x64.zip",
         "https://github.com/baoabaob/codlet/releases/download/../node-v24.21.0-win-x64.zip",
+        "https://api.github.com/repos/another/codlet/releases/assets/583501211",
+        "https://api.github.com/repos/baoabaob/codlet/releases/assets/not-an-id",
+        "https://api.github.com/repos/baoabaob/codlet/releases/assets/0",
+        "https://api.github.com/repos/baoabaob/codlet/releases/assets/583501211?download=1",
     ] {
         assert!(!provision::allowed_mirror_asset_url(url, archive));
     }

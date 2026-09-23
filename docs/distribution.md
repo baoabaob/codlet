@@ -2,6 +2,8 @@
 
 Preview installers contain Codlet, license/attribution files, SDK types, and explicitly selected optional official-plugin packages. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
 
+Reusing the official client means copying its verified executable and license into Codlet's own data directory. The original client can then update independently. This reduces installer and repeat-download size, not Node's memory use or the space occupied by the prepared runtime. The cache follows `CODLET_HOME`: installed builds reuse their normal data directory, while each portable installation keeps its own cache. First use needs network access when neither an approved official runtime nor a valid cached copy is available; subsequent use can reuse the verified cache offline.
+
 Fallback downloads first try the unchanged official archive mirrored in Codlet's `node-runtimes` dependency release, then the official Node.js URL. Both sources must match the same archive, executable and license hashes. When changing a Node pin, run the **Publish pinned Node.js runtimes** workflow before publishing installers; it verifies the original archives and never overwrites a same-name asset with different bytes. These dependency archives are kept out of ordinary Codlet release downloads.
 
 The source and independent official-plugin repositories are public. Preview binaries are published as versioned test assets after validation. Building a local Preview does not publish its files; the installed preview channel discovers published prereleases from the Core repository.
@@ -82,7 +84,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelea
   -WindowsMsiManifest C:\build\windows\package\msi.build\distribution-manifest.json `
   -MacDmg C:\build\macos\package\Codlet-0.2.0-preview.6-macos-arm64.dmg `
   -MacDistributionManifest C:\build\macos\package\distribution-manifest.json `
-  -MacUpdateZip C:\build\macos\package\Codlet-0.2.0-preview.6-darwin-arm64-update.zip `
+  -MacUpdateZip C:\build\macos\package\Codlet-0.2.0-preview.6-darwin-arm64-legacy-update.zip `
+  -LegacyUpdateBridge -WindowsBridgeNodeDirectory C:\build\node-v24.21.0-win-x64 `
   -OutputDirectory C:\build\preview-release
 ```
 
