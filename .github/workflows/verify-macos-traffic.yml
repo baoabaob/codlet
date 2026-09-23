@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       plugins_commit:
-        description: Full official-plugin commit SHA containing the candidate driver
+        description: Full official-plugin commit SHA containing the reviewed product Host
         required: true
         type: string
 
@@ -101,7 +101,7 @@ jobs:
         continue-on-error: true
         working-directory: plugins
         run: |
-          node scripts/verify-official-main-owned.mjs --run-owned yes --mac-candidate yes \
+          node scripts/verify-official-main-owned.mjs --run-owned yes \
             --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol http \
@@ -112,7 +112,7 @@ jobs:
         continue-on-error: true
         working-directory: plugins
         run: |
-          node scripts/verify-official-main-owned.mjs --run-owned yes --mac-candidate yes \
+          node scripts/verify-official-main-owned.mjs --run-owned yes \
             --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol ws \
@@ -122,10 +122,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-traffic-candidate
+          name: macos-traffic-product
           path: |
             plugins/.artifacts/request-chain/macos-backend-plaintext.json
-            plugins/.artifacts/request-chain/macos-candidate/owned-acceptance/*.json
+            plugins/.artifacts/request-chain/macos-product/owned-acceptance/*.json
           if-no-files-found: warn
           retention-days: 7
       - name: Require every native check to pass

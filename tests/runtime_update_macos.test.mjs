@@ -6,7 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 
 const app = path.resolve(process.argv[2] ?? '');
 const version = process.argv[3];
@@ -34,7 +33,7 @@ function signed(root) {
 }
 async function scenario(mode) {
   const temp = fs.mkdtempSync(path.join(app, '../..', 'update-native-fixture-'));
-  let lingering, owner, releaseTimer, heldAtCheck;
+  let lingering, owner, updater, releaseTimer, heldAtCheck;
   try {
     const install = path.join(temp, 'install'), state = path.join(temp, 'state');
     const staged = path.join(state, 'runtime-payload-fixture'), job = path.join(state, 'runtime-install-fixture');
@@ -63,6 +62,8 @@ async function scenario(mode) {
     fs.copyFileSync(originalCore, identity); fs.chmodSync(identity, 0o755);
     fs.copyFileSync(originalNode, helperNode); fs.chmodSync(helperNode, 0o755);
     fs.copyFileSync(new URL('../scripts/runtime-update-helper-macos.mjs', import.meta.url), helper); fs.chmodSync(helper, 0o644);
+    const driver = path.join(job, 'runtime-update-macos-driver.mjs');
+    fs.copyFileSync(new URL('./runtime_update_macos_driver.mjs', import.meta.url), driver);
     const child = owner = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
     if (mode === 'linger') lingering = spawn(path.join(install, 'Codlet.app/Contents/MacOS/fixture-sleeper'), ['30'], { stdio: 'ignore' });
     if (mode === 'snapshot') {
@@ -89,26 +90,37 @@ async function scenario(mode) {
     const planPath = path.join(job, 'install-plan.json'), planBytes = Buffer.from(JSON.stringify(plan) + '\n');
     fs.writeFileSync(planPath, planBytes);
     const digest = sha(planBytes);
-    const { runInstall } = await import(pathToFileURL(helper));
-    let calls = 0;
-    const action = () => { calls++; return mode === 'rollback' && calls === 1 ? 1 : mode === 'unknown' ? 42 : 0; };
-    const ready = message => {
-      assert.equal(message.planSha256, digest);
-      fs.writeFileSync(plan.handoffAckPath, JSON.stringify({ id: plan.id, planSha256: digest }));
-      if (mode !== 'unclean') fs.writeFileSync(path.join(job, 'owner-cleanup.json'), JSON.stringify({ schema: 1, id: plan.id, planSha256: digest, hostsRetired: true, trafficRetired: true }));
-      child.kill('SIGTERM');
-      if (mode === 'linger') releaseTimer = setTimeout(() => {
-        heldAtCheck = fs.existsSync(path.join(install, 'Codlet.app')) && !fs.existsSync(plan.backupRoot);
-        lingering.kill('SIGTERM');
-      }, 800);
-    };
+    updater = spawn(helperNode, [driver, planPath, digest, mode, String(child.pid)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const events = [];
+    let pending = '', errors = '';
+    updater.stdout.setEncoding('utf8'); updater.stderr.setEncoding('utf8');
+    updater.stdout.on('data', chunk => {
+      pending += chunk;
+      while (pending.includes('\n')) {
+        const index = pending.indexOf('\n'), line = pending.slice(0, index);
+        pending = pending.slice(index + 1);
+        const event = JSON.parse(line); events.push(event);
+        if (event.event === 'ready' && mode === 'linger') releaseTimer = setTimeout(() => {
+          heldAtCheck = fs.existsSync(path.join(install, 'Codlet.app')) && !fs.existsSync(plan.backupRoot);
+          lingering.kill('SIGTERM');
+        }, 800);
+      }
+    });
+    updater.stderr.on('data', chunk => errors += chunk);
+    await new Promise((resolve, reject) => {
+      updater.once('error', reject);
+      updater.once('close', code => code === 0 ? resolve() : reject(new Error(`Native updater fixture exited ${code}: ${errors}`)));
+    });
+    const terminal = events.find(event => event.event === 'result' || event.event === 'error');
+    assert.ok(events.some(event => event.event === 'ready'));
+    assert.ok(terminal);
     if (mode === 'rollback' || mode === 'unclean') {
-      await assert.rejects(runInstall(planPath, digest, ready, { restartApp: action }));
+      assert.equal(terminal.event, 'error');
       assert.equal(fs.existsSync(path.join(install, 'Codlet.app/Contents/Resources/update-native-fixture.txt')), false);
       assert.equal(JSON.parse(fs.readFileSync(plan.installReceiptPath)).phase, mode === 'rollback' ? 'rolledBack' : 'rollbackBlocked');
     } else {
-      const receipt = await runInstall(planPath, digest, ready, { restartApp: action });
-      assert.equal(receipt.phase, mode === 'unknown' ? 'rollbackBlocked' : 'installed');
+      assert.equal(terminal.event, 'result');
+      assert.equal(terminal.phase, mode === 'unknown' ? 'rollbackBlocked' : 'installed');
       assert.equal(fs.readFileSync(path.join(install, 'Codlet.app/Contents/Resources/update-native-fixture.txt'), 'utf8'), `signed update fixture ${mode}\n`);
       assert.equal(fs.existsSync(path.join(plan.backupRoot, 'Codlet.app')), mode === 'unknown');
     }
@@ -116,10 +128,10 @@ async function scenario(mode) {
     if (mode === 'linger') assert.equal(heldAtCheck, true, 'a live owned bundle process must prevent replacement');
     if (mode === 'snapshot') assert.equal(lingering.exitCode, null, 'an unrelated Codlet Node snapshot must not block this app update');
     assert.equal(fs.existsSync(path.join(install, '.codlet-runtime-update.lock.json')), mode === 'unknown' || mode === 'unclean');
-    assert.equal(calls, mode === 'rollback' ? 2 : mode === 'unclean' ? 0 : 1);
+    assert.equal(terminal.calls, mode === 'rollback' ? 2 : mode === 'unclean' ? 0 : 1);
   } finally {
     if (releaseTimer) clearTimeout(releaseTimer);
-    for (const child of [owner, lingering]) {
+    for (const child of [owner, lingering, updater]) {
       if (child?.exitCode === null) child.kill('SIGTERM');
       if (child?.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
     }

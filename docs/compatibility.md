@@ -6,7 +6,7 @@ Codlet follows the systems and architectures offered by the official desktop cli
 | --- | --- |
 | Windows x64 | Native launch, Core, GUI/adapters, lifecycle, and local client tests; primary development Preview target. x64/AMD64 supports both Intel and AMD processors. |
 | Windows ARM64 | Platform-specific Node pin and compile path; no ARM64 device acceptance recorded. |
-| macOS Apple Silicon | Native Core/process ownership, compatibility profiles, Swift launcher, and DMG build path; native CI/package checks and real desktop acceptance are separate gates. |
+| macOS Apple Silicon | Native Core/process ownership, compatibility profiles, Swift launcher, DMG and app updater. Controlled native Desktop/model HTTP/SSE/WS checks cover client 26.917.62051; manual GUI/installer acceptance remains separate. |
 | macOS Intel | Not part of the currently selected official-client download target; no Universal/Intel package is produced. |
 | Linux | Deferred; no claim of support. |
 

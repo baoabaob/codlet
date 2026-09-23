@@ -58,22 +58,23 @@ session. Linux is not in the current implementation scope.
 - Arbitrary main-world/DOM patches may require complete window/client recreation
   for strong cleanup, even when managed permissions have already been revoked.
 
-## Features awaiting product acceptance
+## Traffic scope and remaining acceptance
 
 Core includes the plaintext traffic gateway and Windows/macOS Native launch
 owner. Client-specific hooks remain subject to the Adapter's build and capability
 checks. Generic channel tests do not mean every official-client request is
 intercepted. The
 [traffic contract](spec/traffic.md) records the actual attached paths and
-protocols; desktop attachments and macOS acceptance must be reported separately.
+protocols; traffic fixtures and complete desktop acceptance are reported separately.
 
 The former CONNECT/proxy-authentication/temporary-certificate launch path has
-been removed. The Windows Adapter uses separate Desktop HTTP hooks
-and owned AppServer provider routes. Their protocol and lifecycle evidence is in
+been removed. The Adapter uses separate Desktop HTTP hooks and owned AppServer
+provider routes. Reviewed Windows x64 and Apple Silicon builds have native,
+controlled traffic evidence. Their protocol and lifecycle evidence is in
 the [Adapter request-chain specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/request-chain.md).
 Inspect `activatedSources` and `unsupportedSources`; generic attachment does not
 imply browser WebSockets, remote/cloud model sockets, Realtime/WebRTC, attachments,
-live OAuth refresh or macOS are accepted. If traffic interception is explicitly
+live OAuth refresh or full GUI/installer behavior are accepted. If traffic interception is explicitly
 requested and no source can attach, launch fails rather than silently sending
 traffic past the interceptors. Ordinary launches without traffic consumers are
 unaffected. Changing real providers still requires plugin policy for server-owned

@@ -188,8 +188,8 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}, opti
     await verifyApp(plan.installRoot, plan.currentFiles, plan.currentRuntime);
     await verifyApp(plan.stagedRoot, plan.newFiles, plan.newRuntime);
     if (digest(plan.restart.program).sha256 !== plan.restartProgramSha256) throw fail('launcher_changed', 'Installed app launcher changed.');
-    const probe = path.join(plan.installRoot, '.codlet-update-probe-' + randomUUID());
-    fs.writeFileSync(probe, '', { flag: 'wx' }); fs.unlinkSync(probe);
+    const writabilityProbe = path.join(plan.installRoot, '.codlet-update-probe-' + randomUUID());
+    fs.writeFileSync(writabilityProbe, '', { flag: 'wx' }); fs.unlinkSync(writabilityProbe);
     receipt.phase = 'ready'; persist(); onReady({ schema: 1, event: 'runtime-update-helper-ready', id: plan.id, planSha256: expectedSha });
     const ackDeadline = Date.now() + 15000;
     while (Date.now() < ackDeadline) {
