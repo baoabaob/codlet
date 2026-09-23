@@ -85,7 +85,7 @@ jobs:
           trap 'hdiutil detach "$RUNNER_TEMP/codlet-mac-dmg"' EXIT
           ditto "$RUNNER_TEMP/codlet-mac-dmg/ChatGPT.app" "$RUNNER_TEMP/ChatGPT.app"
           codesign --verify --deep --strict --test-requirement \
-            'anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"' \
+            '=anchor apple generic and identifier "com.openai.codex" and certificate leaf[subject.OU] = "2DC432GLL2"' \
             "$RUNNER_TEMP/ChatGPT.app"
       - name: Verify native model-provider behavior
         id: backend
