@@ -317,6 +317,34 @@ try {
     if ($report.externalWrites -ne $false -or $report.tag -ne ('v' + $version) -or $report.updaterPlatforms.Count -ne 2) { throw 'Preview report has the wrong channel or publication behavior.' }
     $planPath = Join-Path $outputDirectory 'release-plan.json'
     $plan = [IO.File]::ReadAllText($planPath) | ConvertFrom-Json
+    $expectedAssets = @(
+        "Codlet-$version-windows-x64-portable.zip",
+        "Codlet-$version-windows-x64.msi",
+        "Codlet-$version-macos-arm64.dmg",
+        "codlet-runtime-$version-win-x64-portable.zip",
+        "Codlet-$version-darwin-arm64-update.zip",
+        'codlet-update.json',
+        'SHA256SUMS.txt'
+    )
+    if ($plan.assets.Count -ne $expectedAssets.Count -or @($expectedAssets | Where-Object { $_ -notin $plan.assets.name }).Count -ne 0) {
+        throw 'Preview plan must contain exactly the seven downloadable assets, without separate distribution manifests.'
+    }
+    foreach ($spec in @(
+        @{ key = 'windowsPortable'; file = '.verification/windows-portable-distribution-manifest.json' },
+        @{ key = 'windowsMsi'; file = '.verification/windows-msi-distribution-manifest.json' },
+        @{ key = 'macos'; file = '.verification/macos-distribution-manifest.json' }
+    )) {
+        $record = $plan.verificationInputs.($spec.key)
+        $path = Join-Path $outputDirectory $spec.file
+        if ($record.file -ne $spec.file -or -not (Test-Path -LiteralPath $path) -or
+            $record.bytes -ne (Get-Item -LiteralPath $path).Length -or $record.sha256 -ne (Hash-File $path)) {
+            throw "Local verification manifest differs from the release plan: $($spec.key)"
+        }
+    }
+    $summary = [IO.File]::ReadAllText((Join-Path $outputDirectory 'SHA256SUMS.txt'))
+    if ($summary -match 'distribution-manifest\.json' -or @($summary.Trim().Split("`n")).Count -ne 6) {
+        throw 'SHA256SUMS must contain only the six other public assets.'
+    }
     $releaseNotes = [IO.File]::ReadAllText((Join-Path $outputDirectory 'release-notes.md'))
     foreach ($expectedText in @('Windows x64 portable ZIP', 'Windows x64 MSI', 'Apple Silicon DMG', 'marketplace', 'traffic hooks', 'runtime updater', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
         if ($releaseNotes -notmatch [regex]::Escape($expectedText)) { throw "Release notes omitted expected reader-facing detail: $expectedText" }
@@ -337,6 +365,20 @@ try {
         $dry = ($dryResult -join "`n") | ConvertFrom-Json
         if ($dry.externalWrites -ne $false -or $dry.applyRequired -ne $true) { throw "$action preview would write externally without -Apply." }
     }
+    $validationPath = Join-Path $outputDirectory $plan.verificationInputs.macos.file
+    $savedValidation = [IO.File]::ReadAllBytes($validationPath)
+    try {
+        [IO.File]::AppendAllText($validationPath, 'tamper')
+        $priorErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $null = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript -Action PrepareDraft -PlanPath $planPath 2>$null
+            $validationTamperExitCode = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $priorErrorAction }
+        if ($validationTamperExitCode -eq 0) { throw 'Publisher accepted a changed local-only distribution manifest.' }
+    }
+    finally { [IO.File]::WriteAllBytes($validationPath, $savedValidation) }
     $tamper = Join-Path $outputDirectory $plan.assets[0].name
     [IO.File]::AppendAllText($tamper, 'tamper')
     $priorErrorAction = $ErrorActionPreference
@@ -358,6 +400,8 @@ try {
             'synthetic draft creation interruption recovers through PrepareDraft and Publish without remote network access',
             'release notes explain package choices, preview improvements, checksums, and the precise macOS signing status',
             'preview plan remains a prerelease and plan-only draft/publish actions make no external writes',
+            'three distribution manifests remain local verification inputs and never become release assets',
+            'changed local-only verification manifest is refused',
             'changed same-version local asset is refused'
         )
         externalWrites = $false

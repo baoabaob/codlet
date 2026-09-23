@@ -352,6 +352,18 @@ function Write-Utf8([string]$Path, [string]$Text) {
     [IO.File]::WriteAllText($Path, $Text, $script:utf8)
 }
 
+function Add-VerificationInput([string]$Stage, [string]$Name, [string]$Source) {
+    if ($Name -notin @('windows-portable-distribution-manifest.json', 'windows-msi-distribution-manifest.json', 'macos-distribution-manifest.json')) {
+        Fail 'Unsupported local release verification input.'
+    }
+    $relative = ".verification/$Name"
+    $target = Join-Path $Stage $relative
+    $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $target))
+    [IO.File]::Copy((Assert-PlainPath $Source), $target)
+    $target = Assert-PlainPath $target
+    [ordered]@{ file = $relative; bytes = [long](Get-Item -LiteralPath $target).Length; sha256 = Get-Sha256 $target }
+}
+
 function Assert-OutputStage([string]$Path, [string]$Parent) {
     $resolved = Get-Absolute $Path
     $prefix = (Get-Absolute $Parent) + [IO.Path]::DirectorySeparatorChar
@@ -425,9 +437,11 @@ function New-PreviewPlan {
         $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-portable.zip") $portableZip 'windows-portable'))
         $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64.msi") $msiPath 'windows-msi'))
         $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-macos-arm64.dmg") $dmgPath 'macos-dmg'))
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-portable-distribution-manifest.json") $portableManifestPath 'windows-portable-manifest'))
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-msi-distribution-manifest.json") $msiManifestPath 'windows-msi-manifest'))
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-macos-arm64-distribution-manifest.json") $macManifestPath 'macos-manifest'))
+        $verificationInputs = [ordered]@{
+            windowsPortable = Add-VerificationInput $stage 'windows-portable-distribution-manifest.json' $portableManifestPath
+            windowsMsi = Add-VerificationInput $stage 'windows-msi-distribution-manifest.json' $msiManifestPath
+            macos = Add-VerificationInput $stage 'macos-distribution-manifest.json' $macManifestPath
+        }
         $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-darwin-arm64-update.zip") $macUpdateZipPath 'runtime-update-macos-app'))
 
         $runtimeBuild = Join-Path $stage '.runtime-update-build'
@@ -482,7 +496,7 @@ function New-PreviewPlan {
             '- **Windows x64 MSI** - per-user installation under LocalAppData, with selectable features.',
             '- **Apple Silicon DMG** - drag `Codlet.app` to Applications. The separate updater ZIP is used by the in-app runtime updater.',
             '',
-            'The release includes `codlet-update.json` and platform-specific Windows portable and macOS app update packages. `SHA256SUMS.txt` lists asset digests; the distribution manifests record package contents and source commits.',
+            'The release includes `codlet-update.json` and platform-specific Windows portable and macOS app update packages. `SHA256SUMS.txt` lists the downloadable asset digests.',
             '',
             '## Preview changes',
             '',
@@ -492,7 +506,7 @@ function New-PreviewPlan {
             '',
             '## Signing and verification',
             '',
-            'The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` and the distribution manifests before use.',
+            'The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.',
             '',
             'This is preview software; see [known issues](https://github.com/baoabaob/codlet/blob/main/docs/known-issues.md) for current platform and acceptance limits.'
         )
@@ -514,6 +528,7 @@ function New-PreviewPlan {
             releaseNotesFile = 'release-notes.md'
             releaseNotesBytes = [long](Get-Item -LiteralPath $notesPath).Length
             releaseNotesSha256 = Get-Sha256 $notesPath
+            verificationInputs = $verificationInputs
             assets = @($assets | Sort-Object name)
         }
         Write-Utf8 (Join-Path $stage 'release-plan.json') (($plan | ConvertTo-Json -Depth 20) + "`n")
@@ -565,6 +580,28 @@ function Read-ReleasePlan([string]$Path) {
         $file = Resolve-PlanAsset $root ([string]$asset.file)
         if ((Get-Item -LiteralPath $file).Length -ne [long]$asset.bytes -or (Get-Sha256 $file) -ne $asset.sha256) { Fail "Release asset differs from the saved plan: $($asset.name)" }
     }
+    if (@($plan.assets | Where-Object { $_.name -match '-distribution-manifest\.json$' -or $_.kind -in @('windows-portable-manifest', 'windows-msi-manifest', 'macos-manifest') }).Count -ne 0) {
+        Fail 'Build-time distribution manifests must not be public release assets.'
+    }
+    if ($null -eq $plan.verificationInputs -or @($plan.verificationInputs.PSObject.Properties).Count -ne 3) {
+        Fail 'Release plan must retain exactly three local distribution manifest verification inputs.'
+    }
+    $macManifestPath = $null
+    foreach ($spec in @(
+        @{ key = 'windowsPortable'; file = '.verification/windows-portable-distribution-manifest.json' },
+        @{ key = 'windowsMsi'; file = '.verification/windows-msi-distribution-manifest.json' },
+        @{ key = 'macos'; file = '.verification/macos-distribution-manifest.json' }
+    )) {
+        $record = $plan.verificationInputs.($spec.key)
+        if ($null -eq $record -or $record.file -ne $spec.file -or [long]$record.bytes -le 0 -or $record.sha256 -notmatch '^[0-9a-f]{64}$') {
+            Fail "Invalid local release verification input: $($spec.key)"
+        }
+        $file = Assert-PlainPath (Join-Path $root $spec.file)
+        if ((Get-Item -LiteralPath $file).Length -ne [long]$record.bytes -or (Get-Sha256 $file) -ne $record.sha256) {
+            Fail "Local release verification input changed: $($spec.key)"
+        }
+        if ($spec.key -eq 'macos') { $macManifestPath = $file }
+    }
     $channelAsset = @($plan.assets | Where-Object { $_.name -eq 'codlet-update.json' })
     if ($channelAsset.Count -ne 1) { Fail 'Release plan must contain codlet-update.json.' }
     $channel = Read-JsonFile (Resolve-PlanAsset $root 'codlet-update.json') 256KB
@@ -583,9 +620,7 @@ function Read-ReleasePlan([string]$Path) {
             Assert-WindowsUpdateZip $zipPath ([string]$plan.version)
         }
         else {
-            $macManifestAsset = @($plan.assets | Where-Object { $_.kind -eq 'macos-manifest' })
-            if ($macManifestAsset.Count -ne 1) { Fail 'Release plan must contain one macOS distribution manifest.' }
-            $macManifest = Read-JsonFile (Resolve-PlanAsset $root ([string]$macManifestAsset[0].file))
+            $macManifest = Read-JsonFile $macManifestPath
             if ($macManifest.schema -ne 1 -or $macManifest.kind -ne 'codlet-macos-preview' -or $macManifest.version -ne $plan.version -or
                 $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginsSourceCommit -ne $plan.pluginsCommit) {
                 Fail 'Saved macOS distribution manifest has different release provenance.'

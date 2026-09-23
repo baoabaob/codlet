@@ -95,4 +95,4 @@ See the [marketplace specification](https://github.com/baoabaob/codlet-plugins/b
 Local Preview installers are not presented as signed, notarized stable releases.
 Windows may show an unsigned-publisher prompt. The Mac app may use an ad-hoc
 integrity signature; that is not a Developer ID signature or Apple notarization.
-See the artifact's distribution manifest and [installation guide](distribution.md).
+See the package metadata and [installation guide](distribution.md).
