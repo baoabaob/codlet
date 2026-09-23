@@ -144,6 +144,8 @@ fn adoption_requires_installer_receipt_and_unchanged_files() {
     );
     let restored = installation.rollback().unwrap();
     drop(installation);
+    assert!(source.join("codlet.json").exists());
+    assert!(receipts.join("dev.managed.receipt.json").exists());
     assert_eq!(restored.local_plugins()["dev.managed"], registration);
     assert!(restored.managed_plugins().get("dev.managed").is_none());
     assert!(restored.is_enabled("dev.managed"));
@@ -192,7 +194,91 @@ fn adoption_requires_installer_receipt_and_unchanged_files() {
             .join("packages/github/dev.managed")
     );
     assert!(installed.is_enabled("dev.managed"));
-    assert!(source.join("codlet.json").exists());
+    assert!(
+        !source.exists(),
+        "committed adoption retires the old seed package"
+    );
+    assert!(
+        !receipts.join("dev.managed.receipt.json").exists(),
+        "the obsolete installer receipt must be removed with its package"
+    );
+}
+
+#[test]
+fn changed_seed_directory_is_preserved_until_committed_cleanup_can_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut registry = PluginRegistry::load(temp.path().join("config.json")).unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let source = home.join("packages/dev.managed");
+    std::fs::create_dir_all(&source).unwrap();
+    let original = "module.exports = { activate() {} };";
+    std::fs::write(
+        source.join("codlet.json"),
+        json!({"schema":1,"id":"dev.managed","version":"1","renderer":{"entry":"entry.js","world":"isolated"},"permissions":["ui.dom"]}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(source.join("entry.js"), original).unwrap();
+    let registration = LocalPluginRegistration {
+        path: source.clone(),
+        grants: vec![Permission::UiDom],
+        broker_policy: BrokerPolicy::default(),
+    };
+    registry
+        .register_local("dev.managed", registration.clone())
+        .unwrap();
+    registry.set_enabled("dev.managed", true).unwrap();
+    registry.save().unwrap();
+    let files: Vec<_> = ["codlet.json", "entry.js"]
+        .iter()
+        .map(|name| {
+            let data = std::fs::read(source.join(name)).unwrap();
+            json!({"path":name,"sha256":format!("{:x}",sha2::Sha256::digest(&data)),"bytes":data.len()})
+        })
+        .collect();
+    let receipts = home.join(".official-seed-transactions");
+    std::fs::create_dir_all(&receipts).unwrap();
+    let receipt = receipts.join("dev.managed.receipt.json");
+    std::fs::write(
+        &receipt,
+        json!({"schema":1,"source":"official-installer","package":{"id":"dev.managed","version":"1","permissions":["ui.dom"],"files":files}}).to_string(),
+    )
+    .unwrap();
+    let package = prepare(&registry, "2", &["ui.dom"]);
+    let selection = preview(&registry, &package.package_path, ManagedOperation::Adopt).unwrap();
+    let (mut candidate, _) = stage(
+        &registry,
+        "dev.managed",
+        &selection.request(registration.grants.clone(), BrokerPolicy::default(), true),
+    )
+    .unwrap();
+    candidate.save().unwrap();
+    let (mut installation, installed, _) =
+        crate::managed_storage::Installation::publish(&candidate, &registry, "dev.managed", true)
+            .unwrap();
+    std::fs::write(source.join("entry.js"), "changed after publish").unwrap();
+    assert!(installation.commit().is_err());
+    drop(installation);
+    assert!(source.exists());
+    assert!(receipt.exists());
+    assert_eq!(
+        installed.local_plugins()["dev.managed"].path,
+        home.join("packages/github/dev.managed")
+    );
+    let journal = home.join("packages/github/.transactions/dev.managed.json");
+    assert!(journal.exists(), "a cleanup retry must remain journaled");
+    let mut recovered = PluginRegistry::load(registry.path()).unwrap();
+    crate::managed_storage::prepare_installations(&mut recovered).unwrap();
+    assert!(
+        source.exists(),
+        "a changed source must not be deleted on retry"
+    );
+    assert!(receipt.exists());
+    assert!(journal.exists());
+    std::fs::write(source.join("entry.js"), original).unwrap();
+    crate::managed_storage::prepare_installations(&mut recovered).unwrap();
+    assert!(!source.exists());
+    assert!(!receipt.exists());
+    assert!(!journal.exists());
 }
 
 #[test]

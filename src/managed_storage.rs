@@ -413,7 +413,19 @@ impl Installation {
                 .iter()
                 .flat_map(|r| r.history.iter().map(|v| v.package_path.clone())),
         );
-        self.clean_paths(paths)
+        self.clean_paths(paths)?;
+        if self.journal.previous_managed.is_none()
+            && let Some(previous) = &self.journal.previous_registration
+        {
+            let registry = PluginRegistry::load(&self.registry_path).map_err(issue)?;
+            crate::plugin_cli::official_seed::cleanup_adopted_source(
+                &registry,
+                &self.journal.id,
+                previous,
+            )
+            .map_err(issue)?;
+        }
+        Ok(())
     }
     fn clean_paths(&self, paths: impl IntoIterator<Item = PathBuf>) -> Result<()> {
         let registry = PluginRegistry::load(&self.registry_path).map_err(issue)?;

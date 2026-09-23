@@ -49,7 +49,7 @@ struct LegacyPackage {
     #[serde(flatten)]
     package: Package,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct Receipt {
     schema: u32,
@@ -214,6 +214,54 @@ pub(crate) fn verified_installer_source(registry: &PluginRegistry, id: &str) -> 
         && receipt.source == "official-installer"
         && receipt.package.id == id
         && verify(&registration.path, &receipt.package).is_ok()
+}
+
+/// Retire only the exact installer-owned source after a managed adoption has
+/// durably committed. A failed or interrupted cleanup leaves the managed
+/// journal in place so startup can retry without losing the old author files.
+pub(crate) fn cleanup_adopted_source(
+    registry: &PluginRegistry,
+    id: &str,
+    previous: &LocalPluginRegistration,
+) -> Result<()> {
+    let (packages, _) = roots(registry.path())?;
+    let source = packages.join(id);
+    if previous.path != source
+        || registry.local_plugins().values().any(|registration| {
+            registration.path.starts_with(&source) || source.starts_with(&registration.path)
+        })
+    {
+        return Err(error(
+            "Installer source is still registered or changed path",
+        ));
+    }
+    let receipt_path = receipt_path(registry.path(), id)?;
+    plain(&source)?;
+    plain(&receipt_path)?;
+    if !source.exists() && !receipt_path.exists() {
+        return Ok(());
+    }
+    let receipt: Receipt = read(&receipt_path)?;
+    if receipt.schema != 1 || receipt.source != "official-installer" || receipt.package.id != id {
+        return Err(error("Installer source receipt changed during cleanup"));
+    }
+    if source.exists() {
+        let mut previous_view = registry.clone();
+        previous_view.restore_managed(id, Some(previous.clone()), None);
+        if !verified_installer_source(&previous_view, id) {
+            return Err(error(
+                "Installer source changed during cleanup; directory preserved",
+            ));
+        }
+        fs::remove_dir_all(&source).map_err(error)?;
+    }
+    // The source directory is gone, so this receipt has no remaining package.
+    // Re-read it to avoid clearing a receipt replaced during directory removal.
+    let current: Receipt = read(&receipt_path)?;
+    if current != receipt {
+        return Err(error("Installer source receipt changed during cleanup"));
+    }
+    fs::remove_file(&receipt_path).map_err(error)
 }
 fn tree(
     directory: &Path,
