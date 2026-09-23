@@ -88,7 +88,7 @@ export function initialize(selected, { approvedPermissions = [], interactivePerm
     fs.renameSync(temporary, statePath);
     const reviewedPath = path.join(home, 'plugin-bundle-reviewed.txt');
     plain(reviewedPath);
-    fs.writeFileSync(reviewedPath, hash(path.join(root, 'optional-plugins/catalog.json')), { mode: 0o600 });
+    fs.writeFileSync(reviewedPath, `completed-v2:${hash(path.join(root, 'optional-plugins/catalog.json'))}`, { mode: 0o600 });
     console.log('Codlet initialization completed. Existing registrations and preferences were preserved.');
   }
 }

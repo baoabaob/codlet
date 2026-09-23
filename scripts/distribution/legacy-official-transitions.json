@@ -1,0 +1,36 @@
+[
+  {
+    "sourceRevision": "c4b1c221b365ce88b0dc260a394f3ea74f0f4494",
+    "transition": "official-0.1.1-runtime-with-official-0.1.0-readme",
+    "evidence": "Observed installed file set; runtime files exactly match the Preview 4 catalog and README exactly matches the Preview 2 catalog. This is a transition, not an original distribution.",
+    "runtimeCatalogSha256": "015ba8db1791d849aae55e329d4b5f6ed462931e5598820e76defa2ffa9c54d1",
+    "readmeCatalogSha256": "b499a08e33656b3766f21b320a7902ae95785d3374a29ed1cf584b2dd60ddb08",
+    "readmeSourceRevision": "acba932b918839780bbf51a4c5601f7a6074727f",
+    "id": "codex.ui.adapter",
+    "version": "0.1.1",
+    "permissions": ["ui.dom", "ui.mainWorld"],
+    "files": [
+      {"path":"codlet-package.json","bytes":374,"sha256":"4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"},
+      {"path":"codlet.json","bytes":661,"sha256":"6a9f431ec9e892c4576161fa01af2551cb611eb89b30f441fcdfd4797016a14a"},
+      {"path":"dist/renderer.js","bytes":25656,"sha256":"afbbf9fe854571ec9422a1f3536a1d5e8a51d6661af1f07eaad4f94f5dfad9c6"},
+      {"path":"README.md","bytes":319,"sha256":"27be08126dbd349e31b4a6b0454465c3ea2a78659642df6029eeac954e14872a"}
+    ]
+  },
+  {
+    "sourceRevision": "c4b1c221b365ce88b0dc260a394f3ea74f0f4494",
+    "transition": "official-0.1.1-runtime-with-official-0.1.0-readme",
+    "evidence": "Observed installed file set; runtime files exactly match the Preview 4 catalog and README exactly matches the Preview 2 catalog. This is a transition, not an original distribution.",
+    "runtimeCatalogSha256": "015ba8db1791d849aae55e329d4b5f6ed462931e5598820e76defa2ffa9c54d1",
+    "readmeCatalogSha256": "b499a08e33656b3766f21b320a7902ae95785d3374a29ed1cf584b2dd60ddb08",
+    "readmeSourceRevision": "acba932b918839780bbf51a4c5601f7a6074727f",
+    "id": "codlet-gui",
+    "version": "0.1.1",
+    "permissions": ["ui.dom", "runtime.manage"],
+    "files": [
+      {"path":"codlet-package.json","bytes":374,"sha256":"4abf82694ad5f6f8bbdf9ca7aa522d1c2f6d21b32a611b6c991680f718abcf51"},
+      {"path":"codlet.json","bytes":883,"sha256":"2afe81eec0bf853ae7573fc280366c78725103cf87964c735556e8b644b62809"},
+      {"path":"dist/renderer.js","bytes":200821,"sha256":"5b560795905098f8c5700dfd229242dede98806c30b482eedb0ff0fb29d54229"},
+      {"path":"README.md","bytes":322,"sha256":"27f672bc622a24ef3b369bd5cf2b3ba3c85034b3ed5c8c9c2a51cceae7e149fd"}
+    ]
+  }
+]

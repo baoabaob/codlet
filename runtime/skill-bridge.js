@@ -53,10 +53,15 @@ function installCodletSkill(config) {
   };
   void(async()=>{
     const build=globalThis.electronBridge?.getSentryInitOptions?.();
-    const profile=config.profiles.find(profile=>build?.appVersion===profile.appVersion&&String(build?.buildNumber)===profile.buildNumber);
-    if(!profile)throw Error('Codlet runtime skill has no reviewed client profile');
+    const candidates=config.profiles.filter(profile=>build?.appVersion===profile.appVersion&&String(build?.buildNumber)===profile.buildNumber);
+    if(!candidates.length)throw Error('Codlet runtime skill has no reviewed client profile');
     const deadline=Date.now()+30000;
-    while(state.alive&&!Array.from(document.scripts).some(script=>script.src===profile.entry)){
+    let profile;
+    while(state.alive){
+      const entries=new Set(Array.from(document.scripts,script=>script.src));
+      const matching=candidates.filter(candidate=>entries.has(candidate.entry));
+      if(matching.length>1)throw Error('The Desktop entry resource is ambiguous');
+      if(matching.length===1){profile=matching[0];break;}
       if(document.readyState==='complete'||Date.now()>deadline)throw Error('The Desktop entry resource changed');
       await delay(50);
     }

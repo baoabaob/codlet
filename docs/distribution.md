@@ -22,6 +22,10 @@ An updated installer offers explicit official-plugin updates. The Core verifies 
 
 One local journal coordinates staged bytes, the registry, and the receipt. Startup and offline CLI recover interrupted operations before loading packages. Temporary ready/backup directories are removed after commit; no historical package store remains. Sources remain local registrations, never synthetic GitHub installations. A running Host must first finish and exit normally before this offline transaction can run.
 
+The catalog completion marker is saved only after a successful explicit setup (or the first Windows setup). Accepting the update prompt, a failed update, or an ordinary launch does not dismiss a pending update. Older markers written before completion are rechecked. If an update fails, an older UI Adapter can remain incompatible with the current client and the GUI may be unavailable; the launcher explains this instead of treating a Core-only launch as a successful plugin upgrade.
+
+`legacy-official-transitions.json` lists two complete historical UI/GUI file sets: official 0.1.1 runtime files with the retained official 0.1.0 README. Both catalog origins are recorded and checked against the original legacy records. This does not allow arbitrary combinations of versions or skip README/extra-file validation.
+
 The installer uses `codlet plugin seed preview <catalog.json> <id> --json` and binds `seed install` to its returned `--preview` digest plus one `--grant` per approved new permission. Direct PowerShell callers can pass `-ApproveNewPermissions`; macOS command-line callers use `--approve-new-permission=<permission>`. Missing approval fails before writes. `scripts/record-legacy-seeds.mjs` regenerates the embedded historical hash list only from prior distributions whose catalog and payload hashes match their distribution manifests; it copies no plugin payloads.
 
 Build the official plugin repository's `dist/` independently, then assemble from reviewed inputs:

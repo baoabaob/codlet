@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const artifacts = path.join(root, '.codlet-artifacts/installer-refresh-2026-09-22/macos/initialization-tests');
+const artifacts = path.join(root, '.codlet-artifacts/installer-repair/macos/initialization-tests');
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function fixture() {
   fs.mkdirSync(artifacts, { recursive: true });
@@ -79,6 +79,7 @@ test('modified author and custom registrations are rejected without overwriting 
     fs.writeFileSync(path.join(f.home, 'config.json'), config);
     const previousState = JSON.stringify({ schema: 1, decided: { 'codex.ui.adapter': { selected: true, result: 'installed', version: '0.1.0' } } });
     fs.writeFileSync(path.join(f.home, 'macos-setup.json'), previousState);
+    fs.writeFileSync(path.join(f.home, 'plugin-bundle-reviewed.txt'), 'previous-reviewed-marker');
     fs.writeFileSync(path.join(f.home, 'existing.json'), JSON.stringify({ plugins: [{ id: 'codex.ui.adapter', source, path: existingPath }] }));
     const result = f.invoke(['codex.ui.adapter']);
     assert.equal(result.status, 20);
@@ -86,6 +87,7 @@ test('modified author and custom registrations are rejected without overwriting 
     assert.equal(fs.readFileSync(path.join(existingPath, 'codlet.json'), 'utf8'), 'author changes');
     assert.equal(fs.readFileSync(path.join(f.home, 'config.json'), 'utf8'), config);
     assert.equal(fs.readFileSync(path.join(f.home, 'macos-setup.json'), 'utf8'), previousState);
+    assert.equal(fs.readFileSync(path.join(f.home, 'plugin-bundle-reviewed.txt'), 'utf8'), 'previous-reviewed-marker');
     assert.equal(fs.existsSync(path.join(f.home, 'added.jsonl')), false);
   }
 });
@@ -95,6 +97,7 @@ test('all optional plugins can be declined without registration', native, () => 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.existsSync(path.join(f.home, 'added.jsonl')), false);
   assert.equal(fs.existsSync(path.join(f.home, 'macos-setup.json')), true);
+  assert.equal(fs.readFileSync(path.join(f.home, 'plugin-bundle-reviewed.txt'), 'utf8'), `completed-v2:${sha(fs.readFileSync(f.catalogPath))}`);
 });
 
 test('an existing plugin requires explicit consent for its new permission delta', native, () => {

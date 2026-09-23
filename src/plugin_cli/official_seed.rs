@@ -403,10 +403,17 @@ fn old_script_package(registry: &Path, id: &str, target: &Path) -> Option<Packag
     None
 }
 fn select(registry: &PluginRegistry, catalog_path: &Path, id: &str) -> Result<Selection> {
-    let known: Vec<LegacyPackage> = serde_json::from_str(include_str!(
+    let mut known: Vec<LegacyPackage> = serde_json::from_str(include_str!(
         "../../scripts/distribution/legacy-official-seeds.json"
     ))
     .map_err(error)?;
+    // Two documented historical runtime-only updates retained the older official
+    // README. These are explicit complete hash sets, never arbitrary file mixing.
+    let transitions: Vec<LegacyPackage> = serde_json::from_str(include_str!(
+        "../../scripts/distribution/legacy-official-transitions.json"
+    ))
+    .map_err(error)?;
+    known.extend(transitions);
     select_with_legacy(registry, catalog_path, id, &known)
 }
 fn select_with_legacy(
@@ -963,6 +970,56 @@ mod tests {
             fs::read_to_string(f.target().join("author-note.txt")).unwrap(),
             "keep me"
         );
+    }
+
+    #[test]
+    fn official_seed_legacy_transition_keeps_readme_and_extra_file_protection() {
+        let f = Fixture::new();
+        let mut old = f.package("1", vec![Permission::UiDom]);
+        f.install();
+        fs::remove_file(receipt_path(&f.registry, ID).unwrap()).unwrap();
+        let readme = b"Known original official README";
+        fs::write(f.target().join("README.md"), readme).unwrap();
+        old.files.push(FileRecord {
+            path: "README.md".into(),
+            bytes: readme.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(readme)),
+        });
+        let legacy = LegacyPackage {
+            source_revision: "a".repeat(40),
+            package: old,
+        };
+        f.package("2", vec![Permission::UiDom]);
+        assert!(select_with_legacy(&f.registry(), &f.catalog, ID, &[]).is_err());
+        assert!(
+            select_with_legacy(&f.registry(), &f.catalog, ID, std::slice::from_ref(&legacy))
+                .is_ok()
+        );
+        fs::write(f.target().join("README.md"), b"Author changed README").unwrap();
+        assert_eq!(
+            select_with_legacy(&f.registry(), &f.catalog, ID, std::slice::from_ref(&legacy))
+                .err()
+                .unwrap()
+                .code,
+            "official_seed_source_changed"
+        );
+        fs::write(f.target().join("README.md"), readme).unwrap();
+        fs::write(f.target().join("author.txt"), "keep").unwrap();
+        assert!(
+            select_with_legacy(&f.registry(), &f.catalog, ID, std::slice::from_ref(&legacy))
+                .is_err()
+        );
+        fs::remove_file(f.target().join("author.txt")).unwrap();
+        let selection = select_with_legacy(&f.registry(), &f.catalog, ID, &[legacy]).unwrap();
+        install(&f.registry(), selection, vec![]).unwrap();
+        assert_eq!(
+            crate::local_plugins::inspect_local_plugin(&f.target())
+                .unwrap()
+                .manifest
+                .version,
+            "2"
+        );
+        f.assert_clean();
     }
 
     #[test]

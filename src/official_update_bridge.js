@@ -3,8 +3,10 @@
 (async () => {
   const profiles = __CODLET_PROFILES__, action = __CODLET_ACTION__;
   const detected = globalThis.electronBridge?.getSentryInitOptions?.();
-  const profile = profiles.builds.find(p => p.appVersion === detected?.appVersion && p.buildNumber === String(detected?.buildNumber));
-  if (window !== window.top || location.origin !== 'app://-' || location.pathname !== '/index.html' || !profile?.officialUpdates || !Array.from(document.scripts).some(s => s.src === profile.entry)) return {available:false,reason:'profile'};
+  const entries = new Set(Array.from(document.scripts, script => script.src));
+  const matchesByEntry = profiles.builds.filter(p => p.appVersion === detected?.appVersion && p.buildNumber === String(detected?.buildNumber) && entries.has(p.entry));
+  const profile = matchesByEntry.length === 1 ? matchesByEntry[0] : null;
+  if (window !== window.top || location.origin !== 'app://-' || location.pathname !== '/index.html' || !profile?.officialUpdates) return {available:false,reason:'profile'};
   const module = await import(profile.module), scopeModule = profile.scopeModule ? await import(profile.scopeModule) : module;
   const token = scopeModule[profile.exports.scope];
   const root = document.getElementById('root'), key = root && Object.keys(root).find(k => k.startsWith('__reactContainer$'));

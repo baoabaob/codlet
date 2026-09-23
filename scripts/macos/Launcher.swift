@@ -48,10 +48,9 @@ final class Launcher: NSObject, NSApplicationDelegate {
         else {
             let marker = home.appendingPathComponent("plugin-bundle-reviewed.txt")
             if let data = try? Data(contentsOf: resources.appendingPathComponent("optional-plugins/catalog.json")) {
-                let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                let fingerprint = "completed-v2:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 if (try? String(contentsOf: marker, encoding: .utf8)) != fingerprint && !CommandLine.arguments.contains("--codlet-update-restart") {
                     let answer = alert("更新官方插件", "此应用包含新的官方插件。更新会校验已有官方文件并保留禁用状态和授权范围；新增权限将单独确认，修改过的作者文件不会覆盖。", buttons: ["选择并更新", "继续使用当前插件"])
-                    try? fingerprint.write(to: marker, atomically: true, encoding: .utf8)
                     if answer == .alertFirstButtonReturn { configure(); return }
                 }
             }
@@ -150,7 +149,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
     private func setupFinished(_ result: Int32) {
         setup = nil; startButton.isEnabled = true
         if result != 0 {
-            let message = result == 20 ? "官方插件未更新：已有来源或文件无法证明是未修改的官方安装包。作者文件、授权和禁用状态已保留。请通过插件管理检查来源；重新打开应用可继续使用当前配置。" : "详细原因保存在 macos-setup.log。未确认的新增权限不会授予；更新事务会在重试或下次启动时恢复。"
+            let message = result == 20 ? "官方插件更新失败：已有来源或文件未通过官方包校验。现有文件、授权和禁用状态均已保留。旧 UI 插件可能不兼容当前客户端，导致 GUI 不显示；请保留日志并完成更新后再启动。此次失败不会标记为已完成，下次启动仍会提示重试。" : "详细原因保存在 macos-setup.log。未确认的新增权限不会授予；更新事务会在重试或下次启动时恢复。"
             if alert("初始化未完成", message, buttons: ["打开日志", "返回"]) == .alertFirstButtonReturn { openLogs() }
             return
         }

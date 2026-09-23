@@ -3,6 +3,12 @@ param([switch]$Configure,[switch]$NoLaunch,[string[]]$Plugins,[string]$DataDirec
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $utf8=[Text.UTF8Encoding]::new($false)
+if($MyInvocation.InvocationName -ne '.'){
+  # The native launcher decodes both redirected PowerShell streams as UTF-8.
+  # Dot-sourced diagnostic callers retain their own console encoding.
+  [Console]::OutputEncoding=$utf8
+  $OutputEncoding=$utf8
+}
 $root=[IO.Path]::GetFullPath($PSScriptRoot)
 $exe=Join-Path $root 'codlet.exe'
 function Full([string]$Path){[IO.Path]::GetFullPath($Path).TrimEnd('\','/')}
@@ -79,6 +85,7 @@ try{
   $setupLock=[IO.File]::Open((Join-Path $dataRoot 'plugin-setup.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
   try{
     $statePath=Join-Path $dataRoot 'plugin-setup.json'
+    $firstSetup=-not [IO.File]::Exists($statePath)
     $state=@{schema=1;decided=@{}}
     if([IO.File]::Exists($statePath)){
       Plain $statePath
@@ -135,8 +142,10 @@ try{
       Save-State
     }
     Save-State
-    $reviewedPath=Join-Path $dataRoot 'plugin-bundle-reviewed.txt';Plain $reviewedPath
-    [IO.File]::WriteAllText($reviewedPath,(Hash $catalogPath).ToUpperInvariant(),$utf8)
+    if($explicit -or $firstSetup){
+      $reviewedPath=Join-Path $dataRoot 'plugin-bundle-reviewed.txt';Plain $reviewedPath
+      [IO.File]::WriteAllText($reviewedPath,('completed-v2:'+(Hash $catalogPath).ToUpperInvariant()),$utf8)
+    }
     Write-Host ('Codlet plugin setup ready: '+$dataRoot)
   }finally{if($setupLock){$setupLock.Dispose()}}
   if(-not $NoLaunch){& $exe launch;exit $LASTEXITCODE}

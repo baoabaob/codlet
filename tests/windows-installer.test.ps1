@@ -3,7 +3,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$fixture=Join-Path $repo ('.codlet-artifacts/installer-refresh-2026-09-22/windows-initialization-tests/'+[Guid]::NewGuid().ToString('N'))
+$fixture=Join-Path $repo ('.codlet-artifacts/installer-repair/windows-initialization-tests/'+[Guid]::NewGuid().ToString('N'))
 $app=Join-Path $fixture 'app';$data=Join-Path $fixture 'data'
 [IO.Directory]::CreateDirectory($app)|Out-Null
 [IO.Directory]::CreateDirectory($data)|Out-Null
@@ -53,10 +53,14 @@ function Initialize([switch]$Ordinary,[string]$Approve){
   $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $app 'Initialize-Codlet.ps1'),'-NoLaunch','-DataDirectory',$data)
   if(-not $Ordinary){$arguments+=@('-Plugins',$id)}
   if($Approve){$arguments+=@('-ApproveNewPermissions',$Approve)}
-  $previousPreference=$ErrorActionPreference
-  try{$ErrorActionPreference='Continue';$messages=& powershell.exe @arguments 2>&1;$code=$LASTEXITCODE}
-  finally{$ErrorActionPreference=$previousPreference}
-  [pscustomobject]@{code=$code;text=($messages|Out-String)}
+  # Match the native launcher's explicit UTF-8 pipe decoding, including stderr.
+  $info=[Diagnostics.ProcessStartInfo]::new('powershell.exe')
+  $info.Arguments=($arguments|ForEach-Object{'"'+$_+'"'}) -join ' '
+  $info.UseShellExecute=$false;$info.CreateNoWindow=$true
+  $info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+  $info.StandardOutputEncoding=$utf8;$info.StandardErrorEncoding=$utf8
+  $process=[Diagnostics.Process]::Start($info)
+  try{$stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync();$process.WaitForExit();[pscustomobject]@{code=$process.ExitCode;text=($stdout.Result+$stderr.Result)}}finally{$process.Dispose()}
 }
 Set-Payload '1.0.0'
 Write-Json (Join-Path $data 'config.json') @{schema=2;plugins=@{$id=@{enabled=$false}}}
@@ -67,6 +71,8 @@ $receipt=$state.decided.PSObject.Properties[$id].Value
 Assert ($receipt.source -eq 'official-installer') 'Missing installer provenance'
 Assert ($receipt.files.Count -eq 2) 'Missing full file hash receipt'
 Assert ($receipt.catalogSha256.Length -eq 64) 'Missing catalog digest'
+$reviewed=Join-Path $data 'plugin-bundle-reviewed.txt'
+Assert ([IO.File]::ReadAllText($reviewed).StartsWith('completed-v2:')) 'Success marker lacks completed semantics'
 $added=[IO.File]::ReadAllText((Join-Path $data 'added.jsonl'))|ConvertFrom-Json
 Assert ('--enable' -notin $added) 'Disabled preference was overridden'
 $destination=Join-Path $data ('packages/'+$id)
@@ -90,12 +96,16 @@ $result=Initialize -Approve 'core.events'
 Assert ($result.code -eq 0) $result.text
 Assert ([IO.File]::ReadAllText((Join-Path $data 'added.jsonl')).Contains('core.events')) 'Explicit permission approval was not forwarded'
 [IO.File]::WriteAllText((Join-Path $destination 'author.txt'),'keep me',$utf8)
+[IO.File]::WriteAllText($reviewed,'previous-reviewed-marker',$utf8)
 $result=Initialize
 Assert ($result.code -eq 20) 'Modified author source was not reported'
+Assert ($result.text.Contains('官方插件未更新：作者文件已修改')) 'UTF-8 error message was corrupted across the launcher pipe'
+Assert ([IO.File]::ReadAllText($reviewed) -eq 'previous-reviewed-marker') 'Failed update marked the new catalog completed'
 Assert ([IO.File]::ReadAllText((Join-Path $destination 'author.txt')) -eq 'keep me') 'Author file was removed'
 $callsBefore=[IO.File]::ReadAllText((Join-Path $data 'added.jsonl'))
 Write-Json (Join-Path $data 'existing.json') @{plugins=@()}
 $result=Initialize -Ordinary
 Assert ($result.code -eq 0) $result.text
 Assert ([IO.File]::ReadAllText((Join-Path $data 'added.jsonl')) -eq $callsBefore) 'Ordinary launch revived a removed plugin'
+Assert ([IO.File]::ReadAllText($reviewed) -eq 'previous-reviewed-marker') 'Ordinary launch dismissed the pending failed update'
 Write-Output 'Windows installer fixture passed: transaction routing, receipt, permission consent, author protection, and no automatic revival.'

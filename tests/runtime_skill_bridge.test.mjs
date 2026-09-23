@@ -6,7 +6,7 @@ const source=readFileSync(new URL('../runtime/skill-bridge.js',import.meta.url),
 const profiles=JSON.parse(readFileSync(new URL('../compatibility/client-profiles.json',import.meta.url),'utf8')).builds.filter(p=>p.runtimeSkill);
 const settle=async()=>{for(let i=0;i<20;i++)await new Promise(r=>setTimeout(r,0));};
 
-function fixture(t,profile,{entry=true,version=profile.appVersion}={}){
+function fixture(t,profile,{entry=true,version=profile.appVersion,reviewedProfiles=profiles}={}){
   const calls=[],coreCalls=[],imports=[];let registered=false,ticket=0;
   const client={getAppServerVersion:()=>profile.appServerVersion,setAppServerVersion(){},async sendRequest(method,params){calls.push({method,params});return {};}};
   const original=client.sendRequest,token={id:'scope'},family={read:()=>client},node={token,familyBindings:new Map([[family,new Map([['local',client]])]])};
@@ -16,7 +16,7 @@ function fixture(t,profile,{entry=true,version=profile.appVersion}={}){
   const scopeModule=profile.scopeModule?{[profile.exports.scope]:token}:nativeModule;
   if(!profile.scopeModule)nativeModule[profile.exports.scope]=token;
   const context=vm.createContext({console,setTimeout,clearTimeout,Map,Set,Symbol,location:{origin:'app://-',pathname:'/index.html'},document,electronBridge:{getSentryInitOptions:()=>({appVersion:version,buildNumber:profile.buildNumber})},loadModule:async resource=>{imports.push(resource);if(resource===profile.module)return nativeModule;assert.equal(resource,profile.scopeModule);return scopeModule;}});
-  const config={marker:'test.skill',binding:'skillBinding',root:'/runtime',skillPath:'/runtime/codlet/SKILL.md',profiles};
+  const config={marker:'test.skill',binding:'skillBinding',root:'/runtime',skillPath:'/runtime/codlet/SKILL.md',profiles:reviewedProfiles};
   const state=()=>vm.runInContext('globalThis[Symbol.for("test.skill")]',context);
   context.skillBinding=text=>{const input=JSON.parse(text);coreCalls.push(input.action);let reply;
     if(input.action==='complete'){registered=input.ok;reply={ready:registered};}
@@ -58,4 +58,16 @@ test('unknown builds and a changed entry never import native modules or alter th
   const changed=fixture(t,profiles.at(-1),{entry:false});changed.document.readyState='complete';
   await new Promise(r=>setTimeout(r,70));await settle();
   assert.equal(changed.state().status,'failed');assert.equal(changed.imports.length,0);assert.equal(changed.client.sendRequest,changed.original);
+});
+
+test('runtime skill distinguishes same-version platform entries and rejects ambiguity',async t=>{
+  const profile=profiles.at(-1),other={...profile,entry:'app://-/assets/other-platform-entry.js',module:'app://-/assets/other-platform-module.js'};
+  const f=fixture(t,profile,{reviewedProfiles:[other,profile]});await settle();
+  assert.equal(f.state().status,'ready');
+  assert.deepEqual(f.imports,profile.scopeModule?[profile.module,profile.scopeModule]:[profile.module]);
+  const ambiguous=fixture(t,profile,{entry:false,reviewedProfiles:[other,profile]});
+  ambiguous.document.scripts.push({src:other.entry},{src:profile.entry});
+  await new Promise(r=>setTimeout(r,70));await settle();
+  assert.equal(ambiguous.state().status,'failed');assert.match(ambiguous.state().error,/ambiguous/);
+  assert.equal(ambiguous.imports.length,0);assert.equal(ambiguous.client.sendRequest,ambiguous.original);
 });

@@ -84,6 +84,7 @@
     },
     {
       "appVersion": "26.917.62051", "buildNumber": "10789", "appServerVersion": "0.155.0-alpha.16.3", "navigation": true, "runtimeSkill": true, "threadConfiguration": true,
+      "platform": "macos-aarch64",
       "officialUpdates": { "stateSelector": "Pet" },
       "entry": "app://-/assets/index-88e5ba1e2117.js", "module": "app://-/assets/app-initial-37097744327a.js",
       "scopeModule": "app://-/assets/app-shared-70a4f71efb70.js",
@@ -92,6 +93,20 @@
       "page": {
         "react": "app://-/assets/app-shared-70a4f71efb70.js", "dom": "app://-/assets/app-shared-70a4f71efb70.js",
         "client": "app://-/assets/app-shared-70a4f71efb70.js", "primary": "app://-/assets/app-initial-37097744327a.js",
+        "exports": { "react": "e6", "dom": "P3", "client": "N3", "sidebar": "bC", "headerInit": "p7", "header": "f7", "newTaskInit": "d2", "newTask": "h2" }
+      }
+    },
+    {
+      "appVersion": "26.917.62051", "buildNumber": "10789", "appServerVersion": "0.155.0-alpha.16.3", "navigation": true, "runtimeSkill": true, "threadConfiguration": true,
+      "platform": "windows-x86_64",
+      "officialUpdates": { "stateSelector": "Pet" },
+      "entry": "app://-/assets/index-897000035213.js", "module": "app://-/assets/app-initial-8f0e46979798.js",
+      "scopeModule": "app://-/assets/app-shared-baf181f346ac.js",
+      "postboxModule": "app://-/assets/app-shared-baf181f346ac.js",
+      "exports": { "scope": "ZI", "manager": "vZt", "client": "yZt", "services": "pnt", "postbox": "X3" },
+      "page": {
+        "react": "app://-/assets/app-shared-baf181f346ac.js", "dom": "app://-/assets/app-shared-baf181f346ac.js",
+        "client": "app://-/assets/app-shared-baf181f346ac.js", "primary": "app://-/assets/app-initial-8f0e46979798.js",
         "exports": { "react": "e6", "dom": "P3", "client": "N3", "sidebar": "bC", "headerInit": "p7", "header": "f7", "newTaskInit": "d2", "newTask": "h2" }
       }
     }
