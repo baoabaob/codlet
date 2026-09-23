@@ -226,7 +226,12 @@ async function createPlaintextSource({ runtime, gateway, signal }) {
       if (controller.signal.aborted) throw failure('stream_retired');
       if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw failure('invalid_response');
       return pack({ ...response, headers: headers(response.headers ?? []).filter(([name]) => !framing.has(name.toLowerCase())) }, record.streams);
-    } catch (error) { retire(record); throw error; }
+    } catch (error) {
+      // Let the failing http.intercept RPC carry its finite original code.
+      // Sending http.cancel first aborts the client's pending RPC and masks
+      // errors such as invalid_response as request_cancelled.
+      retire(record, false); throw error;
+    }
   }
   let peerServer;
   try {

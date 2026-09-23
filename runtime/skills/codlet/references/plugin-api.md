@@ -51,7 +51,7 @@ module.exports = {
 
 涉及实际网络请求/响应或 API 接入时，先读 `docs/spec/traffic.md` 和 `types/host.d.ts`。`context.traffic.registerInterceptor` 为已授权 Host 提供 HTTP(S)/SSE 与 WS/WSS 拦截；`traffic.intercept` 只作用于明确授权的来源，敏感头与改换来源另需 `traffic.sensitiveHeaders`、`traffic.redirect`。优先使用已安装且兼容的官方 Desktop Adapter 抽象，注册始终保留当前消费者身份。首次启用接管插件需要重启客户端，运行时探针会报告实际入口是否已附接；不能把 worker 正在监听说成全客户端均已验证。
 
-按任务分流优先使用官方 Adapter 已验证的会话元数据，在 Host 拦截器中选择上游和改写请求；WS 握手、预热和续接需要维持同一任务的状态，不能把旧服务的 `previous_response_id` 随意交给另一服务。若还要改变后端自身的模型配置或使用无官方账号的自建 provider，在新建/恢复任务前使用 `codex.backend.write@1` 的 `registerThreadConfiguration`，不修改用户全局配置。旧 `codex.backend.transport` / `registerThreadTransport` 已移除，不再使用。
+按任务分流优先使用官方 Adapter 已验证的会话元数据，在 Host 拦截器中选择上游和改写请求；WS 握手、预热和续接需要维持同一任务的状态，不能把旧服务的 `previous_response_id` 随意交给另一服务。若还要改变后端自身的模型配置或使用无官方账号的自建 provider，在新建/恢复任务前使用 `codex.backend.write@1` 的 `registerThreadConfiguration`，不修改用户全局配置。按任务选择每次实际提交的模型时，额外注册 `appliesAt: ['turn.start']` 的同一通用回调，依据 `draft.threadId` 返回 `{model}`；turn 阶段不能改变 provider。旧 `codex.backend.transport` / `registerThreadTransport` 已移除，不再使用。
 
 `context.traffic.openChannel` 是保留的通用 HTTP/SSE/WS 本地服务原语，不是透明接管的前置条件。编写启动适配层时才查看 `codlet.client.launch@1` 的额外 Host 阶段及 `cdp.raw` 权限；普通拦截插件不必自己实现启动注入。配置隔离、一次性流、取消和协议覆盖按当前规范处理，不为捕获流量关闭 TLS 校验或修改系统代理/根证书。
 

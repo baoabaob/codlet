@@ -135,7 +135,10 @@ function connectPlaintextSource(source, { signal } = {}) {
         await peer.request('http.release', { exchange: id }, { timeoutMs: 2000 }).catch(() => {});
         retire(record);
       };
-      const wrapped = Object.freeze({ cancel() { body.cancel(); finish().catch(() => {}); },
+      // Retire the exchange before disposing its streams. A downstream
+      // stream.cancel can close a Native handler lease, which otherwise races
+      // this release and turns an ordinary redirect into http.cancel.
+      const wrapped = Object.freeze({ async cancel() { await finish(); },
         [Symbol.asyncIterator]() {
           const iterator = body[Symbol.asyncIterator]();
           return {

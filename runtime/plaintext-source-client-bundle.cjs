@@ -185,7 +185,7 @@ var require_traffic_wire = __commonJS({
       function importBody(reference, maximum = MAX_BODY) {
         if (reference == null) return null;
         if (typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1) throw failure2("invalid_body");
-        let used = false, finished = false, cancelled = false;
+        let used = false, finished = false, cancelled = false, cancelPromise = Promise.resolve();
         const controller = new AbortController();
         const rootAborted = () => controller.abort(failure2("stream_retired"));
         signal.addEventListener("abort", rootAborted, { once: true });
@@ -199,11 +199,16 @@ var require_traffic_wire = __commonJS({
           cancelled = true;
           finish();
           controller.abort(failure2("request_cancelled"));
-          if (reference.stream) peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).catch(() => {
+          if (reference.stream) cancelPromise = peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).then(() => {
+          }, () => {
           });
           return true;
         };
-        return Object.freeze({ cancel, [Symbol.asyncIterator]() {
+        const cancelAndWait = () => {
+          cancel();
+          return cancelPromise;
+        };
+        return Object.freeze({ cancel, cancelAndWait, [Symbol.asyncIterator]() {
           if (used) throw failure2("body_already_consumed");
           used = true;
           let total = 0, ended = false, reading = false;
@@ -265,7 +270,10 @@ var require_traffic_wire = __commonJS({
           sources.delete(payload.stream);
           source.cancelled = true;
           source.cancelRead?.();
-          source.body.cancel?.();
+          if (source.body.cancelAndWait) await source.body.cancelAndWait().catch(() => {
+          });
+          else if (source.body.cancel) Promise.resolve(source.body.cancel()).catch(() => {
+          });
           if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {
           });
           return { cancelled: true };
@@ -709,10 +717,8 @@ function connectPlaintextSource(source, { signal } = {}) {
         retire(record);
       };
       const wrapped = Object.freeze({
-        cancel() {
-          body.cancel();
-          finish().catch(() => {
-          });
+        async cancel() {
+          await finish();
         },
         [Symbol.asyncIterator]() {
           const iterator = body[Symbol.asyncIterator]();

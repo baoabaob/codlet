@@ -134,21 +134,22 @@ export interface InterceptorList { interceptors: InterceptorInfo[] }
 export interface CallbackAccess { api: 1; symbol: string; ticket: string }
 export interface ThreadConfigurationCompatibility {
   available: boolean;
-  appliesAt: ('thread.start' | 'thread.resume')[];
-  existingLoadedThreads: false;
+  appliesAt: ('thread.start' | 'thread.resume' | 'turn.start')[];
+  existingLoadedThreads: boolean;
   hooks: number;
   pending: number;
   unavailable: { code: string; message: string } | null;
 }
 export interface ThreadConfigurationDraft {
-  readonly source: 'thread.start' | 'thread.resume';
+  readonly source: 'thread.start' | 'thread.resume' | 'turn.start';
   readonly threadId: string | null;
   readonly cwd: string | null;
   readonly model: string | null;
   readonly provider: string | null;
 }
 export interface ThreadConfigurationChange {
-  /** Native task model choice, applied before backend request construction. */
+  /** Model choice before backend request construction. At turn.start this also
+   * updates an existing collaborationMode.settings.model. */
   model?: string;
   /** Select an already configured model provider. Mutually exclusive with provider. */
   modelProvider?: string;
@@ -158,11 +159,17 @@ export interface ThreadConfigurationChange {
   provider?: { id?: string; baseUrl: string; name?: string; supportsWebSockets?: boolean };
 }
 /** Return nothing to leave Native configuration alone. More than one returned
- * change rejects the task request. Running/loaded tasks are not rebound. */
+ * change rejects the request. At turn.start only model is accepted; provider
+ * changes remain limited to thread.start and thread.resume. */
 export type ThreadConfigurationHandler = (draft: ThreadConfigurationDraft, options: Readonly<{ signal: AbortSignal }>) => void | ThreadConfigurationChange | Promise<void | ThreadConfigurationChange>;
+export interface ThreadConfigurationOptions extends InterceptorOptions {
+  /** Defaults to thread.start and thread.resume. Select turn.start to choose a
+   * model for an existing task using draft.threadId. */
+  appliesAt?: ('thread.start' | 'thread.resume' | 'turn.start')[];
+}
 export interface ThreadConfigurationInfo {
   pluginId: string; generation: number; id: string; enabled: boolean;
-  priority: number; timeoutMs: number; calls: number; applied: number; failures: number;
+  priority: number; timeoutMs: number; appliesAt: ('thread.start' | 'thread.resume' | 'turn.start')[]; calls: number; applied: number; failures: number;
 }
 export interface ThreadConfigurationHandle {
   (): void;
@@ -176,7 +183,7 @@ export interface ThreadConfigurationHandle {
 export interface DesktopCallbackApi {
   readonly api: 1;
   registerPreSubmit(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: SubmissionInterceptor): InterceptorHandle;
-  registerThreadConfiguration(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: ThreadConfigurationHandler): ThreadConfigurationHandle;
+  registerThreadConfiguration(owner: RendererContext, ticket: string, options: ThreadConfigurationOptions, handler: ThreadConfigurationHandler): ThreadConfigurationHandle;
   onEvent(owner: RendererContext, ticket: string, handler: (event: Readonly<DesktopEvent>) => void): () => void;
 }
 /** Convenience typing for an author's own Core RPC wrapper. No private transport. */

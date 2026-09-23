@@ -54,6 +54,10 @@ export interface PlaintextForwardResponse extends HttpChannelResponse {
   /** Actual last URL after redirects in the original client transport. */
   readonly finalUrl: string;
 }
+export interface PlaintextInterceptResponse extends Omit<PlaintextForwardResponse, 'body'> {
+  /** Await cancellation to release the exchange before dependent requests. */
+  readonly body: (AsyncIterable<Uint8Array> & { cancel(): Promise<void> }) | null;
+}
 export interface PlaintextSourceClient {
   /** Authenticated peer handshake. Route reservations can be made before this settles. */
   readonly ready: Promise<true>;
@@ -62,7 +66,7 @@ export interface PlaintextSourceClient {
   interceptHttp(input: Pick<HttpForwardRequest, 'url' | 'method' | 'headers' | 'body'>, options: {
     forward(input: PlaintextForwardRequest, context: { signal: AbortSignal }): Promise<PlaintextForwardResponse>;
     signal?: AbortSignal;
-  }): Promise<PlaintextForwardResponse>;
+  }): Promise<PlaintextInterceptResponse>;
   close(): void;
   status(): { open: boolean; routes: number; exchanges: number };
 }

@@ -10,7 +10,8 @@ const { createTrafficRuntime } = require('../runtime/host-traffic-bundle.cjs');
 const { createTrafficInterceptors } = require('../runtime/traffic-interceptors.cjs');
 const { createPlaintextSource } = require('../runtime/plaintext-source.cjs');
 const { connectPlaintextSource } = require('../runtime/plaintext-source-client-bundle.cjs');
-const { connectTrafficPeer } = require('../runtime/traffic-wire.cjs');
+const { connectTrafficPeer, createTrafficStreams } = require('../runtime/traffic-wire.cjs');
+const { connectTrafficGateway } = require('../runtime/traffic-gateway.cjs');
 const { WebSocket, WebSocketServer } = require('../frontend/node_modules/ws');
 const fail = code => Object.assign(new Error(code), { code });
 const token = 'a'.repeat(43);
@@ -180,6 +181,235 @@ test('automatic redirected response is hidden from an interceptor without final-
   assert.equal(response.status, 200);
   assert.equal(observed, 0);
   assert.equal(await bodyText(response.body), 'redirected secret');
+});
+
+test('response interceptor may consume an empty 302 stream and replace it with an empty body', async t => {
+  const { registry, client, source } = await fixture(t);
+  const outer = new AbortController();
+  const owner = new AbortController();
+  let observed = 0;
+  registry.register({ pluginId: 'fixture', generation: 1, signal: owner.signal }, {
+    id: 'empty-redirect', origins: ['https://desktop.example'],
+  }, {
+    async response(response) {
+      if (response.status !== 302) return null;
+      observed++;
+      assert.equal(await bodyText(response.body), '');
+      return { body: '' };
+    },
+  });
+  const redirected = await client.interceptHttp({ url: 'https://desktop.example/first', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) {
+      return { status: 302, finalUrl: input.url, headers: [['location', '/second']],
+        body: (async function* () {})() };
+    },
+  });
+  assert.equal(redirected.status, 302);
+  await redirected.body.cancel();
+  assert.equal(observed, 1);
+  assert.equal(source.status().exchanges, 0);
+  const next = await client.interceptHttp({ url: 'https://desktop.example/second', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) { return { status: 200, finalUrl: input.url, headers: [], body: 'next hop' }; },
+  });
+  assert.equal(next.status, 200);
+  assert.equal(await bodyText(next.body), 'next hop');
+  assert.equal(outer.signal.aborted, false);
+});
+
+test('empty 302 rewrite survives a real gateway relay and Native leaseClosed release ordering', async t => {
+  const root = new AbortController();
+  let gatewayHandle, gatewayEvent, nextLease = 0, observed = 0, rewriteRedirect = true;
+  const hostLeases = new Map();
+  const nativePeer = {
+    async request(method, params, options = {}) {
+      if (method === 'ready') return { ready: true };
+      if (method === 'snapshot') return { revision: 1, registrations: [{
+        registration: 'fixture-response', pluginId: 'fixture', generation: 1,
+        options: { id: 'response', origins: ['https://desktop.example'], handlers: ['response'] },
+      }] };
+      if (method === 'applied') return { applied: true };
+      if (method === 'authorize') return { allowed: true };
+      if (method === 'open') {
+        const lease = `fixture-lease-${++nextLease}`;
+        const controller = new AbortController();
+        const streams = createTrafficStreams({ request: async (_operation, relay) =>
+          gatewayHandle(relay.operation, { lease: relay.lease, payload: relay.payload }) }, lease, controller.signal);
+        hostLeases.set(lease, { controller, streams });
+        const result = { lease }; options.prepareResult?.(result); return result;
+      }
+      if (method === 'relay') {
+        const host = hostLeases.get(params.lease);
+        if (!host) throw fail('stream_retired');
+        if (params.operation !== 'invoke') return host.streams.handle(params.operation, params.payload);
+        const { kind, value } = params.payload;
+        if (kind !== 'response' || value.status !== 302 || !rewriteRedirect) return null;
+        observed++;
+        assert.equal(await bodyText(host.streams.importBody(value.body)), '');
+        return { body: host.streams.exportBody('') };
+      }
+      if (method === 'release') {
+        const host = hostLeases.get(params.lease);
+        if (host) { hostLeases.delete(params.lease); host.controller.abort(); host.streams.dispose(); gatewayEvent({ event: 'leaseClosed', lease: params.lease }); }
+        return { released: true };
+      }
+      throw fail('unexpected_rpc');
+    },
+    close() {}, status: () => ({ open: true, pending: 0, incoming: 0, queuedBytes: 0 }),
+  };
+  const gateway = await connectTrafficGateway({ host: '127.0.0.1', port: 1, token: 'fixture' }, {
+    signal: root.signal,
+    connect: async (_endpoint, { handle, event }) => { gatewayHandle = handle; gatewayEvent = event; return nativePeer; },
+  });
+  const runtime = createTrafficRuntime({ rootSignal: root.signal, makeError: fail, async coreRequest(method, params) {
+    if (method === 'host.network.authorizeChannel') return {};
+    if (method === 'host.network.authorizeForward') return { url: params.url };
+    if (method === 'services.network.resolve') return { proxyUrl: null, caPem: '' };
+    throw fail('unexpected_rpc');
+  } });
+  const source = await createPlaintextSource({ runtime, gateway, signal: root.signal });
+  const client = connectPlaintextSource(source.descriptor);
+  await client.ready;
+  t.after(() => { client.close(); source.close(); gateway.close(); root.abort(); });
+  const outer = new AbortController();
+  const first = await client.interceptHttp({ url: 'https://desktop.example/first', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) { return { status: 302, finalUrl: input.url, headers: [['location', '/second']], body: (async function* () {})() }; },
+  });
+  assert.equal(first.status, 302);
+  await first.body.cancel();
+  assert.equal(observed, 1);
+  assert.equal(source.status().exchanges, 0);
+  const second = await client.interceptHttp({ url: 'https://desktop.example/second', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) { return { status: 200, finalUrl: input.url, headers: [], body: 'next hop' }; },
+  });
+  assert.equal(await bodyText(second.body), 'next hop');
+  rewriteRedirect = false;
+  const passthrough = await client.interceptHttp({ url: 'https://desktop.example/plain-redirect', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) { return { status: 302, finalUrl: input.url, headers: [['location', '/final']], body: (async function* () {})() }; },
+  });
+  assert.equal(passthrough.status, 302);
+  assert.equal(await bodyText(passthrough.body), '');
+  assert.equal(source.status().exchanges, 0);
+  const finalHop = await client.interceptHttp({ url: 'https://desktop.example/final', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) { return { status: 200, finalUrl: input.url, headers: [], body: 'final' }; },
+  });
+  assert.equal(await bodyText(finalHop.body), 'final');
+  assert.equal(outer.signal.aborted, false);
+  assert.equal(gateway.status().leases, 0);
+});
+
+test('real gateway preserves original finite forward errors before exchange cleanup', async t => {
+  const root = new AbortController();
+  let event, nextLease = 0;
+  const nativePeer = {
+    async request(method, params, options = {}) {
+      if (method === 'ready') return { ready: true };
+      if (method === 'snapshot') return { revision: 1, registrations: [{
+        registration: 'fixture-request', pluginId: 'fixture', generation: 1,
+        options: { id: 'request', origins: ['https://desktop.example'], handlers: ['request'] },
+      }] };
+      if (method === 'applied') return { applied: true };
+      if (method === 'authorize') return { allowed: true };
+      if (method === 'open') { const result = { lease: `error-lease-${++nextLease}` }; options.prepareResult?.(result); return result; }
+      if (method === 'relay') return null;
+      if (method === 'release') { event({ event: 'leaseClosed', lease: params.lease }); return { released: true }; }
+      throw fail('unexpected_rpc');
+    },
+    close() {}, status: () => ({ open: true, pending: 0, incoming: 0, queuedBytes: 0 }),
+  };
+  const gateway = await connectTrafficGateway({ host: '127.0.0.1', port: 1, token: 'fixture' }, {
+    signal: root.signal, connect: async (_endpoint, callbacks) => { event = callbacks.event; return nativePeer; },
+  });
+  const runtime = createTrafficRuntime({ rootSignal: root.signal, makeError: fail, async coreRequest(method, params) {
+    if (method === 'host.network.authorizeChannel') return {};
+    if (method === 'host.network.authorizeForward') return { url: params.url };
+    if (method === 'services.network.resolve') return { proxyUrl: null, caPem: '' };
+    throw fail('unexpected_rpc');
+  } });
+  const source = await createPlaintextSource({ runtime, gateway, signal: root.signal });
+  const client = connectPlaintextSource(source.descriptor);
+  await client.ready;
+  t.after(() => { client.close(); source.close(); gateway.close(); root.abort(); });
+  const input = { url: 'https://desktop.example/failure', method: 'GET', headers: [] };
+  await assert.rejects(client.interceptHttp(input, {
+    async forward(next) { return { status: 0, finalUrl: next.url, headers: [], body: null }; },
+  }), { code: 'invalid_response' });
+  await assert.rejects(client.interceptHttp(input, {
+    async forward() { throw fail('desktop_redirect_unavailable'); },
+  }), { code: 'desktop_redirect_unavailable' });
+  assert.equal(source.status().exchanges, 0);
+  assert.equal(client.status().open, true);
+  const recovered = await client.interceptHttp(input, {
+    async forward(next) { return { status: 200, finalUrl: next.url, headers: [], body: 'recovered' }; },
+  });
+  assert.equal(await bodyText(recovered.body), 'recovered');
+});
+
+test('cancelling a streaming redirect body leaves the source and outer signal usable for the next hop', async t => {
+  const { client, source } = await fixture(t);
+  const outer = new AbortController();
+  let originalBodyClosed = false, firstForwardSignal;
+  const first = await client.interceptHttp({ url: 'https://desktop.example/first', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input, { signal }) {
+      firstForwardSignal = signal;
+      return { status: 302, finalUrl: input.url, headers: [['location', '/second']],
+        body: (async function* () {
+          try { yield 'redirect prefix'; await new Promise(() => {}); }
+          finally { originalBodyClosed = true; }
+        })() };
+    },
+  });
+  assert.equal(first.status, 302);
+  const iterator = first.body[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).value.toString(), 'redirect prefix');
+  const cancelled = first.body.cancel();
+  assert(cancelled instanceof Promise);
+  await cancelled;
+  assert.equal(source.status().exchanges, 0);
+  const second = await client.interceptHttp({ url: 'https://desktop.example/second', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input, { signal }) {
+      assert.equal(signal.aborted, false);
+      assert.equal(input.url, 'https://desktop.example/second');
+      return { status: 200, finalUrl: input.url, headers: [], body: 'second hop' };
+    },
+  });
+  assert.equal(await bodyText(second.body), 'second hop');
+  assert.equal(outer.signal.aborted, false);
+  assert.equal(client.status().open, true);
+  for (let attempt = 0; attempt < 20 && source.status().exchanges; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(source.status().exchanges, 0);
+  assert.equal(firstForwardSignal.aborted, true);
+  assert.equal(originalBodyClosed, true);
+});
+
+test('an unread redirect body can be cancelled without draining before the next delegated hop', async t => {
+  const { client, source } = await fixture(t);
+  const outer = new AbortController();
+  let originalCancelled = false;
+  const first = await client.interceptHttp({ url: 'https://desktop.example/first', method: 'GET', headers: [] }, {
+    signal: outer.signal,
+    async forward(input) {
+      const body = { cancel() { originalCancelled = true; }, [Symbol.asyncIterator]() {
+        return { next: () => new Promise(() => {}) };
+      } };
+      return { status: 302, finalUrl: input.url, headers: [['location', '/second']], body };
+    },
+  });
+  await first.body.cancel();
+  assert.equal(originalCancelled, true);
+  assert.equal(source.status().exchanges, 0);
+  const second = await client.interceptHttp({ url: 'https://desktop.example/second', method: 'GET', headers: [] }, {
+    signal: outer.signal, async forward(input) { return { status: 200, finalUrl: input.url, headers: [], body: 'complete' }; },
+  });
+  assert.equal(await bodyText(second.body), 'complete');
+  assert.equal(outer.signal.aborted, false);
 });
 
 test('route registration collision and unknown route stay outside the gateway', async t => {
