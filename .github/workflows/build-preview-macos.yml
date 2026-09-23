@@ -62,7 +62,6 @@ jobs:
           repository: baoabaob/codlet-plugins
           ref: ${{ inputs.plugins_commit }}
           path: plugins
-          ssh-key: ${{ secrets.CODLET_PLUGINS_DEPLOY_KEY }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -83,6 +82,7 @@ jobs:
           npm ci --prefix frontend
           node frontend/build.mjs
           npm ci --prefix ../plugins/frontend
+          node ../plugins/scripts/prepare-core-sdk.mjs "$PWD"
           node ../plugins/frontend/build.mjs
           node ../plugins/scripts/package.mjs
           # Standard-library and build-host notices can differ between GNU
@@ -109,11 +109,11 @@ jobs:
             --plugin-distribution ../plugins/dist \
             --source-commit "$(git rev-parse HEAD)" \
             --plugins-commit "$PLUGINS_COMMIT" \
-            --output .codlet-artifacts/installer-refresh-2026-09-22/macos/package
+            --output .codlet-artifacts/preview-macos/package
       - name: Upload native preview and provenance
         uses: actions/upload-artifact@v4
         with:
           name: codlet-macos-arm64-preview
-          path: core/.codlet-artifacts/installer-refresh-2026-09-22/macos/package/
+          path: core/.codlet-artifacts/preview-macos/package/
           if-no-files-found: error
           retention-days: 3
