@@ -126,14 +126,18 @@ async function scenario(mode) {
     }
     signed(install);
     if (mode === 'linger') assert.equal(heldAtCheck, true, 'a live owned bundle process must prevent replacement');
-    if (mode === 'snapshot') assert.equal(lingering.exitCode, null, 'an unrelated Codlet Node snapshot must not block this app update');
+    if (mode === 'snapshot') assert.equal(lingering.exitCode === null && lingering.signalCode === null, true, 'an unrelated Codlet Node snapshot must not block this app update');
     assert.equal(fs.existsSync(path.join(install, '.codlet-runtime-update.lock.json')), mode === 'unknown' || mode === 'unclean');
     assert.equal(terminal.calls, mode === 'rollback' ? 2 : mode === 'unclean' ? 0 : 1);
+  } catch (error) {
+    console.error(`Native updater fixture ${mode} failed:`, error);
+    throw error;
   } finally {
     if (releaseTimer) clearTimeout(releaseTimer);
     for (const child of [owner, lingering, updater]) {
-      if (child?.exitCode === null) child.kill('SIGTERM');
-      if (child?.exitCode === null) await new Promise(resolve => child.once('exit', resolve));
+      const active = () => child && child.exitCode === null && child.signalCode === null;
+      if (active()) child.kill('SIGTERM');
+      if (active()) await new Promise(resolve => child.once('exit', resolve));
     }
     fs.rmSync(temp, { recursive: true, force: true });
   }
