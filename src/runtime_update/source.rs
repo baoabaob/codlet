@@ -252,8 +252,13 @@ impl UpdateClient {
             .small(https_url(&api)?, &origins, false, MAX_MANIFEST)
             .await?;
         if stable {
-            return serde_json::from_slice(&bytes)
-                .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()));
+            let mut release: GitHubRelease = serde_json::from_slice(&bytes)
+                .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
+            if release.assets.is_empty() {
+                self.hydrate_github_release_assets(repo, &mut release)
+                    .await?;
+            }
+            return Ok(release);
         }
         let releases: Vec<GitHubRelease> = serde_json::from_slice(&bytes)
             .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
@@ -264,27 +269,43 @@ impl UpdateClient {
             ));
         }
         let mut selected: Option<GitHubRelease> = None;
-        for release in releases {
+        let mut asset_fallbacks = 0;
+        for mut release in releases {
             let version = release
                 .tag_name
                 .strip_prefix('v')
-                .unwrap_or(&release.tag_name);
+                .unwrap_or(&release.tag_name)
+                .to_owned();
             if release.id == 0
                 || release.draft
                 || !release.prerelease
                 || release.assets.len() > 128
-                || !release
-                    .assets
-                    .iter()
-                    .any(|asset| asset.name == manifest_asset)
-                || parse_version(version).is_err()
+                || parse_version(&version).is_err()
+            {
+                continue;
+            }
+            if release.assets.is_empty() {
+                if asset_fallbacks >= 4 {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Too many releases require separate asset lookup.",
+                    ));
+                }
+                self.hydrate_github_release_assets(repo, &mut release)
+                    .await?;
+                asset_fallbacks += 1;
+            }
+            if !release
+                .assets
+                .iter()
+                .any(|asset| asset.name == manifest_asset)
             {
                 continue;
             }
             let replace = match &selected {
                 None => true,
                 Some(previous) => newer(
-                    version,
+                    &version,
                     previous
                         .tag_name
                         .strip_prefix('v')
@@ -301,6 +322,50 @@ impl UpdateClient {
                 "No public preview release contains this update manifest.",
             )
         })
+    }
+    async fn hydrate_github_release_assets(
+        &self,
+        repo: &crate::github_distribution::GitHubRepository,
+        release: &mut GitHubRelease,
+    ) -> Result<()> {
+        if release.id == 0 {
+            return Err(error(
+                "runtime_update_manifest_invalid",
+                "Invalid GitHub release ID.",
+            ));
+        }
+        let url = https_url(&format!(
+            "https://api.github.com/repos/{}/{}/releases/{}/assets?per_page=100&page=1",
+            repo.owner, repo.name, release.id
+        ))?;
+        let bytes = self
+            .small(
+                url,
+                &BTreeSet::from(["https://api.github.com".into()]),
+                false,
+                MAX_MANIFEST,
+            )
+            .await?;
+        let assets: Vec<GitHubAsset> = serde_json::from_slice(&bytes)
+            .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
+        if assets.len() >= 100 {
+            return Err(error(
+                "runtime_update_manifest_invalid",
+                "GitHub release asset list reached its page limit.",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        if assets
+            .iter()
+            .any(|asset| asset.id == 0 || !ids.insert(asset.id))
+        {
+            return Err(error(
+                "runtime_update_manifest_invalid",
+                "GitHub release asset list contains duplicate or invalid IDs.",
+            ));
+        }
+        release.assets = assets;
+        Ok(())
     }
     async fn manifest(
         &self,

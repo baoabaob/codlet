@@ -10,6 +10,8 @@ The MSI installs per user. Its feature page offers the GUI, UI Adapter, Desktop 
 
 The portable ZIP must be extracted completely to a writable location. Its first run offers the same plugin choices and stores Codlet data in `data/`. Installed MSI builds use `%LOCALAPPDATA%/Codlet`. Neither redirects official Codex data. `Codlet-Launcher.exe --configure` can add omitted plugins later; ordinary launches do not reinstall removed plugins, and existing disabled states/grants are preserved.
 
+Windows in-app runtime updates replace Core and its pinned Node runtime. Install a newer MSI or extract a new portable package when upgrading the native launcher or installer components. Official plugins have their own GitHub update channels.
+
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, requests normal close with a bounded wait, and offers retry/cancel. Restart Manager automatic shutdown is disabled; no client is force-killed. An unattended busy install fails explicitly. Uninstall removes program files/shortcuts and preserves plugin/config/data.
 
 An updated installer offers explicit official-plugin updates. The Core verifies the complete old file set against its installer receipt or embedded hashes from the previously distributed Preview 1–4 packages, then updates the fixed `packages/<plugin-id>` directory while holding the offline registry and launch leases. Added, changed, linked, or custom-source files are preserved and reported as unverified (20). Existing disabled states, revoked permissions, and all broker scopes are retained; genuinely new permissions require a separate approval. Ordinary startup never reinstalls a removed plugin.

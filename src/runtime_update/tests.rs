@@ -585,6 +585,7 @@ async fn github_preview_finds_numeric_latest_prerelease_and_ignores_drafts_and_o
     let list = serde_json::to_vec(&vec![older, stable, draft, unrelated, selected]).unwrap();
     let fixture = Fixture::new(vec![
         response("200 OK", "", &list),
+        response("200 OK", "", b"[]"),
         response("200 OK", "", &manifest),
     ]);
     let selected = fixture
@@ -603,10 +604,14 @@ async fn github_preview_finds_numeric_latest_prerelease_and_ignores_drafts_and_o
     );
     let requests = fixture.requests.lock().unwrap();
     assert!(requests[0].starts_with("GET /repos/codlet-tests/core/releases?per_page=30 "));
-    assert!(requests[1].starts_with("GET /repos/codlet-tests/core/releases/assets/11 "));
+    assert!(
+        requests[1]
+            .starts_with("GET /repos/codlet-tests/core/releases/1/assets?per_page=100&page=1 ")
+    );
+    assert!(requests[2].starts_with("GET /repos/codlet-tests/core/releases/assets/11 "));
     assert_eq!(
         requests.len(),
-        2,
+        3,
         "a check must not download the update ZIP"
     );
     assert!(
@@ -637,6 +642,54 @@ async fn github_stable_still_uses_the_public_latest_release() {
         fixture.requests.lock().unwrap()[0]
             .starts_with("GET /repos/codlet-tests/core/releases/latest ")
     );
+}
+
+#[tokio::test]
+async fn github_stable_recovers_assets_from_public_release_assets_endpoint() {
+    let (mut release, manifest) = github_release_fixture("9.0.0", "stable", false, false);
+    let assets = serde_json::to_vec(&release["assets"]).unwrap();
+    release["assets"] = serde_json::json!([]);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&release).unwrap()),
+        response("200 OK", "", &assets),
+        response("200 OK", "", &manifest),
+    ]);
+    let selected = fixture
+        .client()
+        .check(
+            &github_channel("stable"),
+            Some(RuntimePayloadProfile::Portable),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.public.version, "9.0.0");
+    let requests = fixture.requests.lock().unwrap();
+    assert!(
+        requests[1]
+            .starts_with("GET /repos/codlet-tests/core/releases/1/assets?per_page=100&page=1 ")
+    );
+    assert_eq!(requests.len(), 3);
+}
+
+#[tokio::test]
+async fn github_stable_asset_lookup_failure_is_not_an_unpublished_release() {
+    let (mut release, _) = github_release_fixture("9.0.0", "stable", false, false);
+    release["assets"] = serde_json::json!([]);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&release).unwrap()),
+        response("503 Service Unavailable", "", b""),
+    ]);
+    let failure = fixture
+        .client()
+        .check(
+            &github_channel("stable"),
+            Some(RuntimePayloadProfile::Portable),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "runtime_update_http");
+    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

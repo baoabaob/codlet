@@ -711,6 +711,8 @@ async fn matching_release_declaration_selects_one_zip_for_declared_market_stats(
     let mut release = release_json(&archive, true);
     release["assets"][0]["download_count"] = serde_json::json!(13);
     release["assets"].as_array_mut().unwrap().push(serde_json::json!({"id":3,"name":"codlet-release.json","size":declaration_bytes.len(),"content_type":"application/json","browser_download_url":"https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/codlet-release.json","state":"uploaded","digest":format!("sha256:{:x}",Sha256::digest(&declaration_bytes)),"download_count":99}));
+    let assets = serde_json::to_vec(&release["assets"]).unwrap();
+    release["assets"] = serde_json::json!([]);
     let fixture = Fixture::new(vec![
         response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
         response(
@@ -718,6 +720,7 @@ async fn matching_release_declaration_selects_one_zip_for_declared_market_stats(
             "",
             &serde_json::to_vec(&vec![release.clone()]).unwrap(),
         ),
+        response("200 OK", "", &assets),
         response("200 OK", "", &declaration_bytes),
     ]);
     let page = fixture
@@ -743,7 +746,12 @@ async fn matching_release_declaration_selects_one_zip_for_declared_market_stats(
     assert_eq!(declared.asset.id, 2);
     assert_eq!(declared.asset.download_count, Some(13));
     assert_eq!(declared.basis, "publisher-release-declaration");
-    assert_eq!(fixture.requests.lock().unwrap().len(), 3);
+    let requests = fixture.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[2]
+            .starts_with("GET /repos/dev-owner/dev-repo/releases/1/assets?per_page=100&page=1 ")
+    );
 }
 
 #[tokio::test]
@@ -920,6 +928,63 @@ async fn fixed_http_fixture_lists_and_prepares_with_a_trusted_redirect() {
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
         assert!(!request.to_ascii_lowercase().contains("cookie:"));
     }
+}
+
+#[tokio::test]
+async fn public_release_assets_endpoint_recovers_empty_embedded_assets_for_list_and_prepare() {
+    let bytes = good_zip();
+    let full = release_json(&bytes, true);
+    let assets = serde_json::to_vec(&full["assets"]).unwrap();
+    let mut empty = full.clone();
+    empty["assets"] = serde_json::json!([]);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&empty).unwrap()),
+        response("200 OK", "", &assets),
+        response("200 OK", "", &serde_json::to_vec(&empty).unwrap()),
+        response("200 OK", "", &assets),
+        repository_identity_response(),
+        response("200 OK", "", &bytes),
+    ]);
+    let client = fixture.client();
+    let link =
+        GitHubLink::parse("https://github.com/dev-owner/dev-repo/releases/tag/v1.0.0").unwrap();
+    let listed = client.list_releases(&link).await.unwrap();
+    assert_eq!(listed.releases[0].assets[0].id, 2);
+    let temp = tempfile::tempdir().unwrap();
+    let prepared = client
+        .prepare_asset(&repository(), 1, 2, &temp.path().join("config.json"))
+        .await
+        .unwrap();
+    assert_eq!(prepared.manifest.id, "dev.github-fixture");
+    let requests = fixture.requests.lock().unwrap();
+    assert!(
+        requests[1]
+            .starts_with("GET /repos/dev-owner/dev-repo/releases/1/assets?per_page=100&page=1 ")
+    );
+    assert!(
+        requests[3]
+            .starts_with("GET /repos/dev-owner/dev-repo/releases/1/assets?per_page=100&page=1 ")
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.to_ascii_lowercase().contains("authorization:"))
+    );
+}
+
+#[tokio::test]
+async fn public_release_assets_endpoint_failure_is_not_an_empty_release() {
+    let mut release = release_json(&good_zip(), true);
+    release["assets"] = serde_json::json!([]);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&release).unwrap()),
+        response("503 Service Unavailable", "", b""),
+    ]);
+    let link =
+        GitHubLink::parse("https://github.com/dev-owner/dev-repo/releases/tag/v1.0.0").unwrap();
+    let failure = fixture.client().list_releases(&link).await.unwrap_err();
+    assert_eq!(failure.code, "github_http_error");
+    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]

@@ -445,7 +445,7 @@ impl GitHubClient {
         {
             return Err(error("invalid_github_url", "Invalid release selection."));
         }
-        let (releases, truncated) = if let Some(tag) = &link.tag {
+        let (releases, mut truncated) = if let Some(tag) = &link.tag {
             let release: ApiRelease = self
                 .json(link.repository.endpoint(&["releases", "tags", tag]))
                 .await?;
@@ -479,9 +479,20 @@ impl GitHubClient {
         };
         let mut seen = BTreeSet::new();
         let mut output = Vec::new();
-        for release in releases {
+        let mut asset_fallbacks = 0;
+        for mut release in releases {
             if release.draft {
                 continue;
+            }
+            if release.assets.is_empty() {
+                if asset_fallbacks < 4 {
+                    self.hydrate_release_assets(&link.repository, &mut release)
+                        .await?;
+                    asset_fallbacks += 1;
+                } else {
+                    // A tag URL can inspect older releases without unbounded API calls.
+                    truncated = true;
+                }
             }
             let release = release.checked(&link.repository)?;
             if !seen.insert(release.id) {
@@ -514,9 +525,19 @@ impl GitHubClient {
                 "Select release and asset IDs returned by GitHub.",
             ));
         }
-        let release: ApiRelease = self
+        let mut release: ApiRelease = self
             .json(repository.endpoint(&["releases", &release_id.to_string()]))
             .await?;
+        if release.id != release_id {
+            return Err(error(
+                "github_release_changed",
+                "The API returned a different release.",
+            ));
+        }
+        if release.assets.is_empty() {
+            self.hydrate_release_assets(repository, &mut release)
+                .await?;
+        }
         let release = release.checked(repository)?;
         if release.id != release_id {
             return Err(error(
@@ -556,6 +577,40 @@ impl GitHubClient {
             registry_path,
             Some(identity),
         )
+    }
+
+    async fn hydrate_release_assets(
+        &self,
+        repository: &GitHubRepository,
+        release: &mut ApiRelease,
+    ) -> Result<()> {
+        if release.id == 0 {
+            return Err(error(
+                "github_response_invalid",
+                "Invalid GitHub release ID.",
+            ));
+        }
+        let mut endpoint = repository.endpoint(&["releases", &release.id.to_string(), "assets"]);
+        endpoint.set_query(Some("per_page=100&page=1"));
+        let assets: Vec<ApiAsset> = self.json(endpoint).await?;
+        if assets.len() >= 100 {
+            return Err(error(
+                "github_response_limit",
+                "The release asset list reached its page limit.",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        if assets
+            .iter()
+            .any(|asset| asset.id == 0 || !ids.insert(asset.id))
+        {
+            return Err(error(
+                "github_response_invalid",
+                "The release asset list contains invalid or duplicate IDs.",
+            ));
+        }
+        release.assets = assets;
+        Ok(())
     }
 
     async fn repository_identity(

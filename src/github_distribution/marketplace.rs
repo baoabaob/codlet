@@ -305,12 +305,21 @@ impl GitHubClient {
                 "The release list exceeded its limit.",
             ));
         }
-        let truncated = raw.len() == RELEASE_PAGE_SIZE;
+        let mut truncated = raw.len() == RELEASE_PAGE_SIZE;
         let mut ids = BTreeSet::new();
         let mut output = Vec::new();
-        for item in raw {
+        let mut asset_fallbacks = 0;
+        for mut item in raw {
             if item.draft {
                 continue;
+            }
+            if item.assets.is_empty() {
+                if asset_fallbacks < MAX_DECLARATIONS_PER_REPOSITORY {
+                    self.hydrate_release_assets(repository, &mut item).await?;
+                    asset_fallbacks += 1;
+                } else {
+                    truncated = true;
+                }
             }
             let declaration = declaration_asset(&item);
             let release = item.checked(repository)?;

@@ -56,10 +56,15 @@ impl Drop for ShutdownSignal {
 
 /// Rust's Child does not terminate on Drop. Keep the unreaped direct child owned
 /// across every fallible startup step, so a failed launch cannot strand it.
-pub struct OwnedChild(Child);
+pub struct OwnedChild(Child, bool);
 impl OwnedChild {
     pub fn new(child: Child) -> Self {
-        Self(child)
+        Self(child, true)
+    }
+    /// A failed update handoff may leave a responsive official client open.
+    /// Release only this known child handle without sending it a signal.
+    pub fn leave_running(&mut self) {
+        self.1 = false;
     }
     pub fn id(&self) -> u32 {
         self.0.id()
@@ -95,6 +100,9 @@ impl OwnedChild {
 }
 impl Drop for OwnedChild {
     fn drop(&mut self) {
+        if !self.1 {
+            return;
+        }
         if let Err(error) = self.terminate() {
             crate::runtime_log::error("macos_child_cleanup", &error.to_string());
         }

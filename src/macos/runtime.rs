@@ -276,7 +276,17 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
                         }
                     }
                     Err(e) => {
-                        if wait_briefly(&mut child)? {
+                        let timeout = if session.update_armed {
+                            Duration::from_secs(120)
+                        } else {
+                            Duration::from_millis(250)
+                        };
+                        if finish_after_pipe_closed(
+                            &mut child,
+                            session.update_armed,
+                            &mut session.update_client_exited,
+                            timeout,
+                        )? {
                             return Ok(());
                         }
                         return Err(e.into());
@@ -416,15 +426,38 @@ fn write_owner_cleanup(path: &PathBuf, id: &str, digest: &str) -> Result<()> {
     file.sync_all()?;
     Ok(())
 }
-fn wait_briefly(child: &mut OwnedChild) -> Result<bool> {
-    let until = Instant::now() + Duration::from_millis(250);
-    while Instant::now() < until {
-        if child.try_wait()?.is_some() {
+fn finish_after_pipe_closed(
+    child: &mut OwnedChild,
+    update_armed: bool,
+    update_client_exited: &mut bool,
+    timeout: Duration,
+) -> Result<bool> {
+    let until = Instant::now() + timeout;
+    loop {
+        let exit = match child.try_wait() {
+            Ok(exit) => exit,
+            Err(error) => {
+                if update_armed {
+                    child.leave_running();
+                }
+                return Err(error.into());
+            }
+        };
+        if let Some(exit) = exit {
+            if !exit.success() {
+                return Err(format!("Official client exited with {exit}").into());
+            }
+            *update_client_exited = update_armed;
             return Ok(true);
+        }
+        if Instant::now() >= until {
+            if update_armed {
+                child.leave_running();
+            }
+            return Ok(false);
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    Ok(false)
 }
 fn request_quit(sessions: &BTreeMap<String, TargetSession>) {
     // The official Mac main process handles quit-app with app.quit(), just as
@@ -588,5 +621,59 @@ impl Drop for Session {
         if let Err(e) = self.stop() {
             crate::runtime_log::error("runtime_cleanup", &e.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod update_exit_tests {
+    use super::*;
+
+    #[test]
+    fn cdp_disconnect_waits_for_owned_client_success_and_records_update_exit() {
+        let mut child = OwnedChild::new(
+            Command::new("/bin/sh")
+                .args(["-c", "sleep 1; exit 0"])
+                .spawn()
+                .unwrap(),
+        );
+        let mut confirmed = false;
+        assert!(
+            finish_after_pipe_closed(&mut child, true, &mut confirmed, Duration::from_secs(3))
+                .unwrap()
+        );
+        assert!(confirmed);
+    }
+
+    #[test]
+    fn cdp_disconnect_rejects_nonzero_and_never_forces_a_late_client() {
+        let mut failed = OwnedChild::new(
+            Command::new("/bin/sh")
+                .args(["-c", "exit 7"])
+                .spawn()
+                .unwrap(),
+        );
+        let mut confirmed = false;
+        assert!(
+            finish_after_pipe_closed(&mut failed, true, &mut confirmed, Duration::from_secs(1))
+                .is_err()
+        );
+        assert!(!confirmed);
+
+        let mut late = OwnedChild::new(Command::new("/bin/sleep").arg("30").spawn().unwrap());
+        let pid = late.id();
+        assert!(
+            !finish_after_pipe_closed(&mut late, true, &mut confirmed, Duration::from_millis(20))
+                .unwrap()
+        );
+        assert!(!confirmed);
+        drop(late);
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0);
+        // The fixture owns this direct sleeper and reaps it itself.
+        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGTERM) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid as i32, &mut status, 0) },
+            pid as i32
+        );
     }
 }
