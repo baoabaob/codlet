@@ -68,7 +68,7 @@ mod plugin_updates;
 #[cfg(windows)]
 pub mod probe;
 mod runtime_skills;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) mod runtime_update_owner;
 #[cfg(windows)]
 pub mod windows;

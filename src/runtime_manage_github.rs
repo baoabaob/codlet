@@ -4,12 +4,12 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::github_distribution::{GitHubClient, GitHubLink, GitHubRepository};
+use crate::github_distribution::{GitHubClient, GitHubLink, GitHubRepository, MarketQuery};
 use crate::managed_plugins::ManagedOperation;
 use crate::plugins::PluginRegistry;
 use crate::runtime_control::MAX_CONTROL_RESPONSE_BYTES;
@@ -29,12 +29,14 @@ struct JobTable {
     sequence: u64,
     active_workers: usize,
     jobs: BTreeMap<String, JobEntry>,
+    discovery_cache: BTreeMap<String, (Instant, Value)>,
 }
 
 struct JobEntry {
     result: Value,
     cancelled: Arc<AtomicBool>,
     sequence: u64,
+    cache_key: Option<String>,
 }
 
 impl GitHubJobs {
@@ -53,6 +55,7 @@ impl GitHubJobs {
                 sequence: 0,
                 active_workers: 0,
                 jobs: BTreeMap::new(),
+                discovery_cache: BTreeMap::new(),
             })),
         }
     }
@@ -67,6 +70,15 @@ impl GitHubJobs {
         F: FnOnce(&mut Value) -> Result<(), RuntimeManageError> + Send + 'static,
     {
         match method {
+            "githubDiscover" => {
+                let input: MarketQuery = decode(params)?;
+                let request = input.clone();
+                self.start_discovery(&input, async move {
+                    let client = GitHubClient::new().map_err(github_error)?;
+                    let result = client.discover(&request).await.map_err(github_error)?;
+                    Ok(serde_json::to_value(result).expect("discovery page serializes"))
+                })
+            }
             "githubReleases" => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -105,8 +117,10 @@ impl GitHubJobs {
                         "Choose a specific release and asset; use previewRollback for retained versions.",
                     ));
                 }
-                if input.operation == ManagedOperation::Update
-                    && input.plugin_id.as_ref().is_none_or(|id| id.is_empty())
+                if matches!(
+                    input.operation,
+                    ManagedOperation::Update | ManagedOperation::Adopt
+                ) && input.plugin_id.as_ref().is_none_or(|id| id.is_empty())
                 {
                     return Err(invalid(
                         "An update must identify the currently installed plugin.",
@@ -162,11 +176,44 @@ impl GitHubJobs {
         )
     }
 
+    fn start_discovery<F>(&self, input: &MarketQuery, work: F) -> Result<Value, RuntimeManageError>
+    where
+        F: Future<Output = Result<Value, RuntimeManageError>> + Send + 'static,
+    {
+        input.validate().map_err(github_error)?;
+        let key = input.cache_key();
+        if !input.refresh {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state
+                .discovery_cache
+                .retain(|_, (at, _)| at.elapsed() < Duration::from_secs(600));
+            if let Some((_, result)) = state.discovery_cache.get(&key) {
+                return Ok(result.clone());
+            }
+        }
+        // Completed pages are shareable; a running job belongs to its caller so
+        // cancelGitHubJob from one window never invalidates another window.
+        self.start_with_timeout_and_cache("discovery", work, Duration::from_secs(120), Some(key))
+    }
+
     fn start_with_timeout<F>(
         &self,
         kind: &'static str,
         work: F,
         timeout: Duration,
+    ) -> Result<Value, RuntimeManageError>
+    where
+        F: Future<Output = Result<Value, RuntimeManageError>> + Send + 'static,
+    {
+        self.start_with_timeout_and_cache(kind, work, timeout, None)
+    }
+
+    fn start_with_timeout_and_cache<F>(
+        &self,
+        kind: &'static str,
+        work: F,
+        timeout: Duration,
+        cache_key: Option<String>,
     ) -> Result<Value, RuntimeManageError>
     where
         F: Future<Output = Result<Value, RuntimeManageError>> + Send + 'static,
@@ -195,13 +242,14 @@ impl GitHubJobs {
             let sequence = state.sequence;
             let job_id = format!("{}-{:x}", state.incarnation, sequence);
             let cancelled = Arc::new(AtomicBool::new(false));
-            let initial = json!({"jobId":job_id, "kind":kind, "status":"running", "stage":if kind == "package" {"downloading-and-validating"} else {"fetching-releases"}});
+            let initial = json!({"jobId":job_id, "kind":kind, "status":"running", "stage":if kind == "package" {"downloading-and-validating"} else if kind == "discovery" {"searching"} else {"fetching-releases"}});
             state.jobs.insert(
                 job_id.clone(),
                 JobEntry {
                     result: initial.clone(),
                     cancelled: cancelled.clone(),
                     sequence,
+                    cache_key,
                 },
             );
             (job_id, cancelled, initial)
@@ -241,6 +289,15 @@ impl GitHubJobs {
                     entry.result["status"] = json!("failed"); entry.result["stage"] = json!("failed"); entry.result["error"] = json!({"code":error.code,"message":error.message});
                 }
             }
+            if let Some(key) = entry.cache_key.clone() && entry.result["status"] == "completed" {
+                let result = entry.result.clone();
+                if table.discovery_cache.len() >= MAX_RETAINED_JOBS {
+                    if let Some(oldest) = table.discovery_cache.iter().min_by_key(|(_, (time, _))| *time).map(|(key, _)| key.clone()) {
+                        table.discovery_cache.remove(&oldest);
+                    }
+                }
+                table.discovery_cache.insert(key, (Instant::now(), result));
+            }
         });
         if let Err(error) = worker {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -263,10 +320,16 @@ fn invalid(message: impl Into<String>) -> RuntimeManageError {
 }
 fn github_error(error: crate::github_distribution::GitHubDistributionError) -> RuntimeManageError {
     let code = match error.code.as_str() {
+        "invalid_market_query" => "invalid_params",
         "github_timeout" => "github_timeout",
         "github_network" => "github_network",
         "github_rate_limited" => "github_rate_limited",
         "github_not_found" => "github_not_found",
+        "github_http_error" => "github_http_error",
+        "github_response_invalid" => "github_response_invalid",
+        "github_response_limit" => "github_response_limit",
+        "github_search_incomplete" => "github_search_incomplete",
+        "github_repository_changed" => "github_repository_changed",
         _ => {
             return RuntimeManageError::new(
                 "github_error",
@@ -286,6 +349,82 @@ fn control_error(error: crate::plugin_control::PluginControlError) -> RuntimeMan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_discovery_job_is_reused_for_the_same_bounded_query() {
+        let directory = tempfile::tempdir().unwrap();
+        let jobs = GitHubJobs::new(Arc::new(directory.path().join("registry.json")));
+        let query = MarketQuery {
+            query: "#adapter".into(),
+            page: 1,
+            refresh: false,
+        };
+        let initial = jobs
+            .start_discovery(&query, async {
+                Ok(json!({"items":[],"page":1,"hasMore":false}))
+            })
+            .unwrap();
+        let params = json!({"jobId": initial["jobId"]});
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let complete = loop {
+            let result = jobs
+                .invoke("githubJob", params.clone(), |_| Ok(()))
+                .unwrap();
+            if result["status"] == "completed" {
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(
+            jobs.invoke(
+                "githubDiscover",
+                json!({"query":"#adapter","page":1}),
+                |_| Ok(())
+            )
+            .unwrap(),
+            complete
+        );
+    }
+
+    #[test]
+    fn cancelling_one_same_query_job_does_not_cancel_another_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let jobs = GitHubJobs::new(Arc::new(directory.path().join("registry.json")));
+        let query = MarketQuery {
+            query: "notes".into(),
+            page: 1,
+            refresh: false,
+        };
+        let first = jobs
+            .start_discovery(&query, std::future::pending())
+            .unwrap();
+        let second = jobs
+            .start_discovery(&query, std::future::pending())
+            .unwrap();
+        assert_ne!(first["jobId"], second["jobId"]);
+        assert_eq!(
+            jobs.invoke("cancelGitHubJob", json!({"jobId": first["jobId"]}), |_| Ok(
+                ()
+            ))
+            .unwrap()["status"],
+            "cancelled"
+        );
+        assert_eq!(
+            jobs.invoke("githubJob", json!({"jobId": second["jobId"]}), |_| Ok(()))
+                .unwrap()["status"],
+            "running"
+        );
+        assert_eq!(
+            jobs.invoke(
+                "cancelGitHubJob",
+                json!({"jobId": second["jobId"]}),
+                |_| Ok(())
+            )
+            .unwrap()["status"],
+            "cancelled"
+        );
+    }
 
     #[test]
     fn a_stalled_release_job_expires_and_releases_its_worker_slot() {

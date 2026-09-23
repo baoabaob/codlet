@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use sha2::Digest;
 use std::io::{Cursor, Write};
 
 fn archive(version: &str, permissions: &[&str], host_source: Option<&str>) -> Vec<u8> {
@@ -56,6 +57,142 @@ fn commit(
     .unwrap();
     next.save().unwrap();
     next
+}
+
+#[test]
+fn adoption_requires_installer_receipt_and_unchanged_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut registry = PluginRegistry::load(temp.path().join("config.json")).unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let source = home.join("packages/dev.managed");
+    std::fs::create_dir_all(&source).unwrap();
+    let manifest = json!({
+        "schema": 1, "id": "dev.managed", "version": "1",
+        "renderer": {"entry": "entry.js", "world": "isolated"},
+        "permissions": ["ui.dom"]
+    });
+    std::fs::write(
+        source.join("codlet.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("entry.js"),
+        "module.exports = { activate() {} };",
+    )
+    .unwrap();
+    let registration = LocalPluginRegistration {
+        path: source.clone(),
+        grants: vec![Permission::UiDom],
+        broker_policy: BrokerPolicy::default(),
+    };
+    registry
+        .register_local("dev.managed", registration.clone())
+        .unwrap();
+    registry.set_enabled("dev.managed", true).unwrap();
+    registry.save().unwrap();
+    let package = prepare(&registry, "2", &["ui.dom"]);
+    assert_eq!(
+        preview(&registry, &package.package_path, ManagedOperation::Adopt)
+            .unwrap_err()
+            .code,
+        "installer_source_required"
+    );
+    let files: Vec<_> = ["codlet.json", "entry.js"].iter().map(|name| {
+        let data = std::fs::read(source.join(name)).unwrap();
+        json!({"path": name, "sha256": format!("{:x}", sha2::Sha256::digest(&data)), "bytes": data.len()})
+    }).collect();
+    let receipts = home.join(".official-seed-transactions");
+    std::fs::create_dir_all(&receipts).unwrap();
+    let receipt = json!({"schema": 1, "source": "official-installer", "package": {
+        "id": "dev.managed", "version": "1", "permissions": ["ui.dom"], "files": files
+    }});
+    std::fs::write(
+        receipts.join("dev.managed.receipt.json"),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
+    let selection = preview(&registry, &package.package_path, ManagedOperation::Adopt).unwrap();
+    assert_eq!(selection.existing_registration, Some(registration.clone()));
+    assert!(selection.existing_enabled);
+    let (mut next, _) = stage(
+        &registry,
+        "dev.managed",
+        &selection.request(
+            registration.grants.clone(),
+            registration.broker_policy.clone(),
+            true,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        next.local_plugins()["dev.managed"].grants,
+        registration.grants
+    );
+    assert_eq!(
+        next.local_plugins()["dev.managed"].broker_policy,
+        registration.broker_policy
+    );
+    assert!(next.managed_plugins()["dev.managed"].current().is_some());
+    next.save().unwrap();
+    let (mut installation, installed, _) =
+        crate::managed_storage::Installation::publish(&next, &registry, "dev.managed", true)
+            .unwrap();
+    assert_eq!(
+        installed.local_plugins()["dev.managed"].grants,
+        registration.grants
+    );
+    let restored = installation.rollback().unwrap();
+    drop(installation);
+    assert_eq!(restored.local_plugins()["dev.managed"], registration);
+    assert!(restored.managed_plugins().get("dev.managed").is_none());
+    assert!(restored.is_enabled("dev.managed"));
+    let another_package = prepare(&restored, "2", &["ui.dom"]);
+    std::fs::write(source.join("entry.js"), "modified").unwrap();
+    assert_eq!(
+        preview(
+            &restored,
+            &another_package.package_path,
+            ManagedOperation::Adopt
+        )
+        .unwrap_err()
+        .code,
+        "installer_source_required"
+    );
+    std::fs::write(
+        source.join("entry.js"),
+        "module.exports = { activate() {} };",
+    )
+    .unwrap();
+    let selection = preview(
+        &restored,
+        &another_package.package_path,
+        ManagedOperation::Adopt,
+    )
+    .unwrap();
+    let (mut candidate, _) = stage(
+        &restored,
+        "dev.managed",
+        &selection.request(vec![Permission::UiDom], BrokerPolicy::default(), true),
+    )
+    .unwrap();
+    candidate.save().unwrap();
+    let (mut installation, mut installed, _) =
+        crate::managed_storage::Installation::publish(&candidate, &restored, "dev.managed", true)
+            .unwrap();
+    installed.set_enabled("dev.managed", true).unwrap();
+    installed.save().unwrap();
+    installation.commit().unwrap();
+    validate_current(&installed, "dev.managed").unwrap();
+    assert_eq!(
+        installed.local_plugins()["dev.managed"].path,
+        temp.path()
+            .canonicalize()
+            .unwrap()
+            .join("packages/github/dev.managed")
+    );
+    assert!(installed.is_enabled("dev.managed"));
+    assert!(source.join("codlet.json").exists());
 }
 
 #[test]
@@ -647,6 +784,7 @@ mod runtime {
                 action: match operation {
                     ManagedOperation::Install => PluginControlAction::Import,
                     ManagedOperation::Update => PluginControlAction::Update,
+                    ManagedOperation::Adopt => PluginControlAction::Update,
                     ManagedOperation::Rollback => PluginControlAction::Rollback,
                 },
                 plugin_id: "dev.managed".into(),

@@ -2,7 +2,7 @@
 
 Preview artifacts contain Codlet, the pinned Node runtime, license/attribution files, SDK types, and explicitly selected optional official-plugin packages. The official Codex application, user accounts, conversation databases, developer profiles, and credentials are not bundled. Install the official client separately.
 
-Repositories remain private during the development trial. Building a local Preview does not create a public release or enable a public update channel.
+The source and independent official-plugin repositories are public. Preview binaries are published as versioned test assets after validation. Building a local Preview does not publish its files; the installed preview channel discovers published prereleases from the Core repository.
 
 ## Windows x64
 
@@ -50,7 +50,7 @@ python3 scripts/build-preview-macos.py \
   --output /absolute/new/output
 ```
 
-The private `Build macOS preview` workflow accepts full Core/plugin commit SHAs, verifies an actual ARM64 runner, builds native Core/Swift, tests initialization in an isolated Codlet home, mounts the DMG, and uploads artifacts with provenance. A read-only deploy key grants access only to the independent plugin repository.
+The `Build macOS preview` workflow accepts full Core/plugin commit SHAs, verifies an actual ARM64 runner, builds native Core/Swift, prepares the matching Core SDK for the independent plugins, tests initialization in an isolated Codlet home, mounts the DMG, and uploads artifacts with provenance. Both source repositories are checked out publicly without deployment credentials.
 
 Current Preview signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
 
@@ -58,4 +58,38 @@ Current Preview signing is ad-hoc integrity signing. Developer ID signing, notar
 
 Ship root `LICENSE` (Apache-2.0), `NOTICE`, third-party UI and Rust notices, pinned Node's license, and each optional plugin's license/notice. Third-party plugins keep their author's actual licenses and are not automatically relicensed to Apache-2.0.
 
-Before delivery, verify the source revisions, package version, architecture, file hashes, installed/portable data scope, cancellation, existing data, optional components, and shortcuts. Record remaining limitations honestly in [known issues](known-issues.md). Public release, signing credentials, publication policy, and multi-platform real-client acceptance are outside a local test build.
+Before delivery, verify the source revisions, package version, architecture, file hashes, installed/portable data scope, cancellation, existing data, optional components, and shortcuts. Record remaining limitations honestly in [known issues](known-issues.md). Publishing a Preview does not establish signed stable-release readiness or replace real-client installation acceptance on each platform.
+
+## Preparing a Preview release
+
+`scripts/Publish-PreviewRelease.ps1` consumes the already-built Windows portable directory and ZIP, MSI plus its `.msi.json` build receipt and MSI distribution manifest, and the macOS DMG, distribution manifest, and updater ZIP. It checks that all package versions and Core/plugin source commits agree, verifies Windows payload/ZIP hashes, MSI receipt, macOS DMG metadata, and the complete macOS updater ZIP inventory/modes/Node pins, then writes a fresh versioned release directory with assets, SHA-256 summary, release notes, and `release-plan.json`. It creates no remote state in its default `Preview` action.
+
+The generated `codlet-update.json` uses the in-client GitHub manifest asset name and schema: `schema: 1`, `kind: "codlet-runtime-channel"`, `channel: "preview"`, `version`, and an artifact per supported platform/profile. Each artifact pins its versioned update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. The updater ZIPs retain `runtime-update-manifest.json` at their root. The current release plan includes Windows `win-x64`/`portable` and Apple Silicon `darwin-arm64`/`macApp`; the ordinary portable ZIP, MSI, DMG, and distribution manifests are also attached as versioned release assets.
+
+Use a new output directory and pass the explicit package paths from the build artifacts:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
+  -Action Preview `
+  -WindowsPortableDirectory C:\build\windows\package\portable `
+  -WindowsPortableZip C:\build\windows\package\Codlet-0.2.0-preview.5-windows-x64-portable.zip `
+  -WindowsMsi C:\build\windows\package\Codlet-0.2.0-preview.5-windows-x64.msi `
+  -WindowsMsiManifest C:\build\windows\package\msi.build\distribution-manifest.json `
+  -MacDmg C:\build\macos\package\Codlet-0.2.0-preview.5-macos-arm64.dmg `
+  -MacDistributionManifest C:\build\macos\package\distribution-manifest.json `
+  -MacUpdateZip C:\build\macos\package\Codlet-0.2.0-preview.5-darwin-arm64-update.zip `
+  -OutputDirectory C:\build\preview-release
+```
+
+Inspect `release-plan.json`, `release-notes.md`, and the asset hashes before preparing a draft. `PrepareDraft` and `Publish` without `-Apply` only validate the local plan and print the intended action. Draft upload is explicit and separate from publication:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
+  -Action PrepareDraft -PlanPath C:\build\preview-release\release-plan.json -Apply
+
+# Publish only after reviewing the complete GitHub draft and its uploaded assets.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
+  -Action Publish -PlanPath C:\build\preview-release\release-plan.json -Apply
+```
+
+The publisher accepts `CODLET_CORE_RELEASE_TOKEN`, `GH_TOKEN`, or a Git Credential Manager credential without printing it. It never changes repository visibility. A version tag or same-version release with different notes, metadata, or assets is rejected; existing assets are never overwritten. Run `scripts/Test-PreviewRelease.ps1` for an isolated packaging/manifest contract test with synthetic inputs and no GitHub writes.

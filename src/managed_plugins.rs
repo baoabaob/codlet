@@ -23,6 +23,7 @@ const MAX_HISTORY: usize = 64;
 pub enum ManagedOperation {
     Install,
     Update,
+    Adopt,
     Rollback,
 }
 
@@ -114,6 +115,7 @@ pub struct ManagedPreview {
     pub manifest: PluginManifest,
     pub source: GitHubSource,
     pub metadata: Option<PackageMetadata>,
+    pub device_compatibility: crate::github_distribution::DeviceCompatibility,
     pub existing_registration: Option<LocalPluginRegistration>,
     pub existing_enabled: bool,
     pub current_version: Option<ManagedVersion>,
@@ -249,6 +251,14 @@ fn preview_checked(
                 ));
             }
         }
+        ManagedOperation::Adopt => {
+            if !crate::plugin_cli::official_seed::verified_installer_source(registry, id) {
+                return Err(control_error(
+                    "installer_source_required",
+                    "This registration is not a verified installer package. Review it as a separate local source; Core will not take over its ID.",
+                ));
+            }
+        }
         _ => {}
     }
     let digest = package_digest(&prepared, &candidate);
@@ -282,10 +292,23 @@ fn preview_checked(
         },
     )
     .map_err(|e| control_error("registration_conflict", e.to_string()))?;
+    let previous_manifest = if operation == ManagedOperation::Adopt {
+        registry
+            .local_plugins()
+            .get(id)
+            .and_then(|registration| inspect_local_plugin(&registration.path).ok())
+            .map(|candidate| candidate.manifest)
+    } else {
+        None
+    };
     let changes = changes(
-        current.map(|version| &version.manifest),
+        current
+            .map(|version| &version.manifest)
+            .or(previous_manifest.as_ref()),
         &candidate.manifest,
     );
+    let device_compatibility =
+        crate::github_distribution::device_compatibility(prepared.metadata.as_ref());
     Ok(ManagedPreview {
         schema: 1,
         kind: "codlet.managed-preview",
@@ -302,6 +325,7 @@ fn preview_checked(
         manifest: candidate.manifest,
         source: prepared.source,
         metadata: prepared.metadata,
+        device_compatibility,
         changes,
         ownership: "core-managed-github",
     })
@@ -343,6 +367,8 @@ fn stage_checked(
     operation: ManagedOperation,
 ) -> Result<(PluginRegistry, PluginCatalogEntry), PluginControlError> {
     let preview = preview_checked(registry, prepared, candidate, operation)?;
+    crate::github_distribution::require_device_compatibility(preview.metadata.as_ref())
+        .map_err(|error| control_error("managed_package_incompatible", error.to_string()))?;
     if preview.manifest.id != id
         || preview.path != request.path
         || preview.content_digest != request.content_digest
@@ -534,6 +560,10 @@ fn same_repository(left: &GitHubSource, right: &GitHubSource) -> bool {
         && left
             .repository_url
             .eq_ignore_ascii_case(&right.repository_url)
+        && left
+            .repository_id
+            .is_none_or(|id| right.repository_id == Some(id))
+        && left.owner_id.is_none_or(|id| right.owner_id == Some(id))
 }
 fn package_digest(prepared: &PreparedGitHubPackage, candidate: &LocalPluginCandidate) -> String {
     local_import::digest(&(

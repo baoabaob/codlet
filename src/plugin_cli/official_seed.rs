@@ -145,7 +145,9 @@ fn write(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 fn valid(package: &Package) -> Result<()> {
-    if !IDS.contains(&package.id.as_str()) || package.files.is_empty() || package.files.len() > 512
+    if !crate::plugins::valid_plugin_id(&package.id)
+        || package.files.is_empty()
+        || package.files.len() > 512
     {
         return Err(error("Invalid official package identity or file count"));
     }
@@ -182,6 +184,36 @@ fn valid(package: &Package) -> Result<()> {
         return Err(error("Invalid package size or missing manifest"));
     }
     Ok(())
+}
+
+/// Read-only proof that a registration still points to an unmodified installer
+/// package. The migration path never infers ownership from an ID or display name.
+pub(crate) fn verified_installer_source(registry: &PluginRegistry, id: &str) -> bool {
+    let Some(registration) = registry.local_plugins().get(id) else {
+        return false;
+    };
+    if registry.managed_plugins().contains_key(id) {
+        return false;
+    }
+    let Some(home) = registry.path().parent() else {
+        return false;
+    };
+    let Ok(home) = home.canonicalize() else {
+        return false;
+    };
+    if registration.path != home.join("packages").join(id) {
+        return false;
+    }
+    let receipt_path = home
+        .join(".official-seed-transactions")
+        .join(format!("{id}.receipt.json"));
+    let Ok(receipt) = read::<Receipt>(&receipt_path) else {
+        return false;
+    };
+    receipt.schema == 1
+        && receipt.source == "official-installer"
+        && receipt.package.id == id
+        && verify(&registration.path, &receipt.package).is_ok()
 }
 fn tree(
     directory: &Path,

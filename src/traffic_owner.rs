@@ -48,6 +48,25 @@ fn failure(code: &'static str) -> HostError {
 }
 
 impl TrafficOwner {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn retire_for_update(&self) -> Result<(), HostError> {
+        self.traffic.set_attached(false);
+        self.process
+            .terminate()
+            .map_err(|_| failure("traffic_worker_stop_failed"))?;
+        self.process
+            .wait(Duration::from_secs(5))
+            .map_err(|_| failure("traffic_worker_wait_failed"))?
+            .ok_or_else(|| failure("traffic_worker_still_running"))?;
+        if !self
+            .process
+            .process_scope_is_empty()
+            .map_err(|_| failure("traffic_worker_scope_unknown"))?
+        {
+            return Err(failure("traffic_worker_scope_not_reaped"));
+        }
+        Ok(())
+    }
     #[cfg(any(windows, test))]
     pub(crate) fn start(
         services: &SharedCoreServices,

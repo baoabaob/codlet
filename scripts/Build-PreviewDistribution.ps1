@@ -107,9 +107,9 @@ official client build. Use Codlet-CLI.cmd doctor --json for local diagnostics.
 macOS packages are distributed separately; Windows ARM64 is not included here.
 Official launches may reuse an already extended instance; a Core crash does not
 guarantee the official client closes. Real cross-version official update acceptance
-is still pending. The update source is not yet published.
+is still pending. The Preview update channel uses published test releases.
 
-Source (private during preview): https://github.com/baoabaob/codlet
+Source and test releases: https://github.com/baoabaob/codlet
 Official plugin development: https://github.com/baoabaob/codlet-plugins
 Independent plugin release channels are recorded in optional-plugins/catalog.json.
 Offline presets remain local installations; this does not enable GitHub updates

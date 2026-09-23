@@ -480,6 +480,23 @@ pub fn load_local_plugin_with_registration(
     let grants = &registration.grants;
     let mut candidate = inspect_local_plugin(root)?;
     let manifest_path = candidate.root.join(MANIFEST_NAME);
+    let package_metadata =
+        crate::github_distribution::read_metadata(&candidate.root).map_err(|error| {
+            reject(
+                &candidate.root.join("codlet-package.json"),
+                "package metadata",
+                error.to_string(),
+            )
+        })?;
+    crate::github_distribution::require_device_compatibility(package_metadata.as_ref()).map_err(
+        |error| {
+            reject(
+                &candidate.root.join("codlet-package.json"),
+                "device compatibility",
+                error.to_string(),
+            )
+        },
+    )?;
     if candidate.manifest.id != expected_id {
         return Err(reject(
             &manifest_path,

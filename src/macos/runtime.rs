@@ -13,8 +13,13 @@ use crate::renderer::RendererRuntime;
 use crate::runtime_control::ControlBroker;
 use crate::runtime_manage::RuntimeManageService;
 use crate::runtime_status::{CodexStatus, StatusPublisher};
+use crate::runtime_update::{
+    RuntimePayloadProfile, RuntimeProcessIdentity, RuntimeRestartCommand, RuntimeRestartContext,
+};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -146,11 +151,42 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         renderer.set_status_publisher(status.clone());
         let manage = RuntimeManageService::new(control.clone())
             .with_local_management(scope.path().to_owned(), watch);
-        if let Some(install) = std::env::current_exe()?.parent() {
+        if let Some(install) = std::env::current_exe()?
+            .ancestors()
+            .find(|p| p.extension().is_some_and(|e| e == "app"))
+            .and_then(|app| app.parent())
+        {
+            let launcher = install.join("Codlet.app/Contents/MacOS/Codlet");
+            let parent =
+                super::identity::ProcessIdentity::inspect(unsafe { libc::getppid() } as u32).ok();
+            let restart = parent
+                .filter(|p| p.executable == launcher && p.uid == unsafe { libc::geteuid() })
+                .map(|p| RuntimeRestartContext {
+                    profile: RuntimePayloadProfile::MacApp,
+                    command: RuntimeRestartCommand {
+                        program: launcher,
+                        args: Vec::new(),
+                        working_directory: install.to_owned(),
+                        environment: std::env::var("CODLET_HOME")
+                            .ok()
+                            .map(|home| BTreeMap::from([("CODLET_HOME".into(), home)]))
+                            .unwrap_or_default(),
+                        timeout_seconds: 90,
+                    },
+                    wait_for: vec![RuntimeProcessIdentity {
+                        pid: p.pid,
+                        creation_time: format!(
+                            "{}{:06}",
+                            p.started_seconds, p.started_microseconds
+                        ),
+                    }],
+                    launcher_files: Vec::new(),
+                    config_pin: None,
+                });
             match crate::runtime_update::RuntimeUpdateService::start_with_preferences(
                 install.to_owned(),
                 scope.path().parent().unwrap().join("updates"),
-                None,
+                restart,
                 manage.preferences_for_start(),
             ) {
                 Ok(service) => manage.set_runtime_update(service),
@@ -183,6 +219,10 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             watcher: None,
             authorization_error: None,
             stopped: false,
+            update_handoff: None,
+            update_armed: false,
+            update_context: None,
+            update_client_exited: false,
         };
         let activation = (|| {
             let (mut targets, initial) =
@@ -209,6 +249,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
                     return Ok(());
                 }
                 if let Some(exit) = child.try_wait()? {
+                    if exit.success() && session.update_armed {
+                        session.update_client_exited = true;
+                    }
                     return if exit.success() {
                         Ok(())
                     } else {
@@ -240,11 +283,82 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
                     }
                 }
                 session.pump(&sessions)?;
+                if let Some(service) = session.manage.runtime_update_service()
+                    && !session.host_control.is_pending()
+                    && session.update_handoff.is_none()
+                    && !session.update_armed
+                    && let Some(request) = service.take_install_request()
+                {
+                    session.update_context = Some((
+                        request.id.clone(),
+                        request.plan_sha256.clone(),
+                        request.plan_path.with_file_name("owner-cleanup.json"),
+                    ));
+                    session.update_handoff = Some(
+                        crate::runtime_update_owner::RuntimeUpdateHandoff::start(service, request),
+                    );
+                }
+                if let Some(result) = session
+                    .update_handoff
+                    .as_ref()
+                    .and_then(|handoff| handoff.poll())
+                {
+                    session.update_handoff = None;
+                    match result {
+                        Ok(()) => {
+                            session.update_armed = true;
+                            request_quit(&sessions);
+                        }
+                        Err(error) => {
+                            session.update_context = None;
+                            crate::runtime_log::error("runtime_update_handoff", &error)
+                        }
+                    }
+                }
+                if session.update_armed
+                    && session
+                        .manage
+                        .runtime_update_service()
+                        .is_some_and(|service| {
+                            service.status().phase
+                                == crate::runtime_update::RuntimeUpdatePhase::Failed
+                        })
+                {
+                    session.update_armed = false;
+                    session.update_context = None;
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
         })();
         let cleanup = session.stop();
-        activation.and(cleanup)
+        let traffic_cleanup: Result<()> = if session.update_armed
+            && session.update_client_exited
+            && activation.is_ok()
+            && cleanup.is_ok()
+        {
+            if let Some(owner) = &traffic {
+                owner.retire_for_update().map_err(Into::into)
+            } else {
+                Ok(())
+            }
+        } else {
+            Ok(())
+        };
+        let proof = if session.update_armed
+            && session.update_client_exited
+            && activation.is_ok()
+            && cleanup.is_ok()
+            && traffic_cleanup.is_ok()
+        {
+            if let Some((id, digest, path)) = &session.update_context {
+                write_owner_cleanup(path, id, digest)
+            } else {
+                Err("Missing owner update context".into())
+            }
+        } else {
+            Ok(())
+        };
+        activation.and(cleanup).and(traffic_cleanup).and(proof)
     } else {
         let recovery = crate::safe_mode::RecoverySession::new(
             scope.path().to_owned(),
@@ -286,6 +400,21 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     });
     let shutdown = client.shutdown().map_err(Into::into);
     result.and(shutdown)
+}
+fn write_owner_cleanup(path: &PathBuf, id: &str, digest: &str) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    serde_json::to_writer(
+        &mut file,
+        &serde_json::json!({
+            "schema":1,"id":id,"planSha256":digest,"hostsRetired":true,"trafficRetired":true
+        }),
+    )?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
 }
 fn wait_briefly(child: &mut OwnedChild) -> Result<bool> {
     let until = Instant::now() + Duration::from_millis(250);
@@ -329,6 +458,10 @@ struct Session {
     watcher: Option<crate::plugin_watch::PluginWatcher>,
     authorization_error: Option<String>,
     stopped: bool,
+    update_handoff: Option<crate::runtime_update_owner::RuntimeUpdateHandoff>,
+    update_armed: bool,
+    update_context: Option<(String, String, PathBuf)>,
+    update_client_exited: bool,
 }
 impl Session {
     fn attach(&mut self, sessions: &BTreeMap<String, TargetSession>) -> Result<()> {

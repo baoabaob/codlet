@@ -12,12 +12,19 @@ use super::{
 };
 
 pub(super) const MANIFEST: &str = "runtime-update-manifest.json";
+const MANIFEST_LIMIT: u64 = if cfg!(target_os = "macos") {
+    2 * 1024 * 1024
+} else {
+    256 * 1024
+};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct RuntimeFile {
     pub path: String,
     pub bytes: u64,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -114,7 +121,7 @@ pub(super) fn restore_staged(
         ));
     }
     let manifest: RuntimePackageManifest =
-        serde_json::from_slice(&read_file(&saved.directory.join(MANIFEST), 256 * 1024)?)
+        serde_json::from_slice(&read_file(&saved.directory.join(MANIFEST), MANIFEST_LIMIT)?)
             .map_err(|e| error("runtime_update_staged_invalid", e.to_string()))?;
     if manifest.version != saved.candidate.version || profile.is_some_and(|p| p != manifest.profile)
     {
@@ -141,6 +148,7 @@ struct NodePin {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NodePlatform {
+    version: Option<String>,
     executable_sha256: String,
     license_sha256: Option<String>,
 }
@@ -223,7 +231,7 @@ fn ordinary_with_links(
             forbidden |= info.nNumberOfLinks != 1;
         }
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     if !directory && !allow_hard_links {
         use std::os::unix::fs::MetadataExt;
         forbidden |= metadata.nlink() != 1;
@@ -316,7 +324,20 @@ fn file_record_with_links(
         path: relative.into(),
         bytes: count,
         sha256: format!("{:x}", digest.finalize()),
+        mode: file_mode(&after),
     })
+}
+fn file_mode(metadata: &std::fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(metadata.permissions().mode() & 0o777)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = metadata;
+        None
+    }
 }
 pub(super) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -344,6 +365,12 @@ fn expected_paths(
     runtime: &NodeRuntime,
     include_other: bool,
 ) -> Result<BTreeSet<String>> {
+    if profile == RuntimePayloadProfile::MacApp {
+        return Err(error(
+            "runtime_update_manifest_invalid",
+            "Mac app files are enumerated from the signed bundle.",
+        ));
+    }
     if !valid_sha(&runtime.executable_sha256)
         || !valid_sha(&runtime.license_sha256)
         || runtime.version.len() > 64
@@ -381,11 +408,13 @@ fn expected_paths(
     Ok(paths)
 }
 fn pin_at(root: &Path) -> Result<NodeRuntime> {
-    let pin: NodePin = serde_json::from_slice(&read_file(
-        &root.join("runtime/node-runtime.json"),
-        64 * 1024,
-    )?)
-    .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
+    let pin_path = if PLATFORM == "darwin-arm64" {
+        root.join("Codlet.app/Contents/Resources/runtime/node-runtime.json")
+    } else {
+        root.join("runtime/node-runtime.json")
+    };
+    let pin: NodePin = serde_json::from_slice(&read_file(&pin_path, 64 * 1024)?)
+        .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
     let platform = pin.platforms.get(PLATFORM).ok_or_else(|| {
         error(
             "runtime_update_manifest_invalid",
@@ -399,7 +428,7 @@ fn pin_at(root: &Path) -> Result<NodeRuntime> {
         ));
     }
     Ok(NodeRuntime {
-        version: pin.version,
+        version: platform.version.clone().unwrap_or(pin.version),
         executable_sha256: platform.executable_sha256.clone(),
         license_sha256: platform.license_sha256.clone().ok_or_else(|| {
             error(
@@ -409,6 +438,81 @@ fn pin_at(root: &Path) -> Result<NodeRuntime> {
         })?,
     })
 }
+#[cfg(target_os = "macos")]
+fn mac_app_paths(root: &Path) -> Result<BTreeSet<String>> {
+    let app = root.join("Codlet.app");
+    ordinary(&app, true)?;
+    let mut pending = vec![app];
+    let mut paths = BTreeSet::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| {
+                    error(
+                        "runtime_update_path_invalid",
+                        "App escaped its installation root.",
+                    )
+                })?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !valid_zip_name(&relative) {
+                return Err(error(
+                    "runtime_update_path_invalid",
+                    "App contains an unsupported path.",
+                ));
+            }
+            let metadata = std::fs::symlink_metadata(&path).map_err(io_error)?;
+            if metadata.is_dir() {
+                ordinary(&path, true)?;
+                pending.push(path);
+            } else {
+                ordinary(&path, false)?;
+                paths.insert(relative);
+            }
+            if paths.len() + pending.len() > MAX_FILES {
+                return Err(error(
+                    "runtime_update_size_limit",
+                    "App exceeds the update file limit.",
+                ));
+            }
+        }
+    }
+    Ok(paths)
+}
+#[cfg(not(target_os = "macos"))]
+fn mac_app_paths(_root: &Path) -> Result<BTreeSet<String>> {
+    Err(error(
+        "install_unavailable",
+        "Mac app updates require macOS.",
+    ))
+}
+#[cfg(target_os = "macos")]
+fn verify_mac_app(root: &Path) -> Result<()> {
+    use std::process::Command;
+    use std::time::Duration;
+    crate::macos::command::output(
+        Command::new("/usr/bin/codesign")
+            .args(["--verify", "--strict"])
+            .arg(root.join("Codlet.app")),
+        Duration::from_secs(30),
+    )
+    .map_err(|e| error("runtime_update_signature_invalid", e.to_string()))?;
+    let mut header = [0u8; 8];
+    File::open(root.join("Codlet.app/Contents/Resources/codlet"))
+        .map_err(io_error)?
+        .read_exact(&mut header)
+        .map_err(io_error)?;
+    if header != [0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 1] {
+        return Err(error(
+            "runtime_update_executable_invalid",
+            "Codlet Core is not Apple Silicon Mach-O.",
+        ));
+    }
+    Ok(())
+}
 pub(super) fn inspect_installation(
     root: &Path,
     profile: RuntimePayloadProfile,
@@ -416,7 +520,12 @@ pub(super) fn inspect_installation(
 ) -> Result<RuntimePackageManifest> {
     canonical_directory(root)?;
     let runtime = pin_at(root)?;
-    let files = expected_paths(profile, &runtime, include_other)?
+    let paths = if profile == RuntimePayloadProfile::MacApp {
+        mac_app_paths(root)?
+    } else {
+        expected_paths(profile, &runtime, include_other)?
+    };
+    let files = paths
         .into_iter()
         .map(|relative| file_record(&root.join(&relative), &relative))
         .collect::<Result<Vec<_>>>()?;
@@ -442,7 +551,7 @@ pub(super) fn stage_archive(
         .tempdir_in(state_root)
         .map_err(io_error)?;
     extract_zip(archive, temporary.path())?;
-    let bytes = read_file(&temporary.path().join(MANIFEST), 256 * 1024)?;
+    let bytes = read_file(&temporary.path().join(MANIFEST), MANIFEST_LIMIT)?;
     let manifest: RuntimePackageManifest = serde_json::from_slice(&bytes)
         .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
     if manifest.version != selected.public.version
@@ -469,7 +578,7 @@ pub(super) fn recheck_staged(staged: &StagedRuntime) -> Result<()> {
     canonical_directory(&staged.directory)?;
     let digest = format!(
         "{:x}",
-        Sha256::digest(read_file(&staged.directory.join(MANIFEST), 256 * 1024)?)
+        Sha256::digest(read_file(&staged.directory.join(MANIFEST), MANIFEST_LIMIT)?)
     );
     if digest != staged.manifest_sha256 {
         return Err(error(
@@ -492,6 +601,104 @@ fn verify_payload(
             "runtime_update_manifest_invalid",
             "Unsupported runtime package format/platform.",
         ));
+    }
+    if manifest.profile == RuntimePayloadProfile::MacApp {
+        #[cfg(not(target_os = "macos"))]
+        return Err(error(
+            "runtime_update_manifest_invalid",
+            "Mac app updates require macOS.",
+        ));
+        #[cfg(target_os = "macos")]
+        {
+            let expected = mac_app_paths(root)?;
+            let declared: BTreeSet<_> = manifest.files.iter().map(|f| f.path.clone()).collect();
+            let node = format!(
+                "Codlet.app/Contents/Resources/runtime/node-v{}-{PLATFORM}/bin/node",
+                manifest.runtime.version
+            );
+            for required in [
+                "Codlet.app/Contents/Info.plist",
+                "Codlet.app/Contents/MacOS/Codlet",
+                "Codlet.app/Contents/Resources/codlet",
+                "Codlet.app/Contents/Resources/runtime/node-runtime.json",
+                "Codlet.app/Contents/Resources/runtime/update-channel.json",
+                &node,
+                &format!(
+                    "Codlet.app/Contents/Resources/runtime/node-v{}-{PLATFORM}/LICENSE",
+                    manifest.runtime.version
+                ),
+            ] {
+                if !declared.contains(required) {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Mac app update omits a required bundle file.",
+                    ));
+                }
+            }
+            if expected != declared
+                || manifest.files.len() != expected.len()
+                || manifest.files.len() > MAX_FILES
+            {
+                return Err(error(
+                    "runtime_update_manifest_invalid",
+                    "Mac app manifest must list the whole signed bundle exactly.",
+                ));
+            }
+            let mut total = 0u64;
+            for file in &manifest.files {
+                if !matches!(file.mode, Some(0o644 | 0o755)) || !valid_sha(&file.sha256) {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Mac app file mode or digest is invalid.",
+                    ));
+                }
+                total = total
+                    .checked_add(file.bytes)
+                    .ok_or_else(|| error("runtime_update_size_limit", "Mac app size overflow."))?;
+                if total > MAX_EXPANDED_BYTES
+                    || file_record(&root.join(&file.path), &file.path)? != *file
+                {
+                    return Err(error(
+                        "runtime_update_digest_mismatch",
+                        "Mac app file differs from its declared digest or mode.",
+                    ));
+                }
+            }
+            let pin = pin_at(root)?;
+            if pin.version != manifest.runtime.version
+                || pin.executable_sha256 != manifest.runtime.executable_sha256
+                || pin.license_sha256 != manifest.runtime.license_sha256
+                || manifest
+                    .files
+                    .iter()
+                    .find(|f| f.path == node)
+                    .map(|f| &f.sha256)
+                    != Some(&pin.executable_sha256)
+            {
+                return Err(error(
+                    "runtime_update_digest_mismatch",
+                    "Mac bundled Node identity differs from its pin.",
+                ));
+            }
+            verify_mac_app(root)?;
+            if no_extra_files {
+                let all = std::fs::read_dir(root)
+                    .map_err(io_error)?
+                    .map(|e| e.map(|e| e.file_name()))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(io_error)?;
+                if all.len() != 2
+                    || !all.contains(&std::ffi::OsString::from("Codlet.app"))
+                    || !all.contains(&std::ffi::OsString::from(MANIFEST))
+                {
+                    return Err(error(
+                        "runtime_update_manifest_invalid",
+                        "Mac update ZIP contains files outside the signed app.",
+                    ));
+                }
+            }
+            return Ok(());
+        }
     }
     let other = if manifest.profile == RuntimePayloadProfile::Portable {
         "codlet-lab.exe"
@@ -525,6 +732,12 @@ fn verify_payload(
             return Err(error(
                 "runtime_update_digest_mismatch",
                 "Runtime file does not match its manifest size/SHA-256.",
+            ));
+        }
+        if file.mode.is_some() {
+            return Err(error(
+                "runtime_update_manifest_invalid",
+                "Windows payload files must not carry POSIX modes.",
             ));
         }
         if file.path.ends_with(".exe") {
@@ -662,6 +875,8 @@ struct CheckedZip {
     size: u64,
     compressed: u64,
     directory: bool,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    mode: Option<u32>,
 }
 fn preflight_zip(path: &Path) -> Result<Vec<CheckedZip>> {
     let mut file = File::open(path).map_err(io_error)?;
@@ -740,6 +955,7 @@ fn preflight_zip(path: &Path) -> Result<Vec<CheckedZip>> {
             return Err(zip_error("Unsafe or duplicate ZIP path."));
         }
         let kind = (attributes >> 16) & 0xf000;
+        let mode = (attributes >> 16) & 0o777;
         if !matches!(kind, 0 | 0x4000 | 0x8000)
             || (kind == 0x4000 && !directory)
             || (kind == 0x8000 && directory)
@@ -835,6 +1051,7 @@ fn preflight_zip(path: &Path) -> Result<Vec<CheckedZip>> {
             size,
             compressed,
             directory,
+            mode: (PLATFORM == "darwin-arm64" && !directory).then_some(mode),
         });
     }
     if cursor != central_end {
@@ -929,6 +1146,15 @@ fn extract_zip(path: &Path, destination: &Path) -> Result<()> {
             return Err(zip_error("ZIP actual size differs from its header."));
         }
         file.sync_all().map_err(io_error)?;
+        #[cfg(unix)]
+        if let Some(mode) = expected.mode {
+            use std::os::unix::fs::PermissionsExt;
+            if !matches!(mode, 0o644 | 0o755) {
+                return Err(zip_error("Mac update ZIP has an unsupported file mode."));
+            }
+            file.set_permissions(std::fs::Permissions::from_mode(mode))
+                .map_err(io_error)?;
+        }
     }
     Ok(())
 }

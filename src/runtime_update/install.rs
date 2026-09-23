@@ -11,12 +11,18 @@ use super::{
 };
 
 const HELPER: &[u8] = include_bytes!("../../scripts/runtime-update-helper.mjs");
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "macos")]
+pub(super) use mac::cleanup_completed_helper as cleanup_completed_mac_helper;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckedPath {
     path: PathBuf,
     bytes: u64,
     sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +57,8 @@ struct InstallPlan<'a> {
     new_runtime: package::NodeRuntime,
     helper_node: CheckedPath,
     helper_script: CheckedPath,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_probe: Option<CheckedPath>,
     restart: &'a RuntimeRestartCommand,
     restart_program_sha256: String,
     launcher_files: Vec<CheckedPath>,
@@ -69,6 +77,7 @@ fn checked(path: &Path) -> Result<CheckedPath> {
         path: path.canonicalize().map_err(io_error)?,
         bytes: record.bytes,
         sha256: record.sha256,
+        mode: record.mode,
     })
 }
 #[cfg(all(test, windows))]
@@ -87,6 +96,10 @@ pub(super) fn prepare_install_plan_with_official(
     restart: &RuntimeRestartContext,
     official_update: bool,
 ) -> Result<RuntimeInstallRequest> {
+    #[cfg(target_os = "macos")]
+    if restart.profile == RuntimePayloadProfile::MacApp {
+        return mac::prepare(install_root, state_root, staged, restart, official_update);
+    }
     ensure_same_volume(install_root, state_root)?;
     let root = package::canonical_directory(install_root)?;
     match std::fs::symlink_metadata(root.join(".codlet-runtime-update.lock.json")) {
@@ -375,6 +388,7 @@ pub(super) fn prepare_install_plan_with_official(
         new_runtime: staged.manifest.runtime.clone(),
         helper_node,
         helper_script,
+        identity_probe: None,
         restart: &restart.command,
         restart_program_sha256: program.sha256,
         launcher_files,
@@ -426,7 +440,36 @@ pub(super) fn ensure_same_volume(install_root: &Path, state_root: &Path) -> Resu
             ));
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let existing = |path: &Path| {
+            path.ancestors()
+                .find(|p| p.exists())
+                .map(std::fs::metadata)
+                .transpose()
+                .map_err(io_error)
+        };
+        let install = existing(install_root)?.ok_or_else(|| {
+            error(
+                "runtime_update_cross_volume",
+                "Installation volume is unavailable.",
+            )
+        })?;
+        let state = existing(state_root)?.ok_or_else(|| {
+            error(
+                "runtime_update_cross_volume",
+                "Update state volume is unavailable.",
+            )
+        })?;
+        if install.dev() != state.dev() {
+            return Err(error(
+                "runtime_update_cross_volume",
+                "Mac app and update staging must share a volume for the atomic bundle exchange.",
+            ));
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (install_root, state_root);
     Ok(())
 }
@@ -461,7 +504,19 @@ pub(super) fn current_process_identity() -> Result<RuntimeProcessIdentity> {
             creation_time: ticks.to_string(),
         })
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let identity = crate::macos::identity::ProcessIdentity::inspect(std::process::id())
+            .map_err(io_error)?;
+        Ok(RuntimeProcessIdentity {
+            pid: identity.pid,
+            creation_time: format!(
+                "{}{:06}",
+                identity.started_seconds, identity.started_microseconds
+            ),
+        })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Err(error(
             "install_unavailable",

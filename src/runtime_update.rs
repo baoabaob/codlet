@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 mod install;
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests;
 mod package;
 mod source;
 pub(crate) use source::newer as newer_version;
@@ -16,7 +18,12 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_FILES: usize = 4096;
+#[cfg(windows)]
 pub const PLATFORM: &str = "win-x64";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const PLATFORM: &str = "darwin-arm64";
+#[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+pub const PLATFORM: &str = "unsupported";
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 #[error("{message}")]
@@ -47,6 +54,7 @@ fn now_ms() -> u64 {
 pub enum RuntimePayloadProfile {
     Portable,
     IsolatedClient,
+    MacApp,
 }
 
 /// Only a trusted launcher constructs this value; it is intentionally not an RPC
@@ -73,7 +81,8 @@ pub struct RuntimeRestartCommand {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeProcessIdentity {
     pub pid: u32,
-    /// Windows process creation FILETIME as decimal text (never a JS Number).
+    /// Windows FILETIME, or Darwin kernel start seconds/microseconds packed into
+    /// a decimal string. Never a JS Number.
     pub creation_time: String,
 }
 #[derive(Debug, Clone, Serialize)]
@@ -729,6 +738,8 @@ struct HelperReceipt {
     moved_new: Vec<String>,
     config_patched: bool,
     error: Option<RuntimeUpdateError>,
+    #[cfg(target_os = "macos")]
+    helper_identity: Option<RuntimeProcessIdentity>,
 }
 fn restore_install_receipt(shared: &Arc<Mutex<State>>, state_root: &Path) {
     let Ok(bytes) = package::read_file(
@@ -818,6 +829,20 @@ fn poll_install_receipt(shared: &Arc<Mutex<State>>) {
     state.install_request = None;
     state.busy = false;
     if completed {
+        #[cfg(target_os = "macos")]
+        if let Some(identity) = receipt.helper_identity {
+            let receipt_path = path.clone();
+            let plan_sha256 = expected_sha.clone();
+            std::thread::spawn(move || {
+                for _ in 0..120 {
+                    if install::cleanup_completed_mac_helper(&receipt_path, &plan_sha256, &identity)
+                    {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            });
+        }
         state.status.phase = RuntimeUpdatePhase::UpToDate;
         state.status.candidate = None;
         state.candidate = None;
@@ -849,7 +874,11 @@ fn poll_install_receipt(shared: &Arc<Mutex<State>>) {
 }
 
 fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
-    let path = install_root.join("runtime/update-channel.json");
+    let path = if PLATFORM == "darwin-arm64" {
+        install_root.join("Codlet.app/Contents/Resources/runtime/update-channel.json")
+    } else {
+        install_root.join("runtime/update-channel.json")
+    };
     let channel = match package::read_file(&path, 32 * 1024) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| error("runtime_update_channel_invalid", e.to_string()))?,

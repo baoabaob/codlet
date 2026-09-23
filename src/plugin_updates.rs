@@ -312,6 +312,7 @@ mod tests {
                             "https://github.com/example/notes/releases/download/v2.0.0/notes.zip"
                                 .into(),
                         digest: None,
+                        download_count: None,
                     }],
                 })
                 .collect(),

@@ -364,6 +364,25 @@ impl Installation {
         Ok(registry)
     }
     fn check_previous(&self, path: &Path) -> Result<()> {
+        if self.journal.previous_managed.is_none() {
+            let prior = self
+                .journal
+                .previous_registration
+                .as_ref()
+                .ok_or_else(|| issue("Previous registration missing"))?;
+            if prior.path != path {
+                return Err(issue("Previous installer source path changed"));
+            }
+            let mut view = PluginRegistry::load(&self.registry_path).map_err(issue)?;
+            view.restore_managed(&self.journal.id, Some(prior.clone()), None);
+            if !crate::plugin_cli::official_seed::verified_installer_source(&view, &self.journal.id)
+            {
+                return Err(issue(
+                    "Previous installer package changed during installation",
+                ));
+            }
+            return Ok(());
+        }
         let old = self
             .journal
             .previous_managed

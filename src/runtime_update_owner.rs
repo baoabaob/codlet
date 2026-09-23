@@ -2,12 +2,16 @@
 //! The helper remains unarmed until its complete preflight receipt is received.
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
 };
@@ -55,16 +59,21 @@ fn handoff(request: &RuntimeInstallRequest, ack_sent: &mut bool) -> Result<(), S
         .create_new(true)
         .open(log_path)
         .map_err(|error| error.to_string())?;
-    let mut child = Command::new(&request.node_path)
+    let mut command = Command::new(&request.node_path);
+    command
         .arg(&request.helper_path)
         .arg("--plan")
         .arg(&request.plan_path)
         .arg("--sha256")
         .arg(&request.plan_sha256)
-        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::from(log))
+        .stderr(Stdio::from(log));
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    #[cfg(target_os = "macos")]
+    command.process_group(0);
+    let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start the update helper: {error}"))?;
     let stdout = child

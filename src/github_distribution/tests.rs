@@ -486,26 +486,26 @@ fn no_source_archive_build_fallback_and_metadata_is_separate() {
         )
         .is_ok()
     );
+    let unsupported_runtime = test_prepare_archive(
+        &registry,
+        &with_extra("codlet-package.json", br#"{"schema":1,"runtimeApi":999}"#),
+    )
+    .unwrap();
     assert_eq!(
-        test_prepare_archive(
-            &registry,
-            &with_extra("codlet-package.json", br#"{"schema":1,"runtimeApi":999}"#)
-        )
-        .unwrap_err()
-        .code,
-        "github_runtime_incompatible"
+        device_compatibility(unsupported_runtime.metadata.as_ref()).status,
+        "incompatible"
     );
+    let unsupported_platform = test_prepare_archive(
+        &registry,
+        &with_extra(
+            "codlet-package.json",
+            br#"{"schema":1,"platforms":["unsupportedOS"]}"#,
+        ),
+    )
+    .unwrap();
     assert_eq!(
-        test_prepare_archive(
-            &registry,
-            &with_extra(
-                "codlet-package.json",
-                br#"{"schema":1,"platforms":["unsupportedOS"]}"#
-            )
-        )
-        .unwrap_err()
-        .code,
-        "github_platform_incompatible"
+        device_compatibility(unsupported_platform.metadata.as_ref()).status,
+        "incompatible"
     );
     assert!(
         test_prepare_archive(
@@ -631,6 +631,220 @@ fn release_json(bytes: &[u8], digest: bool) -> serde_json::Value {
         "content_type":"application/zip","browser_download_url":"https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/plugin.zip","state":"uploaded",
         "digest":if digest { Some(format!("sha256:{:x}", Sha256::digest(bytes))) } else { None }}]})
 }
+fn repository_identity_response() -> Vec<u8> {
+    response("200 OK", "Content-Type: application/json\r\n", br#"{"id":1001,"html_url":"https://github.com/dev-owner/dev-repo","full_name":"dev-owner/dev-repo","owner":{"id":2002,"login":"dev-owner"}}"#)
+}
+
+#[tokio::test]
+async fn topic_discovery_keeps_uninspected_zip_metrics_unknown() {
+    let search = serde_json::json!({"total_count":1,"items":[{"id":1001,"full_name":"dev-owner/dev-repo","html_url":"https://github.com/dev-owner/dev-repo","name":"dev-repo","owner":{"id":2002,"login":"dev-owner"},"description":"Plugin candidate","topics":["codlet-plugin","adapter"],"private":false,"archived":false}]});
+    let mut release = release_json(&good_zip(), true);
+    release["assets"][0]["download_count"] = serde_json::json!(13);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
+        response(
+            "200 OK",
+            "",
+            &serde_json::to_vec(&vec![release.clone()]).unwrap(),
+        ),
+    ]);
+    let query = MarketQuery {
+        query: "#adapter".into(),
+        page: 1,
+        refresh: false,
+    };
+    let page = fixture.client().discover(&query).await.unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].repository_id, 1001);
+    assert_eq!(page.items[0].owner_id, 2002);
+    assert_eq!(page.items[0].plugin_id, None);
+    assert_eq!(page.items[0].total_downloads, None);
+    assert!(!page.items[0].latest_release_verified);
+    assert_eq!(page.items[0].latest_installable_published_at, None);
+    assert_eq!(page.items[0].latest_release.assets[0].download_count, None);
+    assert_eq!(
+        page.items[0].latest_release.published_at.as_deref(),
+        Some("2026-09-12T00:00:00Z")
+    );
+    assert!(!page.has_more);
+    let requests = fixture.requests.lock().unwrap();
+    assert!(requests[0].contains("topic%3Acodlet-plugin+topic%3Aadapter"));
+    assert!(requests[1].starts_with("GET /repos/dev-owner/dev-repo/releases?per_page=100&page=1"));
+}
+
+#[tokio::test]
+async fn readme_zip_is_only_a_candidate_and_never_a_plugin_download_count() {
+    let search = serde_json::json!({"total_count":1,"items":[{"id":1001,"full_name":"dev-owner/dev-repo","html_url":"https://github.com/dev-owner/dev-repo","name":"dev-repo","owner":{"id":2002,"login":"dev-owner"},"description":null,"topics":["codlet-plugin"]}]});
+    let mut release = release_json(&good_zip(), true);
+    release["assets"][0]["name"] = serde_json::json!("README.zip");
+    release["assets"][0]["browser_download_url"] = serde_json::json!(
+        "https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/README.zip"
+    );
+    release["assets"][0]["download_count"] = serde_json::json!(999);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
+        response("200 OK", "", &serde_json::to_vec(&vec![release]).unwrap()),
+    ]);
+    let page = fixture
+        .client()
+        .discover(&MarketQuery {
+            query: String::new(),
+            page: 1,
+            refresh: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].total_downloads, None);
+    assert!(!page.items[0].latest_release_verified);
+    assert_eq!(page.items[0].latest_installable_published_at, None);
+}
+
+#[tokio::test]
+async fn matching_release_declaration_selects_one_zip_for_declared_market_stats() {
+    let archive = good_zip();
+    let search = serde_json::json!({"total_count":1,"items":[{"id":1001,"full_name":"dev-owner/dev-repo","html_url":"https://github.com/dev-owner/dev-repo","name":"dev-repo","owner":{"id":2002,"login":"dev-owner"},"description":"Plugin candidate","topics":["codlet-plugin"]}]});
+    let declaration = serde_json::json!({"schema":1,"kind":"codlet-plugin-release",
+        "manifest":serde_json::from_slice::<serde_json::Value>(manifest()).unwrap(),
+        "metadata":{"schema":1,"runtimeApi":1,"platforms":["any"],"author":"Publisher"},
+        "asset":{"name":"plugin.zip","bytes":archive.len(),"sha256":format!("{:x}",Sha256::digest(&archive))}});
+    let declaration_bytes = serde_json::to_vec(&declaration).unwrap();
+    let mut release = release_json(&archive, true);
+    release["assets"][0]["download_count"] = serde_json::json!(13);
+    release["assets"].as_array_mut().unwrap().push(serde_json::json!({"id":3,"name":"codlet-release.json","size":declaration_bytes.len(),"content_type":"application/json","browser_download_url":"https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/codlet-release.json","state":"uploaded","digest":format!("sha256:{:x}",Sha256::digest(&declaration_bytes)),"download_count":99}));
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
+        response(
+            "200 OK",
+            "",
+            &serde_json::to_vec(&vec![release.clone()]).unwrap(),
+        ),
+        response("200 OK", "", &declaration_bytes),
+    ]);
+    let page = fixture
+        .client()
+        .discover(&MarketQuery {
+            query: String::new(),
+            page: 1,
+            refresh: false,
+        })
+        .await
+        .unwrap();
+    let item = &page.items[0];
+    assert_eq!(item.declaration_status, "matched");
+    assert!(!item.latest_release_verified);
+    assert_eq!(
+        item.latest_installable_published_at.as_deref(),
+        Some("2026-09-12T00:00:00Z")
+    );
+    assert_eq!(item.total_downloads, Some(13));
+    let declared = item.declared_package.as_ref().unwrap();
+    assert_eq!(declared.manifest.id, "dev.github-fixture");
+    assert_eq!(declared.metadata.author.as_deref(), Some("Publisher"));
+    assert_eq!(declared.asset.id, 2);
+    assert_eq!(declared.asset.download_count, Some(13));
+    assert_eq!(declared.basis, "publisher-release-declaration");
+    assert_eq!(fixture.requests.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn mismatched_release_declaration_cannot_create_download_stats() {
+    let archive = good_zip();
+    let search = serde_json::json!({"total_count":1,"items":[{"id":1001,"full_name":"dev-owner/dev-repo","html_url":"https://github.com/dev-owner/dev-repo","name":"dev-repo","owner":{"id":2002,"login":"dev-owner"},"description":null,"topics":["codlet-plugin"]}]});
+    let declaration = serde_json::json!({"schema":1,"kind":"codlet-plugin-release",
+        "manifest":serde_json::from_slice::<serde_json::Value>(manifest()).unwrap(),
+        "metadata":{"schema":1,"runtimeApi":1,"platforms":["any"]},
+        "asset":{"name":"plugin.zip","bytes":archive.len(),"sha256":"0".repeat(64)}});
+    let declaration_bytes = serde_json::to_vec(&declaration).unwrap();
+    let mut release = release_json(&archive, true);
+    release["assets"][0]["download_count"] = serde_json::json!(1000);
+    release["assets"].as_array_mut().unwrap().push(serde_json::json!({"id":3,"name":"codlet-release.json","size":declaration_bytes.len(),"content_type":"application/json","browser_download_url":"https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/codlet-release.json","state":"uploaded","digest":null}));
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
+        response(
+            "200 OK",
+            "",
+            &serde_json::to_vec(&vec![release.clone()]).unwrap(),
+        ),
+        response("200 OK", "", &declaration_bytes),
+    ]);
+    let page = fixture
+        .client()
+        .discover(&MarketQuery {
+            query: String::new(),
+            page: 1,
+            refresh: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].declaration_status, "invalid");
+    assert!(page.items[0].declared_package.is_none());
+    assert_eq!(page.items[0].total_downloads, None);
+    let disappeared = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
+        response("200 OK", "", &serde_json::to_vec(&vec![release]).unwrap()),
+        response("404 Not Found", "", b""),
+    ]);
+    let page = disappeared
+        .client()
+        .discover(&MarketQuery {
+            query: String::new(),
+            page: 1,
+            refresh: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].declaration_status, "invalid");
+    assert_eq!(page.items[0].total_downloads, None);
+}
+
+#[tokio::test]
+async fn older_release_without_a_declaration_keeps_total_unknown() {
+    let archive = good_zip();
+    let search = serde_json::json!({"total_count":1,"items":[{"id":1001,"full_name":"dev-owner/dev-repo","html_url":"https://github.com/dev-owner/dev-repo","name":"dev-repo","owner":{"id":2002,"login":"dev-owner"},"description":null,"topics":["codlet-plugin"]}]});
+    let declaration = serde_json::json!({"schema":1,"kind":"codlet-plugin-release",
+        "manifest":serde_json::from_slice::<serde_json::Value>(manifest()).unwrap(),
+        "metadata":{"schema":1,"runtimeApi":1,"platforms":["any"]},
+        "asset":{"name":"plugin.zip","bytes":archive.len(),"sha256":format!("{:x}",Sha256::digest(&archive))}});
+    let declaration_bytes = serde_json::to_vec(&declaration).unwrap();
+    let mut current = release_json(&archive, true);
+    current["assets"][0]["download_count"] = serde_json::json!(13);
+    current["assets"].as_array_mut().unwrap().push(serde_json::json!({"id":3,"name":"codlet-release.json","size":declaration_bytes.len(),"content_type":"application/json","browser_download_url":"https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/codlet-release.json","state":"uploaded","digest":null}));
+    let mut older = release_json(&archive, true);
+    older["id"] = serde_json::json!(4);
+    older["tag_name"] = serde_json::json!("v0.9.0");
+    older["html_url"] =
+        serde_json::json!("https://github.com/dev-owner/dev-repo/releases/tag/v0.9.0");
+    older["published_at"] = serde_json::json!("2026-08-12T00:00:00Z");
+    older["assets"][0]["id"] = serde_json::json!(5);
+    older["assets"][0]["browser_download_url"] = serde_json::json!(
+        "https://github.com/dev-owner/dev-repo/releases/download/v0.9.0/plugin.zip"
+    );
+    older["assets"][0]["download_count"] = serde_json::json!(100);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&search).unwrap()),
+        response(
+            "200 OK",
+            "",
+            &serde_json::to_vec(&vec![current, older]).unwrap(),
+        ),
+        response("200 OK", "", &declaration_bytes),
+    ]);
+    let page = fixture
+        .client()
+        .discover(&MarketQuery {
+            query: String::new(),
+            page: 1,
+            refresh: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.items[0].declaration_status, "matched");
+    assert_eq!(
+        page.items[0].latest_installable_published_at.as_deref(),
+        Some("2026-09-12T00:00:00Z")
+    );
+    assert_eq!(page.items[0].total_downloads, None);
+}
 
 #[tokio::test]
 async fn a_stalled_connection_reports_a_timeout_instead_of_a_generic_send_error() {
@@ -668,6 +882,7 @@ async fn fixed_http_fixture_lists_and_prepares_with_a_trusted_redirect() {
             "",
             serde_json::to_vec(&release).unwrap().as_slice(),
         ),
+        repository_identity_response(),
         response(
             "302 Found",
             "Location: https://release-assets.githubusercontent.com/fixture?signature=opaque\r\n",
@@ -690,18 +905,43 @@ async fn fixed_http_fixture_lists_and_prepares_with_a_trusted_redirect() {
         .await
         .unwrap();
     assert!(package.source.upstream_digest_verified);
+    assert_eq!(package.source.repository_id, Some(1001));
+    assert_eq!(package.source.owner_id, Some(2002));
     let requests = fixture.requests.lock().unwrap();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     assert!(
         requests[0]
             .starts_with("GET /repos/dev-owner/dev-repo/releases?per_page=100&page=1 HTTP/1.1")
     );
     assert!(requests[1].starts_with("GET /repos/dev-owner/dev-repo/releases/1 HTTP/1.1"));
-    assert!(requests[2].contains("accept: application/octet-stream"));
+    assert!(requests[2].starts_with("GET /repos/dev-owner/dev-repo HTTP/1.1"));
+    assert!(requests[3].contains("accept: application/octet-stream"));
     for request in requests.iter() {
         assert!(!request.to_ascii_lowercase().contains("authorization:"));
         assert!(!request.to_ascii_lowercase().contains("cookie:"));
     }
+}
+
+#[tokio::test]
+async fn preparation_rejects_inconsistent_repository_identity_before_downloading() {
+    let bytes = good_zip();
+    let changed = br#"{"id":1002,"html_url":"https://github.com/dev-owner/dev-repo","full_name":"another-owner/dev-repo","owner":{"id":2002,"login":"dev-owner"}}"#;
+    let fixture = Fixture::new(vec![
+        response(
+            "200 OK",
+            "",
+            &serde_json::to_vec(&release_json(&bytes, true)).unwrap(),
+        ),
+        response("200 OK", "", changed),
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    // A repository/name mismatch cannot become a trusted source receipt.
+    let result = fixture
+        .client()
+        .prepare_asset(&repository(), 1, 2, &temp.path().join("config.json"))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -713,6 +953,7 @@ async fn missing_digest_remains_explicitly_unverified_and_size_still_checked() {
             "",
             &serde_json::to_vec(&release_json(&bytes, false)).unwrap(),
         ),
+        repository_identity_response(),
         response("200 OK", "", &bytes),
     ]);
     let temp = tempfile::tempdir().unwrap();
@@ -755,6 +996,7 @@ async fn changed_asset_digest_or_size_never_creates_a_package() {
         }
         let fixture = Fixture::new(vec![
             response("200 OK", "", &serde_json::to_vec(&metadata).unwrap()),
+            repository_identity_response(),
             response("200 OK", "", &bytes),
         ]);
         let temp = tempfile::tempdir().unwrap();
@@ -784,6 +1026,7 @@ async fn cancellation_during_asset_download_never_creates_staging_or_receipt() {
             "",
             &serde_json::to_vec(&release_json(&bytes, true)).unwrap(),
         ),
+        repository_identity_response(),
         Vec::new(),
     ]);
     let temp = tempfile::tempdir().unwrap();
@@ -796,7 +1039,7 @@ async fn cancellation_during_asset_download_never_creates_staging_or_receipt() {
     )
     .await;
     assert!(result.is_err());
-    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
+    assert_eq!(fixture.requests.lock().unwrap().len(), 3);
     assert!(!temp.path().join("packages").exists());
     assert!(!registry.exists());
 }

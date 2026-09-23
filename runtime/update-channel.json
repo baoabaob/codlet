@@ -1,6 +1,10 @@
 {
   "schema": 1,
-  "channel": "stable",
+  "channel": "preview",
   "checkIntervalSeconds": 900,
-  "source": null
+  "source": {
+    "kind": "github",
+    "repositoryUrl": "https://github.com/baoabaob/codlet",
+    "manifestAsset": "codlet-update.json"
+  }
 }

@@ -39,6 +39,8 @@ pub struct LocalImportPreview {
     pub content_digest: String,
     pub registration_digest: String,
     pub manifest: PluginManifest,
+    pub metadata: Option<crate::github_distribution::PackageMetadata>,
+    pub device_compatibility: crate::github_distribution::DeviceCompatibility,
     pub existing_registration: Option<LocalPluginRegistration>,
     pub existing_enabled: bool,
     pub ownership: &'static str,
@@ -135,15 +137,20 @@ pub fn preview(
     )
     .map_err(|e| error("registration_conflict", e.to_string()))?;
     let id = &candidate.manifest.id;
+    let metadata = crate::github_distribution::read_metadata(&candidate.root)
+        .map_err(|e| error("package_metadata_invalid", e.to_string()))?;
+    let device_compatibility = crate::github_distribution::device_compatibility(metadata.as_ref());
     Ok(LocalImportPreview {
         schema: 1,
         kind: "codlet.local-import-preview",
         path: candidate.root.clone(),
-        content_digest: content_digest(&candidate),
+        content_digest: digest(&(content_digest(&candidate), &metadata)),
         registration_digest: registration_digest(registry, id),
         existing_registration: registry.local_plugins().get(id).cloned(),
         existing_enabled: registry.is_enabled(id),
         manifest: candidate.manifest,
+        metadata,
+        device_compatibility,
         ownership: "development-directory",
     })
 }
@@ -178,9 +185,13 @@ pub(crate) fn stage(
     }
     let candidate = inspect_local_plugin(&request.path)
         .map_err(|e| error("local_plugin_invalid", e.to_string()))?;
+    let metadata = crate::github_distribution::read_metadata(&candidate.root)
+        .map_err(|e| error("package_metadata_invalid", e.to_string()))?;
+    crate::github_distribution::require_device_compatibility(metadata.as_ref())
+        .map_err(|e| error("package_incompatible", e.to_string()))?;
     if candidate.manifest.id != id
         || candidate.root != request.path
-        || content_digest(&candidate) != request.content_digest
+        || digest(&(content_digest(&candidate), &metadata)) != request.content_digest
     {
         return Err(error(
             "import_content_changed",
@@ -340,6 +351,50 @@ mod tests {
             );
             assert!(!registry.path().exists());
         }
+    }
+
+    #[test]
+    fn local_metadata_is_declared_checked_and_bound_to_the_review_digest() {
+        let (_directory, registry, root) = fixture();
+        let metadata = root.join("codlet-package.json");
+        std::fs::write(
+            &metadata,
+            json!({"schema":1,"runtimeApi":1,"platforms":["any"],"author":"Original"}).to_string(),
+        )
+        .unwrap();
+        let candidate = preview(&registry, &root).unwrap();
+        assert_eq!(candidate.device_compatibility.status, "compatible");
+        let request = candidate.request(vec![Permission::UiDom], BrokerPolicy::default(), false);
+        std::fs::write(
+            &metadata,
+            json!({"schema":1,"runtimeApi":1,"platforms":["any"],"author":"Changed"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            stage(&registry, "dev.import", &request).unwrap_err().code,
+            "import_content_changed"
+        );
+        std::fs::write(
+            &metadata,
+            json!({"schema":1,"runtimeApi":1,"platforms":["otheros"]}).to_string(),
+        )
+        .unwrap();
+        let incompatible = preview(&registry, &root).unwrap();
+        assert_eq!(incompatible.device_compatibility.status, "incompatible");
+        assert_eq!(
+            stage(
+                &registry,
+                "dev.import",
+                &incompatible.request(vec![Permission::UiDom], BrokerPolicy::default(), false)
+            )
+            .unwrap_err()
+            .code,
+            "package_incompatible"
+        );
+        assert!(
+            crate::local_plugins::load_local_plugin("dev.import", &root, &[Permission::UiDom], 1)
+                .is_err()
+        );
     }
 
     #[test]

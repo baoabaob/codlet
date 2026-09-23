@@ -46,7 +46,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             let marker = home.appendingPathComponent("plugin-bundle-reviewed.txt")
             if let data = try? Data(contentsOf: resources.appendingPathComponent("optional-plugins/catalog.json")) {
                 let fingerprint = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                if (try? String(contentsOf: marker, encoding: .utf8)) != fingerprint {
+                if (try? String(contentsOf: marker, encoding: .utf8)) != fingerprint && !CommandLine.arguments.contains("--codlet-update-restart") {
                     let answer = alert("更新官方插件", "此应用包含新的官方插件。更新会校验已有官方文件并保留禁用状态和授权范围；新增权限将单独确认，修改过的作者文件不会覆盖。", buttons: ["选择并更新", "继续使用当前插件"])
                     try? fingerprint.write(to: marker, atomically: true, encoding: .utf8)
                     if answer == .alertFirstButtonReturn { configure(); return }

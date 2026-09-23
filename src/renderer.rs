@@ -2562,6 +2562,7 @@ fn invoke_builtin_host_endpoint(
                 | "sourceRemovalPreview"
                 | "openFolder"
                 | "openRuntimeFolder"
+                | "githubDiscover"
                 | "githubReleases"
                 | "githubPrepare"
                 | "githubJob"

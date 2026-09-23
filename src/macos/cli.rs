@@ -16,6 +16,50 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<()> {
     let arguments = arguments.collect::<Vec<_>>();
     match arguments.as_slice() {
         [command] if command == "__codlet_process_owner" => Ok(super::process_owner::run()?),
+        [command, pid] if command == "__codlet_update_process_identity" => {
+            let pid: u32 = pid.to_str().ok_or("Invalid process ID")?.parse()?;
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of_val(&info) as i32;
+            let count = unsafe {
+                libc::proc_pidinfo(
+                    pid as i32,
+                    libc::PROC_PIDTBSDINFO,
+                    1,
+                    (&mut info as *mut libc::proc_bsdinfo).cast(),
+                    size,
+                )
+            };
+            if count == size && info.pbi_pid == pid && info.pbi_status == libc::SZOMB {
+                println!("{}", serde_json::json!({ "pid": pid, "exited": true }));
+                return Ok(());
+            }
+            let identity = super::identity::ProcessIdentity::inspect(pid)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "pid": identity.pid,
+                    "creationTime": format!("{}{:06}", identity.started_seconds, identity.started_microseconds),
+                    "uid": identity.uid,
+                    "executable": identity.executable,
+                })
+            );
+            Ok(())
+        }
+        [command, bundle] if command == "__codlet_update_bundle_processes" => {
+            let bundle = Path::new(bundle);
+            if !bundle.is_absolute() || bundle.extension() != Some(OsStr::new("app")) {
+                return Err("Invalid app path".into());
+            }
+            let contents = bundle.join("Contents");
+            let uid = unsafe { libc::geteuid() };
+            let processes = super::identity::process_ids()?
+                .into_iter()
+                .filter_map(|pid| super::identity::ProcessIdentity::inspect(pid).ok())
+                .filter(|p| p.uid == uid && p.executable.starts_with(&contents))
+                .collect::<Vec<_>>();
+            println!("{}", serde_json::to_string(&processes)?);
+            Ok(())
+        }
         [command, ..] if command == "plugin" => Ok(crate::plugin_commands::run(&arguments)?),
         [command, options @ ..] if command == "launch" => {
             let mut options = options.iter();

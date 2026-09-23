@@ -14,6 +14,8 @@ use crate::local_plugins::inspect_local_plugin;
 use crate::plugins::PluginManifest;
 
 mod archive;
+mod marketplace;
+pub use marketplace::{MarketPage, MarketQuery};
 
 pub const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024;
@@ -50,6 +52,7 @@ pub struct GitHubAsset {
     pub content_type: String,
     pub download_url: String,
     pub digest: Option<String>,
+    pub download_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +91,12 @@ pub struct GitHubSource {
     pub asset_size: u64,
     pub sha256: String,
     pub upstream_digest_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_published_at: Option<String>,
 }
 
 /// Optional publishing metadata, independent of the runtime's codlet.json schema.
@@ -104,6 +113,54 @@ pub struct PackageMetadata {
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapters: Option<serde_json::Value>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCompatibility {
+    pub platform: String,
+    pub runtime_api: u32,
+    pub status: &'static str,
+    pub basis: &'static str,
+}
+pub fn device_compatibility(metadata: Option<&PackageMetadata>) -> DeviceCompatibility {
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let platform_support = metadata.and_then(|m| m.platforms.as_ref()).map(|values| {
+        values
+            .iter()
+            .any(|s| s == "any" || s == std::env::consts::OS || s == &platform)
+    });
+    let runtime_support = metadata.and_then(|m| m.runtime_api).map(|api| api == 1);
+    let status = if platform_support == Some(false) || runtime_support == Some(false) {
+        "incompatible"
+    } else if platform_support == Some(true) && runtime_support == Some(true) {
+        "compatible"
+    } else {
+        "unknown"
+    };
+    DeviceCompatibility {
+        platform,
+        runtime_api: 1,
+        status,
+        basis: if metadata.is_some_and(|m| m.platforms.is_some() || m.runtime_api.is_some()) {
+            "author-declaration"
+        } else {
+            "unknown"
+        },
+    }
+}
+pub fn require_device_compatibility(metadata: Option<&PackageMetadata>) -> Result<()> {
+    let device = device_compatibility(metadata);
+    if device.status == "incompatible" {
+        Err(error(
+            "github_platform_incompatible",
+            format!(
+                "Package does not declare support for {} or runtime API 1.",
+                device.platform
+            ),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -483,6 +540,7 @@ impl GitHubClient {
                 "ZIP asset must be between 1 byte and 32 MiB.",
             ));
         }
+        let identity = self.repository_identity(repository).await?;
         let bytes = self
             .get(
                 repository.endpoint(&["releases", "assets", &asset_id.to_string()]),
@@ -490,7 +548,38 @@ impl GitHubClient {
                 asset.size,
             )
             .await?;
-        prepare_bytes(repository, &release, asset, &bytes, registry_path)
+        prepare_bytes(
+            repository,
+            &release,
+            asset,
+            &bytes,
+            registry_path,
+            Some(identity),
+        )
+    }
+
+    async fn repository_identity(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Result<RepositoryIdentity> {
+        let response: ApiRepositoryIdentity = self.json(repository.endpoint(&[])).await?;
+        let canonical = GitHubRepository::parse(&response.html_url)?;
+        if response.id == 0
+            || response.owner.id == 0
+            || canonical != *repository
+            || response.full_name.to_ascii_lowercase()
+                != format!("{}/{}", repository.owner, repository.name)
+            || !response.owner.login.eq_ignore_ascii_case(&repository.owner)
+        {
+            return Err(error(
+                "github_repository_changed",
+                "GitHub repository identity changed. Review its source again.",
+            ));
+        }
+        Ok(RepositoryIdentity {
+            repository_id: response.id,
+            owner_id: response.owner.id,
+        })
     }
 
     async fn json<T: serde::de::DeserializeOwned>(&self, url: Url) -> Result<T> {
@@ -620,6 +709,25 @@ struct ApiAsset {
     state: String,
     #[serde(default)]
     digest: Option<String>,
+    #[serde(default)]
+    download_count: Option<u64>,
+}
+#[derive(Clone, Copy)]
+struct RepositoryIdentity {
+    repository_id: u64,
+    owner_id: u64,
+}
+#[derive(Deserialize)]
+struct ApiRepositoryIdentity {
+    id: u64,
+    html_url: String,
+    full_name: String,
+    owner: ApiOwnerIdentity,
+}
+#[derive(Deserialize)]
+struct ApiOwnerIdentity {
+    id: u64,
+    login: String,
 }
 #[derive(Deserialize)]
 struct ApiRelease {
@@ -690,6 +798,7 @@ impl ApiRelease {
                 content_type: asset.content_type,
                 download_url: asset.browser_download_url,
                 digest: asset.digest,
+                download_count: asset.download_count,
             });
         }
         Ok(GitHubRelease {
@@ -720,6 +829,7 @@ fn prepare_bytes(
     asset: &GitHubAsset,
     bytes: &[u8],
     registry_path: &Path,
+    identity: Option<RepositoryIdentity>,
 ) -> Result<PreparedGitHubPackage> {
     if bytes.len() as u64 != asset.size {
         return Err(error(
@@ -760,6 +870,9 @@ fn prepare_bytes(
         asset_size: asset.size,
         sha256: sha256.clone(),
         upstream_digest_verified: asset.digest.is_some(),
+        repository_id: identity.map(|value| value.repository_id),
+        owner_id: identity.map(|value| value.owner_id),
+        release_published_at: release.published_at.clone(),
     };
     let receipt = Receipt {
         schema: 2,
@@ -874,6 +987,13 @@ fn validate_source(source: &GitHubSource) -> Result<()> {
         || source.asset_id == 0
         || source.asset_size == 0
         || source.asset_size > MAX_ARCHIVE_BYTES
+        || source.repository_id.is_some() != source.owner_id.is_some()
+        || source.repository_id == Some(0)
+        || source.owner_id == Some(0)
+        || source
+            .release_published_at
+            .as_ref()
+            .is_some_and(|value| value.len() > 64 || value.chars().any(char::is_control))
     {
         return Err(error(
             "github_package_unowned",
@@ -1103,7 +1223,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_metadata(root: &Path) -> Result<Option<PackageMetadata>> {
+pub fn read_metadata(root: &Path) -> Result<Option<PackageMetadata>> {
     let path = root.join("codlet-package.json");
     match std::fs::symlink_metadata(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1117,6 +1237,11 @@ fn read_metadata(root: &Path) -> Result<Option<PackageMetadata>> {
                 format!("Invalid codlet-package.json: {e}"),
             )
         })?;
+    validate_metadata(&metadata)?;
+    Ok(Some(metadata))
+}
+
+fn validate_metadata(metadata: &PackageMetadata) -> Result<()> {
     if metadata.schema != 1
         || metadata.author.as_ref().is_some_and(|s| s.len() > 512)
         || metadata.platforms.as_ref().is_some_and(|v| {
@@ -1135,23 +1260,7 @@ fn read_metadata(root: &Path) -> Result<Option<PackageMetadata>> {
             "Invalid package metadata schema, author or platforms.",
         ));
     }
-    if metadata.runtime_api.is_some_and(|api| api != 1) {
-        return Err(error(
-            "github_runtime_incompatible",
-            "Package declares an unsupported runtime API (this runtime supports API 1).",
-        ));
-    }
-    let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    if metadata.platforms.as_ref().is_some_and(|v| {
-        !v.iter()
-            .any(|s| s == "any" || s == std::env::consts::OS || s == &target)
-    }) {
-        return Err(error(
-            "github_platform_incompatible",
-            format!("Package does not declare support for {target}."),
-        ));
-    }
-    Ok(Some(metadata))
+    Ok(())
 }
 
 fn tree_digest(root: &Path) -> Result<String> {
@@ -1228,6 +1337,7 @@ pub(crate) fn test_prepare_archive(
         download_url: "https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/plugin.zip"
             .into(),
         digest: Some(format!("sha256:{:x}", Sha256::digest(bytes))),
+        download_count: None,
     };
     let release = GitHubRelease {
         id: 1,
@@ -1238,7 +1348,7 @@ pub(crate) fn test_prepare_archive(
         published_at: None,
         assets: vec![asset.clone()],
     };
-    prepare_bytes(&repository, &release, &asset, bytes, registry_path)
+    prepare_bytes(&repository, &release, &asset, bytes, registry_path, None)
 }
 
 #[cfg(test)]

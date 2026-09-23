@@ -3,7 +3,7 @@ pub mod application;
 pub mod cli;
 #[path = "../probe/client_versions.rs"]
 pub(crate) mod client_versions;
-mod command;
+pub(crate) mod command;
 pub mod control_pipe;
 pub(crate) mod filesystem;
 pub(crate) mod folder_dialog;

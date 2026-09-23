@@ -57,6 +57,7 @@ fn payload(
             path: name.clone(),
             bytes: bytes.len() as u64,
             sha256: sha(bytes),
+            mode: None,
         })
         .collect();
     (
@@ -168,12 +169,14 @@ fn unconfigured_development_is_truthful_offline_and_creates_no_update_directory(
 fn preference_changes_reschedule_real_worker_without_fetching_and_honor_full_interval_range() {
     use crate::runtime_settings::{RuntimePreferences, SettingsDocument};
     let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join("runtime")).unwrap();
-    std::fs::write(
-        root.path().join("runtime/update-channel.json"),
-        serde_json::to_vec(&channel()).unwrap(),
-    )
-    .unwrap();
+    let channel_path = if PLATFORM == "darwin-arm64" {
+        root.path()
+            .join("Codlet.app/Contents/Resources/runtime/update-channel.json")
+    } else {
+        root.path().join("runtime/update-channel.json")
+    };
+    std::fs::create_dir_all(channel_path.parent().unwrap()).unwrap();
+    std::fs::write(channel_path, serde_json::to_vec(&channel()).unwrap()).unwrap();
     let mut document = SettingsDocument {
         schema: 1,
         revision: 0,
@@ -276,6 +279,7 @@ fn semantic_version_order_does_not_sort_version_strings_lexically() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn runtime_profiles_stage_only_their_own_executable_and_resume_after_restart() {
     for profile in [
@@ -317,6 +321,7 @@ fn runtime_profiles_stage_only_their_own_executable_and_resume_after_restart() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn malicious_runtime_zip_never_changes_user_configuration_or_escapes_staging() {
     let temp = tempfile::tempdir().unwrap();
@@ -366,6 +371,7 @@ fn malicious_runtime_zip_never_changes_user_configuration_or_escapes_staging() {
     );
 }
 
+#[cfg(windows)]
 #[test]
 fn runtime_zip_rejects_crc_errors_symlinks_and_overlapping_header_metadata() {
     let temp = tempfile::tempdir().unwrap();
@@ -402,6 +408,7 @@ fn runtime_zip_rejects_crc_errors_symlinks_and_overlapping_header_metadata() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn helper_failure_receipt_releases_safe_candidate_but_blocks_uncertain_restart() {
     for phase in ["failed", "rollbackBlocked"] {
@@ -529,6 +536,148 @@ fn release(bytes: &[u8]) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"schema":1,"kind":"codlet-runtime-channel","channel":"stable","version":"9.0.0","artifacts":[{"platform":"win-x64","profile":"portable","bytes":bytes.len(),"sha256":sha(bytes),"url":"https://cdn.example/runtime.zip","assetName":null}]})).unwrap()
 }
 
+fn github_channel(name: &str) -> RuntimeUpdateChannel {
+    RuntimeUpdateChannel {
+        channel: name.into(),
+        source: Some(RuntimeUpdateSource::Github {
+            repository_url: "https://github.com/codlet-tests/core".into(),
+            manifest_asset: "codlet-update.json".into(),
+        }),
+        ..channel()
+    }
+}
+
+fn github_release_fixture(
+    version: &str,
+    channel: &str,
+    prerelease: bool,
+    draft: bool,
+) -> (serde_json::Value, Vec<u8>) {
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "schema":1, "kind":"codlet-runtime-channel", "channel":channel,
+        "version":version, "artifacts":[{
+            "platform":PLATFORM, "profile":"portable", "bytes":123,
+            "sha256":"a".repeat(64), "url":null, "assetName":"runtime.zip"
+        }]
+    }))
+    .unwrap();
+    let release = serde_json::json!({
+        "id":1, "tag_name":format!("v{version}"),
+        "html_url":format!("https://github.com/codlet-tests/core/releases/tag/v{version}"),
+        "draft":draft, "prerelease":prerelease, "assets":[
+            {"id":11,"name":"codlet-update.json","size":manifest.len(),"state":"uploaded","digest":format!("sha256:{}",sha(&manifest))},
+            {"id":12,"name":"runtime.zip","size":123,"state":"uploaded","digest":format!("sha256:{}","a".repeat(64))}
+        ]
+    });
+    (release, manifest)
+}
+
+#[tokio::test]
+async fn github_preview_finds_numeric_latest_prerelease_and_ignores_drafts_and_other_assets() {
+    let (older, _) = github_release_fixture("9.0.0-preview.2", "preview", true, false);
+    let (selected, manifest) = github_release_fixture("9.0.0-preview.10", "preview", true, false);
+    let (stable, _) = github_release_fixture("10.0.0", "stable", false, false);
+    let (draft, _) = github_release_fixture("11.0.0-preview.1", "preview", true, true);
+    let (mut unrelated, _) = github_release_fixture("12.0.0-preview.1", "preview", true, false);
+    unrelated["assets"] = serde_json::json!([]);
+    let list = serde_json::to_vec(&vec![older, stable, draft, unrelated, selected]).unwrap();
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &list),
+        response("200 OK", "", &manifest),
+    ]);
+    let selected = fixture
+        .client()
+        .check(
+            &github_channel("preview"),
+            Some(RuntimePayloadProfile::Portable),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.public.version, "9.0.0-preview.10");
+    assert_eq!(
+        selected.url.as_str(),
+        "https://api.github.com/repos/codlet-tests/core/releases/assets/12"
+    );
+    let requests = fixture.requests.lock().unwrap();
+    assert!(requests[0].starts_with("GET /repos/codlet-tests/core/releases?per_page=30 "));
+    assert!(requests[1].starts_with("GET /repos/codlet-tests/core/releases/assets/11 "));
+    assert_eq!(
+        requests.len(),
+        2,
+        "a check must not download the update ZIP"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.to_ascii_lowercase().contains("authorization:"))
+    );
+}
+
+#[tokio::test]
+async fn github_stable_still_uses_the_public_latest_release() {
+    let (release, manifest) = github_release_fixture("9.0.0", "stable", false, false);
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&release).unwrap()),
+        response("200 OK", "", &manifest),
+    ]);
+    let selected = fixture
+        .client()
+        .check(
+            &github_channel("stable"),
+            Some(RuntimePayloadProfile::Portable),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.public.version, "9.0.0");
+    assert!(
+        fixture.requests.lock().unwrap()[0]
+            .starts_with("GET /repos/codlet-tests/core/releases/latest ")
+    );
+}
+
+#[tokio::test]
+async fn github_preview_without_a_published_candidate_reports_unpublished() {
+    let fixture = Fixture::new(vec![response("200 OK", "", b"[]")]);
+    let error = fixture
+        .client()
+        .check(
+            &github_channel("preview"),
+            Some(RuntimePayloadProfile::Portable),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "runtime_update_not_published");
+    assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn github_preview_defaults_to_mac_app_profile() {
+    let (mut release, manifest) =
+        github_release_fixture("9.0.0-preview.10", "preview", true, false);
+    let mut manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    manifest["artifacts"][0]["profile"] = serde_json::json!("macApp");
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    release["assets"][0]["size"] = serde_json::json!(manifest.len());
+    release["assets"][0]["digest"] = serde_json::json!(format!("sha256:{}", sha(&manifest)));
+    let fixture = Fixture::new(vec![
+        response("200 OK", "", &serde_json::to_vec(&vec![release]).unwrap()),
+        response("200 OK", "", &manifest),
+    ]);
+    let selected = fixture
+        .client()
+        .check(&github_channel("preview"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.profile, RuntimePayloadProfile::MacApp);
+    assert_eq!(selected.public.platform, "darwin-arm64");
+    assert_eq!(fixture.requests.lock().unwrap().len(), 2);
+}
+
+#[cfg(windows)]
 #[tokio::test]
 async fn fixed_https_fixture_checks_then_downloads_exact_pinned_payload_without_authentication() {
     let (manifest, files) = payload(RuntimePayloadProfile::Portable, "9.0.0", "24.21.0", "new");
@@ -709,6 +858,7 @@ fn install_plan_binds_current_identity_and_only_the_two_owner_configuration_pins
 }
 
 #[cfg(windows)]
+#[cfg(windows)]
 #[test]
 fn powershell_builder_emits_real_dotnet_zips_and_merges_both_profiles_without_user_files() {
     use std::os::windows::process::CommandExt;
@@ -796,6 +946,7 @@ fn powershell_builder_emits_real_dotnet_zips_and_merges_both_profiles_without_us
     }
 }
 
+#[cfg(windows)]
 #[cfg(windows)]
 #[test]
 fn cross_volume_install_is_rejected_before_any_process_handoff_or_file_access() {

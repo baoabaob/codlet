@@ -121,7 +121,10 @@ impl PluginControlRequest {
                 PluginControlAction::Import => {
                     matches!(selection.managed, None | Some(ManagedOperation::Install))
                 }
-                PluginControlAction::Update => selection.managed == Some(ManagedOperation::Update),
+                PluginControlAction::Update => matches!(
+                    selection.managed,
+                    Some(ManagedOperation::Update | ManagedOperation::Adopt)
+                ),
                 PluginControlAction::Rollback => {
                     selection.managed == Some(ManagedOperation::Rollback)
                 }

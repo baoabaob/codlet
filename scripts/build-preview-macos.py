@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = ["codex.ui.adapter", "codex.desktop.adapter", "codlet-gui"]
@@ -38,6 +39,45 @@ def copy(source, target):
 
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
+
+
+def build_update_zip(app, destination, version):
+    """Package one complete sealed app with explicit file modes for the updater."""
+    pin = json.loads((app / "Contents/Resources/runtime/node-runtime.json").read_text())
+    node = pin["platforms"]["darwin-arm64"]
+    runtime = {
+        "version": node.get("version", pin["version"]),
+        "executableSha256": node["executableSha256"],
+        "licenseSha256": node["licenseSha256"],
+    }
+    files = []
+    for source in sorted(app.rglob("*")):
+        plain(source)
+        if not source.is_file():
+            continue
+        mode = source.stat().st_mode & 0o777
+        if mode not in (0o644, 0o755):
+            raise ValueError(f"Unsupported signed app file mode: {source} {mode:o}")
+        files.append({"path": str(source.relative_to(app.parent)).replace(os.sep, "/"),
+                      "bytes": source.stat().st_size, "sha256": digest(source), "mode": mode})
+    if len(files) > 4096 or sum(file["bytes"] for file in files) > 1024 * 1024 * 1024:
+        raise ValueError("Signed app exceeds updater bounds")
+    update = {"schema": 1, "kind": "codlet-runtime-update", "version": version,
+              "platform": "darwin-arm64", "profile": "macApp", "runtime": runtime, "files": files}
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED,
+                         compresslevel=6, allowZip64=False) as archive:
+        def put(name, data, mode):
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = (0o100000 | mode) << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=6)
+        put("runtime-update-manifest.json", (json.dumps(update, separators=(",", ":")) + "\n").encode(), 0o644)
+        for file in files:
+            put(file["path"], (app.parent / file["path"]).read_bytes(), file["mode"])
+    if destination.stat().st_size > 512 * 1024 * 1024:
+        raise ValueError("Update ZIP exceeds the download size limit")
+    return {"file": destination.name, "bytes": destination.stat().st_size, "sha256": digest(destination)}
 
 
 def stage_payload(executable, node_directory, plugin_distribution, output, core_commit, plugin_commit):
@@ -174,6 +214,12 @@ def build(args):
         node_version = pin["platforms"]["darwin-arm64"].get("version", pin["version"])
         node_relative = Path(f"Contents/Resources/runtime/node-v{node_version}-darwin-arm64/bin/node")
         run(app / node_relative, "--version")
+        update_zip = temporary / f"Codlet-{version}-darwin-arm64-update.zip"
+        update_asset = build_update_zip(app, update_zip, version)
+        update_environment = {**os.environ, "CODLET_MAC_UPDATE_APP": str(app), "CODLET_MAC_UPDATE_ZIP": str(update_zip)}
+        subprocess.run(["cargo", "test", "--locked", "--target", "aarch64-apple-darwin", "--lib", "macos_signed_bundle_update_archive", "--", "--nocapture"],
+                       cwd=ROOT, env=update_environment, check=True, timeout=900)
+        run(app / node_relative, ROOT / "tests/runtime_update_macos.test.mjs", app, version)
         os.symlink("/Applications", volume / "Applications")
         (volume / "开始使用.txt").write_text(
             f"Codlet {version} · macOS Apple Silicon Preview\n\n"
@@ -185,7 +231,7 @@ def build(args):
             "允许这一个应用；不要关闭系统安全保护。工作与视觉验收仍需真实 Mac 客户端。\n\n"
             "配置、插件和日志在 ~/Library/Application Support/Codlet。\n"
             "拖走 Codlet.app 不删除这些用户数据。菜单栏可补选官方插件或打开日志。\n"
-            "本预览包尚无自动更新分发；更新时正常退出后替换 Applications 中的应用。\n",
+            "安装到 Applications 后，可在 Codlet GUI 中检查并安装预览版更新。更新会先校验整个应用包，请按提示正常退出，完成后 Codlet 会重新打开。\n",
             encoding="utf-8",
         )
         manifest["files"] = [{"path": str(file.relative_to(app)).replace(os.sep, "/"), "bytes": file.stat().st_size, "sha256": digest(file)} for file in sorted(app.rglob("*")) if file.is_file()]
@@ -207,13 +253,15 @@ def build(args):
             listing = subprocess.run([str(installed / "Contents/Resources/codlet"), "plugin", "list", "--json"], env=environment, check=True, timeout=30, capture_output=True, text=True, encoding="utf-8")
             if {entry["id"] for entry in json.loads(listing.stdout)["plugins"]} != set(ALLOWED):
                 raise ValueError("Mounted package failed real Core plugin initialization")
-            manifest["nativePackagingChecks"] = ["arm64-host", "launcher-smoke", "codesign-ad-hoc-integrity", "dmg-verify", "mounted-launcher-smoke", "mounted-real-core-plugin-initialization"]
+            manifest["nativePackagingChecks"] = ["arm64-host", "launcher-smoke", "codesign-ad-hoc-integrity", "signed-update-zip-stage", "native-app-update-swap-rollback", "dmg-verify", "mounted-launcher-smoke", "mounted-real-core-plugin-initialization"]
         finally:
             if os.path.ismount(mounted):
                 run("hdiutil", "detach", mounted)
         manifest["dmg"] = {"file": dmg.name, "bytes": dmg.stat().st_size, "sha256": digest(dmg)}
+        shutil.copy2(update_zip, output / update_zip.name)
+        manifest["updateZip"] = update_asset
         (output / "distribution-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        (output / "SHA256SUMS.txt").write_text(f"{digest(dmg)}  {dmg.name}\n", encoding="utf-8")
+        (output / "SHA256SUMS.txt").write_text(f"{digest(dmg)}  {dmg.name}\n{update_asset['sha256']}  {update_zip.name}\n", encoding="utf-8")
         shutil.copy2(volume / "开始使用.txt", output / "开始使用.txt")
         print(json.dumps({"dmg": str(dmg), "sha256": digest(dmg), "version": version}))
 

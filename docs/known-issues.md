@@ -79,11 +79,15 @@ traffic past the interceptors. Ordinary launches without traffic consumers are
 unaffected. Changing real providers still requires plugin policy for server-owned
 continuation IDs and already-executed tool operations.
 
-The official GUI repository contains a marketplace interaction prototype and
-specification, but that is not yet a production-backed searchable marketplace.
-Existing local/GitHub import and update paths remain available. The accepted
-marketplace requirements are retained in its
-[specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/marketplace.md).
+The GUI marketplace searches public GitHub repositories with the `codlet-plugin`
+topic. Search and availability depend on GitHub indexing, network access and API
+limits; it is not an exhaustive index of every plugin manifest. Missing release
+declarations leave package details and download totals unknown. Matching
+declarations are publisher-provided metadata, not a security review. Installation
+still validates the actual archive and asks for its permissions. Installer presets
+can switch to a verified GitHub release through an explicit adoption review;
+merely publishing a repository never silently changes an installed plugin's source.
+See the [marketplace specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/marketplace.md).
 
 ## Preview signing
 

@@ -17,6 +17,7 @@ const FORWARDED_METHODS: &[&str] = &[
     "sourceRemovalPreview",
     "openFolder",
     "openRuntimeFolder",
+    "githubDiscover",
     "githubReleases",
     "githubPrepare",
     "githubJob",

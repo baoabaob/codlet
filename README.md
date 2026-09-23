@@ -4,13 +4,13 @@ Codlet is an extension runtime for Codex Desktop. It launches a managed desktop 
 
 Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. The management GUI and the Desktop/UI adapters are optional plugins maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). They are not compiled into Core.
 
-This is a development Preview. Source repositories are private during the trial; no public release channel is available. Windows x64 is the primary tested platform. macOS Apple Silicon has a native build and installer path; see [platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) before testing. Linux is outside the current scope.
+This is an experimental Preview with public source. Tagged test builds are distributed separately through [GitHub prereleases](https://github.com/baoabaob/codlet/releases). Windows x64 is the primary tested platform. macOS Apple Silicon has a native build and installer path; see [platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) before testing. Linux is outside the current scope.
 
 ## Use Codlet
 
 Windows packages provide `Codlet-Launcher.exe`. The MSI offers optional official plugins and shortcuts; the portable package keeps Codlet data beside the executable. On macOS, open `Codlet.app` from Applications. The official Codex client must already be installed separately. See [installation and distribution](docs/distribution.md).
 
-The optional GUI provides plugin import, search and tag filtering, permission review, enable/disable/reload/removal, and individual or bulk GitHub updates. Successful updates retain one current package. The CLI works independently of the GUI:
+The optional GUI provides a GitHub-backed plugin marketplace, local/GitHub import, search and tag filtering, permission review, enable/disable/reload/removal, and individual or bulk GitHub updates. Successful updates retain one current package. The CLI works independently of the GUI:
 
 ```sh
 codlet launch

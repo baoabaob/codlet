@@ -176,6 +176,9 @@ impl RuntimeManageService {
 
     pub(crate) fn decorate_list(&self, list: &mut Value) {
         list["runtimeVersion"] = Value::from(env!("CARGO_PKG_VERSION"));
+        list["deviceCompatibility"] =
+            serde_json::to_value(crate::github_distribution::device_compatibility(None))
+                .expect("device compatibility serializes");
         list["runtimeSkill"] = self
             .runtime_skill
             .lock()
@@ -195,8 +198,9 @@ impl RuntimeManageService {
             && let Some(plugins) = list["plugins"].as_array_mut()
         {
             for plugin in plugins {
-                if let Some(current) = plugin["id"]
-                    .as_str()
+                let id = plugin["id"].as_str().map(str::to_owned);
+                if let Some(current) = id
+                    .as_deref()
                     .and_then(|id| registry.managed_plugins().get(id))
                     .and_then(|record| record.current())
                 {
@@ -206,6 +210,34 @@ impl RuntimeManageService {
                     plugin["managedVersionKey"] = Value::from(current.version_key.clone());
                     plugin["metadata"] =
                         serde_json::to_value(&current.metadata).expect("metadata is serializable");
+                    plugin["deviceCompatibility"] = serde_json::to_value(
+                        crate::github_distribution::device_compatibility(current.metadata.as_ref()),
+                    )
+                    .expect("compatibility serializes");
+                } else if let Some(registration) = id
+                    .as_deref()
+                    .and_then(|id| registry.local_plugins().get(id))
+                {
+                    let metadata = crate::github_distribution::read_metadata(&registration.path)
+                        .ok()
+                        .flatten();
+                    plugin["metadata"] =
+                        serde_json::to_value(&metadata).expect("metadata serializes");
+                    plugin["deviceCompatibility"] = serde_json::to_value(
+                        crate::github_distribution::device_compatibility(metadata.as_ref()),
+                    )
+                    .expect("compatibility serializes");
+                    if id.as_deref().is_some_and(|id| {
+                        crate::plugin_cli::official_seed::verified_installer_source(&registry, id)
+                    }) {
+                        plugin["ownership"] = Value::from("installer-seed");
+                    }
+                } else {
+                    plugin["metadata"] = Value::Null;
+                    plugin["deviceCompatibility"] = serde_json::to_value(
+                        crate::github_distribution::device_compatibility(None),
+                    )
+                    .expect("compatibility serializes");
                 }
             }
         }
@@ -540,7 +572,7 @@ impl RuntimeManageService {
         }
         if matches!(
             method,
-            "githubReleases" | "githubPrepare" | "githubJob" | "cancelGitHubJob"
+            "githubDiscover" | "githubReleases" | "githubPrepare" | "githubJob" | "cancelGitHubJob"
         ) {
             let jobs = self.github_jobs.as_ref().ok_or_else(|| {
                 RuntimeManageError::new(

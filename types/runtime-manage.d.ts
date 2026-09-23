@@ -114,7 +114,7 @@ export type PluginControlRequest =
   | { action: 'remove'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never; remove_source?: SourceRemovalRequest }
   | { action: 'revoke'; plugin_id: string; permission: PluginPermission; cascade?: false; local_import?: never }
   | { action: 'import'; plugin_id: string; local_import: LocalImportRequest & { managed?: 'install' }; permission?: never; cascade?: false }
-  | { action: 'update'; plugin_id: string; local_import: LocalImportRequest & { managed: 'update' }; permission?: never; cascade?: false }
+  | { action: 'update'; plugin_id: string; local_import: LocalImportRequest & { managed: 'update' | 'adopt' }; permission?: never; cascade?: false }
   | { action: 'rollback'; plugin_id: string; local_import: LocalImportRequest & { managed: 'rollback' }; permission?: never; cascade?: false };
 
 export interface LocalImportRequest {
@@ -128,7 +128,7 @@ export interface LocalImportRequest {
   /** Defaults to false; activation uses the same receipt as registration. */
   enable?: boolean;
   /** Core validates the package receipt; caller-supplied source metadata is never trusted. */
-  managed?: 'install' | 'update' | 'rollback';
+  managed?: 'install' | 'update' | 'adopt' | 'rollback';
 }
 
 export interface ImportCapability { name: string; api: number; scope: 'runtime' | 'target' | 'backend-session' | 'thread'; }
@@ -149,6 +149,8 @@ export interface LocalImportPreview {
     host?: { entry: string; provides?: ImportCapability[]; requires?: ImportCapability[] };
     permissions: PluginPermission[]; provides: ImportCapability[]; requires: ImportCapability[];
   };
+  metadata: PackageMetadata | null;
+  deviceCompatibility: DeviceCompatibility;
   /** Present on the live public service; CLI preview has no running-session assertion. */
   watchEnabled?: boolean;
   dependencyCheck?: {
@@ -234,10 +236,11 @@ export interface RuntimeManagePlugin {
   path: string | null;
   grants: PluginPermission[];
   brokerPolicy?: BrokerPolicy | null;
-  ownership?: 'bundled' | 'development-directory' | 'core-managed-github';
+  ownership?: 'bundled' | 'development-directory' | 'installer-seed' | 'core-managed-github';
   managedSource?: GitHubSource;
   managedVersionKey?: string;
   metadata?: PackageMetadata | null;
+  deviceCompatibility?: DeviceCompatibility;
   requestedPermissions: PluginPermission[] | null;
   providedCapabilities?: ImportCapability[] | null;
   validation: PluginValidation;
@@ -263,6 +266,7 @@ export interface RuntimeManageList {
   runtimeVersion: string;
   clientStatus?: ClientVersionStatus;
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
+  deviceCompatibility?: DeviceCompatibility;
   localManagement?: { available: true; watchEnabled: boolean; folderPicker: boolean };
   githubManagement?: { available: true };
   /** Core-owned runtime skill, suitable for a native skill prompt link. */
@@ -299,7 +303,8 @@ export interface RuntimeManageMethods {
   installCombinedUpdate: { params: {candidateId: string}; result: OfficialUpdateStatus };
   folderSelection: { params: { selectionId: string }; result: FolderSelection };
   githubReleases: { params: { url: string }; result: GitHubJob };
-  githubPrepare: { params: { repositoryUrl: string; releaseId: number; assetId: number } & ({ operation?: 'install'; pluginId?: string } | { operation: 'update'; pluginId: string }); result: GitHubJob };
+  githubDiscover: { params: { query?: string; page?: number; refresh?: boolean }; result: GitHubJob };
+  githubPrepare: { params: { repositoryUrl: string; releaseId: number; assetId: number } & ({ operation?: 'install'; pluginId?: string } | { operation: 'update' | 'adopt'; pluginId: string }); result: GitHubJob };
   githubJob: { params: { jobId: string }; result: GitHubJob };
   cancelGitHubJob: { params: { jobId: string }; result: GitHubJob };
   /** Compatibility records only; successful normal installs retain one current package. */
@@ -323,7 +328,7 @@ export interface PluginPermissionsReport {
 
 export interface GitHubRepository { owner: string; name: string; url: string; }
 export interface GitHubReleaseAsset {
-  id: number; name: string; size: number; contentType: string; downloadUrl: string; digest: string | null;
+  id: number; name: string; size: number; contentType: string; downloadUrl: string; digest: string | null; downloadCount?: number | null;
 }
 export interface GitHubRelease {
   id: number; tag: string; name: string; url: string; prerelease: boolean;
@@ -337,11 +342,21 @@ export interface GitHubSource {
   repositoryUrl: string; owner: string; repository: string;
   releaseId: number; tag: string; assetId: number; assetName: string; assetUrl: string;
   assetSize: number; sha256: string; upstreamDigestVerified: boolean;
+  /** GitHub API identity, present for freshly prepared packages. Older receipts may omit it. */
+  repositoryId?: number; ownerId?: number;
+  /** Fresh Release publication time; present after successful GitHub package preparation when GitHub provides it. */
+  releasePublishedAt?: string;
 }
 /** Author declarations. Missing values mean unknown, never a compatibility assertion. */
 export interface PackageMetadata {
   schema: 1; runtimeApi?: number | null; platforms?: string[] | null;
   author?: string | null; adapters?: unknown;
+}
+/** Device result applies only to declared OS/architecture and Runtime API. Adapter client support remains separate. */
+export interface DeviceCompatibility {
+  platform: string; runtimeApi: 1;
+  status: 'compatible' | 'incompatible' | 'unknown';
+  basis: 'author-declaration' | 'unknown';
 }
 export interface ManagedVersion {
   versionKey: string; packagePath: string; contentDigest: string;
@@ -354,9 +369,9 @@ export interface ManagedVersion {
  * the selected source directory to exist and pass current validation. */
 export interface ManagedHistory { pluginId: string; currentVersion: string | null; history: ManagedVersion[]; nextCursor: number | null; }
 export interface ManagedPreview {
-  schema: 1; kind: 'codlet.managed-preview'; operation: 'install' | 'update' | 'rollback';
+  schema: 1; kind: 'codlet.managed-preview'; operation: 'install' | 'update' | 'adopt' | 'rollback';
   ownership: 'core-managed-github'; path: string; contentDigest: string; registrationDigest: string;
-  manifest: LocalImportPreview['manifest']; source: GitHubSource; metadata: PackageMetadata | null;
+  manifest: LocalImportPreview['manifest']; source: GitHubSource; metadata: PackageMetadata | null; deviceCompatibility: DeviceCompatibility;
   existingRegistration: LocalPluginRegistration | null; existingEnabled: boolean;
   currentVersion: ManagedVersion | null;
   /** Records present in CLI previews or older replies; may contain only the current version. */
@@ -370,12 +385,38 @@ export interface ManagedPreview {
   };
   dependencyCheck?: LocalImportPreview['dependencyCheck'];
 }
+/** A repository candidate from the public codlet-plugin topic. Plugin ID and package compatibility remain unknown until githubPrepare. */
+export interface MarketItem {
+  pluginId: null; repositoryId: number; ownerId: number; repositoryUrl: string;
+  fullName: string; owner: string; name: string; description: string | null;
+  topics: string[]; author: string;
+  /** Latest uploaded ZIP Release candidate; archive contents have not been inspected. */
+  latestRelease: GitHubRelease; latestReleaseVerified: false;
+  /** Publisher declaration matched to GitHub's exact ZIP asset metadata; not an inspected package. */
+  declarationStatus: 'matched' | 'missing' | 'invalid';
+  declaredPackage: MarketDeclaredPackage | null;
+  /** From a matched declaration; unknown when the latest ZIP candidate has no valid declaration. */
+  latestInstallablePublishedAt: string | null;
+  /** Sum of designated ZIP asset counts only when all listed Releases are complete and declared. */
+  totalDownloads: number | null;
+}
+export interface MarketDeclaredPackage {
+  manifest: LocalImportPreview['manifest']; metadata: PackageMetadata;
+  asset: {id:number; name:string; bytes:number; sha256:string; downloadCount:number|null};
+  releaseId:number; publishedAt:string|null; deviceCompatibility:DeviceCompatibility;
+  basis:'publisher-release-declaration';
+}
+export interface MarketPage {
+  items: MarketItem[]; page: number; hasMore: boolean;
+  fetchedAtUnixMs: number; cacheUntilUnixMs: number;
+}
 /** Background preparation only. Completion does not register, trust or enable a plugin.
  * Poll the same job ID after an uncertain read; do not automatically repeat the start.
  * Cancellation invalidates delivery and may leave temporary downloaded bytes. */
 export type GitHubJob =
-  | { jobId: string; kind: 'releases' | 'package'; status: 'running'; stage?: string }
+  | { jobId: string; kind: 'releases' | 'package' | 'discovery'; status: 'running'; stage?: string }
+  | { jobId: string; kind: 'discovery'; status: 'completed'; stage?: string; result: MarketPage }
   | { jobId: string; kind: 'releases'; status: 'completed'; stage?: string; result: GitHubReleaseCatalog }
   | { jobId: string; kind: 'package'; status: 'completed'; stage?: string; result: ManagedPreview }
-  | { jobId: string; kind: 'releases' | 'package'; status: 'cancelled'; stage?: string }
-  | { jobId: string; kind: 'releases' | 'package'; status: 'failed'; stage?: string; error: PluginControlError };
+  | { jobId: string; kind: 'releases' | 'package' | 'discovery'; status: 'cancelled'; stage?: string }
+  | { jobId: string; kind: 'releases' | 'package' | 'discovery'; status: 'failed'; stage?: string; error: PluginControlError };

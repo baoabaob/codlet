@@ -6,13 +6,40 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::{CommandError as ProbeError, PluginTrustOptions, parse_plugin_trust_options};
-use crate::github_distribution::{GitHubClient, GitHubLink};
+use crate::github_distribution::{GitHubClient, GitHubLink, MarketQuery};
 use crate::managed_plugins::{ManagedOperation, ManagedPreview};
 use crate::plugin_control::{PluginControlAction, PluginControlRequest};
 use crate::plugins::PluginRegistry;
 
 pub(super) fn run(arguments: &[OsString]) -> Result<(), ProbeError> {
     match arguments {
+        [action, rest @ ..] if action == OsStr::new("discover") => {
+            let mut query = String::new();
+            let mut page = 1;
+            let mut json = false;
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
+                match text(arg)? {
+                    "--page" => {
+                        page = positive_id(args.next())?
+                            .try_into()
+                            .map_err(|_| ProbeError::Usage)?
+                    }
+                    "--json" if !json => json = true,
+                    value if query.is_empty() => query = value.into(),
+                    _ => return Err(ProbeError::Usage),
+                }
+            }
+            let search = MarketQuery {
+                query,
+                page,
+                refresh: false,
+            };
+            search.validate()?;
+            let catalog = runtime()?.block_on(GitHubClient::new()?.discover(&search))?;
+            output(&catalog, json);
+            Ok(())
+        }
         [action, url, options @ ..] if action == OsStr::new("releases") => {
             let json = json_only(options)?;
             let link = GitHubLink::parse(text(url)?)?;
@@ -34,6 +61,10 @@ pub(super) fn run(arguments: &[OsString]) -> Result<(), ProbeError> {
                 .update
                 .as_ref()
                 .is_some_and(|id| *id != package.manifest.id)
+                || options
+                    .adopt
+                    .as_ref()
+                    .is_some_and(|id| *id != package.manifest.id)
             {
                 return Err(control(
                     "plugin_identity_changed",
@@ -57,7 +88,9 @@ pub(super) fn run(arguments: &[OsString]) -> Result<(), ProbeError> {
             let preview = crate::managed_plugins::preview(
                 &registry,
                 &package.package_path,
-                if options.update.is_some() {
+                if options.adopt.is_some() {
+                    ManagedOperation::Adopt
+                } else if options.update.is_some() {
                     ManagedOperation::Update
                 } else {
                     ManagedOperation::Install
@@ -111,6 +144,23 @@ pub(super) fn run(arguments: &[OsString]) -> Result<(), ProbeError> {
             }
             apply(preview, options)
         }
+        [action, id, path, options @ ..] if action == OsStr::new("adopt") => {
+            let options = parse_plugin_trust_options(options)?;
+            let registry = PluginRegistry::load_default()?;
+            let preview = crate::managed_plugins::preview(
+                &registry,
+                Path::new(path),
+                ManagedOperation::Adopt,
+            )
+            .map_err(crate::plugin_cli::PluginCliError::from)?;
+            if preview.manifest.id != text(id)? {
+                return Err(control(
+                    "plugin_identity_changed",
+                    "The prepared package does not match the requested plugin ID.",
+                ));
+            }
+            apply(preview, options)
+        }
         [action, id, key, options @ ..] if action == OsStr::new("rollback") => {
             let options = parse_plugin_trust_options(options)?;
             let registry = PluginRegistry::load_default()?;
@@ -125,7 +175,7 @@ pub(super) fn run(arguments: &[OsString]) -> Result<(), ProbeError> {
         }
         _ => Err(control(
             "github_cli_usage",
-            "Use `plugin github releases <url> [--json]`, `preview <url> --release <id> --asset <id> [--update <plugin-id>] [--json]`, `install <prepared-directory>`, `update <plugin-id> <prepared-directory>`, `history <plugin-id> [--json]`, or `rollback <plugin-id> <version-key>`. Mutations require --trust and explicit --grant for each permission; --enable is optional. Omit --trust to inspect a prepared candidate without registering it.",
+            "Use `plugin github discover [query] [--page N] [--json]`, `releases <url> [--json]`, `preview <url> --release <id> --asset <id> [--update <plugin-id>|--adopt <plugin-id>] [--json]`, `install <prepared-directory>`, `update <plugin-id> <prepared-directory>`, `adopt <plugin-id> <prepared-directory>`, `history <plugin-id> [--json]`, or `rollback <plugin-id> <version-key>`. Mutations require --trust and explicit --grant for each permission; --enable is optional. Omit --trust to inspect a prepared candidate without registering it.",
         )),
     }
 }
@@ -148,6 +198,7 @@ fn apply(preview: ManagedPreview, options: PluginTrustOptions) -> Result<(), Pro
     let action = match preview.operation {
         ManagedOperation::Install => PluginControlAction::Import,
         ManagedOperation::Update => PluginControlAction::Update,
+        ManagedOperation::Adopt => PluginControlAction::Update,
         ManagedOperation::Rollback => PluginControlAction::Rollback,
     };
     crate::plugin_cli::manage(
@@ -168,6 +219,7 @@ struct PreviewOptions {
     release_id: u64,
     asset_id: u64,
     update: Option<String>,
+    adopt: Option<String>,
     json: bool,
 }
 impl PreviewOptions {
@@ -175,6 +227,7 @@ impl PreviewOptions {
         let mut release_id = None;
         let mut asset_id = None;
         let mut update = None;
+        let mut adopt = None;
         let mut json = false;
         let mut args = arguments.iter();
         while let Some(argument) = args.next() {
@@ -184,14 +237,21 @@ impl PreviewOptions {
                 "--update" if update.is_none() => {
                     update = Some(text(args.next().ok_or(ProbeError::Usage)?)?.to_owned())
                 }
+                "--adopt" if adopt.is_none() => {
+                    adopt = Some(text(args.next().ok_or(ProbeError::Usage)?)?.to_owned())
+                }
                 "--json" if !json => json = true,
                 _ => return Err(ProbeError::Usage),
             }
+        }
+        if update.is_some() && adopt.is_some() {
+            return Err(ProbeError::Usage);
         }
         Ok(Self {
             release_id: release_id.ok_or(ProbeError::Usage)?,
             asset_id: asset_id.ok_or(ProbeError::Usage)?,
             update,
+            adopt,
             json,
         })
     }
@@ -267,5 +327,20 @@ mod tests {
         assert_eq!((options.release_id, options.asset_id), (1, 2));
         assert_eq!(options.update.as_deref(), Some("dev.example"));
         assert!(options.json);
+        let adopt = parse(&["--release", "1", "--asset", "2", "--adopt", "dev.example"]).unwrap();
+        assert_eq!(adopt.adopt.as_deref(), Some("dev.example"));
+        assert!(
+            parse(&[
+                "--release",
+                "1",
+                "--asset",
+                "2",
+                "--adopt",
+                "dev.example",
+                "--update",
+                "dev.example"
+            ])
+            .is_err()
+        );
     }
 }

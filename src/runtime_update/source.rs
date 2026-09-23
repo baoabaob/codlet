@@ -73,14 +73,21 @@ impl UpdateClient {
         profile: Option<RuntimePayloadProfile>,
     ) -> Result<Option<Candidate>> {
         let selected_profile = profile.unwrap_or_else(|| {
-            if std::env::current_exe()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_owned()))
-                .is_some_and(|n| n.eq_ignore_ascii_case("codlet-lab.exe"))
+            #[cfg(target_os = "macos")]
             {
-                RuntimePayloadProfile::IsolatedClient
-            } else {
-                RuntimePayloadProfile::Portable
+                RuntimePayloadProfile::MacApp
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                if std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_owned()))
+                    .is_some_and(|n| n.eq_ignore_ascii_case("codlet-lab.exe"))
+                {
+                    RuntimePayloadProfile::IsolatedClient
+                } else {
+                    RuntimePayloadProfile::Portable
+                }
             }
         });
         match channel.source.as_ref().ok_or_else(|| {
@@ -127,16 +134,7 @@ impl UpdateClient {
             } => {
                 let repo = crate::github_distribution::GitHubRepository::parse(repository_url)
                     .map_err(|e| error("runtime_update_channel_invalid", e.message))?;
-                let api = format!(
-                    "https://api.github.com/repos/{}/{}/releases/latest",
-                    repo.owner, repo.name
-                );
-                let origins = BTreeSet::from(["https://api.github.com".into()]);
-                let bytes = self
-                    .small(https_url(&api)?, &origins, false, MAX_MANIFEST)
-                    .await?;
-                let release: GitHubRelease = serde_json::from_slice(&bytes)
-                    .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
+                let release = self.github_release(&repo, channel, manifest_asset).await?;
                 if release.id == 0
                     || release.draft
                     || (channel.channel == "stable" && release.prerelease)
@@ -234,6 +232,79 @@ impl UpdateClient {
                 )?))
             }
         }
+    }
+    async fn github_release(
+        &self,
+        repo: &crate::github_distribution::GitHubRepository,
+        channel: &RuntimeUpdateChannel,
+        manifest_asset: &str,
+    ) -> Result<GitHubRelease> {
+        let stable = channel.channel == "stable";
+        // GitHub's /latest endpoint deliberately excludes prereleases. Preview
+        // installations inspect the bounded recent release list instead.
+        let base = format!(
+            "https://api.github.com/repos/{}/{}/releases",
+            repo.owner, repo.name
+        );
+        let api = if stable {
+            format!("{base}/latest")
+        } else {
+            format!("{base}?per_page=30")
+        };
+        let origins = BTreeSet::from(["https://api.github.com".into()]);
+        let bytes = self
+            .small(https_url(&api)?, &origins, false, MAX_MANIFEST)
+            .await?;
+        if stable {
+            return serde_json::from_slice(&bytes)
+                .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()));
+        }
+        let releases: Vec<GitHubRelease> = serde_json::from_slice(&bytes)
+            .map_err(|e| error("runtime_update_manifest_invalid", e.to_string()))?;
+        if releases.len() > 30 {
+            return Err(error(
+                "runtime_update_manifest_invalid",
+                "GitHub returned more releases than requested.",
+            ));
+        }
+        let mut selected: Option<GitHubRelease> = None;
+        for release in releases {
+            let version = release
+                .tag_name
+                .strip_prefix('v')
+                .unwrap_or(&release.tag_name);
+            if release.id == 0
+                || release.draft
+                || !release.prerelease
+                || release.assets.len() > 128
+                || !release
+                    .assets
+                    .iter()
+                    .any(|asset| asset.name == manifest_asset)
+                || parse_version(version).is_err()
+            {
+                continue;
+            }
+            let replace = match &selected {
+                None => true,
+                Some(previous) => newer(
+                    version,
+                    previous
+                        .tag_name
+                        .strip_prefix('v')
+                        .unwrap_or(&previous.tag_name),
+                )?,
+            };
+            if replace {
+                selected = Some(release);
+            }
+        }
+        selected.ok_or_else(|| {
+            error(
+                "runtime_update_not_published",
+                "No public preview release contains this update manifest.",
+            )
+        })
     }
     async fn manifest(
         &self,

@@ -82,6 +82,7 @@ fn release_asset_selection_keeps_the_platform_and_refuses_ambiguous_archives() {
         content_type: "application/zip".into(),
         download_url: String::new(),
         digest: None,
+        download_count: None,
     };
     let mut release = GitHubRelease {
         id: 2,

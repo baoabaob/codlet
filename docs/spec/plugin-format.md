@@ -56,6 +56,14 @@ Optional `codlet-package.json` is bounded to 64 KiB and has this separate schema
 {"schema":1,"runtimeApi":1,"platforms":["windows-x86_64"],"author":"Example author","adapters":{"example":{"testedBuilds":[]}}}
 ```
 
-`runtimeApi`, `platforms`, `author` and `adapters` are optional; unknown top-level fields are rejected. Runtime API must match when declared. A nonempty platform list must include the current target or a broader matching declaration such as `windows` or `any`; omission means unknown. Author text is bounded to 512 bytes. Adapter JSON is an author declaration, not Core verification of private client internals. Put license text in license files rather than inventing a manifest/metadata field.
+`runtimeApi`, `platforms`, `author` and `adapters` are optional; unknown top-level fields are rejected. Runtime API must match when declared. A nonempty platform list must include the current target or a broader matching declaration such as `windows` or `any`; omission means unknown. Core can preview an incompatible package to explain the declaration, then rejects registration/activation. The same bounded metadata reader applies to GitHub, local-import and installer-owned packages; changing metadata after preview changes the local content digest. Author text is bounded to 512 bytes. Adapter JSON is an author declaration, not Core verification of private client internals. Put license text in license files rather than inventing a manifest/metadata field.
 
 Core and its official plugins use Apache-2.0. Independent third-party plugins choose their own applicable licenses; using the runtime does not impose an Apache-only marketplace policy. Keep third-party dependency notices. Platform declarations, dependency compatibility and actual device acceptance remain separate evidence.
+
+For market indexing, a public GitHub Release may also upload a separate `codlet-release.json` asset (at most 16 KiB):
+
+```json
+{"schema":1,"kind":"codlet-plugin-release","manifest":{"schema":1,"id":"dev.example","version":"1.0.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":[]},"metadata":{"schema":1,"runtimeApi":1,"platforms":["windows-x86_64"],"author":"Example author"},"asset":{"name":"dev.example-1.0.0.zip","bytes":12345,"sha256":"<64 lowercase hex digits>"}}
+```
+
+The declaration must name exactly one uploaded ZIP asset in the same Release, with matching size and GitHub asset SHA-256 digest. Discovery uses it only as a publisher claim to identify which ZIP download count and author metadata to display. Missing, malformed or inconsistent declarations leave statistics/compatibility unknown. It does not authorize installation or bypass Core's full ZIP, manifest, dependency, permission and receipt checks during `githubPrepare` and management submit.
