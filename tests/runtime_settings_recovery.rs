@@ -1,14 +1,20 @@
 use std::time::{Duration, Instant};
 
 use codlet::runtime_settings::SettingsDocument;
-use codlet::runtime_update::{RuntimeUpdatePhase, RuntimeUpdateService};
+use codlet::runtime_update::{PLATFORM, RuntimeUpdatePhase, RuntimeUpdateService};
 
 #[test]
 fn an_unavailable_update_worker_cannot_turn_a_failed_settings_apply_into_success() {
     let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join("runtime")).unwrap();
+    let channel_path = if PLATFORM == "darwin-arm64" {
+        root.path()
+            .join("Codlet.app/Contents/Resources/runtime/update-channel.json")
+    } else {
+        root.path().join("runtime/update-channel.json")
+    };
+    std::fs::create_dir_all(channel_path.parent().unwrap()).unwrap();
     // This is rejected locally by the source validator, before any request.
-    std::fs::write(root.path().join("runtime/update-channel.json"), br#"{
+    std::fs::write(channel_path, br#"{
       "schema": 1, "channel": "stable", "checkIntervalSeconds": 900,
       "source": {"kind": "https", "manifestUrl": "http://invalid.invalid/manifest.json", "allowedAssetOrigins": []}
     }"#).unwrap();
