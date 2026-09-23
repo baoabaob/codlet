@@ -221,10 +221,7 @@ fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
     let migrated = read_channel(root.path()).unwrap();
     assert_eq!(migrated.check_interval_seconds, 901);
-    assert_eq!(
-        selected_asset(migrated),
-        "codlet-update-managed.json"
-    );
+    assert_eq!(selected_asset(migrated), "codlet-update-managed.json");
     channel.check_interval_seconds = 900;
     if let Some(RuntimeUpdateSource::Github { repository_url, .. }) = &mut channel.source {
         *repository_url = "https://github.com/community/codlet".into();

@@ -917,3 +917,5 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_acceptance;

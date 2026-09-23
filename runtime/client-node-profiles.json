@@ -16,7 +16,7 @@
       }
     },
     {
-      "enabled": false,
+      "enabled": true,
       "platform": "darwin-arm64",
       "nodeVersion": "24.21.0",
       "nodeSha256": "185e384f0784005202c0ad19c569f6764c6109f1c9903a36417578d28322f68a",

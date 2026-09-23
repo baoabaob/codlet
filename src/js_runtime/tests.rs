@@ -11,7 +11,7 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn embedded_client_profiles_decode_exact_source_fields_and_keep_mac_disabled() {
+fn embedded_client_profiles_decode_reviewed_windows_and_mac_sources() {
     let profiles = provision::profiles().unwrap();
     let windows = profiles
         .iter()
@@ -23,7 +23,8 @@ fn embedded_client_profiles_decode_exact_source_fields_and_keep_mac_disabled() {
         .iter()
         .find(|profile| profile.platform == "darwin-arm64")
         .unwrap();
-    assert!(!mac.enabled);
+    assert!(mac.enabled);
+    assert_eq!(mac.node_version, "24.21.0");
 }
 
 fn fixture_pin(node: &[u8], license: &[u8], mode: Option<&str>) -> RuntimePin {

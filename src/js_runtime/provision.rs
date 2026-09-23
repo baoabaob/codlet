@@ -1338,9 +1338,7 @@ async fn download_archive_attempt(
         .user_agent("Codlet-managed-Node/1");
     #[cfg(windows)]
     let builder = builder.use_native_tls();
-    let client = builder
-        .build()
-        .map_err(network_error)?;
+    let client = builder.build().map_err(network_error)?;
     let mut current = url::Url::parse(url).map_err(|_| invalid("Official Node URL is invalid"))?;
     let archive = path
         .file_name()
