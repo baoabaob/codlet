@@ -897,7 +897,7 @@ impl SharedCoreServices {
                     &|| Ok(()),
                 );
             }
-            "traffic.register" => {
+            "traffic.register" | "traffic.openSource" => {
                 if let Some(traffic) = self
                     .0
                     .entrance
@@ -907,8 +907,16 @@ impl SharedCoreServices {
                 {
                     let _ = traffic.invoke(
                         p,
-                        "unregister",
-                        json!({"registration":value["registration"]}),
+                        if method == "traffic.openSource" {
+                            "closeSource"
+                        } else {
+                            "unregister"
+                        },
+                        if method == "traffic.openSource" {
+                            json!({"source":value["source"]})
+                        } else {
+                            json!({"registration":value["registration"]})
+                        },
                         Arc::new(|_, _| Ok(false)),
                     );
                 }

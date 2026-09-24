@@ -4221,7 +4221,7 @@ var require_host_interceptors = __commonJS({
     var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();
     var fail = (code) => Object.assign(new Error(code), { code });
     function createHostedInterceptors({ coreRequest, rootSignal, detach = (fn) => fn() }) {
-      const registrations = /* @__PURE__ */ new Map(), leases = /* @__PURE__ */ new Map();
+      const registrations = /* @__PURE__ */ new Map(), leases = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new Set();
       let peer, connecting, retired = false, connectionEpoch = 0;
       const check = () => {
         if (retired || rootSignal.aborted) throw fail("host_stopping");
@@ -4242,6 +4242,8 @@ var require_host_interceptors = __commonJS({
           registrations.clear();
           peer = null;
           connecting = null;
+          for (const source of sources) source.retired = true;
+          sources.clear();
         }
       }
       function leaseFor(params) {
@@ -4390,6 +4392,45 @@ var require_host_interceptors = __commonJS({
           inspect: () => Object.freeze({ registered: !registration.closed, enabled: !registration.closed && registration.enabled, exchanges: [...leases.values()].filter((lease) => lease.registration === registration).length })
         });
       }
+      async function openSource(options) {
+        check();
+        await getPeer();
+        const value = await coreRequest("services.traffic.openSource", options, rootSignal);
+        const record = { retired: false };
+        sources.add(record);
+        const finish = async () => {
+          if (record.retired) return;
+          record.retired = true;
+          sources.delete(record);
+          try {
+            const result = await coreRequest("services.traffic.closeSource", { source: value.source }, rootSignal);
+            await synchronized(result.revision, false);
+          } catch (error) {
+            if (!["host_stopping", "stale_generation", "authorization_revoked", "traffic_unavailable"].includes(error.code)) throw error;
+          }
+        };
+        async function synchronized(revision, expectedOpen) {
+          const deadline = Date.now() + 2e3;
+          while (true) {
+            check();
+            const state = await coreRequest("services.traffic.sourceStatus", { source: value.source, revision }, rootSignal);
+            if (state.applied && state.open === expectedOpen) return;
+            if (expectedOpen && !state.open) throw fail("source_retired");
+            if (Date.now() >= deadline) throw fail("traffic_timeout");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        }
+        try {
+          await synchronized(value.revision, true);
+          check();
+          if (record.retired) throw fail("source_retired");
+        } catch (error) {
+          await finish().catch(() => {
+          });
+          throw error;
+        }
+        return Object.freeze({ endpoint: value.endpoint, close: finish, dispose: finish });
+      }
       function closeAll() {
         if (retired) return;
         retired = true;
@@ -4398,10 +4439,13 @@ var require_host_interceptors = __commonJS({
         for (const registration of registrations.values()) registration.closed = true;
         registrations.clear();
         peer?.close();
+        for (const source of sources) source.retired = true;
+        sources.clear();
       }
       rootSignal.addEventListener("abort", closeAll, { once: true });
       return Object.freeze({
         registerInterceptor: (options, handlers) => detach(() => registerInterceptor(options, handlers)),
+        openSource: (options) => detach(() => openSource(options)),
         inspect: () => coreRequest("services.traffic.status", {}, rootSignal),
         closeAll
       });
@@ -4684,7 +4728,7 @@ var require_host_traffic = __commonJS({
           reporting = false;
         });
       }
-      const fail = (code, message, data) => makeError(code, message, data);
+      const fail = (code, message, data) => Object.assign(makeError(code, message, data), data === void 0 ? {} : { data });
       const integer = (value, fallback, maximum, name) => {
         value ??= fallback;
         if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw fail("invalid_argument", `${name} must be an integer in 1..${maximum}`);
@@ -5519,7 +5563,7 @@ ${reason}`);
         return openChannel(options, { http: handler });
       }
       rootSignal.addEventListener("abort", () => closeAll(rootSignal.reason), { once: true });
-      return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
+      return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, openSource: interceptors.openSource, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
     }
     module2.exports = { createTrafficRuntime, createTrafficInterceptors: require_traffic_interceptors().createTrafficInterceptors };
   }
@@ -5533,6 +5577,7 @@ var require_traffic_gateway = __commonJS({
     var { createTrafficInterceptors } = require_traffic_interceptors();
     var failure = (code) => Object.assign(new Error(code), { code });
     async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigins = () => {
+    }, onSources = () => {
     }, onUnavailable = () => {
     }, connect = connectTrafficPeer }) {
       const hooks = /* @__PURE__ */ new Map(), leases = /* @__PURE__ */ new Map(), exchanges = /* @__PURE__ */ new WeakMap();
@@ -5608,6 +5653,7 @@ var require_traffic_gateway = __commonJS({
               hooks.set(item.registration, { controller: ownerController, origins: item.options.origins });
             }
             await onOrigins([...new Set([...hooks.values()].flatMap((hook) => hook.origins))]);
+            await onSources(snapshot.sources ?? []);
             await peer.request("applied", { revision: snapshot.revision }, { signal: controller.signal, timeoutMs: 2e3 });
           }
         })().finally(() => {
@@ -5772,6 +5818,7 @@ var require_plaintext_source = __commonJS({
     async function createPlaintextSource({ runtime, gateway, signal }) {
       if (!runtime?.api?.openChannel || !gateway?.handlers?.http || !gateway?.handlers?.webSocket || !signal) throw new TypeError("trusted source dependencies are required");
       const routes = /* @__PURE__ */ new Map(), exchanges = /* @__PURE__ */ new Map(), routeWaiters = /* @__PURE__ */ new Map(), trustProfiles = /* @__PURE__ */ new Map();
+      const owned = Symbol("native-owned-sources");
       let closed = false;
       function createConfig(base, caPem) {
         if (!caPem) return { base, profile: null };
@@ -5862,6 +5909,7 @@ var require_plaintext_source = __commonJS({
         async http(request, exchange) {
           const { token, suffix } = pathForRoute(request.path);
           const route = await awaitRoute(token, exchange);
+          if (route.peer === owned && (await gateway.native("authorizeSource", { source: token }, exchange.signal)).allowed !== true) throw failure("permission_denied");
           const config = route.config;
           const target = new URL(suffix.slice(1), config.base);
           if (target.origin !== config.base.origin || !target.pathname.startsWith(config.base.pathname)) throw failure("invalid_target");
@@ -5870,6 +5918,7 @@ var require_plaintext_source = __commonJS({
         async webSocket(request, exchange) {
           const { token, suffix } = pathForRoute(request.path);
           const route = await awaitRoute(token, exchange);
+          if (route.peer === owned && (await gateway.native("authorizeSource", { source: token }, exchange.signal)).allowed !== true) throw failure("permission_denied");
           const config = route.config;
           const target = new URL(suffix.slice(1), config.base);
           if (target.origin !== config.base.origin || !target.pathname.startsWith(config.base.pathname)) throw failure("invalid_target");
@@ -5895,16 +5944,37 @@ var require_plaintext_source = __commonJS({
         }
         for (const record of [...exchanges.values()]) if (record.peer === peer) retire(record);
       }
+      function syncOwnedRoutes(values) {
+        if (closed) throw failure("traffic_unavailable");
+        const present = new Set(values.map((value) => value.token));
+        for (const [token, route] of routes) if (route.peer === owned && !present.has(token)) {
+          routes.delete(token);
+          route.closed = true;
+          for (const exchange of route.active) exchange.cancel();
+        }
+        for (const value of values) {
+          if (!TOKEN.test(value.token)) throw failure("invalid_target");
+          const existing = routes.get(value.token);
+          if (existing) {
+            if (existing.peer !== owned || existing.config.base.href !== baseUrl(value.upstreamBaseUrl).href) throw failure("route_collision");
+            continue;
+          }
+          if ([...routes.values()].filter((route2) => route2.peer === owned).length >= MAX_ROUTES) throw failure("resource_limit");
+          const route = { peer: owned, config: createConfig(baseUrl(value.upstreamBaseUrl), ""), active: /* @__PURE__ */ new Set(), closed: false };
+          routes.set(value.token, route);
+          resolveRoute(value.token, route);
+        }
+      }
       async function handle(peer, method, params) {
         if (closed || signal.aborted) throw failure("traffic_unavailable");
         if (method === "route.register") {
-          if (routes.size >= MAX_ROUTES) throw failure("resource_limit");
+          if ([...routes.values()].filter((route2) => route2.peer !== owned).length >= MAX_ROUTES) throw failure("resource_limit");
           if (!TOKEN.test(params?.token) || routes.has(params.token)) throw failure("route_collision");
           const base = baseUrl(params.upstreamBaseUrl);
           const caPem = await readCertificate(peer, params.token, params.additionalCaPem);
           if (closed || signal.aborted) throw failure("traffic_unavailable");
           if (routes.has(params.token)) throw failure("route_collision");
-          if (routes.size >= MAX_ROUTES) throw failure("resource_limit");
+          if ([...routes.values()].filter((route2) => route2.peer !== owned).length >= MAX_ROUTES) throw failure("resource_limit");
           const route = { peer, config: createConfig(base, caPem), active: /* @__PURE__ */ new Set(), closed: false };
           routes.set(params.token, route);
           resolveRoute(params.token, route);
@@ -6015,7 +6085,7 @@ var require_plaintext_source = __commonJS({
           endpoint: peerServer.endpoint,
           routeBaseUrl: routeChannel.endpoint
         });
-        return Object.freeze({ descriptor, close, trustForProfile, status: () => ({
+        return Object.freeze({ descriptor, close, trustForProfile, syncOwnedRoutes, status: () => ({
           open: !closed,
           routes: routes.size,
           exchanges: exchanges.size,
@@ -6126,7 +6196,12 @@ var require_traffic_worker = __commonJS({
       rootSignal.addEventListener("abort", stop, { once: true });
       signal.addEventListener("abort", onAbort, { once: true });
       try {
-        gateway = await connectTrafficGateway(configuration.endpoint, { signal, networkProfile: "native-inherited", onUnavailable: stop });
+        gateway = await connectTrafficGateway(configuration.endpoint, {
+          signal,
+          networkProfile: "native-inherited",
+          onUnavailable: stop,
+          onSources: (values) => source?.syncOwnedRoutes(values)
+        });
         source = await createPlaintextSource({ runtime, gateway, signal });
         if (signal.aborted) throw failure("host_stopping");
         await gateway.native("launched", { source: source.descriptor, environmentPatch: { set: {}, removeCaseInsensitive: [] } });

@@ -106,6 +106,90 @@ impl Fixture {
 }
 
 #[test]
+fn owned_sources_are_origin_checked_generation_scoped_and_revoked() {
+    let f = Fixture::new();
+    let mut gateway = f.gateway();
+    let _host = f.host("test.traffic-a");
+    gateway.call(
+        "launched",
+        json!({"source":{"routeBaseUrl":"http://127.0.0.1:3000/private"}}),
+    );
+    assert_eq!(
+        f.invoke(
+            "test.traffic-a",
+            "openSource",
+            json!({"upstreamBaseUrl":"https://denied.invalid"}),
+            true
+        )
+        .unwrap_err()
+        .code,
+        "policy_denied"
+    );
+    for value in [
+        "https://allowed.invalid/a%2fb",
+        "https://allowed.invalid/?token=x",
+        "https://user:pass@allowed.invalid",
+    ] {
+        assert!(
+            f.invoke(
+                "test.traffic-a",
+                "openSource",
+                json!({"upstreamBaseUrl":value}),
+                true
+            )
+            .is_err()
+        );
+    }
+    let source = f
+        .invoke(
+            "test.traffic-a",
+            "openSource",
+            json!({"upstreamBaseUrl":"https://allowed.invalid/v1"}),
+            true,
+        )
+        .unwrap();
+    let key = source["source"].as_str().unwrap();
+    assert_eq!(key.len(), 43);
+    assert_eq!(
+        gateway.call("snapshot", json!({}))["result"]["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        gateway.call("authorizeSource", json!({"source":key}))["result"]["allowed"],
+        true
+    );
+    assert_eq!(
+        f.invoke("test.traffic-b", "closeSource", json!({"source":key}), true)
+            .unwrap_err()
+            .code,
+        "permission_denied"
+    );
+    assert!(
+        f.invoke(
+            "test.traffic-a",
+            "openSource",
+            json!({"upstreamBaseUrl":"https://allowed.invalid"}),
+            false
+        )
+        .is_err()
+    );
+    f.traffic.retire(&owner_key(
+        &f.services.0.owners.lock().unwrap()["test.traffic-a"],
+    ));
+    assert_eq!(
+        gateway.call("snapshot", json!({}))["result"]["sources"],
+        json!([])
+    );
+    assert_eq!(
+        gateway.call("authorizeSource", json!({"source":key}))["error"]["code"],
+        "stale_generation"
+    );
+}
+
+#[test]
 fn status_reports_only_explicit_source_activation_and_clears_it_on_retirement() {
     let fixture = Fixture::new();
     let _gateway = fixture.gateway();

@@ -181,6 +181,13 @@ export interface HostContext {
   };
   readonly system: { info(options?: ManagedOptions): Promise<{ os: string; architecture: string; logicalCpus: number }> };
   readonly traffic: {
+    /** Own-source ingress through the real Core interceptor pipeline (HTTP/SSE/WS).
+     * Requires traffic.intercept, host.network and the upstream exact-origin grant.
+     * Does not imply that the official client's Native sources are attached.
+     * Opaque loopback endpoint is generation-owned; close cancels active exchanges.
+     * Base path accepts unescaped ASCII path segments; no credentials/query/hash.
+     */
+    openSource(options: { upstreamBaseUrl: string }): Promise<Readonly<{ endpoint: string; close(): Promise<void>; dispose(): Promise<void> }>>;
     /** Creates one private loopback endpoint for the handlers that are present. */
     openChannel(options: TrafficChannelOptions, handlers: TrafficChannelHandlers): Promise<TrafficChannel>;
     /** Requires host.network and an explicit origin grant for every forward call. */

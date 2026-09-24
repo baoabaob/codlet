@@ -34,6 +34,8 @@ struct Package {
     version: String,
     permissions: Vec<Permission>,
     files: Vec<FileRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    update_source: Option<crate::plugin_update_source::UpdateChannel>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +147,9 @@ fn write(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 fn valid(package: &Package) -> Result<()> {
+    if let Some(channel) = &package.update_source {
+        channel.validate(true).map_err(error)?;
+    }
     if !crate::plugins::valid_plugin_id(&package.id)
         || package.files.is_empty()
         || package.files.len() > 512
@@ -189,31 +194,97 @@ fn valid(package: &Package) -> Result<()> {
 /// Read-only proof that a registration still points to an unmodified installer
 /// package. The migration path never infers ownership from an ID or display name.
 pub(crate) fn verified_installer_source(registry: &PluginRegistry, id: &str) -> bool {
-    let Some(registration) = registry.local_plugins().get(id) else {
-        return false;
-    };
+    verified_installer_package(registry, id).is_some()
+}
+fn verified_installer_package(registry: &PluginRegistry, id: &str) -> Option<Package> {
+    let registration = registry.local_plugins().get(id)?;
     if registry.managed_plugins().contains_key(id) {
-        return false;
+        return None;
     }
-    let Some(home) = registry.path().parent() else {
-        return false;
-    };
+    let home = registry.path().parent()?;
     let Ok(home) = home.canonicalize() else {
-        return false;
+        return None;
     };
     if registration.path != home.join("packages").join(id) {
-        return false;
+        return None;
     }
     let receipt_path = home
         .join(".official-seed-transactions")
         .join(format!("{id}.receipt.json"));
-    let Ok(receipt) = read::<Receipt>(&receipt_path) else {
-        return false;
-    };
-    receipt.schema == 1
+    if let Ok(receipt) = read::<Receipt>(&receipt_path)
+        && receipt.schema == 1
         && receipt.source == "official-installer"
         && receipt.package.id == id
         && verify(&registration.path, &receipt.package).is_ok()
+    {
+        return Some(receipt.package);
+    }
+    if let Some(package) = old_script_package(registry.path(), id, &registration.path) {
+        return Some(package);
+    }
+    let mut known: Vec<LegacyPackage> = serde_json::from_str(include_str!(
+        "../../scripts/distribution/legacy-official-seeds.json"
+    ))
+    .ok()?;
+    let transitions: Vec<LegacyPackage> = serde_json::from_str(include_str!(
+        "../../scripts/distribution/legacy-official-transitions.json"
+    ))
+    .ok()?;
+    known.extend(transitions);
+    known
+        .into_iter()
+        .map(|p| p.package)
+        .find(|p| p.id == id && verify(&registration.path, p).is_ok())
+}
+
+pub(crate) fn verified_update_channel(
+    registry: &PluginRegistry,
+    id: &str,
+) -> Option<(
+    crate::plugins::PluginManifest,
+    crate::plugin_update_source::UpdateChannel,
+    String,
+)> {
+    let executable = std::env::current_exe().ok()?;
+    update_channel_from_catalog(
+        registry,
+        id,
+        &executable.parent()?.join("optional-plugins/catalog.json"),
+    )
+}
+fn update_channel_from_catalog(
+    registry: &PluginRegistry,
+    id: &str,
+    catalog_path: &Path,
+) -> Option<(
+    crate::plugins::PluginManifest,
+    crate::plugin_update_source::UpdateChannel,
+    String,
+)> {
+    let package = verified_installer_package(registry, id)?;
+    let channel = if let Some(channel) = &package.update_source {
+        channel.clone()
+    } else {
+        // Compatibility for old receipts: use only the catalog shipped alongside
+        // this Core executable, after checking its complete current payload too.
+        let catalog: Catalog = read(catalog_path).ok()?;
+        if catalog.schema != 1 || catalog.kind != "codlet-official-plugin-bundle" {
+            return None;
+        }
+        let matches: Vec<_> = catalog.packages.iter().filter(|p| p.id == id).collect();
+        if matches.len() != 1 {
+            return None;
+        }
+        let current = matches[0];
+        verify(&catalog_path.parent()?.join("packages").join(id), current).ok()?;
+        current.update_source.clone()?
+    };
+    channel.validate(true).ok()?;
+    let manifest =
+        crate::local_plugins::inspect_local_plugin(&registry.local_plugins().get(id)?.path)
+            .ok()?
+            .manifest;
+    Some((manifest, channel, digest(&package)))
 }
 
 /// Retire only the exact installer-owned source after a managed adoption has
@@ -241,8 +312,14 @@ pub(crate) fn cleanup_adopted_source(
     if !source.exists() && !receipt_path.exists() {
         return Ok(());
     }
-    let receipt: Receipt = read(&receipt_path)?;
-    if receipt.schema != 1 || receipt.source != "official-installer" || receipt.package.id != id {
+    let receipt: Option<Receipt> = if receipt_path.exists() {
+        Some(read(&receipt_path)?)
+    } else {
+        None
+    };
+    if receipt.as_ref().is_some_and(|receipt| {
+        receipt.schema != 1 || receipt.source != "official-installer" || receipt.package.id != id
+    }) {
         return Err(error("Installer source receipt changed during cleanup"));
     }
     if source.exists() {
@@ -257,11 +334,18 @@ pub(crate) fn cleanup_adopted_source(
     }
     // The source directory is gone, so this receipt has no remaining package.
     // Re-read it to avoid clearing a receipt replaced during directory removal.
-    let current: Receipt = read(&receipt_path)?;
+    let current: Option<Receipt> = if receipt_path.exists() {
+        Some(read(&receipt_path)?)
+    } else {
+        None
+    };
     if current != receipt {
         return Err(error("Installer source receipt changed during cleanup"));
     }
-    fs::remove_file(&receipt_path).map_err(error)
+    if receipt.is_some() {
+        fs::remove_file(&receipt_path).map_err(error)?;
+    }
+    Ok(())
 }
 fn tree(
     directory: &Path,
@@ -395,6 +479,7 @@ fn old_script_package(registry: &Path, id: &str, target: &Path) -> Option<Packag
             version: manifest.version,
             permissions: manifest.permissions,
             files,
+            update_source: None,
         };
         if verify(target, &package).is_ok() {
             return Some(package);
@@ -866,6 +951,7 @@ mod tests {
                 version: version.into(),
                 permissions,
                 files,
+                update_source: None,
             };
             write(
                 &self.catalog,
@@ -892,6 +978,43 @@ mod tests {
                 assert!(!tx.join(format!("{ID}.{suffix}")).exists());
             }
         }
+    }
+
+    #[test]
+    fn old_installer_receipt_can_read_a_channel_only_from_a_verified_current_catalog() {
+        let f = Fixture::new();
+        f.package("1", vec![Permission::UiDom]);
+        f.install();
+        let registry = f.registry();
+        assert!(update_channel_from_catalog(&registry, ID, &f.catalog).is_none());
+        let mut catalog: Value = read(&f.catalog).unwrap();
+        catalog["packages"][0]["updateSource"] = json!({"kind":"github","repositoryUrl":"https://github.com/example/plugin","repositoryId":12,"ownerId":34,"assetNameTemplate":"plugin-{version}.zip"});
+        write(&f.catalog, &catalog).unwrap();
+        let (manifest, channel, _) =
+            update_channel_from_catalog(&registry, ID, &f.catalog).unwrap();
+        assert_eq!(manifest.version, "1");
+        assert_eq!(channel.repository_id, Some(12));
+        let before = fs::read(receipt_path(&f.registry, ID).unwrap()).unwrap();
+        let _ = update_channel_from_catalog(&registry, ID, &f.catalog).unwrap();
+        assert_eq!(
+            before,
+            fs::read(receipt_path(&f.registry, ID).unwrap()).unwrap(),
+            "Checking must never migrate the receipt"
+        );
+        fs::write(f.target().join("author.txt"), "keep").unwrap();
+        assert!(update_channel_from_catalog(&registry, ID, &f.catalog).is_none());
+        fs::remove_file(f.target().join("author.txt")).unwrap();
+        fs::write(
+            f.catalog
+                .parent()
+                .unwrap()
+                .join("packages")
+                .join(ID)
+                .join("renderer.js"),
+            "changed current payload",
+        )
+        .unwrap();
+        assert!(update_channel_from_catalog(&registry, ID, &f.catalog).is_none());
     }
 
     #[test]

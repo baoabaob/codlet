@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::github_distribution::{
-    GitHubClient, GitHubLink, GitHubRepository, GitHubSource, ReleaseCatalog,
-};
+#[cfg(test)]
+use crate::github_distribution::GitHubSource;
+use crate::github_distribution::{GitHubClient, GitHubLink, GitHubRepository, ReleaseCatalog};
+use crate::plugin_update_source::PluginUpdateSource;
 use crate::plugins::PluginRegistry;
 use crate::runtime_update::newer_version;
 use serde::Serialize;
@@ -78,10 +79,7 @@ impl PluginUpdates {
         // Never attach cached repository results to a replacement registration.
         match PluginRegistry::load(self.0.registry.as_ref()) {
             Ok(registry) => status.plugins.retain(|id, value| {
-                registry
-                    .managed_plugins()
-                    .get(id)
-                    .and_then(|record| record.current())
+                PluginUpdateSource::load(&registry, id)
                     .is_some_and(|current| current.version_key == value.version_key)
             }),
             Err(_) => {
@@ -116,9 +114,9 @@ impl PluginUpdates {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
                 runtime.block_on(async {
                     let client = GitHubClient::new().map_err(|e| e.to_string())?;
-                    let work = scan(registry.as_ref(), |link| {
+                    let work = scan(registry.as_ref(), |link, channel| {
                         let client = client.clone();
-                        async move { tokio::time::timeout(Duration::from_secs(15), client.list_releases(&link)).await
+                        async move { channel.verify_identity(&client).await?; tokio::time::timeout(Duration::from_secs(15), client.list_releases(&link)).await
                             .map_err(|_| "Plugin update check timed out".to_string())?.map_err(|e| e.to_string()) }
                     });
                     tokio::pin!(work);
@@ -161,15 +159,11 @@ async fn scan<F, Fut>(
     mut fetch: F,
 ) -> Result<BTreeMap<String, PluginReleaseStatus>, String>
 where
-    F: FnMut(GitHubLink) -> Fut,
+    F: FnMut(GitHubLink, crate::plugin_update_source::UpdateChannel) -> Fut,
     Fut: Future<Output = Result<ReleaseCatalog, String>>,
 {
     let registry = PluginRegistry::load(registry_path).map_err(|e| e.to_string())?;
-    let current: Vec<_> = registry
-        .managed_plugins()
-        .iter()
-        .filter_map(|(id, record)| record.current().map(|v| (id, v)))
-        .collect();
+    let current = PluginUpdateSource::all(&registry);
     if current.len() > MAX_PLUGINS {
         return Err("Too many managed plugins to check together; check individual plugins".into());
     }
@@ -177,7 +171,7 @@ where
     let mut results = BTreeMap::new();
     for (id, version) in current {
         let repository =
-            GitHubRepository::parse(&version.source.repository_url).map_err(|e| e.to_string())?;
+            GitHubRepository::parse(&version.channel.repository_url).map_err(|e| e.to_string())?;
         let link = GitHubLink {
             repository,
             tag: None,
@@ -186,12 +180,12 @@ where
         };
         // Registry source, not a URL supplied by a renderer. No token or private
         // repository credentials are collected by background discovery.
-        let key = link.repository.url.to_ascii_lowercase();
+        let key = crate::local_import::digest(&version.channel);
         if !repositories.contains_key(&key) {
             let result = if repositories.len() >= MAX_REPOSITORIES {
                 Err("Repository check limit reached; check this plugin manually".into())
             } else {
-                fetch(link).await
+                fetch(link, version.channel.clone()).await
             };
             repositories.insert(key.clone(), result);
         }
@@ -203,7 +197,12 @@ where
             error: None,
         };
         match &repositories[&key] {
-            Ok(catalog) => select_release(&version.source, catalog, &mut status),
+            Ok(catalog) => select_release_version(
+                &version.comparison_version,
+                version.release_id,
+                catalog,
+                &mut status,
+            ),
             Err(error) => {
                 status.status = "failed";
                 status.error = Some(error.chars().take(1000).collect());
@@ -217,40 +216,54 @@ where
 fn tag_version(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
 }
+#[cfg(test)]
 fn select_release(
     source: &GitHubSource,
     catalog: &ReleaseCatalog,
     result: &mut PluginReleaseStatus,
 ) {
-    if let Some(release) = latest_release(source, catalog) {
+    select_release_version(
+        tag_version(&source.tag),
+        Some(source.release_id),
+        catalog,
+        result,
+    )
+}
+fn select_release_version(
+    current: &str,
+    release_id: Option<u64>,
+    catalog: &ReleaseCatalog,
+    result: &mut PluginReleaseStatus,
+) {
+    if let Some(release) = latest_release_version(current, release_id, catalog) {
         result.status = "available";
         result.release_tag = Some(release.tag.clone());
         result.release_url = Some(release.url.clone());
         return;
     }
-    if newer_version(tag_version(&source.tag), tag_version(&source.tag)).is_ok()
+    if newer_version(current, current).is_ok()
         && !catalog.truncated
         && catalog
             .releases
             .iter()
-            .all(|r| newer_version(tag_version(&r.tag), tag_version(&source.tag)).is_ok())
+            .all(|r| newer_version(tag_version(&r.tag), current).is_ok())
     {
         result.status = "upToDate";
     }
 }
 
-pub(crate) fn latest_release<'a>(
-    source: &GitHubSource,
+pub(crate) fn latest_release_version<'a>(
+    current: &str,
+    release_id: Option<u64>,
     catalog: &'a ReleaseCatalog,
 ) -> Option<&'a crate::github_distribution::GitHubRelease> {
-    let current = tag_version(&source.tag);
     if newer_version(current, current).is_err() {
         return None;
     }
     let accepts_prerelease = current.split('+').next().unwrap_or(current).contains('-');
     let mut candidate: Option<&crate::github_distribution::GitHubRelease> = None;
     for release in &catalog.releases {
-        if release.id == source.release_id
+        if Some(release.id) == release_id
             || release.prerelease && !accepts_prerelease
             || release.assets.is_empty()
         {
@@ -413,7 +426,7 @@ mod tests {
         registry.save().unwrap();
         let before = std::fs::read(&path).unwrap();
         let mut calls = 0;
-        let results = scan(&path, |link| {
+        let results = scan(&path, |link, _| {
             calls += 1;
             assert_eq!(link.repository.url, "https://github.com/example/notes");
             assert!(link.tag.is_none());
@@ -443,10 +456,38 @@ mod tests {
         assert!(service.status().plugins.is_empty());
     }
     #[tokio::test]
+    async fn installer_channel_participates_in_checks_and_changed_identity_invalidates_results() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = crate::plugin_update_source::fixture_seed(root.path(), "dev.seed");
+        let before = std::fs::read(registry.path()).unwrap();
+        let results = scan(registry.path(), |link, channel| async move {
+            assert_eq!(link.repository.url, "https://github.com/dev-owner/dev-repo");
+            assert_eq!(channel.repository_id, Some(42));
+            assert_eq!(channel.owner_id, Some(7));
+            let mut result = catalog(&[("v2.0.0", false)]);
+            result.repository = link.repository;
+            Ok(result)
+        })
+        .await
+        .unwrap();
+        assert_eq!(results["dev.seed"].status, "available");
+        assert_eq!(std::fs::read(registry.path()).unwrap(), before);
+        let service = PluginUpdates::new(Arc::new(registry.path().to_owned()));
+        service.0.status.lock().unwrap().plugins = results;
+        let receipt = root
+            .path()
+            .join(".official-seed-transactions/dev.seed.receipt.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+        value["package"]["updateSource"]["repositoryId"] = json!(43);
+        std::fs::write(receipt, value.to_string()).unwrap();
+        assert!(service.status().plugins.is_empty());
+    }
+    #[tokio::test]
     async fn network_failure_is_reported_without_claiming_a_plugin_is_current() {
         let root = tempfile::tempdir().unwrap();
         let path = registered(root.path(), &["notes.test"]);
-        let result = scan(&path, |_| async { Err("GitHub rate limit".into()) })
+        let result = scan(&path, |_, _| async { Err("GitHub rate limit".into()) })
             .await
             .unwrap();
         assert_eq!(result["notes.test"].status, "failed");

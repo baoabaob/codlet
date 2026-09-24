@@ -5,7 +5,7 @@ const failure = code => Object.assign(new Error(code), { code });
 
 // Trusted Core worker only. Endpoint identity is issued by the Native launch
 // owner; plugin options cannot create a gateway or select an owner generation.
-async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigins = () => {}, onUnavailable = () => {}, connect = connectTrafficPeer }) {
+async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigins = () => {}, onSources = () => {}, onUnavailable = () => {}, connect = connectTrafficPeer }) {
   const hooks = new Map(), leases = new Map(), exchanges = new WeakMap();
   const controller = new AbortController();
   const stop = () => controller.abort(failure('traffic_unavailable'));
@@ -64,6 +64,7 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
           hooks.set(item.registration, { controller: ownerController, origins: item.options.origins });
         }
         await onOrigins([...new Set([...hooks.values()].flatMap(hook => hook.origins))]);
+        await onSources(snapshot.sources ?? []);
         await peer.request('applied', { revision: snapshot.revision }, { signal: controller.signal, timeoutMs: 2000 });
       }
     })().finally(() => { refreshing = null; });

@@ -46,6 +46,7 @@ struct State {
     tickets: BTreeMap<String, Ticket>,
     peers: BTreeMap<String, Peer>,
     registrations: BTreeMap<String, Arc<Registration>>,
+    sources: BTreeMap<String, Arc<OwnedSource>>,
     leases: BTreeMap<String, Lease>,
     pending: BTreeMap<String, Pending>,
     sequence: u64,
@@ -98,6 +99,11 @@ struct Pending {
     id: Value,
     lease: String,
     expires: Instant,
+}
+struct OwnedSource {
+    owner: String,
+    base_url: String,
+    check: Check,
 }
 
 impl Traffic {
@@ -199,6 +205,92 @@ impl Traffic {
         let owner = owner_key(p);
         match method {
             "connect" => self.endpoint(Role::Host(owner)),
+            "openSource" => {
+                let object = params
+                    .as_object()
+                    .ok_or_else(|| error("invalid_params", "source options required"))?;
+                if object.keys().any(|key| key != "upstreamBaseUrl") {
+                    return Err(error("invalid_params", "unknown source option"));
+                }
+                let base = string(&params, "upstreamBaseUrl")?;
+                let url = url::Url::parse(base)
+                    .map_err(|_| error("invalid_params", "invalid source URL"))?;
+                if base.len() > 2048
+                    || base.contains('\\')
+                    || !url
+                        .path()
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"/-_.~".contains(&c))
+                    || !matches!(url.scheme(), "http" | "https")
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+                {
+                    return Err(error(
+                        "invalid_params",
+                        "an HTTP(S) base URL without credentials or query is required",
+                    ));
+                }
+                if !check("intercept", base)? {
+                    return Err(error("permission_denied", "source origin is not granted"));
+                }
+                let mut state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
+                let route_base = state
+                    .launch
+                    .as_ref()
+                    .and_then(|v| v["source"]["routeBaseUrl"].as_str())
+                    .filter(|_| state.ready)
+                    .ok_or_else(|| {
+                        error("traffic_unavailable", "Native source entrance is not ready")
+                    })?
+                    .to_owned();
+                if state.sources.len() >= 32
+                    || state.sources.values().filter(|s| s.owner == owner).count() >= 8
+                {
+                    return Err(error(
+                        "resource_limit",
+                        "owned traffic source limit reached",
+                    ));
+                }
+                let key = files::token("ownedroute")?;
+                state.sources.insert(
+                    key.clone(),
+                    Arc::new(OwnedSource {
+                        owner,
+                        base_url: url.to_string(),
+                        check,
+                    }),
+                );
+                self.hub.changed(&mut state);
+                Ok(
+                    json!({"source":key,"endpoint":format!("{route_base}/{key}"),"revision":state.revision}),
+                )
+            }
+            "sourceStatus" | "closeSource" => {
+                let key = string(&params, "source")?;
+                let mut state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
+                if state.sources.get(key).is_some_and(|s| s.owner != owner) {
+                    return Err(error(
+                        "permission_denied",
+                        "source belongs to another owner",
+                    ));
+                }
+                if method == "closeSource" {
+                    state.sources.remove(key);
+                    self.hub.changed(&mut state);
+                    return Ok(json!({"closed":true,"revision":state.revision}));
+                }
+                let revision = params["revision"]
+                    .as_u64()
+                    .ok_or_else(|| error("invalid_params", "revision required"))?;
+                if revision > state.revision {
+                    return Err(error("invalid_params", "future revision"));
+                }
+                Ok(
+                    json!({"open":state.sources.contains_key(key),"applied":state.ready && state.applied_revision >= revision}),
+                )
+            }
             "register" => {
                 let object = params
                     .as_object()
@@ -361,6 +453,7 @@ impl Traffic {
 
     pub(super) fn retire(&self, owner: &str) {
         let mut state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.sources.retain(|_, source| source.owner != owner);
         let keys = state
             .registrations
             .values()
@@ -515,8 +608,12 @@ impl Hub {
         let Some(peer) = state.peers.remove(peer) else {
             return;
         };
+        if let Role::Host(owner) = &peer.role {
+            state.sources.retain(|_, source| source.owner != *owner);
+        }
         let keys = match peer.role {
             Role::Gateway => {
+                state.sources.clear();
                 state.ready = false;
                 state.attached = false;
                 state.activated_sources.clear();

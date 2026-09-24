@@ -614,6 +614,23 @@ impl GitHubClient {
         Ok(())
     }
 
+    pub(crate) async fn verify_update_identity(
+        &self,
+        repository: &GitHubRepository,
+        repository_id: Option<u64>,
+        owner_id: Option<u64>,
+    ) -> Result<()> {
+        let identity = self.repository_identity(repository).await?;
+        if repository_id.is_some_and(|id| id != identity.repository_id)
+            || owner_id.is_some_and(|id| id != identity.owner_id)
+        {
+            return Err(error(
+                "github_repository_changed",
+                "The update channel's repository or owner identity changed. Review its source again.",
+            ));
+        }
+        Ok(())
+    }
     async fn repository_identity(
         &self,
         repository: &GitHubRepository,
@@ -1384,6 +1401,14 @@ pub(crate) fn test_prepare_archive(
     registry_path: &Path,
     bytes: &[u8],
 ) -> Result<PreparedGitHubPackage> {
+    test_prepare_archive_identity(registry_path, bytes, None)
+}
+#[cfg(test)]
+pub(crate) fn test_prepare_archive_identity(
+    registry_path: &Path,
+    bytes: &[u8],
+    identity: Option<(u64, u64)>,
+) -> Result<PreparedGitHubPackage> {
     let repository = GitHubRepository::parse("https://github.com/dev-owner/dev-repo")?;
     let asset = GitHubAsset {
         id: 2,
@@ -1404,7 +1429,17 @@ pub(crate) fn test_prepare_archive(
         published_at: None,
         assets: vec![asset.clone()],
     };
-    prepare_bytes(&repository, &release, &asset, bytes, registry_path, None)
+    prepare_bytes(
+        &repository,
+        &release,
+        &asset,
+        bytes,
+        registry_path,
+        identity.map(|(repository_id, owner_id)| RepositoryIdentity {
+            repository_id,
+            owner_id,
+        }),
+    )
 }
 
 #[cfg(test)]

@@ -1,11 +1,12 @@
 //! User-requested updates use the existing foreground lifecycle receipts.
 //! Downloads are automatic; existing grants and enablement are preserved. New
 //! authority or changed dependency contracts are returned for explicit review.
-use crate::github_distribution::{
-    GitHubAsset, GitHubClient, GitHubLink, GitHubRelease, GitHubSource,
-};
+#[cfg(test)]
+use crate::github_distribution::GitHubSource;
+use crate::github_distribution::{GitHubAsset, GitHubClient, GitHubLink, GitHubRelease};
 use crate::managed_plugins::{ManagedOperation, ManagedPreview};
 use crate::plugin_control::{PluginControlAction, PluginControlRequest};
+use crate::plugin_update_source::PluginUpdateSource;
 use crate::plugins::PluginRegistry;
 use crate::runtime_control::{ControlBroker, ControlRequest, ControlStatus};
 use crate::runtime_manage::RuntimeManageError;
@@ -69,7 +70,14 @@ impl PluginUpdateInstall {
             && let Some(preview) = state
                 .items
                 .iter()
-                .find(|item| item.plugin_id == plugin_id && item.phase == "reviewRequired")
+                .find(|item| {
+                    item.plugin_id == plugin_id
+                        && item.phase == "reviewRequired"
+                        && PluginRegistry::load(self.0.registry.as_ref())
+                            .ok()
+                            .and_then(|r| PluginUpdateSource::load(&r, plugin_id))
+                            .is_some_and(|s| s.version_key == item.version_key)
+                })
                 .and_then(|item| item.preview.clone())
         {
             return Ok(preview);
@@ -86,17 +94,15 @@ impl PluginUpdateInstall {
         let registry = PluginRegistry::load(self.0.registry.as_ref())
             .map_err(|e| RuntimeManageError::new("registry_error", e.to_string()))?;
         let plugin_ids = plugin_ids.unwrap_or_else(|| {
-            registry
-                .managed_plugins()
-                .iter()
-                .filter(|(_, record)| record.current().is_some())
-                .map(|(id, _)| id.clone())
+            PluginUpdateSource::all(&registry)
+                .into_iter()
+                .map(|(id, _)| id)
                 .collect()
         });
         if plugin_ids.is_empty() || plugin_ids.len() > 128 {
             return Err(RuntimeManageError::new(
                 "invalid_params",
-                "Choose between 1 and 128 GitHub plugins.",
+                "Choose between 1 and 128 plugins with a verified update channel.",
             ));
         }
         let mut items = Vec::new();
@@ -107,16 +113,12 @@ impl PluginUpdateInstall {
                     "Duplicate plugin ID.",
                 ));
             }
-            let version = registry
-                .managed_plugins()
-                .get(&id)
-                .and_then(|r| r.current())
-                .ok_or_else(|| {
-                    RuntimeManageError::new(
-                        "managed_plugin_required",
-                        "Only installed GitHub plugins can be updated.",
-                    )
-                })?;
+            let version = PluginUpdateSource::load(&registry, &id).ok_or_else(|| {
+                RuntimeManageError::new(
+                    "managed_plugin_required",
+                    "This plugin has no verified update channel, or its installer files changed.",
+                )
+            })?;
             items.push(Item {
                 plugin_id: id,
                 version_key: version.version_key.clone(),
@@ -169,7 +171,8 @@ impl PluginUpdateInstall {
                                 if needs_review(&preview) {
                                     let mut value=serde_json::to_value(&preview).map_err(|e|e.to_string())?;
                                     value.as_object_mut().unwrap().remove("history");
-                                    publish(&weak,work.id,&item.plugin_id,"reviewRequired",Some(preview.manifest.version.clone()),Some("This update changes permissions or plugin dependencies. Review it before installing.".into()),Some(value));
+                                    let message=if preview.changes.restart_required {"This update changes plugin entry shape. Apply it with the CLI while Codlet is stopped, then restart Codlet."}else if preview.operation==ManagedOperation::Adopt {"Review the first update from the installer package to its GitHub channel. Existing settings will be preserved."}else{"This update changes permissions or plugin dependencies. Review it before installing."};
+                                    publish(&weak,work.id,&item.plugin_id,"reviewRequired",Some(preview.manifest.version.clone()),Some(message.into()),Some(value));
                                 } else {
                                     publish(&weak,work.id,&item.plugin_id,"installing",Some(preview.manifest.version.clone()),None,None);
                                     match apply(&broker,&preview,&weak,work.id,&item.plugin_id).await {
@@ -216,25 +219,33 @@ fn asset_pattern(name: &str, tag: &str) -> String {
     name.replace(tag, "{version}")
         .replace(tag.strip_prefix('v').unwrap_or(tag), "{version}")
 }
+#[cfg(test)]
 pub(crate) fn select_asset<'a>(
     source: &GitHubSource,
     release: &'a GitHubRelease,
+) -> Result<&'a GitHubAsset, String> {
+    select_channel_asset(
+        &asset_pattern(&source.asset_name, &source.tag),
+        release,
+        true,
+    )
+}
+fn select_channel_asset<'a>(
+    template: &str,
+    release: &'a GitHubRelease,
+    allow_single: bool,
 ) -> Result<&'a GitHubAsset, String> {
     let assets: Vec<_> = release
         .assets
         .iter()
         .filter(|a| a.name.to_ascii_lowercase().ends_with(".zip"))
         .collect();
-    if assets.len() == 1 {
+    if allow_single && assets.len() == 1 {
         return Ok(assets[0]);
     }
     let matching: Vec<_> = assets
         .into_iter()
-        .filter(|a| {
-            a.name == source.asset_name
-                || asset_pattern(&a.name, &release.tag)
-                    == asset_pattern(&source.asset_name, &source.tag)
-        })
+        .filter(|a| a.name == template || asset_pattern(&a.name, &release.tag) == template)
         .collect();
     if matching.len() == 1 {
         Ok(matching[0])
@@ -252,18 +263,12 @@ async fn prepare_latest(
     expected: &str,
 ) -> Result<Option<ManagedPreview>, String> {
     let registry = PluginRegistry::load(path).map_err(|e| e.to_string())?;
-    let current = registry
-        .managed_plugins()
-        .get(id)
-        .and_then(|r| r.current())
+    let current = PluginUpdateSource::load(&registry, id)
         .filter(|v| v.version_key == expected)
         .ok_or("The installed plugin changed. Check it again before updating.")?;
-    let link = GitHubLink::parse(&current.source.repository_url).map_err(|e| e.to_string())?;
-    let current_tag = current
-        .source
-        .tag
-        .strip_prefix('v')
-        .unwrap_or(&current.source.tag);
+    let link = GitHubLink::parse(&current.channel.repository_url).map_err(|e| e.to_string())?;
+    current.channel.verify_identity(client).await?;
+    let current_tag = &current.comparison_version;
     if crate::runtime_update::newer_version(current_tag, current_tag).is_err() {
         return Err("The package version cannot be compared. Choose a release manually.".into());
     }
@@ -274,19 +279,31 @@ async fn prepare_latest(
     if catalog.truncated {
         return Err("Release history is incomplete. Choose a release manually.".into());
     }
-    let Some(release) = crate::plugin_updates::latest_release(&current.source, &catalog) else {
+    let Some(release) =
+        crate::plugin_updates::latest_release_version(current_tag, current.release_id, &catalog)
+    else {
         return if catalog.truncated {
             Err("Release history is incomplete. Choose a release manually.".into())
         } else {
             Ok(None)
         };
     };
-    let asset = select_asset(&current.source, release)?;
+    let asset = select_channel_asset(
+        &current.channel.asset_name_template,
+        release,
+        current.operation == ManagedOperation::Update,
+    )?;
     let package = client
         .prepare_asset(&link.repository, release.id, asset.id, path)
         .await
         .map_err(|e| e.to_string())?;
-    if package.manifest.id != id {
+    if package.manifest.id != id
+        || !current.channel.accepts(&package.source)
+        || package.source.release_id != release.id
+        || package.source.asset_id != asset.id
+        || package.source.tag != release.tag
+        || package.manifest.version != release.tag.strip_prefix('v').unwrap_or(&release.tag)
+    {
         return Err("The downloaded package belongs to a different plugin.".into());
     }
     if !crate::runtime_update::newer_version(&package.manifest.version, &current.manifest.version)
@@ -296,25 +313,23 @@ async fn prepare_latest(
     }
     // Compare again after network I/O; only the requested registration can change.
     let registry = PluginRegistry::load(path).map_err(|e| e.to_string())?;
-    if registry
-        .managed_plugins()
-        .get(id)
-        .and_then(|r| r.current())
-        .is_none_or(|v| v.version_key != expected)
-    {
+    if PluginUpdateSource::load(&registry, id).is_none_or(|v| v.version_key != expected) {
         return Err("The installed plugin changed. Check it again before updating.".into());
     }
-    crate::managed_plugins::preview(&registry, &package.package_path, ManagedOperation::Update)
+    crate::managed_plugins::preview(&registry, &package.package_path, current.operation)
         .map(Some)
         .map_err(|e| e.to_string())
 }
 fn needs_review(p: &ManagedPreview) -> bool {
-    p.existing_registration.as_ref().is_none_or(|r| {
-        p.manifest
-            .permissions
-            .iter()
-            .any(|permission| !r.grants.contains(permission))
-    }) || !p.changes.permissions_added.is_empty()
+    p.operation == ManagedOperation::Adopt
+        || p.changes.restart_required
+        || p.existing_registration.as_ref().is_none_or(|r| {
+            p.manifest
+                .permissions
+                .iter()
+                .any(|permission| !r.grants.contains(permission))
+        })
+        || !p.changes.permissions_added.is_empty()
         || !p.changes.requirements_added.is_empty()
         || !p.changes.requirements_removed.is_empty()
         || !p.changes.provides_added.is_empty()
@@ -331,36 +346,14 @@ async fn apply(
         .existing_registration
         .as_ref()
         .ok_or("Installed plugin has no grants.")?;
-    let mut policy = old.broker_policy.clone();
-    // Removed permissions also retire their now-unused broker policy.
-    if !p
-        .manifest
-        .permissions
-        .contains(&crate::plugins::Permission::HostFs)
-    {
-        policy.read_roots.clear();
-    }
-    if !p
-        .manifest
-        .permissions
-        .contains(&crate::plugins::Permission::HostNetwork)
-    {
-        policy.network_origins.clear();
-    }
-    if !p
-        .manifest
-        .permissions
-        .contains(&crate::plugins::Permission::HostProcess)
-    {
-        policy.executables.clear();
-    }
+    let policy = old.broker_policy.clone();
     let request = PluginControlRequest {
         action: PluginControlAction::Update,
         plugin_id: id.into(),
         permission: None,
         cascade: false,
         remove_source: None,
-        local_import: Some(p.request(p.manifest.permissions.clone(), policy, p.existing_enabled)),
+        local_import: Some(p.request(old.grants.clone(), policy, p.existing_enabled)),
     };
     let prepared = broker.handle(ControlRequest::prepare(request));
     if prepared.status != ControlStatus::Prepared {

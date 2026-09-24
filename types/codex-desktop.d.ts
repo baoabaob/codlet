@@ -75,6 +75,8 @@ export interface ReadMethods {
   'threads.list': { params: Page & { archived?: boolean }; result: { threads: Thread[]; cursor: string | null } };
   /** Metadata read; use paginated turns/items methods for history. */
   'threads.get': { params: { threadId: string }; result: Thread };
+  /** Loaded task's current provider and model; null means unavailable, never guess. */
+  'threads.configuration': { params: { threadId: string }; result: { threadId: string; modelProvider: string | null; model: string | null } };
   'turns.list': { params: Page & { threadId: string }; result: { turns: Turn[]; cursor: string | null } };
   'items.list': { params: Page & { threadId: string; turnId?: string }; result: { items: { turnId: string; item: Item }[]; cursor: string | null } };
   'models.list': { params: Page; result: { models: Model[]; cursor: string | null } };
@@ -91,6 +93,11 @@ export interface WriteMethods {
    * is a navigation receipt, not proof that loading or stream ownership finished.
    * Observe selection.changed or read selection.get before starting a turn. */
   'threads.open': { params: { threadId: string }; result: DesktopSelection & { status: 'opened' | 'opening'; alreadySelected: boolean } };
+  /** Reopens the selected idle owner task using native history/stream lifecycle.
+   * Install a thread.resume configuration hook first. Confirms actual native
+   * model/provider receipt; failures after dispatch may have an unknown outcome.
+   * Never closes provider channels implicitly. Probe support before calling. */
+  'threads.reconfigure': { params: { threadId: string; modelProvider: string; model: string }; result: { threadId: string; status: 'applied'; modelProvider: string; model: string } };
   /** Requires a task already open/resumed in the current owner Desktop window. */
   'turns.start': { params: { threadId: string; text: string; model?: string; effort?: string }; result: { threadId: string; turn: Turn } };
   'turns.steer': { params: { threadId: string; turnId: string; text: string }; result: { threadId: string; turnId: string } };
@@ -133,6 +140,7 @@ export interface InterceptorHandle {
 export interface InterceptorList { interceptors: InterceptorInfo[] }
 export interface CallbackAccess { api: 1; symbol: string; ticket: string }
 export interface ThreadConfigurationCompatibility {
+  reconfigureLoadedThread?: boolean;
   available: boolean;
   appliesAt: ('thread.start' | 'thread.resume' | 'turn.start')[];
   existingLoadedThreads: boolean;

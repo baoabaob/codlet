@@ -24,11 +24,11 @@ async function listen(handler) {
   };
 }
 
-function runtime(origins) {
+function runtime(origins, errorFactory = failure) {
   const root = new AbortController(), calls = [];
   const value = createTrafficRuntime({
     rootSignal: root.signal,
-    makeError: failure,
+    makeError: errorFactory,
     async coreRequest(method, params, signal) {
       calls.push([method, params]);
       if (signal.aborted) throw signal.reason;
@@ -497,4 +497,25 @@ test('an upstream WebSocket HTTP rejection is returned before downstream accepta
     client.once('error', () => {});
   });
   assert.equal(status, 429);
+});
+
+test('a minimal worker error factory still preserves WebSocket 426 for HTTP fallback', async t => {
+  const server = http.createServer((_request, response) => response.end('http-fallback'));
+  server.on('upgrade', (_request, socket) => socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const managed = runtime(new Set([origin]), (code, message) => Object.assign(new Error(message), { code }));
+  t.after(() => managed.closeAll());
+  const channel = await managed.api.openChannel({}, {
+    http: (_request, exchange) => exchange.forward({ url: origin }),
+    webSocket: (_request, exchange) => exchange.forward({ url: origin.replace('http:', 'ws:') }),
+  });
+  for (let turn = 0; turn < 2; turn++) {
+    const status = await new Promise(resolve => {
+      const client = new WebSocket(channel.endpoint.replace('http:', 'ws:'));
+      client.once('unexpected-response', (_request, response) => { response.resume(); client.terminate(); resolve(response.statusCode); });
+      client.once('error', () => {});
+    });
+    assert.equal(status, 426); assert.equal(await (await fetch(channel.endpoint)).text(), 'http-fallback');
+  }
 });

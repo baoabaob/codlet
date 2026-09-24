@@ -37,7 +37,10 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
     Promise.resolve().then(async () => { let observed; do { observed = reportVersion; await reportState([...channels.keys()].map(channel => ({ id: channel.id, ...channel.status() }))); } while (!retired && observed !== reportVersion); }).catch(() => {}).finally(() => { reporting = false; });
   }
 
-  const fail = (code, message, data) => makeError(code, message, data);
+  // Handshake status is part of the transport contract, even when the embedding
+  // worker's error factory only preserves code/message. Losing 426 turns an
+  // intentional WebSocket rejection into 502 and prevents HTTP fallback.
+  const fail = (code, message, data) => Object.assign(makeError(code, message, data), data === undefined ? {} : { data });
   const integer = (value, fallback, maximum, name) => {
     value ??= fallback;
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw fail('invalid_argument', `${name} must be an integer in 1..${maximum}`);
@@ -751,7 +754,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
   }
   function openHttpChannel(options, handler) { return openChannel(options, { http: handler }); }
   rootSignal.addEventListener('abort', () => closeAll(rootSignal.reason), { once: true });
-  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
+  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, openSource: interceptors.openSource, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
 }
 
 module.exports = { createTrafficRuntime, createTrafficInterceptors: require('./traffic-interceptors.cjs').createTrafficInterceptors };

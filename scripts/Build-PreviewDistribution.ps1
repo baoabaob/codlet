@@ -127,8 +127,9 @@ is still pending. The Preview update channel uses published test releases.
 Source and test releases: https://github.com/baoabaob/codlet
 Official plugin development: https://github.com/baoabaob/codlet-plugins
 Independent plugin release channels are recorded in optional-plugins/catalog.json.
-Offline presets remain local installations; this does not enable GitHub updates
-for existing local registrations or grant access to private/draft releases.
+Verified offline presets use their declared GitHub update channels. Their first
+remote update asks to adopt the package; unrelated local author folders stay local.
+Private repositories and draft releases are not supported by this importer.
 
 No real account information, registry files or dev-client data is included.
 The manifest records the full Core and plugin source commits, each distributed

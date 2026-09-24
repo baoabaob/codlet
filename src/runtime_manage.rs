@@ -199,6 +199,13 @@ impl RuntimeManageService {
         {
             for plugin in plugins {
                 let id = plugin["id"].as_str().map(str::to_owned);
+                plugin["updateSource"] = id
+                    .as_deref()
+                    .and_then(|id| {
+                        crate::plugin_update_source::PluginUpdateSource::load(&registry, id)
+                    })
+                    .map(|s| serde_json::to_value(s).expect("update source serializes"))
+                    .unwrap_or(Value::Null);
                 if let Some(current) = id
                     .as_deref()
                     .and_then(|id| registry.managed_plugins().get(id))
@@ -536,11 +543,27 @@ impl RuntimeManageService {
                     "list expects null params.",
                 ));
             }
-            return self
+            let mut listing = self
                 .listing
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone();
+                .clone()?;
+            // Execution state retains its published timestamp. Update ownership
+            // is revalidated on reads so edited files cannot retain a stale channel.
+            if let Some(path) = &self.local_registry
+                && let Ok(registry) = crate::plugins::PluginRegistry::load(path.as_ref())
+                && let Some(plugins) = listing["plugins"].as_array_mut()
+            {
+                for plugin in plugins {
+                    let source = plugin["id"].as_str().and_then(|id| {
+                        crate::plugin_update_source::PluginUpdateSource::load(&registry, id)
+                    });
+                    plugin["updateSource"] = source
+                        .map(|s| serde_json::to_value(s).expect("source serializes"))
+                        .unwrap_or(Value::Null);
+                }
+            }
+            return bounded_value(listing, MAX_CONTROL_RESPONSE_BYTES, "response_too_large");
         }
         if method == "updatePlugins" || method == "pluginUpdateReview" {
             let service = self.plugin_install.as_ref().ok_or_else(|| {
@@ -783,6 +806,12 @@ impl RuntimeManageService {
                             )
                         })?;
                 let mut value = serde_json::json!({"schema":1,"kind":"codlet.plugin-permissions","pluginId":input.plugin_id,"registration":registration,"enabled":registry.is_enabled(&input.plugin_id)});
+                value["updateSource"] = crate::plugin_update_source::PluginUpdateSource::load(
+                    &registry,
+                    &input.plugin_id,
+                )
+                .map(|s| serde_json::to_value(s).expect("update source serializes"))
+                .unwrap_or(Value::Null);
                 if let Some(current) = registry
                     .managed_plugins()
                     .get(&input.plugin_id)

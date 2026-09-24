@@ -3,7 +3,7 @@ const { connectTrafficPeer, createTrafficStreams } = require('./traffic-wire.cjs
 const fail = code => Object.assign(new Error(code), { code });
 
 function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn() }) {
-  const registrations = new Map(), leases = new Map();
+  const registrations = new Map(), leases = new Map(), sources = new Set();
   let peer, connecting, retired = false, connectionEpoch = 0;
   const check = () => { if (retired || rootSignal.aborted) throw fail('host_stopping'); };
   function closeLease(id) {
@@ -17,6 +17,8 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
       for (const id of [...leases.keys()]) closeLease(id);
       for (const registration of registrations.values()) registration.closed = true;
       registrations.clear(); peer = null; connecting = null;
+      for (const source of sources) source.retired = true;
+      sources.clear();
     }
   }
   function leaseFor(params) {
@@ -134,15 +136,47 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
       inspect: () => Object.freeze({ registered: !registration.closed, enabled: !registration.closed && registration.enabled, exchanges: [...leases.values()].filter(lease => lease.registration === registration).length }),
     });
   }
+  async function openSource(options) {
+    check(); await getPeer();
+    const value = await coreRequest('services.traffic.openSource', options, rootSignal);
+    const record = { retired: false }; sources.add(record);
+    const finish = async () => {
+      if (record.retired) return;
+      record.retired = true; sources.delete(record);
+      try {
+        const result = await coreRequest('services.traffic.closeSource', { source: value.source }, rootSignal);
+        await synchronized(result.revision, false);
+      } catch (error) {
+        if (!['host_stopping', 'stale_generation', 'authorization_revoked', 'traffic_unavailable'].includes(error.code)) throw error;
+      }
+    };
+    async function synchronized(revision, expectedOpen) {
+      const deadline = Date.now() + 2000;
+      while (true) {
+        check();
+        const state = await coreRequest('services.traffic.sourceStatus', { source: value.source, revision }, rootSignal);
+        if (state.applied && state.open === expectedOpen) return;
+        if (expectedOpen && !state.open) throw fail('source_retired');
+        if (Date.now() >= deadline) throw fail('traffic_timeout');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+    }
+    try { await synchronized(value.revision, true); check(); if (record.retired) throw fail('source_retired'); }
+    catch (error) { await finish().catch(() => {}); throw error; }
+    return Object.freeze({ endpoint: value.endpoint, close: finish, dispose: finish });
+  }
   function closeAll() {
     if (retired) return; retired = true;
     rootSignal.removeEventListener('abort', closeAll);
     for (const id of [...leases.keys()]) closeLease(id);
     for (const registration of registrations.values()) registration.closed = true;
     registrations.clear(); peer?.close();
+    for (const source of sources) source.retired = true;
+    sources.clear();
   }
   rootSignal.addEventListener('abort', closeAll, { once: true });
   return Object.freeze({ registerInterceptor: (options, handlers) => detach(() => registerInterceptor(options, handlers)),
+    openSource: options => detach(() => openSource(options)),
     inspect: () => coreRequest('services.traffic.status', {}, rootSignal), closeAll });
 }
 module.exports = { createHostedInterceptors };

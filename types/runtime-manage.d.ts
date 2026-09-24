@@ -239,6 +239,8 @@ export interface RuntimeManagePlugin {
   ownership?: 'bundled' | 'development-directory' | 'installer-seed' | 'core-managed-github';
   managedSource?: GitHubSource;
   managedVersionKey?: string;
+  /** Independently verified update channel; not a downloaded package receipt. */
+  updateSource?: PluginUpdateSource | null;
   metadata?: PackageMetadata | null;
   deviceCompatibility?: DeviceCompatibility;
   requestedPermissions: PluginPermission[] | null;
@@ -323,9 +325,16 @@ export interface PluginPermissionsReport {
   ownership?: 'development-directory' | 'core-managed-github';
   managedSource?: GitHubSource;
   managedVersionKey?: string;
+  updateSource?: PluginUpdateSource | null;
   metadata?: PackageMetadata | null;
 }
 
+export interface PluginUpdateSource {
+  kind: 'github'; repositoryUrl: string; repositoryId: number | null; ownerId: number | null;
+  assetNameTemplate: string; ownership: 'installer-seed' | 'core-managed-github';
+  /** Binds installed content, source identity, registration and grants. */
+  versionKey: string; operation: 'adopt' | 'update';
+}
 export interface GitHubRepository { owner: string; name: string; url: string; }
 export interface GitHubReleaseAsset {
   id: number; name: string; size: number; contentType: string; downloadUrl: string; digest: string | null; downloadCount?: number | null;
@@ -379,6 +388,7 @@ export interface ManagedPreview {
   /** Public RPC previews omit full history to stay within the response budget. */
   historyCount?: number;
   changes: {
+    restartRequired?: boolean;
     permissionsAdded: PluginPermission[]; permissionsRemoved: PluginPermission[];
     requirementsAdded: ImportCapability[]; requirementsRemoved: ImportCapability[];
     providesAdded: ImportCapability[]; providesRemoved: ImportCapability[];

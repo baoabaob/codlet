@@ -329,7 +329,7 @@ impl Hub {
                 json!({"ready":true})
             }
             "snapshot" if role == Role::Gateway => {
-                let (revision, registrations) = {
+                let (revision, registrations, sources) = {
                     let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                     state.change_queued = false;
                     let mut registrations = state
@@ -339,7 +339,15 @@ impl Hub {
                         .cloned()
                         .collect::<Vec<_>>();
                     registrations.sort_by_key(|r| r.order);
-                    (state.revision, registrations)
+                    (
+                        state.revision,
+                        registrations,
+                        state
+                            .sources
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect::<Vec<_>>(),
+                    )
                 };
                 let mut live = Vec::new();
                 for registration in registrations {
@@ -355,7 +363,23 @@ impl Hub {
                         live.push(json!({"registration":registration.key,"pluginId":registration.plugin_id,"generation":registration.generation,"options":registration.options,"order":registration.order}));
                     }
                 }
-                json!({"revision":revision,"registrations":live})
+                let sources = sources
+                    .into_iter()
+                    .filter(|(_, s)| (s.check)("intercept", &s.base_url).unwrap_or(false))
+                    .map(|(key, s)| json!({"token":key,"upstreamBaseUrl":s.base_url}))
+                    .collect::<Vec<_>>();
+                json!({"revision":revision,"registrations":live,"sources":sources})
+            }
+            "authorizeSource" if role == Role::Gateway => {
+                let source = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .sources
+                    .get(string(&params, "source")?)
+                    .cloned()
+                    .ok_or_else(|| error("stale_generation", "source retired"))?;
+                json!({"allowed":(source.check)("intercept", &source.base_url)?})
             }
             "activate" | "setEnabled" if matches!(role, Role::Host(_)) => {
                 let key = string(&params, "registration")?;

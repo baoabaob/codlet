@@ -95,6 +95,7 @@ impl ManagedPluginRecord {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedChanges {
+    pub restart_required: bool,
     pub permissions_added: Vec<Permission>,
     pub permissions_removed: Vec<Permission>,
     pub requirements_added: Vec<CapabilityDescriptor>,
@@ -261,6 +262,15 @@ fn preview_checked(
         }
         _ => {}
     }
+    if operation == ManagedOperation::Adopt
+        && let Some(source) = crate::plugin_update_source::PluginUpdateSource::load(registry, id)
+        && !source.channel.accepts(&prepared.source)
+    {
+        return Err(control_error(
+            "managed_source_changed",
+            "The downloaded repository or owner identity does not match the installer update channel.",
+        ));
+    }
     let digest = package_digest(&prepared, &candidate);
     if operation == ManagedOperation::Rollback
         && record.is_none_or(|record| {
@@ -315,7 +325,7 @@ fn preview_checked(
         operation,
         path: candidate.root,
         content_digest: digest,
-        registration_digest: local_import::registration_digest(registry, id),
+        registration_digest: selection_registration_digest(registry, id, operation),
         existing_registration: registry.local_plugins().get(id).cloned(),
         existing_enabled: registry.is_enabled(id),
         current_version: current.cloned(),
@@ -345,7 +355,7 @@ pub fn stage(
             "Use an explicit managed preview.",
         )
     })?;
-    if local_import::registration_digest(registry, id) != request.registration_digest {
+    if selection_registration_digest(registry, id, operation) != request.registration_digest {
         return Err(control_error(
             "import_registration_changed",
             "The registration, permissions, enabled preference or managed history changed after preview.",
@@ -591,12 +601,32 @@ fn changes(previous: Option<&PluginManifest>, next: &PluginManifest) -> ManagedC
     let next_requires = next.all_requires().cloned().collect::<Vec<_>>();
     let next_provides = next.all_provides().cloned().collect::<Vec<_>>();
     ManagedChanges {
+        restart_required: previous.is_some_and(|old| {
+            old.host.is_some() != next.host.is_some()
+                || old.renderer.as_ref().map(|r| r.world) != next.renderer.as_ref().map(|r| r.world)
+        }),
         permissions_added: difference(&next.permissions, &old_permissions),
         permissions_removed: difference(&old_permissions, &next.permissions),
         requirements_added: difference(&next_requires, &old_requires),
         requirements_removed: difference(&old_requires, &next_requires),
         provides_added: difference(&next_provides, &old_provides),
         provides_removed: difference(&old_provides, &next_provides),
+    }
+}
+fn selection_registration_digest(
+    registry: &PluginRegistry,
+    id: &str,
+    operation: ManagedOperation,
+) -> String {
+    let current = local_import::registration_digest(registry, id);
+    if operation == ManagedOperation::Adopt {
+        local_import::digest(&(
+            current,
+            crate::plugin_update_source::PluginUpdateSource::load(registry, id)
+                .map(|s| s.version_key),
+        ))
+    } else {
+        current
     }
 }
 fn difference<T: PartialEq + Clone>(left: &[T], right: &[T]) -> Vec<T> {

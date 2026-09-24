@@ -79,7 +79,8 @@ async function startTrafficWorker(configuration, { signal: rootSignal, environme
   rootSignal.addEventListener('abort', stop, { once: true });
   signal.addEventListener('abort', onAbort, { once: true });
   try {
-    gateway = await connectTrafficGateway(configuration.endpoint, { signal, networkProfile: 'native-inherited', onUnavailable: stop });
+    gateway = await connectTrafficGateway(configuration.endpoint, { signal, networkProfile: 'native-inherited', onUnavailable: stop,
+      onSources: values => source?.syncOwnedRoutes(values) });
     source = await createPlaintextSource({ runtime, gateway, signal });
     if (signal.aborted) throw failure('host_stopping');
     await gateway.native('launched', { source: source.descriptor, environmentPatch: { set: {}, removeCaseInsensitive: [] } });

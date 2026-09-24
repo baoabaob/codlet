@@ -64,6 +64,7 @@ const sameOriginHeaders = (value, initialUrl) => {
 async function createPlaintextSource({ runtime, gateway, signal }) {
   if (!runtime?.api?.openChannel || !gateway?.handlers?.http || !gateway?.handlers?.webSocket || !signal) throw new TypeError('trusted source dependencies are required');
   const routes = new Map(), exchanges = new Map(), routeWaiters = new Map(), trustProfiles = new Map();
+  const owned = Symbol('native-owned-sources');
   let closed = false;
   function createConfig(base, caPem) {
     if (!caPem) return { base, profile: null };
@@ -127,6 +128,7 @@ async function createPlaintextSource({ runtime, gateway, signal }) {
     async http(request, exchange) {
       const { token, suffix } = pathForRoute(request.path);
       const route = await awaitRoute(token, exchange);
+      if (route.peer === owned && (await gateway.native('authorizeSource', { source: token }, exchange.signal)).allowed !== true) throw failure('permission_denied');
       const config = route.config;
       const target = new URL(suffix.slice(1), config.base);
       if (target.origin !== config.base.origin || !target.pathname.startsWith(config.base.pathname)) throw failure('invalid_target');
@@ -135,6 +137,7 @@ async function createPlaintextSource({ runtime, gateway, signal }) {
     async webSocket(request, exchange) {
       const { token, suffix } = pathForRoute(request.path);
       const route = await awaitRoute(token, exchange);
+      if (route.peer === owned && (await gateway.native('authorizeSource', { source: token }, exchange.signal)).allowed !== true) throw failure('permission_denied');
       const config = route.config;
       const target = new URL(suffix.slice(1), config.base);
       if (target.origin !== config.base.origin || !target.pathname.startsWith(config.base.pathname)) throw failure('invalid_target');
@@ -154,16 +157,37 @@ async function createPlaintextSource({ runtime, gateway, signal }) {
     }
     for (const record of [...exchanges.values()]) if (record.peer === peer) retire(record);
   }
+  // Only the trusted gateway snapshot can create these routes. The public Host
+  // receives its own opaque URL, never the Native launch-source peer token.
+  function syncOwnedRoutes(values) {
+    if (closed) throw failure('traffic_unavailable');
+    const present = new Set(values.map(value => value.token));
+    for (const [token, route] of routes) if (route.peer === owned && !present.has(token)) {
+      routes.delete(token); route.closed = true;
+      for (const exchange of route.active) exchange.cancel();
+    }
+    for (const value of values) {
+      if (!TOKEN.test(value.token)) throw failure('invalid_target');
+      const existing = routes.get(value.token);
+      if (existing) {
+        if (existing.peer !== owned || existing.config.base.href !== baseUrl(value.upstreamBaseUrl).href) throw failure('route_collision');
+        continue;
+      }
+      if ([...routes.values()].filter(route => route.peer === owned).length >= MAX_ROUTES) throw failure('resource_limit');
+      const route = { peer: owned, config: createConfig(baseUrl(value.upstreamBaseUrl), ''), active: new Set(), closed: false };
+      routes.set(value.token, route); resolveRoute(value.token, route);
+    }
+  }
   async function handle(peer, method, params) {
     if (closed || signal.aborted) throw failure('traffic_unavailable');
     if (method === 'route.register') {
-      if (routes.size >= MAX_ROUTES) throw failure('resource_limit');
+      if ([...routes.values()].filter(route => route.peer !== owned).length >= MAX_ROUTES) throw failure('resource_limit');
       if (!TOKEN.test(params?.token) || routes.has(params.token)) throw failure('route_collision');
       const base = baseUrl(params.upstreamBaseUrl);
       const caPem = await readCertificate(peer, params.token, params.additionalCaPem);
       if (closed || signal.aborted) throw failure('traffic_unavailable');
       if (routes.has(params.token)) throw failure('route_collision');
-      if (routes.size >= MAX_ROUTES) throw failure('resource_limit');
+      if ([...routes.values()].filter(route => route.peer !== owned).length >= MAX_ROUTES) throw failure('resource_limit');
       const route = { peer, config: createConfig(base, caPem), active: new Set(), closed: false };
       routes.set(params.token, route); resolveRoute(params.token, route);
       return { baseUrl: `${routeChannel.endpoint}/${params.token}` };
@@ -247,7 +271,7 @@ async function createPlaintextSource({ runtime, gateway, signal }) {
       for (const record of [...exchanges.values()]) retire(record);
       routeChannel.close();
     }
-    return Object.freeze({ descriptor, close, trustForProfile, status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size,
+    return Object.freeze({ descriptor, close, trustForProfile, syncOwnedRoutes, status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size,
       routeChannel: routeChannel.status(), peer: peerServer.status() }) });
   } catch (error) { await routeChannel.close(); throw error; }
 }

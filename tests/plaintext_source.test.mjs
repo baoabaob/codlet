@@ -23,7 +23,7 @@ async function bodyText(body) {
   for await (const chunk of body) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString();
 }
-async function fixture(t) {
+async function fixture(t, authorizeSource = async () => ({ allowed: true })) {
   const root = new AbortController();
   const registry = createTrafficInterceptors({ rootSignal: root.signal, maxActiveWebSocket: 32, authorize: async () => true });
   let source;
@@ -34,12 +34,46 @@ async function fixture(t) {
       caPem: params.profile?.startsWith('source-route:') ? source.trustForProfile(params.profile, new URL(params.url)) : '' };
     throw fail('unexpected_rpc');
   } });
-  source = await createPlaintextSource({ runtime, gateway: { handlers: registry.handlers }, signal: root.signal });
+  source = await createPlaintextSource({ runtime, gateway: { handlers: registry.handlers, native: authorizeSource }, signal: root.signal });
   const client = connectPlaintextSource(source.descriptor);
   await client.ready;
   t.after(async () => { client.close(); source.close(); registry.close(); root.abort(); });
   return { root, registry, source, client };
 }
+
+test('plugin-owned source runs the shared HTTP/SSE/WS pipeline, rechecks grants and cancels on removal', async t => {
+  let allowed = true, received = 0;
+  const upstream = http.createServer(async (request, response) => {
+    received++;
+    if (request.url === '/hold') { response.writeHead(200, { 'content-type': 'text/event-stream' }); response.write('data: holding\n\n'); return; }
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end('data: ' + await bodyText(request) + '\n\n');
+  });
+  const sockets = new Set(); upstream.on('connection', s => { sockets.add(s); s.once('close', () => sockets.delete(s)); });
+  const port = await listen(upstream), ws = new WebSocketServer({ server: upstream });
+  ws.on('connection', socket => socket.on('message', value => socket.send('echo:' + value)));
+  t.after(() => { for (const client of ws.clients) client.terminate(); ws.close(); for (const s of sockets) s.destroy(); upstream.close(); });
+  const { source, registry } = await fixture(t, async () => ({ allowed }));
+  registry.register({ pluginId: 'fixture', generation: 1, signal: new AbortController().signal }, { id: 'owned', origins: [`http://127.0.0.1:${port}`] }, {
+    request: request => request.method === 'POST' ? { request: { body: 'changed' } } : null,
+    response: response => ({ status: 201, headers: response.headers }),
+    webSocket: () => ({ clientToServer: frame => ({ ...frame, data: 'changed' }), serverToClient: frame => ({ ...frame, data: frame.data + ':observed' }) }),
+  });
+  source.syncOwnedRoutes([{ token, upstreamBaseUrl: `http://127.0.0.1:${port}` }]);
+  const endpoint = `${source.descriptor.routeBaseUrl}/${token}`;
+  const result = await fetch(endpoint + '/responses', { method: 'POST', body: 'original' });
+  assert.equal(result.status, 201); assert.equal(await result.text(), 'data: changed\n\n');
+  const socket = new WebSocket(endpoint.replace('http:', 'ws:') + '/responses');
+  const frame = new Promise((resolve, reject) => { socket.once('message', data => resolve(data.toString())); socket.once('error', reject); });
+  await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); }); socket.send('original');
+  assert.equal(await frame, 'echo:changed:observed');
+  const held = await fetch(endpoint + '/hold'); const reader = held.body.getReader(); await reader.read();
+  allowed = false;
+  const denied = await fetch(endpoint + '/responses'); assert.equal(denied.status, 403); assert.equal(received, 2);
+  const closed = new Promise(resolve => socket.once('close', resolve));
+  source.syncOwnedRoutes([]); await closed;
+  await assert.rejects(reader.read()); assert.equal(source.status().routes, 0);
+});
 test('registered private base routes HTTP and split SSE through the same interceptor chain', async t => {
   const upstream = http.createServer(async (request, response) => {
     assert.equal(request.url, '/v1/responses?mode=stream&encoded=%2F..');

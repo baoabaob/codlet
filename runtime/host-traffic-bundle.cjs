@@ -4221,7 +4221,7 @@ var require_host_interceptors = __commonJS({
     var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();
     var fail = (code) => Object.assign(new Error(code), { code });
     function createHostedInterceptors({ coreRequest, rootSignal, detach = (fn) => fn() }) {
-      const registrations = /* @__PURE__ */ new Map(), leases = /* @__PURE__ */ new Map();
+      const registrations = /* @__PURE__ */ new Map(), leases = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new Set();
       let peer, connecting, retired = false, connectionEpoch = 0;
       const check = () => {
         if (retired || rootSignal.aborted) throw fail("host_stopping");
@@ -4242,6 +4242,8 @@ var require_host_interceptors = __commonJS({
           registrations.clear();
           peer = null;
           connecting = null;
+          for (const source of sources) source.retired = true;
+          sources.clear();
         }
       }
       function leaseFor(params) {
@@ -4390,6 +4392,45 @@ var require_host_interceptors = __commonJS({
           inspect: () => Object.freeze({ registered: !registration.closed, enabled: !registration.closed && registration.enabled, exchanges: [...leases.values()].filter((lease) => lease.registration === registration).length })
         });
       }
+      async function openSource(options) {
+        check();
+        await getPeer();
+        const value = await coreRequest("services.traffic.openSource", options, rootSignal);
+        const record = { retired: false };
+        sources.add(record);
+        const finish = async () => {
+          if (record.retired) return;
+          record.retired = true;
+          sources.delete(record);
+          try {
+            const result = await coreRequest("services.traffic.closeSource", { source: value.source }, rootSignal);
+            await synchronized(result.revision, false);
+          } catch (error) {
+            if (!["host_stopping", "stale_generation", "authorization_revoked", "traffic_unavailable"].includes(error.code)) throw error;
+          }
+        };
+        async function synchronized(revision, expectedOpen) {
+          const deadline = Date.now() + 2e3;
+          while (true) {
+            check();
+            const state = await coreRequest("services.traffic.sourceStatus", { source: value.source, revision }, rootSignal);
+            if (state.applied && state.open === expectedOpen) return;
+            if (expectedOpen && !state.open) throw fail("source_retired");
+            if (Date.now() >= deadline) throw fail("traffic_timeout");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        }
+        try {
+          await synchronized(value.revision, true);
+          check();
+          if (record.retired) throw fail("source_retired");
+        } catch (error) {
+          await finish().catch(() => {
+          });
+          throw error;
+        }
+        return Object.freeze({ endpoint: value.endpoint, close: finish, dispose: finish });
+      }
       function closeAll() {
         if (retired) return;
         retired = true;
@@ -4398,10 +4439,13 @@ var require_host_interceptors = __commonJS({
         for (const registration of registrations.values()) registration.closed = true;
         registrations.clear();
         peer?.close();
+        for (const source of sources) source.retired = true;
+        sources.clear();
       }
       rootSignal.addEventListener("abort", closeAll, { once: true });
       return Object.freeze({
         registerInterceptor: (options, handlers) => detach(() => registerInterceptor(options, handlers)),
+        openSource: (options) => detach(() => openSource(options)),
         inspect: () => coreRequest("services.traffic.status", {}, rootSignal),
         closeAll
       });
@@ -4681,7 +4725,7 @@ function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState,
       reporting = false;
     });
   }
-  const fail = (code, message, data) => makeError(code, message, data);
+  const fail = (code, message, data) => Object.assign(makeError(code, message, data), data === void 0 ? {} : { data });
   const integer = (value, fallback, maximum, name) => {
     value ??= fallback;
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw fail("invalid_argument", `${name} must be an integer in 1..${maximum}`);
@@ -5516,6 +5560,6 @@ ${reason}`);
     return openChannel(options, { http: handler });
   }
   rootSignal.addEventListener("abort", () => closeAll(rootSignal.reason), { once: true });
-  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
+  return Object.freeze({ api: Object.freeze({ openChannel, openHttpChannel, openSource: interceptors.openSource, registerInterceptor: interceptors.registerInterceptor, inspect: interceptors.inspect }), closeAll });
 }
 module.exports = { createTrafficRuntime, createTrafficInterceptors: require_traffic_interceptors().createTrafficInterceptors };
