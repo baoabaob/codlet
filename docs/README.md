@@ -3,6 +3,9 @@
 These pages describe the current product and its contracts. Historical plans,
 acceptance logs and abandoned prototypes are available through Git history.
 
+The active [native traffic migration design](native-traffic-migration.md) is a
+proposal for upcoming implementation, not a description of shipped behavior.
+
 ## Using and developing Codlet
 
 | Page | Purpose |
