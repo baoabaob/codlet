@@ -44,10 +44,11 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
     onUnavailable();
   }
   controller.signal.addEventListener('abort', close, { once: true });
-  async function refresh() {
+  async function refresh(force = true) {
     if (!peer || retired) return;
-    dirty = true;
+    if (force) dirty = true;
     if (refreshing) return refreshing;
+    if (!dirty) return;
     refreshing = (async () => {
       while (dirty && !retired) {
         dirty = false;
@@ -67,7 +68,12 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
         await onSources(snapshot.sources ?? []);
         await peer.request('applied', { revision: snapshot.revision }, { signal: controller.signal, timeoutMs: 2000 });
       }
-    })().finally(() => { refreshing = null; });
+    })().catch(error => { stop(); throw error; }).finally(() => {
+      refreshing = null;
+      // A pushed change can arrive after the loop's last check but before this
+      // promise settles. Drain it even when no further request is dispatched.
+      if (dirty && !retired) return refresh(false);
+    });
     return refreshing;
   }
   async function leaseFor(item, url, context) {
@@ -106,7 +112,9 @@ async function connectTrafficGateway(endpoint, { signal, networkProfile, onOrigi
     return decision;
   }
   async function dispatch(kind, request, exchange) {
-    await refresh();
+    // Native pushes registration/source changes and waits for their applied
+    // revision. Reuse that snapshot; per-exchange authorization still runs.
+    await refresh(false);
     if (controller.signal.aborted || exchange.signal.aborted) throw failure('traffic_unavailable');
     const record = { cancel: exchange.cancel, leases: new Map() };
     exchanges.set(exchange.signal, record);

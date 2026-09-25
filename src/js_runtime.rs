@@ -120,6 +120,11 @@ impl JsRuntime {
             "--no-experimental-strip-types".into(),
             "--no-global-search-paths".into(),
             "--no-experimental-require-module".into(),
+            // The fixed streaming worker has a small live JS heap. V8's
+            // machine-sized nursery otherwise retains tens of MiB after bursts.
+            // This tunes collection frequency, not body/frame or old-heap limits;
+            // ordinary plugin Hosts retain their own runtime defaults.
+            "--max-semi-space-size=4".into(),
             bootstrap.path().to_string_lossy().into_owned(),
             source.path().to_string_lossy().into_owned(),
         ];

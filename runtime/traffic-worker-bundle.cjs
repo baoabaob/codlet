@@ -5630,10 +5630,11 @@ var require_traffic_gateway = __commonJS({
         onUnavailable();
       }
       controller.signal.addEventListener("abort", close, { once: true });
-      async function refresh() {
+      async function refresh(force = true) {
         if (!peer || retired) return;
-        dirty = true;
+        if (force) dirty = true;
         if (refreshing) return refreshing;
+        if (!dirty) return;
         refreshing = (async () => {
           while (dirty && !retired) {
             dirty = false;
@@ -5656,8 +5657,12 @@ var require_traffic_gateway = __commonJS({
             await onSources(snapshot.sources ?? []);
             await peer.request("applied", { revision: snapshot.revision }, { signal: controller.signal, timeoutMs: 2e3 });
           }
-        })().finally(() => {
+        })().catch((error) => {
+          stop();
+          throw error;
+        }).finally(() => {
           refreshing = null;
+          if (dirty && !retired) return refresh(false);
         });
         return refreshing;
       }
@@ -5705,7 +5710,7 @@ var require_traffic_gateway = __commonJS({
         return decision;
       }
       async function dispatch(kind, request, exchange) {
-        await refresh();
+        await refresh(false);
         if (controller.signal.aborted || exchange.signal.aborted) throw failure("traffic_unavailable");
         const record = { cancel: exchange.cancel, leases: /* @__PURE__ */ new Map() };
         exchanges.set(exchange.signal, record);
