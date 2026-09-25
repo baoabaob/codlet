@@ -2,10 +2,8 @@
 param(
   [Parameter(Mandatory=$true)][string]$CodletExecutable,
   [string]$NodeDirectory,
-  [Parameter(Mandatory=$true)][string]$PluginDistribution,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
   [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$SourceCommit,
-  [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$PluginsCommit,
   [switch]$Zip,
   [switch]$BundleNodeForTests
 )
@@ -17,7 +15,7 @@ if(Test-Path -LiteralPath $output){throw 'Choose a new output directory'}
 function Plain([string]$Path){for($current=[IO.Path]::GetFullPath($Path);$current;$current=[IO.Path]::GetDirectoryName($current)){if((Test-Path -LiteralPath $current) -and (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw "Linked distribution path: $current"}}}
 function Hash([string]$Path){$algorithm=[Security.Cryptography.SHA256]::Create();$stream=[IO.File]::OpenRead($Path);try{[BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose();$algorithm.Dispose()}}
 $utf8=[Text.UTF8Encoding]::new($false)
-Plain $output;Plain $CodletExecutable;Plain $PluginDistribution
+Plain $output;Plain $CodletExecutable
 $pin=[IO.File]::ReadAllText((Join-Path $root 'runtime/node-runtime.json'))|ConvertFrom-Json
 $pinMode=if($BundleNodeForTests){'bundled'}else{'managed'}
 if($BundleNodeForTests -and -not $NodeDirectory){throw 'BundleNodeForTests requires NodeDirectory'}
@@ -31,23 +29,6 @@ $exeStream=[IO.File]::OpenRead($CodletExecutable)
 try{$reader=[IO.BinaryReader]::new($exeStream);if($reader.ReadUInt16() -ne 0x5a4d){throw 'Expected PE executable'};$exeStream.Position=60;$peOffset=$reader.ReadUInt32();$exeStream.Position=$peOffset;if($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664){throw 'Expected Windows x64 executable'}}finally{$exeStream.Dispose()}
 $cargo=[IO.File]::ReadAllText((Join-Path $root 'Cargo.toml'))
 $version=[regex]::Match($cargo,'(?m)^version = "([^"]+)"').Groups[1].Value
-$catalog=[IO.File]::ReadAllText((Join-Path $PluginDistribution 'catalog.json'))|ConvertFrom-Json
-if($catalog.schema -ne 1 -or $catalog.kind -ne 'codlet-official-plugin-bundle'){throw 'Invalid independent plugin catalog'}
-$seedIds=if($catalog.PSObject.Properties['installerPlugins']){@($catalog.installerPlugins)}else{@($catalog.packages.id)}
-if(@($seedIds|Sort-Object -Unique).Count -ne @($seedIds).Count){throw 'Duplicate installer plugin selection'}
-foreach($id in $seedIds){if($id -notin @('codex.ui.adapter','codex.desktop.adapter','codlet-gui') -or @($catalog.packages|Where-Object{$_.id -eq $id}).Count -ne 1){throw 'Invalid installer plugin selection'}}
-if('codlet-gui' -in $seedIds -and 'codex.ui.adapter' -notin $seedIds){throw 'The GUI installer preset requires UI Adapter'}
-$catalog.packages=@($catalog.packages|Where-Object{$_.id -in $seedIds})
-$pluginOrigins=@();$repositories=@{}
-foreach($package in $catalog.packages){
-  # Older local-preview catalogs remain readable. New catalogs preserve each
-  # independent release channel without fabricating a GitHub install receipt.
-  if($package.PSObject.Properties['repository']){
-    if($package.repository -notmatch '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $repositories.ContainsKey($package.repository) -or $package.tag -ne ('v'+$package.version)){throw 'Invalid independent plugin release channel'}
-    $repositories[$package.repository]=$true
-    $pluginOrigins+=@{id=$package.id;version=$package.version;repository=$package.repository;tag=$package.tag;packageSha256=$package.sha256;registration='local-seed'}
-  }
-}
 $stage=$output+'.stage-'+[Guid]::NewGuid().ToString('N')
 [IO.Directory]::CreateDirectory($stage)|Out-Null
 function Copy-Payload([string]$Source,[string]$Relative){
@@ -73,18 +54,7 @@ foreach($name in @('Start-Codlet.cmd','Codlet-CLI.cmd','Initialize-Codlet.ps1'))
 Copy-Payload (Join-Path $root 'scripts/Restart-Codlet.ps1') 'Restart-Codlet.ps1'
 Copy-Payload (Join-Path $root 'scripts/Export-Diagnostics.ps1') 'Export-Diagnostics.ps1'
 Copy-Payload (Join-Path $root 'assets/codlet/ico/codlet.ico') 'codlet.ico'
-[IO.Directory]::CreateDirectory((Join-Path $stage 'optional-plugins'))|Out-Null
-[IO.File]::WriteAllText((Join-Path $stage 'optional-plugins/catalog.json'),($catalog|ConvertTo-Json -Depth 20),$utf8)
-foreach($package in $catalog.packages){
-  if($package.id -notin @('codex.ui.adapter','codex.desktop.adapter','codlet-gui')){throw 'Unexpected package in first-party catalog'}
-  foreach($file in $package.files){
-    if($file.path -notmatch '^[a-zA-Z0-9._/-]+$' -or $file.path.Split('/') -contains '..'){throw 'Invalid package payload path'}
-    $relative='packages/'+$package.id+'/'+$file.path
-    $source=Join-Path $PluginDistribution $relative
-    if((Hash $source) -ne $file.sha256){throw ('Plugin payload mismatch: '+$relative)}
-    Copy-Payload $source ('optional-plugins/'+$relative)
-  }
-}
+Copy-Payload (Join-Path $root 'scripts/distribution/official-plugins.json') 'official-plugins.json'
 Get-ChildItem -LiteralPath (Join-Path $root 'types') -Filter '*.d.ts' -File | ForEach-Object{Copy-Payload $_.FullName ('sdk/types/'+$_.Name)}
 Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_UI_LICENSES.txt') 'THIRD_PARTY_NOTICES.txt'
 Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_RUST_LICENSES.txt') 'THIRD_PARTY_RUST_LICENSES.txt'
@@ -95,13 +65,17 @@ $readme=@'
 
 1. Extract the complete directory to a writable location
 2. Run Codlet-Launcher.exe; it lists running applications before launch
-3. On first portable launch, choose the official plugins you want
+3. On first portable launch, choose official plugins to download from GitHub
 
 Codlet prepares its private JavaScript runtime from a verified official Codex
 installation when available. Otherwise it downloads the pinned official Node
 archive into its private cache. A system Node installation is not required.
 
-GUI automatically includes UI Adapter. Desktop Adapter is independently optional.
+The package contains Core only, with no plugin code or fixed plugin versions.
+GUI includes UI Adapter in the download selection. Desktop Adapter is optional.
+Setup uses the latest published GitHub Release through the regular CLI importer.
+Existing plugins are never replaced, downgraded or re-enabled by Core setup.
+Network failure leaves an unfinished selection retryable; there is no bundled fallback.
 Use the GUI marketplace or CLI to add other plugins later. Existing registrations,
 disabled states and grants are preserved. To remove a plugin, use GUI or:
 
@@ -113,7 +87,7 @@ the official client's account, configuration or conversation database location.
 
 The MSI installs for the current user and provides a feature selection page.
 Uninstall removes application files and shortcuts; plugin/config/data are retained.
-MSI repair does not overwrite plugins copied into the user data directory.
+MSI repair does not overwrite downloaded plugins in the user data directory.
 
 This unsigned package targets Windows x64. Install the official Codex client
 separately. Check the compatibility evidence and known issues at the Core revision
@@ -126,20 +100,20 @@ is still pending. The Preview update channel uses published test releases.
 
 Source and test releases: https://github.com/baoabaob/codlet
 Official plugin development: https://github.com/baoabaob/codlet-plugins
-Independent plugin release channels are recorded in optional-plugins/catalog.json.
-Verified offline presets use their declared GitHub update channels. Their first
-remote update asks to adopt the package; unrelated local author folders stay local.
+Plugin download choices, source identities and initial permission expectations
+are recorded in official-plugins.json; no local plugin build is needed for Core.
+Downloads are registered as ordinary GitHub plugins from their first install.
 Private repositories and draft releases are not supported by this importer.
 
 No real account information, registry files or dev-client data is included.
-The manifest records the full Core and plugin source commits, each distributed
+The manifest records the full Core source commit, each distributed
 file and its SHA-256. License and attribution terms are included in LICENSE,
 NOTICE and THIRD_PARTY_NOTICES.txt. The JavaScript runtime's LICENSE is stored
 with the prepared runtime in Codlet's private cache.
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.md'),$readme.Replace("`r`n","`n")+"`n",$utf8)
 $records=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName | ForEach-Object{[ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');bytes=$_.Length;sha256=Hash $_.FullName}})
-$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';runtime=[ordered]@{mode=$pinMode;version=$pin.version;executableSha256=$spec.executableSha256;licenseSha256=$spec.licenseSha256};sourceCommit=$SourceCommit.ToLowerInvariant();pluginsCommit=$PluginsCommit.ToLowerInvariant();officialPlugins=$pluginOrigins;files=$records}
+$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';runtime=[ordered]@{mode=$pinMode;version=$pin.version;executableSha256=$spec.executableSha256;licenseSha256=$spec.licenseSha256};sourceCommit=$SourceCommit.ToLowerInvariant();pluginDelivery='github-latest';files=$records}
 [IO.File]::WriteAllText((Join-Path $stage 'distribution-manifest.json'),($manifest|ConvertTo-Json -Depth 8),$utf8)
 [IO.Directory]::Move($stage,$output)
 $zipPath=$null

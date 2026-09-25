@@ -33,8 +33,7 @@ $fixtureCompiler=Join-Path ([Environment]::GetFolderPath('Windows')) "Microsoft.
 if($LASTEXITCODE -ne 0){throw 'UTF-8 CLI fixture compilation failed'}
 $fixtureInitializer=Join-Path $fixtureApp 'Initialize-Codlet.ps1'
 [IO.File]::WriteAllText($fixtureInitializer,[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'distribution/Initialize-Codlet.ps1')),[Text.UTF8Encoding]::new($true))
-[IO.Directory]::CreateDirectory((Join-Path $fixtureApp 'optional-plugins'))|Out-Null
-[IO.File]::WriteAllText((Join-Path $fixtureApp 'optional-plugins/catalog.json'),'{"schema":1,"kind":"codlet-official-plugin-bundle","packages":[]}',[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $fixtureApp 'official-plugins.json'),'{"schema":1,"kind":"codlet-plugin-download-options","plugins":[]}',[Text.UTF8Encoding]::new($false))
 $fixtureExpectedName=([string][char]0x63d2)+[char]0x4ef6+[char]0x3002
 $fixtureExpectedPath='C:\'+[char]0x6d4b+[char]0x8bd5+'\plug in\'
 $fixturePreviousEncoding=[Console]::OutputEncoding

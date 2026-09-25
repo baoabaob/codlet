@@ -1,6 +1,6 @@
 # Distribution
 
-Preview installers contain Codlet, license/attribution files, SDK types, and explicitly selected optional official-plugin packages. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
+Preview installers contain Codlet, license/attribution files, SDK types, and plugin download options. They contain no plugin code or fixed plugin versions. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
 
 Reusing the official client means copying its verified executable and license into Codlet's own data directory. The original client can then update independently. This reduces installer and repeat-download size, not Node's memory use or the space occupied by the prepared runtime. The cache follows `CODLET_HOME`: installed builds reuse their normal data directory, while each portable installation keeps its own cache. First use needs network access when neither an approved official runtime nor a valid cached copy is available; subsequent use can reuse the verified cache offline.
 
@@ -16,34 +16,38 @@ The portable ZIP must be extracted completely to a writable location. Its first 
 
 Windows in-app runtime updates replace Core and its runtime descriptor. An already prepared compatible Node is reused; preparing a missing runtime must succeed before the installation is replaced. Install a newer MSI or extract a new portable package when upgrading the native launcher or installer components. Official plugins have their own GitHub update channels.
 
-An installer's `catalog.json` may bind each package to an `updateSource` containing its GitHub repository URL, numeric repository/owner identities, and ZIP asset name template. Seed receipts retain this channel separately from download provenance. Verified seeds participate in normal check, individual update, and update-all flows while remaining `source=local`, `ownership=installer-seed`. Their first downloaded update is an explicit managed **adopt** review; only a real checked GitHub download creates managed GitHub provenance. Core does not maintain an official repository allowlist or infer channels from names/authors.
+`official-plugins.json` contains only the selectable IDs, repository URLs/numeric identities,
+dependencies and initial permission expectations. MSI features persist download choices in
+HKCU; portable and Mac setup ask on first use. Selection fetches the latest published stable
+Release, finds its exact ID/version ZIP and calls the same `plugin github preview/install`
+commands available to users. Core checks the archive; setup checks manifest ID/version,
+repository/owner identity and the upstream SHA-256 before granting the selected permissions.
+Additional permissions require separate approval. The resulting source is `github` from
+the first installation, with no seed/adoption step for new users.
 
-Old receipts remain valid. If they lack a channel, Core can read the catalog beside its executable only after verifying the old seed's complete receipt/historical file set and the catalog's current payload. Check operations do not rewrite registration or receipts. A changed file, channel identity, registration, or grant invalidates cached findings and prepared adoption reviews. New permissions/dependency contracts require review; entry-shape changes require stopping and restarting instead of an automatic hot update. Existing disabled states, grants and all broker scopes are preserved.
+Only read/download failures are retried once automatically. Failed choices remain pending;
+Windows offers retry/cancel and Mac restores pending choices on the next launch. Previously
+completed plugin registrations are reused without download. An uncertain mutation is never
+blindly replayed. Core upgrades/repair do not update, downgrade, adopt, re-enable or overwrite
+existing plugins, including custom sources. Removed plugins are not revived by ordinary
+startup. Use the GUI/CLI's normal update flow for installed plugins.
+
+Earlier releases installed local seeds. Those existing receipts, file validation and explicit
+GitHub adoption remain supported; installing a new Core does not silently change their source.
+Legacy seed commands are migration support, not the current installer path. Core has no runtime
+dependency on these official plugins and does not assign them special permissions.
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, requests normal close with a bounded wait, and offers retry/cancel. Restart Manager automatic shutdown is disabled; no client is force-killed. An unattended busy install fails explicitly. Uninstall removes program files/shortcuts and preserves plugin/config/data.
-
-An updated installer offers explicit official-plugin updates. The Core verifies the complete old file set against its installer receipt or embedded hashes from the previously distributed Preview 1–4 packages, then updates the fixed `packages/<plugin-id>` directory while holding the offline registry and launch leases. Added, changed, linked, or custom-source files are preserved and reported as unverified (20). Existing disabled states, revoked permissions, and all broker scopes are retained; genuinely new permissions require a separate approval. Ordinary startup never reinstalls a removed plugin.
-
-One local journal coordinates staged bytes, the registry, and the receipt. Startup and offline CLI recover interrupted operations before loading packages. Temporary ready/backup directories are removed after commit; no historical package store remains. Sources remain local registrations, never synthetic GitHub installations. A running Host must first finish and exit normally before this offline transaction can run.
-
-The catalog completion marker is saved only after a successful explicit setup (or the first Windows setup). Accepting the update prompt, a failed update, or an ordinary launch does not dismiss a pending update. Older markers written before completion are rechecked. If an update fails, an older UI Adapter can remain incompatible with the current client and the GUI may be unavailable; the launcher explains this instead of treating a Core-only launch as a successful plugin upgrade.
-
-`legacy-official-transitions.json` lists two complete historical UI/GUI file sets: official 0.1.1 runtime files with the retained official 0.1.0 README. Both catalog origins are recorded and checked against the original legacy records. This does not allow arbitrary combinations of versions or skip README/extra-file validation.
-
-The installer uses `codlet plugin seed preview <catalog.json> <id> --json` and binds `seed install` to its returned `--preview` digest plus one `--grant` per approved new permission. Direct PowerShell callers can pass `-ApproveNewPermissions`; macOS command-line callers use `--approve-new-permission=<permission>`. Missing approval fails before writes. `scripts/record-legacy-seeds.mjs` regenerates the embedded historical hash list only from prior distributions whose catalog and payload hashes match their distribution manifests; it copies no plugin payloads.
-
-Build the official plugin repository's `dist/` independently, then assemble from reviewed inputs:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-PreviewDistribution.ps1 `
   -CodletExecutable C:\build\codlet.exe `
-  -PluginDistribution C:\src\codlet-plugins\dist `
-  -SourceCommit FULL_CORE_SHA -PluginsCommit FULL_PLUGIN_SHA `
+  -SourceCommit FULL_CORE_SHA `
   -OutputDirectory C:\output\codlet-preview -Zip
 node scripts/build-msi.mjs C:\output\codlet-preview C:\tools\wix-3.14.1 C:\output\Codlet-Preview.msi
 ```
 
-WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The runtime descriptor and plugin catalog files are verified before assembly. The manifest records distributed files and SHA-256 values. Offline plugin presets are local registrations; their independent GitHub release channels are recorded without inventing remote installation receipts.
+WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The manifest records Core's source revision, distributed files and SHA-256 values. Plugin source commits and package hashes belong to the independently downloaded releases, not to Core's build.
 
 Use `Test-DistributionEncoding.ps1` for Windows PowerShell/encoding checks and `Test-WindowsInstaller.ps1` for controlled process and MSI preflight scenarios. `Test-MsiDistribution.ps1 -StructureOnly` inspects tables/features without changing the user's installation. Never deliver fixture or stale-Core packages used by these tests.
 
@@ -58,12 +62,11 @@ sh scripts/build-macos.sh release
 python3 scripts/build-preview-macos.py \
   --executable target/aarch64-apple-darwin/release/codlet \
   --node-directory target/aarch64-apple-darwin/release/runtime/node-v22.23.2-darwin-arm64 \
-  --plugin-distribution ../codlet-plugins/dist \
-  --source-commit FULL_CORE_SHA --plugins-commit FULL_PLUGIN_SHA \
+  --source-commit FULL_CORE_SHA \
   --output /absolute/new/output
 ```
 
-The `Build macOS preview` workflow accepts full Core/plugin commit SHAs, verifies an actual ARM64 runner, builds native Core/Swift, prepares the matching Core SDK for the independent plugins, tests initialization in an isolated Codlet home, mounts the DMG, and uploads artifacts with provenance. Both source repositories are checked out publicly without deployment credentials.
+The `Build macOS preview` workflow accepts one full Core commit SHA. It checks out only Core, verifies the ARM64 runner, builds Core/Swift, tests downloads in an isolated Codlet home, mounts the DMG and uploads artifacts with Core provenance. Building Core no longer checks out or builds the plugin repository.
 
 Current Preview signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
 

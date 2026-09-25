@@ -35,14 +35,7 @@ class PackagingTests(unittest.TestCase):
         self.write(self.source / "runtime/update-channel.json", '{"schema":1,"channel":"preview","source":{"manifestAsset":"codlet-update-managed.json"}}')
         for name in ["scripts/macos/initialize.mjs", "NOTICE", "docs/THIRD_PARTY_UI_LICENSES.txt", "docs/THIRD_PARTY_RUST_LICENSES.txt", "types/host.d.ts"]:
             self.write(self.source / name, "fixture")
-        packages = []
-        for identifier in builder.ALLOWED:
-            manifest = {"id": identifier, "version": "1.0.0", "permissions": ["ui.dom"]}
-            file = self.plugins / "packages" / identifier / "codlet.json"
-            self.write(file, json.dumps(manifest))
-            packages.append({**manifest, "repository": "https://github.com/example/" + identifier, "tag": "v1.0.0", "sha256": "0" * 64, "dependencies": ["codex.ui.adapter"] if identifier == "codlet-gui" else [], "files": [{"path": "codlet.json", "bytes": file.stat().st_size, "sha256": self.hash(file)}]})
-        self.catalog = {"schema": 1, "kind": "codlet-official-plugin-bundle", "installerPlugins": builder.ALLOWED, "packages": packages}
-        self.save_catalog()
+        self.write(self.source / "scripts/distribution/official-plugins.json", (ROOT / "scripts/distribution/official-plugins.json").read_bytes())
 
     def tearDown(self):
         builder.ROOT = self.original_root
@@ -56,17 +49,15 @@ class PackagingTests(unittest.TestCase):
     def hash(file):
         return hashlib.sha256(file.read_bytes()).hexdigest()
 
-    def save_catalog(self):
-        self.write(self.plugins / "catalog.json", json.dumps(self.catalog))
-
     def stage(self):
-        return builder.stage_payload(self.binary, self.runtime, self.plugins, self.directory / "output", "a" * 40, "b" * 40)
+        return builder.stage_payload(self.binary, self.runtime, self.directory / "output", "a" * 40)
 
     def test_managed_bundle_has_provenance_licenses_and_no_embedded_node(self):
         app, version, manifest = self.stage()
         self.assertEqual(version, "0.2.0-preview.6")
         self.assertEqual(manifest["sourceCommit"], "a" * 40)
-        self.assertEqual(manifest["pluginsSourceCommit"], "b" * 40)
+        self.assertEqual(manifest["pluginDelivery"], "github-latest")
+        self.assertNotIn("pluginsSourceCommit", manifest)
         self.assertFalse(manifest["notarized"])
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
         self.assertEqual(info["LSArchitecturePriority"], ["arm64"])
@@ -97,18 +88,15 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pinned macOS runtime"):
             self.stage()
 
-    def test_rejects_package_path_escape(self):
-        self.catalog["packages"][0]["files"][0]["path"] = "../outside.json"
-        self.save_catalog()
-        with self.assertRaisesRegex(ValueError, "payload path"):
-            self.stage()
-        self.assertFalse((self.directory / "outside.json").exists())
-
-    def test_rejects_missing_gui_dependency(self):
-        self.catalog["packages"][2]["dependencies"] = []
-        self.save_catalog()
-        with self.assertRaisesRegex(ValueError, "UI Adapter dependency"):
-            self.stage()
+    def test_package_contains_only_download_options_and_no_plugin_code(self):
+        app, _, _ = self.stage()
+        resources = app / "Contents/Resources"
+        self.assertFalse((resources / "optional-plugins").exists())
+        self.assertEqual(list(app.rglob("codlet.json")), [])
+        self.assertEqual(list(app.rglob("renderer.js")), [])
+        options = json.loads((resources / "official-plugins.json").read_text())
+        self.assertEqual(options["kind"], "codlet-plugin-download-options")
+        self.assertTrue(all("version" not in p and "files" not in p for p in options["plugins"]))
 
     def test_rejects_missing_license_text(self):
         (self.source / "LICENSE").unlink()

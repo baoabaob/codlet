@@ -9,7 +9,8 @@ const compiler=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteracti
 if(compiler.error||compiler.status!==0)throw Error('Windows installer helper compilation failed');
 const manifest=JSON.parse(await readFile(resolve(root,'distribution-manifest.json'),'utf8'));
 if(manifest.platform!=='win-x64'||manifest.kind!=='codlet-portable-distribution')throw Error('Expected Windows x64 portable input');
-if(!/^[0-9a-f]{40}$/i.test(manifest.sourceCommit??'')||!/^[0-9a-f]{40}$/i.test(manifest.pluginsCommit??''))throw Error('Portable manifest must record full 40-hex Core and plugin commits');
+if(!/^[0-9a-f]{40}$/i.test(manifest.sourceCommit??'')||manifest.pluginDelivery!=='github-latest')throw Error('Expected Core-only distribution with GitHub plugin downloads');
+if(manifest.files.some(file=>file.path.startsWith('optional-plugins/')||/(^|\/)codlet\.json$/.test(file.path)))throw Error('Core installer may not contain plugin payloads');
 const runtime=JSON.parse(await readFile(resolve(root,'runtime/node-runtime.json'),'utf8'));
 if(runtime.mode!=='managed'||manifest.runtime?.mode!=='managed'||manifest.runtime.version!==runtime.version)throw Error('MSI requires a managed-runtime portable distribution');
 if(manifest.files.some(file=>/^runtime\/node-v[^/]+\/[^/]+$/.test(file.path)))throw Error('Managed-runtime MSI may not bundle Node files');
@@ -36,8 +37,13 @@ for(const file of payload){
   const parent=file.path.includes('/')?file.path.slice(0,file.path.lastIndexOf('/')):'';
   const component=id('C_',file.path),fileId=id('F_',file.path),dir=directory(parent);
   components.push(`<DirectoryRef Id="${dir}"><Component Id="${component}" Guid="${guid(file.path)}" Win64="yes"><File Id="${fileId}" Name="${xml(basename(file.path))}" Source="${xml(file.source)}"/><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="${component}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
-  const group=file.path.startsWith('optional-plugins/packages/codex.ui.adapter/')?'UiAdapter':file.path.startsWith('optional-plugins/packages/codex.desktop.adapter/')?'DesktopAdapter':file.path.startsWith('optional-plugins/packages/codlet-gui/')?'GUI':'Core';
-  features[group].push(component);
+  features.Core.push(component);
+}
+// Optional features store the user's download choices, never plugin code.
+for(const [feature,plugin] of [['UiAdapter','codex.ui.adapter'],['DesktopAdapter','codex.desktop.adapter'],['GUI','codlet-gui']]){
+  const component=id('Download_',plugin);
+  components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('download-choice:'+plugin)}" Win64="yes"><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer\\Plugins" Name="${plugin}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
+  features[feature].push(component);
 }
 function tree(path){let children='';for(const [relative,value]of directories){if(!relative)continue;const parent=relative.includes('/')?relative.slice(0,relative.lastIndexOf('/')):'';if(parent===path)children+=`<Directory Id="${value}" Name="${xml(basename(relative))}">${tree(relative)}</Directory>`;}return children;}
 const refs=names=>names.map(name=>`<ComponentRef Id="${name}"/>`).join('');
@@ -64,7 +70,7 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 <InstallExecuteSequence><Custom Action="CheckRunningApplications" Before="InstallValidate">NOT UPGRADINGPRODUCTCODE</Custom></InstallExecuteSequence>
 <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="已安装更新版本的 Codlet Preview"/>
 <MediaTemplate EmbedCab="yes" CompressionLevel="medium"/>
-<Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动会准备所选插件。卸载保留插件、配置和用户数据。"/>
+<Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动将从 GitHub 下载所选插件，需要网络。已有插件保持不变。卸载保留用户数据。"/>
 <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 Codlet"/>
 <CustomAction Id="LaunchCodletAfterInstall" FileKey="${id('F_','Codlet-Launcher.exe')}" ExeCommand="" Return="asyncNoWait" Impersonate="yes"/>
 <Icon Id="CodletIcon" SourceFile="${xml(resolve(root,'codlet.ico'))}"/>
@@ -75,9 +81,9 @@ ${components.join('\n')}
 <Feature Id="Core" Title="Codlet Core（必需）" Description="CLI 与 codlet 技能。运行时首次使用时由 Codlet 自动准备；仅当前用户安装，不修改官方客户端的数据目录。" Level="1" Absent="disallow" ConfigurableDirectory="INSTALLFOLDER">${refs(features.Core)}</Feature>
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>
-<Feature Id="UiAdapter" Title="UI Adapter" Description="接入 Codex 侧栏和插件页面。需要界面访问权限。" Level="1">${refs(features.UiAdapter)}</Feature>
-<Feature Id="DesktopAdapter" Title="Desktop Adapter" Description="提供客户端、对话和流量接入接口。需要主界面访问、Host 进程及客户端调试权限。" Level="1">${refs(features.DesktopAdapter)}</Feature>
-<Feature Id="GUI" Title="Codlet GUI（包含 UI Adapter）" Description="图形化插件管理。自动包含 UI Adapter；需要插件管理与界面访问权限。" Level="1">${refs([...features.GUI,...features.UiAdapter])}</Feature>
+<Feature Id="UiAdapter" Title="下载 UI Adapter" Description="从 GitHub 获取最新发布版，接入侧栏和插件页面。需要界面访问权限。" Level="1">${refs(features.UiAdapter)}</Feature>
+<Feature Id="DesktopAdapter" Title="下载 Desktop Adapter" Description="从 GitHub 获取最新发布版，提供客户端、对话和流量接口。需要主界面访问、Host 进程及调试权限。" Level="1">${refs(features.DesktopAdapter)}</Feature>
+<Feature Id="GUI" Title="下载 Codlet GUI（包含 UI Adapter）" Description="从 GitHub 获取最新发布版，提供图形化管理。包含 UI Adapter；需要插件管理与界面访问权限。" Level="1">${refs([...features.GUI,...features.UiAdapter])}</Feature>
 <UIRef Id="WixUI_FeatureTree"/><WixVariable Id="WixUILicenseRtf" Value="${xml(resolve(build,'notice.rtf'))}"/>
 <WixVariable Id="WixUIBannerBmp" Value="${xml(resolve(build,'banner.bmp'))}"/><WixVariable Id="WixUIDialogBmp" Value="${xml(resolve(build,'dialog.bmp'))}"/>
 <UI>

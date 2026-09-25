@@ -22,6 +22,9 @@ if($StructureOnly){
     foreach($name in @('Core','UiAdapter','DesktopAdapter','GUI','StartMenu','DesktopShortcut')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
     $installedFiles=@(Rows 'SELECT `FileName` FROM `File`' 1|ForEach-Object{$_[0]})
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)node\.exe$'}).Count){throw 'Managed MSI contains a bundled Node executable'}
+    if(@($installedFiles|Where-Object{$_ -match '(^|\|)(codlet\.json|renderer\.js|host\.cjs)$'}).Count){throw 'Core MSI contains plugin code'}
+    $choices=@(Rows 'SELECT `Name` FROM `Registry` WHERE `Key` = ''Software\Codlet\Preview\Installer\Plugins''' 1|ForEach-Object{$_[0]})
+    if(($choices|Sort-Object)-join ',' -ne 'codex.desktop.adapter,codex.ui.adapter,codlet-gui'){throw 'MSI must persist the three plugin download choices'}
     $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
     if($shortcuts.Count -ne 2 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe' -or $_[2] -like '*--configure*'}).Count){throw 'Only the Start menu and desktop launch shortcuts are allowed'}
     $sequences=@(Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)
@@ -34,7 +37,7 @@ if($StructureOnly){
     if($restart -ne 'DisableShutdown'){throw 'MSI may automatically close user applications'}
     $launch=@(Rows "SELECT ``Condition`` FROM ``ControlEvent`` WHERE ``Event``='DoAction' AND ``Argument``='LaunchCodletAfterInstall'" 1)[0][0]
     if($launch -notlike '*WIXUI_EXITDIALOGOPTIONALCHECKBOX*'){throw 'Post-install launch is not opt-in'}
-    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;bundledNode=$false;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
+    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;bundledNode=$false;bundledPlugins=$false;pluginDownloadChoices=$choices;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
     $report|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $artifacts 'report.json') -Encoding UTF8
     $report|ConvertTo-Json -Compress
   }finally{[Runtime.InteropServices.Marshal]::ReleaseComObject($database)|Out-Null;[Runtime.InteropServices.Marshal]::ReleaseComObject($installer)|Out-Null}
@@ -69,11 +72,12 @@ try{
   Assert (@((Inventory).plugins).Count -eq 0) 'Core-only MSI unexpectedly registered plugins'
   $checks.Add('Core-only MSI runs with no optional plugins')
   Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI') -Name 'add-gui'
-  Assert ([IO.File]::Exists((Join-Path $install 'optional-plugins/packages/codex.ui.adapter/codlet.json'))) 'GUI selection missed its UI Adapter component'
-  Assert (-not [IO.Directory]::Exists((Join-Path $install 'optional-plugins/packages/codex.desktop.adapter'))) 'Unselected Desktop Adapter was installed'
+  Assert (-not [IO.Directory]::Exists((Join-Path $install 'optional-plugins'))) 'MSI includes offline plugin code'
+  $choices=Get-ItemProperty -LiteralPath 'HKCU:/Software/Codlet/Preview/Installer/Plugins'
+  Assert ($choices.'codex.ui.adapter' -eq 1 -and $choices.'codlet-gui' -eq 1) 'GUI selection missed the UI Adapter download choice'
   & (Join-Path $install 'Initialize-Codlet.ps1') -NoLaunch -DataDirectory $data
   Assert (@((Inventory).plugins).Count -eq 2) 'MSI first-launch package registration is wrong'
-  $checks.Add('GUI-only MSI install includes UI Adapter and omits Desktop Adapter')
+  $checks.Add('GUI-only MSI downloads GUI and UI Adapter through GitHub')
   & (Join-Path $install 'codlet.exe') plugin disable codlet-gui --json | Out-Null
   Assert ($LASTEXITCODE -eq 0) 'Could not set a user preference'
   Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI,DesktopAdapter') -Name 'add-desktop'

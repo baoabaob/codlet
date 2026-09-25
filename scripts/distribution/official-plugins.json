@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "kind": "codlet-plugin-download-options",
+  "plugins": [
+    {
+      "id": "codex.ui.adapter",
+      "repositoryUrl": "https://github.com/baoabaob/codlet-ui-adapter",
+      "repositoryId": 1379358711,
+      "ownerId": 76909162,
+      "permissions": ["ui.dom", "ui.mainWorld"],
+      "dependencies": []
+    },
+    {
+      "id": "codex.desktop.adapter",
+      "repositoryUrl": "https://github.com/baoabaob/codlet-desktop-adapter",
+      "repositoryId": 1379359205,
+      "ownerId": 76909162,
+      "permissions": ["ui.mainWorld", "host.process", "cdp.raw"],
+      "dependencies": []
+    },
+    {
+      "id": "codlet-gui",
+      "repositoryUrl": "https://github.com/baoabaob/codlet-gui",
+      "repositoryId": 1379359689,
+      "ownerId": 76909162,
+      "permissions": ["ui.dom", "runtime.manage"],
+      "dependencies": ["codex.ui.adapter"]
+    }
+  ]
+}

@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import CryptoKit
 
 private struct RuntimePin: Decodable {
     struct Platform: Decodable { let version: String? }
@@ -44,16 +43,8 @@ final class Launcher: NSObject, NSApplicationDelegate {
         let duplicates = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier!).filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if let existing = duplicates.first { existing.activate(options: [.activateIgnoringOtherApps]); NSApp.terminate(nil); return }
         makeMenu()
-        if !FileManager.default.fileExists(atPath: home.appendingPathComponent("macos-setup.json").path) { configure() }
+        if !FileManager.default.fileExists(atPath: home.appendingPathComponent("macos-setup.json").path) || !pendingDownloads().isEmpty { configure() }
         else {
-            let marker = home.appendingPathComponent("plugin-bundle-reviewed.txt")
-            if let data = try? Data(contentsOf: resources.appendingPathComponent("optional-plugins/catalog.json")) {
-                let fingerprint = "completed-v2:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                if (try? String(contentsOf: marker, encoding: .utf8)) != fingerprint && !CommandLine.arguments.contains("--codlet-update-restart") {
-                    let answer = alert("更新官方插件", "此应用包含新的官方插件。更新会校验已有官方文件并保留禁用状态和授权范围；新增权限将单独确认，修改过的作者文件不会覆盖。", buttons: ["选择并更新", "继续使用当前插件"])
-                    if answer == .alertFirstButtonReturn { configure(); return }
-                }
-            }
             prepareLaunch()
         }
     }
@@ -78,6 +69,12 @@ final class Launcher: NSObject, NSApplicationDelegate {
         buttons.forEach { alert.addButton(withTitle: $0) }
         return alert.runModal()
     }
+    private func pendingDownloads() -> Set<String> {
+        guard let bytes = try? Data(contentsOf: home.appendingPathComponent("macos-setup.json")),
+              let state = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              let decisions = state["decided"] as? [String: [String: Any]] else { return [] }
+        return Set(decisions.filter { $0.value["result"] as? String == "pending" }.map { $0.key })
+    }
     @objc private func configure() {
         guard setup == nil else { return }
         guard !waitingForClientExit else { return }
@@ -93,14 +90,15 @@ final class Launcher: NSObject, NSApplicationDelegate {
             label.font = .systemFont(ofSize: size); label.frame = NSRect(x: 28, y: y, width: 504, height: height); view.addSubview(label); return label
         }
         _ = label("按你的方式设置 Codlet", 373, 30, 24)
-        _ = label(firstSetup ? "选择需要的官方插件。全部取消可仅使用 Core 和 CLI。\n安装后也可以通过菜单栏重新选择。" : "勾选本次希望安装或更新的插件，已有授权与禁用状态保留。\n仅替换经校验的官方文件；取消勾选不会删除插件。", 317, 48, 14)
+        _ = label(firstSetup ? "从 GitHub 下载所选插件的最新发布版。全部取消可仅使用 Core。\n安装后也可以通过菜单栏重新选择。" : "勾选希望下载的插件，已有插件与启停偏好保持不变。\n更新已有插件请使用 GUI 或 CLI；取消勾选不会删除插件。", 317, 48, 14)
         func checkbox(_ text: String, _ y: CGFloat, _ checked: Bool) -> NSButton {
             let box = NSButton(checkboxWithTitle: text, target: self, action: #selector(syncDependencies))
             box.frame = NSRect(x: 28, y: y, width: 504, height: 30); box.state = checked ? .on : .off; view.addSubview(box); return box
         }
-        gui = checkbox("Codlet GUI · 图形化管理插件", 271, firstSetup)
-        ui = checkbox("UI Adapter · 侧栏与插件页面（GUI 必需）", 235, firstSetup)
-        desktop = checkbox("Desktop Adapter · 客户端与对话接口", 199, firstSetup)
+        let pending = pendingDownloads()
+        gui = checkbox("Codlet GUI · 图形化管理插件", 271, firstSetup || pending.contains("codlet-gui"))
+        ui = checkbox("UI Adapter · 侧栏与插件页面（GUI 必需）", 235, firstSetup || pending.contains("codex.ui.adapter"))
+        desktop = checkbox("Desktop Adapter · 客户端与对话接口", 199, firstSetup || pending.contains("codex.desktop.adapter"))
         shortcut = checkbox("在桌面创建 Codlet 快捷入口", 153, false)
         setupLabel = label("新安装插件获得声明的权限；已有授权与禁用状态保留。\n这是未经 Apple 公证的预览版，使用前请确认来源。", 86, 55, 12)
         setupLabel.textColor = .secondaryLabelColor
@@ -142,14 +140,14 @@ final class Launcher: NSObject, NSApplicationDelegate {
                 try? log.close()
                 DispatchQueue.main.async { self?.setupFinished(process.terminationStatus) }
             }
-            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在准备运行环境并初始化插件；首次使用可能需要下载，请稍候…"
+            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在从 GitHub 下载并校验所选插件，请稍候…"
             try process.run()
         } catch { setup = nil; startButton.isEnabled = true; _ = alert("无法初始化 Codlet", error.localizedDescription) }
     }
     private func setupFinished(_ result: Int32) {
         setup = nil; startButton.isEnabled = true
         if result != 0 {
-            let message = result == 20 ? "官方插件更新失败：已有来源或文件未通过官方包校验。现有文件、授权和禁用状态均已保留。旧 UI 插件可能不兼容当前客户端，导致 GUI 不显示；请保留日志并完成更新后再启动。此次失败不会标记为已完成，下次启动仍会提示重试。" : "详细原因保存在 macos-setup.log。未确认的新增权限不会授予；更新事务会在重试或下次启动时恢复。"
+            let message = "插件下载或安装未完成，请检查网络或代理后重试。详细原因保存在 macos-setup.log；已有插件、设置和授权保持不变。也可以取消未完成的选项，仅使用 Core。"
             if alert("初始化未完成", message, buttons: ["打开日志", "返回"]) == .alertFirstButtonReturn { openLogs() }
             return
         }

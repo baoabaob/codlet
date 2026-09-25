@@ -421,16 +421,14 @@ function New-PreviewPlan {
     $portableManifestPath = Assert-PlainPath (Join-Path $portableRoot 'distribution-manifest.json')
     $portableManifest = Read-JsonFile $portableManifestPath
     Assert-DistributionEnvelope $portableManifest 'codlet-portable-distribution' 'win-x64' $version
-    if ($portableManifest.pluginsCommit -notmatch '^[0-9a-fA-F]{40}$') { Fail 'Windows portable manifest must record a complete plugin source commit.' }
-    $portableManifest.pluginsCommit = $portableManifest.pluginsCommit.ToLowerInvariant()
+    if ($portableManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only Windows distribution.' }
     Assert-DirectoryManifestPayload $portableRoot $portableManifest
     Assert-PortableZip $portableZip $portableRoot $portableManifest
 
     $msiManifest = Read-JsonFile $msiManifestPath
     Assert-DistributionEnvelope $msiManifest 'codlet-msi-distribution' 'win-x64' $version
     if ($msiManifest.sourceCommit -ne $portableManifest.sourceCommit) { Fail 'Windows MSI and portable builds come from different Core commits.' }
-    if ($msiManifest.pluginsCommit -and $msiManifest.pluginsCommit -notmatch '^[0-9a-fA-F]{40}$') { Fail 'Windows MSI manifest contains an invalid plugin commit.' }
-    if ($msiManifest.pluginsCommit -and $msiManifest.pluginsCommit.ToLowerInvariant() -ne $portableManifest.pluginsCommit) { Fail 'Windows MSI and portable builds come from different plugin commits.' }
+    if ($msiManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only MSI distribution.' }
     $msiRoot = Split-Path -Parent $msiManifestPath
     Assert-DirectoryManifestPayload $msiRoot $msiManifest -FallbackDirectory $portableRoot
     $msiMetadataPath = Assert-PlainPath ($msiPath + '.json')
@@ -441,7 +439,7 @@ function New-PreviewPlan {
 
     $macManifest = Read-JsonFile $macManifestPath
     Assert-DistributionEnvelope $macManifest 'codlet-macos-preview' 'darwin-arm64' $version
-    if ($macManifest.pluginsSourceCommit -notmatch '^[0-9a-fA-F]{40}$' -or $macManifest.pluginsSourceCommit.ToLowerInvariant() -ne $portableManifest.pluginsCommit) { Fail 'macOS and Windows builds come from different plugin commits.' }
+    if ($macManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only macOS distribution.' }
     if ($macManifest.sourceCommit.ToLowerInvariant() -ne $portableManifest.sourceCommit) { Fail 'macOS and Windows builds come from different Core commits.' }
     if ($null -eq $macManifest.dmg -or $macManifest.dmg.file -ne [IO.Path]::GetFileName($dmgPath) -or
         [long]$macManifest.dmg.bytes -ne (Get-Item -LiteralPath $dmgPath).Length -or $macManifest.dmg.sha256 -notmatch '^[0-9a-f]{64}$' -or
@@ -524,7 +522,7 @@ function New-PreviewPlan {
         $notesLines = @(
             "# Codlet Core $version Preview",
             '',
-            "This prerelease was built from Core commit ``$($portableManifest.sourceCommit)`` and official-plugin source commit ``$($portableManifest.pluginsCommit)``.",
+            "This prerelease was built from Core commit ``$($portableManifest.sourceCommit)`` only. Optional plugins are downloaded from their published GitHub Releases.",
             '',
             '## Downloads',
             '',
@@ -561,7 +559,7 @@ function New-PreviewPlan {
             prerelease = $true
             legacyUpdateBridge = [bool]$LegacyUpdateBridge
             sourceCommit = $portableManifest.sourceCommit
-            pluginsCommit = $portableManifest.pluginsCommit
+            pluginDelivery = 'github-latest'
             releaseName = "Codlet $version Preview"
             releaseNotesFile = 'release-notes.md'
             releaseNotesBytes = [long](Get-Item -LiteralPath $notesPath).Length
@@ -608,7 +606,7 @@ function Read-ReleasePlan([string]$Path) {
     if ($plan.schema -ne 1 -or $plan.kind -ne 'codlet-core-preview-release-plan' -or $plan.channel -ne 'preview' -or $plan.prerelease -ne $true) { Fail 'Expected a Codlet Core preview release plan.' }
     Assert-Version ([string]$plan.version) | Out-Null
     if ($plan.tag -ne ('v' + $plan.version) -or $plan.repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
-        $plan.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $plan.pluginsCommit -notmatch '^[0-9a-f]{40}$') { Fail 'Release plan version, repository or provenance is invalid.' }
+        $plan.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $plan.pluginDelivery -ne 'github-latest') { Fail 'Release plan version, repository or provenance is invalid.' }
     if ($plan.assets -isnot [System.Array] -or $plan.assets.Count -lt 4 -or $plan.assets.Count -gt 128) { Fail 'Release plan asset list is empty or too large.' }
     $root = Split-Path -Parent $planPath
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -668,7 +666,7 @@ function Read-ReleasePlan([string]$Path) {
         else {
             $macManifest = Read-JsonFile $macManifestPath
             if ($macManifest.schema -ne 1 -or $macManifest.kind -ne 'codlet-macos-preview' -or $macManifest.version -ne $plan.version -or
-                $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginsSourceCommit -ne $plan.pluginsCommit) {
+                $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginDelivery -ne 'github-latest') {
                 Fail 'Saved macOS distribution manifest has different release provenance.'
             }
             Assert-MacUpdateZip $zipPath $macManifest ([string]$plan.version) -LegacyBridge:$plan.legacyUpdateBridge

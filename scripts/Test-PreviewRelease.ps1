@@ -208,7 +208,7 @@ try {
     $pluginCommit = 'b' * 40
     $portableManifest = [ordered]@{
         schema = 1; kind = 'codlet-portable-distribution'; version = $version; platform = 'win-x64'
-        sourceCommit = $coreCommit; pluginsCommit = $pluginCommit; officialPlugins = @(); files = $portableRecords
+        sourceCommit = $coreCommit; pluginDelivery = 'github-latest'; files = $portableRecords
     }
     Write-Json (Join-Path $portable 'distribution-manifest.json') $portableManifest
     $portableZip = Join-Path $win ("Codlet-$version-windows-x64-portable.zip")
@@ -219,7 +219,7 @@ try {
     $msiRecords = @($portableRecords) + @((File-Record $msiInstallPath 'msi-install.json'))
     $msiManifest = [ordered]@{
         schema = 1; kind = 'codlet-msi-distribution'; version = $version; platform = 'win-x64'
-        sourceCommit = $coreCommit; pluginsCommit = $pluginCommit; officialPlugins = @(); files = $msiRecords
+        sourceCommit = $coreCommit; pluginDelivery = 'github-latest'; files = $msiRecords
     }
     $msiManifestPath = Join-Path $msiBuild 'distribution-manifest.json'
     Write-Json $msiManifestPath $msiManifest
@@ -307,7 +307,7 @@ try {
     [IO.File]::WriteAllBytes($dmgPath, $utf8.GetBytes('synthetic unsigned DMG fixture' + "`n"))
     $macManifest = [ordered]@{
         schema = 1; kind = 'codlet-macos-preview'; version = $version; platform = 'darwin-arm64'
-        sourceCommit = $coreCommit; pluginsSourceCommit = $pluginCommit; appleDeveloperSigned = $false; notarized = $false
+        sourceCommit = $coreCommit; pluginDelivery = 'github-latest'; appleDeveloperSigned = $false; notarized = $false
         files = $slimMacRecords
         dmg = [ordered]@{ file = $dmgName; bytes = [long](Get-Item -LiteralPath $dmgPath).Length; sha256 = Hash-File $dmgPath }
         updateZip = [ordered]@{ file = $updateZipName; bytes = [long](Get-Item -LiteralPath $updateZipPath).Length; sha256 = Hash-File $updateZipPath }

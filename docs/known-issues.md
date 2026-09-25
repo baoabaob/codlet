@@ -85,7 +85,7 @@ topic. Search and availability depend on GitHub indexing, network access and API
 limits; it is not an exhaustive index of every plugin manifest. Missing release
 declarations leave package details and download totals unknown. Matching
 declarations are publisher-provided metadata, not a security review. Installation
-still validates the actual archive and asks for its permissions. Installer presets
+still validates the actual archive and asks for its permissions. Older local installer seeds
 can switch to a verified GitHub release through an explicit adoption review;
 merely publishing a repository never silently changes an installed plugin's source.
 See the [marketplace specification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/marketplace.md).

@@ -67,13 +67,14 @@ def main(archive, plugins, export_runtime):
             raise ValueError("CUA Node did not report its reviewed runtime version")
         clean = {key: value for key, value in os.environ.items()
                  if not key.upper().startswith(("NODE_", "OPENSSL_", "DYLD_")) and key.upper() != "ELECTRON_RUN_AS_NODE"}
-        print(run(node, ROOT / "tests/mac_client_node.native.mjs", ROOT, plugins, env=clean).stdout.strip())
+        print(run(node, ROOT / "tests/mac_client_node.native.mjs", ROOT, *([plugins] if plugins else []), env=clean).stdout.strip())
         print(run(node, "--test", ROOT / "tests/host_bootstrap.test.mjs",
                   ROOT / "tests/host_capability_bootstrap.test.mjs",
                   ROOT / "tests/host_traffic.test.mjs", env=clean).stdout.strip())
         clean["CODLET_CORE_ROOT"] = str(ROOT)
-        print(run(node, "--test", plugins / "tests/desktop_host_abi.test.mjs",
-                  plugins / "tests/desktop_launch_bundle.test.mjs", cwd=plugins, env=clean).stdout.strip())
+        if plugins:
+            print(run(node, "--test", plugins / "tests/desktop_host_abi.test.mjs",
+                      plugins / "tests/desktop_launch_bundle.test.mjs", cwd=plugins, env=clean).stdout.strip())
         native = {**clean, "CODLET_TEST_REVIEWED_MAC_APP": str(app),
                   "CODLET_HOME": str(temporary / "resolver-acceptance-home"), "CARGO_INCREMENTAL": "0"}
         print(run("cargo", "test", "--locked", "--target", "aarch64-apple-darwin", "--lib",
@@ -97,7 +98,7 @@ def main(archive, plugins, export_runtime):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
-    parser.add_argument("--plugins", type=Path, required=True)
+    parser.add_argument("--plugins", type=Path)
     parser.add_argument("--export-runtime", type=Path)
     args = parser.parse_args()
-    main(args.archive, args.plugins.resolve(strict=True), args.export_runtime)
+    main(args.archive, args.plugins.resolve(strict=True) if args.plugins else None, args.export_runtime)

@@ -30,12 +30,13 @@ $empty=Invoke-CodletTestCli -Arguments @('plugin','list','--json')
 Assert (@($empty.plugins).Count -eq 0) 'Release Core unexpectedly contains plugins'
 Setup $env:CODLET_HOME @('none')
 Assert (@((Invoke-CodletTestCli -Arguments @('plugin','list','--json')).plugins).Count -eq 0) 'Core-only choice installed a plugin'
-$checks.Add('release Core has no embedded plugins; explicit Core-only setup remains empty')
+Assert (-not (Test-Path -LiteralPath (Join-Path $root 'optional-plugins'))) 'Distribution still contains offline plugin payloads'
+$checks.Add('Core-only package has no plugin payloads or plugin source revision')
 $env:CODLET_HOME=Join-Path $artifacts 'GUI with spaces'
 Setup $env:CODLET_HOME @('codlet-gui')
 $listed=Invoke-CodletTestCli -Arguments @('plugin','list','--json')
 Assert ((@($listed.plugins.id|Sort-Object)-join ',') -eq 'codex.ui.adapter,codlet-gui') 'GUI dependency selection is wrong'
-Assert (@($listed.plugins|Where-Object{-not $_.enabled -or $_.validationError -or $_.source -ne 'local'}).Count -eq 0) 'External official plugin registration did not validate'
+Assert (@($listed.plugins|Where-Object{-not $_.enabled -or $_.validationError -or $_.source -ne 'github'}).Count -eq 0) 'External official plugin registration did not validate'
 $config=Join-Path $env:CODLET_HOME 'config.json'
 $before=[IO.File]::ReadAllText($config)
 Setup $env:CODLET_HOME $null
@@ -71,6 +72,6 @@ $env:CODLET_HOME=Join-Path $artifacts 'minimal-registry'
 Setup $env:CODLET_HOME @('codex.desktop.adapter')
 Assert (@((Invoke-CodletTestCli -Arguments @('plugin','list','--json')).plugins).Count -eq 1) 'Valid registry with omitted preference map was rejected'
 $checks.Add('legacy disabled GUI preference and minimal valid registry survive first-party package setup')
-$report=[ordered]@{schema=1;scope='release-binary-and-offline-plugin-setup';passed=$true;checks=$checks.ToArray();clientStarted=$false;userDataUntouched=$true}
+$report=[ordered]@{schema=1;scope='release-binary-and-github-plugin-setup';passed=$true;checks=$checks.ToArray();clientStarted=$false;userDataUntouched=$true}
 $report|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $artifacts 'report.json') -Encoding UTF8
 $report|ConvertTo-Json -Depth 8

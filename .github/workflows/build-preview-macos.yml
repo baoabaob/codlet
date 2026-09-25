@@ -7,10 +7,6 @@ on:
         description: Full 40-character Core commit SHA to build
         required: true
         type: string
-      plugins_commit:
-        description: Full 40-character commit SHA from baoabaob/codlet-plugins
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -32,15 +28,13 @@ jobs:
           path: core
           ref: ${{ inputs.core_commit }}
           persist-credentials: false
-      - name: Require an immutable plugin revision and native Apple Silicon
+      - name: Require an immutable Core revision and native Apple Silicon
         env:
           CORE_COMMIT: ${{ inputs.core_commit }}
-          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
         run: |
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
           [[ "$CORE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$PLUGINS_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CORE_COMMIT"
       - uses: actions/setup-python@v5
         with:
@@ -56,20 +50,12 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('node_version=' + version + '\n')
           PY
-      - name: Check out independently maintained official plugins
-        uses: actions/checkout@v4
-        with:
-          repository: baoabaob/codlet-plugins
-          ref: ${{ inputs.plugins_commit }}
-          path: plugins
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ steps.runtime.outputs.node_version }}
           cache: npm
           cache-dependency-path: |
             core/frontend/package-lock.json
-            plugins/frontend/package-lock.json
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
@@ -77,14 +63,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core -> target
-      - name: Build reviewed frontend and plugin payloads
+      - name: Build Core frontend runtime
         run: |
           npm ci --prefix frontend
           node frontend/build.mjs
-          npm ci --prefix ../plugins/frontend
-          node ../plugins/scripts/prepare-core-sdk.mjs "$PWD"
-          node ../plugins/frontend/build.mjs
-          node ../plugins/scripts/package.mjs
           # Standard-library and build-host notices can differ between GNU
           # Windows and Apple toolchains. Ship this build's actual attribution.
           python3 scripts/collect-rust-licenses.py
@@ -108,7 +90,6 @@ jobs:
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 tests/verify_mac_client_node.py \
             --archive .codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip \
-            --plugins ../plugins \
             --export-runtime .codlet-artifacts/official-mac/validated-cua-node
       - name: Run native Core and packaging contract tests
         run: |
@@ -120,18 +101,14 @@ jobs:
         run: sh scripts/build-macos.sh release
       - name: Assemble app and preview disk image
         env:
-          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
           NODE_VERSION: ${{ steps.runtime.outputs.node_version }}
         run: |
-          test "$(git -C ../plugins rev-parse HEAD)" = "$PLUGINS_COMMIT"
           codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
           python3 scripts/build-preview-macos.py \
             --executable "$codlet_target_root/aarch64-apple-darwin/release/codlet" \
             --node-directory "$codlet_target_root/aarch64-apple-darwin/release/runtime/node-v$NODE_VERSION-darwin-arm64" \
             --reviewed-client-node-directory .codlet-artifacts/official-mac/validated-cua-node \
-            --plugin-distribution ../plugins/dist \
             --source-commit "$(git rev-parse HEAD)" \
-            --plugins-commit "$PLUGINS_COMMIT" \
             --output .codlet-artifacts/preview-macos/package
       - name: Upload native preview and provenance
         uses: actions/upload-artifact@v4

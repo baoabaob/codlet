@@ -116,9 +116,9 @@ def stage_legacy_bridge(app, node_directory, destination):
     return destination
 
 
-def stage_payload(executable, node_directory, plugin_distribution, output, core_commit, plugin_commit):
+def stage_payload(executable, node_directory, output, core_commit):
     """Validate and assemble only declared payloads; also used by portable tests."""
-    for value in (executable, node_directory, plugin_distribution, output):
+    for value in (executable, node_directory, output):
         plain(value)
     if output.exists():
         raise ValueError("Choose a new output directory")
@@ -127,7 +127,7 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
         header = stream.read(12)
     if header[:4] != bytes.fromhex("cffaedfe") or int.from_bytes(header[4:8], "little") != 0x0100000C:
         raise ValueError("Expected an Apple Silicon Mach-O executable")
-    for commit in (core_commit, plugin_commit):
+    for commit in (core_commit,):
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise ValueError("Source provenance must use complete 40-character Git SHAs")
     cargo = (ROOT / "Cargo.toml").read_text()
@@ -145,26 +145,6 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
         plain(node_directory / name)
         if digest(node_directory / name) != checksum:
             raise ValueError(f"Node does not match the pinned macOS runtime: {name}")
-    catalog = json.loads((plugin_distribution / "catalog.json").read_text(encoding="utf-8"))
-    if catalog.get("schema") != 1 or catalog.get("kind") != "codlet-official-plugin-bundle":
-        raise ValueError("Invalid official plugin catalog")
-    ids = catalog.get("installerPlugins", [pkg["id"] for pkg in catalog["packages"]])
-    if len(set(ids)) != len(ids) or set(ids) != set(ALLOWED):
-        raise ValueError("macOS setup requires the three declared official installer plugins")
-    packages = []
-    for identifier in ALLOWED:
-        matches = [pkg for pkg in catalog["packages"] if pkg["id"] == identifier]
-        if len(matches) != 1:
-            raise ValueError("Duplicate or missing installer package")
-        pkg = matches[0]
-        if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", pkg["repository"]) or pkg["tag"] != "v" + pkg["version"]:
-            raise ValueError("Invalid official plugin provenance")
-        if any(dep not in ALLOWED for dep in pkg.get("dependencies", [])):
-            raise ValueError("Installer plugin has an unavailable dependency")
-        if identifier == "codlet-gui" and "codex.ui.adapter" not in pkg.get("dependencies", []):
-            raise ValueError("GUI must declare its UI Adapter dependency")
-        packages.append(pkg)
-    catalog["packages"] = packages
     app = output / "Codlet.app"
     resources = app / "Contents/Resources"
     copy(executable, resources / "codlet")
@@ -172,23 +152,7 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
     for name in ("node-runtime.json", "client-node-profiles.json", "update-channel.json"):
         copy(ROOT / "runtime" / name, resources / "runtime" / name)
     copy(ROOT / "scripts/macos/initialize.mjs", resources / "initialize.mjs")
-    (resources / "optional-plugins").mkdir()
-    (resources / "optional-plugins/catalog.json").write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
-    for pkg in packages:
-        seen = set()
-        for file in pkg["files"]:
-            relative = file["path"]
-            if not re.fullmatch(r"[a-zA-Z0-9._/-]+", relative) or any(part in ("", ".", "..") for part in relative.split("/")) or relative in seen:
-                raise ValueError("Invalid or duplicate package payload path")
-            seen.add(relative)
-            source = plugin_distribution / "packages" / pkg["id"] / relative
-            plain(source)
-            if digest(source) != file["sha256"] or source.stat().st_size != file["bytes"]:
-                raise ValueError(f"Plugin payload mismatch: {pkg['id']}/{relative}")
-            copy(source, resources / "optional-plugins/packages" / pkg["id"] / relative)
-        manifest = json.loads((resources / "optional-plugins/packages" / pkg["id"] / "codlet.json").read_text())
-        if manifest["id"] != pkg["id"] or manifest["version"] != pkg["version"] or sorted(manifest["permissions"]) != sorted(pkg["permissions"]):
-            raise ValueError("Plugin manifest/catalog mismatch")
+    copy(ROOT / "scripts/distribution/official-plugins.json", resources / "official-plugins.json")
     license_names = [name for name in ("LICENSE",) if (ROOT / name).is_file()]
     if not license_names or any((ROOT / name).stat().st_size < 200 for name in license_names):
         raise ValueError("A complete repository license text is required")
@@ -214,10 +178,9 @@ def stage_payload(executable, node_directory, plugin_distribution, output, core_
     return app, version, {
         "schema": 1, "kind": "codlet-macos-preview", "version": version,
         "platform": "darwin-arm64", "sourceCommit": core_commit,
-        "pluginsSourceCommit": plugin_commit, "appleDeveloperSigned": False,
+        "pluginDelivery": "github-latest", "appleDeveloperSigned": False,
         "notarized": False, "signature": "ad-hoc app seal; managed Node verified outside the bundle",
         "license": license_expression, "licenseFiles": [f"Contents/Resources/licenses/{name}" for name in [*license_names, "NOTICE", "THIRD_PARTY_UI_LICENSES.txt", "THIRD_PARTY_RUST_LICENSES.txt"]],
-        "officialPlugins": [{key: pkg[key] for key in ("id", "version", "repository", "tag", "sha256")} for pkg in packages],
     }
 
 
@@ -232,7 +195,7 @@ def build(args):
     with tempfile.TemporaryDirectory(prefix=".macos-package-", dir=output.parent) as temporary:
         temporary = Path(temporary)
         volume = temporary / "volume"
-        app, version, manifest = stage_payload(Path(args.executable).absolute(), Path(args.node_directory).absolute(), Path(args.plugin_distribution).absolute(), volume, args.source_commit, args.plugins_commit)
+        app, version, manifest = stage_payload(Path(args.executable).absolute(), Path(args.node_directory).absolute(), volume, args.source_commit)
         run("xcrun", "swiftc", "-swift-version", "5", "-O", "-target", "arm64-apple-macos13.0", "-framework", "AppKit", ROOT / "scripts/macos/Launcher.swift", "-o", app / "Contents/MacOS/Codlet")
         icons = temporary / "Codlet.iconset"
         icons.mkdir()
@@ -276,7 +239,7 @@ def build(args):
         (volume / "开始使用.txt").write_text(
             f"Codlet {version} · macOS Apple Silicon Preview\n\n"
             "1. 将 Codlet 拖入 Applications，再从应用程序打开。\n"
-            "2. 首次打开可选择官方插件及桌面快捷入口。GUI 自动包含 UI Adapter。\n"
+            "2. 首次打开可选择从 GitHub 下载最新官方插件及创建桌面快捷入口。GUI 自动包含 UI Adapter。\n"
             "3. 如果 Codex 正在运行，Codlet 会先提示你完成任务，并仅请求正常退出。\n\n"
             "本包没有 Apple Developer ID 签名或公证。Gatekeeper 可能阻止首次打开。\n"
             "确认下载来源和 SHA-256 后，可使用 macOS 系统设置中的隐私与安全性页\n"
@@ -325,7 +288,7 @@ def build(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    for option in ("executable", "node-directory", "plugin-distribution", "output", "source-commit", "plugins-commit"):
+    for option in ("executable", "node-directory", "output", "source-commit"):
         parser.add_argument("--" + option, required=True)
     parser.add_argument("--reviewed-client-node-directory")
     build(parser.parse_args())
