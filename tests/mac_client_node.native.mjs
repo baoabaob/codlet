@@ -54,7 +54,7 @@ try {
   assert.equal(execFileSync(process.execPath, flags, { cwd: temporary, env: clean, timeout: 10000, encoding: 'utf8' }), 'Host modules and exact flags passed');
 
   const entry = plugins ? path.join(plugins, 'bundled/codex-desktop-adapter/host.cjs') : path.join(temporary, 'launch-fixture.cjs');
-  if (!plugins) fs.writeFileSync(entry, 'exports.prepareClientLaunch = async () => ({ arguments: ["--inspect-brk=127.0.0.1:0"] });');
+  if (!plugins) fs.writeFileSync(entry, 'exports.prepareClientLaunch = async () => ({ arguments: ["--inspect-brk=127.0.0.1:0"] }); exports.attachClientLaunch = async () => { throw Error("prepare-only fixture"); };');
   const snapshot = path.join(temporary, 'desktop-snapshot.cjs');
   fs.copyFileSync(entry, snapshot);
   const bootstrap = path.join(core, 'runtime/client-launch.cjs');
