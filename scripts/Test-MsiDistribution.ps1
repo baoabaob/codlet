@@ -23,7 +23,7 @@ if($StructureOnly){
     $installedFiles=@(Rows 'SELECT `FileName` FROM `File`' 1|ForEach-Object{$_[0]})
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)node\.exe$'}).Count){throw 'Managed MSI contains a bundled Node executable'}
     $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
-    if($shortcuts.Count -ne 3 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe'}).Count){throw 'Shortcuts must target the native launcher'}
+    if($shortcuts.Count -ne 2 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe' -or $_[2] -like '*--configure*'}).Count){throw 'Only the Start menu and desktop launch shortcuts are allowed'}
     $sequences=@(Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)
     $preflight=[int](@($sequences|Where-Object{$_[0] -eq 'CheckRunningApplications'})[0][1])
     $validate=[int](@($sequences|Where-Object{$_[0] -eq 'InstallValidate'})[0][1])

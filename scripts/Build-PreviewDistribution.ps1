@@ -69,7 +69,7 @@ if($BundleNodeForTests){
   Copy-Payload (Join-Path $NodeDirectory 'node.exe') ($nodeRelative+'/node.exe')
   Copy-Payload (Join-Path $NodeDirectory 'LICENSE') ($nodeRelative+'/LICENSE')
 }
-foreach($name in @('Start-Codlet.cmd','Choose-Plugins.cmd','Codlet-CLI.cmd','Initialize-Codlet.ps1')){Copy-Payload (Join-Path $root ('scripts/distribution/'+$name)) $name}
+foreach($name in @('Start-Codlet.cmd','Codlet-CLI.cmd','Initialize-Codlet.ps1')){Copy-Payload (Join-Path $root ('scripts/distribution/'+$name)) $name}
 Copy-Payload (Join-Path $root 'scripts/Restart-Codlet.ps1') 'Restart-Codlet.ps1'
 Copy-Payload (Join-Path $root 'scripts/Export-Diagnostics.ps1') 'Export-Diagnostics.ps1'
 Copy-Payload (Join-Path $root 'assets/codlet/ico/codlet.ico') 'codlet.ico'
@@ -102,7 +102,7 @@ installation when available. Otherwise it downloads the pinned official Node
 archive into its private cache. A system Node installation is not required.
 
 GUI automatically includes UI Adapter. Desktop Adapter is independently optional.
-Codlet-Launcher.exe --configure can install an omitted plugin later. Existing registrations,
+Use the GUI marketplace or CLI to add other plugins later. Existing registrations,
 disabled states and grants are preserved. To remove a plugin, use GUI or:
 
     Codlet-CLI.cmd plugin remove PLUGIN_ID --cascade --json

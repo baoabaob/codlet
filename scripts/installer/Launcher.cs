@@ -1,13 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -20,6 +18,7 @@ namespace Codlet.Setup {
         [STAThread]
         static int Main(string[] args) {
             bool quiet = args.Contains("--quiet"), configure = args.Contains("--configure"), check = args.Contains("--check");
+            bool refreshPlugins = false;
             if (args.Any(a => a != "--quiet" && a != "--configure" && a != "--check")) return 87;
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             string data = File.Exists(Path.Combine(root, "portable.mode")) ? Path.Combine(root, "data") : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Codlet");
@@ -35,28 +34,25 @@ namespace Codlet.Setup {
                         const string notice = "此安装包包含新的官方插件。更新会校验已有官方文件，保留禁用状态和授权范围；新增权限单独确认，修改过的作者文件不会覆盖。\n\n选择“确定”选择并更新插件；选择“取消”继续使用当前插件。";
                         if (quiet) Log("Official plugin bundle changed. Existing plugins retained; run Codlet-Launcher.exe --configure to check versions.");
                         else {
-                            configure = MessageBox.Show(notice, "Codlet · 检查官方插件版本", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK;
+                            refreshPlugins = MessageBox.Show(notice, "Codlet · 检查官方插件版本", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) == DialogResult.OK;
                         }
                     }
                 }
                 if (quiet && (configure || (!check && File.Exists(Path.Combine(root, "portable.mode")) && !File.Exists(Path.Combine(data, "plugin-setup.json"))))) { Log("Interactive plugin selection is required; run without --quiet first."); return 87; }
                 int gate = ProcessGate.Check(root, !quiet, !configure, Log);
                 if (gate != 0 || check) return gate;
-                if (quiet) return Start(data, configure, null);
-                using (var form = new ProgressDialog()) {
-                    int result = 1;
-                    form.Shown += async delegate {
-                        try { result = await Task.Run(() => Start(data, configure, message => form.BeginInvoke((Action)(() => form.Status.Text = message)))); }
-                        catch (Exception error) { Log(error.ToString()); form.Error = "启动失败：" + error.Message; }
-                        if (result == 20 && form.Error == null) form.Error = "官方插件更新失败：已有来源或文件未通过官方包校验。现有文件、授权和禁用状态均已保留。旧 UI 插件可能不兼容当前客户端，导致 GUI 不显示；请保留日志并完成更新后再启动。此次失败不会标记为已完成，下次启动仍会提示重试。";
-                        if (result != 0 && form.Error == null) form.Error = "操作未完成（代码 " + result + "）。已启动的进程不会被强制关闭。";
-                        form.Finish();
-                    };
-                    form.ShowDialog();
-                    if (form.Error != null) MessageBox.Show(form.Error + "\n\n诊断日志：\n" + logFile, "Codlet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return result;
+                // Successful launches have no launcher window. Keep readiness
+                // monitoring and surface actionable failures after they occur.
+                int result = Start(data, configure, refreshPlugins);
+                if (result != 0 && !quiet) {
+                    string error = result == 20
+                        ? "官方插件更新失败，现有文件和授权已保留。请查看日志后重试。"
+                        : "启动未完成（代码 " + result + "）。请查看日志；不要重复启动多个实例。";
+                    MessageBox.Show(error + "\n\n诊断日志：\n" + logFile, "Codlet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
+                return result;
             } catch (Exception error) {
+                try { if (logFile != null) Log(error.ToString()); } catch { }
                 if (!quiet) MessageBox.Show(error.Message, "Codlet", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
@@ -87,10 +83,8 @@ namespace Codlet.Setup {
                 try { return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(stdout.Result); } catch { return null; }
             }
         }
-        static int Start(string data, bool configure, Action<string> progress) {
-            if (progress != null) progress("正在准备所选插件…");
-            int initialized = Initialize(data, configure); if (initialized != 0 || configure) return initialized;
-            if (progress != null) progress("正在准备运行环境并启动 Codex。首次启动可能需要下载运行时（最多等待 5 分钟）…");
+        static int Start(string data, bool configure, bool refreshPlugins) {
+            int initialized = Initialize(data, configure || refreshPlugins); if (initialized != 0 || configure) return initialized;
             // Core is a long-lived host. Its exit is not launch readiness.
             Log("Core stdout/stderr: " + logFile + ".core.log");
             var process = DetachedHost.Start(root, data, logFile);
@@ -112,16 +106,4 @@ namespace Codlet.Setup {
         }
     }
 
-    sealed class ProgressDialog : Form {
-        public Label Status = new Label(); public string Error; bool finished;
-        public ProgressDialog() {
-            Text = "Codlet"; Font = SystemFonts.MessageBoxFont; AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(520, 150); StartPosition = FormStartPosition.CenterScreen;
-            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
-            Status.SetBounds(24, 26, 472, 54); Controls.Add(Status);
-            var bar = new ProgressBar { Style = ProgressBarStyle.Marquee }; bar.SetBounds(24, 96, 472, 18); Controls.Add(bar);
-            FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!finished) e.Cancel = true; };
-        }
-        public void Finish() { finished = true; Close(); }
-    }
 }
