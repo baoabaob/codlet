@@ -45,11 +45,11 @@ function runtime(origins, errorFactory = failure) {
   return { ...value, root, calls };
 }
 
-function request(url, { method = 'GET', headers, body } = {}) {
+function request(url, { method = 'GET', headers, body, onData } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request(url, { method, headers }, response => {
       const chunks = [], arrivals = [];
-      response.on('data', chunk => { chunks.push(chunk); arrivals.push(Date.now()); });
+      response.on('data', chunk => { chunks.push(chunk); arrivals.push(Date.now()); onData?.(chunk); });
       response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks), arrivals }));
     });
     req.once('error', reject);
@@ -60,13 +60,19 @@ function request(url, { method = 'GET', headers, body } = {}) {
 
 test('explicit loopback channel rewrites a real binary POST and streams the selected upstream response', async t => {
   const seen = [[], []];
+  let releaseEnd, upstreamEnded = false, streamedBeforeEnd = false, observed = '';
+  const firstReceived = new Promise(resolve => { releaseEnd = resolve; });
+  // Prove ordering, not a sub-60ms response time on a shared CI machine.
+  const watchdog = setTimeout(releaseEnd, 5000);
+  t.after(() => { clearTimeout(watchdog); releaseEnd(); });
   const upstreams = await Promise.all([0, 1].map(index => listen(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     seen[index].push({ method: req.method, headers: req.headers, body: Buffer.concat(chunks) });
     res.writeHead(index ? 207 : 200, { 'content-type': 'text/event-stream', 'x-upstream': String(index), connection: 'close' });
     res.write('data: first\n\n');
-    await tick(60);
+    await firstReceived;
+    upstreamEnded = true;
     res.end('data: second\n\n');
   })));
   for (const server of upstreams) t.after(server.close);
@@ -91,9 +97,12 @@ test('explicit loopback channel rewrites a real binary POST and streams the sele
   });
   t.after(() => channel.close());
 
-  const started = Date.now();
   const response = await request(`${channel.endpoint}/v1/responses`, {
     method: 'POST', headers: { 'x-route': 'two', authorization: 'Bearer downstream-only', 'content-type': 'application/octet-stream' }, body: Buffer.from([0, 1, 2, 255]),
+    onData(chunk) {
+      observed += chunk.toString();
+      if (observed.includes('data: first\n\n')) { streamedBeforeEnd ||= !upstreamEnded; releaseEnd(); }
+    },
   });
   assert.equal(response.status, 207, response.body.toString());
   assert.equal(response.headers['x-plugin'], 'transformed');
@@ -106,7 +115,7 @@ test('explicit loopback channel rewrites a real binary POST and streams the sele
   assert.deepEqual(seen[1][0].body, Buffer.concat([Buffer.from('changed:'), Buffer.from([0, 1, 2, 255])]));
   assert.equal(response.body.toString(), 'data: prefix\n\ndata: first\n\ndata: second\n\n');
   assert.ok(response.arrivals.length >= 2);
-  assert.ok(response.arrivals[0] - started < 60, 'the first transformed SSE chunk arrives before upstream completion');
+  assert.ok(streamedBeforeEnd, 'the first upstream SSE chunk reaches the downstream before upstream completion');
   assert.equal(managed.calls.filter(([method]) => method === 'host.network.authorizeChannel').length, 2, 'open and each inbound request are freshly authorized');
   assert.equal(managed.calls.filter(([method]) => method === 'host.network.authorizeForward').length, 1);
 });

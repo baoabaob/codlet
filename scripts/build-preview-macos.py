@@ -265,11 +265,13 @@ def build(args):
             # Validate the shipped initializer with the real native Core using
             # disposable Codlet data. This does not launch the official client.
             environment = {**os.environ, "CODLET_HOME": str(temporary / "runtime-acceptance-home")}
-            subprocess.run([str(installed / "Contents/Resources/codlet"), "__codlet_initialize_plugins", *ALLOWED], env=environment, check=True, timeout=180)
+            selected = ALLOWED if args.verify_online_plugins else []
+            subprocess.run([str(installed / "Contents/Resources/codlet"), "__codlet_initialize_plugins", *selected], env=environment, check=True, timeout=180)
             listing = subprocess.run([str(installed / "Contents/Resources/codlet"), "plugin", "list", "--json"], env=environment, check=True, timeout=30, capture_output=True, text=True, encoding="utf-8")
-            if {entry["id"] for entry in json.loads(listing.stdout)["plugins"]} != set(ALLOWED):
+            if {entry["id"] for entry in json.loads(listing.stdout)["plugins"]} != set(selected):
                 raise ValueError("Mounted package failed real Core plugin initialization")
-            manifest["nativePackagingChecks"] = ["arm64-host", "launcher-smoke", "codesign-ad-hoc-integrity", "signed-update-zip-stage", "native-app-update-swap-rollback", "dmg-verify", "mounted-launcher-smoke", "mounted-real-core-plugin-initialization"]
+            manifest["nativePackagingChecks"] = ["arm64-host", "launcher-smoke", "codesign-ad-hoc-integrity", "signed-update-zip-stage", "native-app-update-swap-rollback", "dmg-verify", "mounted-launcher-smoke", "mounted-real-core-initialization"]
+            manifest["pluginDownloadsVerified"] = args.verify_online_plugins
             if reviewed_client_node is not None:
                 manifest["nativePackagingChecks"].append("official-client-node-helper")
         finally:
@@ -288,6 +290,7 @@ def build(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify-online-plugins", action="store_true", help="Additional live GitHub acceptance; requires network and unauthenticated API quota")
     for option in ("executable", "node-directory", "output", "source-commit"):
         parser.add_argument("--" + option, required=True)
     parser.add_argument("--reviewed-client-node-directory")

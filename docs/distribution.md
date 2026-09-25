@@ -66,7 +66,7 @@ python3 scripts/build-preview-macos.py \
   --output /absolute/new/output
 ```
 
-The `Build macOS preview` workflow accepts one full Core commit SHA. It checks out only Core, verifies the ARM64 runner, builds Core/Swift, tests downloads in an isolated Codlet home, mounts the DMG and uploads artifacts with Core provenance. Building Core no longer checks out or builds the plugin repository.
+The `Build macOS preview` workflow accepts one full Core commit SHA. It checks out only Core, verifies the ARM64 runner, builds Core/Swift, tests Core-only initialization in an isolated Codlet home, mounts the DMG and uploads artifacts with Core provenance. Building Core no longer checks out or builds the plugin repository. Pass `--verify-online-plugins` for additional real GitHub installation acceptance; this requires public API quota and is recorded separately as `pluginDownloadsVerified`. Plugin service availability does not gate a Core-only build.
 
 Current Preview signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
 
