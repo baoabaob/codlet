@@ -15,6 +15,12 @@ official feature plugins live in [codlet-plugins](https://github.com/baoabaob/co
 | Official adapters | Reviewed client-build mappings, navigation, native objects and backend semantics | Exclusive access to Core primitives |
 | GUI | An optional consumer of public management APIs | A privileged built-in management path unavailable to other plugins |
 
+The generic HTTP/SSE/WebSocket engine lives in Rust Core. It owns bounded native
+streams, forwarding, trust/proxy handling and ordinary plugin authority. JavaScript
+Hosts keep only plugin callbacks and stream bindings. There is no permanent Node
+traffic process or legacy forwarding fallback; client-specific integration stays
+in an ordinary authorized launch Adapter. See the [traffic contract](spec/traffic.md).
+
 The Core-provided `/codlet` skill is the deliberate small exception to the
 client-agnostic boundary: it owns a reviewed skill-registration bridge and its
 generated resources. It is present without the GUI, never submits a model task

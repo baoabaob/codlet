@@ -10,6 +10,7 @@ fn run(local_app_data: &Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_codlet"))
         .args(arguments)
         .env("LOCALAPPDATA", local_app_data)
+        .env_remove("CODLET_HOME")
         .output()
         .unwrap()
 }
@@ -173,6 +174,7 @@ fn doctor_without_registry_path_keeps_static_diagnostics_and_reports_runtime_una
     let output = Command::new(env!("CARGO_BIN_EXE_codlet"))
         .args(["doctor", "--json"])
         .env_remove("LOCALAPPDATA")
+        .env_remove("CODLET_HOME")
         .current_dir(directory.path())
         .output()
         .unwrap();

@@ -10,6 +10,7 @@ pub(super) fn serve(listener: TcpListener, hub: Weak<Hub>, mut stopped: watch::R
         return;
     };
     runtime.block_on(async move {
+        if let Some(hub) = hub.upgrade() { let _ = hub.runtime.set(tokio::runtime::Handle::current()); }
         let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return; };
         let slots = Arc::new(tokio::sync::Semaphore::new(MAX_REGISTRATIONS + 8));
         let mut tasks = tokio::task::JoinSet::new();
@@ -30,6 +31,7 @@ pub(super) fn serve(listener: TcpListener, hub: Weak<Hub>, mut stopped: watch::R
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         if let Some(hub) = hub.upgrade() {
+            if let Some(engine)=hub.native.lock().unwrap_or_else(|p|p.into_inner()).as_ref(){engine.stop();}
             let peers = hub.state.lock().unwrap_or_else(|p|p.into_inner()).peers.keys().cloned().collect::<Vec<_>>();
             for peer in peers { hub.disconnected(&peer); }
         }
@@ -196,7 +198,7 @@ async fn connection(mut stream: tokio::net::TcpStream, weak: Weak<Hub>) {
     }
 }
 
-fn valid_id(value: &Value) -> bool {
+pub(super) fn valid_id(value: &Value) -> bool {
     value
         .as_str()
         .is_some_and(|v| !v.is_empty() && v.len() <= 128)
@@ -227,7 +229,7 @@ impl Hub {
         let leases = state
             .leases
             .iter()
-            .filter(|(_, v)| v.expires <= now)
+            .filter(|(_, v)| v.expires.is_some_and(|deadline| deadline <= now))
             .map(|(k, _)| k.clone())
             .collect::<Vec<_>>();
         for lease in leases {
@@ -251,7 +253,7 @@ impl Hub {
         }
     }
 
-    fn process(&self, peer_id: &str, frame: Value) -> Result<()> {
+    pub(super) fn process(&self, peer_id: &str, frame: Value) -> Result<()> {
         let object = frame
             .as_object()
             .ok_or_else(|| error("invalid_frame", "object required"))?;
@@ -281,6 +283,30 @@ impl Hub {
         };
         let params = frame.get("params").cloned().unwrap_or(json!({}));
         let value = match method.as_str() {
+            "channel.forward" | "channel.cancel" if matches!(role, Role::Host(_)) => {
+                let Role::Host(owner) = role else {
+                    unreachable!()
+                };
+                let engine = self
+                    .native
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                    .ok_or_else(|| error("traffic_unavailable", "native channels unavailable"))?;
+                let destination = peer_id.to_owned();
+                engine.clone().spawn(async move {
+                    let result = engine.channel_operation(owner, &method, params).await;
+                    if let Some(hub) = engine.hub.upgrade() {
+                        let state = hub.state.lock().unwrap_or_else(|p| p.into_inner());
+                        let frame = match result {
+                            Ok(result) => json!({"id":id,"result":result}),
+                            Err(e) => json!({"id":id,"error":{"code":e.code}}),
+                        };
+                        let _ = hub.send(&state, &destination, frame);
+                    }
+                });
+                return Ok(());
+            }
             "applied" if role == Role::Gateway => {
                 let revision = params["revision"]
                     .as_u64()
@@ -467,7 +493,13 @@ impl Hub {
                     if !state.registrations.contains_key(key) {
                         return Err(error("stale_generation", "registration retired"));
                     }
-                    if state.leases.len() >= MAX_LEASES {
+                    if state
+                        .leases
+                        .values()
+                        .filter(|lease| lease.expires.is_some())
+                        .count()
+                        >= MAX_LEASES
+                    {
                         return Err(error("resource_limit", "traffic lease limit reached"));
                     }
                     if !state
@@ -491,7 +523,7 @@ impl Hub {
                             registration,
                             opening_request: id.clone(),
                             url: policy_url.origin().ascii_serialization(),
-                            expires: Instant::now() + Duration::from_secs(300),
+                            expires: Some(Instant::now() + Duration::from_secs(300)),
                         },
                     );
                     json!({"lease":lease})
@@ -660,6 +692,13 @@ impl Hub {
                             | "request_cancelled"
                             | "invalid_frame"
                             | "invalid_body"
+                            | "websocket_rejected"
+                            | "upstream_failed"
+                            | "handler_timeout"
+                            | "permission_denied"
+                            | "authorization_revoked"
+                            | "policy_denied"
+                            | "stream_failed"
                     )
                 })
                 .unwrap_or("traffic_callback_failed");

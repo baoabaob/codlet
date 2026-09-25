@@ -68,6 +68,7 @@ def main(archive, plugins, export_runtime):
         clean = {key: value for key, value in os.environ.items()
                  if not key.upper().startswith(("NODE_", "OPENSSL_", "DYLD_")) and key.upper() != "ELECTRON_RUN_AS_NODE"}
         print(run(node, ROOT / "tests/mac_client_node.native.mjs", ROOT, *([plugins] if plugins else []), env=clean).stdout.strip())
+        print(run("cargo", "build", "--locked", "--features", "test-fixtures", "--bin", "codlet-traffic-fixture", env=clean).stdout.strip())
         print(run(node, "--test", ROOT / "tests/host_bootstrap.test.mjs",
                   ROOT / "tests/host_capability_bootstrap.test.mjs",
                   ROOT / "tests/host_traffic.test.mjs", env=clean).stdout.strip())

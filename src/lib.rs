@@ -14,6 +14,8 @@ mod control_validation;
 pub mod core_resources;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod core_services;
+#[cfg(all(feature = "test-fixtures", any(windows, target_os = "macos")))]
+pub use core_services::traffic::fixture::run as run_traffic_fixture;
 pub mod diagnostic_bundle;
 pub mod diagnostics;
 pub mod github_distribution;

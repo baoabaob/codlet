@@ -1,103 +1,55 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const { createTrafficInterceptors } = require('../runtime/traffic-interceptors.cjs');
-const origin = 'https://fixture.invalid';
-function setup(t, authorize = async (_owner, action) => action !== 'sensitiveHeaders') {
-  const root = new AbortController();
-  const registry = createTrafficInterceptors({ rootSignal: root.signal, authorize, networkProfile: 'saved-upstream' });
-  t.after(() => root.abort());
-  const owners = [];
-  function register(id, callbacks, options = {}) {
-    const owner = { pluginId: id, generation: 1, signal: (owners[owners.push(new AbortController()) - 1]).signal };
-    return registry.register(owner, { id: 'test', origins: [origin], ...options }, callbacks);
-  }
-  const controller = new AbortController(), forwarded = [];
-  const exchange = { signal: controller.signal, cancel: () => controller.abort(), forward: async request => { forwarded.push(request); return { status: 200, headers: [['set-cookie', 'fixture']], body: ['response'] }; } };
-  t.after(() => controller.abort());
-  const request = { url: `${origin}/responses?private=fixture`, method: 'POST', headers: [['authorization', 'Bearer fixture'], ['x-vendor-secret', 'fixture'], ['content-type', 'text/plain']], body: ['request'] };
-  return { root, registry, register, owners, forwarded, controller, exchange, request };
+import { nativeTraffic, bodyBytes, idle } from './support/native-traffic.mjs';
+const origin='https://fixture.invalid',alternate='https://alternate.invalid';
+async function setup(t, options={}) {
+  const f=await nativeTraffic(t,{origins:[origin,alternate],...options}), client=f.client();await client.ready;const forwarded=[];
+  const request={url:origin+'/responses?private=fixture',method:'POST',headers:[['authorization','Bearer fixture'],['x-vendor-secret','fixture'],['content-type','text/plain']],body:'request'};
+  const run=()=>client.interceptHttp(request,{forward:async input=>{forwarded.push({...input,body:await bodyBytes(input.body)});return {status:200,headers:[['set-cookie','fixture']],body:'response'};}});
+  return {f,client,request,run,forwarded,register:(id,handlers,options={})=>f.runtime().api.registerInterceptor({id,origins:[origin],...options},handlers)};
 }
-test('request order is deterministic, response order reverses, sensitive headers stay opaque', async t => {
-  const trace = [];
-  const next = setup(t);
-  for (const id of ['z', 'a']) next.register(id, { request(request) { trace.push(`${id}:request`); assert(!request.headers.some(([name]) => name === 'authorization')); return { request: { body: [id] } }; }, response(response) { trace.push(`${id}:response`); assert(!response.headers.some(([name]) => name === 'set-cookie')); } });
-  await next.registry.handlers.http(next.request, next.exchange);
-  assert.deepEqual(trace, ['a:request', 'z:request', 'z:response', 'a:response']);
-  assert.equal(next.forwarded[0].networkProfile, 'saved-upstream');
-  assert(next.forwarded[0].headers.some(([name, value]) => name === 'authorization' && value === 'Bearer fixture'));
-  assert.equal(next.registry.status().active, 1);
-  next.controller.abort(); assert.equal(next.registry.status().active, 0);
-});
-test('first terminal decision wins and later plugins never observe a blocked request', async t => {
-  const value = setup(t);
-  value.register('a', { request: () => ({ block: true }), response: (_response, context) => { assert.equal(context.source, 'synthetic'); } });
-  value.register('b', { request: () => { assert.fail('must not run'); } });
-  assert.equal((await value.registry.handlers.http(value.request, value.exchange)).status, 403);
-  assert.equal(value.forwarded.length, 0);
-});
-test('origin rewrites require a separate grant and remove even unknown credential headers', async t => {
-  const seen = [], value = setup(t, async (_owner, action, url) => { seen.push([action, url]); return true; });
-  value.register('a', { request: () => ({ request: { url: 'https://alternate.invalid/responses' } }) });
-  value.register('b', { request: () => assert.fail('a rewrite must not expand another observer scope') });
-  await value.registry.handlers.http(value.request, value.exchange);
-  assert.deepEqual(value.forwarded[0].headers, [['content-type', 'text/plain']]);
-  assert(seen.some(([action, url]) => action === 'redirect' && url === 'https://alternate.invalid/responses'));
-  const denied = setup(t, async (_owner, action) => action !== 'redirect');
-  denied.register('a', { request: () => ({ request: { url: 'https://alternate.invalid/' } }) });
-  await assert.rejects(denied.registry.handlers.http(denied.request, denied.exchange), { code: 'permission_denied' });
-  assert.equal(denied.forwarded.length, 0);
-});
-test('unprivileged header rewrites preserve hidden headers and cannot inject credentials', async t => {
-  const value = setup(t);
-  value.register('a', { request: () => ({ request: { headers: [['content-type', 'application/json']] } }) });
-  await value.registry.handlers.http(value.request, value.exchange);
-  assert.deepEqual(value.forwarded[0].headers, [['content-type', 'application/json'], ['authorization', 'Bearer fixture'], ['x-vendor-secret', 'fixture']]);
-  const denied = setup(t);
-  denied.register('b', { request: () => ({ request: { headers: [['Authorization', 'other']] } }) });
-  await assert.rejects(denied.registry.handlers.http(denied.request, denied.exchange), { code: 'permission_denied' });
-});
-test('synthetic responses enforce the same sensitive-header grant as response rewrites', async t => {
-  const denied = setup(t);
-  denied.register('a', { request: () => ({ respond: { status: 200, headers: [['Set-Cookie', 'session=fixture; HttpOnly']] } }) });
-  await assert.rejects(denied.registry.handlers.http(denied.request, denied.exchange), { code: 'permission_denied' });
-  assert.equal(denied.forwarded.length, 0);
 
-  const ordinary = setup(t);
-  ordinary.register('a', { request: () => ({ respond: { status: 200, headers: [['Content-Type', 'text/plain']], body: 'synthetic' } }) });
-  assert.deepEqual((await ordinary.registry.handlers.http(ordinary.request, ordinary.exchange)).headers, [['Content-Type', 'text/plain']]);
-
-  const privileged = setup(t, async () => true);
-  privileged.register('a', { request: () => ({ respond: { status: 200, headers: [['Set-Cookie', 'session=fixture; HttpOnly']] } }) });
-  assert.deepEqual((await privileged.registry.handlers.http(privileged.request, privileged.exchange)).headers, [['Set-Cookie', 'session=fixture; HttpOnly']]);
+test('first terminal decision wins and later plugins cannot observe a blocked request',async t=>{
+  const s=await setup(t);let responses=0;
+  await s.register('block',{request:()=>({block:true}),response:(_r,c)=>{assert.equal(c.source,'synthetic');responses++;}},{priority:-10});
+  await s.register('later',{request:()=>assert.fail('must not run')});
+  const result=await s.run();assert.equal(result.status,403);await bodyBytes(result.body);assert.equal(s.forwarded.length,0);assert.equal(responses,1);await idle(s.f);
 });
-test('disable, generation retirement and timeout cancel exchanges and release their slots', async t => {
-  for (const mode of ['disable', 'retire', 'timeout']) {
-    const value = setup(t); let entered;
-    const started = new Promise(resolve => { entered = resolve; });
-    const handle = value.register('a', { request: () => { entered(); return new Promise(() => {}); } }, { timeoutMs: 20 });
-    const pending = value.registry.handlers.http(value.request, value.exchange);
-    await started;
-    if (mode === 'disable') handle.setEnabled(false);
-    if (mode === 'retire') value.owners[0].abort();
-    await assert.rejects(pending, { code: mode === 'timeout' ? 'interceptor_timeout' : 'interceptor_retired' });
-    assert.equal(value.registry.status().active, 0); assert(value.controller.signal.aborted);
-  }
+for(const permitted of [false,true])test(`cross-origin redirects ${permitted?'strip all unapproved credential headers':'require a separate permission'}`,async t=>{
+  const s=await setup(t,{sensitive:permitted});
+  await s.register('redirect',{request:()=>({request:{url:alternate+'/responses'}})},{priority:-10});
+  await s.register('observer',{request:()=>assert.fail('redirect cannot broaden another observer scope')});
+  if(permitted){const result=await s.run();await bodyBytes(result.body);assert.deepEqual(s.forwarded[0].headers,[['content-type','text/plain']]);}
+  else{await assert.rejects(s.run(),{code:'permission_denied'});assert.equal(s.forwarded.length,0);}
+  await idle(s.f);
 });
-test('callback errors never propagate private messages into the traffic failure code', async t => {
-  const value = setup(t);
-  value.register('a', { request: () => { throw Object.assign(new Error('private token and body'), { code: 'private-url-query' }); } });
-  await assert.rejects(value.registry.handlers.http(value.request, value.exchange), error => error.code === 'interceptor_failed' && !String(error).includes('private'));
+test('unprivileged header changes preserve hidden credentials and cannot inject new ones',async t=>{
+  const s=await setup(t);let inject=false;
+  await s.register('headers',{request(input){assert(!input.headers.some(([n])=>n==='authorization'));return {request:{headers:inject?[['Authorization','other']]:[['content-type','application/json']]}};},response(value){assert(!value.headers.some(([n])=>n==='set-cookie'));}});
+  const response=await s.run();await bodyBytes(response.body);
+  assert.deepEqual(s.forwarded[0].headers,[['content-type','application/json'],['authorization','Bearer fixture'],['x-vendor-secret','fixture']]);
+  inject=true;await assert.rejects(s.run(),{code:'permission_denied'});await idle(s.f);
 });
-test('WebSocket transforms execute in both directions and stop after permission revocation', async t => {
-  let allowed = true;
-  const value = setup(t, async () => allowed);
-  for (const id of ['b', 'a']) value.register(id, { webSocket: () => ({ clientToServer: frame => ({ ...frame, data: frame.data + id }), serverToClient: frame => ({ ...frame, data: frame.data + id }) }) });
-  await value.registry.handlers.webSocket({ ...value.request, url: 'wss://fixture.invalid/responses', protocols: [] }, value.exchange);
-  const forward = value.forwarded[0], frame = { data: '', binary: false }, context = { signal: value.exchange.signal };
-  assert.deepEqual(await forward.clientToServer(frame, context), { data: 'ab', binary: false });
-  assert.deepEqual(await forward.serverToClient(frame, context), { data: 'ba', binary: false });
-  allowed = false;
-  await assert.rejects(forward.clientToServer(frame, context), { code: 'permission_denied' });
+for(const permitted of [false,true])test(`synthetic responses ${permitted?'use':'cannot bypass'} the sensitive-header grant`,async t=>{
+  const s=await setup(t,{sensitive:permitted});await s.register('synthetic',{request:()=>({respond:{status:200,headers:[['set-cookie','fixture']],body:'synthetic'}})});
+  if(permitted){const response=await s.run();assert.equal((await bodyBytes(response.body)).toString(),'synthetic');assert.deepEqual(response.headers,[['set-cookie','fixture']]);}
+  else await assert.rejects(s.run(),{code:'permission_denied'});
+  assert.equal(s.forwarded.length,0);await idle(s.f);
+});
+for(const mode of ['disable','retire','timeout'])test(`interceptor ${mode} cancels active callbacks and releases capacity`,{timeout:15000},async t=>{
+  const s=await setup(t);let enter;const started=new Promise(r=>enter=r);
+  const hook=await s.register('pending',{request:()=>{enter();return new Promise(()=>{});}},{timeoutMs:50});
+  const failed=assert.rejects(s.run());await started;
+  if(mode==='disable')await hook.setEnabled(false);if(mode==='retire')await s.f.call('retire');
+  await failed;await idle(s.f);assert.equal(s.forwarded.length,0);
+});
+test('private callback exception messages and invented codes never enter traffic responses',async t=>{
+  const s=await setup(t);await s.register('failure',{request(){throw Object.assign(new Error('private token'),{code:'private-token'});}});
+  await assert.rejects(s.run(),e=>e.code==='traffic_callback_failed'&&!String(e).includes('private'));await idle(s.f);
+});
+test('large binary bodies cross the Host data plane once and remain byte exact',async t=>{
+  const s=await setup(t),bytes=Buffer.alloc(128*1024+3,0xff);s.request.body=bytes;
+  let callbackError;
+  await s.register('binary',{async request(r){try {assert.deepEqual(await bodyBytes(r.body),bytes);return {request:{body:[Buffer.from('changed:'),bytes]}};}catch(error){callbackError=error;throw error;}},async response(r){try{return {body:[await bodyBytes(r.body),bytes]};}catch(error){callbackError=error;throw error;}}});
+  const response=await s.run().catch(error=>{throw new Error((callbackError??error).code+' '+s.f.stderr(),{cause:callbackError??error});});assert.deepEqual(await bodyBytes(response.body),Buffer.concat([Buffer.from('response'),bytes]));assert.deepEqual(s.forwarded[0].body,Buffer.concat([Buffer.from('changed:'),bytes]));await idle(s.f);
 });

@@ -319,6 +319,9 @@ fn validate_proxy(value: &str) -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn channel_target(p: &Principal, value: &str) -> Result<url::Url> {
+    authorized_url(p, value)
+}
 fn authorized_url(p: &Principal, value: &str) -> Result<url::Url> {
     let mut url = url::Url::parse(value)
         .map_err(|_| error("invalid_url", "absolute HTTP(S)/WS(S) URL required"))?;

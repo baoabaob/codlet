@@ -101,6 +101,9 @@ impl Drop for ServiceOperation {
 impl SharedCoreServices {
     pub fn new(registry: &Path) -> Result<Self> {
         let persistent = PluginServices::new(registry)?;
+        Self::with_persistent(registry, persistent)
+    }
+    fn with_persistent(registry: &Path, persistent: PluginServices) -> Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Work>(16);
         let shared = Arc::new(Shared {
             registry: registry.to_owned(),
@@ -567,6 +570,98 @@ impl SharedCoreServices {
             )),
         }
     }
+    fn channel_route(&self, p: &Principal, input: Value) -> Result<Value> {
+        self.check(p, "traffic.openChannel", true, &json!({}))?;
+        let target = network::channel_target(p, string(&input, "url")?)?;
+        let mut route = if let Some(profile) = input.get("networkProfile") {
+            let params = json!({"profile":profile,"url":target.as_str()});
+            self.check(p, "network.resolve", true, &params)?;
+            self.0
+                .network
+                .invoke(p, "resolve", params, &self.0.persistent, &|| {
+                    self.current_checked(p, true)
+                })?
+        } else {
+            json!({"proxyUrl":null})
+        };
+        if let Some(reference) = input.get("credentialRef") {
+            let params =
+                json!({"reference":reference,"origin":target.origin().ascii_serialization()});
+            self.check(p, "credentials.resolve", true, &params)?;
+            let secret = self.0.persistent.resolve_credential(
+                &p.owner,
+                string(&params, "reference")?,
+                string(&params, "origin")?,
+            )?;
+            route["credential"] = json!(secret.as_str());
+        }
+        if let Some(reference) = route.get("proxyCredentialRef").and_then(Value::as_str) {
+            let proxy = url::Url::parse(string(&route, "proxyUrl")?)
+                .map_err(|_| error("invalid_proxy", "invalid proxy URL"))?;
+            let params =
+                json!({"reference":reference,"origin":proxy.origin().ascii_serialization()});
+            self.check(p, "credentials.resolve", true, &params)?;
+            let secret = self.0.persistent.resolve_credential(
+                &p.owner,
+                reference,
+                string(&params, "origin")?,
+            )?;
+            route["proxyAuthorization"] = json!(secret.as_str());
+        }
+        self.current_checked(p, true)?;
+        Ok(route)
+    }
+    fn traffic_operation(&self, p: &Principal, method: &str, params: Value) -> Result<Value> {
+        if matches!(method, "connectPeer" | "openChannel" | "closeChannel") {
+            let entrance = self.prepare_traffic()?;
+            entrance.start_native()?;
+            if method == "closeChannel" {
+                return entrance.close_channel(p, &params);
+            }
+            if method == "openChannel" {
+                let weak = Arc::downgrade(&self.0);
+                let principal = p.clone();
+                let check = Arc::new(move |_: &str, _: &str| {
+                    let shared = SharedCoreServices(
+                        weak.upgrade()
+                            .ok_or_else(|| error("runtime_stopped", "Core retired"))?,
+                    );
+                    shared.check(&principal, "traffic.openChannel", true, &json!({}))?;
+                    Ok(true)
+                });
+                let weak = Arc::downgrade(&self.0);
+                let principal = p.clone();
+                let resolve = Arc::new(move |value: Value| {
+                    SharedCoreServices(
+                        weak.upgrade()
+                            .ok_or_else(|| error("runtime_stopped", "Core retired"))?,
+                    )
+                    .channel_route(&principal, value)
+                });
+                return entrance.open_channel(p, params, check, resolve);
+            }
+        }
+        let entrance = self
+            .0
+            .entrance
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| error("traffic_unavailable", "traffic entrance is not prepared"))?;
+        let weak = Arc::downgrade(&self.0);
+        let snapshot = p.clone();
+        entrance.invoke(
+            p,
+            method,
+            params,
+            Arc::new(move |action, target| {
+                let shared = weak
+                    .upgrade()
+                    .ok_or_else(|| error("runtime_stopped", "Core traffic authority retired"))?;
+                SharedCoreServices(shared).traffic_check(&snapshot, action, target)
+            }),
+        )
+    }
     fn execute(&self, work: &Work) -> Result<Value> {
         let check = || {
             if work.cancelled.load(Ordering::Acquire) {
@@ -631,33 +726,7 @@ impl SharedCoreServices {
                     .network
                     .invoke(p, method, params, &self.0.persistent, &check)
             }
-            Some(("traffic", method)) => {
-                let entrance = self
-                    .0
-                    .entrance
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone()
-                    .ok_or_else(|| {
-                        error(
-                            "traffic_unavailable",
-                        "No enabled and authorized traffic Host was present at client launch; restart the client after enabling and granting traffic.intercept",
-                        )
-                    })?;
-                let weak = Arc::downgrade(&self.0);
-                let snapshot = p.clone();
-                entrance.invoke(
-                    p,
-                    method,
-                    params,
-                    Arc::new(move |action, target| {
-                        let shared = weak.upgrade().ok_or_else(|| {
-                            error("runtime_stopped", "Core traffic authority retired")
-                        })?;
-                        SharedCoreServices(shared).traffic_check(&snapshot, action, target)
-                    }),
-                )
-            }
+            Some(("traffic", method)) => self.traffic_operation(p, method, params),
             Some(("resources", "list")) => {
                 let jobs = self
                     .0
@@ -860,6 +929,17 @@ impl SharedCoreServices {
     }
     fn rollback_resource(&self, p: &Principal, method: &str, value: &Value) {
         match method {
+            "traffic.openChannel" => {
+                if let Some(traffic) = self
+                    .0
+                    .entrance
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                {
+                    let _ = traffic.close_channel(p, &json!({"channel":value["id"]}));
+                }
+            }
             "tasks.register" => {
                 let _ = self.0.resources.invoke(
                     &p.resources,
@@ -921,7 +1001,7 @@ impl SharedCoreServices {
                     );
                 }
             }
-            "traffic.connect" => {
+            "traffic.connect" | "traffic.connectPeer" => {
                 if let Some(traffic) = self
                     .0
                     .entrance
@@ -1040,6 +1120,8 @@ fn permission(method: &str) -> Result<Permission> {
         Some(("resources", "reportTraffic")) => HostNetwork,
         Some(("network", "fetch")) => HostNetwork,
         Some(("network", _)) => CoreNetwork,
+        Some(("traffic", "connectPeer")) => HostProcess,
+        Some(("traffic", "openChannel" | "closeChannel")) => HostNetwork,
         Some(("traffic", _)) => TrafficIntercept,
         Some(("desktop", "notify" | "dismissNotification" | "notificationEvents")) => {
             CoreNotifications

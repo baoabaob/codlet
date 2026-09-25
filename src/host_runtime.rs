@@ -570,7 +570,13 @@ impl HostOwner {
         if method.starts_with("host.") && self.observation.state != ExecutionState::Stopping {
             return self.dispatch_os(id, method, params, parent);
         }
-        if method.starts_with("rpc.") && self.observation.state != ExecutionState::Stopping {
+        if (method.starts_with("rpc.")
+            || matches!(
+                method,
+                "traffic.connectPeer" | "traffic.openChannel" | "traffic.closeChannel"
+            ))
+            && self.observation.state != ExecutionState::Stopping
+        {
             return self.dispatch_rpc(client, id, method, params, parent);
         }
         if !matches!(method, "cdp.request" | "cdp.subscribe" | "cdp.unsubscribe") {

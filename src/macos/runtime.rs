@@ -78,7 +78,7 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         .map(|(_, _, runtime, services, provider)| {
             let runtime = runtime.as_ref().expect("traffic requires a Host runtime");
             let mut owner =
-                crate::traffic_owner::TrafficOwner::start_cancellable(services, runtime, || {
+                crate::traffic_owner::TrafficOwner::start_cancellable(services, || {
                     shutdown_signal.requested()
                 })?;
             owner.prepare_adapter(provider.as_ref().unwrap(), scope.path(), runtime)?;

@@ -30,10 +30,11 @@ Run checks appropriate to the changed behavior. The wider regression suite is:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features -- --test-threads=2
+cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
 node --test --test-concurrency=2 tests/*.test.mjs
 ```
 
-Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins only for protocol/lifecycle tests and is rejected in release builds. The official plugin repository validates its own adapters and GUI against a prepared Core SDK snapshot.
+Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins and the isolated native traffic harness only for tests and is rejected when debug assertions are disabled. The harness uses temporary registries and in-memory credentials. The official plugin repository validates its own adapters and GUI against a prepared Core SDK snapshot; its opt-in native traffic acceptance additionally needs the compiled Core fixture.
 
 Installer-specific checks are described in [distribution](distribution.md). Keep tests that exercise real invariants, failure paths, and public contracts. Avoid making tests depend on incidental documentation filenames or dated experiment output.
 

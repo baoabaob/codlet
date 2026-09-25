@@ -1,15 +1,12 @@
-//! Native owner for the fixed plaintext traffic worker and private launch data.
+//! Native owner for the Rust traffic engine and private Adapter launch data.
 //! Launch configuration is private process data; errors never print it.
 use crate::core_services::{SharedCoreServices, traffic::Traffic};
-use crate::js_runtime::{JsInvocation, JsRuntime};
-use crate::platform::host::{OwnedPluginProcess, PluginStdio};
+use crate::js_runtime::JsRuntime;
 use crate::plugin_host::HostError;
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::path::Path;
 use std::time::{Duration, Instant};
-
-const START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Input is the launch catalog's enabled plugins, after normal validation.
 pub(crate) fn required_for_plugins(plugins: &[crate::plugins::LoadedPlugin]) -> bool {
@@ -26,9 +23,6 @@ pub(crate) fn required_for_plugins(plugins: &[crate::plugins::LoadedPlugin]) -> 
 
 pub(crate) struct TrafficOwner {
     traffic: Traffic,
-    process: OwnedPluginProcess,
-    _stdio: PluginStdio,
-    _invocation: JsInvocation,
     directory: tempfile::TempDir,
     environment: Vec<(OsString, OsString)>,
     original_environment: Vec<(OsString, OsString)>,
@@ -50,34 +44,16 @@ fn failure(code: &'static str) -> HostError {
 impl TrafficOwner {
     #[cfg(target_os = "macos")]
     pub(crate) fn retire_for_update(&self) -> Result<(), HostError> {
-        self.traffic.set_attached(false);
-        self.process
-            .terminate()
-            .map_err(|_| failure("traffic_worker_stop_failed"))?;
-        self.process
-            .wait(Duration::from_secs(5))
-            .map_err(|_| failure("traffic_worker_wait_failed"))?
-            .ok_or_else(|| failure("traffic_worker_still_running"))?;
-        if !self
-            .process
-            .process_scope_is_empty()
-            .map_err(|_| failure("traffic_worker_scope_unknown"))?
-        {
-            return Err(failure("traffic_worker_scope_not_reaped"));
-        }
-        Ok(())
+        self.traffic.stop_native();
+        self.wait_retired(Duration::from_secs(5))
     }
     #[cfg(any(windows, test))]
-    pub(crate) fn start(
-        services: &SharedCoreServices,
-        runtime: &JsRuntime,
-    ) -> Result<Self, HostError> {
-        Self::start_cancellable(services, runtime, || false)
+    pub(crate) fn start(services: &SharedCoreServices) -> Result<Self, HostError> {
+        Self::start_cancellable(services, || false)
     }
 
     pub(crate) fn start_cancellable(
         services: &SharedCoreServices,
-        runtime: &JsRuntime,
         cancelled: impl Fn() -> bool,
     ) -> Result<Self, HostError> {
         if cancelled() {
@@ -92,59 +68,31 @@ impl TrafficOwner {
         let traffic = services
             .prepare_traffic()
             .map_err(|e| HostError::new(e.code, e.message))?;
-        let endpoint = traffic
-            .gateway_endpoint()
+        traffic
+            .start_native()
             .map_err(|e| HostError::new(e.code, e.message))?;
-        let config = json!({"endpoint": endpoint, "directory": directory.path()});
-        let invocation = runtime.prepare_traffic_worker(&config, directory.path())?;
-        let (process, stdio) = OwnedPluginProcess::spawn(
-            &invocation.executable,
-            &invocation.arguments,
-            &invocation.cwd,
-            Some(&invocation.environment),
-        )
-        .map_err(|error| {
-            #[cfg(target_os = "macos")]
-            {
-                crate::macos::host::spawn_failure("traffic_worker_spawn_failed", &error)
-            }
-            #[cfg(windows)]
-            {
-                let _ = error;
-                failure("traffic_worker_spawn_failed")
-            }
-        })?;
-        let mut owner = Self {
+        if cancelled() {
+            traffic.stop_native();
+            return Err(failure("traffic_launch_cancelled"));
+        }
+        let descriptor = traffic
+            .launch_descriptor()
+            .ok_or_else(|| failure("traffic_engine_unavailable"))?;
+        let environment = apply_descriptor(original.clone(), &descriptor)?;
+        let owner = Self {
             traffic,
-            process,
-            _stdio: stdio,
-            _invocation: invocation,
             directory,
-            environment: Vec::new(),
+            environment,
             original_environment: original.clone(),
-            descriptor: Value::Null,
+            descriptor,
             adapter: std::cell::RefCell::new(None),
             launch_arguments: Vec::new(),
             launch_provider: None,
             last_authorization_check: std::cell::Cell::new(None),
             stderr: None,
         };
-        let deadline = Instant::now() + START_TIMEOUT;
-        loop {
-            if cancelled() {
-                return Err(failure("traffic_launch_cancelled"));
-            }
-            owner.check_alive()?;
-            if let Some(descriptor) = owner.traffic.launch_descriptor() {
-                owner.environment = apply_descriptor(original, &descriptor)?;
-                owner.descriptor = descriptor;
-                return Ok(owner);
-            }
-            if Instant::now() >= deadline {
-                return Err(failure("traffic_worker_timeout"));
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        owner.check_alive()?;
+        Ok(owner)
     }
 
     pub(crate) fn environment(&self) -> &[(OsString, OsString)] {
@@ -229,37 +177,34 @@ impl TrafficOwner {
             provider.check()?;
             self.last_authorization_check.set(Some(Instant::now()));
         }
-        if self
-            .process
-            .wait(Duration::ZERO)
-            .map_err(|_| failure("traffic_worker_wait_failed"))?
-            .is_some()
-        {
+        if !self.traffic.native_alive() {
             self.traffic.set_attached(false);
-            return Err(failure("traffic_worker_exited"));
+            return Err(failure("traffic_engine_stopped"));
         }
         Ok(())
+    }
+    fn wait_retired(&self, budget: Duration) -> Result<(), HostError> {
+        let deadline = Instant::now() + budget;
+        while Instant::now() < deadline {
+            if self.traffic.native_retired() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Err(failure("traffic_cleanup_incomplete"))
     }
 }
 
 impl Drop for TrafficOwner {
     fn drop(&mut self) {
-        self.traffic.set_attached(false);
-        // The official client owner must retire before this owner. Terminate the
-        // private worker job/group and reap it before deleting launch files.
-        let _ = self.process.terminate();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if self.process.process_scope_is_empty().unwrap_or(false) {
-                return;
-            }
-            let _ = self.process.wait(Duration::from_millis(10));
-            std::thread::sleep(Duration::from_millis(10));
+        // The official client retires first; then bounded native tasks/sockets.
+        self.traffic.stop_native();
+        if self.wait_retired(Duration::from_secs(2)).is_err() {
+            crate::runtime_log::error(
+                "traffic_cleanup_incomplete",
+                "Native traffic tasks did not retire within their cleanup budget",
+            );
         }
-        crate::runtime_log::error(
-            "traffic_cleanup_incomplete",
-            "The private traffic worker did not confirm process-scope retirement within its cleanup budget",
-        );
     }
 }
 
@@ -499,20 +444,11 @@ mod tests {
     }
 
     #[test]
-    fn fixed_worker_handshake_owns_environment_and_cleans_private_files() {
-        let distribution = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_owned();
-        let runtime = JsRuntime::from_distribution(&distribution)
-            .expect("stage pinned runtime beside target/debug/codlet.exe");
+    fn native_handshake_owns_environment_and_retires_tasks_and_private_files() {
         let directory = tempfile::tempdir().unwrap();
         let services = SharedCoreServices::new(&directory.path().join("plugins.json")).unwrap();
         let parent_before: Vec<_> = std::env::vars_os().collect();
-        let owner = TrafficOwner::start(&services, &runtime).unwrap();
+        let owner = TrafficOwner::start(&services).unwrap();
         let owned_directory = owner.directory.path().to_owned();
         assert_eq!(owner.environment(), owner.original_environment.as_slice());
         assert!(
@@ -525,39 +461,26 @@ mod tests {
         assert_eq!(std::env::vars_os().collect::<Vec<_>>(), parent_before);
         drop(owner);
         assert!(!owned_directory.exists());
+        assert!(services.prepare_traffic().unwrap().native_retired());
     }
 
     #[test]
-    fn cancelled_start_and_dead_worker_never_report_a_live_attachment() {
-        let distribution = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_owned();
-        let runtime = JsRuntime::from_distribution(&distribution).unwrap();
+    fn cancelled_start_and_stopped_engine_never_report_a_live_attachment() {
         let directory = tempfile::tempdir().unwrap();
         let services = SharedCoreServices::new(&directory.path().join("plugins.json")).unwrap();
         assert_eq!(
-            TrafficOwner::start_cancellable(&services, &runtime, || true)
+            TrafficOwner::start_cancellable(&services, || true)
                 .err()
                 .unwrap()
                 .code,
             "traffic_launch_cancelled"
         );
-        let owner = TrafficOwner::start(&services, &runtime).unwrap();
-        owner.process.terminate().unwrap();
-        assert!(
-            owner
-                .process
-                .wait(Duration::from_secs(2))
-                .unwrap()
-                .is_some()
-        );
+        let owner = TrafficOwner::start(&services).unwrap();
+        owner.traffic.stop_native();
+        owner.wait_retired(Duration::from_secs(2)).unwrap();
         assert_eq!(
             owner.client_launched().unwrap_err().code,
-            "traffic_worker_exited"
+            "traffic_engine_stopped"
         );
         let owned = owner.directory.path().to_owned();
         drop(owner);
@@ -566,7 +489,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn owned_fake_client_failure_retires_exact_handle_and_keeps_worker_until_exit() {
+    fn owned_fake_client_failure_retires_exact_handle_and_keeps_engine_until_exit() {
         use crate::cdp::CdpClient;
         use crate::windows::environment::ChildEnvironment;
         use crate::windows::process::{
@@ -583,10 +506,9 @@ mod tests {
             .parent()
             .unwrap()
             .to_owned();
-        let runtime = JsRuntime::from_distribution(&distribution).unwrap();
         let directory = tempfile::tempdir().unwrap();
         let services = SharedCoreServices::new(&directory.path().join("plugins.json")).unwrap();
-        let owner = TrafficOwner::start(&services, &runtime).unwrap();
+        let owner = TrafficOwner::start(&services).unwrap();
         let executable = distribution.join("codlet-fake-child.exe");
         let arguments = [OsString::from("--scenario=lab-environment")];
         let (unrelated, unrelated_pipes) =

@@ -5,8 +5,18 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::thread::JoinHandle;
 use tokio::sync::{mpsc as async_mpsc, watch};
 
+mod channels;
+mod dispatch;
+mod engine;
+#[cfg(feature = "test-fixtures")]
+pub(crate) mod fixture;
+mod model;
+mod rpc;
+mod source;
+mod streams;
 #[cfg(test)]
 mod tests;
+mod transport;
 mod wire;
 
 const MAX_REGISTRATIONS: usize = 32;
@@ -40,6 +50,9 @@ struct Hub {
     address: SocketAddr,
     state: Mutex<State>,
     resolvers: Arc<tokio::sync::Semaphore>,
+    runtime: std::sync::OnceLock<tokio::runtime::Handle>,
+    native: Mutex<Option<Arc<engine::Engine>>>,
+    native_start: Mutex<()>,
 }
 #[derive(Default)]
 struct State {
@@ -91,7 +104,7 @@ struct Lease {
     registration: Arc<Registration>,
     opening_request: Value,
     url: String,
-    expires: Instant,
+    expires: Option<Instant>,
 }
 struct Pending {
     source: String,
@@ -104,9 +117,116 @@ struct OwnedSource {
     owner: String,
     base_url: String,
     check: Check,
+    stopped: tokio_util::sync::CancellationToken,
 }
 
 impl Traffic {
+    pub(crate) fn start_native(&self) -> Result<()> {
+        let _gate = self
+            .hub
+            .native_start
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(engine) = self
+            .hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            return if engine.stopped.is_cancelled() {
+                Err(error("traffic_unavailable", "native engine retired"))
+            } else {
+                Ok(())
+            };
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let handle = loop {
+            if let Some(handle) = self.hub.runtime.get() {
+                break handle.clone();
+            }
+            if Instant::now() >= deadline {
+                return Err(error(
+                    "traffic_unavailable",
+                    "traffic runtime did not start",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let hub = self.hub.clone();
+        handle.spawn(async move {
+            let result = engine::Engine::start(hub.clone(), std::env::vars().collect()).await;
+            match result {
+                Ok(engine) => {
+                    *hub.native.lock().unwrap_or_else(|p| p.into_inner()) = Some(engine.clone());
+                    if sender.send(Ok(())).is_err() {
+                        engine.stop();
+                    }
+                }
+                Err(e) => {
+                    let _ = sender.send(Err(e));
+                }
+            }
+        });
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| error("traffic_unavailable", "native engine did not start"))?
+    }
+    pub(crate) fn stop_native(&self) {
+        if let Some(engine) = self
+            .hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            engine.stop();
+        }
+        self.set_attached(false);
+    }
+    pub(crate) fn native_alive(&self) -> bool {
+        self.hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|e| !e.stopped.is_cancelled())
+    }
+    pub(crate) fn native_retired(&self) -> bool {
+        self.hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_none_or(|e| {
+                e.stopped.is_cancelled()
+                    && e.tasks.load(Ordering::Acquire) == 0
+                    && e.blockers.available_permits() == 4
+            })
+    }
+    fn native(&self) -> Result<Arc<engine::Engine>> {
+        self.hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .filter(|e| !e.stopped.is_cancelled())
+            .ok_or_else(|| error("traffic_unavailable", "native engine unavailable"))
+    }
+    pub(super) fn open_channel(
+        &self,
+        p: &Principal,
+        params: Value,
+        check: Check,
+        resolve: channels::Resolve,
+    ) -> Result<Value> {
+        self.native()?.open_channel(p, params, check, resolve)
+    }
+    pub(super) fn close_channel(&self, p: &Principal, params: &Value) -> Result<Value> {
+        self.native()?
+            .close_channel(&owner_key(p), string(params, "channel")?)
+    }
     pub(crate) fn bind() -> Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| error("traffic_unavailable", "cannot bind the traffic data plane"))?;
@@ -123,6 +243,9 @@ impl Traffic {
             address,
             state: Mutex::new(State::default()),
             resolvers: Arc::new(tokio::sync::Semaphore::new(4)),
+            runtime: std::sync::OnceLock::new(),
+            native: Mutex::new(None),
+            native_start: Mutex::new(()),
         });
         let (stop, stopped) = watch::channel(false);
         let weak = Arc::downgrade(&hub);
@@ -140,6 +263,7 @@ impl Traffic {
     }
 
     /// Only the Native launch owner gets this ticket. It is never an RPC result.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub(crate) fn gateway_endpoint(&self) -> Result<Value> {
         self.endpoint(Role::Gateway)
     }
@@ -204,7 +328,7 @@ impl Traffic {
     ) -> Result<Value> {
         let owner = owner_key(p);
         match method {
-            "connect" => self.endpoint(Role::Host(owner)),
+            "connect" | "connectPeer" => self.endpoint(Role::Host(owner)),
             "openSource" => {
                 let object = params
                     .as_object()
@@ -260,6 +384,7 @@ impl Traffic {
                         owner,
                         base_url: url.to_string(),
                         check,
+                        stopped: tokio_util::sync::CancellationToken::new(),
                     }),
                 );
                 self.hub.changed(&mut state);
@@ -277,7 +402,9 @@ impl Traffic {
                     ));
                 }
                 if method == "closeSource" {
-                    state.sources.remove(key);
+                    if let Some(source) = state.sources.remove(key) {
+                        source.stopped.cancel();
+                    }
                     self.hub.changed(&mut state);
                     return Ok(json!({"closed":true,"revision":state.revision}));
                 }
@@ -453,7 +580,14 @@ impl Traffic {
 
     pub(super) fn retire(&self, owner: &str) {
         let mut state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
-        state.sources.retain(|_, source| source.owner != owner);
+        state.sources.retain(|_, source| {
+            if source.owner == owner {
+                source.stopped.cancel();
+                false
+            } else {
+                true
+            }
+        });
         let keys = state
             .registrations
             .values()
@@ -474,6 +608,16 @@ impl Traffic {
             let _ = peer.stop.send(true);
         }
         self.hub.changed(&mut state);
+        drop(state);
+        if let Some(engine) = self
+            .hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            engine.retire_owner(owner);
+        }
     }
 
     pub(super) fn revoke_ticket(&self, owner: &str, token: &str) {
@@ -487,10 +631,48 @@ impl Traffic {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub(crate) fn resources(&self) -> Value {
         let state = self.hub.state.lock().unwrap_or_else(|p| p.into_inner());
-        json!({"peers":state.peers.len(),"tickets":state.tickets.len(),"registrations":state.registrations.len(),"leases":state.leases.len(),"pending":state.pending.len(),"peakPending":state.peak_pending,"queuedBytes":state.peers.values().map(|p|p.queued_bytes.load(Ordering::Acquire)).sum::<usize>(),"maxQueuedBytesPerPeer":QUEUED_BYTES})
+        let mut value = json!({"peers":state.peers.len(),"tickets":state.tickets.len(),"registrations":state.registrations.len(),"leases":state.leases.len(),"pending":state.pending.len(),"peakPending":state.peak_pending,"queuedBytes":state.peers.values().map(|p|p.queued_bytes.load(Ordering::Acquire)).sum::<usize>(),"maxQueuedBytesPerPeer":QUEUED_BYTES});
+        drop(state);
+        if let Some(engine) = self
+            .hub
+            .native
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            value["channels"] = json!(
+                engine
+                    .channels
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len()
+            );
+            value["routes"] = json!(
+                engine
+                    .routes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len()
+            );
+            value["exchanges"] = json!(
+                engine
+                    .exchanges
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len()
+            );
+            value["clients"] = json!(
+                engine
+                    .clients
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len()
+            );
+        }
+        value
     }
 }
 
@@ -608,11 +790,25 @@ impl Hub {
         let Some(peer) = state.peers.remove(peer) else {
             return;
         };
+        let retired_owner = match &peer.role {
+            Role::Host(owner) => Some(owner.clone()),
+            _ => None,
+        };
         if let Role::Host(owner) = &peer.role {
-            state.sources.retain(|_, source| source.owner != *owner);
+            state.sources.retain(|_, source| {
+                if source.owner == *owner {
+                    source.stopped.cancel();
+                    false
+                } else {
+                    true
+                }
+            });
         }
         let keys = match peer.role {
             Role::Gateway => {
+                for source in state.sources.values() {
+                    source.stopped.cancel();
+                }
                 state.sources.clear();
                 state.ready = false;
                 state.attached = false;
@@ -632,5 +828,15 @@ impl Hub {
             self.remove_registration(&mut state, &key);
         }
         self.changed(&mut state);
+        drop(state);
+        if let Some(owner) = retired_owner
+            && let Some(engine) = self
+                .native
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        {
+            engine.retire_owner(&owner);
+        }
     }
 }

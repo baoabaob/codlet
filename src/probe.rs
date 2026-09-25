@@ -787,7 +787,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
             let runtime = js_runtime
                 .as_ref()
                 .expect("traffic requires a Host runtime");
-            let mut owner = crate::traffic_owner::TrafficOwner::start(&plugin_services, runtime)?;
+            let mut owner = crate::traffic_owner::TrafficOwner::start(&plugin_services)?;
             owner.prepare_adapter(provider, renderer.registry_path(), runtime)?;
             Ok::<_, HostError>(owner)
         })

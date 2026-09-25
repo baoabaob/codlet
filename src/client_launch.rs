@@ -562,7 +562,7 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
         };
         let (directory, registry, provider, runtime) = fixture();
         let services = SharedCoreServices::new(&registry).unwrap();
-        let mut owner = TrafficOwner::start(&services, &runtime).unwrap();
+        let mut owner = TrafficOwner::start(&services).unwrap();
         owner
             .prepare_adapter(&provider, &registry, &runtime)
             .unwrap();

@@ -15,32 +15,6 @@ struct Fetch {
     max_bytes: Option<usize>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Empty {}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthorizeForward {
-    url: String,
-}
-
-pub(super) fn authorize_channel(params: Value, guard: &RequestGuard) -> Result<Value> {
-    let _: Empty = decode(params)?;
-    guard.check_full()?;
-    Ok(json!({
-        "transport":"http-loopback",
-        "coverage":"explicit-endpoint"
-    }))
-}
-
-pub(super) fn authorize_forward(params: Value, guard: &RequestGuard) -> Result<Value> {
-    let request: AuthorizeForward = decode(params)?;
-    guard.check_full()?;
-    let (url, origin) = authorized_url(&request.url, guard, true)?;
-    Ok(json!({"url":url.as_str(),"origin":origin}))
-}
-
 pub(super) async fn fetch(
     client: &reqwest::Client,
     params: Value,
@@ -48,7 +22,7 @@ pub(super) async fn fetch(
 ) -> Result<Value> {
     let request: Fetch = decode(params)?;
     let limit = byte_limit(request.max_bytes)?;
-    let (url, _) = authorized_url(&request.url, guard, false)?;
+    let url = authorized_url(&request.url, guard)?;
     let method = match request.method.as_deref().unwrap_or("GET") {
         "GET" => reqwest::Method::GET,
         "HEAD" => reqwest::Method::HEAD,
@@ -141,38 +115,23 @@ pub(super) async fn fetch(
     }
 }
 
-fn authorized_url(
-    url: &str,
-    guard: &RequestGuard,
-    allow_websocket: bool,
-) -> Result<(reqwest::Url, String)> {
+fn authorized_url(url: &str, guard: &RequestGuard) -> Result<reqwest::Url> {
     if url.len() > 8192 {
         return Err(invalid("network URL exceeds 8192 bytes"));
     }
     let url = reqwest::Url::parse(url)
         .map_err(|_| invalid("network access requires an absolute HTTP(S) URL"))?;
-    if !(matches!(url.scheme(), "http" | "https")
-        || allow_websocket && matches!(url.scheme(), "ws" | "wss"))
+    if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
     {
         return Err(invalid(
-            "network URL must use HTTP(S) or an allowed WebSocket scheme, without credentials or fragment",
+            "network URL must use HTTP(S), without credentials or fragment",
         ));
     }
-    let mut policy_url = url.clone();
-    if url.scheme() == "ws" {
-        policy_url
-            .set_scheme("http")
-            .expect("HTTP and WS schemes are replaceable");
-    } else if url.scheme() == "wss" {
-        policy_url
-            .set_scheme("https")
-            .expect("HTTPS and WSS schemes are replaceable");
-    }
-    let origin = policy_url.origin().ascii_serialization();
+    let origin = url.origin().ascii_serialization();
     if !guard
         .authorization
         .0
@@ -186,7 +145,7 @@ fn authorized_url(
             "URL origin was not explicitly granted",
         ));
     }
-    Ok((url, origin))
+    Ok(url)
 }
 
 fn network_error(error: reqwest::Error) -> OsBrokerError {

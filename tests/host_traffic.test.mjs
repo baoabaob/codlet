@@ -3,9 +3,9 @@ import http from 'node:http';
 import net from 'node:net';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { nativeTraffic } from './support/native-traffic.mjs';
 
 const require = createRequire(import.meta.url);
-const { createTrafficRuntime } = require('../runtime/host-traffic-bundle.cjs');
 const { WebSocket, WebSocketServer } = require('../frontend/node_modules/ws');
 const tick = delay => new Promise(resolve => setTimeout(resolve, delay));
 const failure = (code, message, data) => Object.assign(new Error(message), { code, ...(data === undefined ? {} : { data }) });
@@ -24,25 +24,9 @@ async function listen(handler) {
   };
 }
 
-function runtime(origins, errorFactory = failure) {
-  const root = new AbortController(), calls = [];
-  const value = createTrafficRuntime({
-    rootSignal: root.signal,
-    makeError: errorFactory,
-    async coreRequest(method, params, signal) {
-      calls.push([method, params]);
-      if (signal.aborted) throw signal.reason;
-      if (method === 'host.network.authorizeChannel') return { transport: 'http-loopback', coverage: 'explicit-endpoint' };
-      if (method === 'host.network.authorizeForward') {
-        const url = new URL(params.url);
-        const policy = new URL(url); if (policy.protocol === 'ws:') policy.protocol = 'http:'; else if (policy.protocol === 'wss:') policy.protocol = 'https:';
-        if (!origins.has(policy.origin)) throw failure('policy_denied', 'origin denied');
-        return { url: url.href, origin: policy.origin };
-      }
-      throw failure('method_not_found', method);
-    },
-  });
-  return { ...value, root, calls };
+async function runtime(t, origins) {
+  const fixture = await nativeTraffic(t, { origins: [...origins], noIntercept: true });
+  return { ...fixture.runtime(), fixture };
 }
 
 function request(url, { method = 'GET', headers, body, onData } = {}) {
@@ -76,7 +60,7 @@ test('explicit loopback channel rewrites a real binary POST and streams the sele
     res.end('data: second\n\n');
   })));
   for (const server of upstreams) t.after(server.close);
-  const managed = runtime(new Set(upstreams.map(server => server.origin)));
+  const managed = await runtime(t, new Set(upstreams.map(server => server.origin)));
   t.after(() => managed.closeAll());
 
   const channel = await managed.api.openHttpChannel({ maxRequestBytes: 1024, maxResponseBytes: 4096 }, async (incoming, exchange) => {
@@ -116,8 +100,6 @@ test('explicit loopback channel rewrites a real binary POST and streams the sele
   assert.equal(response.body.toString(), 'data: prefix\n\ndata: first\n\ndata: second\n\n');
   assert.ok(response.arrivals.length >= 2);
   assert.ok(streamedBeforeEnd, 'the first upstream SSE chunk reaches the downstream before upstream completion');
-  assert.equal(managed.calls.filter(([method]) => method === 'host.network.authorizeChannel').length, 2, 'open and each inbound request are freshly authorized');
-  assert.equal(managed.calls.filter(([method]) => method === 'host.network.authorizeForward').length, 1);
 });
 
 test('origin denial, handler timeout, byte caps and a second forward have deterministic failures without replay', async t => {
@@ -128,7 +110,7 @@ test('origin denial, handler timeout, byte caps and a second forward have determ
     res.end('upstream');
   });
   t.after(upstream.close);
-  const managed = runtime(new Set([upstream.origin]));
+  const managed = await runtime(t, new Set([upstream.origin]));
   t.after(() => managed.closeAll());
 
   let mode = 'denied';
@@ -137,6 +119,8 @@ test('origin denial, handler timeout, byte caps and a second forward have determ
     if (mode === 'timeout') return new Promise(() => {});
     if (mode === 'large-request') { for await (const _chunk of incoming.body) {} return { status: 204 }; }
     if (mode === 'informational') return { status: 103 };
+    if (mode === 'large-forward') return exchange.forward({ url: upstream.origin, method: 'POST', body: '12345' });
+    if (mode === 'large-response') return { status: 200, body: '123456789' };
     if (mode === 'connect') return exchange.forward({ url: `${upstream.origin}/tunnel`, method: 'connect' });
     const response = await exchange.forward({ url: `${upstream.origin}/once` });
     await assert.rejects(exchange.forward({ url: `${upstream.origin}/twice` }), { code: 'forward_response_pending' });
@@ -148,6 +132,8 @@ test('origin denial, handler timeout, byte caps and a second forward have determ
   mode = 'timeout'; assert.equal((await request(`${channel.endpoint}/timeout`)).status, 504);
   mode = 'large-request'; assert.equal((await request(`${channel.endpoint}/large`, { method: 'POST', body: '12345' })).status, 413);
   mode = 'informational'; assert.equal((await request(`${channel.endpoint}/informational`)).status, 502);
+  mode = 'large-forward'; assert.equal((await request(`${channel.endpoint}/large-forward`)).status, 413);
+  mode = 'large-response'; assert.equal((await request(`${channel.endpoint}/large-response`)).status, 413);
   mode = 'connect'; assert.equal((await request(`${channel.endpoint}/connect`)).status, 502);
   mode = 'once'; assert.equal((await request(`${channel.endpoint}/once`)).status, 200);
   assert.equal(upstreamCalls, 1, 'Core never retries and the second dispatch is rejected');
@@ -162,7 +148,7 @@ test('multiple HTTP attempts are explicit, bounded and require releasing the pri
     res.end(req.url);
   });
   t.after(upstream.close);
-  const managed = runtime(new Set([upstream.origin]));
+  const managed = await runtime(t, new Set([upstream.origin]));
   t.after(() => managed.closeAll());
   let observed;
   const channel = await managed.api.openHttpChannel({ maxForwardAttempts: 2 }, async (_incoming, exchange) => {
@@ -185,26 +171,13 @@ test('multiple HTTP attempts are explicit, bounded and require releasing the pri
   assert.deepEqual(paths, ['/first', '/second']);
   assert.deepEqual(observed, { attempts: 2, maximum: 2 });
   assert.equal(channel.status().forwardAttempts, 2);
-  assert.equal(managed.calls.filter(([method]) => method === 'host.network.authorizeForward').length, 2);
 });
 
 test('channel count includes concurrent opens and releases capacity on close', async t => {
-  const root = new AbortController();
-  let releaseAuthorization;
-  const gate = new Promise(resolve => { releaseAuthorization = resolve; });
-  const managed = createTrafficRuntime({
-    rootSignal: root.signal,
-    makeError: failure,
-    async coreRequest(method) {
-      if (method !== 'host.network.authorizeChannel') throw failure('method_not_found', method);
-      await gate;
-      return { transport: 'http-loopback', coverage: 'explicit-endpoint' };
-    },
-  });
+  const managed = await runtime(t, new Set());
   t.after(() => managed.closeAll());
   const pending = Array.from({ length: 4 }, () => managed.api.openHttpChannel({}, () => ({ status: 204 })));
   await assert.rejects(managed.api.openHttpChannel({}, () => ({ status: 204 })), { code: 'channel_limit' });
-  releaseAuthorization();
   const channels = await Promise.all(pending);
   await channels[0].close();
   const replacement = await managed.api.openHttpChannel({}, () => ({ status: 204 }));
@@ -212,34 +185,13 @@ test('channel count includes concurrent opens and releases capacity on close', a
   await Promise.all([...channels.slice(1), replacement].map(channel => channel.close()));
 });
 
-test('retiring while the loopback listen callback is pending closes the unregistered listener', async t => {
-  const originalCreateServer = http.createServer;
-  let boundPort;
-  http.createServer = (...args) => {
-    const server = originalCreateServer(...args);
-    const originalListen = server.listen;
-    server.listen = function (...listenArgs) {
-      const callback = listenArgs.at(-1);
-      listenArgs[listenArgs.length - 1] = () => {
-        boundPort = server.address().port;
-        setTimeout(callback, 40);
-      };
-      return originalListen.apply(this, listenArgs);
-    };
-    return server;
-  };
-  t.after(() => { http.createServer = originalCreateServer; });
-  const managed = runtime(new Set());
-  const opening = managed.api.openHttpChannel({}, () => ({ status: 204 }));
-  while (boundPort === undefined) await tick(1);
+test('retiring the Host data peer retires native channels without retiring Core', async t => {
+  const managed = await runtime(t, new Set());
+  const channel = await managed.api.openHttpChannel({}, () => ({ status: 204 }));
   managed.closeAll();
-  await assert.rejects(opening, { code: 'host_stopping' });
-  const probe = await new Promise(resolve => {
-    const socket = net.connect(boundPort, '127.0.0.1');
-    socket.once('connect', () => resolve(false));
-    socket.once('error', () => resolve(true));
-  });
-  assert.equal(probe, true);
+  await tick(50);
+  assert.equal((await request(channel.endpoint)).status, 404);
+  assert.equal((await managed.fixture.call('resources')).leases, 0);
 });
 
 test('closing a channel aborts an in-flight upstream and refuses CONNECT and Upgrade', async t => {
@@ -247,7 +199,7 @@ test('closing a channel aborts an in-flight upstream and refuses CONNECT and Upg
   const closed = new Promise(resolve => { upstreamClosed = resolve; });
   const upstream = await listen((_req, res) => res.once('close', upstreamClosed));
   t.after(upstream.close);
-  const managed = runtime(new Set([upstream.origin]));
+  const managed = await runtime(t, new Set([upstream.origin]));
   t.after(() => managed.closeAll());
   const channel = await managed.api.openHttpChannel({}, (_incoming, exchange) => exchange.forward({ url: `${upstream.origin}/hang` }));
 
@@ -255,16 +207,11 @@ test('closing a channel aborts an in-flight upstream and refuses CONNECT and Upg
   await tick(30);
   await channel.close();
   await Promise.race([closed, tick(1000).then(() => assert.fail('upstream socket was not cancelled'))]);
-  assert.ok(await pending instanceof Error);
+  const cancelled = await pending;
+  assert.ok(cancelled instanceof Error || cancelled.status >= 400);
   assert.equal(channel.status().open, false);
 
-  const probe = await new Promise((resolve, reject) => {
-    const parsed = new URL(channel.endpoint);
-    const socket = net.connect(Number(parsed.port), parsed.hostname);
-    socket.once('connect', () => reject(new Error('closed listener still accepted a socket')));
-    socket.once('error', resolve);
-  });
-  assert.ok(probe instanceof Error);
+  assert.equal((await request(channel.endpoint)).status, 404, 'the shared native listener cannot reuse a retired channel');
 });
 
 test('cancellation after upstream headers destroys an unread or stalled SSE response', async t => {
@@ -276,7 +223,7 @@ test('cancellation after upstream headers destroys an unread or stalled SSE resp
     res.write('data: first\n\n');
   });
   t.after(upstream.close);
-  const managed = runtime(new Set([upstream.origin]));
+  const managed = await runtime(t, new Set([upstream.origin]));
   t.after(() => managed.closeAll());
   const channel = await managed.api.openHttpChannel({}, async (_incoming, exchange) => exchange.forward({ url: `${upstream.origin}/stream` }));
 
@@ -305,7 +252,7 @@ test('an upstream stream failure before body consumption is contained and observ
     setTimeout(() => res.destroy(), 5);
   });
   t.after(upstream.close);
-  const managed = runtime(new Set([upstream.origin]));
+  const managed = await runtime(t, new Set([upstream.origin]));
   t.after(() => managed.closeAll());
   const channel = await managed.api.openHttpChannel({}, async (_incoming, exchange) => {
     const response = await exchange.forward({ url: `${upstream.origin}/cut` });
@@ -320,7 +267,7 @@ test('an upstream stream failure before body consumption is contained and observ
 });
 
 test('downstream cancellation releases a slot held by a blocked response iterator or handler', async t => {
-  const managed = runtime(new Set());
+  const managed = await runtime(t, new Set());
   t.after(() => managed.closeAll());
   let iteratorReturned = false;
   const blockedBody = {
@@ -381,7 +328,7 @@ test('one private endpoint proxies WebSocket text and binary frames with ordered
   await new Promise((resolve, reject) => { httpServer.once('error', reject); httpServer.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => webSocketServer.close(() => httpServer.close(resolve))));
   const origin = `http://127.0.0.1:${httpServer.address().port}`;
-  const managed = runtime(new Set([origin]));
+  const managed = await runtime(t, new Set([origin]));
   t.after(() => managed.closeAll());
 
   const channel = await managed.api.openChannel({ maxWebSocketMessageBytes: 1024, maxWebSocketQueueBytes: 2048 }, {
@@ -417,11 +364,10 @@ test('one private endpoint proxies WebSocket text and binary frames with ordered
   client.close();
   await new Promise(resolve => client.once('close', resolve));
   assert.equal(await upstreamClose, 1005, 'a no-status close propagates without attempting close(1005)');
-  assert.equal(managed.calls.filter(([method]) => method === 'host.network.authorizeForward').length, 1);
 });
 
 test('WebSocket origin denial rejects the handshake before accepting the downstream socket', async t => {
-  const managed = runtime(new Set());
+  const managed = await runtime(t, new Set());
   t.after(() => managed.closeAll());
   const channel = await managed.api.openChannel({}, {
     webSocket: (_request, exchange) => exchange.forward({ url: 'ws://127.0.0.1:1/denied' }),
@@ -436,7 +382,7 @@ test('WebSocket origin denial rejects the handshake before accepting the downstr
   assert.equal(status, 403);
 });
 
-test('WebSocket limits apply after transforms and count zero-byte queued frames', async t => {
+test('WebSocket limits apply after transforms and native pull backpressure bounds queued callbacks', async t => {
   const server = http.createServer();
   const serverSockets = new Set();
   server.on('connection', socket => { serverSockets.add(socket); socket.once('close', () => serverSockets.delete(socket)); });
@@ -450,7 +396,7 @@ test('WebSocket limits apply after transforms and count zero-byte queued frames'
     server.close(resolve);
   }));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const managed = runtime(new Set([origin]));
+  const managed = await runtime(t, new Set([origin]));
   t.after(() => managed.closeAll());
   const transformed = await managed.api.openChannel({ maxWebSocketMessageBytes: 4 }, {
     webSocket: (_request, exchange) => exchange.forward({ url: origin.replace('http:', 'ws:'), clientToServer: () => '12345' }),
@@ -462,29 +408,22 @@ test('WebSocket limits apply after transforms and count zero-byte queued frames'
   assert.equal(transformedClose, 1011);
   await transformed.close();
 
-  let release;
+  let release, active = 0, peak = 0, processed = 0;
   const wait = new Promise(resolve => { release = resolve; });
   const queued = await managed.api.openChannel({ maxWebSocketMessageBytes: 4, maxWebSocketQueueBytes: 16, maxWebSocketQueueFrames: 2 }, {
-    webSocket: (_request, exchange) => exchange.forward({ url: origin.replace('http:', 'ws:'), clientToServer: async frame => { await wait; return frame; } }),
+    webSocket: (_request, exchange) => exchange.forward({ url: origin.replace('http:', 'ws:'), clientToServer: async frame => { active++; peak = Math.max(peak, active); await wait; active--; processed++; return frame; } }),
   });
   t.after(() => queued.close());
   const second = new WebSocket(queued.endpoint.replace('http:', 'ws:'));
   await new Promise((resolve, reject) => { second.once('open', resolve); second.once('error', reject); });
   const closed = new Promise(resolve => second.once('close', resolve));
-  // Force the defensive queue bound independently of TCP backpressure. In
-  // production pause() normally prevents these frames reaching JS this fast.
-  const originalPause = net.Socket.prototype.pause;
-  net.Socket.prototype.pause = function () { return this; };
-  let queueClose;
-  try {
-    for (let index = 0; index < 16; index++) second.send(Buffer.alloc(0));
-    queueClose = await Promise.race([closed, tick(1000).then(() => null)]);
-  } finally {
-    net.Socket.prototype.pause = originalPause;
-    release();
-  }
-  if (queueClose === null) { second.terminate(); await queued.close(); }
-  assert.equal(queueClose, 1013);
+  for (let index = 0; index < 16; index++) second.send(Buffer.alloc(0));
+  await tick(100); assert.equal(peak, 1); assert.equal(processed, 0);
+  release();
+  const deadline = Date.now() + 2000;
+  while (processed < 16 && Date.now() < deadline) await tick(5);
+  assert.equal(processed, 16); assert.equal(peak, 1);
+  second.close(); await closed;
   await queued.close();
 });
 
@@ -494,7 +433,7 @@ test('an upstream WebSocket HTTP rejection is returned before downstream accepta
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const managed = runtime(new Set([origin]));
+  const managed = await runtime(t, new Set([origin]));
   t.after(() => managed.closeAll());
   const channel = await managed.api.openChannel({}, {
     webSocket: (_request, exchange) => exchange.forward({ url: origin.replace('http:', 'ws:') }),
@@ -513,7 +452,7 @@ test('a minimal worker error factory still preserves WebSocket 426 for HTTP fall
   server.on('upgrade', (_request, socket) => socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const managed = runtime(new Set([origin]), (code, message) => Object.assign(new Error(message), { code }));
+  const managed = await runtime(t, new Set([origin]), (code, message) => Object.assign(new Error(message), { code }));
   t.after(() => managed.closeAll());
   const channel = await managed.api.openChannel({}, {
     http: (_request, exchange) => exchange.forward({ url: origin }),

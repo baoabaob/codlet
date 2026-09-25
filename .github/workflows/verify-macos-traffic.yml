@@ -75,6 +75,13 @@ jobs:
           npm ci --prefix plugins/frontend
           node plugins/scripts/prepare-core-sdk.mjs "$CODLET_CORE_ROOT"
           node plugins/frontend/build.mjs
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core -> target
+      - name: Build native traffic acceptance engine
+        working-directory: core
+        run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
       - name: Stage the source-reviewed official client
         run: |
           curl --fail --location --retry 2 --output "$RUNNER_TEMP/ChatGPT-26.917.62051.zip" \

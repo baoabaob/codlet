@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import http from 'node:http';
+import { nativeTraffic } from './support/native-traffic.mjs';
 
 const bootstrap = (await Promise.all([
   readFile(new URL('../runtime/core-services.cjs', import.meta.url), 'utf8').then(source => `const createEmbeddedServicesRuntime = (() => { const module = {exports:{}};${source};return module.exports.createCoreServicesRuntime;})();`),
@@ -251,6 +252,7 @@ test('Host outbound SDK preserves parent tokens, opaque handles, notification re
 });
 
 test('traffic listeners outlive their creating capability invocation without borrowing its deadline', async t => {
+  const native = await nativeTraffic(t, { noIntercept: true });
   const fixture = await host(t, `const cap=${JSON.stringify(capability)}; let channel; module.exports={
     activate(context) {
       context.rpc.provide(cap,'open',async()=>{
@@ -262,9 +264,13 @@ test('traffic listeners outlive their creating capability invocation without bor
   };`);
   const invoke = fixture.invoke('open', null, 500);
   const authorizeOpen = await fixture.next();
-  assert.equal(authorizeOpen.method, 'host.network.authorizeChannel');
+  assert.equal(authorizeOpen.method, 'traffic.connectPeer');
   assert.equal(authorizeOpen.params.invocationId, undefined);
-  fixture.send({ type: 'response', id: authorizeOpen.id, ok: true, result: { transport: 'http-loopback', coverage: 'explicit-endpoint' } });
+  fixture.send({ type: 'response', id: authorizeOpen.id, ok: true, result: await native.call('services.traffic.connectPeer') });
+  const openChannel = await fixture.next();
+  assert.equal(openChannel.method, 'traffic.openChannel');
+  assert.equal(openChannel.params.invocationId, undefined);
+  fixture.send({ type: 'response', id: openChannel.id, ok: true, result: await native.call('services.traffic.openChannel', openChannel.params) });
   const opened = await fixture.next();
   assert.equal(opened.id, invoke); assert.equal(opened.ok, true);
 
@@ -272,10 +278,6 @@ test('traffic listeners outlive their creating capability invocation without bor
     const request = http.get(opened.result.endpoint + '/after-invocation', resolve);
     request.once('error', reject);
   });
-  const authorizeRequest = await fixture.next();
-  assert.equal(authorizeRequest.method, 'host.network.authorizeChannel');
-  assert.equal(authorizeRequest.params.invocationId, undefined);
-  fixture.send({ type: 'response', id: authorizeRequest.id, ok: true, result: { transport: 'http-loopback', coverage: 'explicit-endpoint' } });
   const received = await response;
   received.resume();
   await once(received, 'end');

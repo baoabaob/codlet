@@ -2,7 +2,7 @@
 const { connectTrafficPeer, createTrafficStreams } = require('./traffic-wire.cjs');
 const fail = code => Object.assign(new Error(code), { code });
 
-function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn() }) {
+function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn(), extension }) {
   const registrations = new Map(), leases = new Map(), sources = new Set();
   let peer, connecting, retired = false, connectionEpoch = 0;
   const check = () => { if (retired || rootSignal.aborted) throw fail('host_stopping'); };
@@ -11,6 +11,7 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
     leases.delete(id); lease.controller.abort(fail('stream_retired')); lease.streams.dispose();
   }
   function event(message) {
+    extension?.event(message);
     if (message.event === 'leaseClosed') closeLease(message.lease);
     if (message.event === 'closed') {
       connectionEpoch++;
@@ -36,6 +37,7 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
     return lease;
   }
   async function handle(method, params) {
+    if (extension?.matches(method, params)) return (await extension.handle(method, params, peer)).result;
     // Runs synchronously up to the first await, before a coalesced leaseClosed
     // event can overtake initialization of this lease's cancellation signal.
     const lease = method === 'invoke' ? leaseFor(params) : leases.get(params?.lease);
@@ -87,7 +89,7 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
     if (!connecting) {
     const epoch = ++connectionEpoch;
     connecting = detach(async () => {
-      const endpoint = await coreRequest('services.traffic.connect', {}, rootSignal);
+      const endpoint = await coreRequest('services.traffic.connectPeer', {}, rootSignal);
       const connected = await connectTrafficPeer(endpoint, { signal: rootSignal, handle, event: message => { if (connectionEpoch === epoch) event(message); }, detach });
       if (retired || connectionEpoch !== epoch) { connected.close(); throw fail('host_stopping'); }
       peer = connected; return connected;
@@ -177,6 +179,6 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
   rootSignal.addEventListener('abort', closeAll, { once: true });
   return Object.freeze({ registerInterceptor: (options, handlers) => detach(() => registerInterceptor(options, handlers)),
     openSource: options => detach(() => openSource(options)),
-    inspect: () => coreRequest('services.traffic.status', {}, rootSignal), closeAll });
+    inspect: () => coreRequest('services.traffic.status', {}, rootSignal), closeAll, getPeer });
 }
 module.exports = { createHostedInterceptors };

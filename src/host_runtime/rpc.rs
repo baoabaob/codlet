@@ -48,6 +48,7 @@ pub(super) struct Pending {
 }
 
 enum Kind {
+    Traffic(crate::core_services::ServiceOperation),
     Call {
         route: Box<RpcRoute>,
         method: String,
@@ -114,6 +115,35 @@ impl HostOwner {
             }
             let cancelled = Arc::new(AtomicBool::new(false));
             let kind = match method {
+                "traffic.connectPeer" | "traffic.openChannel" | "traffic.closeChannel" => {
+                    let services =
+                        self.services
+                            .config
+                            .plugin_services
+                            .as_ref()
+                            .ok_or_else(|| {
+                                HostError::new(
+                                    "runtime_unavailable",
+                                    "Core traffic services unavailable",
+                                )
+                            })?;
+                    Kind::Traffic(
+                        services
+                            .begin(
+                                crate::core_services::ServiceCaller {
+                                    id: &self.observation.plugin.manifest.id,
+                                    generation: self.observation.plugin.generation,
+                                    host: true,
+                                    document: None,
+                                },
+                                method,
+                                params,
+                                deadline,
+                                client.clone(),
+                            )
+                            .map_err(|e| HostError::new(e.code, e.message))?,
+                    )
+                }
                 "rpc.request" | "rpc.notify" => {
                     let input: CallInput = decode_params(params).map_err(host_error)?;
                     if !valid_identifier(&input.method)
@@ -257,6 +287,13 @@ impl HostOwner {
     ) -> Option<Result<Value, HostError>> {
         let kind = pending.kind.take().expect("pending RPC has a phase");
         match kind {
+            Kind::Traffic(mut operation) => {
+                let result = operation
+                    .try_result()
+                    .map(|result| result.map_err(|e| HostError::new(e.code, e.message)));
+                pending.kind = Some(Kind::Traffic(operation));
+                result
+            }
             Kind::Call {
                 route,
                 method,

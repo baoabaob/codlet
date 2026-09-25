@@ -151,6 +151,12 @@ const trafficRuntime = createEmbeddedTrafficRuntime({
   coreRequest(method, params, signal) {
     // A channel is generation-owned, not a continuation of the capability call
     // that happened to create it. Future socket callbacks get fresh Core deadlines.
+    // These are SDK channel lifecycle operations. Like the former native
+    // channel authorization calls they require Host grants, not a declared
+    // dependency on the public Core service capability.
+    if (['services.traffic.connectPeer', 'services.traffic.openChannel', 'services.traffic.closeChannel'].includes(method)) {
+      return invocationContext.run(undefined, () => request(method.slice(9), params, MAX_TIMEOUT, undefined, false, signal));
+    }
     return invocationContext.run(undefined, () => method.startsWith('services.')
       ? rpcRequest({ name: 'codlet.core.services', api: 1, scope: 'runtime' }, method.slice(9), params, { signal })
       : request(method, params, MAX_TIMEOUT, undefined, false, signal));

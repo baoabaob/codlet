@@ -79,6 +79,14 @@ pub struct PluginServices {
 }
 
 impl PluginServices {
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fn fixture(registry_path: &Path) -> Result<Self> {
+        let root = ServiceRoot::new(registry_path)?;
+        Ok(Self {
+            storage: storage::PluginStorage::new(root.clone()),
+            secrets: secrets::PluginSecrets::fixture(root),
+        })
+    }
     pub fn new(registry_path: &Path) -> Result<Self> {
         let root = ServiceRoot::new(registry_path)?;
         Ok(Self {

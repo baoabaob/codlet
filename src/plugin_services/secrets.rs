@@ -114,6 +114,37 @@ struct RemoveInput {
 }
 
 impl PluginSecrets {
+    #[cfg(feature = "test-fixtures")]
+    pub(super) fn fixture(root: ServiceRoot) -> Self {
+        #[derive(Default)]
+        struct Memory(std::sync::Mutex<BTreeMap<String, Vec<u8>>>);
+        impl SecretBackend for Memory {
+            fn put(&self, target: &str, _: &str, secret: &[u8]) -> Result<()> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .insert(target.into(), secret.to_vec());
+                Ok(())
+            }
+            fn get(&self, target: &str) -> Result<Option<SecretBuffer>> {
+                Ok(self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .get(target)
+                    .cloned()
+                    .map(SecretBuffer))
+            }
+            fn delete(&self, target: &str) -> Result<()> {
+                self.0.lock().unwrap().remove(target);
+                Ok(())
+            }
+        }
+        Self {
+            root,
+            backend: Arc::new(Memory::default()),
+        }
+    }
     pub(super) fn system(root: ServiceRoot) -> Self {
         Self {
             root,

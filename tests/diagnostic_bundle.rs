@@ -205,6 +205,7 @@ fn actual_cli_exports_a_failed_doctor_without_modifying_the_corrupt_registry() {
     let result = std::process::Command::new(env!("CARGO_BIN_EXE_codlet"))
         .args(args)
         .env("LOCALAPPDATA", root.path())
+        .env_remove("CODLET_HOME")
         .output()
         .unwrap();
     assert!(
@@ -229,6 +230,7 @@ fn actual_cli_exports_a_failed_doctor_without_modifying_the_corrupt_registry() {
     let repeat = std::process::Command::new(env!("CARGO_BIN_EXE_codlet"))
         .args(args)
         .env("LOCALAPPDATA", root.path())
+        .env_remove("CODLET_HOME")
         .output()
         .unwrap();
     assert!(!repeat.status.success());

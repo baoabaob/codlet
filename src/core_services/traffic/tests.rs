@@ -483,12 +483,13 @@ fn native_cancelled_open_releases_unreceived_lease_without_waiting_for_expiry() 
 }
 
 #[test]
-fn native_data_plane_round_trips_host_callbacks_streams_and_websocket_frames() {
+fn native_data_plane_round_trips_host_callbacks_and_large_streams() {
     use std::io::{BufRead, BufReader};
     let Some(node) = std::env::var_os("CODLET_TRAFFIC_TEST_NODE") else {
         return;
     };
     let fixture = Fixture::new();
+    fixture.traffic.start_native().unwrap();
     let mut child = std::process::Command::new(node)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/traffic-native-peer.cjs"))
         .stdin(std::process::Stdio::piped())
@@ -498,7 +499,7 @@ fn native_data_plane_round_trips_host_callbacks_streams_and_websocket_frames() {
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
-    writeln!(input,"{}",json!({"gateway":fixture.traffic.gateway_endpoint().unwrap(),"host":fixture.invoke("test.traffic-a","connect",json!({}),true).unwrap()})).unwrap();
+    writeln!(input,"{}",json!({"source":fixture.traffic.launch_descriptor().unwrap()["source"],"host":fixture.invoke("test.traffic-a","connect",json!({}),true).unwrap()})).unwrap();
     let mut line = String::new();
     output.read_line(&mut line).unwrap();
     assert_eq!(

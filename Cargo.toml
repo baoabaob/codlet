@@ -25,7 +25,15 @@ base64 = "0.22"
 thiserror = "2.0"
 tempfile = "3.20"
 url = "2.5"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "hickory-dns", "system-proxy"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "hickory-dns", "system-proxy", "stream"] }
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 tokio = { version = "1", features = ["rt", "time", "net", "sync", "macros", "io-util"] }
 zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
@@ -78,3 +86,8 @@ path = "src/bin/codlet-lab.rs"
 [[bin]]
 name = "codlet-fake-host"
 path = "src/bin/codlet-fake-host.rs"
+
+[[bin]]
+name = "codlet-traffic-fixture"
+path = "src/bin/codlet-traffic-fixture.rs"
+required-features = ["test-fixtures"]
