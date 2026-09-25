@@ -112,6 +112,15 @@ try{
     if('codlet-gui' -in $selected -and 'codex.ui.adapter' -notin $selected){$selected+='codex.ui.adapter'}
     foreach($id in $selected){if($id -notin @($available.id)){throw "Selected plugin is unavailable: $id"}}
     $listing=Invoke-Cli -Arguments @('plugin','list','--json')
+    # Persist the entire selection before the first network operation. Otherwise
+    # a failure in a dependency could forget plugins later in the same selection.
+    foreach($id in $selected){
+      $present=@($listing.plugins|Where-Object{$_.id -eq $id}).Count -gt 0
+      if(-not $present -and ($explicit -or -not $state.decided.ContainsKey($id) -or -not $state.decided[$id].selected -or (Decision-Result $id) -eq 'pending')){
+        $state.decided[$id]=@{selected=$true;result='pending'}
+      }
+    }
+    Save-State
     foreach($package in $available){
       $id=[string]$package.id
       if($id -notin $selected){if(-not $state.decided.ContainsKey($id) -or ($explicit -and (Decision-Result $id) -eq 'pending')){$state.decided[$id]=@{selected=$false;result='declined'}};continue}

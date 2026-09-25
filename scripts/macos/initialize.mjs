@@ -62,6 +62,9 @@ export function initialize(selected, {
     }
   };
   const listing = selected.length ? invoke(['plugin', 'list', '--json']) : { plugins: [] };
+  // A failed dependency must not discard the rest of the user's selection.
+  for (const id of selected) if (!listing.plugins.some(p => p.id === id)) state.decided[id] = { selected: true, result: 'pending' };
+  save();
   for (const pkg of packages) {
     const id = pkg.id;
     if (!selected.includes(id)) {

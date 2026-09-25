@@ -71,3 +71,9 @@ test('a user can decline a failed pending download and finish Core-only setup',(
  assert.throws(()=>f.run(['codex.ui.adapter']),/release unavailable/);
  f.run([]);assert.equal(f.state().decided['codex.ui.adapter'].result,'declined');
 });
+test('a failed dependency retains all selected downloads for the next attempt',()=>{
+ const f=fixture({releases:()=>{throw Error('release unavailable');}});
+ assert.throws(()=>f.run(['codlet-gui','codex.desktop.adapter']),/release unavailable/);
+ assert.deepEqual(Object.keys(f.state().decided).sort(),['codex.desktop.adapter','codex.ui.adapter','codlet-gui']);
+ assert.ok(Object.values(f.state().decided).every(d=>d.result==='pending'));
+});
