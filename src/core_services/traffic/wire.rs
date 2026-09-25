@@ -464,7 +464,7 @@ impl Hub {
                     .get(key)
                     .cloned()
                     .ok_or_else(|| error("stale_generation", "registration retired"))?;
-                let url = string(&params, "url")?;
+                let url = bounded_string(&params, "url", 8192)?;
                 if !registration.active.load(Ordering::Acquire) {
                     return Err(error("traffic_unavailable", "interceptor is not active"));
                 }
@@ -679,6 +679,17 @@ impl Hub {
             return Err(error("permission_denied", "reply belongs to another peer"));
         }
         let pending = state.pending.remove(key).unwrap();
+        // Expiry polling reclaims idle calls; delivery still checks the actual
+        // deadline so a late reply cannot win between timer ticks.
+        if pending.expires <= Instant::now() {
+            let _ = self.send(
+                &state,
+                &pending.source,
+                json!({"id":pending.id,"error":{"code":"traffic_timeout"}}),
+            );
+            self.release(&mut state, &pending.lease);
+            return Ok(());
+        }
         let reply = if let Some(failure) = frame.get("error") {
             let code = failure
                 .get("code")

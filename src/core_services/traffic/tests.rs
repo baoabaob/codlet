@@ -408,6 +408,43 @@ fn native_revocation_retires_pending_data_and_cannot_deliver_a_late_plugin_reply
 }
 
 #[test]
+fn native_reply_checks_its_deadline_without_waiting_for_expiry_polling() {
+    let fixture = Fixture::new();
+    let mut gateway = fixture.gateway();
+    let mut host = fixture.host("test.traffic-a");
+    let registration = fixture.registration("test.traffic-a");
+    host.call("activate", json!({"registration":registration}));
+    let lease = gateway.call(
+        "open",
+        json!({"registration":registration,"url":"https://allowed.invalid/"}),
+    )["result"]["lease"]
+        .clone();
+    let pending = gateway.request("relay", json!({"lease":lease,"operation":"invoke","payload":{"kind":"request","value":{"body":null}}}));
+    let invoke = host.until(|value| value["method"] == "invoke");
+    let destination = {
+        let mut state = fixture.traffic.hub.state.lock().unwrap();
+        let call = state
+            .pending
+            .get_mut(invoke["id"].as_str().unwrap())
+            .unwrap();
+        call.expires = Instant::now() - Duration::from_nanos(1);
+        call.destination.clone()
+    };
+    fixture
+        .traffic
+        .hub
+        .process(
+            &destination,
+            json!({"id":invoke["id"],"result":{"respond":{"status":200,"body":"late"}}}),
+        )
+        .unwrap();
+    let result = gateway.until(|value| value["id"] == pending);
+    assert_eq!(result["error"]["code"], "traffic_timeout");
+    assert!(result.get("result").is_none());
+    assert_eq!(fixture.traffic.resources()["leases"], 0);
+}
+
+#[test]
 fn native_interceptor_disable_closes_streams_but_keeps_the_other_owners_registration() {
     let fixture = Fixture::new();
     let mut gateway = fixture.gateway();

@@ -966,7 +966,7 @@ var require_host_channels = __commonJS({
               });
             } catch (error) {
               exchange.pending = false;
-              throw error;
+              throw error.code === "request_timeout" ? fail("handler_timeout") : error;
             }
           }
         });

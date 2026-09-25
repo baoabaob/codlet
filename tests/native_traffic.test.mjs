@@ -84,6 +84,17 @@ test('delegated absent bodies stay null and do not become consumed empty streams
   assert.equal(response.status,204);await bodyBytes(response.body);await idle(f);
 });
 
+test('traffic URLs retain their 8 KiB contract across channels and delegated callbacks',async t=>{
+  const origin=await listen(http.createServer((req,res)=>res.end(String(req.url.length))),t),f=await nativeTraffic(t,{origins:[origin]});
+  const target=origin+'/?q='+'x'.repeat(7000);
+  const channel=await f.runtime().api.openHttpChannel({},(_,exchange)=>exchange.forward({url:target}));
+  assert.equal((await read(channel.endpoint)).body.toString(),'7004');await channel.close();
+  await f.runtime().api.registerInterceptor({id:'long-url',origins:[origin]},{request(r){assert.equal(r.url,target);return {request:{url:target}};}});
+  const client=f.client();await client.ready;
+  const result=await client.interceptHttp({url:target,method:'GET',headers:[]},{forward:async r=>{assert.equal(r.url,target);return {status:204,headers:[]};}});
+  assert.equal(result.status,204);await bodyBytes(result.body);await idle(f);
+});
+
 test('native explicit WS bridges before a handler waits for its close promise', {timeout:15000},async t=>{
   const server=http.createServer();const ws=new WebSocketServer({server});t.after(()=>{for(const socket of ws.clients)socket.terminate();ws.close();});
   ws.on('connection',socket=>socket.on('message',(data,binary)=>socket.send(data,{binary})));

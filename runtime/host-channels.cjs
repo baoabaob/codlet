@@ -97,7 +97,7 @@ function createHostedChannels({ coreRequest, rootSignal, getPeer, reportState = 
           if (webSocket) { exchange.pending = false; return Object.freeze({ protocol: result.protocol, closed: exchange.closed }); }
           return Object.freeze({ status: result.status, headers: Object.freeze(result.headers.map(pair => Object.freeze(pair))),
             body: onceResponse(exchange.streams.importBody(result.body), release => { exchange.releasing = release; exchange.pending = false; }) });
-        } catch (error) { exchange.pending = false; throw error; }
+        } catch (error) { exchange.pending = false; throw error.code === 'request_timeout' ? fail('handler_timeout') : error; }
       },
     });
     const response = await exchange.channel.handlers[webSocket ? 'webSocket' : 'http'](request, api);

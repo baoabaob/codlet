@@ -247,7 +247,7 @@ impl Engine {
                     values.insert(id.clone(), exchange.clone());
                 }
                 let outcome=async {
-                    let value=&params["request"];let target=string(value,"url")?;if !matches!(url(target)?.scheme(),"http"|"https"){return Err(error("invalid_target","HTTP URL required"));}
+                    let value=&params["request"];let target=bounded_string(value,"url",8192)?;if !matches!(url(target)?.scheme(),"http"|"https"){return Err(error("invalid_target","HTTP URL required"));}
                     let request=Request{id:files::token("request")?,url:target.to_owned(),method:super::model::method(string(value,"method")?)?,headers:pairs(value.get("headers").unwrap_or(&json!([])))?,body:streams::remote_body(peer.clone(),id.clone(),value.get("body").cloned().unwrap_or(Value::Null),exchange.stopped.child_token(),streams::BODY_LIMIT)?,protocols:vec![]};
                     let response=self.intercept_http(request,&exchange,&Default::default()).await?;exchange.check()?;
                     let body=exchange.streams.export(response.body)?;

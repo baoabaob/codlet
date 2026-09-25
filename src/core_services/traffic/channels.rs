@@ -488,7 +488,7 @@ impl Engine {
         channel.forwards.fetch_add(1, Ordering::AcqRel);
         self.channel_state(&channel);
         let result=async{
-            let target=string(value,"url")?.to_owned();url(&target)?;
+            let target=bounded_string(value,"url",8192)?.to_owned();url(&target)?;
             let resolve=channel.resolve.clone();let options=value.clone();let route=tokio::task::spawn_blocking(move||resolve(options)).await.map_err(|_|error("traffic_unavailable","authority failed"))??;exchange.check()?;
             let trust=Trust{credential:route["credential"].as_str().map(str::to_owned),route:Some(route),ca:None};
             let method=super::model::method(value.get("method").and_then(Value::as_str).unwrap_or("GET"))?;

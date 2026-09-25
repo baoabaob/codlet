@@ -114,9 +114,8 @@ test('origin denial, handler timeout, byte caps and a second forward have determ
   t.after(() => managed.closeAll());
 
   let mode = 'denied';
-  const channel = await managed.api.openHttpChannel({ handlerTimeoutMs: 40, maxRequestBytes: 4, maxResponseBytes: 8 }, async (incoming, exchange) => {
+  const channel = await managed.api.openHttpChannel({ handlerTimeoutMs: 3000, maxRequestBytes: 4, maxResponseBytes: 8 }, async (incoming, exchange) => {
     if (mode === 'denied') return exchange.forward({ url: 'http://127.0.0.1:1/blocked' });
-    if (mode === 'timeout') return new Promise(() => {});
     if (mode === 'large-request') { for await (const _chunk of incoming.body) {} return { status: 204 }; }
     if (mode === 'informational') return { status: 103 };
     if (mode === 'large-forward') return exchange.forward({ url: upstream.origin, method: 'POST', body: '12345' });
@@ -129,7 +128,10 @@ test('origin denial, handler timeout, byte caps and a second forward have determ
   t.after(() => channel.close());
 
   assert.equal((await request(`${channel.endpoint}/denied`)).status, 403);
-  mode = 'timeout'; assert.equal((await request(`${channel.endpoint}/timeout`)).status, 504);
+  // The short callback deadline is independent of platform TLS-root startup.
+  const timed = await managed.api.openHttpChannel({ handlerTimeoutMs: 40 }, () => new Promise(() => {}));
+  assert.equal((await request(`${timed.endpoint}/timeout`)).status, 504);
+  await timed.close();
   mode = 'large-request'; assert.equal((await request(`${channel.endpoint}/large`, { method: 'POST', body: '12345' })).status, 413);
   mode = 'informational'; assert.equal((await request(`${channel.endpoint}/informational`)).status, 502);
   mode = 'large-forward'; assert.equal((await request(`${channel.endpoint}/large-forward`)).status, 413);
@@ -194,17 +196,18 @@ test('retiring the Host data peer retires native channels without retiring Core'
   assert.equal((await managed.fixture.call('resources')).leases, 0);
 });
 
-test('closing a channel aborts an in-flight upstream and refuses CONNECT and Upgrade', async t => {
-  let upstreamClosed;
+test('closing a channel aborts an in-flight upstream and refuses CONNECT and Upgrade', {timeout:15000}, async t => {
+  let upstreamClosed, upstreamEntered;
   const closed = new Promise(resolve => { upstreamClosed = resolve; });
-  const upstream = await listen((_req, res) => res.once('close', upstreamClosed));
+  const entered = new Promise(resolve => { upstreamEntered = resolve; });
+  const upstream = await listen((_req, res) => { res.once('close', upstreamClosed); upstreamEntered(); });
   t.after(upstream.close);
   const managed = await runtime(t, new Set([upstream.origin]));
   t.after(() => managed.closeAll());
   const channel = await managed.api.openHttpChannel({}, (_incoming, exchange) => exchange.forward({ url: `${upstream.origin}/hang` }));
 
   const pending = request(`${channel.endpoint}/hang`).catch(error => error);
-  await tick(30);
+  await entered;
   await channel.close();
   await Promise.race([closed, tick(1000).then(() => assert.fail('upstream socket was not cancelled'))]);
   const cancelled = await pending;

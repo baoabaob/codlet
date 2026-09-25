@@ -176,7 +176,7 @@ impl Engine {
         fields(update, &["url", "method", "headers", "body"])?;
         let old = origin(&request.url)?;
         if let Some(value) = update.get("url") {
-            request.url = string(update, "url")?.to_owned();
+            request.url = bounded_string(update, "url", 8192)?.to_owned();
             url(value.as_str().unwrap_or(""))?;
         }
         if let Some(value) = update.get("method") {

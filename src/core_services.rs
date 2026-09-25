@@ -572,7 +572,7 @@ impl SharedCoreServices {
     }
     fn channel_route(&self, p: &Principal, input: Value) -> Result<Value> {
         self.check(p, "traffic.openChannel", true, &json!({}))?;
-        let target = network::channel_target(p, string(&input, "url")?)?;
+        let target = network::channel_target(p, bounded_string(&input, "url", 8192)?)?;
         let mut route = if let Some(profile) = input.get("networkProfile") {
             let params = json!({"profile":profile,"url":target.as_str()});
             self.check(p, "network.resolve", true, &params)?;
@@ -1143,10 +1143,13 @@ pub(crate) fn error(code: &'static str, message: impl Into<String>) -> ServiceEr
     }
 }
 pub(crate) fn string<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
+    bounded_string(value, name, 4096)
+}
+pub(crate) fn bounded_string<'a>(value: &'a Value, name: &str, limit: usize) -> Result<&'a str> {
     value
         .get(name)
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty() && s.len() <= 4096)
+        .filter(|s| !s.is_empty() && s.len() <= limit)
         .ok_or_else(|| error("invalid_params", format!("{name} must be a bounded string")))
 }
 pub(crate) fn now_ms() -> u128 {
