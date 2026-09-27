@@ -6,8 +6,14 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub(crate) mod client_versions;
+#[cfg(all(feature = "desktop-acceptance", not(test)))]
+mod desktop_acceptance;
 mod runtime_update_owner;
 mod safe_mode;
+#[cfg(all(feature = "desktop-acceptance", not(test)))]
+pub fn run_desktop_acceptance() {
+    desktop_acceptance::isolated_full_runtime();
+}
 
 use crate::catalog::PluginCatalog;
 use crate::cdp::{
@@ -51,6 +57,9 @@ const LAUNCH_MUTEX_DEADLINE: Duration = Duration::from_secs(30);
 const REGISTRY_LEASE_DEADLINE: Duration = Duration::from_millis(1500);
 const REAL_PROBE_CONFIRMATION: &str = "--launch-codex";
 const RUNTIME_WAIT_SLICE: Duration = Duration::from_millis(50);
+// Electron may close CDP before its asynchronous shutdown has finished. Keep
+// the owned handle long enough to observe the real exit instead of reporting EOF.
+const CLIENT_EXIT_AFTER_CDP_CLOSE: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Error)]
 pub enum ProbeError {
@@ -258,7 +267,7 @@ struct PreparedServices {
 }
 
 struct HostServers {
-    _status: StatusServer,
+    _status: Option<StatusServer>,
     control: ControlServer,
 }
 
@@ -708,7 +717,7 @@ fn start_connected_codex_with_traffic(
                         ControlServer::bind_current_user(services.lease, services.status.clone())?;
                     let status = StatusServer::bind_current_user(services.status)?;
                     Ok::<_, ProbeError>(HostServers {
-                        _status: status,
+                        _status: Some(status),
                         control,
                     })
                 })
@@ -771,6 +780,18 @@ fn start_connected_codex_with_traffic(
 }
 
 fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeError> {
+    start_codlet_runtime_with_connector(options, start_connected_codex_with_traffic)
+}
+
+// The isolated desktop acceptance test supplies only the owned child and scoped
+// IPC listeners. Plugin preparation, activation and the event loop stay shared.
+fn start_codlet_runtime_with_connector(
+    options: LaunchOptions,
+    connect: impl FnOnce(
+        Option<PreparedServices>,
+        Option<&crate::traffic_owner::TrafficOwner>,
+    ) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError>,
+) -> Result<CodletRuntime, ProbeError> {
     let scope = RegistryScope::for_path(&default_registry_path()?)?;
     let lease = scope
         .acquire(REGISTRY_LEASE_DEADLINE)
@@ -814,7 +835,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     if renderer.needs_renderer_targets() {
         renderer.set_status_publisher(status.clone());
     }
-    let (connected, servers) = start_connected_codex_with_traffic(
+    let (connected, servers) = connect(
         Some(PreparedServices {
             status: status.clone(),
             lease,
@@ -1037,7 +1058,12 @@ impl ProbedCodex {
             let changes = match self.targets.pump(Duration::ZERO) {
                 Ok(changes) => changes,
                 Err(error) => {
-                    if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
+                    let budget = if self.client.closed_reason().is_some() {
+                        CLIENT_EXIT_AFTER_CDP_CLOSE
+                    } else {
+                        RUNTIME_WAIT_SLICE
+                    };
+                    if let Some(exit_code) = self.process.wait(budget)? {
                         break exit_code;
                     }
                     return Err(error.into());
@@ -1133,7 +1159,12 @@ impl CodletRuntime {
             {
                 Ok(changes) => changes.unwrap_or_default(),
                 Err(error) => {
-                    if let Some(exit_code) = self.process.wait(RUNTIME_WAIT_SLICE)? {
+                    let budget = if self.client.closed_reason().is_some() {
+                        CLIENT_EXIT_AFTER_CDP_CLOSE
+                    } else {
+                        RUNTIME_WAIT_SLICE
+                    };
+                    if let Some(exit_code) = self.process.wait(budget)? {
                         break exit_code;
                     }
                     return Err(error.into());

@@ -41,6 +41,15 @@ Rust test do not prove that a new private frontend export or backend build is
 supported. Capability probes fail explicitly on unknown/mismatched builds.
 See [compatibility](compatibility.md) for the current platform and evidence rules.
 
+Windows package 26.924.2738.0 / frontend 26.924.22138 build 11645 opens its
+login UI under the full isolated Core startup path, but the current Desktop/UI
+adapters lack a reviewed profile for that frontend. They report build drift and
+the Codlet GUI is unavailable. This does not establish signed-in behavior or a
+new-MSIX upgrade: the test uses signed unpacked program files in the existing
+package context. A reported early exit 13 on another machine remains unresolved;
+successful isolated startup must not be used to dismiss that report.
+See the [startup acceptance harness](desktop-startup-acceptance.md).
+
 Windows x64 has local desktop evidence. Windows ARM64 and macOS desktop behavior
 still need acceptance on their corresponding devices. CI/native packaging tests
 and a generated Mac disk image are not a substitute for a Mac user's full desktop

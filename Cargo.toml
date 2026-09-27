@@ -13,6 +13,7 @@ strip = "symbols"
 # Synthetic renderer fixtures for the protocol/lifecycle integration suite only.
 # Release builds reject this feature; normal Core has no built-in plugins.
 test-fixtures = []
+desktop-acceptance = []
 
 [build-dependencies]
 cc = "1.2"
@@ -82,6 +83,11 @@ path = "src/bin/codlet-fake-child.rs"
 [[bin]]
 name = "codlet-lab"
 path = "src/bin/codlet-lab.rs"
+
+[[bin]]
+name = "codlet-desktop-acceptance"
+path = "src/bin/codlet-desktop-acceptance.rs"
+required-features = ["desktop-acceptance"]
 
 [[bin]]
 name = "codlet-fake-host"

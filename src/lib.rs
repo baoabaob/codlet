@@ -1,6 +1,9 @@
 #[cfg(all(feature = "test-fixtures", not(debug_assertions)))]
 compile_error!("test-fixtures must never be enabled in a release build");
 
+#[cfg(all(feature = "desktop-acceptance", not(debug_assertions)))]
+compile_error!("desktop-acceptance must never be enabled in a release build");
+
 pub mod capabilities;
 pub mod catalog;
 pub mod cdp;
