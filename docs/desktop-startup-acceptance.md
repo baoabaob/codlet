@@ -46,6 +46,16 @@ installed-launch failure. These hidden entries are preserved as UTF-16; values
 are never printed to diagnostics. Unit coverage also checks a real shell child,
 helper serialization, malformed separators, NUL rejection and non-Unicode data.
 
+The selected client also goes through production `resolve_package_executable`,
+which returns a canonical `\\?\` Windows path after package containment checks.
+Passing a plain configuration path directly to the launch API previously hid a
+second installed-launch defect: Owl 26.924.2738.0 reported `App resources URL is
+invalid` and exited 13 when its executable used the verbatim prefix. The official
+launch boundary now converts only to an equivalent ordinary DOS/UNC path and
+checks it resolves to the same canonical executable. Package containment and
+helper image validation still use canonical paths. No resource URL or `--run-app`
+argument is invented, and the CDP parameters, environment and CWD are unchanged.
+
 The optional `rawLaunch: true` diagnostic control deliberately skips this repair.
 It reproduces the old launch path and is expected to fail if the selected program
 does not acquire package identity. It is not a production launcher setting.

@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::mem::size_of;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -254,9 +254,12 @@ pub(crate) fn launch_packaged_cdp(
     stderr: Option<&crate::client_stderr::ClientStderr>,
     package: &super::packages::InstalledPackage,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    // Keep canonical paths for package/identity checks, but not for Owl's
+    // application resource URL bootstrap: a verbatim path makes it exit 13.
+    let program = client_program_path(executable)?;
     let pipes = CdpPipes::create()?;
     let launch = NativeLaunch {
-        executable,
+        executable: &program,
         arguments,
         environment,
         no_window: false,
@@ -279,6 +282,62 @@ pub(crate) fn launch_packaged_cdp(
         child.resume()?;
     }
     Ok((child.finish(own_scope)?, pipes.into_parent()))
+}
+
+fn client_program_path(executable: &Path) -> Result<PathBuf, ProcessError> {
+    if !executable.is_absolute() {
+        return Err(ProcessError::ExecutableNotAbsolute(executable.to_owned()));
+    }
+    let canonical = executable
+        .canonicalize()
+        .map_err(|_| ProcessError::ExecutableNotFound(executable.to_owned()))?;
+    let program = ordinary_program_path(&canonical)?;
+    if program.canonicalize().ok().as_ref() != Some(&canonical) {
+        return Err(ProcessError::PackageLaunch(
+            "ordinary executable path does not resolve to the validated file".into(),
+        ));
+    }
+    Ok(program)
+}
+
+fn ordinary_program_path(path: &Path) -> Result<PathBuf, ProcessError> {
+    let invalid = || {
+        ProcessError::PackageLaunch(
+            "official executable needs an equivalent ordinary absolute DOS or UNC path".into(),
+        )
+    };
+    if !path.is_absolute() {
+        return Err(invalid());
+    }
+    // Ordinary Win32 paths trim trailing dots/spaces. Do not silently reinterpret
+    // a verbatim-only filename when preparing the native CreateProcessW input.
+    for component in path.components() {
+        if let Component::Normal(name) = component
+            && name
+                .encode_wide()
+                .last()
+                .is_some_and(|c| c == b'.' as u16 || c == b' ' as u16)
+        {
+            return Err(invalid());
+        }
+    }
+    let wide: Vec<_> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(invalid());
+    }
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(_) => Ok(PathBuf::from(OsString::from_wide(&wide[4..]))),
+            Prefix::VerbatimUNC(_, _) => {
+                let mut unc = vec![b'\\' as u16; 2];
+                unc.extend_from_slice(&wide[8..]);
+                Ok(PathBuf::from(OsString::from_wide(&unc)))
+            }
+            Prefix::Disk(_) | Prefix::UNC(_, _) => Ok(path.to_owned()),
+            _ => Err(invalid()),
+        },
+        _ => Err(invalid()),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -798,6 +857,61 @@ fn last_error(operation: &'static str) -> ProcessError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_program_path_preserves_dos_unc_and_unicode_names() {
+        for (input, expected) in [
+            (
+                r"\\?\C:\Program Files\客户端\ChatGPT.exe",
+                r"C:\Program Files\客户端\ChatGPT.exe",
+            ),
+            (
+                r"\\?\UNC\server\share\客户端\ChatGPT.exe",
+                r"\\server\share\客户端\ChatGPT.exe",
+            ),
+            (r"C:\app\ChatGPT.exe", r"C:\app\ChatGPT.exe"),
+        ] {
+            assert_eq!(
+                ordinary_program_path(Path::new(input)).unwrap(),
+                Path::new(expected)
+            );
+        }
+        for invalid in [
+            r"app\ChatGPT.exe",
+            r"\\.\PhysicalDrive0",
+            r"\\?\Volume{fixture}\ChatGPT.exe",
+            r"\\?\C:\app.\ChatGPT.exe",
+            r"\\?\C:\app \ChatGPT.exe",
+        ] {
+            assert!(ordinary_program_path(Path::new(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn canonical_official_program_path_still_launches_the_same_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("客户端 with spaces");
+        std::fs::create_dir(&app).unwrap();
+        let original = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("codlet-fake-child.exe");
+        let executable = app.join("ChatGPT.exe");
+        std::fs::copy(original, &executable).unwrap();
+        let canonical = executable.canonicalize().unwrap();
+        let program = client_program_path(&canonical).unwrap();
+        assert!(
+            matches!(program.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_)))
+        );
+        assert_eq!(program.canonicalize().unwrap(), canonical);
+        let (child, _pipes) =
+            launch_with_cdp_pipes(&program, &[OsString::from("--scenario=owned-exit")], true)
+                .unwrap();
+        assert_eq!(child.wait(Duration::from_secs(5)).unwrap(), Some(73));
+    }
 
     fn suspended_exit_fixture() -> (SuspendedChild, ParentCdpPipes) {
         let executable = std::env::current_exe()

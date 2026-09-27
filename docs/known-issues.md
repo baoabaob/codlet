@@ -46,19 +46,15 @@ login UI under the full isolated Core startup path, but the current Desktop/UI
 adapters lack a reviewed profile for that frontend. They report build drift and
 the Codlet GUI is unavailable. This does not establish signed-in behavior or a
 new-MSIX upgrade: the test uses signed unpacked program files with the existing
-registered package. Preview 14 addresses a confirmed missing-package-identity
-launch defect: Core now checks the suspended child and establishes package
-context when necessary. The local unpackaged-creator comparison fails without
-that context and opens the login page with it. The other machine's specific exit
-13 still requires confirmation with the corrected launch path; local evidence
-must not be presented as completed acceptance of that machine's MSIX update.
+registered package. Preview 16 includes corrections for missing child package
+identity, rejected hidden shell metadata (`=ExitCode`), and Owl rejecting the
+canonical `\\?\` executable path while constructing its application resource URL.
+The last defect reproduces the reported Owl error and exit 13 locally by changing
+only the executable path representation; ordinary paths render successfully.
+The startup harness now exercises production package path resolution as well as
+real shell inheritance. These fixes do not add a frontend adapter profile or
+establish acceptance of the other machine's registered-MSIX update.
 See the [startup acceptance harness](desktop-startup-acceptance.md).
-
-Preview 14 also rejected valid inherited shell metadata such as `=ExitCode`
-while preparing the package helper, causing both normal and safe startup to
-stop with an environment validation error. Preview 15 preserves those entries.
-The regression is reproduced by a real `cmd.exe` child and included in the full
-isolated startup harness. This correction does not add a frontend adapter profile.
 
 Windows x64 has local desktop evidence. Windows ARM64 and macOS desktop behavior
 still need acceptance on their corresponding devices. CI/native packaging tests

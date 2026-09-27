@@ -59,6 +59,11 @@ pub(super) fn isolated_full_runtime() {
             revision: parts[3],
         },
     };
+    // Use the installed launcher's actual resolver, including its canonical
+    // verbatim Windows path. A plain config path hid Owl's resource URL failure.
+    let executable =
+        resolve_package_executable(&package, Path::new(CODEX_EXECUTABLE_RELATIVE_PATH))
+            .expect("resolve reviewed package executable");
     let mut runtime = start_codlet_runtime_with_connector(LaunchOptions::default(), |services, traffic| {
         assert!(traffic.is_none(), "this acceptance scenario has no traffic consumer");
         let services = services.expect("production runtime services");
