@@ -54,6 +54,12 @@ that context and opens the login page with it. The other machine's specific exit
 must not be presented as completed acceptance of that machine's MSIX update.
 See the [startup acceptance harness](desktop-startup-acceptance.md).
 
+Preview 14 also rejected valid inherited shell metadata such as `=ExitCode`
+while preparing the package helper, causing both normal and safe startup to
+stop with an environment validation error. Preview 15 preserves those entries.
+The regression is reproduced by a real `cmd.exe` child and included in the full
+isolated startup harness. This correction does not add a frontend adapter profile.
+
 Windows x64 has local desktop evidence. Windows ARM64 and macOS desktop behavior
 still need acceptance on their corresponding devices. CI/native packaging tests
 and a generated Mac disk image are not a substitute for a Mac user's full desktop

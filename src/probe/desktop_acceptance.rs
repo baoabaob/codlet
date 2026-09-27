@@ -64,15 +64,21 @@ pub(super) fn isolated_full_runtime() {
         let services = services.expect("production runtime services");
         let control = ControlServer::bind_isolated(services.lease, services.status.clone())?;
         let stderr = crate::client_stderr::ClientStderr::capture_startup()?;
-        let environment = crate::windows::environment::ChildEnvironment::from_entries(std::env::vars_os()).map_err(ProcessError::from)?;
         // Same native CDP pipes and startup stderr as production. Exact-child
         // cleanup additionally prevents failed tests leaving a client behind.
         let context = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
         let (process, pipes) = if std::env::var_os("CODLET_ACCEPTANCE_RAW").is_some() {
+            let environment = crate::windows::environment::ChildEnvironment::inherited().map_err(ProcessError::from)?;
             crate::windows::process::launch_with_owned_traffic_capture(&executable, &[], &environment, &stderr)?
         } else {
-            crate::windows::process::launch_packaged_cdp(&executable, &[], Some(&environment), true, Some(&stderr), &context)?
+            // Production ordinary/safe startup inherits the complete native block.
+            // Supplying a sanitized explicit block here would hide launcher defects.
+            crate::windows::process::launch_packaged_cdp(&executable, &[], None, true, Some(&stderr), &context)?
         };
+        if std::env::var_os("CODLET_ACCEPTANCE_SHELL_ENV").is_some() {
+            let environment = crate::windows::environment::ChildEnvironment::inherited().map_err(ProcessError::from)?;
+            assert!(environment.entries_os().contains(&(OsString::from("=ExitCode"), OsString::from("00000007"))), "real shell metadata must reach Core before the helper handoff");
+        }
         services.status.set_codex(CodexStatus {
             pid: process.process_id(), package_full_name: package.full_name.clone(),
             package_version: package.version.to_string(), executable: executable.display().to_string(),

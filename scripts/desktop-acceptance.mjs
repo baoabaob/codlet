@@ -3,8 +3,8 @@ import path from 'node:path';
 import net from 'node:net';
 import {spawn,execFileSync} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
-// Run inside an existing Windows desktop package context. No package is installed
-// or updated. The config selects reviewed binaries and a fresh output directory.
+// Run from an unpackaged creator; Core establishes the required package context.
+// No package is installed or updated. Use reviewed binaries and a fresh directory.
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 for(const key of ['root','clientApp','pluginsRoot','testBinary']) {
   if(typeof config[key]!=='string'||!path.isAbsolute(config[key])) throw Error(key+' must be absolute');
@@ -22,6 +22,7 @@ env.CODEX_ELECTRON_PRIMARY_RUNTIME_UPDATE_MODE='manual';
 env.SHELL='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 env.PSModulePath='C:/Windows/System32/WindowsPowerShell/v1.0/Modules';
 env.CODLET_ACCEPTANCE_ROOT=root;
+env.CODLET_ACCEPTANCE_SHELL_ENV='1';
 if(config.rawLaunch===true) env.CODLET_ACCEPTANCE_RAW='1';
 env.CODLET_ACCEPTANCE_PACKAGE_VERSION=config.packageVersion;
 env.CODLET_ACCEPTANCE_EXE=path.join(config.clientApp,'ChatGPT.exe');
@@ -66,7 +67,13 @@ try {
     ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.id===1){clearTimeout(timeout);ws.close();m.error?reject(Error(JSON.stringify(m.error))):resolve();}};
     ws.onerror=()=>{clearTimeout(timeout);reject(Error('backend websocket failure'));};
   });
-  child=spawn(config.testBinary,[],{env,cwd:root,windowsHide:true,stdio:['ignore',fs.openSync(path.join(root,'core.out.log'),'w'),fs.openSync(path.join(root,'core.err.log'),'w')]});
+  // A real cmd invocation leaves =ExitCode metadata in the native environment.
+  // Passing a curated JS object directly to Core previously hid this startup bug.
+  // Profiles/backend remain isolated; only this owned child's environment changes.
+  const entry=path.join(root,'start-core.cmd');
+  if(/["\r\n]/.test(config.testBinary)) throw Error('invalid test binary path');
+  fs.writeFileSync(entry,`@echo off\r\ncmd.exe /d /c exit 7\r\n"${config.testBinary.replaceAll('%','%%')}"\r\nexit /b %errorlevel%\r\n`);
+  child=spawn(env.COMSPEC||env.ComSpec||'C:/Windows/System32/cmd.exe',['/d','/s','/c',`"${entry}"`],{env,cwd:root,windowsHide:true,windowsVerbatimArguments:true,stdio:['ignore',fs.openSync(path.join(root,'core.out.log'),'w'),fs.openSync(path.join(root,'core.err.log'),'w')]});
   const exit=await new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});
   fs.writeFileSync(path.join(root,'completed.json'),JSON.stringify({exit,root}));
   process.exitCode=exit===0?0:1;

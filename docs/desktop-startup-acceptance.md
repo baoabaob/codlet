@@ -37,6 +37,15 @@ the coordinator alive until `root/completed.json` appears. Core must detect a
 missing/wrong child identity itself, activate its short-lived package helper and
 transfer only its owned CDP/stderr handles. No permanent helper remains.
 
+The coordinator starts Core through a real `cmd.exe` invocation after an external
+command has exited. This supplies Windows' hidden `=ExitCode` entry as well as
+drive-directory metadata. Core uses the production implicit-inheritance path
+(`environment: None`), including the package-helper transfer. Converting a
+curated environment map into explicit entries here previously missed a real
+installed-launch failure. These hidden entries are preserved as UTF-16; values
+are never printed to diagnostics. Unit coverage also checks a real shell child,
+helper serialization, malformed separators, NUL rejection and non-Unicode data.
+
 The optional `rawLaunch: true` diagnostic control deliberately skips this repair.
 It reproduces the old launch path and is expected to fail if the selected program
 does not acquire package identity. It is not a production launcher setting.
