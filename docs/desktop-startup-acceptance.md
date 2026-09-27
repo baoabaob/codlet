@@ -60,6 +60,29 @@ The optional `rawLaunch: true` diagnostic control deliberately skips this repair
 It reproduces the old launch path and is expected to fail if the selected program
 does not acquire package identity. It is not a production launcher setting.
 
+Additional opt-in controls support adapter acceptance without changing production:
+
+- `localApiKeyFixture: true` writes a synthetic file-only API key and runs a
+  bounded loopback HTTP/SSE fixture. Desktop test requests and model replies use
+  fixed strings; it never copies a real account. The endpoint rejects WS with
+  426 so HTTP fallback can be observed.
+- `ownedBackend: true` requires that fixture and lets the selected desktop launch
+  the verified, staged `backend/codex.exe`. Otherwise a separate owned WS backend
+  is used, with listener PID verification. This distinction matters for early
+  backend-spawn hooks.
+- `extraPlugins` lists trusted absolute test-plugin directories copied into the
+  fresh test root. Only their declared permissions are granted; `host.network`
+  gets the exact fixture origin. No daily registry is changed.
+- `fixtureState` seeds at most 64 KiB of synthetic client state for onboarding
+  setup. Do not supply a real user's state or credentials.
+- `probeScript` is a trusted absolute JS file (at most 128 KiB) evaluated only in
+  the owned main renderer. `probe.json` records its result or exception every
+  two seconds. This replaces the harness's default Codlet-click action.
+- `durationSeconds` bounds observation to 35–180 seconds. The main surface is
+  selected independently of auxiliary target arrival order. Traffic-enabled
+  runs use the production launch-provider handshake, with bounded stderr capture
+  on failure; they do not assume an available inspector.
+
 The coordinator creates fresh user-data, Codex, Codlet, SQLite and temporary
 directories, file-only authentication, and a dedicated loopback app-server. It
 verifies the listener belongs to the exact child before initializing WebSocket

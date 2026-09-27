@@ -79,6 +79,11 @@ impl ClientStderr {
         *self.startup.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
+    pub(crate) fn capture_acceptance_startup(&self) {
+        *self.startup.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
+    }
+
     #[cfg(windows)]
     pub(crate) fn report_startup_failure(&self) {
         // The child can exit just before its already-written stderr is drained.
