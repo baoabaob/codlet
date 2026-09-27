@@ -48,6 +48,12 @@ interceptors), without changing saved configuration. Quiet startup never silentl
 retries without plugins. A readiness timeout retains the running process and does
 not start another instance. Logs are in the Codlet data directory's `launcher-logs`;
 recovery uses a separate `.safe.core.log` so the original failure is retained.
+Ordinary and safe Windows launches also supply valid standard handles to the
+official child, retain at most the first 64 KiB of its startup stderr, and report
+that output on an early failure. Private inspector endpoint lines are omitted.
+The buffer is released at normal readiness, or after 30 seconds in safe mode;
+later stderr is drained and discarded. The launcher logs also record the actual
+owned process's package identity, separately from the discovered package version.
 
 On Windows, unavailable renderer discovery is reported as
 `renderer_executor_unavailable`; Core and a still-running official client remain

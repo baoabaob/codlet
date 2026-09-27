@@ -3,6 +3,7 @@
 use crate::platform::host::{Channel, StopSignal, signal};
 use crate::plugin_host::HostError;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,8 @@ pub(crate) struct ClientStderr {
     stop: StopSignal,
     reader: Option<JoinHandle<()>>,
     receiver: mpsc::Receiver<Result<String, HostError>>,
+    #[cfg(windows)]
+    startup: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 fn error(code: &'static str) -> HostError {
@@ -29,6 +32,15 @@ fn error(code: &'static str) -> HostError {
 
 impl ClientStderr {
     pub(crate) fn new() -> Result<Self, HostError> {
+        Self::start(false)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn capture_startup() -> Result<Self, HostError> {
+        Self::start(true)
+    }
+
+    fn start(capture: bool) -> Result<Self, HostError> {
         #[cfg(windows)]
         let stop = std::sync::Arc::new(
             crate::windows::local_ipc::create_event().map_err(|_| error("client_stderr_failed"))?,
@@ -44,9 +56,11 @@ impl ClientStderr {
         #[cfg(windows)]
         let null = null_handle()?;
         let (sender, receiver) = mpsc::sync_channel(1);
+        let startup = Arc::new(Mutex::new(capture.then(Vec::new)));
+        let observed = startup.clone();
         let reader = std::thread::Builder::new()
             .name("codlet-client-stderr".into())
-            .spawn(move || drain(channel, sender))
+            .spawn(move || drain(channel, sender, observed))
             .map_err(|_| error("client_stderr_failed"))?;
         Ok(Self {
             child,
@@ -55,7 +69,31 @@ impl ClientStderr {
             stop,
             reader: Some(reader),
             receiver,
+            #[cfg(windows)]
+            startup,
         })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn finish_startup(&self) {
+        *self.startup.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn report_startup_failure(&self) {
+        // The child can exit just before its already-written stderr is drained.
+        std::thread::sleep(Duration::from_millis(50));
+        let bytes = self
+            .startup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(bytes) = bytes.filter(|b| !b.is_empty()) {
+            eprintln!(
+                "client-startup-stderr (up to 65536 bytes):\n{}",
+                startup_text(&bytes)
+            );
+        }
     }
 
     pub(crate) fn endpoint(
@@ -113,7 +151,11 @@ impl Drop for ClientStderr {
     }
 }
 
-fn drain(channel: Channel, sender: mpsc::SyncSender<Result<String, HostError>>) {
+fn drain(
+    channel: Channel,
+    sender: mpsc::SyncSender<Result<String, HostError>>,
+    startup: Arc<Mutex<Option<Vec<u8>>>>,
+) {
     let mut buffer = [0u8; 4096];
     let mut pending = Vec::new();
     let mut scanned = 0usize;
@@ -123,6 +165,10 @@ fn drain(channel: Channel, sender: mpsc::SyncSender<Result<String, HostError>>) 
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
+        if let Some(bytes) = startup.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            let keep = count.min((64 * 1024usize).saturating_sub(bytes.len()));
+            bytes.extend_from_slice(&buffer[..keep]);
+        }
         if delivered {
             continue;
         }
@@ -146,6 +192,23 @@ fn drain(channel: Channel, sender: mpsc::SyncSender<Result<String, HostError>>) 
     if !delivered {
         let _ = sender.try_send(Err(error("client_inspector_unavailable")));
     }
+}
+
+#[cfg(windows)]
+fn startup_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| {
+            if line.starts_with("Debugger listening on ") {
+                "[private inspector endpoint omitted]".to_owned()
+            } else {
+                line.chars()
+                    .filter(|c| !c.is_control() || *c == '\t')
+                    .collect()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn inspector_line(line: &[u8]) -> Option<String> {
@@ -210,6 +273,44 @@ fn null_handle() -> Result<ChildHandle, HostError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn startup_capture_preserves_real_child_error_and_releases_its_bounded_buffer() {
+        let executable = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("codlet-fake-child.exe");
+        let stderr = ClientStderr::capture_startup().unwrap();
+        let (child, pipes) = crate::windows::process::launch_with_startup_capture(
+            &executable,
+            &["--scenario=startup-stderr".into()],
+            true,
+            &stderr,
+        )
+        .unwrap();
+        assert_eq!(child.wait(Duration::from_secs(5)).unwrap(), Some(13));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let bytes = stderr.startup.lock().unwrap().clone().unwrap();
+            if bytes.len() == 64 * 1024 {
+                let text = startup_text(&bytes);
+                assert!(text.contains("fixture: startup failure"));
+                assert!(!text.contains("ws://127.0.0.1"));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stderr was not drained after child exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        stderr.finish_startup();
+        assert!(stderr.startup.lock().unwrap().is_none());
+        drop(pipes);
+    }
     #[test]
     fn accepts_only_exact_loopback_inspector_lines() {
         let valid =

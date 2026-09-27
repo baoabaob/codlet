@@ -91,6 +91,9 @@ impl Drop for ChildProcess {
 }
 
 impl ChildProcess {
+    pub(crate) fn package_family(&self) -> Result<Option<String>, ProcessError> {
+        query_process_package_family(&self.handle, self.process_id)
+    }
     pub(crate) fn owned_handle(&self) -> &OwnedHandle {
         &self.handle
     }
@@ -191,6 +194,23 @@ pub(crate) fn launch_with_owned_traffic_capture(
         Some(environment),
         None,
         true,
+        Some(stderr),
+    )
+}
+
+pub(crate) fn launch_with_startup_capture(
+    executable: &Path,
+    arguments: &[OsString],
+    no_window: bool,
+    stderr: &crate::client_stderr::ClientStderr,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_cdp(
+        executable,
+        arguments,
+        no_window,
+        None,
+        None,
+        false,
         Some(stderr),
     )
 }

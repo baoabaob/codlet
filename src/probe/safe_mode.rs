@@ -41,8 +41,14 @@ fn run_once() -> Result<bool, ProbeError> {
     println!("action: close Codex, then launch normally to leave safe mode");
     let result = (|| {
         let mut disconnected = false;
+        let started = Instant::now();
         loop {
             if let Some(code) = connected.process.wait(RUNTIME_WAIT_SLICE)? {
+                if code != 0
+                    && let Some(stderr) = &connected.stderr
+                {
+                    stderr.report_startup_failure();
+                }
                 connected.client.shutdown()?;
                 println!("codex-exit-code: {code}");
                 let restart =
@@ -52,6 +58,11 @@ fn run_once() -> Result<bool, ProbeError> {
                 } else {
                     Err(ProbeError::CodexExit { exit_code: code })
                 };
+            }
+            if started.elapsed() > Duration::from_secs(30)
+                && let Some(stderr) = &connected.stderr
+            {
+                stderr.finish_startup();
             }
             if !disconnected && connected.client.closed_reason().is_some() {
                 disconnected = true;

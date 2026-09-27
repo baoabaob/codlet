@@ -181,6 +181,7 @@ struct ConnectedCodex {
     process: ChildProcess,
     client: CdpClient,
     events: CdpEventStream,
+    stderr: Option<crate::client_stderr::ClientStderr>,
 }
 
 struct RendererOutcome {
@@ -208,6 +209,7 @@ struct CodletRuntime {
     last_authorization_error: Option<String>,
     runtime_update: runtime_update_owner::RuntimeUpdateOwner,
     official_update: crate::official_update::OfficialUpdateOwner,
+    _stderr: Option<crate::client_stderr::ClientStderr>,
     // Keep listeners and the registry lease until renderer cleanup has finished.
     _servers: HostServers,
 }
@@ -690,6 +692,9 @@ fn start_connected_codex_with_traffic(
     let status = services.as_ref().map(|services| services.status.clone());
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
+    let stderr = (traffic.is_none() && services.is_some())
+        .then(crate::client_stderr::ClientStderr::capture_startup)
+        .transpose()?;
     let ((process, pipes), server) = checked_launch_prepared(
         &executable,
         running,
@@ -721,6 +726,13 @@ fn start_connected_codex_with_traffic(
                     &environment,
                     traffic.stderr(),
                 )?
+            } else if let Some(stderr) = &stderr {
+                crate::windows::process::launch_with_startup_capture(
+                    &executable,
+                    &[],
+                    false,
+                    stderr,
+                )?
             } else {
                 launch_with_cdp_pipes(&executable, &[], false)?
             };
@@ -739,7 +751,12 @@ fn start_connected_codex_with_traffic(
         });
     }
     drop(launch_guard);
-    let (client, events) = CdpClient::spawn(pipes)?;
+    eprintln!("client-package-identity: {:?}", process.package_family());
+    let (client, events) = CdpClient::spawn(pipes).inspect_err(|_| {
+        if let Some(stderr) = &stderr {
+            stderr.report_startup_failure();
+        }
+    })?;
     Ok((
         ConnectedCodex {
             package,
@@ -747,6 +764,7 @@ fn start_connected_codex_with_traffic(
             process,
             client,
             events,
+            stderr,
         },
         server,
     ))
@@ -865,6 +883,9 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     };
     if let Some(exit_code) = connected.process.wait(exit_budget)? {
         eprintln!("client-exited-before-ready: code={exit_code}; hex=0x{exit_code:08x}");
+        if let Some(stderr) = &connected.stderr {
+            stderr.report_startup_failure();
+        }
         return Err(ProbeError::CodexExit { exit_code });
     }
     let initial_outcomes: Vec<_> = renderer
@@ -918,6 +939,9 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     status.publish_host_observation(hosts.execution_snapshot());
     status.set_ready();
     control.set_ready();
+    if let Some(stderr) = &connected.stderr {
+        stderr.finish_startup();
+    }
     let runtime_update = runtime_update_owner::RuntimeUpdateOwner::start(
         &manage_service,
         renderer.registry_path(),
@@ -947,6 +971,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         last_authorization_error: None,
         runtime_update,
         official_update,
+        _stderr: connected.stderr,
     })
 }
 

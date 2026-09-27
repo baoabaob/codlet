@@ -39,6 +39,14 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
     let mut output = unsafe { File::from_raw_handle(parsed.child_writer as *mut _) };
 
     match parsed.scenario.as_str() {
+        "startup-stderr" => {
+            eprintln!("fixture: startup failure");
+            eprintln!(
+                "Debugger listening on ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc"
+            );
+            eprintln!("{}", "x".repeat(80 * 1024));
+            Err(FakeChildError::RequestedExit(13))
+        }
         mode @ ("raw-host-cdp" | "raw-host-cdp-delayed") => {
             scenario_raw_host_cdp(&mut input, &mut output, mode.ends_with("delayed"))
         }
