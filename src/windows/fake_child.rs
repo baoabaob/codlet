@@ -39,6 +39,7 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
     let mut output = unsafe { File::from_raw_handle(parsed.child_writer as *mut _) };
 
     match parsed.scenario.as_str() {
+        "owned-exit" => Err(FakeChildError::RequestedExit(73)),
         "startup-stderr" => {
             eprintln!("fixture: startup failure");
             eprintln!(

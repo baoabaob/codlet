@@ -257,7 +257,11 @@ impl Channel {
     }
 
     pub(crate) fn connect(&self) -> Result<(), LocalIpcError> {
-        self.operation(None, |overlapped| {
+        self.connect_until(None)
+    }
+
+    pub(crate) fn connect_until(&self, deadline: Option<Instant>) -> Result<(), LocalIpcError> {
+        self.operation(deadline, |overlapped| {
             Ok(unsafe { ConnectNamedPipe(raw(&self.pipe), overlapped) } != 0)
         })
         .map(|_| ())

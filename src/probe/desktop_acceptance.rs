@@ -5,6 +5,14 @@ use base64::Engine;
 use serde_json::json;
 
 pub(super) fn isolated_full_runtime() {
+    let creator_package = crate::windows::package_launch::package_full_name(unsafe {
+        windows_sys::Win32::System::Threading::GetCurrentProcess()
+    })
+    .expect("creator package identity");
+    assert!(
+        creator_package.is_none(),
+        "run acceptance from an ordinary unpackaged process; a pre-supplied package context hides startup defects"
+    );
     let root = PathBuf::from(std::env::var_os("CODLET_ACCEPTANCE_ROOT").expect("acceptance root"));
     assert!(root.is_absolute());
     assert_eq!(
@@ -59,12 +67,17 @@ pub(super) fn isolated_full_runtime() {
         let environment = crate::windows::environment::ChildEnvironment::from_entries(std::env::vars_os()).map_err(ProcessError::from)?;
         // Same native CDP pipes and startup stderr as production. Exact-child
         // cleanup additionally prevents failed tests leaving a client behind.
-        let (process, pipes) = crate::windows::process::launch_with_owned_traffic_capture(&executable, &[], &environment, &stderr)?;
+        let context = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
+        let (process, pipes) = if std::env::var_os("CODLET_ACCEPTANCE_RAW").is_some() {
+            crate::windows::process::launch_with_owned_traffic_capture(&executable, &[], &environment, &stderr)?
+        } else {
+            crate::windows::process::launch_packaged_cdp(&executable, &[], Some(&environment), true, Some(&stderr), &context)?
+        };
         services.status.set_codex(CodexStatus {
             pid: process.process_id(), package_full_name: package.full_name.clone(),
             package_version: package.version.to_string(), executable: executable.display().to_string(),
         });
-        std::fs::write(root.join("client.json"), json!({"pid":process.process_id(),"created":process.creation_time_filetime()?,"packageFamily":process.package_family()?,"executable":executable}).to_string()).unwrap();
+        std::fs::write(root.join("client.json"), json!({"pid":process.process_id(),"created":process.creation_time_filetime()?,"packageFamily":process.package_family()?,"executable":executable,"creatorPackage":creator_package}).to_string()).unwrap();
         let (client, events) = CdpClient::spawn(pipes)?;
         Ok((ConnectedCodex {package, executable, process, client, events, stderr:Some(stderr)}, Some(HostServers{_status:None,control})))
     }).expect("full Core startup");

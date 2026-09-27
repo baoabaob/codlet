@@ -47,8 +47,7 @@ use crate::windows::packages::{
     find_unique_current_user_package, resolve_package_executable,
 };
 use crate::windows::process::{
-    ChildProcess, ProcessError, RunningProcess, launch_with_cdp_pipes,
-    running_processes_for_package,
+    ChildProcess, ProcessError, RunningProcess, running_processes_for_package,
 };
 use crate::windows::status_pipe::{StatusPipeError, StatusServer, query_current_user};
 
@@ -274,6 +273,10 @@ struct HostServers {
 pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), ProbeError> {
     let arguments: Vec<_> = arguments.collect();
     match arguments.as_slice() {
+        [command, pipe] if command == OsStr::new(crate::windows::package_launch::COMMAND) => {
+            crate::windows::package_launch::run_helper(pipe)?;
+            Ok(())
+        }
         [command, options @ ..] if command == OsStr::new("launch") => {
             let options = parse_launch_options(options)?;
             if options.safe_mode {
@@ -729,21 +732,23 @@ fn start_connected_codex_with_traffic(
                     traffic.environment().iter().cloned(),
                 )
                 .map_err(ProcessError::from)?;
-                crate::windows::process::launch_with_owned_traffic_capture(
+                crate::windows::process::launch_packaged_cdp(
                     &executable,
                     traffic.arguments(),
-                    &environment,
-                    traffic.stderr(),
-                )?
-            } else if let Some(stderr) = &stderr {
-                crate::windows::process::launch_with_startup_capture(
-                    &executable,
-                    &[],
-                    false,
-                    stderr,
+                    Some(&environment),
+                    true,
+                    Some(traffic.stderr()),
+                    &package,
                 )?
             } else {
-                launch_with_cdp_pipes(&executable, &[], false)?
+                crate::windows::process::launch_packaged_cdp(
+                    &executable,
+                    &[],
+                    None,
+                    false,
+                    stderr.as_ref(),
+                    &package,
+                )?
             };
             if let Some(traffic) = traffic {
                 traffic.attach_client(launched.0.process_id(), &executable, || false)?;

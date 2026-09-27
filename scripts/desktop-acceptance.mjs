@@ -22,12 +22,18 @@ env.CODEX_ELECTRON_PRIMARY_RUNTIME_UPDATE_MODE='manual';
 env.SHELL='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 env.PSModulePath='C:/Windows/System32/WindowsPowerShell/v1.0/Modules';
 env.CODLET_ACCEPTANCE_ROOT=root;
+if(config.rawLaunch===true) env.CODLET_ACCEPTANCE_RAW='1';
 env.CODLET_ACCEPTANCE_PACKAGE_VERSION=config.packageVersion;
 env.CODLET_ACCEPTANCE_EXE=path.join(config.clientApp,'ChatGPT.exe');
-const cli=path.join(config.clientApp,'resources/codex.exe');
-for(const executable of [env.CODLET_ACCEPTANCE_EXE,cli]) {
+const officialCli=path.join(config.clientApp,'resources/codex.exe');
+for(const executable of [env.CODLET_ACCEPTANCE_EXE,officialCli]) {
   execFileSync(env.SHELL,['-NoLogo','-NoProfile','-NonInteractive','-Command',"$s=Get-AuthenticodeSignature -LiteralPath $env:CODLET_SIGNATURE_FILE; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'OpenAI'){exit 1}"],{env:{...env,CODLET_SIGNATURE_FILE:executable},windowsHide:true,timeout:20000});
 }
+// Some WindowsApps CLI images cannot be executed directly by an unpackaged
+// coordinator. Stage the already verified executable in this fresh test root.
+// The official desktop still runs from the explicitly selected clientApp path.
+const cli=path.join(root,'backend-cli.exe');
+fs.copyFileSync(officialCli,cli,fs.constants.COPYFILE_EXCL);
 fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),'cli_auth_credentials_store="file"\nsandbox_mode="read-only"\napproval_policy="never"\n[analytics]\nenabled=false\n[mcp_servers.codex_app]\nenabled=false\ncommand=""\n');
 const registry={schema:2,plugins:{},localPlugins:{}};
 for(const plugin of ['codex-desktop-adapter','codex-ui-adapter','codlet']) {

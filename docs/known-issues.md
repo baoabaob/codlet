@@ -45,9 +45,13 @@ Windows package 26.924.2738.0 / frontend 26.924.22138 build 11645 opens its
 login UI under the full isolated Core startup path, but the current Desktop/UI
 adapters lack a reviewed profile for that frontend. They report build drift and
 the Codlet GUI is unavailable. This does not establish signed-in behavior or a
-new-MSIX upgrade: the test uses signed unpacked program files in the existing
-package context. A reported early exit 13 on another machine remains unresolved;
-successful isolated startup must not be used to dismiss that report.
+new-MSIX upgrade: the test uses signed unpacked program files with the existing
+registered package. Preview 14 addresses a confirmed missing-package-identity
+launch defect: Core now checks the suspended child and establishes package
+context when necessary. The local unpackaged-creator comparison fails without
+that context and opens the login page with it. The other machine's specific exit
+13 still requires confirmation with the corrected launch path; local evidence
+must not be presented as completed acceptance of that machine's MSIX update.
 See the [startup acceptance harness](desktop-startup-acceptance.md).
 
 Windows x64 has local desktop evidence. Windows ARM64 and macOS desktop behavior

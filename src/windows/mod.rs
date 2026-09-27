@@ -7,6 +7,7 @@ pub mod launch_mutex;
 pub(crate) mod local_ipc;
 pub(crate) mod open_folder;
 pub(crate) mod owned_directory;
+pub(crate) mod package_launch;
 pub mod packages;
 pub mod pipes;
 pub(crate) mod plugin_process;

@@ -7,20 +7,20 @@ use std::time::Duration;
 
 use thiserror::Error;
 use windows_sys::Win32::Foundation::{
-    APPMODEL_ERROR_NO_PACKAGE, CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES,
-    ERROR_SUCCESS, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, ERROR_SUCCESS,
+    FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessTimes,
-    InitializeProcThreadAttributeList, OpenProcess, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-    STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+    GetProcessTimes, InitializeProcThreadAttributeList, OpenProcess,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW, ResumeThread, STARTUPINFOEXW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::environment::{ChildEnvironment, EnvironmentError};
@@ -28,6 +28,8 @@ use super::pipes::{CdpPipes, ParentCdpPipes};
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
+    #[error("packaged client launch: {0}")]
+    PackageLaunch(String),
     #[error("executable path must be absolute: {0}")]
     ExecutableNotAbsolute(PathBuf),
     #[error("executable path does not resolve to a file: {0}")]
@@ -181,6 +183,7 @@ pub(crate) fn launch_with_owned_traffic_environment(
     )
 }
 
+#[cfg(any(test, feature = "desktop-acceptance"))]
 pub(crate) fn launch_with_owned_traffic_capture(
     executable: &Path,
     arguments: &[OsString],
@@ -198,6 +201,7 @@ pub(crate) fn launch_with_owned_traffic_capture(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn launch_with_startup_capture(
     executable: &Path,
     arguments: &[OsString],
@@ -224,6 +228,130 @@ fn launch_cdp(
     own_scope: bool,
     stderr: Option<&crate::client_stderr::ClientStderr>,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    let pipes = CdpPipes::create()?;
+    let mut child = create_suspended(&NativeLaunch {
+        executable,
+        arguments,
+        no_window,
+        environment,
+        current_directory,
+        cdp: pipes.child_handles(),
+        stderr: stderr.map(|capture| capture.handles()),
+        preserve_package_identity: false,
+    })?;
+    child.resume()?;
+    Ok((child.finish(own_scope)?, pipes.into_parent()))
+}
+
+/// Only the official-client caller supplies a package identity. Generic plugin
+/// processes and protocol fixtures never acquire a desktop package identity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_packaged_cdp(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: Option<&ChildEnvironment>,
+    own_scope: bool,
+    stderr: Option<&crate::client_stderr::ClientStderr>,
+    package: &super::packages::InstalledPackage,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    let pipes = CdpPipes::create()?;
+    let launch = NativeLaunch {
+        executable,
+        arguments,
+        environment,
+        no_window: false,
+        current_directory: None,
+        cdp: pipes.child_handles(),
+        stderr: stderr.map(|capture| capture.handles()),
+        preserve_package_identity: false,
+    };
+    let mut child = create_suspended(&launch)?;
+    let identity = super::package_launch::package_full_name(raw_handle(&child.process))?;
+    if identity.as_deref() != Some(package.full_name.as_str()) {
+        eprintln!(
+            "client-package-context: expected={}; observed={identity:?}; activating owned helper",
+            package.full_name
+        );
+        child.abort()?;
+        drop(child);
+        child = super::package_launch::create_in_package(&launch, package)?;
+    } else {
+        child.resume()?;
+    }
+    Ok((child.finish(own_scope)?, pipes.into_parent()))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NativeLaunch<'a> {
+    pub executable: &'a Path,
+    pub arguments: &'a [OsString],
+    pub no_window: bool,
+    pub environment: Option<&'a ChildEnvironment>,
+    pub current_directory: Option<&'a Path>,
+    pub cdp: [HANDLE; 2],
+    pub stderr: Option<[HANDLE; 2]>,
+    pub preserve_package_identity: bool,
+}
+
+/// A not-yet-committed child is killed through its exact retained handle on any
+/// error, including failures after ResumeThread but before the broker handshake.
+pub(crate) struct SuspendedChild {
+    pub process: OwnedHandle,
+    pub thread: OwnedHandle,
+    pub pid: u32,
+    pub armed: bool,
+}
+impl SuspendedChild {
+    pub(crate) fn resume(&mut self) -> Result<(), ProcessError> {
+        if unsafe { ResumeThread(raw_handle(&self.thread)) } == u32::MAX {
+            return Err(last_error("ResumeThread(owned client)"));
+        }
+        Ok(())
+    }
+    pub(crate) fn abort(&mut self) -> Result<(), ProcessError> {
+        if unsafe { WaitForSingleObject(raw_handle(&self.process), 0) } != WAIT_OBJECT_0 {
+            if unsafe { TerminateProcess(raw_handle(&self.process), 1) } == 0 {
+                return Err(last_error("TerminateProcess(uncommitted client)"));
+            }
+            if unsafe { WaitForSingleObject(raw_handle(&self.process), 2000) } != WAIT_OBJECT_0 {
+                return Err(last_error("WaitForSingleObject(uncommitted client)"));
+            }
+        }
+        self.armed = false;
+        Ok(())
+    }
+    fn finish(mut self, own_scope: bool) -> Result<ChildProcess, ProcessError> {
+        // Retain the same kernel process object while closing the startup thread.
+        let process = self.process.try_clone().map_err(|error| {
+            ProcessError::PackageLaunch(format!("Retain owned process handle: {error}"))
+        })?;
+        self.armed = false;
+        Ok(ChildProcess {
+            handle: process,
+            process_id: self.pid,
+            traffic_owned: own_scope,
+        })
+    }
+}
+impl Drop for SuspendedChild {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.abort();
+        }
+    }
+}
+
+pub(crate) fn create_suspended(launch: &NativeLaunch<'_>) -> Result<SuspendedChild, ProcessError> {
+    let NativeLaunch {
+        executable,
+        arguments,
+        no_window,
+        environment,
+        current_directory,
+        cdp,
+        stderr,
+        preserve_package_identity,
+    } = *launch;
     if !executable.is_absolute() {
         return Err(ProcessError::ExecutableNotAbsolute(executable.to_owned()));
     }
@@ -243,8 +371,7 @@ fn launch_cdp(
         })
         .transpose()?;
 
-    let pipes = CdpPipes::create()?;
-    let child_handles = pipes.child_handles();
+    let child_handles = cdp;
     let mut child_arguments = arguments.to_vec();
     child_arguments.push(OsString::from("--remote-debugging-pipe=JSON"));
     child_arguments.push(OsString::from(format!(
@@ -256,15 +383,21 @@ fn launch_cdp(
     let mut command_line = build_command_line(executable.as_os_str(), &child_arguments)?;
     let mut inherited_handles = child_handles.to_vec();
     if let Some(stderr) = stderr {
-        inherited_handles.extend(stderr.handles());
+        inherited_handles.extend(stderr);
     }
-    let attribute_list = AttributeList::with_handle_list(&inherited_handles)?;
+    // OVERERRIDE applies only to this child, unlike DISABLE_PROCESS_TREE. Keep
+    // official child-process behavior intact (shells must not be forced into MSIX).
+    let policy = 0x04_u32;
+    let attribute_list = AttributeList::with_handles_and_package_policy(
+        &inherited_handles,
+        preserve_package_identity.then_some(&policy),
+    )?;
     // SAFETY: Win32 STARTUPINFOEXW is initialized by zeroing before setting cb and attributes.
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.lpAttributeList = attribute_list.pointer;
     if let Some(stderr) = stderr {
-        let [stderr, null] = stderr.handles();
+        let [stderr, null] = stderr;
         startup.StartupInfo.dwFlags |= windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdError = stderr;
         startup.StartupInfo.hStdInput = null;
@@ -272,7 +405,7 @@ fn launch_cdp(
     }
     // SAFETY: PROCESS_INFORMATION is an output-only POD structure for CreateProcessW.
     let mut process_information: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let mut creation_flags = EXTENDED_STARTUPINFO_PRESENT;
+    let mut creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED;
     if environment_block.is_some() {
         creation_flags |= CREATE_UNICODE_ENVIRONMENT;
     }
@@ -305,17 +438,13 @@ fn launch_cdp(
 
     // SAFETY: successful CreateProcessW returned two independently owned handles.
     let process = unsafe { OwnedHandle::from_raw_handle(process_information.hProcess.cast()) };
-    // SAFETY: the primary thread handle is not needed after process creation.
-    unsafe { CloseHandle(process_information.hThread) };
-    let parent_pipes = pipes.into_parent();
-    Ok((
-        ChildProcess {
-            handle: process,
-            process_id: process_information.dwProcessId,
-            traffic_owned: own_scope,
-        },
-        parent_pipes,
-    ))
+    let thread = unsafe { OwnedHandle::from_raw_handle(process_information.hThread.cast()) };
+    Ok(SuspendedChild {
+        process,
+        thread,
+        pid: process_information.dwProcessId,
+        armed: true,
+    })
 }
 
 pub fn running_processes_for_package(
@@ -506,9 +635,18 @@ pub(crate) struct AttributeList {
 
 impl AttributeList {
     pub(crate) fn with_handle_list(handles: &[HANDLE]) -> Result<Self, ProcessError> {
+        Self::with_handles_and_package_policy(handles, None)
+    }
+    fn with_handles_and_package_policy(
+        handles: &[HANDLE],
+        policy: Option<&u32>,
+    ) -> Result<Self, ProcessError> {
+        let count = 1 + u32::from(policy.is_some());
         let mut byte_length = 0_usize;
         // SAFETY: a null list is the documented size-query form.
-        unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut byte_length) };
+        unsafe {
+            InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &mut byte_length)
+        };
         if byte_length == 0 {
             return Err(last_error("InitializeProcThreadAttributeList(size)"));
         }
@@ -523,7 +661,7 @@ impl AttributeList {
         let mut storage = vec![0_usize; words];
         let pointer = storage.as_mut_ptr().cast();
         // SAFETY: pointer refers to byte_length bytes of suitably aligned writable storage.
-        if unsafe { InitializeProcThreadAttributeList(pointer, 1, 0, &mut byte_length) } == 0 {
+        if unsafe { InitializeProcThreadAttributeList(pointer, count, 0, &mut byte_length) } == 0 {
             return Err(last_error("InitializeProcThreadAttributeList(data)"));
         }
         // SAFETY: the initialized list and handle slice remain live through process creation.
@@ -543,10 +681,27 @@ impl AttributeList {
             unsafe { DeleteProcThreadAttributeList(pointer) };
             return Err(last_error("UpdateProcThreadAttribute(handle list)"));
         }
-        Ok(Self {
+        let list = Self {
             _storage: storage,
             pointer,
-        })
+        };
+        if let Some(policy) = policy
+            && unsafe {
+                UpdateProcThreadAttribute(
+                    pointer,
+                    0,
+                    windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY
+                        as usize,
+                    (policy as *const u32).cast(),
+                    size_of::<u32>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            } == 0
+        {
+            return Err(last_error("UpdateProcThreadAttribute(package identity)"));
+        }
+        Ok(list)
     }
 }
 
@@ -643,6 +798,59 @@ fn last_error(operation: &'static str) -> ProcessError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn suspended_exit_fixture() -> (SuspendedChild, ParentCdpPipes) {
+        let executable = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("codlet-fake-child.exe");
+        let arguments = [OsString::from("--scenario=owned-exit")];
+        let pipes = CdpPipes::create().unwrap();
+        let child = create_suspended(&NativeLaunch {
+            executable: &executable,
+            arguments: &arguments,
+            no_window: true,
+            environment: None,
+            current_directory: None,
+            cdp: pipes.child_handles(),
+            stderr: None,
+            preserve_package_identity: false,
+        })
+        .unwrap();
+        (child, pipes.into_parent())
+    }
+
+    #[test]
+    fn uncommitted_child_never_runs_and_is_reaped_on_drop() {
+        let (child, _pipes) = suspended_exit_fixture();
+        let observed = child.process.try_clone().unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(raw_handle(&observed), 100) },
+            WAIT_TIMEOUT
+        );
+        drop(child);
+        assert_eq!(
+            unsafe { WaitForSingleObject(raw_handle(&observed), 2000) },
+            WAIT_OBJECT_0
+        );
+        let mut code = 0;
+        assert_ne!(
+            unsafe { GetExitCodeProcess(raw_handle(&observed), &mut code) },
+            0
+        );
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn committed_child_runs_and_retains_its_real_exit_status() {
+        let (mut child, _pipes) = suspended_exit_fixture();
+        child.resume().unwrap();
+        let process = child.finish(false).unwrap();
+        assert_eq!(process.wait(Duration::from_secs(5)).unwrap(), Some(73));
+    }
 
     #[test]
     fn command_line_quotes_spaces_quotes_and_trailing_backslashes() {
