@@ -39,6 +39,22 @@ dependency on these official plugins and does not assign them special permission
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, requests normal close with a bounded wait, and offers retry/cancel. Restart Manager automatic shutdown is disabled; no client is force-killed. An unattended busy install fails explicitly. Uninstall removes program files/shortcuts and preserves plugin/config/data.
 
+The Windows launcher retains the exact native Core process handle so early exits
+preserve their actual exit code and log, even if Core exits before the first poll.
+If Core exits before readiness, interactive startup offers one safe-mode attempt
+after the normal process gate. `Codlet-Launcher.exe --safe-mode` also starts this
+recovery path directly, skipping plugin setup and all plugins (including traffic
+interceptors), without changing saved configuration. Quiet startup never silently
+retries without plugins. A readiness timeout retains the running process and does
+not start another instance. Logs are in the Codlet data directory's `launcher-logs`;
+recovery uses a separate `.safe.core.log` so the original failure is retained.
+
+On Windows, unavailable renderer discovery is reported as
+`renderer_executor_unavailable`; Core and a still-running official client remain
+available even for a renderer-only plugin configuration. The launcher reports that
+UI plugins did not load. An official process that itself exits is still a startup
+failure, and required traffic source attachment continues to fail closed.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-PreviewDistribution.ps1 `
   -CodletExecutable C:\build\codlet.exe `

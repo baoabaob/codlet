@@ -921,6 +921,13 @@ impl RendererRuntime {
         }
     }
 
+    #[cfg(windows)]
+    pub(crate) fn record_executor_unavailable(&mut self, message: &str) {
+        self.record_status_event("", "renderer_executor_unavailable", message);
+        self.publish_status();
+        self.refresh_management_list();
+    }
+
     pub fn set_manage_service(&mut self, service: crate::runtime_manage::RuntimeManageService) {
         service.publish_runtime_skill(
             self.runtime_skills

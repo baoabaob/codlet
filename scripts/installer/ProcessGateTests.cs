@@ -35,6 +35,20 @@ namespace Codlet.Setup {
                 Assert(ProcessGate.RequestClose(found.Single(p => p.Id == stubborn.Id)), "normal close request is sent to stubborn test application");
                 Assert(!stubborn.WaitForExit(500), "refused close never becomes forced termination");
                 Assert(!other.HasExited, "unrelated same-name application remains running");
+                string exitFile = Path.Combine(root, "fixture-exit-code");
+                try {
+                    foreach (int code in new[] { 23, 0, 259 }) {
+                        File.WriteAllText(exitFile, code.ToString());
+                        using (var early = DetachedHost.Start(root, root, Path.Combine(root, "early-" + code))) {
+                            long created = early.StartTime.ToUniversalTime().Ticks;
+                            var deadline = Stopwatch.StartNew();
+                            while (!early.HasExited && deadline.ElapsedMilliseconds < 5000) Thread.Sleep(10);
+                            Assert(early.HasExited, "early Core exit is observed");
+                            Assert(early.ExitCode == code, "early Core exit code is preserved: " + code);
+                            Assert(early.StartTime.ToUniversalTime().Ticks == created, "process identity survives exit");
+                        }
+                    }
+                } finally { File.Delete(exitFile); }
                 // This child owns only test fixture files and exits on its own.
                 var detached = DetachedHost.Start(root, root, Path.Combine(root, "detached"));
                 File.WriteAllText(Path.Combine(root, "detached.pid"), detached.Id.ToString()); detached.Dispose();

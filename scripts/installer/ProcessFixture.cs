@@ -1,10 +1,17 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Windows.Forms;
 
 static class ProcessFixture {
     [STAThread] static void Main(string[] args) {
-        if (args.Length == 1 && args[0] == "launch") {
+        if (args.Length >= 1 && args[0] == "launch") {
+            string data = Environment.GetEnvironmentVariable("CODLET_HOME");
+            string exitFile = Path.Combine(data, "fixture-exit-code");
+            if (File.Exists(exitFile)) {
+                Console.Error.WriteLine("fixture: Core stopped before readiness");
+                Environment.Exit(Int32.Parse(File.ReadAllText(exitFile)));
+            }
             for (int i = 0; i < 20; ++i) { Console.WriteLine("detached-output-" + i); Thread.Sleep(100); }
             return;
         }

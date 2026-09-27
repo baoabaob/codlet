@@ -803,6 +803,11 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         }),
         traffic.as_ref(),
     )?;
+    eprintln!(
+        "client-started: version={}; pid={}",
+        connected.package.version,
+        connected.process.process_id()
+    );
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
@@ -839,24 +844,29 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
     }
     renderer.set_external_observations(hosts.observations());
     let (targets, sessions) = if renderer.needs_renderer_targets() {
-        match TargetController::discover(
+        discover_runtime_targets(
+            &mut renderer,
             connected.client.clone(),
             connected.events,
             REQUEST_DEADLINE,
-        ) {
-            Ok((targets, sessions)) => (Some(targets), sessions),
-            Err(error) if has_hosts => {
-                eprintln!("renderer-executor: state=unavailable; error={error}");
-                (None, Vec::new())
-            }
-            Err(error) => return Err(error.into()),
-        }
+        )
     } else {
         // Raw hosts receive the connection without private URL matching or any
         // managed-renderer CDP commands. Retire the unused legacy event sink.
         drop(connected.events);
         (None, Vec::new())
     };
+    // A missing renderer is a degraded plugin executor, not a failed Core.
+    // An actually exited desktop, however, must never be reported as ready.
+    let exit_budget = if connected.client.closed_reason().is_some() {
+        Duration::from_millis(250)
+    } else {
+        Duration::ZERO
+    };
+    if let Some(exit_code) = connected.process.wait(exit_budget)? {
+        eprintln!("client-exited-before-ready: code={exit_code}; hex=0x{exit_code:08x}");
+        return Err(ProbeError::CodexExit { exit_code });
+    }
     let initial_outcomes: Vec<_> = renderer
         .attach_all(&sessions)
         .into_iter()
@@ -938,6 +948,22 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
         runtime_update,
         official_update,
     })
+}
+
+fn discover_runtime_targets(
+    renderer: &mut RendererRuntime,
+    client: CdpClient,
+    events: CdpEventStream,
+    deadline: Duration,
+) -> (Option<TargetController>, Vec<TargetSession>) {
+    match TargetController::discover(client, events, deadline) {
+        Ok((targets, sessions)) => (Some(targets), sessions),
+        Err(error) => {
+            eprintln!("renderer-executor: state=unavailable; error={error}");
+            renderer.record_executor_unavailable(&error.to_string());
+            (None, Vec::new())
+        }
+    }
 }
 
 /// Validate configured plugins and build the renderer manager before any Codex
@@ -1577,6 +1603,42 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
+
+    #[test]
+    fn renderer_only_startup_survives_closed_cdp_without_changing_plugins() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let registry = PluginRegistry::load(&path).unwrap();
+        let mut renderer = RendererRuntime::bundled(registry).unwrap();
+        let status = StatusPublisher::new();
+        renderer.set_status_publisher(status.clone());
+        let before = std::fs::read(&path).ok();
+        let pipes = crate::windows::pipes::CdpPipes::create()
+            .unwrap()
+            .into_parent();
+        let (client, events) = CdpClient::spawn(pipes).unwrap();
+        let (targets, sessions) = discover_runtime_targets(
+            &mut renderer,
+            client.clone(),
+            events,
+            Duration::from_secs(1),
+        );
+        assert!(targets.is_none());
+        assert!(sessions.is_empty());
+        assert_eq!(renderer.session_count(), 0);
+        assert!(
+            status
+                .snapshot()
+                .renderer
+                .recent_events
+                .iter()
+                .any(|event| {
+                    event.code == "renderer_executor_unavailable" && event.message.contains("CDP")
+                })
+        );
+        assert_eq!(std::fs::read(path).ok(), before);
+        client.shutdown().unwrap();
+    }
 
     #[test]
     fn file_watching_requires_exact_explicit_launch_flag() {
