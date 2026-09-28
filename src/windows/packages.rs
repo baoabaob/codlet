@@ -9,7 +9,7 @@ use thiserror::Error;
 use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, WIN32_ERROR};
 use windows_sys::Win32::Storage::Packaging::Appx::{
     GetPackagePathByFullName, GetPackagesByPackageFamily, PACKAGE_ID, PACKAGE_INFORMATION_BASIC,
-    PACKAGE_VERSION, PackageIdFromFullName,
+    PACKAGE_VERSION, PackageFamilyNameFromFullName, PackageIdFromFullName,
 };
 
 pub const CODEX_PACKAGE_FAMILY: &str = "OpenAI.Codex_2p2nqsd0c76g0";
@@ -106,6 +106,41 @@ pub fn find_unique_current_user_package(
             count,
         }),
     }
+}
+
+/// Resolve an identity obtained from an owned, authenticated activation helper.
+/// Family enumeration can be an older snapshot than AUMID activation. Do not
+/// choose a version by sorting installed directories or trusting plugin input.
+pub(crate) fn from_activated_identity(
+    family_name: &str,
+    full_name: &str,
+) -> Result<InstalledPackage, PackageError> {
+    let full = wide_nul(OsStr::new(full_name), "activated package full name")?;
+    let mut length = 0;
+    let first = unsafe { PackageFamilyNameFromFullName(full.as_ptr(), &mut length, null_mut()) };
+    if first != ERROR_INSUFFICIENT_BUFFER || length == 0 || length > 1024 {
+        return Err(PackageError::Win32 {
+            operation: "PackageFamilyNameFromFullName(size)",
+            code: first,
+        });
+    }
+    let mut family = vec![0; length as usize];
+    let result =
+        unsafe { PackageFamilyNameFromFullName(full.as_ptr(), &mut length, family.as_mut_ptr()) };
+    expect_success("PackageFamilyNameFromFullName(data)", result)?;
+    let actual = string_from_shared_buffer(family.as_mut_ptr(), &family)?;
+    if actual != family_name {
+        return Err(invalid_os_data(
+            "activated package identity",
+            "the owned helper belongs to a different package family",
+        ));
+    }
+    Ok(InstalledPackage {
+        family_name: actual,
+        full_name: full_name.to_owned(),
+        install_location: query_install_location(&full)?,
+        version: query_version(&full)?,
+    })
 }
 
 pub fn resolve_package_executable(
@@ -421,6 +456,23 @@ fn invalid_os_data(operation: &'static str, reason: impl Into<String>) -> Packag
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn activated_identity_rejects_foreign_family_before_path_lookup() {
+        let result = from_activated_identity(
+            CODEX_PACKAGE_FAMILY,
+            "Microsoft.WindowsCalculator_10.0.0.0_x64__8wekyb3d8bbwe",
+        );
+        assert!(matches!(
+            result,
+            Err(PackageError::InvalidOsData {
+                operation: "activated package identity",
+                ..
+            })
+        ));
+        assert!(from_activated_identity(CODEX_PACKAGE_FAMILY, "not a package").is_err());
+        assert!(from_activated_identity(CODEX_PACKAGE_FAMILY, "embedded\0name").is_err());
+    }
 
     #[test]
     fn rejects_executable_parent_traversal() {

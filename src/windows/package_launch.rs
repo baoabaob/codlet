@@ -148,6 +148,17 @@ struct Request {
     no_window: bool,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "action",
+    content = "request",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum LaunchIntent {
+    Start(Request),
+    Cancel,
+}
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum Reply {
     Ready { pid: u32, tid: u32, created: u64 },
@@ -311,15 +322,28 @@ pub(crate) fn create_in_package(
     let helper = activate_helper(package, &executable, &name)?;
     let deadline = Instant::now() + TIMEOUT;
     let result = (|| {
-        if package_full_name(raw(&helper))?.as_deref() != Some(&package.full_name) {
-            return Err(failure("activated helper has wrong package identity"));
-        }
         channel.connect_until(Some(deadline)).map_err(failure)?;
         let peer = ServerIdentity::verify_client(&channel.pipe, &executable).map_err(failure)?;
         if peer.pid != unsafe { GetProcessId(raw(&helper)) }
             || creation_time(raw(&peer.process))? != creation_time(raw(&helper))?
         {
             return Err(failure("unexpected package helper peer"));
+        }
+        let actual = package_full_name(raw(&helper))?
+            .ok_or_else(|| failure("activated helper has no package identity"))?;
+        if actual != package.full_name {
+            // Windows selected this process through the requested family's
+            // AUMID. Authenticate it before accepting its effective identity.
+            // No client request, inherited handles or environment were sent.
+            let active = packages::from_activated_identity(&package.family_name, &actual)
+                .map_err(failure)?;
+            // A version refresh is an ordinary cancellation, not a failed
+            // helper. It exits without creating any client or receiving secrets.
+            send(&channel, &LaunchIntent::Cancel, deadline)?;
+            return Err(ProcessError::PackageSelectionChanged {
+                selected: package.full_name.clone(),
+                active: Box::new(active),
+            });
         }
         let inherited;
         let environment = if let Some(environment) = launch.environment {
@@ -342,7 +366,7 @@ pub(crate) fn create_in_package(
             .collect();
         send(
             &channel,
-            &Request {
+            &LaunchIntent::Start(Request {
                 package: package.full_name.clone(),
                 executable: wide(launch.executable.as_os_str()),
                 arguments: launch.arguments.iter().map(|arg| wide(arg)).collect(),
@@ -354,7 +378,7 @@ pub(crate) fn create_in_package(
                     .collect(),
                 handles,
                 no_window: launch.no_window,
-            },
+            }),
             deadline,
         )?;
         let (pid, tid, created) = match receive(&channel, deadline)? {
@@ -428,7 +452,11 @@ pub(crate) fn create_in_package(
     // EOF aborts the helper's uncommitted suspended child. Neither side keeps a
     // permanent broker or publishes a general-purpose package launcher endpoint.
     drop(channel);
-    let _ = unsafe { WaitForSingleObject(raw(&helper), 3000) };
+    if unsafe { WaitForSingleObject(raw(&helper), 3000) } != WAIT_OBJECT_0 {
+        return Err(failure(
+            "owned package helper retirement was not confirmed; launch was not retried",
+        ));
+    }
     result
 }
 pub(crate) fn run_helper(name: &OsStr) -> Result<(), ProcessError> {
@@ -442,13 +470,18 @@ pub(crate) fn run_helper(name: &OsStr) -> Result<(), ProcessError> {
     let parent = open_dup_peer(&peer)?;
     let deadline = Instant::now() + TIMEOUT;
     let result = (|| {
-        let request: Request = receive(&channel, deadline)?;
-        let package = packages::find_unique_current_user_package(packages::CODEX_PACKAGE_FAMILY)
+        let request = match receive(&channel, deadline)? {
+            LaunchIntent::Start(request) => request,
+            LaunchIntent::Cancel => return Ok(()),
+        };
+        // The activator's immutable process identity is authoritative here.
+        // Re-enumerating the family can return the same stale snapshot that
+        // caused the first launch attempt to select the previous installation.
+        let actual = package_full_name(unsafe { GetCurrentProcess() })?
+            .ok_or_else(|| failure("package helper has no package identity"))?;
+        let package = packages::from_activated_identity(packages::CODEX_PACKAGE_FAMILY, &actual)
             .map_err(failure)?;
-        if package.full_name != request.package
-            || package_full_name(unsafe { GetCurrentProcess() })?.as_deref()
-                != Some(&request.package)
-        {
+        if package.full_name != request.package {
             return Err(failure("package changed before client creation"));
         }
         let executable = PathBuf::from(OsString::from_wide(&request.executable));

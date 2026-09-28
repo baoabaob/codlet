@@ -25,6 +25,7 @@ env.SHELL='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 env.PSModulePath='C:/Windows/System32/WindowsPowerShell/v1.0/Modules';
 env.CODLET_ACCEPTANCE_ROOT=root;
 env.CODLET_ACCEPTANCE_SHELL_ENV='1';
+if(config.stalePackageSelection===true)env.CODLET_ACCEPTANCE_STALE_PACKAGE='1';
 if(config.startupHelper!=null)throw Error('The lab startup helper was retired; use the production launch Adapter');
 if(config.fixtureState!=null){
   if(typeof config.fixtureState!=='object'||Array.isArray(config.fixtureState)||Buffer.byteLength(JSON.stringify(config.fixtureState))>65536)throw Error('fixtureState must be a bounded synthetic state object');

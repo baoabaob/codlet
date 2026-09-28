@@ -28,6 +28,13 @@ use super::pipes::{CdpPipes, ParentCdpPipes};
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
+    // Only returned before a client is resumed, after an owned helper's exact
+    // image, creation identity and current-user pipe peer have been verified.
+    #[error("official client package changed during launch: selected={selected}; activated={}", active.full_name)]
+    PackageSelectionChanged {
+        selected: String,
+        active: Box<super::packages::InstalledPackage>,
+    },
     #[error("client startup bootstrap: {0}")]
     ClientBootstrap(String),
     #[error("packaged client launch: {0}")]

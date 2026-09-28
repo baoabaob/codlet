@@ -81,11 +81,21 @@ pub(super) fn isolated_full_runtime() {
         let stderr = traffic.is_none().then(crate::client_stderr::ClientStderr::capture_startup).transpose()?;
         // Same native CDP pipes and startup stderr as production. Exact-child
         // cleanup additionally prevents failed tests leaving a client behind.
-        let context = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
+        let mut context = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
+        let current_context = context.clone();
+        if std::env::var_os("CODLET_ACCEPTANCE_STALE_PACKAGE").is_some() {
+            // Simulate only the stale enumeration result. Windows registration,
+            // the selected signed image and the user's running client stay intact.
+            context.full_name = "OpenAI.Codex_0.0.0.0_x64__2p2nqsd0c76g0".into();
+        }
+        let selected_context = context.full_name.clone();
         let (process, pipes) = if let Some(traffic) = traffic {
             traffic.stderr().capture_acceptance_startup();
             let environment = crate::windows::environment::ChildEnvironment::from_entries(traffic.environment().iter().cloned()).map_err(ProcessError::from)?;
-            let launched = crate::windows::process::launch_packaged_cdp_with_bootstrap(&executable, traffic.arguments(), Some(&environment), true, Some(traffic.stderr()), &context, &mut |child| traffic.before_client_resume(child, &executable))?;
+            let (active, launched) = super::package_refresh::launch(context, |context| {
+                Ok(crate::windows::process::launch_packaged_cdp_with_bootstrap(&executable, traffic.arguments(), Some(&environment), true, Some(traffic.stderr()), context, &mut |child| traffic.before_client_resume(child, &executable))?)
+            })?;
+            assert_eq!(active, current_context);
             if let Err(error) = traffic.attach_client(launched.0.process_id(), &executable, || false) {
                 traffic.stderr().report_startup_failure();
                 eprintln!("acceptance-traffic-client: pid={}; exit={:?}", launched.0.process_id(), launched.0.wait(Duration::from_millis(10)));
@@ -99,7 +109,11 @@ pub(super) fn isolated_full_runtime() {
         } else {
             // Production ordinary/safe startup inherits the complete native block.
             // Supplying a sanitized explicit block here would hide launcher defects.
-            crate::windows::process::launch_packaged_cdp(&executable, &[], None, true, stderr.as_ref(), &context)?
+            let (active, launched) = super::package_refresh::launch(context, |context| {
+                Ok(crate::windows::process::launch_packaged_cdp(&executable, &[], None, true, stderr.as_ref(), context)?)
+            })?;
+            assert_eq!(active, current_context);
+            launched
         };
         if std::env::var_os("CODLET_ACCEPTANCE_SHELL_ENV").is_some() {
             let environment = crate::windows::environment::ChildEnvironment::inherited().map_err(ProcessError::from)?;
@@ -109,7 +123,7 @@ pub(super) fn isolated_full_runtime() {
             pid: process.process_id(), package_full_name: package.full_name.clone(),
             package_version: package.version.to_string(), executable: executable.display().to_string(),
         });
-        std::fs::write(root.join("client.json"), json!({"pid":process.process_id(),"created":process.creation_time_filetime()?,"packageFamily":process.package_family()?,"executable":executable,"creatorPackage":creator_package}).to_string()).unwrap();
+        std::fs::write(root.join("client.json"), json!({"pid":process.process_id(),"created":process.creation_time_filetime()?,"packageFamily":process.package_family()?,"executable":executable,"creatorPackage":creator_package,"selectedContext":selected_context,"activatedContext":current_context.full_name}).to_string()).unwrap();
         let (client, events) = CdpClient::spawn(pipes)?;
         Ok((ConnectedCodex {package, executable, process, client, events, stderr}, Some(HostServers{_status:None,control})))
     }).expect("full Core startup");

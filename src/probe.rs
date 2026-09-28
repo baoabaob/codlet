@@ -8,6 +8,7 @@ use thiserror::Error;
 pub(crate) mod client_versions;
 #[cfg(all(feature = "desktop-acceptance", not(test)))]
 mod desktop_acceptance;
+mod package_refresh;
 mod runtime_update_owner;
 mod safe_mode;
 #[cfg(all(feature = "desktop-acceptance", not(test)))]
@@ -704,10 +705,17 @@ fn start_connected_codex_with_traffic(
     let status = services.as_ref().map(|services| services.status.clone());
     let launch_guard = LaunchMutexGuard::acquire_current_user(LAUNCH_MUTEX_DEADLINE)?;
     let (package, executable, running) = inspect_environment()?;
+    eprintln!(
+        "client-package-selection: creator={:?}; selected={}",
+        crate::windows::package_launch::package_full_name(unsafe {
+            windows_sys::Win32::System::Threading::GetCurrentProcess()
+        }),
+        package.full_name
+    );
     let stderr = (traffic.is_none() && services.is_some())
         .then(crate::client_stderr::ClientStderr::capture_startup)
         .transpose()?;
-    let ((process, pipes), server) = checked_launch_prepared(
+    let ((package, (process, pipes), executable), server) = checked_launch_prepared(
         &executable,
         running,
         || running_processes_for_package(CODEX_PACKAGE_FAMILY, &executable),
@@ -727,34 +735,49 @@ fn start_connected_codex_with_traffic(
                 .transpose()
         },
         |server| {
-            let launched = if let Some(traffic) = traffic {
-                let environment = crate::windows::environment::ChildEnvironment::from_entries(
-                    traffic.environment().iter().cloned(),
-                )
-                .map_err(ProcessError::from)?;
-                crate::windows::process::launch_packaged_cdp_with_bootstrap(
-                    &executable,
-                    traffic.arguments(),
-                    Some(&environment),
-                    true,
-                    Some(traffic.stderr()),
-                    &package,
-                    &mut |child| traffic.before_client_resume(child, &executable),
-                )?
-            } else {
-                crate::windows::process::launch_packaged_cdp(
-                    &executable,
-                    &[],
-                    None,
-                    false,
-                    stderr.as_ref(),
-                    &package,
-                )?
-            };
+            let (package, (launched, executable)) =
+                package_refresh::launch(package.clone(), |package| {
+                    let executable = resolve_package_executable(
+                        package,
+                        Path::new(CODEX_EXECUTABLE_RELATIVE_PATH),
+                    )?;
+                    // An update may replace both the package root and the process
+                    // snapshot. Keep the same launch mutex and IPC incarnation.
+                    reject_instance_conflict(
+                        &executable,
+                        running_processes_for_package(CODEX_PACKAGE_FAMILY, &executable)?,
+                    )?;
+                    let launched = if let Some(traffic) = traffic {
+                        let environment =
+                            crate::windows::environment::ChildEnvironment::from_entries(
+                                traffic.environment().iter().cloned(),
+                            )
+                            .map_err(ProcessError::from)?;
+                        crate::windows::process::launch_packaged_cdp_with_bootstrap(
+                            &executable,
+                            traffic.arguments(),
+                            Some(&environment),
+                            true,
+                            Some(traffic.stderr()),
+                            package,
+                            &mut |child| traffic.before_client_resume(child, &executable),
+                        )?
+                    } else {
+                        crate::windows::process::launch_packaged_cdp(
+                            &executable,
+                            &[],
+                            None,
+                            false,
+                            stderr.as_ref(),
+                            package,
+                        )?
+                    };
+                    Ok((launched, executable))
+                })?;
             if let Some(traffic) = traffic {
                 traffic.attach_client(launched.0.process_id(), &executable, || false)?;
             }
-            Ok((launched, server))
+            Ok(((package, launched, executable), server))
         },
     )?;
     if let Some(status) = status {

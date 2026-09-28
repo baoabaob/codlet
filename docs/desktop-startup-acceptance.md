@@ -37,6 +37,34 @@ the coordinator alive until `root/completed.json` appears. Core must detect a
 missing/wrong child identity itself, activate its short-lived package helper and
 transfer only its owned CDP/stderr handles. No permanent helper remains.
 
+The installer-completion launch can observe a different family-enumeration
+snapshot from Windows' actual AUMID activation. One reported first launch selected
+`26.915.4065.0` while both the owned child and activated helper belonged to
+`26.924.2738.0`; a later ordinary launch succeeded. This identifies the mismatch,
+but does not establish whether Windows caching, installer context or concurrent
+registration caused that initial snapshot.
+
+Core now authenticates the owned helper's exact executable, PID, creation time
+and current-user pipe peer before reading its effective package identity. A
+different version must still belong to the requested family. Core resolves that
+exact identity through Windows, cancels and confirms retirement of the helper
+before sending any launch environment/handles, then retries with the refreshed
+package and executable. The same launch mutex and IPC incarnation stay held;
+process conflicts are checked again. At most three distinct pre-resume attempts
+are allowed. Repeated identities, foreign families and other errors fail without
+replay. A resumed client or plugin handshake is never retried this way. The helper
+also resolves its own activated identity, rather than repeating family enumeration.
+
+`stalePackageSelection: true` injects an obsolete selection into this isolated
+harness only. It does not register, update or remove a Windows package. The real
+COM helper must trigger the refresh, the normal runtime must start, and
+`client.json` records both selected and activated context. The 26.924 signed-client
+fixture passed this recovery with both traffic sources active and two modified
+WebSocket turns, including prewarm and continuation. Unit tests separately
+verify replacing the executable path, rejecting foreign/repeated identities,
+the retry limit and a process appearing before the refreshed attempt. This is
+not a claim of having reproduced the other machine's MSI transaction.
+
 The coordinator starts Core through a real `cmd.exe` invocation after an external
 command has exited. This supplies Windows' hidden `=ExitCode` entry as well as
 drive-directory metadata. Core uses the production implicit-inheritance path
