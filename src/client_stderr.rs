@@ -79,7 +79,7 @@ impl ClientStderr {
         *self.startup.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    #[cfg(all(windows, feature = "desktop-acceptance"))]
+    #[cfg(all(windows, feature = "desktop-acceptance", not(test)))]
     pub(crate) fn capture_acceptance_startup(&self) {
         *self.startup.lock().unwrap_or_else(|e| e.into_inner()) = Some(Vec::new());
     }

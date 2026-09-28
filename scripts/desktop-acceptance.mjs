@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
+import {createRequire} from 'node:module';
 import {spawn,execFileSync} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 // Run from an unpackaged creator; Core establishes the required package context.
@@ -24,6 +25,10 @@ env.SHELL='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 env.PSModulePath='C:/Windows/System32/WindowsPowerShell/v1.0/Modules';
 env.CODLET_ACCEPTANCE_ROOT=root;
 env.CODLET_ACCEPTANCE_SHELL_ENV='1';
+if(config.startupHelper!=null){
+  if(typeof config.startupHelper!=='string'||!path.isAbsolute(config.startupHelper)||!fs.statSync(config.startupHelper).isFile())throw Error('startupHelper must be an absolute trusted lab executable');
+  env.CODLET_ACCEPTANCE_STARTUP_HELPER=config.startupHelper;
+}
 if(config.fixtureState!=null){
   if(typeof config.fixtureState!=='object'||Array.isArray(config.fixtureState)||Buffer.byteLength(JSON.stringify(config.fixtureState))>65536)throw Error('fixtureState must be a bounded synthetic state object');
   fs.writeFileSync(path.join(env.CODEX_HOME,'.codex-global-state.json'),JSON.stringify(config.fixtureState));
@@ -39,8 +44,11 @@ if(config.durationSeconds!=null) {
 if(config.rawLaunch===true) env.CODLET_ACCEPTANCE_RAW='1';
 env.CODLET_ACCEPTANCE_PACKAGE_VERSION=config.packageVersion;
 env.CODLET_ACCEPTANCE_EXE=path.join(config.clientApp,'ChatGPT.exe');
-const officialCli=path.join(config.clientApp,'resources/codex.exe');
-for(const executable of [env.CODLET_ACCEPTANCE_EXE,officialCli]) {
+const backendNames=['codex.exe','codex-command-runner.exe','codex-code-mode-host.exe',
+  'codex-windows-sandbox-setup.exe','codex-windows-sandbox-service.exe'];
+const backendFiles=backendNames.map(name=>path.join(config.clientApp,'resources',name));
+for(const executable of [env.CODLET_ACCEPTANCE_EXE,...backendFiles]) {
+  if(!fs.statSync(executable).isFile())throw Error('The selected backend installation is incomplete: '+path.basename(executable));
   execFileSync(env.SHELL,['-NoLogo','-NoProfile','-NonInteractive','-Command',"$s=Get-AuthenticodeSignature -LiteralPath $env:CODLET_SIGNATURE_FILE; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'OpenAI'){exit 1}"],{env:{...env,CODLET_SIGNATURE_FILE:executable},windowsHide:true,timeout:20000});
 }
 // Some WindowsApps CLI images cannot be executed directly by an unpackaged
@@ -48,34 +56,51 @@ for(const executable of [env.CODLET_ACCEPTANCE_EXE,officialCli]) {
 // The official desktop still runs from the explicitly selected clientApp path.
 const backendDirectory=path.join(root,'backend');fs.mkdirSync(backendDirectory);
 const cli=path.join(backendDirectory,'codex.exe');
-fs.copyFileSync(officialCli,cli,fs.constants.COPYFILE_EXCL);
+// The CLI resolves sandbox/setup and tool-host companions beside itself. A
+// solitary copied codex.exe triggers an unrelated Windows missing-file dialog.
+for(const executable of backendFiles)fs.copyFileSync(executable,path.join(backendDirectory,path.basename(executable)),fs.constants.COPYFILE_EXCL);
 env.CODEX_CLI_PATH=cli;
-let fixtureServer;
+env.PATH=backendDirectory+path.delimiter+(env.PATH??env.Path??'');
+let fixtureServer,fixtureWebSockets;
 let fixtureConfig='';
 if(config.localApiKeyFixture===true) {
   let turns=0;
+  function modelEvents(){
+    turns++;const id='fixture-'+turns,text='codlet-original-response';
+    const item={id:'msg-'+turns,type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text,annotations:[]}]};
+    return [{type:'response.created',response:{id,status:'in_progress',output:[]}},
+      {type:'response.output_item.added',output_index:0,item:{...item,status:'in_progress',content:[]}},
+      {type:'response.output_text.delta',item_id:item.id,output_index:0,content_index:0,delta:text},
+      {type:'response.output_item.done',output_index:0,item},
+      {type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:1,output_tokens:1,total_tokens:2,input_tokens_details:{cached_tokens:0},output_tokens_details:{reasoning_tokens:0}}}}];
+  }
   fixtureServer=http.createServer(async (request,response)=>{
     const chunks=[];let bytes=0;
     for await(const chunk of request){bytes+=chunk.length;if(bytes>4*1024*1024){response.writeHead(413).end();return;}chunks.push(chunk);}
     const body=Buffer.concat(chunks).toString('utf8');
     fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({path:request.url,method:request.method,
-      requestModified:request.headers['x-codlet-acceptance']==='modified',bodyModified:body.includes('codlet-modified-request')})+'\n');
+      requestModified:request.headers['x-codlet-acceptance']==='modified',bodyModified:body.includes('codlet-modified-request'),modelModified:body.includes('"model":"codlet-intercepted-model"')})+'\n');
     if(request.url?.endsWith('/responses')){
-      turns++;const id='fixture-'+turns,text='codlet-original-response';
-      const item={id:'msg-'+turns,type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text,annotations:[]}]};
-      const events=[{type:'response.created',response:{id,status:'in_progress',output:[]}},
-        {type:'response.output_item.added',output_index:0,item:{...item,status:'in_progress',content:[]}},
-        {type:'response.output_text.delta',item_id:item.id,output_index:0,content_index:0,delta:text},
-        {type:'response.output_item.done',output_index:0,item},
-        {type:'response.completed',response:{id,status:'completed',output:[item],usage:{input_tokens:1,output_tokens:1,total_tokens:2,input_tokens_details:{cached_tokens:0},output_tokens_details:{reasoning_tokens:0}}}}];
       response.writeHead(200,{'content-type':'text/event-stream'});
-      response.end(events.map(value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`).join(''));return;
+      response.end(modelEvents().map(value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`).join(''));return;
     }
     if(request.url?.includes('/desktop/')){response.writeHead(200,{'content-type':'text/plain'}).end('codlet-original-response');return;}
     response.writeHead(request.url?.endsWith('/models')?200:404,{'content-type':'application/json'});
     response.end(JSON.stringify(request.url?.endsWith('/models')?{object:'list',data:[{id:'gpt-5.4',object:'model',owned_by:'codlet-acceptance'}]}:{error:{message:'Unsupported acceptance endpoint'}}));
   });
-  fixtureServer.on('upgrade',(_request,socket)=>socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'));
+  if(config.fixtureWebSocket===true){
+    const {WebSocketServer}=createRequire(new URL('../frontend/package.json',import.meta.url))('ws');
+    fixtureWebSockets=new WebSocketServer({noServer:true,maxPayload:4*1024*1024});
+    fixtureServer.on('upgrade',(request,socket,head)=>fixtureWebSockets.handleUpgrade(request,socket,head,connection=>{
+      fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({protocol:'websocket',requestModified:request.headers['x-codlet-acceptance']==='modified'})+'\n');
+      connection.on('error',()=>{});
+      connection.on('message',data=>{
+        let body;try{body=JSON.parse(data.toString());}catch{connection.close(1003,'Invalid fixture request');return;}
+        fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({protocol:'websocket-frame',modelModified:body.model==='codlet-intercepted-model',prewarm:body.generate===false,continuation:typeof body.previous_response_id==='string'})+'\n');
+        for(const event of modelEvents())connection.send(JSON.stringify(event));
+      });
+    }));
+  }else fixtureServer.on('upgrade',(_request,socket)=>socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'));
   await new Promise(resolve=>fixtureServer.listen(0,'127.0.0.1',resolve));
   const url=`http://127.0.0.1:${fixtureServer.address().port}/v1`;
   env.OPENAI_BASE_URL=url;
@@ -150,5 +175,6 @@ try {
   process.exitCode=1;
 } finally {
   if(backend&&backend.exitCode===null){backend.kill();await new Promise(r=>backend.once('exit',r));}
+  if(fixtureWebSockets){for(const connection of fixtureWebSockets.clients)connection.terminate();await new Promise(resolve=>fixtureWebSockets.close(resolve));}
   if(fixtureServer){fixtureServer.closeAllConnections();await new Promise(resolve=>fixtureServer.close(resolve));}
 }

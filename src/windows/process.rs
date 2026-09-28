@@ -362,6 +362,8 @@ pub(crate) struct SuspendedChild {
 }
 impl SuspendedChild {
     pub(crate) fn resume(&mut self) -> Result<(), ProcessError> {
+        #[cfg(all(feature = "desktop-acceptance", not(test)))]
+        super::startup_research::before_resume(self)?;
         if unsafe { ResumeThread(raw_handle(&self.thread)) } == u32::MAX {
             return Err(last_error("ResumeThread(owned client)"));
         }

@@ -64,8 +64,9 @@ Additional opt-in controls support adapter acceptance without changing productio
 
 - `localApiKeyFixture: true` writes a synthetic file-only API key and runs a
   bounded loopback HTTP/SSE fixture. Desktop test requests and model replies use
-  fixed strings; it never copies a real account. The endpoint rejects WS with
-  426 so HTTP fallback can be observed.
+  fixed strings; it never copies a real account. By default the endpoint rejects
+  WS with 426 so HTTP fallback can be observed. `fixtureWebSocket: true` enables
+  the bounded synthetic Responses WS server, including prewarm/continuation.
 - `ownedBackend: true` requires that fixture and lets the selected desktop launch
   the verified, staged `backend/codex.exe`. Otherwise a separate owned WS backend
   is used, with listener PID verification. This distinction matters for early
@@ -82,6 +83,21 @@ Additional opt-in controls support adapter acceptance without changing productio
   selected independently of auxiliary target arrival order. Traffic-enabled
   runs use the production launch-provider handshake, with bounded stderr capture
   on failure; they do not assume an available inspector.
+- `startupHelper` selects a trusted absolute research executable, only in this
+  opt-in acceptance build. Before resuming the newly created client it receives
+  PID, creation time, verified executable and a fixture receipt path. Core checks
+  the owned root marker and executable identity, bounds the `armed` reply to
+  64 bytes/six seconds, and reaps the helper within fifteen further seconds.
+  Release Core has no such environment hook. This is not a production plugin API
+  or permission grant, and the helper must never adopt an existing desktop.
+
+The staged backend includes its signed command-runner, code-mode-host, Windows
+sandbox setup and sandbox service companions. Staging only `codex.exe` led to a
+native missing-helper dialog during first-run setup. The coordinator verifies
+these files before launch and preserves their names and adjacent layout. A
+fresh official profile can still request Windows sandbox setup independently of
+transport tests; use a disposable Windows test environment for that acceptance,
+and do not automate elevation. Transport replies do not prove sandbox readiness.
 
 The coordinator creates fresh user-data, Codex, Codlet, SQLite and temporary
 directories, file-only authentication, and a dedicated loopback app-server. It
