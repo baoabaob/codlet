@@ -28,6 +28,8 @@ use super::pipes::{CdpPipes, ParentCdpPipes};
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
+    #[error("client startup bootstrap: {0}")]
+    ClientBootstrap(String),
     #[error("packaged client launch: {0}")]
     PackageLaunch(String),
     #[error("executable path must be absolute: {0}")]
@@ -254,6 +256,27 @@ pub(crate) fn launch_packaged_cdp(
     stderr: Option<&crate::client_stderr::ClientStderr>,
     package: &super::packages::InstalledPackage,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_packaged_cdp_with_bootstrap(
+        executable,
+        arguments,
+        environment,
+        own_scope,
+        stderr,
+        package,
+        &mut |_| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_packaged_cdp_with_bootstrap(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: Option<&ChildEnvironment>,
+    own_scope: bool,
+    stderr: Option<&crate::client_stderr::ClientStderr>,
+    package: &super::packages::InstalledPackage,
+    before_resume: &mut impl FnMut(&SuspendedChild) -> Result<(), ProcessError>,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
     // Keep canonical paths for package/identity checks, but not for Owl's
     // application resource URL bootstrap: a verbatim path makes it exit 13.
     let program = client_program_path(executable)?;
@@ -277,8 +300,9 @@ pub(crate) fn launch_packaged_cdp(
         );
         child.abort()?;
         drop(child);
-        child = super::package_launch::create_in_package(&launch, package)?;
+        child = super::package_launch::create_in_package(&launch, package, before_resume)?;
     } else {
+        before_resume(&child)?;
         child.resume()?;
     }
     Ok((child.finish(own_scope)?, pipes.into_parent()))
@@ -362,8 +386,6 @@ pub(crate) struct SuspendedChild {
 }
 impl SuspendedChild {
     pub(crate) fn resume(&mut self) -> Result<(), ProcessError> {
-        #[cfg(all(feature = "desktop-acceptance", not(test)))]
-        super::startup_research::before_resume(self)?;
         if unsafe { ResumeThread(raw_handle(&self.thread)) } == u32::MAX {
             return Err(last_error("ResumeThread(owned client)"));
         }

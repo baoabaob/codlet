@@ -297,6 +297,7 @@ fn activate_helper(
 pub(crate) fn create_in_package(
     launch: &NativeLaunch<'_>,
     package: &InstalledPackage,
+    before_resume: &mut impl FnMut(&SuspendedChild) -> Result<(), ProcessError>,
 ) -> Result<SuspendedChild, ProcessError> {
     let nonce = super::control_scope::random_incarnation().map_err(failure)?;
     let suffix = nonce
@@ -410,6 +411,7 @@ pub(crate) fn create_in_package(
             ));
         }
         child.armed = true;
+        before_resume(&child)?;
         child.resume()?;
         send(&channel, &Commit { pid, created }, deadline)?;
         match receive(&channel, deadline)? {

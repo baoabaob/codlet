@@ -1,3 +1,4 @@
+pub(crate) mod client_bootstrap;
 pub mod control_pipe;
 mod control_scope;
 pub mod environment;
@@ -13,6 +14,4 @@ pub mod pipes;
 pub(crate) mod plugin_process;
 pub mod process;
 pub(crate) mod restart_bridge;
-#[cfg(all(feature = "desktop-acceptance", not(test)))]
-mod startup_research;
 pub mod status_pipe;

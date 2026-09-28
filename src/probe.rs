@@ -732,13 +732,14 @@ fn start_connected_codex_with_traffic(
                     traffic.environment().iter().cloned(),
                 )
                 .map_err(ProcessError::from)?;
-                crate::windows::process::launch_packaged_cdp(
+                crate::windows::process::launch_packaged_cdp_with_bootstrap(
                     &executable,
                     traffic.arguments(),
                     Some(&environment),
                     true,
                     Some(traffic.stderr()),
                     &package,
+                    &mut |child| traffic.before_client_resume(child, &executable),
                 )?
             } else {
                 crate::windows::process::launch_packaged_cdp(

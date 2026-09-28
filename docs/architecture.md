@@ -40,6 +40,12 @@ no plugin registry or permanent idle Node process. Hosts with ordinary capabilit
 providers or dependencies retain the existing Host lifecycle. The exact rule is
 part of the [Host contract](spec/host.md).
 
+On Windows the provider can negotiate a reversible module-data plan before the
+owned child resumes. Core verifies file identity, bounded non-executable edits
+and restoration; the plugin owns version-specific profiles and strategy. Core
+contains no official plugin ID or client fuse layout. A temporary native worker
+retires before activation, without adding another distributed helper program.
+
 The Core controls admission, provider dispatch and delivery against current
 authorization. Calls pin their provider and document generation; a late result
 does not attach itself to a newer instance. Timeouts and cancellation do not

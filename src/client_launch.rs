@@ -54,6 +54,7 @@ pub(crate) struct LaunchAdapter {
     _invocation: JsInvocation,
     context: Value,
     arguments: Vec<OsString>,
+    before_resume: bool,
 }
 
 pub(crate) struct LaunchAuthorization {
@@ -124,7 +125,8 @@ impl LaunchAdapter {
                 ))
             })
             .collect::<Result<_, HostError>>()?;
-        let context = json!({"traffic": traffic, "originalEnvironment": original});
+        let context = json!({"traffic": traffic, "originalEnvironment": original,
+            "features": {"moduleDataBootstrap": if cfg!(windows) { 1 } else { 0 }}});
         let (process, stdio) = OwnedPluginProcess::spawn(
             &invocation.executable,
             &invocation.arguments,
@@ -150,6 +152,7 @@ impl LaunchAdapter {
             _invocation: invocation,
             context,
             arguments: Vec::new(),
+            before_resume: false,
         };
         let plan = adapter.call(
             "prepare",
@@ -157,12 +160,47 @@ impl LaunchAdapter {
             Instant::now() + Duration::from_secs(10),
         )?;
         adapter.arguments = validate_arguments(&plan)?;
+        adapter.before_resume = match plan.get("beforeResume") {
+            None | Some(Value::Bool(false)) => false,
+            Some(Value::Bool(true)) if cfg!(windows) => true,
+            _ => return Err(error("client_launch_phase_unsupported")),
+        };
         revalidate(&adapter.provider, &adapter.registry)?;
         Ok(adapter)
     }
 
     pub(crate) fn arguments(&self) -> &[OsString] {
         &self.arguments
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn before_resume(
+        &self,
+        pid: u32,
+        executable: &Path,
+        deadline: Instant,
+    ) -> Result<Option<crate::windows::client_bootstrap::ModuleDataPlan>, HostError> {
+        if !self.before_resume {
+            return Ok(None);
+        }
+        revalidate(&self.provider, &self.registry)?;
+        let mut context = self.context.clone();
+        context["expectedPid"] = json!(pid);
+        context["executable"] = json!(executable);
+        let reply = self.call("beforeResume", context, deadline)?;
+        if reply
+            .as_object()
+            .is_none_or(|object| object.len() != 1 || !object.contains_key("moduleData"))
+        {
+            return Err(error("client_launch_adapter_protocol"));
+        }
+        revalidate(&self.provider, &self.registry)?;
+        if reply["moduleData"].is_null() {
+            return Ok(None);
+        }
+        crate::windows::client_bootstrap::ModuleDataPlan::parse(reply["moduleData"].clone())
+            .map(Some)
+            .map_err(|e| error(e.code))
     }
 
     pub(crate) fn attach(
@@ -213,7 +251,18 @@ impl LaunchAdapter {
                 let value: Value = serde_json::from_slice(&reply[..end])
                     .map_err(|_| error("client_launch_adapter_protocol"))?;
                 if value["ok"] != true {
-                    return Err(error("client_launch_adapter_failed"));
+                    let code = value["code"].as_str().filter(|code| {
+                        !code.is_empty()
+                            && code.len() <= 80
+                            && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                    });
+                    return Err(HostError::new(
+                        "client_launch_adapter_failed",
+                        format!(
+                            "Client launch adapter failed: {}",
+                            code.unwrap_or("unspecified")
+                        ),
+                    ));
                 }
                 return Ok(value["result"].clone());
             }
@@ -395,9 +444,13 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
 "#;
 
     fn fixture() -> (tempfile::TempDir, PathBuf, LoadedPlugin, JsRuntime) {
+        fixture_source(SOURCE)
+    }
+
+    fn fixture_source(source: &str) -> (tempfile::TempDir, PathBuf, LoadedPlugin, JsRuntime) {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        std::fs::write(root.join("host.cjs"), SOURCE).unwrap();
+        std::fs::write(root.join("host.cjs"), source).unwrap();
         std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":"test.launch-adapter","version":"1","host":{"entry":"host.cjs"},"permissions":["host.process","cdp.raw"],"provides":[{"name":CAPABILITY,"api":1,"scope":"runtime"}]}).to_string()).unwrap();
         let registry_path = root.join("registry.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
@@ -430,6 +483,107 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
 
     fn traffic() -> Value {
         json!({"source":{"version":1,"kind":"plaintext","operations":["route.register","route.update","route.close","http.intercept"],"protocols":["http","sse","webSocket"],"endpoint":{"host":"127.0.0.1","port":49152,"token":"0123456789abcdef0123456789abcdef"},"routeBaseUrl":"http://127.0.0.1:49153/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"},"environmentPatch":{"set":{},"removeCaseInsensitive":[]}})
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn optional_resume_phase_uses_snapshot_and_rechecks_authorization() {
+        let source = SOURCE.replace(
+            "({arguments:['--inspect-brk=127.0.0.1:0']})",
+            "({arguments:['--inspect-brk=127.0.0.1:0'],beforeResume:true})",
+        ) + "\nexports.beforeClientResume = ({features,expectedPid,executable}) => { if(features.moduleDataBootstrap!==1 || expectedPid!==123 || !executable) throw Error('bad_context'); return {moduleData:null}; };";
+        let (directory, registry, provider, runtime) = fixture_source(&source);
+        let adapter = LaunchAdapter::start(
+            &provider,
+            &registry,
+            &runtime,
+            directory.path(),
+            traffic(),
+            &[],
+        )
+        .unwrap();
+        let image = std::env::current_exe().unwrap();
+        std::fs::write(
+            provider.host.as_ref().unwrap().entry.clone(),
+            "throw Error('edited');",
+        )
+        .unwrap();
+        assert!(
+            adapter
+                .before_resume(123, &image, Instant::now() + Duration::from_secs(2))
+                .unwrap()
+                .is_none()
+        );
+        adapter
+            .attach(
+                "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
+                123,
+                &image,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+        drop(adapter);
+        let adapter = LaunchAdapter::start(
+            &provider,
+            &registry,
+            &runtime,
+            directory.path(),
+            traffic(),
+            &[],
+        )
+        .unwrap();
+        let mut changed = PluginRegistry::load(&registry).unwrap();
+        changed.set_enabled(&provider.manifest.id, false).unwrap();
+        changed.save().unwrap();
+        assert_eq!(
+            adapter
+                .before_resume(123, &image, Instant::now() + Duration::from_secs(2))
+                .unwrap_err()
+                .code,
+            "client_launch_authorization_revoked"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opt_in_requires_an_export_and_never_skips_the_resume_phase() {
+        let source = SOURCE.replace(
+            "({arguments:['--inspect-brk=127.0.0.1:0']})",
+            "({arguments:['--inspect-brk=127.0.0.1:0'],beforeResume:true})",
+        );
+        let (directory, registry, provider, runtime) = fixture_source(&source);
+        assert!(
+            LaunchAdapter::start(
+                &provider,
+                &registry,
+                &runtime,
+                directory.path(),
+                traffic(),
+                &[]
+            )
+            .is_err()
+        );
+        let (directory, registry, provider, runtime) =
+            fixture_source(&(source + "\nexports.beforeClientResume=()=>({moduleData:null});"));
+        let adapter = LaunchAdapter::start(
+            &provider,
+            &registry,
+            &runtime,
+            directory.path(),
+            traffic(),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            adapter
+                .attach(
+                    "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
+                    123,
+                    &std::env::current_exe().unwrap(),
+                    Instant::now() + Duration::from_secs(2)
+                )
+                .is_err()
+        );
     }
 
     #[test]

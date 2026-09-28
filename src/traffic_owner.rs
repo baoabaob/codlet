@@ -32,6 +32,9 @@ pub(crate) struct TrafficOwner {
     launch_provider: Option<crate::client_launch::LaunchAuthorization>,
     last_authorization_check: std::cell::Cell<Option<Instant>>,
     stderr: Option<crate::client_stderr::ClientStderr>,
+    #[cfg(windows)]
+    bootstrap: std::cell::RefCell<Option<crate::windows::client_bootstrap::BootstrapSession>>,
+    startup_deadline: std::cell::Cell<Option<Instant>>,
 }
 
 fn failure(code: &'static str) -> HostError {
@@ -90,6 +93,9 @@ impl TrafficOwner {
             launch_provider: None,
             last_authorization_check: std::cell::Cell::new(None),
             stderr: None,
+            #[cfg(windows)]
+            bootstrap: std::cell::RefCell::new(None),
+            startup_deadline: std::cell::Cell::new(None),
         };
         owner.check_alive()?;
         Ok(owner)
@@ -140,7 +146,16 @@ impl TrafficOwner {
         cancelled: impl Fn() -> bool,
     ) -> Result<(), HostError> {
         self.check_alive()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = self
+            .startup_deadline
+            .get()
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(10));
+        #[cfg(windows)]
+        if let Some(bootstrap) = self.bootstrap.borrow().as_ref() {
+            bootstrap
+                .wait_patched(deadline)
+                .map_err(|e| failure(e.code))?;
+        }
         let endpoint = self.stderr().endpoint(deadline, &cancelled)?;
         if cancelled() {
             return Err(failure("traffic_launch_cancelled"));
@@ -152,10 +167,41 @@ impl TrafficOwner {
             .ok_or_else(|| failure("client_launch_adapter_required"))?;
         let activation = adapter.attach(&endpoint, pid, executable, deadline)?;
         drop(adapter);
+        #[cfg(windows)]
+        if let Some(bootstrap) = self.bootstrap.borrow_mut().take() {
+            bootstrap.restore(deadline).map_err(|e| failure(e.code))?;
+            eprintln!("client-bootstrap: restored; debugger detached");
+        }
         self.check_alive()?;
         self.traffic
             .set_source_activation(activation.activated, activation.unsupported);
         Ok(())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn before_client_resume(
+        &self,
+        child: &crate::windows::process::SuspendedChild,
+        executable: &Path,
+    ) -> Result<(), crate::windows::process::ProcessError> {
+        let run = || -> Result<(), HostError> {
+            self.check_alive()?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            self.startup_deadline.set(Some(deadline));
+            let adapter = self.adapter.borrow();
+            let adapter = adapter
+                .as_ref()
+                .ok_or_else(|| failure("client_launch_adapter_required"))?;
+            if let Some(plan) = adapter.before_resume(child.pid, executable, deadline)? {
+                let session = crate::windows::client_bootstrap::BootstrapSession::arm(
+                    child, executable, plan, deadline,
+                )
+                .map_err(|e| failure(e.code))?;
+                *self.bootstrap.borrow_mut() = Some(session);
+            }
+            Ok(())
+        };
+        run().map_err(|e| crate::windows::process::ProcessError::ClientBootstrap(e.to_string()))
     }
 
     /// This records installation of the backend's launch configuration only.

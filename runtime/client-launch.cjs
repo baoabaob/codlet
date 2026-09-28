@@ -29,11 +29,13 @@ process.stdin.on('data', chunk => {
   pending = Buffer.alloc(0); busy = true;
   if (input.phase !== stage) { fail(); return; }
   const timer = setTimeout(fail, 10000);
-  Promise.resolve().then(() => plugin.exports[stage === 'prepare' ? 'prepareClientLaunch' : 'attachClientLaunch']({ ...input.context, signal: controller.signal }))
+  const method = { prepare: 'prepareClientLaunch', beforeResume: 'beforeClientResume', attach: 'attachClientLaunch' }[stage];
+  Promise.resolve().then(() => plugin.exports[method]({ ...input.context, signal: controller.signal }))
     .then(result => {
+      if (stage === 'prepare' && result?.beforeResume === true && (input.context?.features?.moduleDataBootstrap !== 1 || typeof plugin.exports.beforeClientResume !== 'function')) throw new Error('launch_phase_unsupported');
       send({ ok: true, result }); busy = false;
       if (stage === 'attach') { process.stdout.write('', () => process.exit(0)); }
-      else stage = 'attach';
-    }, () => { try { send({ ok: false }); } finally { fail(); } })
+      else stage = stage === 'prepare' && result?.beforeResume === true ? 'beforeResume' : 'attach';
+    }).catch(error => { try { send({ ok: false, code: /^[a-z_]{1,80}$/.test(error?.code) ? error.code : 'client_launch_adapter_failed' }); } finally { fail(); } })
     .finally(() => clearTimeout(timer));
 });

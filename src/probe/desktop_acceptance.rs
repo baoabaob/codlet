@@ -85,7 +85,7 @@ pub(super) fn isolated_full_runtime() {
         let (process, pipes) = if let Some(traffic) = traffic {
             traffic.stderr().capture_acceptance_startup();
             let environment = crate::windows::environment::ChildEnvironment::from_entries(traffic.environment().iter().cloned()).map_err(ProcessError::from)?;
-            let launched = crate::windows::process::launch_packaged_cdp(&executable, traffic.arguments(), Some(&environment), true, Some(traffic.stderr()), &context)?;
+            let launched = crate::windows::process::launch_packaged_cdp_with_bootstrap(&executable, traffic.arguments(), Some(&environment), true, Some(traffic.stderr()), &context, &mut |child| traffic.before_client_resume(child, &executable))?;
             if let Err(error) = traffic.attach_client(launched.0.process_id(), &executable, || false) {
                 traffic.stderr().report_startup_failure();
                 eprintln!("acceptance-traffic-client: pid={}; exit={:?}", launched.0.process_id(), launched.0.wait(Duration::from_millis(10)));

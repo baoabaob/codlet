@@ -83,13 +83,11 @@ Additional opt-in controls support adapter acceptance without changing productio
   selected independently of auxiliary target arrival order. Traffic-enabled
   runs use the production launch-provider handshake, with bounded stderr capture
   on failure; they do not assume an available inspector.
-- `startupHelper` selects a trusted absolute research executable, only in this
-  opt-in acceptance build. Before resuming the newly created client it receives
-  PID, creation time, verified executable and a fixture receipt path. Core checks
-  the owned root marker and executable identity, bounds the `armed` reply to
-  64 bytes/six seconds, and reaps the helper within fifteen further seconds.
-  Release Core has no such environment hook. This is not a production plugin API
-  or permission grant, and the helper must never adopt an existing desktop.
+- Windows traffic runs now use the production provider's optional before-resume
+  module-data phase, with the same grants, validation and restoration as normal
+  Core. The former `startupHelper` setting is rejected; the research executable
+  and its environment-variable hook have been removed. No arbitrary PID is a
+  bootstrap target. See the [launch contract](spec/traffic.md).
 
 The staged backend includes its signed command-runner, code-mode-host, Windows
 sandbox setup and sandbox service companions. Staging only `codex.exe` led to a
@@ -97,7 +95,10 @@ native missing-helper dialog during first-run setup. The coordinator verifies
 these files before launch and preserves their names and adjacent layout. A
 fresh official profile can still request Windows sandbox setup independently of
 transport tests; use a disposable Windows test environment for that acceptance,
-and do not automate elevation. Transport replies do not prove sandbox readiness.
+and do not automate elevation. The official plugins' dedicated traffic fixture
+blocks `windowsSandbox/setupStart` inside its test-only main bundle, before the
+RPC can install OS components. That guard is absent from production. Transport
+replies do not prove sandbox readiness.
 
 The coordinator creates fresh user-data, Codex, Codlet, SQLite and temporary
 directories, file-only authentication, and a dedicated loopback app-server. It
