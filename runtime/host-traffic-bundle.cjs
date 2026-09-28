@@ -773,15 +773,26 @@ var require_host_channels = __commonJS({
     }, detach = (fn) => fn() }) {
       const channels = /* @__PURE__ */ new Map(), exchanges = /* @__PURE__ */ new Map();
       let retired = false;
+      let reporting = false, revision = 0;
       const check = () => {
         if (retired || rootSignal.aborted) throw fail("host_stopping");
       };
       const changed = () => {
-        try {
-          Promise.resolve(reportState([...channels.values()].map((channel) => channel.api.status()))).catch(() => {
-          });
-        } catch {
-        }
+        revision++;
+        if (reporting || rootSignal.aborted) return;
+        reporting = true;
+        Promise.resolve().then(async () => {
+          let reported;
+          do {
+            reported = revision;
+            const snapshot = [...channels.values()].map((channel) => ({ id: channel.id, ...channel.api.status() }));
+            try {
+              await reportState(snapshot);
+            } catch {
+            }
+          } while (!rootSignal.aborted && reported !== revision);
+          reporting = false;
+        });
       };
       function retireExchange(id, code = "closed") {
         const exchange = exchanges.get(id);

@@ -8,6 +8,13 @@ The process ingress uses generic plaintext sources. The Adapter's [request-chain
 
 Core owns one Rust traffic engine for transparent sources and explicit channels. It reuses the traffic authority's Tokio runtime; there is no permanent Node traffic worker or alternative JavaScript forwarding engine. The dispatcher uses an in-process authority peer, one authenticated loopback Host peer per plugin generation, and a separate private launch-source peer. Short service RPCs register policy and return status. Request bodies, response bodies and WebSocket frames use the bounded data peer only when a plugin consumes them. An unmatched request streams directly between native sockets. Renderer calls cannot create a peer or select an owner generation.
 
+Host channel diagnostics share the bounded managed-RPC queue with plugin work.
+State changes coalesce behind at most one in-flight report and retain only the
+latest snapshot. Every observation includes the channel ID. Reporting failures
+do not retry unchanged state or block channel close/forward operations. This
+prevents diagnostic bursts from exhausting the Host's RPC/frame queue while
+an HTTP, SSE or WebSocket test is using its transport.
+
 The Windows/macOS launch owner prepares the engine before client attachment and retains it until the owned client has retired. Core owns authority, private launch descriptors, and the selected launch plugin's bounded handshake; the ordinary authorized plugin owns client-specific hooks and routing. Core never depends on an official Adapter package. Plugin disable, revocation, generation replacement or peer failure retires affected registrations, sources, channels and exchanges. A request already sent upstream is never replayed after retirement. The short-lived Adapter launch executor and ordinary JavaScript plugin Hosts remain isolated from Core.
 
 ## Registration

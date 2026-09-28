@@ -6,8 +6,25 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 function createHostedChannels({ coreRequest, rootSignal, getPeer, reportState = () => {}, detach = fn => fn() }) {
   const channels = new Map(), exchanges = new Map();
   let retired = false;
+  let reporting = false, revision = 0;
   const check = () => { if (retired || rootSignal.aborted) throw fail('host_stopping'); };
-  const changed = () => { try { Promise.resolve(reportState([...channels.values()].map(channel => channel.api.status()))).catch(() => {}); } catch {} };
+  // Diagnostics share the bounded managed-RPC queue with plugin work. A burst
+  // of stream/state events must occupy only one report slot; retain the latest
+  // snapshot, not one queued request for every intermediate observation.
+  const changed = () => {
+    revision++;
+    if (reporting || rootSignal.aborted) return;
+    reporting = true;
+    Promise.resolve().then(async () => {
+      let reported;
+      do {
+        reported = revision;
+        const snapshot = [...channels.values()].map(channel => ({ id: channel.id, ...channel.api.status() }));
+        try { await reportState(snapshot); } catch {} // Observations never block transport or cleanup.
+      } while (!rootSignal.aborted && reported !== revision);
+      reporting = false;
+    });
+  };
   function retireExchange(id, code = 'closed') {
     const exchange = exchanges.get(id); if (!exchange) return;
     exchanges.delete(id); exchange.controller.abort(fail('stream_retired')); exchange.streams.dispose();

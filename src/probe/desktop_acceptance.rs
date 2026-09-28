@@ -128,6 +128,21 @@ pub(super) fn isolated_full_runtime() {
         Ok((ConnectedCodex {package, executable, process, client, events, stderr}, Some(HostServers{_status:None,control})))
     }).expect("full Core startup");
     runtime.print_identity_and_initial_state();
+    if std::env::var("CODLET_ACCEPTANCE_MANUAL").as_deref() == Ok("1") {
+        assert!(
+            std::env::var_os("CODLET_ACCEPTANCE_PROBE").is_none(),
+            "manual acceptance never runs an automated UI probe"
+        );
+        std::fs::write(
+            root.join("manual-ready.txt"),
+            "Close this isolated client to finish.\n",
+        )
+        .unwrap();
+        let outcome = runtime.wait_inner();
+        let exit = runtime.process.wait(Duration::from_secs(15));
+        println!("manual-client-exit: {exit:?}; runtime: {outcome:?}");
+        return;
+    }
     let client = runtime.client.clone();
     let status = runtime.status.clone();
     let report_root = root.clone();

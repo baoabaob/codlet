@@ -111,6 +111,11 @@ Additional opt-in controls support adapter acceptance without changing productio
   selected independently of auxiliary target arrival order. Traffic-enabled
   runs use the production launch-provider handshake, with bounded stderr capture
   on failure; they do not assume an available inspector.
+- `manual: true` leaves the isolated client open until the tester closes it.
+  It rejects `probeScript`, disables automated clicks, screenshots and the
+  observation deadline, and writes `manual-ready.txt`. It is an interactive
+  demonstration, not an automatic pass verdict. The fixture server and owned
+  backend retire when the window closes; no daily profile is used.
 - Windows traffic runs now use the production provider's optional before-resume
   module-data phase, with the same grants, validation and restoration as normal
   Core. The former `startupHelper` setting is rejected; the research executable
