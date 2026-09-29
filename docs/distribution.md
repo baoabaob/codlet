@@ -28,14 +28,21 @@ the first installation, with no seed/adoption step for new users.
 Only read/download failures are retried once automatically. Failed choices remain pending;
 Windows offers retry/cancel and Mac restores pending choices on the next launch. Previously
 completed plugin registrations are reused without download. An uncertain mutation is never
-blindly replayed. Core upgrades/repair do not update, downgrade, adopt, re-enable or overwrite
-existing plugins, including custom sources. Removed plugins are not revived by ordinary
-startup. Use the GUI/CLI's normal update flow for installed plugins.
+blindly replayed. Setup does not overwrite existing registrations or revive removed
+plugins. Before the first normal launch of a changed Core/client version, Core refreshes
+already-installed official download channels through the regular GitHub preparation and
+managed-install transactions. This also runs before the Codlet-owned official-update restart.
+Successful checks are cached across ordinary launches. The network budget is 30 seconds;
+failed checks retain installed packages, record diagnostics and retry on a later launch
+after a five-minute cooldown. Safe mode skips this maintenance.
 
-Earlier releases installed local seeds. Those existing receipts, file validation and explicit
-GitHub adoption remain supported; installing a new Core does not silently change their source.
-Legacy seed commands are migration support, not the current installer path. Core has no runtime
-dependency on these official plugins and does not assign them special permissions.
+Earlier releases installed local seeds. Startup can migrate an unmodified seed to its pinned
+official GitHub channel after verifying the complete receipt/file set and repository/owner
+numeric identities. Downloads must pass the upstream digest check. Existing grants, broker
+scopes and enabled preferences are retained; new authority or dependency-contract changes
+require review. Custom or modified directories are skipped. Legacy seed commands remain
+migration support. Core has no runtime dependency on these plugins and grants them no
+special capabilities.
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, requests normal close with a bounded wait, and offers retry/cancel. Restart Manager automatic shutdown is disabled; no client is force-killed. An unattended busy install fails explicitly. Uninstall removes program files/shortcuts and preserves plugin/config/data.
 

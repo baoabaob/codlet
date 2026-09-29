@@ -14,11 +14,19 @@ codlet plugin list --json
 
 The native Windows launcher reports running recognized clients before launch. Close them normally or cancel; unsaved work is never a reason for the launcher to force-kill the app. Its initial normal-close wait is bounded. If the client remains open, retry after closing it yourself.
 
-Launch logs are under the selected Codlet data directory's `launcher-logs/`. Startup confirmation is limited to 90 seconds. On timeout, already started processes remain available for investigation; the launcher reports the failure instead of hiding an indefinite wait. MSI process-check logs are `%TEMP%/Codlet-Installer-{ProductCode}.log`. An unattended installation refuses a busy client before changing installation files (MSI error 1603, process-gate result 1618).
+Launch logs are under the selected Codlet data directory's `launcher-logs/`. Startup confirmation is limited to five minutes. On timeout, already started processes remain available for investigation; the launcher reports the failure instead of hiding an indefinite wait. MSI process-check logs are `%TEMP%/Codlet-Installer-{ProductCode}.log`. An unattended installation refuses a busy client before changing installation files (MSI error 1603, process-gate result 1618).
 
 The macOS launcher similarly requests normal quit, waits up to 15 seconds, and permits cancellation. Preview apps are ad-hoc signed, not Developer ID signed/notarized. Do not globally disable OS protections to test them.
 
 For an independent developer lab, follow the printed startup/error/coordinator paths. Recovery requires the previous owner to have exited; see [development](development.md).
+
+An absent Codlet icon does not by itself mean the client bypassed Core. Check `status` for
+the owned client PID and `recent_events` for `ui_build_drift`. After an official update,
+startup refresh results are in `config.json.client-plugins.json` and `logs/runtime.jsonl`.
+`reviewRequired` needs plugin-management review; a network failure keeps the previous
+packages and permits client startup. `runtime_skill_ready` confirms registration with the
+local App Server; `runtime_skill_unavailable` explains a missing `/codlet` skill separately
+from GUI availability. A newly released client still needs reviewed compatibility profiles.
 
 ## Safe mode
 

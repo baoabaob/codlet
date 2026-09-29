@@ -809,13 +809,19 @@ fn start_connected_codex_with_traffic(
 }
 
 fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeError> {
-    start_codlet_runtime_with_connector(options, start_connected_codex_with_traffic)
+    let package = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
+    start_codlet_runtime_with_connector(
+        options,
+        Some(&package.full_name),
+        start_connected_codex_with_traffic,
+    )
 }
 
 // The isolated desktop acceptance test supplies only the owned child and scoped
 // IPC listeners. Plugin preparation, activation and the event loop stay shared.
 fn start_codlet_runtime_with_connector(
     options: LaunchOptions,
+    refresh_client: Option<&str>,
     connect: impl FnOnce(
         Option<PreparedServices>,
         Option<&crate::traffic_owner::TrafficOwner>,
@@ -836,6 +842,10 @@ fn start_codlet_runtime_with_connector(
     let mut registry = PluginRegistry::load(scope.path())?;
     crate::managed_storage::prepare_installations(&mut registry)
         .map_err(crate::plugin_cli::PluginCliError::from)?;
+    if let Some(client) = refresh_client {
+        crate::plugin_startup_updates::refresh(&lease, client);
+        registry = PluginRegistry::load(scope.path())?;
+    }
     let mut host_control = HostControl::new(registry.path().to_owned());
     let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
     renderer.enable_runtime_skill();

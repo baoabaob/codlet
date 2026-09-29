@@ -75,7 +75,7 @@ pub(super) fn isolated_full_runtime() {
     let executable =
         resolve_package_executable(&package, Path::new(CODEX_EXECUTABLE_RELATIVE_PATH))
             .expect("resolve reviewed package executable");
-    let mut runtime = start_codlet_runtime_with_connector(LaunchOptions::default(), |services, traffic| {
+    let mut runtime = start_codlet_runtime_with_connector(LaunchOptions::default(), None, |services, traffic| {
         let services = services.expect("production runtime services");
         let control = ControlServer::bind_isolated(services.lease, services.status.clone())?;
         let stderr = traffic.is_none().then(crate::client_stderr::ClientStderr::capture_startup).transpose()?;

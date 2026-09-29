@@ -68,6 +68,7 @@ pub mod os_broker;
 pub mod plugin_cli;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod plugin_commands;
+mod plugin_startup_updates;
 mod plugin_update_install;
 mod plugin_update_source;
 mod plugin_updates;

@@ -55,6 +55,7 @@ test('cold documents wait for the reviewed entry, and disposal cancels every pen
 test('unknown builds and a changed entry never import native modules or alter the connection',async t=>{
   const unknown=fixture(t,profiles[0],{version:'unreviewed'});await settle();
   assert.equal(unknown.state().status,'failed');assert.equal(unknown.client.sendRequest,unknown.original);assert.equal(unknown.imports.length,0);
+  assert.ok(unknown.coreCalls.includes('failed'), 'missing Core profiles must produce a diagnostic, not silently hide the skill');
   const changed=fixture(t,profiles.at(-1),{entry:false});changed.document.readyState='complete';
   await new Promise(r=>setTimeout(r,70));await settle();
   assert.equal(changed.state().status,'failed');assert.equal(changed.imports.length,0);assert.equal(changed.client.sendRequest,changed.original);

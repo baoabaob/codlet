@@ -251,6 +251,21 @@ pub(crate) fn verified_update_channel(
         id,
         &executable.parent()?.join("optional-plugins/catalog.json"),
     )
+    .or_else(|| {
+        // Core-only distributions no longer contain the old payload catalog.
+        // Bind the current download channel only after proving every old file;
+        // an arbitrary local directory with an official ID is never adopted.
+        let package = verified_installer_package(registry, id)?;
+        if package.update_source.is_some() {
+            return None;
+        }
+        let channel = crate::plugin_update_source::official_channel(id)?;
+        let manifest =
+            crate::local_plugins::inspect_local_plugin(&registry.local_plugins().get(id)?.path)
+                .ok()?
+                .manifest;
+        Some((manifest, channel, digest(&package)))
+    })
 }
 fn update_channel_from_catalog(
     registry: &PluginRegistry,

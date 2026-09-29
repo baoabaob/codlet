@@ -54,7 +54,7 @@ function Select-Plugins($Available){
   $form=[Windows.Forms.Form]::new();$form.Text='Codlet · 选择官方插件';$form.ClientSize=[Drawing.Size]::new(570,320);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.MaximizeBox=$false;$form.MinimizeBox=$false
   $form.Font=[Drawing.Font]::new('Microsoft YaHei UI',10)
   if([IO.File]::Exists((Join-Path $root 'codlet.ico'))){$form.Icon=[Drawing.Icon]::new((Join-Path $root 'codlet.ico'))}
-  $label=[Windows.Forms.Label]::new();$label.Text="从 GitHub 下载所选插件的最新发布版。GUI 包含 UI Adapter。`n已有插件保持不变，可在 GUI 或 CLI 中更新。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
+  $label=[Windows.Forms.Label]::new();$label.Text="从 GitHub 下载所选插件的最新发布版。GUI 包含 UI Adapter。`n已有插件保留配置；启动时同步官方插件更新。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
   $boxes=@{};$y=91
   foreach($package in $Available){
     $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codex.ui.adapter'{'UI Adapter — 接入侧栏与插件页面'};'codex.desktop.adapter'{'Desktop Adapter — 提供客户端与对话接口'};'codlet-gui'{'Codlet GUI — 图形化管理插件（包含 UI Adapter）'}}
@@ -124,7 +124,8 @@ try{
     foreach($package in $available){
       $id=[string]$package.id
       if($id -notin $selected){if(-not $state.decided.ContainsKey($id) -or ($explicit -and (Decision-Result $id) -eq 'pending')){$state.decided[$id]=@{selected=$false;result='declined'}};continue}
-      # Core upgrades do not update, downgrade, re-enable or adopt any existing source.
+      # Setup preserves existing sources. Core's pre-launch refresh separately
+      # verifies installed official channels and preserves their grants/settings.
       $existing=@($listing.plugins|Where-Object{$_.id -eq $id})
       if($existing.Count -gt 0){if(-not $state.decided.ContainsKey($id) -or (Decision-Result $id) -eq 'pending'){$state.decided[$id]=@{selected=$true;result='existing'}};continue}
       if(-not $explicit -and $state.decided.ContainsKey($id) -and $state.decided[$id].selected -and (Decision-Result $id) -ne 'pending'){continue}

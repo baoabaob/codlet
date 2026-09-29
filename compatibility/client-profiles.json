@@ -109,6 +109,13 @@
         "client": "app://-/assets/app-shared-baf181f346ac.js", "primary": "app://-/assets/app-initial-8f0e46979798.js",
         "exports": { "react": "e6", "dom": "P3", "client": "N3", "sidebar": "bC", "headerInit": "p7", "header": "f7", "newTaskInit": "d2", "newTask": "h2" }
       }
+    },
+    {
+      "appVersion": "26.924.22138", "buildNumber": "11645", "platform": "windows-x86_64",
+      "appServerVersion": "0.158.0-alpha.2.1", "runtimeSkill": true,
+      "entry": "app://-/assets/index-90c6cda9bd3d.js",
+      "module": "app://-/assets/app-shared-c568b0b98683.js",
+      "exports": { "scope": "tSt", "client": "yC", "services": "nC" }
     }
   ]
 }

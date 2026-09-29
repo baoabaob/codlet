@@ -290,6 +290,34 @@ pub(crate) fn recover_in_safe_mode(
     })
 }
 
+/// The startup owner holds the registry lease and has not started executors.
+/// Reuse the normal managed install transaction, including recovery/rollback.
+pub(crate) fn update_before_launch(
+    lease: &RegistryScopeGuard,
+    preview: &crate::managed_plugins::ManagedPreview,
+) -> Result<(), PluginCliError> {
+    let old = preview.existing_registration.as_ref().ok_or_else(|| {
+        PluginControlError::new(
+            "installed_plugin_required",
+            "Startup updates cannot install a new plugin",
+        )
+    })?;
+    let request = PluginControlRequest {
+        action: PluginControlAction::Update,
+        plugin_id: preview.manifest.id.clone(),
+        permission: None,
+        cascade: false,
+        remove_source: None,
+        local_import: Some(preview.request(
+            old.grants.clone(),
+            old.broker_policy.clone(),
+            preview.existing_enabled,
+        )),
+    };
+    request.validate()?;
+    edit_registration(lease.scope().path(), &request, &mut CliOutput::default())
+}
+
 fn edit_registration(
     path: &std::path::Path,
     request: &PluginControlRequest,

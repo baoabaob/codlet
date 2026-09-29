@@ -6,6 +6,44 @@ use crate::managed_plugins::ManagedOperation;
 use crate::plugins::{PluginManifest, PluginRegistry};
 use serde::{Deserialize, Serialize};
 
+/// Distribution identity only: Core never imports or requires these plugins.
+pub(crate) fn official_channel(id: &str) -> Option<UpdateChannel> {
+    #[derive(Deserialize)]
+    struct Catalog {
+        plugins: Vec<Download>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Download {
+        id: String,
+        repository_url: String,
+        repository_id: u64,
+        owner_id: u64,
+    }
+    let catalog: Catalog = serde_json::from_str(include_str!(
+        "../scripts/distribution/official-plugins.json"
+    ))
+    .ok()?;
+    let entry = catalog.plugins.into_iter().find(|entry| entry.id == id)?;
+    Some(UpdateChannel {
+        kind: "github".into(),
+        repository_url: entry.repository_url,
+        repository_id: Some(entry.repository_id),
+        owner_id: Some(entry.owner_id),
+        asset_name_template: format!("{id}-{{version}}.zip"),
+    })
+}
+
+pub(crate) fn is_official_channel(id: &str, source: &UpdateChannel) -> bool {
+    official_channel(id).is_some_and(|expected| {
+        expected
+            .repository_url
+            .eq_ignore_ascii_case(&source.repository_url)
+            && expected.repository_id == source.repository_id
+            && expected.owner_id == source.owner_id
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateChannel {

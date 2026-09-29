@@ -256,7 +256,7 @@ fn select_channel_asset<'a>(
         )
     }
 }
-async fn prepare_latest(
+pub(crate) async fn prepare_latest(
     client: &GitHubClient,
     path: &Path,
     id: &str,
@@ -323,13 +323,15 @@ async fn prepare_latest(
 fn needs_review(p: &ManagedPreview) -> bool {
     p.operation == ManagedOperation::Adopt
         || p.changes.restart_required
-        || p.existing_registration.as_ref().is_none_or(|r| {
-            p.manifest
-                .permissions
-                .iter()
-                .any(|permission| !r.grants.contains(permission))
-        })
-        || !p.changes.permissions_added.is_empty()
+        || needs_authority_review(p)
+}
+pub(crate) fn needs_authority_review(p: &ManagedPreview) -> bool {
+    p.existing_registration.as_ref().is_none_or(|r| {
+        p.manifest
+            .permissions
+            .iter()
+            .any(|permission| !r.grants.contains(permission))
+    }) || !p.changes.permissions_added.is_empty()
         || !p.changes.requirements_added.is_empty()
         || !p.changes.requirements_removed.is_empty()
         || !p.changes.provides_added.is_empty()

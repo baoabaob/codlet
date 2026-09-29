@@ -334,6 +334,16 @@ impl RuntimeSkills {
     pub(crate) fn invoke(&mut self, target: &str, context: u64, input: &Value) -> Value {
         let fail = |message: &str| json!({"error":message});
         match input["action"].as_str() {
+            Some("failed") => {
+                let message: String = input["message"]
+                    .as_str()
+                    .unwrap_or("Runtime skill registration failed")
+                    .chars()
+                    .take(1000)
+                    .collect();
+                crate::runtime_log::error("runtime_skill_unavailable", &message);
+                json!({"reported":true})
+            }
             Some("ensure" | "set") => {
                 if self.pending.is_some() {
                     return json!({"busy":true});
@@ -383,6 +393,10 @@ impl RuntimeSkills {
                 if input["ok"] == true {
                     self.roots = pending.roots.clone();
                     self.registered = true;
+                    crate::runtime_log::info(
+                        "runtime_skill_ready",
+                        "Codlet skill registered with the local App Server",
+                    );
                 } else {
                     self.registered = false;
                 }

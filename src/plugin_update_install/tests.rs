@@ -49,12 +49,24 @@ fn existing_grants_update_directly_but_new_authority_and_dependency_changes_requ
     assert!(!needs_review(&p));
     p.operation = ManagedOperation::Adopt;
     assert!(needs_review(&p));
+    assert!(
+        !needs_authority_review(&p),
+        "verified migration can happen before executors start"
+    );
     p.operation = ManagedOperation::Update;
     p.changes.restart_required = true;
     assert!(needs_review(&p));
+    assert!(
+        !needs_authority_review(&p),
+        "entry changes can be applied before launch"
+    );
     p.changes.restart_required = false;
     p.manifest.permissions.push(Permission::RuntimeManage);
     assert!(needs_review(&p));
+    assert!(
+        needs_authority_review(&p),
+        "startup must not approve new authority"
+    );
     p.manifest.permissions.pop();
     p.changes.requirements_added.push(
         crate::capabilities::CapabilityDescriptor::new(

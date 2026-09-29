@@ -36,6 +36,14 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     } else {
         let mut registry = PluginRegistry::load(scope.path())?;
         crate::managed_storage::prepare_installations(&mut registry)?;
+        crate::plugin_startup_updates::refresh(
+            &lease,
+            &format!(
+                "{}:{}:{}",
+                application.identifier, application.version, application.build
+            ),
+        );
+        registry = PluginRegistry::load(scope.path())?;
         let catalog = PluginCatalog::load(&registry)?;
         let host_plugins = catalog
             .enabled_plugins(&registry)?

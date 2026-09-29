@@ -16,6 +16,14 @@ The project's current platform scope is based on the official [Windows deploymen
 
 Reviewed client mappings live in `compatibility/client-profiles.json`; actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Unknown client builds must report unavailable private integrations explicitly. Do not add an acceptance record because a source profile or cross-compile exists.
 
+Windows package 26.924.2738.0 (frontend 26.924.22138 / 11645, local App Server
+0.158.0-alpha.2.1) has isolated real-client acceptance for the Core runtime skill,
+native plugin navigation, GUI activation and clean shutdown. Preview.20 also verifies
+migration of prior installer seeds through the published GitHub channels while retaining
+grants and enabled preferences. This does not claim another real MSIX update was installed
+during that isolated test; updater restart registration is covered separately by native
+bridge tests and the observed user update.
+
 The optional Desktop and UI adapters own private frontend behavior. Core owns generic lifecycle, identity, RPC, permissions, and resource cleanup. Adapter-only plugins can inherit the portability of the adapter operations they actually use; direct OS calls, binaries, native libraries, or private mappings can narrow support. Dependency names alone do not prove portability.
 
 ## Acceptance evidence

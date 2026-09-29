@@ -177,6 +177,10 @@ impl OfficialUpdateOwner {
         if let Some(bridge) = &self.bridge {
             if bridge.take_registered() {
                 self.intent.registered();
+                crate::runtime_log::info(
+                    "official_update_restart_requested",
+                    "Core owns the official updater restart handoff",
+                );
                 eprintln!("official-update: installer requested restart; Core owns the handoff");
             }
             if let Ok(snapshot) = bridge.snapshot() {
@@ -403,6 +407,13 @@ impl OfficialUpdateOwner {
                         return UpdateExit::Combined;
                     }
                     self.completed = true;
+                    crate::runtime_log::info(
+                        "official_update_restart_confirmed",
+                        &format!(
+                            "{} -> {}; restarting through Codlet",
+                            self.package.full_name, package.full_name
+                        ),
+                    );
                     return UpdateExit::Restart;
                 }
                 stable = Some(package.full_name);

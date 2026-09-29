@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../src/official_update_bridge.js', import.meta.url), 'utf8').replaceAll('import(', 'loadModule(');
-const profile = JSON.parse(readFileSync(new URL('../compatibility/client-profiles.json', import.meta.url), 'utf8')).builds.at(-1);
+const profile = JSON.parse(readFileSync(new URL('../compatibility/client-profiles.json', import.meta.url), 'utf8')).builds.filter(p => p.officialUpdates).at(-1);
 
 test('update bridge selects the observed platform entry before importing or installing', async () => {
   const token = { id: 'AppScope' }, atom = {}, state = { downloadProgressPercent: null, installProgressPercent: null,

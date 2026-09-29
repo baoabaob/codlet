@@ -35,11 +35,19 @@ pub fn initialize(registry: &Path) {
 }
 
 pub fn error(code: &str, message: &str) {
+    record("error", code, message);
+}
+
+pub fn info(code: &str, message: &str) {
+    record("info", code, message);
+}
+
+fn record(level: &str, code: &str, message: &str) {
     let Some(log) = LOG.get() else {
         return;
     };
     let path = log.lock().unwrap_or_else(|error| error.into_inner());
-    if let Err(error) = append(&path, "error", code, message) {
+    if let Err(error) = append(&path, level, code, message) {
         eprintln!("codlet-log: {error}");
     }
 }

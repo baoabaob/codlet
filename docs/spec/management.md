@@ -78,7 +78,16 @@ plugin github adopt dev.notes PREVIEW_PATH --trust --grant ui.dom --enable --jso
 
 Core generates the source receipt; caller-supplied provenance is not accepted as authority. The final import request pairs `managed:'install'` with `action:'import'`, or `managed:'update'|'adopt'` with `action:'update'`, retains the exact preview digests, and confirms grants/scopes/enablement. Changing repositories or changing from local to managed ownership does not inherit trust silently. Installed managed sources are checked again at startup/enable/reload and should not be edited in place.
 
-`managed:'adopt'` pairs with `action:'update'` only after an explicit `githubPrepare` adoption preview. Core requires the existing registration to be an unmodified installer package proven by its local receipt and complete file record. A same-ID custom local registration cannot be adopted. This transaction preserves the reviewed grants, broker policy and enabled preference selected by the caller, while publishing a new verified GitHub package for offline use. Fresh package receipts include GitHub repository and owner numeric IDs; clients classify maintained sources by these IDs together with the full repository name and inspected plugin ID, not by topic, ID alone or author text. Core has no official repository allowlist.
+`managed:'adopt'` pairs with `action:'update'` after a verified adoption preview. Core requires the existing registration to be an unmodified installer package proven by its local receipt and complete file record. A same-ID custom local registration cannot be adopted. This transaction preserves the reviewed grants, broker policy and enabled preference selected by the caller, while publishing a new verified GitHub package for offline use. Fresh package receipts include GitHub repository and owner numeric IDs; clients classify maintained sources by these IDs together with the full repository name and inspected plugin ID, not by topic, ID alone or author text.
+
+Startup maintenance uses the distribution's official download identities to refresh only
+already-installed matching channels when the Core/client identity changes. Verified old
+installer seeds can use the same adoption transaction without an extra dialog when no
+authority or dependency contract changes. It holds the registry lease before any executor
+starts, so entry changes do not require another restart. New permissions, revoked grants,
+dependency changes, changed authors' files and different repository identities are never
+silently approved. Third-party updates retain the explicit GUI/CLI flow. This distribution
+policy does not make any Adapter a Core dependency or grant it additional capabilities.
 
 `codlet-package.json` metadata is read through one bounded validator for local imports, installer packages and GitHub packages. Its platform and Runtime API declarations produce `deviceCompatibility` with explicit `compatible`, `incompatible` or `unknown` status. Missing declarations remain unknown. Incompatible packages may be previewed but cannot be registered. Adapter declarations are author data and do not establish client build support or certification.
 

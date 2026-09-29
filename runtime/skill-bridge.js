@@ -87,5 +87,5 @@ function installCodletSkill(config) {
     };
     client.sendRequest=state.wrapper;client.setAppServerVersion=state.versionWrapper;
     await updateRoots();
-  })().catch(error=>{if(state.alive){state.status='failed';state.error=String(error.message??error);}});
+  })().catch(error=>{if(state.alive){state.status='failed';state.error=String(error.message??error);void ask('failed',{message:state.error.slice(0,1000)}).catch(()=>{});}});
 }
