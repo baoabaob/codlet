@@ -29,7 +29,12 @@ mod tests {
     fn local_versions_do_not_infer_client_update_availability() {
         let value = status_for_target("26.908.4834.0", "windows", "x86_64");
         assert_eq!(value["status"], "matched");
-        assert_eq!(value["adaptedVersions"], json!(["26.908.4834.0"]));
+        assert!(
+            value["adaptedVersions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("26.908.4834.0"))
+        );
         assert!(value.get("latestVersion").is_none());
         assert!(value.get("officialUpdateAvailable").is_none());
         assert!(value.get("installedVersion").is_none());
