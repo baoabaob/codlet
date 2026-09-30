@@ -26,6 +26,7 @@ namespace Codlet.Setup {
                 if (!preview) return 87;
 #endif
                 var app = new Application();
+                if (args.Contains("--chinese")) System.Threading.Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
                 var setup = new SetupWindow(preview, args.Contains("--english"));
                 if (args.Contains("--self-test")) {
                     int index = Array.IndexOf(args, "--self-test");
@@ -47,7 +48,10 @@ namespace Codlet.Setup {
         readonly Dictionary<string, string> folders = new Dictionary<string, string>();
         readonly Dictionary<string, string> existing = new Dictionary<string, string>();
         readonly Dictionary<string, string[]> words = new Dictionary<string, string[]> {
-            {"slogan", new[]{"自定义你的 Codex", "Customize your Codex"}},
+            {"title", new[]{"Codlet 安装器", "Codlet Installer"}},
+            {"close", new[]{"关闭安装器", "Close installer"}}, {"version", new[]{"版本", "Version"}},
+            {"expandPlugins", new[]{"展开官方插件选项", "Expand official plugin options"}},
+            {"collapsePlugins", new[]{"收起官方插件选项", "Collapse official plugin options"}},
             {"scope", new[]{"安装范围", "Install for"}}, {"admin", new[]{"需要管理员权限", "Administrator permission required"}},
             {"user", new[]{"仅当前用户", "Just me"}}, {"machine", new[]{"所有用户（全局）", "Everyone on this computer"}},
             {"location", new[]{"安装位置", "Installation folder"}}, {"browse", new[]{"浏览…", "Browse…"}},
@@ -80,11 +84,16 @@ namespace Codlet.Setup {
         bool syncing, closed, gateBusy, cancelPending; MsiSession session;
         List<RunningApplication> running = new List<RunningApplication>();
         public SetupWindow(bool isPreview, bool english) {
-            preview = isPreview; chinese = !english && CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+            preview = isPreview; chinese = !english && UsesChinese(CultureInfo.CurrentUICulture);
             using (var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("Codlet.Setup.xaml")) Window = (Window)XamlReader.Load(source);
             Window.MaxHeight = Math.Max(540, SystemParameters.WorkArea.Height - 40);
             ApplyTheme(IsDark()); Translate(Window);
+            Window.Title = T("title");
             Control<TextBlock>("VersionLabel").Text = SetupBuild.Version;
+            System.Windows.Automation.AutomationProperties.SetName(Control<Button>("CloseButton"), T("close"));
+            System.Windows.Automation.AutomationProperties.SetName(Control<TextBox>("InstallPath"), T("location"));
+            System.Windows.Automation.AutomationProperties.SetName(Control<TextBlock>("VersionLabel"), T("version") + " " + SetupBuild.Version);
+            System.Windows.Automation.AutomationProperties.SetHelpText(Control<Button>("PluginsButton"), T("expandPlugins"));
             folders["user"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codlet Preview");
             folders["machine"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Codlet Preview");
             if (!preview) {
@@ -108,10 +117,7 @@ namespace Codlet.Setup {
                 } catch (Exception error) { Notice(error.Message); }
             };
             Control<Button>("PluginsButton").Click += delegate {
-                var choices = Control<StackPanel>("PluginChoices"); bool expand = choices.Visibility != Visibility.Visible;
-                choices.Visibility = expand ? Visibility.Visible : Visibility.Collapsed;
-                Control<TextBlock>("PluginChevron").Text = expand ? "⌃" : "⌄";
-                Window.Height = Math.Min(Window.MaxHeight, expand ? 782 : 660);
+                SetPluginsExpanded(Control<StackPanel>("PluginChoices").Visibility != Visibility.Visible);
             };
             foreach (string name in new[]{"GuiChoice", "UiChoice", "DesktopAdapterChoice"}) {
                 var box = Control<CheckBox>(name);
@@ -124,7 +130,14 @@ namespace Codlet.Setup {
             SyncPlugins(null); Validate();
         }
         TControl Control<TControl>(string name) where TControl : FrameworkElement { return (TControl)Window.FindName(name); }
+        internal static bool UsesChinese(CultureInfo culture) { return String.Equals(culture.TwoLetterISOLanguageName, "zh", StringComparison.OrdinalIgnoreCase); }
         string T(string key) { return words[key][chinese ? 0 : 1]; }
+        void SetPluginsExpanded(bool expanded) {
+            Control<StackPanel>("PluginChoices").Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            ((RotateTransform)Control<System.Windows.Shapes.Path>("PluginChevron").RenderTransform).Angle = expanded ? 180 : 0;
+            System.Windows.Automation.AutomationProperties.SetHelpText(Control<Button>("PluginsButton"), T(expanded ? "collapsePlugins" : "expandPlugins"));
+            Window.Height = Math.Min(Window.MaxHeight, expanded ? 722 : 620);
+        }
         void Translate(DependencyObject root) {
             var element = root as FrameworkElement;
             string tag = element == null ? null : element.Tag as string;
@@ -364,7 +377,7 @@ namespace Codlet.Setup {
             Control<RadioButton>("MachineScope").IsChecked = true;
             if (Control<TextBox>("InstallPath").Text != folders["machine"]) throw new Exception("Scope did not change path");
             Capture(Path.Combine(output, "installer-machine.png"));
-            ApplyTheme(true); Control<StackPanel>("PluginChoices").Visibility = Visibility.Visible; Window.Height = 782;
+            ApplyTheme(true); SetPluginsExpanded(true);
             Capture(Path.Combine(output, "installer-dark.png"));
             var payload = ExtractPayload(output); File.Delete(payload);
             File.WriteAllText(Path.Combine(output, "report.json"), "{\"passed\":true,\"installationPerformed\":false,\"nativeUi\":true,\"payloadHashVerified\":true,\"scopeAndFeatures\":true,\"msiProgressAndCancellation\":true,\"version\":\"" + SetupBuild.Version + "\"}", new UTF8Encoding(false));
