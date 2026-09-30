@@ -78,7 +78,7 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 <Binary Id="CodletInstallerActions" SourceFile="${xml(resolve(build,'Codlet-Installer-Preflight.exe'))}"/>
 <CustomAction Id="CheckRunningApplications" BinaryKey="CodletInstallerActions" ExeCommand="&quot;[INSTALLFOLDER].&quot; [UILevel] &quot;[TempFolder]Codlet-Installer-[ProductCode].log&quot;" Execute="immediate" Return="check"/>
 <InstallExecuteSequence><Custom Action="CheckRunningApplications" Before="InstallValidate">NOT UPGRADINGPRODUCTCODE</Custom></InstallExecuteSequence>
-<MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="已安装更新版本的 Codlet Preview"/>
+<MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更新版本的 Codlet Preview"/>
 <MediaTemplate EmbedCab="yes" CompressionLevel="medium"/>
 <Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动将从 GitHub 下载所选插件，需要网络。已有插件保持不变。卸载保留用户数据。"/>
 <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 Codlet"/>

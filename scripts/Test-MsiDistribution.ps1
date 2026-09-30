@@ -41,6 +41,9 @@ if($StructureOnly){
     $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
     if($shortcuts.Count -ne 2 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe' -or $_[2] -like '*--configure*'}).Count){throw 'Only the Start menu and desktop launch shortcuts are allowed'}
     $sequences=@(Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)
+    $initialize=[int](@($sequences|Where-Object{$_[0] -eq 'InstallInitialize'})[0][1])
+    $removeExisting=[int](@($sequences|Where-Object{$_[0] -eq 'RemoveExistingProducts'})[0][1])
+    if($removeExisting -le $initialize){throw 'Upgrade must remove the old product inside the rollback transaction'}
     $preflight=[int](@($sequences|Where-Object{$_[0] -eq 'CheckRunningApplications'})[0][1])
     $validate=[int](@($sequences|Where-Object{$_[0] -eq 'InstallValidate'})[0][1])
     if($preflight -le 0 -or $preflight -ge $validate){throw 'Process check must precede file validation and the transaction'}
