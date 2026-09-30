@@ -100,11 +100,13 @@ impl Desktop {
                     .plugin
                     .authorization
                     .as_ref()
-                    .map(|a| &a.broker_policy.shortcuts)
+                    .map(|a| &a.broker_policy)
                     .ok_or_else(|| error("policy_denied", "no shortcuts were granted"))?;
-                if !allowed.iter().any(|candidate| {
-                    normalize_shortcut(candidate).is_ok_and(|value| value == chord)
-                }) {
+                if !allowed.client_permissions
+                    && !allowed.shortcuts.iter().any(|candidate| {
+                        normalize_shortcut(candidate).is_ok_and(|value| value == chord)
+                    })
+                {
                     return Err(error(
                         "policy_denied",
                         "this specific shortcut was not granted",

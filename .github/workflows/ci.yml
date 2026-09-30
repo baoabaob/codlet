@@ -89,6 +89,8 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-WindowsInstaller.ps1 -ArtifactsDirectory .codlet-artifacts/installer-ci
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-NativeInstaller.ps1 -ArtifactsDirectory .codlet-artifacts/native-installer-ci
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-launcher.test.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
 

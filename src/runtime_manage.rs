@@ -190,7 +190,7 @@ impl RuntimeManageService {
             .unwrap_or_else(|error| error.into_inner())
             .clone();
         if self.local_registry.is_some() {
-            list["localManagement"] = serde_json::json!({"available":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
+            list["localManagement"] = serde_json::json!({"available":true, "clientPermissions":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
             list["githubManagement"] = serde_json::json!({"available":true});
         }
         if let Some(path) = &self.local_registry

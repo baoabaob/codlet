@@ -3,6 +3,7 @@ use std::thread;
 
 fn owner() -> ResourceOwner {
     ResourceOwner {
+        client_permissions: false,
         plugin_id: "test.resources".into(),
         source_identity: "scope/source".into(),
         generation: 1,
@@ -644,5 +645,32 @@ fn process_rejects_ungranted_environment_before_start() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn client_permissions_spawn_without_program_cwd_or_environment_lists() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut owner = process_owner(&temp);
+    let executable = owner.executables[0].clone();
+    owner.client_permissions = true;
+    owner.executables.clear();
+    let cwd = temp.path().join("work");
+    std::fs::create_dir(&cwd).unwrap();
+    let core = CoreResources::default();
+    let created = call(
+        &core,
+        &owner,
+        "processes.spawn",
+        json!({"executable":executable,"cwd":cwd,"env":{"CODLET_TEST_VALUE":"hello"},"args":["--eval","process.stdout.write(process.env.CODLET_TEST_VALUE)"],"operationKey":"client-access"}),
+    );
+    let id = &created["process"];
+    assert_eq!(read_until(&core, &owner, id, "stdout", 5), b"hello");
+    call(&core, &owner, "processes.close", json!({"process":id}));
+    let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/whoami.exe");
+    assert!(
+        crate::os_broker::filesystem::pin_client_path(&system).is_ok(),
+        "OS system hard links are valid with client access"
     );
 }

@@ -8,6 +8,21 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 const MAX_BYTES: usize = 256 * 1024;
+#[derive(Clone)]
+struct FileAccess {
+    roots: Vec<PathBuf>,
+    client_permissions: bool,
+}
+impl FileAccess {
+    fn pin(&self, path: &Path) -> Result<crate::os_broker::filesystem::Selected> {
+        if self.client_permissions {
+            crate::os_broker::filesystem::pin_client_path(path)
+        } else {
+            pin_within_grants(path, &self.roots)
+        }
+        .map_err(broker_error)
+    }
+}
 #[derive(Clone, Default)]
 pub(super) struct Files(Arc<Mutex<State>>);
 #[derive(Default)]
@@ -19,7 +34,7 @@ struct State {
 struct Watch {
     owner: String,
     target: PathBuf,
-    roots: Vec<PathBuf>,
+    roots: FileAccess,
     snapshot: Value,
     revision: u64,
     events: VecDeque<Value>,
@@ -114,7 +129,7 @@ impl Files {
         check()?;
         match method {
             "read" => {
-                let mut selected = pin_within_grants(&path, &roots).map_err(broker_error)?;
+                let mut selected = roots.pin(&path)?;
                 let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
                 let maximum = params
                     .get("maxBytes")
@@ -139,7 +154,7 @@ impl Files {
                 )
             }
             "stat" => {
-                let selected = pin_within_grants(&path, &roots).map_err(broker_error)?;
+                let selected = roots.pin(&path)?;
                 metadata(&selected.file)
             }
             "readDir" => directory_snapshot(&path, &roots),
@@ -147,7 +162,7 @@ impl Files {
                 let parent = path
                     .parent()
                     .ok_or_else(|| error("invalid_params", "target has no parent"))?;
-                let pinned_parent = pin_within_grants(parent, &roots).map_err(broker_error)?;
+                let pinned_parent = roots.pin(parent)?;
                 let expected = params.get("expectedVersion").ok_or_else(|| {
                     error(
                         "invalid_params",
@@ -156,7 +171,7 @@ impl Files {
                 })?;
                 let previous = match fs::symlink_metadata(&path) {
                     Ok(_) => {
-                        let selected = pin_within_grants(&path, &roots).map_err(broker_error)?;
+                        let selected = roots.pin(&path)?;
                         Some(version(&selected.file)?)
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -186,14 +201,14 @@ impl Files {
                 check()?;
                 pinned_parent.check_location().map_err(broker_error)?;
                 commit_file(&pinned_parent, &path, &bytes, expected.is_null())?;
-                let current = pin_within_grants(&path, &roots).map_err(broker_error)?;
+                let current = roots.pin(&path)?;
                 Ok(json!({"version":version(&current.file)?,"bytesWritten":bytes.len()}))
             }
             "mkdir" => {
                 let parent = path
                     .parent()
                     .ok_or_else(|| error("invalid_params", "target has no parent"))?;
-                let selected = pin_within_grants(parent, &roots).map_err(broker_error)?;
+                let selected = roots.pin(parent)?;
                 check()?;
                 make_directory(&selected, &path)?;
                 selected.check_location().map_err(broker_error)?;
@@ -203,8 +218,8 @@ impl Files {
                 let parent = path
                     .parent()
                     .ok_or_else(|| error("invalid_params", "target has no parent"))?;
-                let parent = pin_within_grants(parent, &roots).map_err(broker_error)?;
-                let selected = pin_within_grants(&path, &roots).map_err(broker_error)?;
+                let parent = roots.pin(parent)?;
+                let selected = roots.pin(&path)?;
                 let expected = string(&params, "expectedVersion")?;
                 if version(&selected.file)? != expected {
                     return Err(error("revision_conflict", "the selected file changed"));
@@ -225,7 +240,7 @@ impl Files {
         params: &Value,
         write: bool,
         watch: bool,
-    ) -> Result<(PathBuf, Vec<PathBuf>)> {
+    ) -> Result<(PathBuf, FileAccess)> {
         if let Some(reference) = params.get("reference").and_then(Value::as_str) {
             let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
             let selected = state
@@ -251,7 +266,13 @@ impl Files {
                         .to_owned(),
                 ]
             };
-            return Ok((selected.path.clone(), roots));
+            return Ok((
+                selected.path.clone(),
+                FileAccess {
+                    roots,
+                    client_permissions: false,
+                },
+            ));
         }
         let path = PathBuf::from(string(params, "path")?);
         let policy = p
@@ -269,9 +290,15 @@ impl Files {
         };
         crate::plugin_permissions::validate_policy_path(&path)
             .map_err(|e| error("invalid_params", e.to_string()))?;
-        Ok((path, roots.clone()))
+        Ok((
+            path,
+            FileAccess {
+                roots: roots.clone(),
+                client_permissions: policy.client_permissions,
+            },
+        ))
     }
-    fn watch(&self, p: &Principal, target: PathBuf, roots: Vec<PathBuf>) -> Result<Value> {
+    fn watch(&self, p: &Principal, target: PathBuf, roots: FileAccess) -> Result<Value> {
         let initial_snapshot = snapshot(&target, &roots)?;
         let id = token("watch")?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -449,8 +476,8 @@ impl Drop for State {
         }
     }
 }
-fn snapshot(path: &Path, roots: &[PathBuf]) -> Result<Value> {
-    let selected = pin_within_grants(path, roots).map_err(broker_error)?;
+fn snapshot(path: &Path, roots: &FileAccess) -> Result<Value> {
+    let selected = roots.pin(path)?;
     let meta = selected.file.metadata().map_err(io_error)?;
     if meta.is_dir() {
         directory_snapshot(path, roots)
@@ -494,8 +521,8 @@ fn version(file: &File) -> Result<String> {
             .unwrap_or(0)
     ))
 }
-fn directory_snapshot(path: &Path, roots: &[PathBuf]) -> Result<Value> {
-    let selected = pin_within_grants(path, roots).map_err(broker_error)?;
+fn directory_snapshot(path: &Path, roots: &FileAccess) -> Result<Value> {
+    let selected = roots.pin(path)?;
     let mut entries = Vec::new();
     for entry in fs::read_dir(&selected.path).map_err(io_error)?.take(1025) {
         let entry = entry.map_err(io_error)?;

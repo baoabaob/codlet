@@ -272,6 +272,7 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
 
 #[derive(Default)]
 struct PluginTrustOptions {
+    client_permissions: bool,
     trusted: bool,
     enable: bool,
     json: bool,
@@ -292,6 +293,8 @@ fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptio
     while let Some(argument) = arguments.next() {
         if argument == OsStr::new("--trust") && !options.trusted {
             options.trusted = true;
+        } else if argument == OsStr::new("--client-permissions") && !options.client_permissions {
+            options.client_permissions = true;
         } else if argument == OsStr::new("--enable") && !options.enable {
             options.enable = true;
         } else if argument == OsStr::new("--json") && !options.json {
@@ -393,6 +396,7 @@ fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(),
     broker_policy.cwd_roots = options.cwd_roots;
     broker_policy.env_keys = options.env_keys;
     broker_policy.shortcuts = options.shortcuts;
+    broker_policy.client_permissions = options.client_permissions;
     let broker_policy = broker_policy.canonicalized()?;
     broker_policy.validate_grants(&options.grants)?;
     if !options.json {

@@ -8,9 +8,17 @@ Fallback downloads first try the unchanged official archive mirrored in Codlet's
 
 The source and independent official-plugin repositories are public. Preview binaries are published as versioned test assets after validation. Building a local Preview does not publish its files; the installed preview channel discovers published prereleases from the Core repository.
 
+`Publish-PreviewRelease.ps1 -WindowsSetup PATH` validates and includes the native EXE alongside its exact MSI payload. `-WindowsOnly` supports Windows testing releases without advertising unbuilt macOS artifacts; the update manifest lists only the platforms actually included. Omitting this flag continues to require both Windows and macOS build evidence.
+
 ## Windows x64
 
-The MSI installs per user. Its feature page offers the GUI, UI Adapter, Desktop Adapter, and shortcut options. The GUI requires UI Adapter; Desktop Adapter is independently optional. The completion page can launch Codlet. The native `Codlet-Launcher.exe` is the normal entrypoint; internal PowerShell helpers remain implementation details.
+The recommended Windows installer is the native `-setup.exe`: a WPF window using the .NET Framework already supplied by supported Windows versions, with an embedded MSI. It adds no browser or JavaScript runtime. The single-page installer uses Codlet branding, follows the system light/dark appearance, supports Chinese and English, and provides the real Windows folder picker. Installation paths expand environment variables and remain editable.
+
+Installation defaults to the current user. Selecting all users chooses Program Files and lets Windows Installer request elevation; the setup window and post-install launcher remain unelevated. The MSI is dual-purpose (`ALLUSERS=2`, `MSIINSTALLPERUSER=1` by default). Shortcuts, installer registration, plugin download choices and optional PATH entries follow the selected scope. Uninstall removes only the PATH entry for its own installation. Open a new terminal after setup to use `codlet`.
+
+An existing installation retains its directory and choices. Switching between user and machine scopes requires uninstalling the other-scope installation first; setup explains this instead of silently creating two conflicting installations. Plugin/config/runtime data remain per user under LocalAppData in either scope. All-users Core/launcher upgrades require the installer; an unelevated runtime cannot replace files in Program Files.
+
+The installer offers GUI, UI Adapter, Desktop Adapter, and shortcut options. GUI requires UI Adapter; Desktop Adapter is independently optional. The completion page can launch Codlet. The native `Codlet-Launcher.exe` is the normal entrypoint; internal PowerShell helpers remain implementation details. Direct MSI installation remains available for administration and automation with its standard maintenance interface.
 
 The portable ZIP must be extracted completely to a writable location. Its first run offers the same plugin choices and stores Codlet data in `data/`. Installed MSI builds use `%LOCALAPPDATA%/Codlet`. Neither redirects official Codex data. `Codlet-Launcher.exe --configure` can add omitted plugins later; ordinary launches do not reinstall removed plugins, and existing disabled states/grants are preserved.
 
@@ -74,11 +82,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-PreviewDistrib
   -SourceCommit FULL_CORE_SHA `
   -OutputDirectory C:\output\codlet-preview -Zip
 node scripts/build-msi.mjs C:\output\codlet-preview C:\tools\wix-3.14.1 C:\output\Codlet-Preview.msi
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-WindowsInstaller.ps1 `
+  -MsiPath C:\output\Codlet-Preview.msi -OutputPath C:\output\Codlet-Preview-setup.exe `
+  -Version VERSION_FROM_CARGO_TOML
 ```
 
 WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The manifest records Core's source revision, distributed files and SHA-256 values. Plugin source commits and package hashes belong to the independently downloaded releases, not to Core's build.
 
-Use `Test-DistributionEncoding.ps1` for Windows PowerShell/encoding checks and `Test-WindowsInstaller.ps1` for controlled process and MSI preflight scenarios. `Test-MsiDistribution.ps1 -StructureOnly` inspects tables/features without changing the user's installation. Never deliver fixture or stale-Core packages used by these tests.
+Use `Test-DistributionEncoding.ps1` for Windows PowerShell/encoding checks and `Test-WindowsInstaller.ps1` for controlled process and MSI preflight scenarios. `Test-NativeInstaller.ps1` renders the actual native UI in both languages, validates feature/scope/path commands, and exercises real MSI record progress/cancellation without installing. Fixture builds cannot install. `Test-MsiDistribution.ps1 -StructureOnly` inspects tables, scopes, PATH components and features without changing the user's installation. Never deliver fixture or stale-Core packages used by these tests.
+
+The native shell uses [MSI's external UI record handler](https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msisetexternaluirecord) and `NONE | UACONLY` so it suppresses the old wizard while retaining the system elevation prompt. Scope handling follows [Microsoft's single-package authoring contract](https://learn.microsoft.com/en-us/windows/win32/msi/single-package-authoring). MSI log files remain under `%LOCALAPPDATA%\Codlet\installer-logs`. Cancelling requests MSI rollback, never terminates the Windows Installer process. Native normal-close requests remain bounded and do not force-kill clients.
 
 ## macOS Apple Silicon
 

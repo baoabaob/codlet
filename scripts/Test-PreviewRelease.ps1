@@ -364,7 +364,7 @@ try {
         throw 'SHA256SUMS must contain only the other public assets.'
     }
     $releaseNotes = [IO.File]::ReadAllText((Join-Path $outputDirectory 'release-notes.md'))
-    foreach ($expectedText in @('Windows x64 portable ZIP', 'Windows x64 MSI', 'Apple Silicon DMG', 'Host plugins', 'traffic hooks', 'runtime updater', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
+    foreach ($expectedText in @('Windows x64 portable ZIP', 'Windows x64 MSI', 'Apple Silicon DMG', 'PATH', 'declared capabilities', 'runtime updates', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
         if ($releaseNotes -notmatch [regex]::Escape($expectedText)) { throw "Release notes omitted expected reader-facing detail: $expectedText" }
     }
     if ($releaseNotes -match '(?m)^\| Asset \|' -or $releaseNotes -match '(?m)^\| ``[^|]+`` \|') { throw 'Release notes duplicate the per-asset hash table instead of directing readers to SHA256SUMS.txt.' }
@@ -385,6 +385,19 @@ try {
         if ($dry.externalWrites -ne $false -or $dry.applyRequired -ne $true) { throw "$action preview would write externally without -Apply." }
     }
     $validationPath = Join-Path $outputDirectory $plan.verificationInputs.macos.file
+    if(-not $TestLegacyBridge){
+        $windowsOutput=$outputDirectory+'-windows-only'
+        $windowsArguments=@('-Action','Preview','-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsPortableZip',$portableZip,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-OutputDirectory',$windowsOutput)
+        $windowsReport=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @windowsArguments
+        if($LASTEXITCODE -ne 0){throw 'Windows-only Preview fixture failed'}
+        $windowsReport=($windowsReport -join "`n")|ConvertFrom-Json
+        if($windowsReport.updaterPlatforms.Count -ne 1 -or $windowsReport.externalWrites){throw 'Windows-only release advertises an unbuilt platform'}
+        $windowsPlan=Join-Path $windowsOutput 'release-plan.json'
+        foreach($action in @('PrepareDraft','Publish')){
+            $dryResult=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript -Action $action -PlanPath $windowsPlan
+            if($LASTEXITCODE -ne 0 -or (($dryResult -join "`n")|ConvertFrom-Json).externalWrites){throw 'Windows-only release plan cannot be safely validated'}
+        }
+    }
     $savedValidation = [IO.File]::ReadAllBytes($validationPath)
     try {
         [IO.File]::AppendAllText($validationPath, 'tamper')

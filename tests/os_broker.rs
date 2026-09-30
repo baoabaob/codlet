@@ -623,6 +623,43 @@ fn network_fetch_honors_exact_origins_limits_cancellation_and_redirect_boundarie
 }
 
 #[test]
+fn client_permissions_enable_file_and_http_access_without_manual_scopes() {
+    let server = Server::new(None);
+    let mut fixture = Fixture::new(vec![]);
+    fixture.authorization.revoke();
+    let mut registry = fixture.registry();
+    let mut registration = registry.local_plugins()[ID].clone();
+    registration.broker_policy = BrokerPolicy {
+        client_permissions: true,
+        ..Default::default()
+    };
+    registry.register_local(ID, registration.clone()).unwrap();
+    registry.save().unwrap();
+    fixture.plugin = load_local_plugin_with_registration(ID, &registration, 2).unwrap();
+    fixture.authorization = fixture.client.authorize(&fixture.plugin).unwrap();
+    let path = fixture.root.join("not-in-a-whitelist.txt");
+    fs::write(&path, "fixture").unwrap();
+    assert_eq!(
+        fixture
+            .call("host.fs.readText", json!({"path":path}))
+            .unwrap()["text"],
+        "fixture"
+    );
+    assert_eq!(
+        fixture
+            .call("host.network.fetch", json!({"url":server.origin}))
+            .unwrap()["body"],
+        "fixture"
+    );
+    fixture.authorization.revoke();
+    assert!(
+        fixture
+            .call("host.fs.readText", json!({"path":path}))
+            .is_err()
+    );
+}
+
+#[test]
 fn process_run_passes_an_argument_array_without_shell_and_enforces_output_and_executable_policy() {
     let fixture = Fixture::new(vec![]);
     let arguments = vec![

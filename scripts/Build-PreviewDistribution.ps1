@@ -85,7 +85,8 @@ Codlet-CLI.cmd scopes CLI commands to this portable directory's data/. The MSI
 edition uses the current user's LocalAppData/Codlet data instead. Neither changes
 the official client's account, configuration or conversation database location.
 
-The MSI installs for the current user and provides a feature selection page.
+The native setup EXE offers current-user or all-users installation, folder browsing,
+shortcut and PATH options. Its embedded MSI also supports administrative deployment.
 Uninstall removes application files and shortcuts; plugin/config/data are retained.
 MSI repair does not overwrite downloaded plugins in the user data directory.
 

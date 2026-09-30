@@ -192,6 +192,7 @@ async fn automatic_install_submits_one_receipt_and_preserves_enabled_state_and_g
         Permission::CoreShortcuts,
     ]);
     prior.broker_policy = BrokerPolicy {
+        client_permissions: false,
         read_roots: vec![scope.clone()],
         network_origins: vec!["https://example.com".into()],
         executables: vec![],

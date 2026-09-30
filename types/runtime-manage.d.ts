@@ -7,6 +7,9 @@ export type PluginPermission =
   | 'core.events' | 'core.tasks' | 'host.process.spawn' | 'core.network' | 'core.notifications' | 'core.clipboard.read' | 'core.clipboard.write' | 'core.shortcuts' | 'core.diagnostics';
 
 export interface BrokerPolicy {
+  /** Granted categories use the desktop process's OS-user access. No per-plugin
+   * path/origin/program scopes; not the Codex conversation sandbox. */
+  readonly clientPermissions?: boolean;
   readonly readRoots?: readonly string[];
   readonly networkOrigins?: readonly string[];
   readonly executables?: readonly string[];
@@ -20,7 +23,8 @@ export interface BrokerPolicy {
 export interface LocalPluginRegistration {
   readonly path: string;
   readonly grants: readonly PluginPermission[];
-  /** Omitted/empty means no filesystem roots, network origins or child programs. */
+  /** clientPermissions opts into OS-user access for declared/granted categories.
+   * Omitted/empty retains legacy deny-by-default scope behavior. */
   readonly brokerPolicy?: BrokerPolicy;
 }
 
@@ -269,7 +273,7 @@ export interface RuntimeManageList {
   clientStatus?: ClientVersionStatus;
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
   deviceCompatibility?: DeviceCompatibility;
-  localManagement?: { available: true; watchEnabled: boolean; folderPicker: boolean };
+  localManagement?: { available: true; clientPermissions?: boolean; watchEnabled: boolean; folderPicker: boolean };
   githubManagement?: { available: true };
   /** Core-owned runtime skill, suitable for a native skill prompt link. */
   runtimeSkill?: { available: false } | { available: true; name: 'codlet'; path: string };

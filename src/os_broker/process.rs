@@ -34,10 +34,15 @@ pub(super) fn run(params: Value, guard: &RequestGuard) -> Result<Value> {
             "process args must be at most 64 bounded strings without NUL",
         ));
     }
-    let executable_guard = super::filesystem::pin_exact_grant(
-        &request.executable,
-        &guard.authorization.0.registration.broker_policy.executables,
-    )?;
+    let policy = &guard.authorization.0.registration.broker_policy;
+    let executable_guard = if policy.client_permissions {
+        super::filesystem::pin_client_path(&request.executable)
+    } else {
+        super::filesystem::pin_exact_grant(
+            &request.executable,
+            &guard.authorization.0.registration.broker_policy.executables,
+        )
+    }?;
     let executable = &executable_guard.path;
     let cwd = &guard.authorization.0.registration.path;
     let cwd_guard = super::filesystem::pin_exact_grant(cwd, std::slice::from_ref(cwd))?;

@@ -354,9 +354,10 @@ pub(super) fn authorize_url(p: &Principal, value: &str) -> Result<()> {
         .contains(&Permission::HostNetwork)
         || !p.plugin.authorization.as_ref().is_some_and(|a| {
             a.grants.contains(&Permission::HostNetwork)
-                && a.broker_policy
-                    .network_origins
-                    .contains(&url.origin().ascii_serialization())
+                && (a.broker_policy.client_permissions
+                    || a.broker_policy
+                        .network_origins
+                        .contains(&url.origin().ascii_serialization()))
         })
     {
         return Err(error(

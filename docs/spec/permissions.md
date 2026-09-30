@@ -1,6 +1,19 @@
-# Permissions and explicit scopes
+# Permissions
 
 Managed authority is the intersection of the loaded manifest declarations, explicitly saved grants, resource ownership and applicable scopes. A grant absent from the manifest does not expand its declaration. Requiring a semantic adapter capability does not implicitly grant all permissions used by its provider.
+
+The GUI uses one consent checkbox for the displayed permission categories and saves
+`brokerPolicy: {"clientPermissions": true}`. Those granted categories use the desktop
+process's normal OS-user access: no separate directory, destination, executable,
+working-directory, environment-key or shortcut lists. This does not elevate the process
+or inherit a conversation's sandbox/approval settings. Capability declarations, individual
+permission grants/revocation, source identity, generation ownership and resource limits
+still apply. System executables that are hard links are allowed in this mode.
+
+CLI imports can select the same behavior with `--client-permissions`. Legacy scoped
+registrations and CLI switches remain supported without silently broadening saved
+authority. The two policy forms cannot be mixed. The scope columns below describe
+the legacy form; its lists do not apply with `clientPermissions: true`.
 
 ## Current permissions
 

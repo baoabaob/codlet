@@ -1051,6 +1051,7 @@ mod tests {
             Permission::CoreShortcuts,
         ];
         registration.broker_policy = crate::plugin_permissions::BrokerPolicy {
+            client_permissions: false,
             read_roots: vec![policy_root.clone()],
             network_origins: vec!["https://example.com".into()],
             executables: vec![exe],

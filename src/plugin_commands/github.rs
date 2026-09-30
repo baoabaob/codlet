@@ -186,11 +186,18 @@ fn apply(preview: ManagedPreview, options: PluginTrustOptions) -> Result<(), Pro
         return Err(ProbeError::PluginTrustRequired(preview.manifest.id));
     }
     crate::local_plugins::validate_grants(&preview.manifest, &options.grants)?;
-    let broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
+    let mut broker_policy = crate::plugin_permissions::BrokerPolicy::from_explicit_inputs(
         &options.read_roots,
         &options.network_origins,
         &options.executables,
     )?;
+    broker_policy.write_roots = options.write_roots;
+    broker_policy.watch_roots = options.watch_roots;
+    broker_policy.cwd_roots = options.cwd_roots;
+    broker_policy.env_keys = options.env_keys;
+    broker_policy.shortcuts = options.shortcuts;
+    broker_policy.client_permissions = options.client_permissions;
+    let broker_policy = broker_policy.canonicalized()?;
     broker_policy.validate_grants(&options.grants)?;
     if !options.json {
         output(&preview, false);

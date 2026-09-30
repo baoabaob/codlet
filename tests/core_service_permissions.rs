@@ -37,6 +37,7 @@ impl Scopes {
 
     fn full_policy(&self) -> BrokerPolicy {
         BrokerPolicy {
+            client_permissions: false,
             read_roots: vec![self.read.clone()],
             network_origins: vec!["HTTPS://EXAMPLE.COM:443/".into()],
             executables: vec![self.executable.clone()],
@@ -62,6 +63,22 @@ fn full_grants() -> Vec<Permission> {
         Permission::HostFsWatch,
         Permission::CoreShortcuts,
     ]
+}
+
+#[test]
+fn client_permissions_are_explicit_preserved_and_cannot_mix_with_legacy_lists() {
+    let value = json!({"clientPermissions":true});
+    let policy: BrokerPolicy = serde_json::from_value(value.clone()).unwrap();
+    assert!(!policy.is_empty());
+    assert_eq!(policy.canonicalized().unwrap(), policy);
+    assert_eq!(serde_json::to_value(&policy).unwrap(), value);
+    let mut mixed = policy;
+    mixed.network_origins.push("https://example.com".into());
+    assert!(mixed.validate().is_err());
+    assert!(
+        !BrokerPolicy::default().client_permissions,
+        "existing stored policies do not silently gain access"
+    );
 }
 
 #[test]

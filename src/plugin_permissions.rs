@@ -14,6 +14,10 @@ pub const MAX_POLICY_PATH_BYTES: usize = 4096;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BrokerPolicy {
+    /// Explicit consent to use the desktop process's OS-user access for the
+    /// granted permission categories. Legacy scoped registrations stay intact.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub client_permissions: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_roots: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -40,7 +44,8 @@ pub struct PermissionPolicyError {
 
 impl BrokerPolicy {
     pub fn is_empty(&self) -> bool {
-        self.read_roots.is_empty()
+        !self.client_permissions
+            && self.read_roots.is_empty()
             && self.network_origins.is_empty()
             && self.executables.is_empty()
             && self.write_roots.is_empty()
@@ -51,6 +56,20 @@ impl BrokerPolicy {
     }
 
     pub fn validate(&self) -> Result<(), PermissionPolicyError> {
+        if self.client_permissions
+            && (!self.read_roots.is_empty()
+                || !self.write_roots.is_empty()
+                || !self.watch_roots.is_empty()
+                || !self.network_origins.is_empty()
+                || !self.executables.is_empty()
+                || !self.cwd_roots.is_empty()
+                || !self.env_keys.is_empty()
+                || !self.shortcuts.is_empty())
+        {
+            return Err(policy_error(
+                "clientPermissions cannot be combined with per-plugin scopes",
+            ));
+        }
         for (name, paths) in [
             ("readRoots", &self.read_roots),
             ("executables", &self.executables),
@@ -175,6 +194,10 @@ impl BrokerPolicy {
     }
 
     pub fn canonicalized(&self) -> Result<Self, PermissionPolicyError> {
+        if self.client_permissions {
+            self.validate()?;
+            return Ok(self.clone());
+        }
         let mut policy =
             Self::from_explicit_inputs(&self.read_roots, &self.network_origins, &self.executables)?;
         policy.write_roots = self

@@ -17,6 +17,7 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub struct ResourceOwner {
+    pub client_permissions: bool,
     pub plugin_id: String,
     pub source_identity: String,
     pub generation: u64,

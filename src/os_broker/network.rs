@@ -137,8 +137,14 @@ fn authorized_url(url: &str, guard: &RequestGuard) -> Result<reqwest::Url> {
         .0
         .registration
         .broker_policy
-        .network_origins
-        .contains(&origin)
+        .client_permissions
+        && !guard
+            .authorization
+            .0
+            .registration
+            .broker_policy
+            .network_origins
+            .contains(&origin)
     {
         return Err(OsBrokerError::new(
             "policy_denied",

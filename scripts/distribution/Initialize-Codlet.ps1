@@ -106,7 +106,14 @@ try{
     if($PSBoundParameters.ContainsKey('Plugins')){$selected=@($Plugins|Where-Object{$_ -and $_ -ne 'none'})}
     elseif($Configure -or ([IO.File]::Exists((Join-Path $root 'portable.mode')) -and $firstSetup)){$selected=@(Select-Plugins $available);$explicit=$true}
     elseif([IO.File]::Exists((Join-Path $root 'msi-install.json'))){
-      $choices=Get-ItemProperty -LiteralPath 'HKCU:\Software\Codlet\Preview\Installer\Plugins' -ErrorAction SilentlyContinue
+      $choices=$null
+      foreach($hive in @('HKCU:','HKLM:')){
+        $registration=Get-ItemProperty -LiteralPath ($hive+'\Software\Codlet\Preview\Installer') -ErrorAction SilentlyContinue
+        if($registration -and $registration.PSObject.Properties['InstallFolder'] -and (Full $registration.InstallFolder) -ieq (Full $root)){
+          $choices=Get-ItemProperty -LiteralPath ($hive+'\Software\Codlet\Preview\Installer\Plugins') -ErrorAction SilentlyContinue
+          break
+        }
+      }
       $selected=@($available|Where-Object{$choices -and $choices.PSObject.Properties[$_.id] -and $choices.($_.id) -eq 1}|ForEach-Object{$_.id})
     }else{$selected=@($available|Where-Object{$state.decided.ContainsKey($_.id) -and (Decision-Result $_.id) -eq 'pending'}|ForEach-Object{$_.id})}
     if('codlet-gui' -in $selected -and 'codex.ui.adapter' -notin $selected){$selected+='codex.ui.adapter'}

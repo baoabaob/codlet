@@ -130,6 +130,7 @@ fn core_services(executable: &str) -> Result<()> {
     let binary = directory.path().join("stream-fixture");
     std::fs::copy(executable, &binary)?;
     let owner = ResourceOwner {
+        client_permissions: false,
         plugin_id: "test.macos-stream".into(),
         source_identity: "native-fixture".into(),
         generation: 1,

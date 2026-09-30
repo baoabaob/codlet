@@ -37,6 +37,8 @@ pub(crate) struct ServiceCaller<'a> {
 
 #[derive(Clone)]
 pub struct SharedCoreServices(Arc<Shared>);
+#[cfg(test)]
+mod client_permissions_tests;
 struct Shared {
     registry: PathBuf,
     persistent: PluginServices,
@@ -221,6 +223,7 @@ impl SharedCoreServices {
                     source_identity: source_identity.clone(),
                 },
                 resources: ResourceOwner {
+                    client_permissions: policy.client_permissions,
                     plugin_id: id.clone(),
                     source_identity,
                     generation: plugin.generation,

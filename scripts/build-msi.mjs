@@ -18,7 +18,7 @@ const xml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').re
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const id=(prefix,value)=>prefix+digest(value).slice(0,24);
 const guid=value=>{const h=digest('codlet-preview-msi-v1:'+value);return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;};
-const features={Core:[],UiAdapter:[],DesktopAdapter:[],GUI:[],StartMenu:[],DesktopShortcut:[]},directories=new Map([['','INSTALLFOLDER']]),components=[];
+const features={Core:[],UiAdapter:[],DesktopAdapter:[],GUI:[],StartMenu:[],DesktopShortcut:[],CliPath:[]},directories=new Map([['','INSTALLFOLDER']]),components=[];
 const payload=manifest.files.filter(file=>file.path!=='portable.mode').map(file=>({...file,source:resolve(root,file.path)}));
 for(const name of ['msi-install.json','distribution-manifest.json']){
   const content=name==='msi-install.json'
@@ -36,34 +36,44 @@ for(const file of payload){
   const bytes=await readFile(file.source);if(bytes.length!==file.bytes||digest(bytes)!==file.sha256)throw Error('Portable manifest mismatch: '+file.path);
   const parent=file.path.includes('/')?file.path.slice(0,file.path.lastIndexOf('/')):'';
   const component=id('C_',file.path),fileId=id('F_',file.path),dir=directory(parent);
-  components.push(`<DirectoryRef Id="${dir}"><Component Id="${component}" Guid="${guid(file.path)}" Win64="yes"><File Id="${fileId}" Name="${xml(basename(file.path))}" Source="${xml(file.source)}"/><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="${component}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
+  components.push(`<DirectoryRef Id="${dir}"><Component Id="${component}" Guid="${guid(file.path)}" Win64="yes"><File Id="${fileId}" Name="${xml(basename(file.path))}" Source="${xml(file.source)}"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="${component}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
   features.Core.push(component);
 }
 // Optional features store the user's download choices, never plugin code.
 for(const [feature,plugin] of [['UiAdapter','codex.ui.adapter'],['DesktopAdapter','codex.desktop.adapter'],['GUI','codlet-gui']]){
   const component=id('Download_',plugin);
-  components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('download-choice:'+plugin)}" Win64="yes"><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer\\Plugins" Name="${plugin}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
+  components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('download-choice:'+plugin)}" Win64="yes"><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer\\Plugins" Name="${plugin}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
   features[feature].push(component);
 }
 function tree(path){let children='';for(const [relative,value]of directories){if(!relative)continue;const parent=relative.includes('/')?relative.slice(0,relative.lastIndexOf('/')):'';if(parent===path)children+=`<Directory Id="${value}" Name="${xml(basename(relative))}">${tree(relative)}</Directory>`;}return children;}
 const refs=names=>names.map(name=>`<ComponentRef Id="${name}"/>`).join('');
-components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="DirectoryCleanup" Guid="${guid('directory-cleanup')}" Win64="yes">${[...directories.values(),'ProgramsFolder'].map(dir=>`<RemoveFolder Id="${id('R_',dir)}" Directory="${dir}" On="uninstall"/>`).join('')}<RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="DirectoryCleanup" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
+components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="DirectoryCleanup" Guid="${guid('directory-cleanup')}" Win64="yes">${[...directories.values()].map(dir=>`<RemoveFolder Id="${id('R_',dir)}" Directory="${dir}" On="uninstall"/>`).join('')}<RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="DirectoryCleanup" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
 features.Core.push('DirectoryCleanup');
-components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="InstallLocation" Guid="${guid('install-location')}" Win64="yes"><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes"/></Component></DirectoryRef>`);
+components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="InstallLocation" Guid="${guid('install-location')}" Win64="yes"><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes"/></Component></DirectoryRef>`);
 features.Core.push('InstallLocation');
+for(const [scope,system,condition] of [['User','no','NOT ALLUSERS'],['Machine','yes','ALLUSERS']]){
+  const component='CliPath'+scope;
+  components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('cli-path:'+scope)}" Win64="yes"><Condition>${condition}</Condition><Environment Id="${component}Environment" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" Permanent="no" System="${system}"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="${component}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
+  features.CliPath.push(component);
+}
 const app=manifest.version,parts=/^(\d+)\.(\d+)\.(\d+)-preview\.(\d+)$/.exec(app);
 if(!parts)throw Error('This builder accepts an explicit preview version only');
 const msiVersion=`${parts[1]}.${parts[2]}.${Number(parts[4])}`;
 if(Number(parts[4])>65535)throw Error('Preview sequence exceeds MSI version range');
 const licenseText=await readFile(resolve(root,'LICENSE'),'utf8');
 const rtfText=value=>value.replaceAll('\\','\\\\').replaceAll('{','\\{').replaceAll('}','\\}').replaceAll('\r','').replaceAll('\n','\\par\n');
-const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet local Preview\n\nCore and official plugins are licensed under Apache-2.0. Installation is per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
+const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet local Preview\n\nCore and official plugins are licensed under Apache-2.0. Installation can be per-user or all-users; plugin data remains per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
 await writeFile(resolve(build,'notice.rtf'),license);
 const source=`<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="*" Name="Codlet Preview ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
-<Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" Platform="x64" SummaryCodepage="936" Description="Codlet 本地测试版"/>
-<Condition Message="此安装包仅支持当前用户安装">NOT ALLUSERS</Condition>
-<Property Id="INSTALLFOLDER" Secure="yes"><RegistrySearch Id="PriorInstallFolder" Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="raw" Win64="yes"/></Property>
+<Package InstallerVersion="500" Compressed="yes" InstallPrivileges="elevated" Platform="x64" SummaryCodepage="936" Description="Codlet 本地测试版"/>
+<Property Id="ALLUSERS" Value="2" Secure="yes"/><Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes"/>
+<Property Id="INSTALLFOLDER" Secure="yes"/>
+<Property Id="PRIORUSERFOLDER"><RegistrySearch Id="PriorUserInstallFolder" Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="raw" Win64="yes"/></Property>
+<Property Id="PRIORMACHINEFOLDER"><RegistrySearch Id="PriorMachineInstallFolder" Root="HKLM" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="raw" Win64="yes"/></Property>
+<SetProperty Id="INSTALLFOLDER" Value="[PRIORUSERFOLDER]" After="AppSearch" Sequence="both">NOT INSTALLFOLDER AND PRIORUSERFOLDER AND (NOT ALLUSERS OR (ALLUSERS=2 AND MSIINSTALLPERUSER=1))</SetProperty>
+<SetProperty Id="INSTALLFOLDER" Action="PriorMachineFolder" Value="[PRIORMACHINEFOLDER]" After="SetINSTALLFOLDER" Sequence="both">NOT INSTALLFOLDER AND PRIORMACHINEFOLDER AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))</SetProperty>
+<Condition Message="切换安装范围前，请先卸载另一范围的 Codlet；插件和配置会保留。">Installed OR ((NOT PRIORUSERFOLDER OR NOT ALLUSERS OR (ALLUSERS=2 AND MSIINSTALLPERUSER=1)) AND (NOT PRIORMACHINEFOLDER OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)))</Condition>
 <Property Id="MSIRESTARTMANAGERCONTROL" Value="DisableShutdown"/>
 <Binary Id="CodletInstallerActions" SourceFile="${xml(resolve(build,'Codlet-Installer-Preflight.exe'))}"/>
 <CustomAction Id="CheckRunningApplications" BinaryKey="CodletInstallerActions" ExeCommand="&quot;[INSTALLFOLDER].&quot; [UILevel] &quot;[TempFolder]Codlet-Installer-[ProductCode].log&quot;" Execute="immediate" Return="check"/>
@@ -74,13 +84,14 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 Codlet"/>
 <CustomAction Id="LaunchCodletAfterInstall" FileKey="${id('F_','Codlet-Launcher.exe')}" ExeCommand="" Return="asyncNoWait" Impersonate="yes"/>
 <Icon Id="CodletIcon" SourceFile="${xml(resolve(root,'codlet.ico'))}"/>
-<Directory Id="TARGETDIR" Name="SourceDir"><Directory Id="LocalAppDataFolder"><Directory Id="ProgramsFolder" Name="Programs"><Directory Id="INSTALLFOLDER" Name="Codlet Preview">${tree('')}</Directory></Directory></Directory><Directory Id="ProgramMenuFolder"><Directory Id="CodletMenu" Name="Codlet Preview"/></Directory><Directory Id="DesktopFolder"/></Directory>
+<Directory Id="TARGETDIR" Name="SourceDir"><Directory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Codlet Preview">${tree('')}</Directory></Directory><Directory Id="ProgramMenuFolder"><Directory Id="CodletMenu" Name="Codlet Preview"/></Directory><Directory Id="DesktopFolder"/></Directory>
 ${components.join('\n')}
-<DirectoryRef Id="CodletMenu"><Component Id="StartMenu" Guid="${guid('start-menu')}" Win64="yes"><Shortcut Id="LaunchCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RemoveFolder Id="RemoveMenu" On="uninstall"/><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
-<DirectoryRef Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="${guid('desktop-shortcut')}" Win64="yes"><Shortcut Id="DesktopCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RegistryValue Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
-<Feature Id="Core" Title="Codlet Core（必需）" Description="CLI 与 codlet 技能。运行时首次使用时由 Codlet 自动准备；仅当前用户安装，不修改官方客户端的数据目录。" Level="1" Absent="disallow" ConfigurableDirectory="INSTALLFOLDER">${refs(features.Core)}</Feature>
+<DirectoryRef Id="CodletMenu"><Component Id="StartMenu" Guid="${guid('start-menu')}" Win64="yes"><Shortcut Id="LaunchCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RemoveFolder Id="RemoveMenu" On="uninstall"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
+<DirectoryRef Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="${guid('desktop-shortcut')}" Win64="yes"><Shortcut Id="DesktopCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
+<Feature Id="Core" Title="Codlet Core（必需）" Description="CLI 与 codlet 技能。运行时首次使用时由 Codlet 自动准备；不修改官方客户端的数据目录。" Level="1" Absent="disallow" ConfigurableDirectory="INSTALLFOLDER">${refs(features.Core)}</Feature>
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>
+<Feature Id="CliPath" Title="将 codlet 加入 PATH" Description="在新打开的终端中使用 codlet 命令；卸载时移除本安装目录的 PATH 项。" Level="1">${refs(features.CliPath)}</Feature>
 <Feature Id="UiAdapter" Title="下载 UI Adapter" Description="从 GitHub 获取最新发布版，接入侧栏和插件页面。需要界面访问权限。" Level="1">${refs(features.UiAdapter)}</Feature>
 <Feature Id="DesktopAdapter" Title="下载 Desktop Adapter" Description="从 GitHub 获取最新发布版，提供客户端、对话和流量接口。需要主界面访问、Host 进程及调试权限。" Level="1">${refs(features.DesktopAdapter)}</Feature>
 <Feature Id="GUI" Title="下载 Codlet GUI（包含 UI Adapter）" Description="从 GitHub 获取最新发布版，提供图形化管理。包含 UI Adapter；需要插件管理与界面访问权限。" Level="1">${refs([...features.GUI,...features.UiAdapter])}</Feature>
@@ -93,5 +104,9 @@ ${components.join('\n')}
 await writeFile(resolve(build,'Product.wxs'),source);
 function run(program,args){const result=spawnSync(resolve(wix,program),args,{stdio:'inherit',windowsHide:true});if(result.error)throw result.error;if(result.status!==0)throw Error(`${program} exited ${result.status}`);}
 run('candle.exe',['-nologo','-arch','x64','-out',resolve(build,'Product.wixobj'),resolve(build,'Product.wxs')]);
-run('light.exe',['-nologo','-ext',resolve(wix,'WixUIExtension.dll'),'-cultures:zh-cn','-out',out,resolve(build,'Product.wixobj')]);
+// ICE57 predates dual-purpose shell-folder redirection and reports the two
+// non-advertised shortcuts as per-user even in the all-users context. Their
+// ProgramMenuFolder/DesktopFolder and HKMU keypaths all follow ALLUSERS.
+// Test-MsiDistribution verifies these exact context-dependent registrations.
+run('light.exe',['-nologo','-sice:ICE57','-ext',resolve(wix,'WixUIExtension.dll'),'-cultures:zh-cn','-out',out,resolve(build,'Product.wixobj')]);
 const bytes=await readFile(out);const result={path:out,version:app,msiVersion,bytes:bytes.length,sha256:digest(bytes),features:Object.keys(features),signed:false};await writeFile(out+'.json',JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result));

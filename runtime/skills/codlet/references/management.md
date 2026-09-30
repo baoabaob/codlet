@@ -52,7 +52,9 @@ plugin github install <preview.path> --trust [--grant <permission> ...] [--enabl
 
 预览会下载/验证，尚不激活。检查 preview 中的 manifest、source、deviceCompatibility、依赖和现有注册；`unknown` 表示发布者未完整声明，`incompatible` 不能安装。公开仓库不需要用户交出 token。用户已要求从该来源安装，并且权限已在请求范围内时可继续；额外读取文件、联网或后台程序等权限须解释并取得范围授权。`--grant` 逐项列出，不能用全权限通配。
 
-Host broker 的路径/来源/程序白名单分别用 `--read-root <dir>`、`--network-origin <origin>`、`--executable <path>`。空白名单不授予访问。原生 Host 不构成操作系统沙箱，以用户账户执行。保留现有策略，不能更新时静默放宽。
+当前 GUI 以权限分类展示并一次勾选授权，不要求填写路径、网站或程序白名单。CLI 的同等授权使用 `--client-permissions`，仍需按插件实际声明逐项传入 `--grant`。这表示使用桌面进程的系统用户权限，不继承单个对话的沙箱／审批设置，也不会提升为管理员。
+
+旧版限域记录和 `--read-root`、`--network-origin`、`--executable` 等参数仍可读取和使用，不能与 `--client-permissions` 混用。更新时保留已有授权；只有用户同意重新授权时才将旧限域策略切换成客户端权限。
 
 依赖不会自动下载。说明缺少的 provider，查找可用适配层，按用户已确认选择安装/启用。相同 ID 已注册在别处时先展示旧路径，不用移除再添加掩盖冲突。
 

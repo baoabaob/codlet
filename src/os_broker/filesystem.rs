@@ -175,6 +175,10 @@ fn open_authorized(requested: &Path, guard: &RequestGuard) -> Result<Selected> {
     crate::plugin_permissions::validate_policy_path(requested)
         .map_err(|error| invalid(error.to_string()))?;
     let policy = &guard.authorization.0.registration.broker_policy;
+    if policy.client_permissions {
+        guard.check_full()?;
+        return pin_client_path(requested);
+    }
     if policy.read_roots.is_empty() {
         return Err(denied("no readRoots were explicitly granted"));
     }
@@ -191,6 +195,32 @@ fn open_authorized(requested: &Path, guard: &RequestGuard) -> Result<Selected> {
         return Err(denied("the final open handle escaped its granted root"));
     }
     Ok(selected)
+}
+
+/// No plugin-specific path boundary: normal OS ACLs apply. Retain the actual
+/// handle for ownership/race checks; Windows system executables may be hard links.
+pub(crate) fn pin_client_path(requested: &Path) -> Result<Selected> {
+    crate::plugin_permissions::validate_policy_path(requested)
+        .map_err(|e| invalid(e.to_string()))?;
+    let path = requested.canonicalize().map_err(io_error)?;
+    #[cfg(windows)]
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&path)
+        .map_err(io_error)?;
+    #[cfg(target_os = "macos")]
+    let file = File::open(&path).map_err(io_error)?;
+    #[cfg(windows)]
+    let path = final_path(&file)?;
+    #[cfg(target_os = "macos")]
+    let path = crate::macos::filesystem::final_path(&file).map_err(io_error)?;
+    Ok(Selected {
+        file,
+        path,
+        _parents: Vec::new(),
+    })
 }
 
 pub(crate) fn pin_exact_grant(requested: &Path, allowed: &[PathBuf]) -> Result<Selected> {

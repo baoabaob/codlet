@@ -5,6 +5,8 @@ param(
     [string]$WindowsPortableZip,
     [string]$WindowsMsi,
     [string]$WindowsMsiManifest,
+    [string]$WindowsSetup,
+    [switch]$WindowsOnly,
     [string]$MacDmg,
     [string]$MacDistributionManifest,
     [string]$MacUpdateZip,
@@ -406,7 +408,9 @@ function Assert-OutputStage([string]$Path, [string]$Parent) {
 }
 
 function New-PreviewPlan {
-    foreach ($required in @('WindowsPortableDirectory', 'WindowsPortableZip', 'WindowsMsi', 'WindowsMsiManifest', 'MacDmg', 'MacDistributionManifest', 'MacUpdateZip', 'OutputDirectory')) {
+    $requiredInputs=@('WindowsPortableDirectory', 'WindowsPortableZip', 'WindowsMsi', 'WindowsMsiManifest', 'OutputDirectory')
+    if(-not $WindowsOnly){$requiredInputs+=@('MacDmg', 'MacDistributionManifest', 'MacUpdateZip')}
+    foreach ($required in $requiredInputs) {
         if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) { Fail "Preview action requires -$($required)." }
     }
     $version = Get-CoreVersion
@@ -415,9 +419,11 @@ function New-PreviewPlan {
     $portableZip = Assert-PlainPath $WindowsPortableZip
     $msiPath = Assert-PlainPath $WindowsMsi
     $msiManifestPath = Assert-PlainPath $WindowsMsiManifest
-    $dmgPath = Assert-PlainPath $MacDmg
-    $macManifestPath = Assert-PlainPath $MacDistributionManifest
-    $macUpdateZipPath = Assert-PlainPath $MacUpdateZip
+    if(-not $WindowsOnly){
+        $dmgPath = Assert-PlainPath $MacDmg
+        $macManifestPath = Assert-PlainPath $MacDistributionManifest
+        $macUpdateZipPath = Assert-PlainPath $MacUpdateZip
+    }
     $portableManifestPath = Assert-PlainPath (Join-Path $portableRoot 'distribution-manifest.json')
     $portableManifest = Read-JsonFile $portableManifestPath
     Assert-DistributionEnvelope $portableManifest 'codlet-portable-distribution' 'win-x64' $version
@@ -437,6 +443,14 @@ function New-PreviewPlan {
         Fail 'MSI bytes do not match the build receipt or package version.'
     }
 
+    if($WindowsSetup){
+        $setupPath=Assert-PlainPath $WindowsSetup
+        $setupReceipt=Read-JsonFile ($setupPath+'.json') 128KB
+        if($setupReceipt.fixture -ne $false -or $setupReceipt.ui -ne 'native-wpf' -or $setupReceipt.version -ne $version -or
+           $setupReceipt.payloadSha256 -ne $msiMetadata.sha256 -or $setupReceipt.sha256 -ne (Get-Sha256 $setupPath) -or
+           [long]$setupReceipt.bytes -ne (Get-Item -LiteralPath $setupPath).Length){Fail 'Native installer receipt or embedded MSI identity does not match.'}
+    }
+    if(-not $WindowsOnly){
     $macManifest = Read-JsonFile $macManifestPath
     Assert-DistributionEnvelope $macManifest 'codlet-macos-preview' 'darwin-arm64' $version
     if ($macManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only macOS distribution.' }
@@ -447,6 +461,7 @@ function New-PreviewPlan {
         Fail 'macOS DMG does not match its distribution manifest.'
     }
     Assert-MacUpdateZip $macUpdateZipPath $macManifest $version -LegacyBridge:$LegacyUpdateBridge
+    }
     if ($LegacyUpdateBridge) { $bridgeNode = Assert-PlainPath $WindowsBridgeNodeDirectory $true }
 
     $output = Get-Absolute $OutputDirectory
@@ -463,13 +478,16 @@ function New-PreviewPlan {
         $assets = [Collections.Generic.List[object]]::new()
         $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-portable.zip") $portableZip 'windows-portable'))
         $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64.msi") $msiPath 'windows-msi'))
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-macos-arm64.dmg") $dmgPath 'macos-dmg'))
+        if($WindowsSetup){$assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-setup.exe") $setupPath 'windows-setup'))}
         $verificationInputs = [ordered]@{
             windowsPortable = Add-VerificationInput $stage 'windows-portable-distribution-manifest.json' $portableManifestPath
             windowsMsi = Add-VerificationInput $stage 'windows-msi-distribution-manifest.json' $msiManifestPath
-            macos = Add-VerificationInput $stage 'macos-distribution-manifest.json' $macManifestPath
         }
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-darwin-arm64-update.zip") $macUpdateZipPath 'runtime-update-macos-app'))
+        if(-not $WindowsOnly){
+            $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-macos-arm64.dmg") $dmgPath 'macos-dmg'))
+            $verificationInputs.macos=Add-VerificationInput $stage 'macos-distribution-manifest.json' $macManifestPath
+            $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-darwin-arm64-update.zip") $macUpdateZipPath 'runtime-update-macos-app'))
+        }
 
         $runtimeBuild = Join-Path $stage '.runtime-update-build'
         $builder = Join-Path $PSScriptRoot 'Build-RuntimeUpdate.ps1'
@@ -495,7 +513,10 @@ function New-PreviewPlan {
                 bytes = [long]$runtimeAsset.bytes
                 sha256 = $runtimeAsset.sha256
                 assetName = $runtimeAssetName
-            }, [ordered]@{
+            })
+        }
+        if(-not $WindowsOnly){
+            $channelManifest.artifacts+=@([ordered]@{
                 platform = 'darwin-arm64'
                 profile = 'macApp'
                 bytes = [long](@($assets | Where-Object { $_.name -eq "Codlet-$version-darwin-arm64-update.zip" })[0].bytes)
@@ -527,21 +548,22 @@ function New-PreviewPlan {
             '## Downloads',
             '',
             "- **[Windows x64 portable ZIP](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-portable.zip)** - extract and run Codlet; portable data stays alongside the extracted app.",
-            "- **[Windows x64 MSI](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64.msi)** - per-user installation under LocalAppData, with selectable features.",
-            "- **[Apple Silicon DMG](https://github.com/$Repository/releases/download/v$version/Codlet-$version-macos-arm64.dmg)** - drag Codlet.app to Applications.",
+            $(if($WindowsSetup){"- **[Windows x64 installer](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-setup.exe)** - recommended; native Codlet UI, install scope, folder picker, shortcut and PATH options."}),
+            "- **[Windows x64 MSI](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64.msi)** - Windows Installer package for administration and automation.",
+            $(if(-not $WindowsOnly){"- **[Apple Silicon DMG](https://github.com/$Repository/releases/download/v$version/Codlet-$version-macos-arm64.dmg)** - drag Codlet.app to Applications."}else{'This release provides Windows builds only; it does not update macOS installations.'}),
             '',
             'Choose one installation download above. The update ZIPs and `codlet-update-managed.json` are used by the in-app updater. `SHA256SUMS.txt` lists download checksums.',
             $(if ($LegacyUpdateBridge) { 'This transition release also provides `codlet-update.json` and full updater payloads so Preview 5 can upgrade. New installations use the smaller packages; later updates use the managed-runtime channel.' } else { 'Node is prepared automatically from a verified official-client runtime or the pinned fallback download, then reused from the managed cache.' }),
             '',
             '## Preview changes',
             '',
-            '- Smaller installers reuse a verified official-client Node runtime or prepare a pinned fallback automatically.',
-            '- Host plugins and HTTP/WebSocket traffic hooks keep their existing APIs and permissions.',
-            '- Release builds omit unused symbol tables. The runtime updater verifies and prepares the next runtime before replacing the current installation.',
+            '- Native installation follows system appearance and language; user and machine scope have matching shortcuts, registry and optional PATH entries.',
+            '- A single plugin consent can grant declared capabilities within the desktop user context. Existing scoped permissions remain unchanged until explicitly reauthorized.',
+            '- Install the setup EXE to upgrade launcher/installer components. In-app runtime updates replace Core only. Switching installation scope requires uninstalling the old-scope application first; plugin data is preserved.',
             '',
             '## Signing and verification',
             '',
-            'Windows packages are unsigned. The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.',
+            $(if($WindowsOnly){'Windows packages are unsigned. Review `SHA256SUMS.txt` before use.'}else{'Windows packages are unsigned. The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.'}),
             '',
             'This is preview software; see [known issues](https://github.com/baoabaob/codlet/blob/main/docs/known-issues.md) for current platform and acceptance limits.'
         )
@@ -558,6 +580,7 @@ function New-PreviewPlan {
             channel = 'preview'
             prerelease = $true
             legacyUpdateBridge = [bool]$LegacyUpdateBridge
+            windowsOnly = [bool]$WindowsOnly
             sourceCommit = $portableManifest.sourceCommit
             pluginDelivery = 'github-latest'
             releaseName = "Codlet $version Preview"
@@ -575,7 +598,7 @@ function New-PreviewPlan {
             version = $version
             tag = $plan.tag
             prerelease = $true
-            updaterPlatforms = @('win-x64', 'darwin-arm64')
+            updaterPlatforms = @($channelManifest.artifacts | ForEach-Object { $_.platform })
             assets = @($plan.assets | ForEach-Object { [ordered]@{ name = $_.name; bytes = $_.bytes; sha256 = $_.sha256; kind = $_.kind } })
             releasePlan = (Join-Path $output 'release-plan.json')
             releaseNotes = (Join-Path $output 'release-notes.md')
@@ -619,8 +642,10 @@ function Read-ReleasePlan([string]$Path) {
     if (@($plan.assets | Where-Object { $_.name -match '-distribution-manifest\.json$' -or $_.kind -in @('windows-portable-manifest', 'windows-msi-manifest', 'macos-manifest') }).Count -ne 0) {
         Fail 'Build-time distribution manifests must not be public release assets.'
     }
-    if ($null -eq $plan.verificationInputs -or @($plan.verificationInputs.PSObject.Properties).Count -ne 3) {
-        Fail 'Release plan must retain exactly three local distribution manifest verification inputs.'
+    $windowsOnlyPlan=$plan.PSObject.Properties['windowsOnly'] -and $plan.windowsOnly -eq $true
+    $expectedInputs=if($windowsOnlyPlan){2}else{3}
+    if ($null -eq $plan.verificationInputs -or @($plan.verificationInputs.PSObject.Properties).Count -ne $expectedInputs) {
+        Fail 'Release plan must retain the local manifests for exactly its selected platforms.'
     }
     $macManifestPath = $null
     foreach ($spec in @(
@@ -628,6 +653,7 @@ function Read-ReleasePlan([string]$Path) {
         @{ key = 'windowsMsi'; file = '.verification/windows-msi-distribution-manifest.json' },
         @{ key = 'macos'; file = '.verification/macos-distribution-manifest.json' }
     )) {
+        if($spec.key -eq 'macos' -and $windowsOnlyPlan){continue}
         $record = $plan.verificationInputs.($spec.key)
         if ($null -eq $record -or $record.file -ne $spec.file -or [long]$record.bytes -le 0 -or $record.sha256 -notmatch '^[0-9a-f]{64}$') {
             Fail "Invalid local release verification input: $($spec.key)"
@@ -649,8 +675,10 @@ function Read-ReleasePlan([string]$Path) {
         }
     }
     elseif ($legacyChannelAsset.Count -ne 0) { Fail 'A managed-only release must not advertise its ZIPs to Preview 5.' }
-    if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'preview' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne 2) { Fail 'Preview channel manifest is not compatible with the runtime updater.' }
+    $expectedPlatforms=if($windowsOnlyPlan){1}else{2}
+    if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'preview' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne $expectedPlatforms) { Fail 'Preview channel manifest is not compatible with the runtime updater.' }
     foreach ($supported in @(@{ platform = 'win-x64'; profile = 'portable' }, @{ platform = 'darwin-arm64'; profile = 'macApp' })) {
+        if($supported.platform -eq 'darwin-arm64' -and $windowsOnlyPlan){continue}
         $matches = @($channel.artifacts | Where-Object { $_.platform -eq $supported.platform -and $_.profile -eq $supported.profile })
         if ($matches.Count -ne 1) { Fail "Preview channel manifest must contain one $($supported.platform)/$($supported.profile) updater artifact." }
         $artifact = $matches[0]

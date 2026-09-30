@@ -19,7 +19,20 @@ if($StructureOnly){
   try{
     $featureRows=@(Rows 'SELECT `Feature`,`Level` FROM `Feature`' 2)
     $featureNames=@($featureRows|ForEach-Object{$_[0]})
-    foreach($name in @('Core','UiAdapter','DesktopAdapter','GUI','StartMenu','DesktopShortcut')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
+    foreach($name in @('Core','UiAdapter','DesktopAdapter','GUI','StartMenu','DesktopShortcut','CliPath')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
+    $allUsers=@(Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ALLUSERS'" 1)[0][0]
+    $perUser=@(Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MSIINSTALLPERUSER'" 1)[0][0]
+    if($allUsers -ne '2' -or $perUser -ne '1'){throw 'Expected dual-purpose MSI with a per-user default'}
+    $registrations=@(Rows 'SELECT `Root` FROM `Registry`' 1)
+    if(@($registrations|Where-Object{$_[0] -ne '-1'}).Count){throw 'Installer registration and plugin choices must follow installation context'}
+    $environment=@(Rows 'SELECT `Name`,`Value`,`Component_` FROM `Environment`' 3)
+    if($environment.Count -ne 2 -or @($environment|Where-Object{$_[1] -ne '[~];[INSTALLFOLDER]' -or $_[0] -notmatch '-'}).Count){throw 'PATH must append one removable installation directory'}
+    foreach($context in @(@('CliPathUser','NOT ALLUSERS',$false),@('CliPathMachine','ALLUSERS',$true))){
+      $row=@($environment|Where-Object{$_[2] -eq $context[0]})
+      if($row.Count -ne 1 -or $row[0][0].Contains('*') -ne $context[2]){throw 'Wrong PATH registry scope'}
+      $condition=@(Rows ('SELECT `Condition` FROM `Component` WHERE `Component`='''+$context[0]+'''') 1)[0][0]
+      if($condition -ne $context[1]){throw 'PATH components must be mutually exclusive by installation scope'}
+    }
     $installedFiles=@(Rows 'SELECT `FileName` FROM `File`' 1|ForEach-Object{$_[0]})
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)node\.exe$'}).Count){throw 'Managed MSI contains a bundled Node executable'}
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)(codlet\.json|renderer\.js|host\.cjs)$'}).Count){throw 'Core MSI contains plugin code'}

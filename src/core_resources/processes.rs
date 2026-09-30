@@ -260,28 +260,37 @@ fn spawn(owner: &ResourceOwner, input: Spawn) -> Result<Process> {
     if !matches!(input.stdin.as_str(), "pipe" | "closed") {
         return Err(invalid("stdin must be pipe or closed"));
     }
-    let executable =
+    let executable = if owner.client_permissions {
+        crate::os_broker::filesystem::pin_client_path(&input.executable)
+    } else {
         crate::os_broker::filesystem::pin_exact_grant(&input.executable, &owner.executables)
-            .map_err(|e| ServiceError::new(e.code, e.message))?;
+    }
+    .map_err(|e| ServiceError::new(e.code, e.message))?;
     let cwd = input.cwd.as_ref().unwrap_or(&owner.default_cwd);
-    let cwd_guard = if cwd == &owner.default_cwd {
+    let cwd_guard = if owner.client_permissions {
+        crate::os_broker::filesystem::pin_client_path(cwd)
+    } else if cwd == &owner.default_cwd {
         crate::os_broker::filesystem::pin_exact_grant(cwd, std::slice::from_ref(&owner.default_cwd))
     } else {
         crate::os_broker::filesystem::pin_within_grants(cwd, &owner.cwd_roots)
     }
     .map_err(|e| ServiceError::new(e.code, e.message))?;
-    let mut environment: BTreeMap<OsString, OsString> = [
-        "SystemRoot",
-        "WINDIR",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "LANG",
-        "LC_CTYPE",
-    ]
-    .into_iter()
-    .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
-    .collect();
+    let mut environment: BTreeMap<OsString, OsString> = if owner.client_permissions {
+        std::env::vars_os().collect()
+    } else {
+        [
+            "SystemRoot",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "LANG",
+            "LC_CTYPE",
+        ]
+        .into_iter()
+        .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+        .collect()
+    };
     if input.env.len() > 32
         || input
             .env
@@ -297,7 +306,7 @@ fn spawn(owner: &ResourceOwner, input: Spawn) -> Result<Process> {
             || key.len() > 128
             || key.contains(['\0', '='])
             || value.contains('\0')
-            || !owner.env_keys.contains(&key)
+            || (!owner.client_permissions && !owner.env_keys.contains(&key))
         {
             return Err(ServiceError::new(
                 "policy_denied",
