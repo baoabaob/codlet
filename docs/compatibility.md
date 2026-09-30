@@ -14,7 +14,7 @@ The project's current platform scope is based on the official [Windows deploymen
 
 ## Client integration
 
-Reviewed client mappings live in `compatibility/client-profiles.json`; actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Unknown client builds must report unavailable private integrations explicitly. Do not add an acceptance record because a source profile or cross-compile exists.
+Reviewed client mappings live in `compatibility/client-profiles.json`; actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Optional adapters can validate the existing interfaces on an unlisted build; missing or ambiguous contracts make the affected capability unavailable. Core's runtime skill discovers the mounted local request client independently of optional adapters and version profiles. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists.
 
 Windows package 26.924.2738.0 (frontend 26.924.22138 / 11645, local App Server
 0.158.0-alpha.2.1) has isolated real-client acceptance for the Core runtime skill,
@@ -25,6 +25,13 @@ during that isolated test; updater restart registration is covered separately by
 bridge tests and the observed user update.
 
 The optional Desktop and UI adapters own private frontend behavior. Core owns generic lifecycle, identity, RPC, permissions, and resource cleanup. Adapter-only plugins can inherit the portability of the adapter operations they actually use; direct OS calls, binaries, native libraries, or private mappings can narrow support. Dependency names alone do not prove portability.
+
+Windows package `26.928.1915.0` (frontend `26.928.20755` / `12246`, AppServer
+`0.159.0`) passed isolated real-client checks for the runtime skill, plugin GUI,
+Desktop task reads, composer actions, native page toolbar and unsubmitted draft
+creation. The run had zero plugin errors and a normal exit. It used a fresh
+profile, synthetic onboarding and a loopback API fixture; daily-client data,
+real sign-in and MSIX installation were outside that acceptance.
 
 ## Acceptance evidence
 

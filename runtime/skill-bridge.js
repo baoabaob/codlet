@@ -16,17 +16,32 @@ function installCodletSkill(config) {
     });
   }
   state.receive=(id,value)=>{const pending=state.requests.get(id);if(!pending)return;clearTimeout(pending.timer);state.requests.delete(id);value.error?pending.reject(Error(value.error)):pending.resolve(value);};
-  function findClient(module,scopeModule,profile){
-    const token=scopeModule[profile.exports.scope],family=module[profile.exports.client],root=document.getElementById('root');
-    if(!token||!family||!root)return null;
+  function findClient(){
+    const root=document.getElementById('root');
+    if(!root)return null;
     const container=root&&root[Object.keys(root).find(k=>k.startsWith('__reactContainer$'))];
-    const pending=[container?.stateNode?.current??container],seen=new Set();
-    while(pending.length&&seen.size<4096){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);
-      const chain=fiber.memoizedProps?.value,node=chain instanceof Map&&chain.get(token?.id);
-      if(node?.token===token&&node.familyBindings?.get(family)?.has('local'))return family.read(node,chain,'local');
+    const pending=[container?.stateNode?.current??container],seen=new Set(),nodes=new Set(),clients=new Set();
+    while(pending.length){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;
+      if(seen.size>=20000)throw Error('The Desktop tree exceeds the skill discovery limit');seen.add(fiber);
+      const chain=fiber.memoizedProps?.value;
+      if(chain instanceof Map)for(const node of chain.values()){
+        if(!node?.token||chain.get(node.token.id)!==node||!(node.familyBindings instanceof Map)||nodes.has(node))continue;
+        nodes.add(node);if(nodes.size>256||node.familyBindings.size>512)throw Error('The Desktop scope exceeds the skill discovery limit');
+        const bound=[];
+        for(const [family,bindings]of node.familyBindings){
+          if(family?.scope!==node.token||typeof family.read!=='function'||!(bindings instanceof Map)||!bindings.has('local'))continue;
+          bound.push(family.read(node,chain,'local'));
+        }
+        for(const manager of bound){
+          const client=manager?.requestClient;
+          if(typeof manager?.getHostId==='function'&&manager.getHostId()==='local'&&typeof manager.getConversation==='function'&&bound.includes(client)&&
+            typeof client?.sendRequest==='function'&&typeof client.getAppServerVersion==='function'&&typeof client.setAppServerVersion==='function'&&client.requestPromises instanceof Map)clients.add(client);
+        }
+      }
       if(fiber.sibling)pending.push(fiber.sibling);if(fiber.child)pending.push(fiber.child);
     }
-    return null;
+    if(clients.size>1)throw Error('The local Desktop skill connection is ambiguous');
+    return clients.size===1?[...clients][0]:null;
   }
   async function updateRoots(roots) {
     const deadline=Date.now()+15000;
@@ -52,22 +67,10 @@ function installCodletSkill(config) {
     if(globalThis[key]===state)delete globalThis[key];
   };
   void(async()=>{
-    const build=globalThis.electronBridge?.getSentryInitOptions?.();
-    const candidates=config.profiles.filter(profile=>build?.appVersion===profile.appVersion&&String(build?.buildNumber)===profile.buildNumber);
-    if(!candidates.length)throw Error('Codlet runtime skill has no reviewed client profile');
     const deadline=Date.now()+30000;
-    let profile;
-    while(state.alive){
-      const entries=new Set(Array.from(document.scripts,script=>script.src));
-      const matching=candidates.filter(candidate=>entries.has(candidate.entry));
-      if(matching.length>1)throw Error('The Desktop entry resource is ambiguous');
-      if(matching.length===1){profile=matching[0];break;}
-      if(document.readyState==='complete'||Date.now()>deadline)throw Error('The Desktop entry resource changed');
-      await delay(50);
-    }
-    if(!state.alive)return;
-    const module=await import(profile.module),scopeModule=profile.scopeModule?await import(profile.scopeModule):module;
-    while(state.alive&&!state.client){const client=findClient(module,scopeModule,profile);if(client?.getAppServerVersion?.()===profile.appServerVersion)state.client=client;else{if(Date.now()>deadline)throw Error('The local App Server is not ready for the Codlet skill');await delay(100);}}
+    // Reuse the mounted local request client. Hashed resources, minified export
+    // names and frontend/backend versions are not part of the skills RPC ABI.
+    while(state.alive&&!state.client){const client=findClient();if(client?.getAppServerVersion?.())state.client=client;else{if(Date.now()>deadline)throw Error('The local App Server is not ready for the Codlet skill');await delay(100);}}
     if(!state.alive)return;
     const client=state.client;if(typeof client.sendRequest!=='function'||typeof client.setAppServerVersion!=='function')throw Error('The native skill connection changed');
     state.original=client.sendRequest;state.versionSetter=client.setAppServerVersion;

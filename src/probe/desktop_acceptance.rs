@@ -167,10 +167,11 @@ pub(super) fn isolated_full_runtime() {
                 )
                 .unwrap();
                 if sid.is_none() {
-                    // Auxiliary/pet targets can attach before the main window.
-                    // Pick the owned desktop surface by size, not event order.
+                    // Splash/pet targets can attach before the main window and
+                    // the splash is also large. Require a rendered navigation
+                    // landmark instead of latching onto the first large target.
                     for target in &snapshot.renderer.targets {
-                        let dimensions = client.request("Runtime.evaluate", Some(json!({"expression":"innerWidth>=480&&innerHeight>=400","returnByValue":true})), Some(&target.session_id), Duration::from_secs(2));
+                        let dimensions = client.request("Runtime.evaluate", Some(json!({"expression":"innerWidth>=480&&innerHeight>=400&&!!document.querySelector('nav[data-app-navigation-rail=\"true\"],nav button.sidebar-item')","returnByValue":true})), Some(&target.session_id), Duration::from_secs(2));
                         if dimensions
                             .ok()
                             .and_then(|r| r.result)
