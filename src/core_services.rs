@@ -39,6 +39,8 @@ pub(crate) struct ServiceCaller<'a> {
 pub struct SharedCoreServices(Arc<Shared>);
 #[cfg(test)]
 mod client_permissions_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 struct Shared {
     registry: PathBuf,
     persistent: PluginServices,
@@ -1088,18 +1090,20 @@ fn monitor(weak: Weak<Shared>) {
             .cloned()
             .collect::<Vec<_>>();
         for owner in owners {
-            if service
-                .current_checked(
-                    &owner,
-                    owner
-                        .plugin
-                        .manifest
-                        .permissions
-                        .contains(&Permission::TrafficIntercept),
-                )
-                .is_err()
-            {
+            if service.current(&owner).is_err() {
                 service.retire(&owner.owner.plugin_id, owner.plugin.generation);
+                continue;
+            }
+            // Activation precedes the enable preference commit. A disabled
+            // preference closes traffic leases, but does not retire the whole
+            // service generation. Package cleanup and trust revocation do that.
+            if owner
+                .plugin
+                .manifest
+                .permissions
+                .contains(&Permission::TrafficIntercept)
+            {
+                let _ = service.current_checked(&owner, true);
             }
         }
     }

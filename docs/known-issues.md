@@ -3,6 +3,23 @@
 This page describes limitations of the current implementation. They are not
 implemented features or reasons to weaken authorization boundaries.
 
+## Core service lifetime during first enable
+
+Preview 24 can report a plugin as active while its Core service calls fail with
+`stale_generation`. When enabling a plugin with `traffic.intercept`, activation
+starts before the enabled preference is committed. The resource monitor treated
+that temporary disabled preference as retirement of the entire service owner.
+Storage, tasks, events, files, processes and network calls then lose their shared
+generation even though the renderer and Host process remain active.
+
+Preview 25 preserves Core service authority during that activation window while
+continuing to deny and close disabled traffic operations. Permission revocation,
+trust-record changes and explicit package cleanup still retire the owner. Two
+regression tests exercise the actual lifetime monitor, staged enable, traffic
+cleanup and permission revocation. Reloading an already enabled plugin restores
+its current instance on Preview 24; re-enabling after disable can trigger the
+defect again, so the permanent fix requires the newer Core.
+
 ## Renderer environments after repeated reloads
 
 **Accepted Preview limitation.** A new isolated renderer generation creates a new
