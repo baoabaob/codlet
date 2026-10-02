@@ -43,6 +43,8 @@ if(config.durationSeconds!=null) {
   if(!Number.isSafeInteger(config.durationSeconds)||config.durationSeconds<35||config.durationSeconds>180) throw Error('durationSeconds must be 35..180');
   env.CODLET_ACCEPTANCE_DURATION=String(config.durationSeconds);
 }
+if(config.fixtureResponseDelayMs!=null&&(!Number.isSafeInteger(config.fixtureResponseDelayMs)||config.fixtureResponseDelayMs<0||config.fixtureResponseDelayMs>5000))throw Error('fixtureResponseDelayMs must be 0..5000');
+if(config.foreground===true)env.CODLET_ACCEPTANCE_FOREGROUND='1';
 if(config.rawLaunch===true) env.CODLET_ACCEPTANCE_RAW='1';
 env.CODLET_ACCEPTANCE_PACKAGE_VERSION=config.packageVersion;
 env.CODLET_ACCEPTANCE_EXE=path.join(config.clientApp,'ChatGPT.exe');
@@ -81,9 +83,10 @@ if(config.localApiKeyFixture===true) {
     for await(const chunk of request){bytes+=chunk.length;if(bytes>4*1024*1024){response.writeHead(413).end();return;}chunks.push(chunk);}
     const body=Buffer.concat(chunks).toString('utf8');
     fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({path:request.url,method:request.method,
-      requestModified:request.headers['x-codlet-acceptance']==='modified',bodyModified:body.includes('codlet-modified-request'),modelModified:body.includes('"model":"codlet-intercepted-model"')})+'\n');
+      requestModified:request.headers['x-codlet-acceptance']==='modified',bodyModified:body.includes('codlet-modified-request'),modelModified:body.includes('"model":"codlet-intercepted-model"'),contextAdded:body.includes('Synthetic functional test context'),submitPrefixRemoved:!body.includes('[FUNCTIONAL]')})+'\n');
     if(request.url?.endsWith('/responses')){
       response.writeHead(200,{'content-type':'text/event-stream'});
+      if(config.fixtureResponseDelayMs){response.flushHeaders();await delay(config.fixtureResponseDelayMs);if(response.destroyed)return;}
       response.end(modelEvents().map(value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`).join(''));return;
     }
     if(request.url?.includes('/desktop/')){response.writeHead(200,{'content-type':'text/plain'}).end('codlet-original-response');return;}
@@ -96,10 +99,11 @@ if(config.localApiKeyFixture===true) {
     fixtureServer.on('upgrade',(request,socket,head)=>fixtureWebSockets.handleUpgrade(request,socket,head,connection=>{
       fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({protocol:'websocket',requestModified:request.headers['x-codlet-acceptance']==='modified'})+'\n');
       connection.on('error',()=>{});
-      connection.on('message',data=>{
+      connection.on('message',async data=>{
         let body;try{body=JSON.parse(data.toString());}catch{connection.close(1003,'Invalid fixture request');return;}
         fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({protocol:'websocket-frame',modelModified:body.model==='codlet-intercepted-model',prewarm:body.generate===false,continuation:typeof body.previous_response_id==='string'})+'\n');
-        for(const event of modelEvents())connection.send(JSON.stringify(event));
+        if(config.fixtureResponseDelayMs)await delay(config.fixtureResponseDelayMs);
+        if(connection.readyState===1)for(const event of modelEvents())connection.send(JSON.stringify(event));
       });
     }));
   }else fixtureServer.on('upgrade',(_request,socket)=>socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'));
@@ -111,7 +115,7 @@ if(config.localApiKeyFixture===true) {
   fixtureConfig=`openai_base_url=${JSON.stringify(url)}\n`;
   fs.writeFileSync(path.join(env.CODEX_HOME,'auth.json'),JSON.stringify({OPENAI_API_KEY:'codlet-offline-acceptance'}));
 }
-fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),fixtureConfig+'cli_auth_credentials_store="file"\nsandbox_mode="read-only"\napproval_policy="never"\nmodel="gpt-5.4"\n[features]\nplugins=false\nremote_models=false\nremote_plugin=false\ncode_mode_host=false\n[analytics]\nenabled=false\n[mcp_servers.codex_app]\nenabled=false\ncommand=""\n');
+fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),fixtureConfig+'cli_auth_credentials_store="file"\nsandbox_mode="read-only"\napproval_policy="never"\nmodel="gpt-5.4"\n[features]\nplugins=false\nremote_models=false\nremote_plugin=false\ncode_mode_host=false\nresponses_websockets='+String(config.fixtureWebSocket===true)+'\nresponses_websockets_v2='+String(config.fixtureWebSocket===true)+'\n[analytics]\nenabled=false\n[mcp_servers.codex_app]\nenabled=false\ncommand=""\n');
 const registry={schema:2,plugins:{},localPlugins:{}};
 for(const plugin of ['codex-desktop-adapter','codex-ui-adapter','codlet']) {
   const dir=path.join(config.pluginsRoot,'bundled',plugin);
@@ -124,11 +128,14 @@ for(const source of config.extraPlugins??[]) {
   if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(manifest.id)||registry.localPlugins[manifest.id])throw Error('invalid or duplicate fixture plugin id');
   const dir=path.join(root,'fixture-plugins',manifest.id);
   fs.cpSync(source,dir,{recursive:true,errorOnExist:true,force:false});
-  fs.writeFileSync(path.join(dir,'fixture.json'),JSON.stringify({baseUrl:env.OPENAI_BASE_URL??null}));
+  fs.writeFileSync(path.join(dir,'fixture.json'),JSON.stringify({baseUrl:env.OPENAI_BASE_URL??null,autorun:config.functionalTestAuto===true}));
+  const policy=config.extraPluginPolicies?.[manifest.id];
+  if(policy&&(typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).some(key=>key!=='clientPermissions')||policy.clientPermissions!==true))throw Error('extraPluginPolicies accepts only explicit clientPermissions:true for a trusted isolated fixture');
   registry.localPlugins[manifest.id]={path:dir,grants:manifest.permissions,
-    ...(env.OPENAI_BASE_URL&&manifest.permissions.includes('host.network')?{brokerPolicy:{networkOrigins:[new URL(env.OPENAI_BASE_URL).origin]}}:{})};
+    ...(policy?{brokerPolicy:policy}:env.OPENAI_BASE_URL&&manifest.permissions.includes('host.network')?{brokerPolicy:{networkOrigins:[new URL(env.OPENAI_BASE_URL).origin]}}:{})};
 }
 fs.writeFileSync(path.join(env.CODLET_HOME,'config.json'),JSON.stringify(registry,null,2));
+if(config.lifecyclePlugin!=null&&(typeof config.lifecyclePlugin!=='string'||!registry.localPlugins[config.lifecyclePlugin]||!(config.extraPlugins??[]).some(source=>JSON.parse(fs.readFileSync(path.join(source,'codlet.json'),'utf8')).id===config.lifecyclePlugin)))throw Error('lifecyclePlugin must name a trusted copied fixture');
 let backend,endpoint,port;
 if(config.ownedBackend===true) {
   if(config.localApiKeyFixture!==true)throw Error('ownedBackend requires the local API key fixture');
@@ -169,7 +176,30 @@ try {
   if(/["\r\n]/.test(config.testBinary)) throw Error('invalid test binary path');
   fs.writeFileSync(entry,`@echo off\r\ncmd.exe /d /c exit 7\r\n"${config.testBinary.replaceAll('%','%%')}"\r\nexit /b %errorlevel%\r\n`);
   child=spawn(env.COMSPEC||env.ComSpec||'C:/Windows/System32/cmd.exe',['/d','/s','/c',`"${entry}"`],{env,cwd:root,windowsHide:true,windowsVerbatimArguments:true,stdio:['ignore',fs.openSync(path.join(root,'core.out.log'),'w'),fs.openSync(path.join(root,'core.err.log'),'w')]});
+  let auditing=false;
+  const lifecycle=config.lifecyclePlugin&&setInterval(()=>{
+    if(auditing)return;
+    let result;try{const probes=JSON.parse(fs.readFileSync(path.join(root,'probe.json'),'utf8'));result=probes.at(-1)?.result?.response?.result?.value;}catch{return;}
+    if(result?.phase!=='complete')return;
+    auditing=true;clearInterval(lifecycle);
+    const audit={pluginId:config.lifecyclePlugin,commands:[],passed:false};
+    try{
+      fs.writeFileSync(path.join(root,'functional-report.json'),JSON.stringify(result,null,2));
+      const pluginRoot=registry.localPlugins[config.lifecyclePlugin].path,fixturePath=path.join(pluginRoot,'fixture.json'),fixture=JSON.parse(fs.readFileSync(fixturePath,'utf8'));
+      fixture.autorun=false;fs.writeFileSync(fixturePath,JSON.stringify(fixture));
+      for(const action of ['reload','disable','enable']){
+        const receipt=JSON.parse(execFileSync(config.testBinary,['plugin',action,config.lifecyclePlugin,'--json'],{env,cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,maxBuffer:4*1024*1024}));
+        if(receipt.outcome!=='completed'||receipt.control?.operation?.completion?.report?.outcome!=='applied'||receipt.control.operation.completion.report.target_failures.length)throw Error('Fixture lifecycle did not apply: '+action);
+        const cleanup=JSON.parse(fs.readFileSync(path.join(pluginRoot,'cleanup.json'),'utf8'));
+        if(!cleanup.retired)throw Error('Fixture did not record cleanup');
+        audit.commands.push({action,receipt,cleanup});
+      }
+      audit.passed=true;
+    }catch(error){audit.error=String(error);}
+    fs.writeFileSync(path.join(root,'lifecycle.json'),JSON.stringify(audit,null,2));
+  },500);
   const exit=await new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});
+  if(lifecycle)clearInterval(lifecycle);
   fs.writeFileSync(path.join(root,'completed.json'),JSON.stringify({exit,root}));
   process.exitCode=exit===0?0:1;
 } catch(error) {

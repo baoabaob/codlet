@@ -158,6 +158,7 @@ pub(super) fn isolated_full_runtime() {
             let mut samples = Vec::new();
             let mut sid = None;
             let mut probes = Vec::new();
+            let mut focused = false;
             while started.elapsed() < Duration::from_secs(duration) {
                 std::thread::sleep(Duration::from_secs(2));
                 let snapshot = status.snapshot();
@@ -183,6 +184,14 @@ pub(super) fn isolated_full_runtime() {
                     }
                 }
                 if let Some(sid) = &sid {
+                    // Some Desktop builds defer local stream ownership in a
+                    // background window. Opt in only for an owned functional
+                    // fixture; ordinary and manual acceptance keep their focus.
+                    if !focused && std::env::var_os("CODLET_ACCEPTANCE_FOREGROUND").is_some() {
+                        client.request("Page.bringToFront", None, Some(sid), Duration::from_secs(3))
+                            .map_err(|error| error.to_string())?;
+                        focused = true;
+                    }
                     if started.elapsed() > Duration::from_secs(6)
                         && let Some(path) = &probe_script
                     {

@@ -35,6 +35,22 @@ real sign-in and MSIX installation were outside that acceptance.
 
 ## Acceptance evidence
 
+Windows package `26.930.2377.0` (frontend `26.930.21537` / `12776`, AppServer
+`0.159.0-alpha.12.1`) passed the extended `compatibility.acceptance` 0.0.2
+fixture with Desktop Adapter 0.2.7 and UI Adapter 0.1.10. Both HTTP/SSE and
+Responses WebSocket runs passed 24 functional checks, including task opening,
+submit rewrite/context injection, model traffic rewriting, events/history,
+steering/interruption and plugin-owned Core services. The WebSocket run also
+passed scoped CLI reload/disable/enable and generation cleanup. The runtime
+skill was ready, both sources activated, and the clients exited normally with
+zero plugin errors. This used synthetic credentials and owned loopback fixtures;
+real OAuth, new MSIX installation, OS dialogs and other platforms are separate.
+
+This update required exact-image startup and main/backend source reviews in the
+Desktop Adapter. The startup-only inspector argument is consumed before later
+native workers/forks inherit it; retaining it left the worktree environment
+reader waiting indefinitely. Core's generic production lifecycle is unchanged.
+
 For each target, record the installed official package/frontend/backend identity, pinned Node version, launch and shutdown, management IPC, runtime skill, plugin activation/reload/revocation/removal, dependency failure recovery, and UI behavior. Installer tests must cover paths with spaces and non-ASCII characters, existing data, running applications, shortcut choices, and cancellation.
 
 CI-native process tests, simulated protocols, package mount/signature checks, and real desktop tests answer different questions. Preserve that distinction in release notes and [known issues](known-issues.md); never present unsigned or untested builds as notarized or fully accepted.
