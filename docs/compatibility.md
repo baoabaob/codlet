@@ -87,6 +87,14 @@ real sign-in and MSIX installation were outside that acceptance.
 
 ## Acceptance evidence
 
+Fresh Windows profiles do not isolate machine-wide sandbox users and firewall
+rules. Earlier native acceptance profiles triggered the official elevated
+sandbox provisioner on the development host. This can affect other profiles;
+the profile boundaries stated below apply to files and credentials, not system
+sandbox state. Native Windows acceptance now requires an explicitly disposable
+VM/host (`disposableWindowsHost: true`). Do not run that provisioning flow on a
+shared daily machine. This changes the acceptance tooling, not Core startup.
+
 Preview.24 on Windows package `26.930.2377.0`, Desktop Adapter 0.2.8 and
 UI Adapter 0.1.10 passed four native public-management checks for live remote
 records, manual refresh, caller-source rejection and list/status consistency.

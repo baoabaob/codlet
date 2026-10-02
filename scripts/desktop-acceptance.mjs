@@ -8,6 +8,11 @@ import {setTimeout as delay} from 'node:timers/promises';
 // Run from an unpackaged creator; Core establishes the required package context.
 // No package is installed or updated. Use reviewed binaries and a fresh directory.
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+// A fresh CODEX_HOME isolates files, but elevated Windows sandbox setup also
+// changes machine-wide accounts and firewall rules. Require a disposable host.
+if(process.platform==='win32'&&config.disposableWindowsHost!==true) {
+  throw Error('Native Windows acceptance requires a disposable VM/host (disposableWindowsHost:true). Separate profiles do not isolate Windows sandbox accounts or firewall rules.');
+}
 for(const key of ['root','clientApp','pluginsRoot','testBinary']) {
   if(typeof config[key]!=='string'||!path.isAbsolute(config[key])) throw Error(key+' must be absolute');
 }
