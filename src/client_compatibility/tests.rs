@@ -366,6 +366,55 @@ async fn malformed_failed_redirected_and_oversized_http_never_replace_good_recor
 }
 
 #[tokio::test]
+async fn api_fallback_reads_the_same_catalog_without_authentication_or_cross_endpoint_etags() {
+    let primary = server(vec![Some(response(503, b"unavailable", ""))]).await;
+    let fallback = server(vec![Some(response(
+        200,
+        &catalog_bytes(&updated_catalog()),
+        "ETag: \"api-only\"\r\n",
+    ))])
+    .await;
+    let fetched = fetch_sources(&primary.url, Some(&fallback.url), Some("\"raw-only\""))
+        .await
+        .unwrap();
+    assert_eq!(fetched.catalog.unwrap(), updated_catalog());
+    assert!(fetched.etag.is_none());
+    let requests = fallback.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = requests[0].to_lowercase();
+    assert!(request.contains("accept: application/vnd.github.raw+json"));
+    assert!(request.contains("x-github-api-version: 2022-11-28"));
+    assert!(!request.contains("if-none-match:") && !request.contains("authorization:"));
+}
+
+#[tokio::test]
+async fn successful_primary_skips_fallback_and_invalid_fallback_preserves_cached_data() {
+    let primary = server(vec![Some(response(
+        200,
+        &catalog_bytes(&updated_catalog()),
+        "",
+    ))])
+    .await;
+    let fallback = server(vec![None]).await;
+    fetch_sources(&primary.url, Some(&fallback.url), None)
+        .await
+        .unwrap();
+    assert!(fallback.requests.lock().unwrap().is_empty());
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("cache.json");
+    save_state(&path, updated_catalog());
+    let saved = std::fs::read(&path).unwrap();
+    let primary = server(vec![Some(response(503, b"", ""))]).await;
+    let fallback = server(vec![Some(response(200, b"{}", ""))]).await;
+    assert!(
+        fetch_sources(&primary.url, Some(&fallback.url), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+}
+
+#[tokio::test]
 async fn disabled_automatic_checks_allow_one_coalesced_manual_refresh() {
     let temp = tempfile::tempdir().unwrap();
     let registry = temp.path().join("config.json");

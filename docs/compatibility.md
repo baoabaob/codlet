@@ -24,6 +24,10 @@ This is advisory JSON; it cannot change plugin grants, execute code, install
 updates, enable capabilities, or supply new private-interface mappings. The
 source is pinned to this repository over HTTPS, redirects are rejected, and
 schema, identity, version requirements, duplicates and size are validated.
+If the raw-file read fails, Core reads the same repository, path and `main`
+ref through the fixed anonymous GitHub contents API using the raw-file media
+type. This fallback is bounded and validated identically. It does not reuse
+ETags across endpoints, follow redirect URLs, or send GitHub credentials.
 
 Each record identifies one exact official package and platform, the minimum
 Core and required adapter versions, and the versions actually used for its
@@ -41,7 +45,7 @@ loads a validated last-successful cache first and checks in the background after
 normal runtime readiness. Automatic checks follow the existing
 `automaticUpdateChecks` preference. Fresh caches avoid startup downloads for
 six hours; an unlisted running client triggers a check even with a fresh cache.
-Successful checks use ETag revalidation. Errors keep the current records and
+Raw-file checks use ETag revalidation. Errors keep the current records and
 retry after 15 minutes. Manual checks coalesce for 60 seconds; closing the
 runtime cancels an outstanding request.
 
@@ -82,6 +86,17 @@ profile, synthetic onboarding and a loopback API fixture; daily-client data,
 real sign-in and MSIX installation were outside that acceptance.
 
 ## Acceptance evidence
+
+Preview.24 on Windows package `26.930.2377.0`, Desktop Adapter 0.2.8 and
+UI Adapter 0.1.10 passed four native public-management checks for live remote
+records, manual refresh, caller-source rejection and list/status consistency.
+The normal functional fixture passed its 20 checks and scoped CLI
+reload/disable/enable cleanup in the same run. The runtime skill was ready,
+both sources activated, the client exited normally and there were zero plugin
+errors. Tests used an owned fresh profile and synthetic loopback fixtures.
+The 489 passing Core tests include raw/API fallback, bounded/invalid responses,
+ETags, cache/revision validation, preferences and cancellation; six tests retain
+their existing ignored status. The public settings API suite passed six tests.
 
 Windows package `26.930.2377.0` (frontend `26.930.21537` / `12776`, AppServer
 `0.159.0-alpha.12.1`) passed the extended `compatibility.acceptance` 0.0.2

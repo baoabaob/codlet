@@ -14,6 +14,7 @@ use crate::runtime_settings::RuntimeSettings;
 use crate::runtime_update::newer_version;
 
 const SOURCE: &str = "https://raw.githubusercontent.com/baoabaob/codlet/main/compatibility/tested-client-versions.json";
+const FALLBACK: &str = "https://api.github.com/repos/baoabaob/codlet/contents/compatibility/tested-client-versions.json?ref=main";
 const BASELINE: &str = include_str!("../compatibility/client-compatibility-baseline.json");
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_CACHE_BYTES: usize = MAX_BYTES + 1024;
@@ -272,6 +273,35 @@ struct Fetched {
     etag: Option<String>,
 }
 async fn fetch(url: &str, etag: Option<&str>) -> Result<Fetched, String> {
+    fetch_request(url, etag, false).await
+}
+
+async fn fetch_sources(
+    primary: &str,
+    fallback: Option<&str>,
+    etag: Option<&str>,
+) -> Result<Fetched, String> {
+    match fetch(primary, etag).await {
+        Ok(fetched) => Ok(fetched),
+        Err(primary_error) => {
+            let Some(fallback) = fallback else {
+                return Err(primary_error);
+            };
+            let mut fetched =
+                fetch_request(fallback, None, true)
+                    .await
+                    .map_err(|fallback_error| {
+                        format!("Raw source: {primary_error}; GitHub API: {fallback_error}")
+                    })?;
+            // ETags belong to one representation/endpoint. The bounded API
+            // fallback is fetched fresh rather than reusing a raw-file ETag.
+            fetched.etag = None;
+            Ok(fetched)
+        }
+    }
+}
+
+async fn fetch_request(url: &str, etag: Option<&str>, github_api: bool) -> Result<Fetched, String> {
     // Only the compiled source reaches this function in production. Redirects
     // are rejected; no API token, plugin credentials or client identity is sent.
     let client = reqwest::Client::builder()
@@ -282,9 +312,17 @@ async fn fetch(url: &str, etag: Option<&str>) -> Result<Fetched, String> {
         .user_agent("Codlet-client-compatibility/1")
         .build()
         .map_err(|error| error.without_url().to_string())?;
-    let mut request = client
-        .get(url)
-        .header(reqwest::header::ACCEPT, "application/json");
+    let mut request = client.get(url).header(
+        reqwest::header::ACCEPT,
+        if github_api {
+            "application/vnd.github.raw+json"
+        } else {
+            "application/json"
+        },
+    );
+    if github_api {
+        request = request.header("X-GitHub-Api-Version", "2022-11-28");
+    }
     if let Some(etag) = etag.filter(|value| valid_etag(value)) {
         request = request.header(reqwest::header::IF_NONE_MATCH, etag);
     }
@@ -546,7 +584,7 @@ fn refresh_loop(
                 let result = runtime.block_on(async {
                     tokio::select! {
                         _ = cancellation.cancelled() => None,
-                        result = fetch(&source, etag.as_deref()) => Some(result),
+                        result = fetch_sources(&source, (source == SOURCE).then_some(FALLBACK), etag.as_deref()) => Some(result),
                     }
                 });
                 let Some(result) = result else {
@@ -607,7 +645,7 @@ fn status(state: &State, running: &str, platform: &str, core: &str, plugins: &Va
     json!({"source":state.source,"status":if supported {"matched"} else if record.is_some() {"requirements-unmet"} else {"unmatched"},
         "runningVersion":running,"platform":platform,"adaptedVersions":records.iter().map(|record| &record.client_version).collect::<Vec<_>>(),
         "matchesRunningClient":supported,"verificationRecord":record,"missingRequirements":missing,
-        "compatibilityCatalog":{"sourceUrl":SOURCE,"revision":state.catalog.revision,"phase":state.phase,
+        "compatibilityCatalog":{"sourceUrl":SOURCE,"fallbackSourceUrl":FALLBACK,"revision":state.catalog.revision,"phase":state.phase,
             "checkedAtUnixMs":state.checked_at,"refreshIntervalSeconds":REFRESH.as_secs(),"error":state.error}})
 }
 

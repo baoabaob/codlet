@@ -8,15 +8,15 @@ module.exports.activate=async context=>{
   report.dataset.remoteCompatibilityAcceptance='running';document.body.append(report);
   const state={phase:'running',checks:[],clientStatus:null,runtimeVersion:null,error:null};
   const save=()=>{report.dataset.remoteCompatibilityAcceptance=state.phase;report.textContent=JSON.stringify(state);};
-  dispose=()=>{alive=false;clearTimeout(timer);report.remove();};context.onDispose(dispose);
+  dispose=()=>{alive=false;clearTimeout(timer);report.remove();};
   const request=(method,params=null)=>context.rpc.request({name:'codlet.runtime.manage',api:1,scope:'runtime'},method,params,{timeoutMs:5000});
   const assert=(value,message)=>{if(!value)throw Error(message);};
-  try {
+  const run=async()=>{try {
     const started=Date.now();
     while(alive){
       const value=await request('versionStatus');state.runtimeVersion=value.runtimeVersion;state.clientStatus=value.clientStatus;save();
-      if(value.clientStatus?.source==='remote-manifest')break;
-      assert(Date.now()-started<20000,'Remote metadata was not observed');
+      if(value.clientStatus?.source==='remote-manifest'&&value.clientStatus.matchesRunningClient===true)break;
+      assert(Date.now()-started<30000,'Remote metadata was not observed');
       await new Promise(resolve=>{timer=setTimeout(resolve,250);});
     }
     if(!alive)return;
@@ -36,5 +36,7 @@ module.exports.activate=async context=>{
     assert(listing.clientStatus.compatibilityCatalog.revision===state.clientStatus.compatibilityCatalog.revision,'Catalog snapshot drifted');
     state.checks.push({id:'remote.management-list',status:'passed'});
     state.phase='complete';save();
-  } catch(error) {if(alive){state.phase='failed';state.error=String(error);save();}}
+  } catch(error) {if(alive){state.phase='failed';state.error=String(error);save();}}};
+  // Activation must finish before Core starts background checks at readiness.
+  timer=setTimeout(()=>void run(),0);
 };

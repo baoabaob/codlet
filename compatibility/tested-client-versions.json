@@ -2,7 +2,7 @@
   "schema": 3,
   "kind": "codlet-client-compatibility",
   "repository": "baoabaob/codlet",
-  "revision": 2026100201,
+  "revision": 2026100202,
   "records": [
     {
       "platform": "windows-x86_64",
@@ -59,6 +59,13 @@
       "verifiedWith": [
         {
           "coreVersion": "0.2.0-preview.23",
+          "adapters": {
+            "codex.desktop.adapter": "0.2.8",
+            "codex.ui.adapter": "0.1.10"
+          }
+        },
+        {
+          "coreVersion": "0.2.0-preview.24",
           "adapters": {
             "codex.desktop.adapter": "0.2.8",
             "codex.ui.adapter": "0.1.10"

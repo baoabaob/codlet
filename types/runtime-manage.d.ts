@@ -92,7 +92,7 @@ export interface ClientVersionStatus {
   verificationRecord?: ClientCompatibilityRecord | null;
   missingRequirements?: {kind: 'core' | 'adapter'; id?: string; minimumVersion: string; currentVersion: string | null; active?: boolean}[];
   compatibilityCatalog?: {
-    sourceUrl: string; revision: number; phase: 'idle' | 'checking' | 'disabled' | 'error';
+    sourceUrl: string; fallbackSourceUrl: string; revision: number; phase: 'idle' | 'checking' | 'disabled' | 'error';
     checkedAtUnixMs: number | null; refreshIntervalSeconds: number; error: string | null;
   };
 }
