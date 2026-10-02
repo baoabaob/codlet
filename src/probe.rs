@@ -1416,6 +1416,7 @@ impl CodletRuntime {
     }
 
     fn stop_hosts(&mut self) -> Result<(), HostError> {
+        self.manage_service.stop_client_version_checks();
         self.renderer.stop_runtime_skill();
         for failure in self.renderer.retire_all_package_renderers() {
             eprintln!(

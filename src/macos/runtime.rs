@@ -611,6 +611,7 @@ impl Session {
             return Ok(());
         }
         self.stopped = true;
+        self.manage.stop_client_version_checks();
         self.control.stop();
         self.renderer.stop_runtime_skill();
         for failure in self.renderer.retire_all_package_renderers() {

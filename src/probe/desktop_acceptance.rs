@@ -188,7 +188,8 @@ pub(super) fn isolated_full_runtime() {
                     // background window. Opt in only for an owned functional
                     // fixture; ordinary and manual acceptance keep their focus.
                     if !focused && std::env::var_os("CODLET_ACCEPTANCE_FOREGROUND").is_some() {
-                        client.request("Page.bringToFront", None, Some(sid), Duration::from_secs(3))
+                        client
+                            .request("Page.bringToFront", None, Some(sid), Duration::from_secs(3))
                             .map_err(|error| error.to_string())?;
                         focused = true;
                     }

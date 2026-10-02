@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "compatibility.remote-checks",
+  "name": "Remote compatibility acceptance",
+  "version": "0.0.1",
+  "renderer": {"entry": "renderer.js", "world": "isolated"},
+  "permissions": ["ui.dom", "runtime.manage"],
+  "requires": [{"name": "codlet.runtime.manage", "api": 1, "scope": "runtime"}]
+}

@@ -27,6 +27,7 @@ const FORWARDED_METHODS: &[&str] = &[
     "runtimeUpdateStatus",
     "getSettings",
     "versionStatus",
+    "checkClientCompatibility",
     "saveSettings",
     "checkRuntimeUpdate",
     "checkPluginUpdates",

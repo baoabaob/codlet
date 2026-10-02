@@ -105,6 +105,16 @@ Rollback requires a retained version key, an existing source directory and reval
 
 `versionStatus` combines current runtime/client facts, update discovery and batch state without inferring an available release from publication evidence. `checkPluginUpdates` is read-only discovery of registered GitHub sources and coalesces while running/for 60 seconds afterward. `updatePlugins` is an explicit batch action; it preserves grants and enabled preferences, and yields `reviewRequired` when authority changes. `pluginUpdateReview` binds review to that batch/candidate. Local projects and offline installer imports do not become GitHub update sources because they have official names.
 
+`clientStatus` also reports the advisory compatibility catalog source, revision,
+last successful check, current verification record and missing Core/adapter
+requirements. `checkClientCompatibility(null)` requests a background metadata
+refresh; poll `versionStatus` for its result. Callers cannot select a URL or
+path. The existing `checkRuntimeUpdate` action also refreshes compatibility
+metadata, so the GUI's existing check action works without a GUI update.
+Automatic refresh follows `automaticUpdateChecks`; caches and the bundled
+baseline remain usable when automatic checks are disabled or the network is
+unavailable. This endpoint never changes activation or installation authority.
+
 Core check/download/install methods are separate actions. Combined official-client/Core updates use one explicit `installCombinedUpdate({candidateId})` operation; reconcile a lost reply through status instead of replaying. An unconfigured development channel is not “up to date.” Installer-managed Core files and portable self-update follow their respective ownership rules; an OS package upgrade is not permission to overwrite unrelated installations.
 
 The optional GUI and Codex native adapter semantics are documented in the [official plugin specifications](https://github.com/baoabaob/codlet-plugins/blob/main/docs/README.md). Core's management service and runtime skill remain available without that GUI.

@@ -83,11 +83,25 @@ export interface PluginUpdateStatus {
   plugins: Record<string, { versionKey: string; status: 'unknown' | 'upToDate' | 'available' | 'failed'; releaseTag: string | null; releaseUrl: string | null; error: string | null }>;
 }
 export interface ClientVersionStatus {
-  status: 'unknown' | 'matched' | 'unmatched';
-  source?: 'local-package';
+  status: 'unknown' | 'matched' | 'unmatched' | 'requirements-unmet';
+  source?: 'local-package' | 'remote-cache' | 'remote-manifest';
   matchesRunningClient?: boolean;
   runningVersion?: string;
+  platform?: string;
   adaptedVersions?: string[];
+  verificationRecord?: ClientCompatibilityRecord | null;
+  missingRequirements?: {kind: 'core' | 'adapter'; id?: string; minimumVersion: string; currentVersion: string | null; active?: boolean}[];
+  compatibilityCatalog?: {
+    sourceUrl: string; revision: number; phase: 'idle' | 'checking' | 'disabled' | 'error';
+    checkedAtUnixMs: number | null; refreshIntervalSeconds: number; error: string | null;
+  };
+}
+export interface ClientCompatibilityRecord {
+  platform: string; clientVersion: string; minimumCoreVersion: string;
+  requiredAdapters: Record<string, string>;
+  verifiedWith: {coreVersion: string; adapters: Record<string, string>}[];
+  /** Imported package-only acceptance without an archived Core/adapter combination. */
+  legacyRecord?: boolean;
 }
 export interface VersionStatus {
   runtimeVersion: string;
@@ -284,6 +298,8 @@ export interface RuntimeManageSnapshot extends RuntimeManageList { sampledAtUnix
 export interface RuntimeManageMethods {
   list: { params: null; result: RuntimeManageList };
   versionStatus: { params: null; result: VersionStatus };
+  /** Refresh advisory metadata only; poll versionStatus for completion. URLs cannot be supplied. */
+  checkClientCompatibility: { params: null; result: ClientVersionStatus };
   getSettings: { params: null; result: RuntimeSettingsSnapshot };
   /** One CAS write; after an uncertain reply, read getSettings instead of resubmitting. */
   saveSettings: { params: { expectedRevision: number; values: RuntimePreferences }; result: RuntimeSettingsSnapshot };

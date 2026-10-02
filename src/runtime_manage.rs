@@ -42,7 +42,7 @@ pub struct RuntimeManageService {
         Arc<Mutex<Option<crate::windows::restart_bridge::ForegroundPermission>>>,
     broker: ControlBroker,
     listing: Arc<Mutex<Result<Value, RuntimeManageError>>>,
-    client_status: Arc<Mutex<Value>>,
+    client_compatibility: Arc<Mutex<Option<crate::client_compatibility::ClientCompatibility>>>,
     runtime_skill: Arc<Mutex<Value>>,
     runtime_update: Arc<Mutex<Option<crate::runtime_update::RuntimeUpdateService>>>,
     pub(crate) official_updates: crate::official_update::OfficialUpdates,
@@ -91,7 +91,7 @@ impl RuntimeManageService {
                 "The runtime has not published a plugin list yet.",
             )))),
             local_registry: None,
-            client_status: Arc::new(Mutex::new(serde_json::json!({"status":"unknown"}))),
+            client_compatibility: Default::default(),
             runtime_skill: Arc::new(Mutex::new(serde_json::json!({"available":false}))),
             runtime_update: Arc::new(Mutex::new(None)),
             official_updates: Default::default(),
@@ -135,6 +135,9 @@ impl RuntimeManageService {
             })
     }
     pub(crate) fn start_plugin_update_checks(&self) {
+        if let Some(compatibility) = self.client_compatibility_service() {
+            compatibility.start();
+        }
         if let Some(updates) = &self.plugin_updates {
             updates.start(
                 self.preferences_for_start()
@@ -184,11 +187,7 @@ impl RuntimeManageService {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        list["clientStatus"] = self
-            .client_status
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
+        list["clientStatus"] = self.client_version_status(&list["plugins"]);
         if self.local_registry.is_some() {
             list["localManagement"] = serde_json::json!({"available":true, "clientPermissions":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
             list["githubManagement"] = serde_json::json!({"available":true});
@@ -250,11 +249,42 @@ impl RuntimeManageService {
         }
     }
 
-    pub(crate) fn publish_client_status(&self, status: Value) {
-        *self
-            .client_status
+    pub(crate) fn observe_client_version(&self, running: &str) {
+        if let Some(registry) = &self.local_registry {
+            let service = crate::client_compatibility::ClientCompatibility::new(
+                running,
+                registry,
+                self.settings.clone(),
+            );
+            let previous = self
+                .client_compatibility
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .replace(service);
+            drop(previous);
+        }
+    }
+
+    fn client_compatibility_service(
+        &self,
+    ) -> Option<crate::client_compatibility::ClientCompatibility> {
+        self.client_compatibility
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = status;
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn client_version_status(&self, plugins: &Value) -> Value {
+        self.client_compatibility_service().map_or_else(
+            || serde_json::json!({"status":"unknown"}),
+            |service| service.status(plugins),
+        )
+    }
+
+    pub(crate) fn stop_client_version_checks(&self) {
+        if let Some(service) = self.client_compatibility_service() {
+            service.stop();
+        }
     }
 
     pub(crate) fn publish_runtime_skill(&self, skill: Value) {
@@ -319,11 +349,15 @@ impl RuntimeManageService {
                 .unwrap_or_else(|error| error.into_inner())
                 .as_ref()
                 .map(|service| service.status());
-            let client = self
-                .client_status
+            let plugins = self
+                .listing
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .clone();
+                .as_ref()
+                .ok()
+                .map(|listing| listing["plugins"].clone())
+                .unwrap_or(Value::Null);
+            let client = self.client_version_status(&plugins);
             return bounded_value(
                 serde_json::json!({"runtimeVersion":env!("CARGO_PKG_VERSION"),"runtimeUpdate":update,
                 "runtimeUpdateError":update.is_none().then(||serde_json::json!({"code":"runtime_update_unavailable","message":"Runtime updates are unavailable for this launcher."})),
@@ -403,6 +437,30 @@ impl RuntimeManageService {
             }
             return Ok(self.settings_snapshot(document));
         }
+        if method == "checkClientCompatibility" {
+            if !params.is_null() {
+                return Err(RuntimeManageError::new(
+                    "invalid_params",
+                    "checkClientCompatibility expects null params.",
+                ));
+            }
+            let service = self.client_compatibility_service().ok_or_else(|| {
+                RuntimeManageError::new(
+                    "client_compatibility_unavailable",
+                    "The running client identity is unavailable.",
+                )
+            })?;
+            service.check();
+            let plugins = self
+                .listing
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .ok()
+                .map(|listing| listing["plugins"].clone())
+                .unwrap_or(Value::Null);
+            return Ok(service.status(&plugins));
+        }
         if method == "checkPluginUpdates" {
             if !params.is_null() {
                 return Err(RuntimeManageError::new(
@@ -460,6 +518,11 @@ impl RuntimeManageService {
                     "invalid_params",
                     "Runtime updates expect empty params.",
                 ));
+            }
+            if method == "checkRuntimeUpdate" {
+                if let Some(compatibility) = self.client_compatibility_service() {
+                    compatibility.check();
+                }
             }
             let service = self
                 .runtime_update

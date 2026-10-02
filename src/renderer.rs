@@ -2579,6 +2579,7 @@ fn invoke_builtin_host_endpoint(
                 | "runtimeUpdateStatus"
                 | "getSettings"
                 | "versionStatus"
+                | "checkClientCompatibility"
                 | "saveSettings"
                 | "checkRuntimeUpdate"
                 | "checkPluginUpdates"

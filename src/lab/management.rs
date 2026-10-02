@@ -418,6 +418,7 @@ impl LabRuntime {
         if let Some(clean) = self.stopped {
             return clean;
         }
+        self.manage_service.stop_client_version_checks();
         self.control.stop();
         self.renderer.stop_runtime_skill();
         let mut clean = true;
