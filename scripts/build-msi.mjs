@@ -22,7 +22,7 @@ const features={Core:[],UiAdapter:[],DesktopAdapter:[],GUI:[],StartMenu:[],Deskt
 const payload=manifest.files.filter(file=>file.path!=='portable.mode').map(file=>({...file,source:resolve(root,file.path)}));
 for(const name of ['msi-install.json','distribution-manifest.json']){
   const content=name==='msi-install.json'
-    ?{schema:1,kind:'codlet-msi-install',version:manifest.version,coreUpgrade:'Use the next MSI; portable ZIP replacement is disabled'}
+    ?{schema:1,kind:'codlet-msi-install',version:manifest.version,coreUpgrade:'Run the newer Codlet setup EXE; portable ZIP replacement is disabled'}
     :{...manifest,kind:'codlet-msi-distribution',files:payload.map(({source,...file})=>file)};
   const bytes=Buffer.from(JSON.stringify(content,null,2)+'\n'),source=resolve(build,name);await writeFile(source,bytes);payload.push({path:name,bytes:bytes.length,sha256:digest(bytes),source});
 }

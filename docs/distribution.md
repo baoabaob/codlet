@@ -8,7 +8,7 @@ Fallback downloads first try the unchanged official archive mirrored in Codlet's
 
 The source and independent official-plugin repositories are public. Preview binaries are published as versioned test assets after validation. Building a local Preview does not publish its files; the installed preview channel discovers published prereleases from the Core repository.
 
-`Publish-PreviewRelease.ps1 -WindowsSetup PATH` validates and includes the native EXE alongside its exact MSI payload. `-WindowsOnly` supports Windows testing releases without advertising unbuilt macOS artifacts; the update manifest lists only the platforms actually included. Omitting this flag continues to require both Windows and macOS build evidence.
+`Publish-PreviewRelease.ps1` requires `-WindowsSetup PATH` and validates the native EXE against its embedded MSI build receipt. The setup EXE is the only Windows installation download in future releases. Standalone MSI and portable distribution ZIPs remain internal build inputs and are rejected as public installation assets. Existing published releases are retained. `-WindowsOnly` supports Windows testing releases without advertising unbuilt macOS artifacts; omitting it requires both Windows and macOS build evidence.
 
 ## Windows x64
 
@@ -18,11 +18,11 @@ Installation defaults to the current user. Selecting all users chooses Program F
 
 An existing installation retains its directory and choices. Switching between user and machine scopes requires uninstalling the other-scope installation first; setup explains this instead of silently creating two conflicting installations. Plugin/config/runtime data remain per user under LocalAppData in either scope. All-users Core/launcher upgrades require the installer; an unelevated runtime cannot replace files in Program Files.
 
-The installer offers GUI, UI Adapter, Desktop Adapter, and shortcut options. GUI requires UI Adapter; Desktop Adapter is independently optional. The completion page can launch Codlet. The native `Codlet-Launcher.exe` is the normal entrypoint; internal PowerShell helpers remain implementation details. Direct MSI installation remains available for administration and automation with its standard maintenance interface.
+The installer offers GUI, UI Adapter, Desktop Adapter, and shortcut options. GUI requires UI Adapter; Desktop Adapter is independently optional. The completion page can launch Codlet. The native `Codlet-Launcher.exe` is the normal entrypoint; internal PowerShell helpers remain implementation details. Windows Installer continues to manage upgrade, repair, and uninstall through the embedded MSI payload.
 
-The portable ZIP must be extracted completely to a writable location. Its first run offers the same plugin choices and stores Codlet data in `data/`. Installed MSI builds use `%LOCALAPPDATA%/Codlet`. Neither redirects official Codex data. `Codlet-Launcher.exe --configure` can add omitted plugins later; ordinary launches do not reinstall removed plugins, and existing disabled states/grants are preserved.
+Installed builds use `%LOCALAPPDATA%/Codlet`. Existing portable installations retain their `data/` directory and runtime update channel; new Windows installation downloads use the setup EXE. Neither redirects official Codex data. `Codlet-Launcher.exe --configure` can add omitted plugins later; ordinary launches do not reinstall removed plugins, and existing disabled states/grants are preserved.
 
-Windows in-app runtime updates replace Core and its runtime descriptor. An already prepared compatible Node is reused; preparing a missing runtime must succeed before the installation is replaced. Install a newer MSI or extract a new portable package when upgrading the native launcher or installer components. Official plugins have their own GitHub update channels.
+Run a newer setup EXE to upgrade an installed Windows version, including earlier direct MSI installations. Existing portable in-app runtime updates replace Core and its runtime descriptor, reusing an already prepared compatible Node; preparing a missing runtime must succeed before replacement. Those updater ZIPs are compatibility payloads rather than installation downloads. Official plugins have their own GitHub update channels.
 
 `official-plugins.json` contains only the selectable IDs, repository URLs/numeric identities,
 dependencies and initial permission expectations. MSI features persist download choices in
@@ -120,9 +120,9 @@ Before delivery, verify the source revisions, package version, architecture, fil
 
 ## Preparing a Preview release
 
-`scripts/Publish-PreviewRelease.ps1` consumes the already-built Windows portable directory and ZIP, MSI plus its `.msi.json` build receipt and MSI distribution manifest, and the macOS DMG, distribution manifest, and updater ZIP. It checks that all package versions and Core/plugin source commits agree, verifies Windows payload/ZIP hashes, MSI receipt, macOS DMG metadata, and the complete macOS updater ZIP inventory/modes/Node pins, then writes a fresh versioned release directory with assets, SHA-256 summary, release notes, and `release-plan.json`. The three build-time distribution manifests remain in the local `.verification` directory and are checked again when reading the plan; they are not GitHub Release assets. The default `Preview` action creates no remote state.
+`scripts/Publish-PreviewRelease.ps1` consumes the Windows payload directory, internal MSI with its build receipt and distribution manifest, and the setup EXE with its receipt. A portable ZIP is optional validation input. Combined releases also require the macOS DMG, distribution manifest, and updater ZIP. The script verifies versions, source revisions, payload hashes, installer receipts, and updater contents, then writes a fresh versioned release directory with assets, checksums, release notes, and `release-plan.json`. Build-time distribution manifests and the setup receipt stay in the local `.verification` directory and are checked again when reading the plan. The default `Preview` action creates no remote state.
 
-The generated `codlet-update-managed.json` uses the in-client GitHub manifest asset name and schema: `schema: 1`, `kind: "codlet-runtime-channel"`, `channel: "preview"`, `version`, and an artifact per supported platform/profile. Each artifact pins its versioned update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. The updater ZIPs retain `runtime-update-manifest.json` at their root. The seven normal public assets are the Windows portable ZIP, MSI, Mac DMG, both updater ZIPs, `codlet-update-managed.json`, and `SHA256SUMS.txt`.
+The generated `codlet-update-managed.json` uses the in-client GitHub manifest asset name and schema: `schema: 1`, `kind: "codlet-runtime-channel"`, `channel: "preview"`, `version`, and an artifact per supported platform/profile. Each artifact pins its versioned update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. The updater ZIPs retain `runtime-update-manifest.json` at their root. A Windows-only release has four public assets: the setup EXE, the runtime update ZIP for existing portable installations, `codlet-update-managed.json`, and `SHA256SUMS.txt`. A combined release additionally contains the Mac DMG and Mac updater ZIP. Only the setup EXE is linked as a Windows installation download.
 
 Preview 5 cannot read managed-runtime update packages. The Preview 6 transition therefore uses `-LegacyUpdateBridge -WindowsBridgeNodeDirectory <pinned-node-directory>` and the Mac builder's separate legacy updater ZIP. It publishes complete old-format updater payloads plus the additional `codlet-update.json` channel that Preview 5 understands; the ordinary MSI, portable ZIP and DMG remain small. Both channels name the same transition payloads. Core 6 reads the managed channel after that update. Later releases omit the legacy channel so older clients find the compatible transition release instead of attempting an unsupported small ZIP.
 
@@ -132,9 +132,9 @@ Use a new output directory and pass the explicit package paths from the build ar
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
   -Action Preview `
   -WindowsPortableDirectory C:\build\windows\package\portable `
-  -WindowsPortableZip C:\build\windows\package\Codlet-0.2.0-preview.6-windows-x64-portable.zip `
   -WindowsMsi C:\build\windows\package\Codlet-0.2.0-preview.6-windows-x64.msi `
   -WindowsMsiManifest C:\build\windows\package\msi.build\distribution-manifest.json `
+  -WindowsSetup C:\build\windows\package\Codlet-0.2.0-preview.6-windows-x64-setup.exe `
   -MacDmg C:\build\macos\package\Codlet-0.2.0-preview.6-macos-arm64.dmg `
   -MacDistributionManifest C:\build\macos\package\distribution-manifest.json `
   -MacUpdateZip C:\build\macos\package\Codlet-0.2.0-preview.6-darwin-arm64-legacy-update.zip `

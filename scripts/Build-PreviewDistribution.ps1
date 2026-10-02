@@ -81,12 +81,13 @@ disabled states and grants are preserved. To remove a plugin, use GUI or:
 
     Codlet-CLI.cmd plugin remove PLUGIN_ID --cascade --json
 
-Codlet-CLI.cmd scopes CLI commands to this portable directory's data/. The MSI
-edition uses the current user's LocalAppData/Codlet data instead. Neither changes
+Codlet-CLI.cmd scopes CLI commands to this internal portable build's data/. The
+installed edition uses the current user's LocalAppData/Codlet data instead. Neither changes
 the official client's account, configuration or conversation database location.
 
 The native setup EXE offers current-user or all-users installation, folder browsing,
-shortcut and PATH options. Its embedded MSI also supports administrative deployment.
+shortcut and PATH options. Use a newer setup EXE to upgrade installed versions.
+The MSI is an internal installer payload; new releases distribute the setup EXE.
 Uninstall removes application files and shortcuts; plugin/config/data are retained.
 MSI repair does not overwrite downloaded plugins in the user data directory.
 

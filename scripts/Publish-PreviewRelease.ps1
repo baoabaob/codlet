@@ -383,7 +383,7 @@ function Write-Utf8([string]$Path, [string]$Text) {
 }
 
 function Add-VerificationInput([string]$Stage, [string]$Name, [string]$Source) {
-    if ($Name -notin @('windows-portable-distribution-manifest.json', 'windows-msi-distribution-manifest.json', 'macos-distribution-manifest.json')) {
+    if ($Name -notin @('windows-portable-distribution-manifest.json', 'windows-msi-distribution-manifest.json', 'windows-setup-build.json', 'macos-distribution-manifest.json')) {
         Fail 'Unsupported local release verification input.'
     }
     $relative = ".verification/$Name"
@@ -408,7 +408,7 @@ function Assert-OutputStage([string]$Path, [string]$Parent) {
 }
 
 function New-PreviewPlan {
-    $requiredInputs=@('WindowsPortableDirectory', 'WindowsPortableZip', 'WindowsMsi', 'WindowsMsiManifest', 'OutputDirectory')
+    $requiredInputs=@('WindowsPortableDirectory', 'WindowsMsi', 'WindowsMsiManifest', 'WindowsSetup', 'OutputDirectory')
     if(-not $WindowsOnly){$requiredInputs+=@('MacDmg', 'MacDistributionManifest', 'MacUpdateZip')}
     foreach ($required in $requiredInputs) {
         if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) { Fail "Preview action requires -$($required)." }
@@ -416,7 +416,7 @@ function New-PreviewPlan {
     $version = Get-CoreVersion
     if (-not $version.Contains('-')) { Fail 'Preview publication requires a prerelease version in Cargo.toml.' }
     $portableRoot = Assert-PlainPath $WindowsPortableDirectory $true
-    $portableZip = Assert-PlainPath $WindowsPortableZip
+    if ($WindowsPortableZip) { $portableZip = Assert-PlainPath $WindowsPortableZip }
     $msiPath = Assert-PlainPath $WindowsMsi
     $msiManifestPath = Assert-PlainPath $WindowsMsiManifest
     if(-not $WindowsOnly){
@@ -429,7 +429,7 @@ function New-PreviewPlan {
     Assert-DistributionEnvelope $portableManifest 'codlet-portable-distribution' 'win-x64' $version
     if ($portableManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only Windows distribution.' }
     Assert-DirectoryManifestPayload $portableRoot $portableManifest
-    Assert-PortableZip $portableZip $portableRoot $portableManifest
+    if ($WindowsPortableZip) { Assert-PortableZip $portableZip $portableRoot $portableManifest }
 
     $msiManifest = Read-JsonFile $msiManifestPath
     Assert-DistributionEnvelope $msiManifest 'codlet-msi-distribution' 'win-x64' $version
@@ -443,13 +443,11 @@ function New-PreviewPlan {
         Fail 'MSI bytes do not match the build receipt or package version.'
     }
 
-    if($WindowsSetup){
-        $setupPath=Assert-PlainPath $WindowsSetup
-        $setupReceipt=Read-JsonFile ($setupPath+'.json') 128KB
-        if($setupReceipt.fixture -ne $false -or $setupReceipt.ui -ne 'native-wpf' -or $setupReceipt.version -ne $version -or
-           $setupReceipt.payloadSha256 -ne $msiMetadata.sha256 -or $setupReceipt.sha256 -ne (Get-Sha256 $setupPath) -or
-           [long]$setupReceipt.bytes -ne (Get-Item -LiteralPath $setupPath).Length){Fail 'Native installer receipt or embedded MSI identity does not match.'}
-    }
+    $setupPath=Assert-PlainPath $WindowsSetup
+    $setupReceipt=Read-JsonFile ($setupPath+'.json') 128KB
+    if($setupReceipt.fixture -ne $false -or $setupReceipt.ui -ne 'native-wpf' -or $setupReceipt.version -ne $version -or
+       $setupReceipt.payloadSha256 -ne $msiMetadata.sha256 -or $setupReceipt.sha256 -ne (Get-Sha256 $setupPath) -or
+       [long]$setupReceipt.bytes -ne (Get-Item -LiteralPath $setupPath).Length){Fail 'Native installer receipt or embedded MSI identity does not match.'}
     if(-not $WindowsOnly){
     $macManifest = Read-JsonFile $macManifestPath
     Assert-DistributionEnvelope $macManifest 'codlet-macos-preview' 'darwin-arm64' $version
@@ -476,12 +474,11 @@ function New-PreviewPlan {
     $stage = Assert-OutputStage $stage $parent
     try {
         $assets = [Collections.Generic.List[object]]::new()
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-portable.zip") $portableZip 'windows-portable'))
-        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64.msi") $msiPath 'windows-msi'))
-        if($WindowsSetup){$assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-setup.exe") $setupPath 'windows-setup'))}
+        $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-windows-x64-setup.exe") $setupPath 'windows-setup'))
         $verificationInputs = [ordered]@{
             windowsPortable = Add-VerificationInput $stage 'windows-portable-distribution-manifest.json' $portableManifestPath
             windowsMsi = Add-VerificationInput $stage 'windows-msi-distribution-manifest.json' $msiManifestPath
+            windowsSetup = Add-VerificationInput $stage 'windows-setup-build.json' ($setupPath + '.json')
         }
         if(-not $WindowsOnly){
             $assets.Add((Add-CopiedAsset $stage ("Codlet-$version-macos-arm64.dmg") $dmgPath 'macos-dmg'))
@@ -547,19 +544,17 @@ function New-PreviewPlan {
             '',
             '## Downloads',
             '',
-            "- **[Windows x64 portable ZIP](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-portable.zip)** - extract and run Codlet; portable data stays alongside the extracted app.",
-            $(if($WindowsSetup){"- **[Windows x64 installer](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-setup.exe)** - recommended; native Codlet UI, install scope, folder picker, shortcut and PATH options."}),
-            "- **[Windows x64 MSI](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64.msi)** - Windows Installer package for administration and automation.",
+            "- **[Windows x64 installer](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-setup.exe)** - native Codlet UI, install scope, folder picker, shortcut and PATH options.",
             $(if(-not $WindowsOnly){"- **[Apple Silicon DMG](https://github.com/$Repository/releases/download/v$version/Codlet-$version-macos-arm64.dmg)** - drag Codlet.app to Applications."}else{'This release provides Windows builds only; it does not update macOS installations.'}),
             '',
-            'Choose one installation download above. The update ZIPs and `codlet-update-managed.json` are used by the in-app updater. `SHA256SUMS.txt` lists download checksums.',
+            'Use the installer above for Windows installation and upgrades. The update ZIPs and `codlet-update-managed.json` support existing portable and macOS installations. `SHA256SUMS.txt` lists download checksums.',
             $(if ($LegacyUpdateBridge) { 'This transition release also provides `codlet-update.json` and full updater payloads so Preview 5 can upgrade. New installations use the smaller packages; later updates use the managed-runtime channel.' } else { 'Node is prepared automatically from a verified official-client runtime or the pinned fallback download, then reused from the managed cache.' }),
             '',
             '## Preview changes',
             '',
             '- Native installation follows system appearance and language; user and machine scope have matching shortcuts, registry and optional PATH entries.',
             '- A single plugin consent can grant declared capabilities within the desktop user context. Existing scoped permissions remain unchanged until explicitly reauthorized.',
-            '- Install the setup EXE to upgrade launcher/installer components. In-app runtime updates replace Core only. Switching installation scope requires uninstalling the old-scope application first; plugin data is preserved.',
+            '- Run the setup EXE to upgrade installed Windows versions, including earlier MSI installations. Existing portable in-app runtime updates replace Core only. Switching installation scope requires uninstalling the old-scope application first; plugin data is preserved.',
             '',
             '## Signing and verification',
             '',
@@ -642,8 +637,12 @@ function Read-ReleasePlan([string]$Path) {
     if (@($plan.assets | Where-Object { $_.name -match '-distribution-manifest\.json$' -or $_.kind -in @('windows-portable-manifest', 'windows-msi-manifest', 'macos-manifest') }).Count -ne 0) {
         Fail 'Build-time distribution manifests must not be public release assets.'
     }
+    $setupAssets = @($plan.assets | Where-Object { $_.kind -eq 'windows-setup' -and $_.name -eq "Codlet-$($plan.version)-windows-x64-setup.exe" })
+    if ($setupAssets.Count -ne 1 -or @($plan.assets | Where-Object { $_.name -match '\.msi$|-windows-[^-]+-portable\.zip$' -or $_.kind -in @('windows-msi', 'windows-portable') }).Count -ne 0) {
+        Fail 'Windows installation downloads must contain exactly the setup EXE, without standalone MSI or portable packages.'
+    }
     $windowsOnlyPlan=$plan.PSObject.Properties['windowsOnly'] -and $plan.windowsOnly -eq $true
-    $expectedInputs=if($windowsOnlyPlan){2}else{3}
+    $expectedInputs=if($windowsOnlyPlan){3}else{4}
     if ($null -eq $plan.verificationInputs -or @($plan.verificationInputs.PSObject.Properties).Count -ne $expectedInputs) {
         Fail 'Release plan must retain the local manifests for exactly its selected platforms.'
     }
@@ -651,6 +650,7 @@ function Read-ReleasePlan([string]$Path) {
     foreach ($spec in @(
         @{ key = 'windowsPortable'; file = '.verification/windows-portable-distribution-manifest.json' },
         @{ key = 'windowsMsi'; file = '.verification/windows-msi-distribution-manifest.json' },
+        @{ key = 'windowsSetup'; file = '.verification/windows-setup-build.json' },
         @{ key = 'macos'; file = '.verification/macos-distribution-manifest.json' }
     )) {
         if($spec.key -eq 'macos' -and $windowsOnlyPlan){continue}
@@ -663,6 +663,12 @@ function Read-ReleasePlan([string]$Path) {
             Fail "Local release verification input changed: $($spec.key)"
         }
         if ($spec.key -eq 'macos') { $macManifestPath = $file }
+        if ($spec.key -eq 'windowsSetup') {
+            $receipt = Read-JsonFile $file 128KB
+            if ($receipt.fixture -ne $false -or $receipt.ui -ne 'native-wpf' -or $receipt.version -ne $plan.version -or
+                $receipt.sha256 -ne $setupAssets[0].sha256 -or [long]$receipt.bytes -ne [long]$setupAssets[0].bytes -or
+                $receipt.payloadSha256 -notmatch '^[0-9a-f]{64}$') { Fail 'Saved native installer receipt differs from the release asset.' }
+        }
     }
     if (-not $plan.PSObject.Properties['legacyUpdateBridge'] -or $plan.legacyUpdateBridge -isnot [bool]) { Fail 'Release plan must identify whether this is a legacy update bridge.' }
     $channelAsset = @($plan.assets | Where-Object { $_.name -eq 'codlet-update-managed.json' })

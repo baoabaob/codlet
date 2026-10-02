@@ -25,6 +25,16 @@ function Write-Json([string]$Path, $Object) {
     [IO.File]::WriteAllText($Path, (($Object | ConvertTo-Json -Depth 20) + "`n"), $utf8)
 }
 
+function Assert-PublisherRejects([string[]]$Arguments, [string]$Expected) {
+    $priorErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $failure = & powershell.exe -NoLogo -NoProfile -NonInteractive -File $releaseScript @Arguments 2>&1
+        if ($LASTEXITCODE -eq 0 -or ($failure | Out-String) -notmatch [regex]::Escape($Expected)) { throw "Publisher did not reject: $Expected" }
+    }
+    finally { $ErrorActionPreference = $priorErrorAction }
+}
+
 function File-Record([string]$Path, [string]$Relative, [int]$Mode = 420) {
     [ordered]@{ path = $Relative; bytes = [long](Get-Item -LiteralPath $Path).Length; sha256 = Hash-File $Path; mode = $Mode }
 }
@@ -226,6 +236,9 @@ try {
     $msiPath = Join-Path $win ("Codlet-$version-windows-x64.msi")
     [IO.File]::WriteAllBytes($msiPath, $utf8.GetBytes('synthetic MSI package fixture' + "`n"))
     Write-Json ($msiPath + '.json') ([ordered]@{ path = $msiPath; version = $version; bytes = [long](Get-Item -LiteralPath $msiPath).Length; sha256 = Hash-File $msiPath })
+    $setupPath = Join-Path $win ("Codlet-$version-windows-x64-setup.exe")
+    Make-Pe $setupPath 'synthetic native setup receipt fixture'
+    Write-Json ($setupPath + '.json') ([ordered]@{ version = $version; bytes = [long](Get-Item -LiteralPath $setupPath).Length; sha256 = Hash-File $setupPath; payloadSha256 = Hash-File $msiPath; ui = 'native-wpf'; fixture = $false })
 
     $app = Join-Path $mac 'Codlet.app'
     $macNodeVersion = '22.23.2'
@@ -324,10 +337,12 @@ try {
         '-Action', 'Preview', '-Repository', 'baoabaob/codlet',
         '-WindowsPortableDirectory', $portable, '-WindowsPortableZip', $portableZip,
         '-WindowsMsi', $msiPath, '-WindowsMsiManifest', $msiManifestPath,
+        '-WindowsSetup', $setupPath,
         '-MacDmg', $dmgPath, '-MacDistributionManifest', $macManifestPath, '-MacUpdateZip', $updateZipPath,
         '-OutputDirectory', $outputDirectory
     )
     if ($TestLegacyBridge) { $arguments += @('-LegacyUpdateBridge', '-WindowsBridgeNodeDirectory', $nodeDirectory) }
+    Assert-PublisherRejects @($arguments | Where-Object { $_ -ne '-WindowsSetup' -and $_ -ne $setupPath }) 'Preview action requires -WindowsSetup.'
     $resultText = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Preview release fixture was rejected by the publisher.' }
     $report = ($resultText -join "`n") | ConvertFrom-Json
@@ -335,8 +350,7 @@ try {
     $planPath = Join-Path $outputDirectory 'release-plan.json'
     $plan = [IO.File]::ReadAllText($planPath) | ConvertFrom-Json
     $expectedAssets = @(
-        "Codlet-$version-windows-x64-portable.zip",
-        "Codlet-$version-windows-x64.msi",
+        "Codlet-$version-windows-x64-setup.exe",
         "Codlet-$version-macos-arm64.dmg",
         "codlet-runtime-$version-win-x64-portable.zip",
         "Codlet-$version-darwin-arm64-update.zip",
@@ -350,6 +364,7 @@ try {
     foreach ($spec in @(
         @{ key = 'windowsPortable'; file = '.verification/windows-portable-distribution-manifest.json' },
         @{ key = 'windowsMsi'; file = '.verification/windows-msi-distribution-manifest.json' },
+        @{ key = 'windowsSetup'; file = '.verification/windows-setup-build.json' },
         @{ key = 'macos'; file = '.verification/macos-distribution-manifest.json' }
     )) {
         $record = $plan.verificationInputs.($spec.key)
@@ -364,9 +379,10 @@ try {
         throw 'SHA256SUMS must contain only the other public assets.'
     }
     $releaseNotes = [IO.File]::ReadAllText((Join-Path $outputDirectory 'release-notes.md'))
-    foreach ($expectedText in @('Windows x64 portable ZIP', 'Windows x64 MSI', 'Apple Silicon DMG', 'PATH', 'declared capabilities', 'runtime updates', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
+    foreach ($expectedText in @('Windows x64 installer', 'Apple Silicon DMG', 'PATH', 'declared capabilities', 'runtime updates', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
         if ($releaseNotes -notmatch [regex]::Escape($expectedText)) { throw "Release notes omitted expected reader-facing detail: $expectedText" }
     }
+    if ($releaseNotes -match 'Windows x64 MSI|Windows x64 portable ZIP|releases/download/[^)]+\.msi') { throw 'Release notes still advertise a separate Windows installation package.' }
     if ($releaseNotes -match '(?m)^\| Asset \|' -or $releaseNotes -match '(?m)^\| ``[^|]+`` \|') { throw 'Release notes duplicate the per-asset hash table instead of directing readers to SHA256SUMS.txt.' }
     $channel = [IO.File]::ReadAllText((Join-Path $outputDirectory 'codlet-update-managed.json')) | ConvertFrom-Json
     if ($TestLegacyBridge -and (Hash-File (Join-Path $outputDirectory 'codlet-update.json')) -ne (Hash-File (Join-Path $outputDirectory 'codlet-update-managed.json'))) { throw 'Bridge channels disagree about the update payloads.' }
@@ -384,10 +400,22 @@ try {
         $dry = ($dryResult -join "`n") | ConvertFrom-Json
         if ($dry.externalWrites -ne $false -or $dry.applyRequired -ne $true) { throw "$action preview would write externally without -Apply." }
     }
+    $savedPlan = [IO.File]::ReadAllBytes($planPath)
+    foreach ($forbidden in @(@{ source = $msiPath; kind = 'windows-msi' }, @{ source = $portableZip; kind = 'windows-portable' })) {
+        try {
+            $modified = [IO.File]::ReadAllText($planPath) | ConvertFrom-Json
+            $name = [IO.Path]::GetFileName($forbidden.source)
+            [IO.File]::Copy($forbidden.source, (Join-Path $outputDirectory $name))
+            $modified.assets += [pscustomobject]@{ name = $name; file = $name; kind = $forbidden.kind; bytes = [long](Get-Item -LiteralPath $forbidden.source).Length; sha256 = Hash-File $forbidden.source }
+            Write-Json $planPath $modified
+            Assert-PublisherRejects @('-Action', 'PrepareDraft', '-PlanPath', $planPath) 'Windows installation downloads must contain exactly the setup EXE'
+        }
+        finally { [IO.File]::WriteAllBytes($planPath, $savedPlan) }
+    }
     $validationPath = Join-Path $outputDirectory $plan.verificationInputs.macos.file
     if(-not $TestLegacyBridge){
         $windowsOutput=$outputDirectory+'-windows-only'
-        $windowsArguments=@('-Action','Preview','-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsPortableZip',$portableZip,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-OutputDirectory',$windowsOutput)
+        $windowsArguments=@('-Action','Preview','-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-WindowsSetup',$setupPath,'-OutputDirectory',$windowsOutput)
         $windowsReport=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @windowsArguments
         if($LASTEXITCODE -ne 0){throw 'Windows-only Preview fixture failed'}
         $windowsReport=($windowsReport -join "`n")|ConvertFrom-Json
@@ -430,14 +458,14 @@ try {
         passed = $true
         version = $version
         checks = @(
-            'portable package, MSI, Mac DMG, and both updater packages verify against their distribution/build metadata',
+            'Windows publishes the native setup EXE; MSI and portable build inputs are not installation downloads',
             'managed and transition channels contain the correct version, profiles and exact updater asset digests',
             'a Preview 5 transition uses full legacy-compatible updater ZIPs while ordinary downloads stay thin',
             'draft preparation tag creation is exact-commit, idempotent, retryable after interruption, and refuses conflicting refs',
             'synthetic draft creation interruption recovers through PrepareDraft and Publish without remote network access',
             'release notes explain package choices, preview improvements, checksums, and the precise macOS signing status',
             'preview plan remains a prerelease and plan-only draft/publish actions make no external writes',
-            'three distribution manifests remain local verification inputs and never become release assets',
+            'distribution manifests and the native setup receipt remain local verification inputs',
             'changed local-only verification manifest is refused',
             'changed same-version local asset is refused'
         )

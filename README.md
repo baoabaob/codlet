@@ -8,7 +8,7 @@ This is an experimental Preview with public source. Tagged test builds are distr
 
 ## Use Codlet
 
-Windows packages provide `Codlet-Launcher.exe`. The MSI offers optional official plugins and shortcuts; the portable package keeps Codlet data beside the executable. On macOS, open `Codlet.app` from Applications. The official Codex client must already be installed separately. See [installation and distribution](docs/distribution.md).
+On Windows, use the `-setup.exe` installer for installation and upgrades, then open `Codlet-Launcher.exe`. The installer offers scope, folder, optional official plugins, shortcuts, and PATH choices. Future Windows releases provide this installer as the single installation download. On macOS, open `Codlet.app` from Applications. The official Codex client must already be installed separately. See [installation and distribution](docs/distribution.md).
 
 The optional GUI provides a GitHub-backed plugin marketplace, local/GitHub import, search and tag filtering, permission review, enable/disable/reload/removal, and individual or bulk GitHub updates. Successful updates retain one current package. The CLI works independently of the GUI:
 
