@@ -7,6 +7,8 @@ compile_error!("desktop-acceptance must never be enabled in a release build");
 pub mod capabilities;
 pub mod catalog;
 pub mod cdp;
+#[cfg(any(windows, target_os = "macos"))]
+mod client_bridge;
 mod client_compatibility;
 #[cfg(any(windows, target_os = "macos"))]
 mod client_launch;

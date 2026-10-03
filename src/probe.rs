@@ -867,26 +867,33 @@ fn start_codlet_runtime_with_connector_filtered(
     let (mut renderer, host_plugins) = prepare_plugin_runtimes_filtered(registry, suspension)?;
     renderer.enable_runtime_skill();
     host_control.seed_watch_sources(&renderer, &host_plugins);
-    let traffic_required = crate::traffic_owner::required_for_plugins(&host_plugins);
-    let has_hosts = host_plugins
-        .iter()
-        .any(|plugin| plugin.manifest.has_runtime_host());
-    let js_runtime = (has_hosts || traffic_required)
-        .then(JsRuntime::discover)
-        .transpose()?;
+    let js_runtime = Some(JsRuntime::discover()?);
     let plugin_services = crate::core_services::SharedCoreServices::new(renderer.registry_path())
         .map_err(|e| HostError::new(e.code, e.message))?;
-    let traffic = traffic_required
-        .then(|| {
-            let provider = crate::client_launch::select(&host_plugins)?;
+    let source_requested = host_plugins.iter().any(|plugin| {
+        plugin
+            .manifest
+            .host_provides()
+            .iter()
+            .any(|capability| capability.name.as_str() == crate::client_launch::CAPABILITY)
+    });
+    let traffic = if suspension.is_some_and(|reason| reason == "client_bridge_fuse_unsupported") {
+        None
+    } else {
+        Some({
+            let provider = if source_requested {
+                Some(crate::client_launch::select(&host_plugins)?)
+            } else {
+                None
+            };
             let runtime = js_runtime
                 .as_ref()
                 .expect("traffic requires a Host runtime");
             let mut owner = crate::traffic_owner::TrafficOwner::start(&plugin_services)?;
-            owner.prepare_adapter(provider, renderer.registry_path(), runtime)?;
+            owner.prepare_bridge(runtime, renderer.registry_path(), provider)?;
             Ok::<_, HostError>(owner)
-        })
-        .transpose()?;
+        }?)
+    };
     let status = StatusPublisher::new();
     if renderer.needs_renderer_targets() {
         renderer.set_status_publisher(status.clone());
@@ -905,6 +912,20 @@ fn start_codlet_runtime_with_connector_filtered(
     );
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
+    if source_requested
+        && traffic
+            .as_ref()
+            .is_some_and(|owner| !owner.bridge_supported())
+    {
+        let registry = PluginRegistry::load(renderer.registry_path())?;
+        let prepared =
+            prepare_plugin_runtimes_filtered(registry, Some("client_source_build_unverified"))?;
+        renderer = prepared.0;
+        renderer.enable_runtime_skill();
+        renderer.set_status_publisher(status.clone());
+        host_control.seed_watch_sources(&renderer, &prepared.1);
+    }
+    renderer.set_client_source(traffic.as_ref().and_then(|owner| owner.client_source()));
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())
         .with_local_management(renderer.registry_path().to_owned(), options.watch);
     let mut official_update = crate::official_update::OfficialUpdateOwner::start(

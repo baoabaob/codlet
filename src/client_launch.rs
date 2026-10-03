@@ -11,6 +11,23 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub(crate) const CAPABILITY: &str = "codlet.client.launch";
+pub(crate) fn startup_affected(plugins: &[LoadedPlugin]) -> BTreeSet<String> {
+    let mut affected = BTreeSet::new();
+    for plugin in plugins {
+        let provider = plugin.manifest.host_provides().iter().any(|capability| {
+            capability.name.as_str() == CAPABILITY
+                && capability.api.get() == 1
+                && capability.scope == CapabilityScope::Runtime
+        });
+        if provider || crate::traffic_owner::required_for_plugins(std::slice::from_ref(plugin)) {
+            affected.extend(crate::plugin_lifecycle::dependent_closure(
+                plugins,
+                &plugin.manifest.id,
+            ));
+        }
+    }
+    affected
+}
 fn error(code: &'static str) -> HostError {
     HostError::new(
         code,
@@ -240,7 +257,14 @@ impl LaunchAdapter {
                 .stdout
                 .read_some(&mut buffer, Some(deadline))
                 .map_err(|_| error("client_launch_adapter_timeout"))?;
-            if count == 0 || reply.len() + count > 16 * 1024 {
+            if count == 0
+                || reply.len() + count
+                    > if phase == "source" {
+                        1024 * 1024
+                    } else {
+                        16 * 1024
+                    }
+            {
                 return Err(error("client_launch_adapter_protocol"));
             }
             reply.extend_from_slice(&buffer[..count]);
@@ -268,6 +292,79 @@ impl LaunchAdapter {
             }
         }
     }
+}
+
+pub(crate) fn source_snapshot(
+    provider: &LoadedPlugin,
+    registry: &Path,
+    runtime: &JsRuntime,
+    directory: &Path,
+) -> Result<Value, HostError> {
+    select(std::slice::from_ref(provider))?;
+    let current = PluginRegistry::load(registry)
+        .map_err(|_| error("client_launch_authorization_unavailable"))?;
+    if provider
+        .authorization
+        .as_ref()
+        .is_none_or(|record| current.local_plugins().get(&provider.manifest.id) != Some(record))
+    {
+        return Err(error("client_launch_authorization_revoked"));
+    }
+    let invocation = runtime.prepare_client_launch(
+        provider
+            .host
+            .as_ref()
+            .ok_or_else(|| error("client_launch_adapter_denied"))?,
+        directory,
+    )?;
+    let (process, stdio) = OwnedPluginProcess::spawn(
+        &invocation.executable,
+        &invocation.arguments,
+        &invocation.cwd,
+        Some(&invocation.environment),
+    )
+    .map_err(|_| error("client_launch_adapter_spawn_failed"))?;
+    let adapter = LaunchAdapter {
+        provider: provider.clone(),
+        registry: registry.to_owned(),
+        process,
+        stdio,
+        _invocation: invocation,
+        context: Value::Null,
+        arguments: Vec::new(),
+        before_resume: false,
+    };
+    let value = adapter.call(
+        "source",
+        json!({"features":{"clientBridge":1}}),
+        Instant::now() + Duration::from_secs(10),
+    )?;
+    validate_source_authority(provider, registry)?;
+    if value.as_object().is_none_or(|record| record.len() != 1)
+        || value["code"]
+            .as_str()
+            .is_none_or(|code| code.is_empty() || code.len() > 1024 * 1024)
+    {
+        return Err(error("client_launch_adapter_protocol"));
+    }
+    Ok(value)
+}
+
+pub(crate) fn validate_source_authority(
+    provider: &LoadedPlugin,
+    registry: &Path,
+) -> Result<(), HostError> {
+    select(std::slice::from_ref(provider))?;
+    let current = PluginRegistry::load(registry)
+        .map_err(|_| error("client_launch_authorization_unavailable"))?;
+    if provider
+        .authorization
+        .as_ref()
+        .is_none_or(|record| current.local_plugins().get(&provider.manifest.id) != Some(record))
+    {
+        return Err(error("client_launch_authorization_revoked"));
+    }
+    Ok(())
 }
 
 impl Drop for LaunchAdapter {
@@ -329,12 +426,44 @@ fn validate_activation(reply: &Value, source: &Value) -> Result<SourceActivation
     {
         return Err(invalid());
     }
+    validate_activation_metadata(reply, source, true)
+}
+
+pub(crate) fn validate_client_source_activation(
+    activation: &Value,
+    source: &Value,
+) -> Result<SourceActivation, HostError> {
+    let invalid = || error("client_launch_adapter_unconfirmed");
+    let object = activation.as_object().ok_or_else(invalid)?;
+    if object.len() != 3
+        || object.keys().any(|key| {
+            !["installed", "activatedSources", "unsupportedSources"].contains(&key.as_str())
+        })
+    {
+        return Err(invalid());
+    }
+    let installed = activation["installed"].as_bool().ok_or_else(invalid)?;
+    let activated = activation["activatedSources"]
+        .as_array()
+        .ok_or_else(invalid)?;
+    if installed == activated.is_empty() {
+        return Err(invalid());
+    }
+    validate_activation_metadata(activation, source, installed)
+}
+
+fn validate_activation_metadata(
+    reply: &Value,
+    source: &Value,
+    installed: bool,
+) -> Result<SourceActivation, HostError> {
+    let invalid = || error("client_launch_adapter_unconfirmed");
     let activated = reply["activatedSources"].as_array().ok_or_else(invalid)?;
     let unsupported = match reply.get("unsupportedSources") {
         Some(value) => value.as_array().ok_or_else(invalid)?,
         None => return Err(invalid()),
     };
-    if activated.is_empty() || activated.len() > 8 || unsupported.len() > 8 {
+    if (installed && activated.is_empty()) || activated.len() > 8 || unsupported.len() > 8 {
         return Err(invalid());
     }
     let offered_operations = source["operations"].as_array().ok_or_else(invalid)?;
@@ -435,6 +564,36 @@ mod tests {
     use super::*;
     use crate::plugins::LocalPluginRegistration;
 
+    #[test]
+    fn a_bridge_source_entry_does_not_need_the_legacy_startup_exports() {
+        let (directory, registry, provider, runtime) =
+            fixture_source("exports.clientSource=()=>({code:'module.exports={};'});");
+        assert_eq!(
+            source_snapshot(&provider, &registry, &runtime, directory.path()).unwrap()["code"],
+            "module.exports={};"
+        );
+    }
+
+    #[test]
+    fn source_activation_rejects_unoffered_protocols_and_inconsistent_availability() {
+        let offer = json!({"operations":["http.intercept"],"protocols":["http"]});
+        let valid = json!({"installed":true,"activatedSources":[{"id":"test-http","operations":["http.intercept"],"protocols":["http"],"coverage":["test-path"]}],"unsupportedSources":[]});
+        assert!(validate_client_source_activation(&valid, &offer).is_ok());
+        let mut invalid = valid.clone();
+        invalid["activatedSources"][0]["protocols"] = json!(["webSocket"]);
+        assert!(validate_client_source_activation(&invalid, &offer).is_err());
+        let mut invalid = valid;
+        invalid["installed"] = json!(false);
+        assert!(validate_client_source_activation(&invalid, &offer).is_err());
+        assert!(
+            validate_client_source_activation(
+                &json!({"installed":false,"activatedSources":[],"unsupportedSources":[]}),
+                &offer
+            )
+            .is_ok()
+        );
+    }
+
     const SOURCE: &str = r#"
 exports.prepareClientLaunch = () => ({arguments:['--inspect-brk=127.0.0.1:0']});
 exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
@@ -483,6 +642,46 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
 
     fn traffic() -> Value {
         json!({"source":{"version":1,"kind":"plaintext","operations":["route.register","route.update","route.close","http.intercept"],"protocols":["http","sse","webSocket"],"endpoint":{"host":"127.0.0.1","port":49152,"token":"0123456789abcdef0123456789abcdef"},"routeBaseUrl":"http://127.0.0.1:49153/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"},"environmentPatch":{"set":{},"removeCaseInsensitive":[]}})
+    }
+
+    #[test]
+    fn reload_source_uses_the_trusted_immutable_snapshot_and_accepts_a_large_bounded_bundle() {
+        let source = format!("{SOURCE}\nexports.clientSource=()=>({{code:'x'.repeat(65536)}});");
+        let (directory, registry, provider, runtime) = fixture_source(&source);
+        std::fs::write(
+            provider.host.as_ref().unwrap().entry.clone(),
+            "throw Error('changed author file');",
+        )
+        .unwrap();
+        let result = source_snapshot(&provider, &registry, &runtime, directory.path()).unwrap();
+        assert_eq!(result["code"].as_str().unwrap().len(), 65536);
+        let mut changed = PluginRegistry::load(&registry).unwrap();
+        changed
+            .revoke_permission(&provider.manifest.id, Permission::CdpRaw)
+            .unwrap();
+        changed.save().unwrap();
+        assert_eq!(
+            validate_source_authority(&provider, &registry)
+                .unwrap_err()
+                .code,
+            "client_launch_authorization_revoked"
+        );
+    }
+
+    #[test]
+    fn reload_source_can_prepare_an_explicit_enable_without_persisting_enabled_preferences() {
+        let source =
+            format!("{SOURCE}\nexports.clientSource=()=>({{code:'module.exports={{}};'}});");
+        let (directory, registry, provider, runtime) = fixture_source(&source);
+        let mut disabled = PluginRegistry::load(&registry).unwrap();
+        disabled.set_enabled(&provider.manifest.id, false).unwrap();
+        disabled.save().unwrap();
+        assert!(source_snapshot(&provider, &registry, &runtime, directory.path()).is_ok());
+        assert!(
+            !PluginRegistry::load(&registry)
+                .unwrap()
+                .is_enabled(&provider.manifest.id)
+        );
     }
 
     #[cfg(windows)]

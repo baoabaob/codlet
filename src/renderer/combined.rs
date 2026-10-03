@@ -44,7 +44,10 @@ impl RendererRuntime {
         &self,
         plugin: &LoadedPlugin,
     ) -> Result<(), PluginControlError> {
-        if let Some(reason) = self.catalog.startup_suspension(&plugin.manifest.id) {
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(reason) = self.catalog.startup_suspension(&plugin.manifest.id)
+            && self.client_source.is_none()
+        {
             return Err(PluginControlError::new(
                 "startup_plugin_suspended",
                 format!(
@@ -71,6 +74,24 @@ impl RendererRuntime {
             ));
         }
         Ok(())
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    pub(crate) fn set_client_source(
+        &mut self,
+        source: Option<crate::client_bridge::ClientSourceRuntime>,
+    ) {
+        self.client_source = source;
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    pub(crate) fn client_source(&self) -> Option<crate::client_bridge::ClientSourceRuntime> {
+        self.client_source.clone()
+    }
+    pub(crate) fn resume_startup_plugins(&mut self, ids: &BTreeSet<String>) {
+        self.catalog.resume_startup(ids);
+    }
+    pub(crate) fn startup_suspended(&self, id: &str) -> bool {
+        self.catalog.startup_suspension(id).is_some()
     }
 
     pub(crate) fn begin_package_management(

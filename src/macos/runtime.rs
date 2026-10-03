@@ -51,16 +51,17 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             .filter(|p| p.manifest.host.is_some())
             .collect::<Vec<_>>();
         HostRuntime::validate_plugins(&host_plugins)?;
-        let traffic_required = crate::traffic_owner::required_for_plugins(&host_plugins);
-        let launch_provider = traffic_required
+        let source_requested = host_plugins.iter().any(|plugin| {
+            plugin
+                .manifest
+                .host_provides()
+                .iter()
+                .any(|capability| capability.name.as_str() == crate::client_launch::CAPABILITY)
+        });
+        let launch_provider = source_requested
             .then(|| crate::client_launch::select(&host_plugins).cloned())
             .transpose()?;
-        let runtime = (traffic_required
-            || host_plugins
-                .iter()
-                .any(|plugin| plugin.manifest.has_runtime_host()))
-        .then(JsRuntime::discover)
-        .transpose()?;
+        let runtime = Some(JsRuntime::discover()?);
         let services = crate::core_services::SharedCoreServices::new(scope.path())?;
         let mut renderer = RendererRuntime::from_catalog(catalog, registry)?;
         renderer.enable_runtime_skill();
@@ -82,14 +83,13 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     // destroying its private proxy and trust directory. Safe mode has no owner.
     let traffic = prepared
         .as_ref()
-        .filter(|(_, _, _, _, provider)| provider.is_some())
         .map(|(_, _, runtime, services, provider)| {
             let runtime = runtime.as_ref().expect("traffic requires a Host runtime");
             let mut owner =
                 crate::traffic_owner::TrafficOwner::start_cancellable(services, || {
                     shutdown_signal.requested()
                 })?;
-            owner.prepare_adapter(provider.as_ref().unwrap(), scope.path(), runtime)?;
+            owner.prepare_bridge(runtime, scope.path(), provider.as_ref())?;
             Ok::<_, crate::plugin_host::HostError>(owner)
         })
         .transpose()?;
@@ -153,10 +153,28 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         application.build,
         child.id()
     );
-    let result = if let Some((mut renderer, host_control, js_runtime, plugin_services, _)) =
+    let result = if let Some((mut renderer, host_control, js_runtime, plugin_services, src)) =
         prepared
     {
+        let mut host_control = host_control;
+        if src.is_some()
+            && traffic
+                .as_ref()
+                .is_some_and(|owner| !owner.bridge_supported())
+        {
+            let registry = PluginRegistry::load(renderer.registry_path())?;
+            let mut catalog = PluginCatalog::load(&registry)?;
+            let enabled = catalog.enabled_plugins(&registry)?;
+            catalog.suspend_startup(
+                &crate::client_launch::startup_affected(&enabled),
+                "client_source_build_unverified",
+            );
+            renderer = RendererRuntime::from_catalog(catalog, registry)?;
+            renderer.enable_runtime_skill();
+            host_control.seed_watch_sources(&renderer, &renderer.logical_plugins());
+        }
         renderer.set_status_publisher(status.clone());
+        renderer.set_client_source(traffic.as_ref().and_then(|owner| owner.client_source()));
         let manage = RuntimeManageService::new(control.clone())
             .with_local_management(scope.path().to_owned(), watch);
         if let Some(install) = std::env::current_exe()?

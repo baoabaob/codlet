@@ -342,6 +342,52 @@ impl JsRuntime {
         invocation._bootstrap = bootstrap;
         Ok(invocation)
     }
+
+    pub(crate) fn prepare_client_bridge(
+        &self,
+        directory: &Path,
+    ) -> Result<JsInvocation, HostError> {
+        let mut source = tempfile::Builder::new()
+            .prefix("client-bridge-")
+            .suffix(".cjs")
+            .tempfile_in(directory)
+            .map_err(io_error)?;
+        source
+            .write_all(include_bytes!("../runtime/client-bridge-bundle.cjs"))
+            .map_err(io_error)?;
+        source.flush().map_err(io_error)?;
+        let mut bootstrap = tempfile::Builder::new()
+            .prefix("client-bridge-start-")
+            .suffix(".cjs")
+            .tempfile_in(directory)
+            .map_err(io_error)?;
+        bootstrap
+            .write_all(include_bytes!("../runtime/client-bridge-bootstrap.cjs"))
+            .map_err(io_error)?;
+        bootstrap.flush().map_err(io_error)?;
+        Ok(JsInvocation {
+            executable: self.0.executable.clone(),
+            arguments: vec![
+                "--no-addons".into(),
+                "--no-global-search-paths".into(),
+                bootstrap.path().to_string_lossy().into_owned(),
+                source.path().to_string_lossy().into_owned(),
+            ],
+            cwd: directory.to_owned(),
+            environment: std::env::vars_os()
+                .filter(|(key, _)| {
+                    let name = key.to_string_lossy().to_ascii_uppercase();
+                    !name.starts_with("NODE_")
+                        && !name.starts_with("OPENSSL_")
+                        && !name.starts_with("DYLD_")
+                        && name != "ELECTRON_RUN_AS_NODE"
+                })
+                .collect(),
+            _source: source,
+            _bootstrap: bootstrap,
+            _runtime: self.clone(),
+        })
+    }
 }
 
 fn io_error(error: std::io::Error) -> HostError {

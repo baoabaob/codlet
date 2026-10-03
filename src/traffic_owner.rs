@@ -35,6 +35,15 @@ pub(crate) struct TrafficOwner {
     #[cfg(windows)]
     bootstrap: std::cell::RefCell<Option<crate::windows::client_bootstrap::BootstrapSession>>,
     startup_deadline: std::cell::Cell<Option<Instant>>,
+    bridge_bootstrap: std::cell::RefCell<Option<crate::client_bridge::Bootstrap>>,
+    client_source: std::cell::RefCell<Option<crate::client_bridge::ClientSourceRuntime>>,
+    bridge_inputs: Option<(
+        JsRuntime,
+        std::path::PathBuf,
+        Value,
+        Option<crate::plugins::LoadedPlugin>,
+    )>,
+    bridge_supported: std::cell::Cell<bool>,
 }
 
 fn failure(code: &'static str) -> HostError {
@@ -96,6 +105,10 @@ impl TrafficOwner {
             #[cfg(windows)]
             bootstrap: std::cell::RefCell::new(None),
             startup_deadline: std::cell::Cell::new(None),
+            bridge_bootstrap: std::cell::RefCell::new(None),
+            client_source: std::cell::RefCell::new(None),
+            bridge_inputs: None,
+            bridge_supported: std::cell::Cell::new(false),
         };
         owner.check_alive()?;
         Ok(owner)
@@ -130,6 +143,41 @@ impl TrafficOwner {
         Ok(())
     }
 
+    pub(crate) fn prepare_bridge(
+        &mut self,
+        runtime: &JsRuntime,
+        registry: &Path,
+        provider: Option<&crate::plugins::LoadedPlugin>,
+    ) -> Result<(), HostError> {
+        let configuration = json!({"source":self.descriptor["source"],"runtimeExecutable":runtime.executable_path(),"deadlineUnixMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64+15000});
+        let selected=provider.and_then(|provider|match crate::client_launch::source_snapshot(provider,registry,runtime,self.directory.path()){
+            Ok(source)=>Some(json!({"owner":provider.manifest.id,"generation":provider.generation,"code":source["code"],"configuration":configuration})),
+            Err(error)=>{crate::runtime_log::error("client_source_unavailable",&format!("{}: {}",provider.manifest.id,error.code));None}
+        });
+        self.bridge_bootstrap
+            .replace(Some(crate::client_bridge::Bootstrap::start(
+                runtime,
+                self.directory.path(),
+                self.descriptor.clone(),
+                selected,
+            )?));
+        self.bridge_inputs = Some((
+            runtime.clone(),
+            registry.to_owned(),
+            configuration,
+            provider.cloned(),
+        ));
+        self.launch_arguments = vec![OsString::from("--inspect-brk=127.0.0.1:0")];
+        self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
+        Ok(())
+    }
+    pub(crate) fn client_source(&self) -> Option<crate::client_bridge::ClientSourceRuntime> {
+        self.client_source.borrow().clone()
+    }
+    pub(crate) fn bridge_supported(&self) -> bool {
+        self.bridge_supported.get()
+    }
+
     pub(crate) fn arguments(&self) -> &[OsString] {
         &self.launch_arguments
     }
@@ -160,6 +208,50 @@ impl TrafficOwner {
         if cancelled() {
             return Err(failure("traffic_launch_cancelled"));
         }
+        if let Some(bootstrap) = self.bridge_bootstrap.borrow_mut().take() {
+            let (endpoint, activation) = bootstrap.attach(&endpoint, pid, executable, deadline)?;
+            drop(bootstrap);
+            #[cfg(windows)]
+            if let Some(bootstrap) = self.bootstrap.borrow_mut().take() {
+                bootstrap.restore(deadline).map_err(|e| failure(e.code))?;
+            }
+            let (runtime, registry, configuration, provider) = self
+                .bridge_inputs
+                .as_ref()
+                .expect("bridge configuration prepared");
+            let activation_metadata = crate::client_launch::validate_client_source_activation(
+                &activation,
+                &configuration["source"],
+            )?;
+            let mut supported = activation["installed"] == true;
+            let source = crate::client_bridge::ClientSourceRuntime::new(
+                endpoint,
+                runtime.clone(),
+                registry.clone(),
+                configuration.clone(),
+                supported.then(|| provider.clone()).flatten(),
+                self.traffic.clone(),
+            )?;
+            if supported
+                && let Some(provider) = provider
+                && crate::client_launch::validate_source_authority(provider, registry).is_err()
+            {
+                source.replace(None)?;
+                supported = false;
+            }
+            self.bridge_supported.set(supported);
+            self.client_source.replace(Some(source));
+            if !supported {
+                self.traffic
+                    .set_source_activation(json!([]), activation_metadata.unsupported);
+                return Ok(());
+            }
+            self.traffic.set_source_activation(
+                activation_metadata.activated,
+                activation_metadata.unsupported,
+            );
+            return Ok(());
+        }
         let adapter = self
             .adapter
             .borrow_mut()
@@ -188,6 +280,17 @@ impl TrafficOwner {
             self.check_alive()?;
             let deadline = Instant::now() + Duration::from_secs(15);
             self.startup_deadline.set(Some(deadline));
+            if let Some(bridge) = self.bridge_bootstrap.borrow().as_ref() {
+                if let Some(plan) = bridge.before_resume(child.pid, executable, deadline)? {
+                    *self.bootstrap.borrow_mut() = Some(
+                        crate::windows::client_bootstrap::BootstrapSession::arm(
+                            child, executable, plan, deadline,
+                        )
+                        .map_err(|e| failure(e.code))?,
+                    );
+                }
+                return Ok(());
+            }
             let adapter = self.adapter.borrow();
             let adapter = adapter
                 .as_ref()
@@ -341,14 +444,14 @@ fn apply_descriptor(
 }
 
 #[cfg(target_os = "macos")]
-fn secure_directory(path: &Path) -> Result<(), HostError> {
+pub(crate) fn secure_directory(path: &Path) -> Result<(), HostError> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| failure("traffic_directory_failed"))
 }
 
 #[cfg(windows)]
-fn secure_directory(path: &Path) -> Result<(), HostError> {
+pub(crate) fn secure_directory(path: &Path) -> Result<(), HostError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{

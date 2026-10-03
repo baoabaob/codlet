@@ -102,6 +102,7 @@ pub(super) fn plugin_list(
             "id":id,
             "temporarilyDisabled":catalog.startup_suspension(id).is_some(),
             "temporaryDisableReason":catalog.startup_suspension(id),
+            "reloadAvailable":catalog.startup_suspension(id).is_none_or(|reason|reason.starts_with("client_source_")),
             "name":metadata.map(|plugin| plugin.manifest.display_name()).unwrap_or(id),
             "description":metadata.and_then(|plugin| plugin.manifest.description.as_deref()),
             "i18n":metadata.map(|plugin| &plugin.manifest.i18n),

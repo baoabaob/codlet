@@ -22,7 +22,18 @@ impl HostControl {
     ) -> Result<Prepared, PluginControlError> {
         let id = &job.request.plugin_id;
         let current = renderer.logical_plugins();
-        let affected = if job.request.action == PluginControlAction::Reload {
+        let recovered = renderer.client_source().is_some() && renderer.startup_suspended(id);
+        let full = if recovered {
+            renderer
+                .catalog_snapshot()
+                .enabled_with_suspensions(&registry)
+                .map_err(catalog_error)?
+        } else {
+            current.clone()
+        };
+        let affected = if recovered {
+            plugin_lifecycle::dependent_closure(&full, id)
+        } else if job.request.action == PluginControlAction::Reload {
             if !registry.is_enabled(id)
                 || (!current.iter().any(|plugin| plugin.manifest.id == *id)
                     && !self.generations.contains_key(id))
@@ -76,8 +87,12 @@ impl HostControl {
                 job,
                 registry,
                 ActivationPlan {
-                    affected,
-                    previous: Vec::new(),
+                    affected: affected.clone(),
+                    previous: current
+                        .iter()
+                        .filter(|plugin| affected.contains(&plugin.manifest.id))
+                        .cloned()
+                        .collect(),
                     next: Vec::new(),
                     entries: if managed_stop {
                         selected.into_iter().collect()
@@ -196,6 +211,10 @@ enum Phase {
     StartRollback,
     RenderRollback,
     StopRollback,
+    NativeCandidates,
+    NativeRollback,
+    NativeDisable,
+    NativeNoRollback,
 }
 
 pub(super) struct PendingControl {
@@ -216,6 +235,8 @@ pub(super) struct PendingControl {
     managed_previous: Option<PluginRegistry>,
     managed_restored: bool,
     managed_installation: Option<crate::managed_storage::Installation>,
+    source_operation:
+        Option<std::sync::mpsc::Receiver<Result<serde_json::Value, crate::plugin_host::HostError>>>,
 }
 
 impl PendingControl {
@@ -238,6 +259,7 @@ impl PendingControl {
             managed_previous: None,
             managed_restored: false,
             managed_installation: None,
+            source_operation: None,
         }
     }
 
@@ -287,6 +309,7 @@ impl PendingControl {
                     match self.phase {
                         Phase::Disable => {
                             if confirmed && self.failures.is_empty() && let Err(error)=self.publish_managed_installation() { self.failure("managed_install",error.to_string()); }
+                            if confirmed && self.failures.is_empty() && self.begin_native(renderer,&[],false) {self.phase=Phase::NativeDisable;continue;}
                             return Some(self.finish(renderer, generations, if self.failures.is_empty() { if self.unchanged { PluginControlOutcome::Unchanged } else { PluginControlOutcome::Applied } } else { PluginControlOutcome::Degraded }, None));
                         }
                         Phase::StopPrevious => {
@@ -307,8 +330,9 @@ impl PendingControl {
                                 if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
                                 continue;
                             }
-                            self.phase = Phase::StartCandidates;
-                            self.batch = HostBatch::start(&self.plan.replacements(), "activate");
+                            let replacements=self.plan.replacements();
+                            if self.begin_native(renderer,&replacements,false){self.phase=Phase::NativeCandidates;}
+                            else{self.phase = Phase::StartCandidates;self.batch = HostBatch::start(&replacements, "activate");}
                         }
                         Phase::StopCandidates => {
                             if !confirmed || !self.cleanup_confirmed { return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Candidate native cleanup could not be confirmed; prior code was not restarted.".into()))); }
@@ -316,6 +340,55 @@ impl PendingControl {
                         }
                         Phase::StopRollback => return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("The requested change and restoration failed; affected packages remain stopped.".into()))),
                         _ => unreachable!(),
+                    }
+                }
+                Phase::NativeCandidates
+                | Phase::NativeRollback
+                | Phase::NativeDisable
+                | Phase::NativeNoRollback => {
+                    let result = match self
+                        .source_operation
+                        .as_ref()
+                        .expect("native entry operation")
+                        .try_recv()
+                    {
+                        Ok(result) => result,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(_) => Err(crate::plugin_host::HostError::new(
+                            "client_bridge_worker_stopped",
+                            "Client entry worker exited before confirming its operation",
+                        )),
+                    };
+                    self.source_operation = None;
+                    if let Err(error) = result {
+                        self.failure(
+                            "client_source",
+                            format!("{}: {}", error.code, error.message),
+                        );
+                        if matches!(self.phase, Phase::NativeCandidates) {
+                            if let Some(report) = self.start_rollback(renderer, hosts, generations)
+                            {
+                                return Some(report);
+                            }
+                            continue;
+                        }
+                        return Some(
+                            self.finish(
+                                renderer,
+                                generations,
+                                PluginControlOutcome::Degraded,
+                                Some(
+                                    "Client entry cleanup or restoration could not be confirmed."
+                                        .into(),
+                                ),
+                            ),
+                        );
+                    }
+                    match self.phase{
+                        Phase::NativeNoRollback=>return Some(self.finish(renderer,generations,PluginControlOutcome::Degraded,Some("The requested activation failed; its native entry was retired and no previous package was running.".into()))),
+                        Phase::NativeDisable=>return Some(self.finish(renderer,generations,PluginControlOutcome::Applied,None)),
+                        Phase::NativeRollback=>{self.phase=Phase::StartRollback;self.batch=HostBatch::start(&self.rollback,"rollback_activate");},
+                        _=>{self.phase=Phase::StartCandidates;self.batch=HostBatch::start(&self.plan.replacements(),"activate");}
                     }
                 }
                 Phase::StartCandidates | Phase::StartRollback => {
@@ -464,6 +537,7 @@ impl PendingControl {
                         return Some(self.finish(renderer, generations, if self.cleanup_confirmed && !self.failures.iter().any(|failure| matches!(failure.stage.as_str(), "deactivate" | "rollback_cleanup")) { PluginControlOutcome::RolledBack } else { PluginControlOutcome::Degraded }, Some("The requested change failed; previous immutable entry snapshots were restored together with fresh generations under current trust.".into())));
                     }
                     renderer.commit_package_entries(std::mem::take(&mut self.plan.entries));
+                    renderer.resume_startup_plugins(&self.plan.affected);
                     return Some(self.finish(
                         renderer,
                         generations,
@@ -513,6 +587,10 @@ impl PendingControl {
                 Some("The requested change failed and concurrent state prevented registration restoration; affected packages remain stopped.".into())));
         }
         if self.plan.previous.is_empty() {
+            if self.begin_native(renderer, &[], true) {
+                self.phase = Phase::NativeNoRollback;
+                return None;
+            }
             return Some(
                 self.finish(
                     renderer,
@@ -557,7 +635,12 @@ impl PendingControl {
                     self.failure("rollback_validate", error.to_string());
                     return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Core rejected the restoration registrations; affected packages remain stopped.".into())));
                 }
-                self.batch = HostBatch::start(&self.rollback, "rollback_activate");
+                let restored = self.rollback.clone();
+                if self.begin_native(renderer, &restored, true) {
+                    self.phase = Phase::NativeRollback;
+                } else {
+                    self.batch = HostBatch::start(&self.rollback, "rollback_activate");
+                }
                 let _ = hosts;
                 None
             }
@@ -587,6 +670,35 @@ impl PendingControl {
             stage: stage.into(),
             error,
         });
+    }
+    fn begin_native(
+        &mut self,
+        renderer: &RendererRuntime,
+        plugins: &[LoadedPlugin],
+        restoring: bool,
+    ) -> bool {
+        let relevant = self
+            .plan
+            .entries
+            .iter()
+            .filter_map(|entry| entry.plugin.as_ref().ok())
+            .chain(self.plan.previous.iter())
+            .any(client_entry);
+        let Some(service) = renderer.client_source() else {
+            return false;
+        };
+        if !relevant && !service.affects(&self.plan.affected) {
+            return false;
+        }
+        let selected = plugins.iter().find(|plugin| client_entry(plugin)).cloned();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.source_operation = Some(receiver);
+        let _ = restoring;
+        std::thread::spawn(move || {
+            let result = service.replace(selected.as_ref());
+            let _ = sender.send(result);
+        });
+        true
     }
 
     fn publish_managed_installation(&mut self) -> Result<(), PluginControlError> {
@@ -712,6 +824,14 @@ impl PendingControl {
         renderer.finish_package_management(self.registry.clone(), generations.clone());
         report
     }
+}
+
+fn client_entry(plugin: &LoadedPlugin) -> bool {
+    plugin.manifest.host_provides().iter().any(|capability| {
+        capability.name.as_str() == crate::client_launch::CAPABILITY
+            && capability.api.get() == 1
+            && capability.scope == crate::capabilities::CapabilityScope::Runtime
+    })
 }
 
 fn validate_package_trust(

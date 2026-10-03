@@ -8,7 +8,7 @@ const controller = new AbortController();
 let stage = 'prepare', pending = Buffer.alloc(0), busy = false;
 const send = value => {
   const bytes = JSON.stringify(value);
-  if (Buffer.byteLength(bytes) > 16 * 1024) throw new Error('launch_reply_too_large');
+  if (Buffer.byteLength(bytes) > (stage==='source'?1024*1024:16 * 1024)) throw new Error('launch_reply_too_large');
   process.stdout.write(bytes + '\n');
 };
 const fail = () => { controller.abort(); process.exitCode = 1; process.stdin.destroy(); };
@@ -17,7 +17,8 @@ try {
   const entry = process.argv[2], source = fs.readFileSync(process.argv[3], 'utf8');
   plugin = new Module(entry); plugin.filename = entry; plugin.paths = Module._nodeModulePaths(path.dirname(entry));
   plugin._compile(source, entry);
-  if (typeof plugin.exports.prepareClientLaunch !== 'function' || typeof plugin.exports.attachClientLaunch !== 'function') throw new Error('launch_exports_missing');
+  if (typeof plugin.exports.clientSource !== 'function' &&
+      (typeof plugin.exports.prepareClientLaunch !== 'function' || typeof plugin.exports.attachClientLaunch !== 'function')) throw new Error('launch_exports_missing');
 } catch { fail(); }
 process.stdin.on('end', fail); process.stdin.on('error', fail);
 process.stdin.on('data', chunk => {
@@ -27,14 +28,18 @@ process.stdin.on('data', chunk => {
   if (end !== pending.length - 1) { fail(); return; }
   let input; try { input = JSON.parse(pending.subarray(0, end)); } catch { fail(); return; }
   pending = Buffer.alloc(0); busy = true;
+  if (input.phase==='source'&&stage==='prepare')stage='source';
   if (input.phase !== stage) { fail(); return; }
   const timer = setTimeout(fail, 10000);
-  const method = { prepare: 'prepareClientLaunch', beforeResume: 'beforeClientResume', attach: 'attachClientLaunch' }[stage];
-  Promise.resolve().then(() => plugin.exports[method]({ ...input.context, signal: controller.signal }))
+  const method = { prepare: 'prepareClientLaunch', beforeResume: 'beforeClientResume', attach: 'attachClientLaunch',source:'clientSource' }[stage];
+  Promise.resolve().then(() => {
+    if (typeof plugin.exports[method] !== 'function') throw Object.assign(new Error('launch_exports_missing'), {code:'launch_exports_missing'});
+    return plugin.exports[method]({ ...input.context, signal: controller.signal });
+  })
     .then(result => {
       if (stage === 'prepare' && result?.beforeResume === true && (input.context?.features?.moduleDataBootstrap !== 1 || typeof plugin.exports.beforeClientResume !== 'function')) throw new Error('launch_phase_unsupported');
       send({ ok: true, result }); busy = false;
-      if (stage === 'attach') { process.stdout.write('', () => process.exit(0)); }
+      if (stage === 'attach'||stage==='source') { process.stdout.write('', () => process.exit(0)); }
       else stage = stage === 'prepare' && result?.beforeResume === true ? 'beforeResume' : 'attach';
     }).catch(error => { try { send({ ok: false, code: /^[a-z_]{1,80}$/.test(error?.code) ? error.code : 'client_launch_adapter_failed' }); } finally { fail(); } })
     .finally(() => clearTimeout(timer));

@@ -116,6 +116,8 @@ pub struct RendererRuntime {
     manage_service: Option<crate::runtime_manage::RuntimeManageService>,
     #[cfg(any(windows, target_os = "macos"))]
     core_services: Option<crate::core_services::SharedCoreServices>,
+    #[cfg(any(windows, target_os = "macos"))]
+    client_source: Option<crate::client_bridge::ClientSourceRuntime>,
     plugin_registry: PluginRegistry,
     capabilities: CapabilityRegistry,
     sessions: HashMap<String, RendererSession>,
@@ -360,6 +362,8 @@ impl RendererRuntime {
             manage_service: None,
             #[cfg(any(windows, target_os = "macos"))]
             core_services: None,
+            #[cfg(any(windows, target_os = "macos"))]
+            client_source: None,
             pending_actions: Vec::new(),
             pending_package_disables: BTreeSet::new(),
             status_publisher: None,

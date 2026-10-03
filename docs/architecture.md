@@ -34,17 +34,21 @@ exact capability descriptors rather than a whitelist of official providers.
 CLI, GUI and other authorized managers use the same prepare/submit/operation
 transactions and observe the same ownership state.
 
-A dedicated client-launch Host uses its existing entry, snapshot and grants in a
-short-lived Native executor only when traffic interception requires it. It adds
-no plugin registry or permanent idle Node process. Hosts with ordinary capability
-providers or dependencies retain the existing Host lifecycle. The exact rule is
-part of the [Host contract](spec/host.md).
+Core establishes a generic authenticated client bridge before application entry,
+including a launch with no enabled client-source provider. The temporary Node
+bootstrap closes the inspector and exits. The in-process bridge remains tied to
+Core's live connection; it records original module fingerprints and scoped
+bindings so a later granted plugin can attach or replace its source. Host,
+renderer and client-source entries share the package lifecycle and receipt.
+See the [Host contract](spec/host.md).
 
-On Windows the provider can negotiate a reversible module-data plan before the
-owned child resumes. Core verifies file identity, bounded non-executable edits
-and restoration; the plugin owns version-specific profiles and strategy. Core
-contains no official plugin ID or client fuse layout. A temporary native worker
-retires before activation, without adding another distributed helper program.
+On Windows Core reads Electron's public versioned fuse schema and, when needed,
+plans a one-byte temporary inspector edit in the exact owned image. Native still
+verifies the whole file, mapped non-executable data and restoration. This public
+platform bootstrap has no application source hashes or private application
+symbols. Plugins retain their reviewed source/backend profiles and hook logic.
+The temporary native debugger worker retires before activation; no additional
+distributed helper executable or permanent Node service is introduced.
 
 The Core controls admission, provider dispatch and delivery against current
 authorization. Calls pin their provider and document generation; a late result
@@ -54,7 +58,7 @@ after an uncertain submit rather than submitting again.
 
 Host replacements use existing OS process ownership. Renderer replacement first
 cleans affected renderers, then retires old Host owners, then starts candidate
-Hosts before their dependent renderers. Failed replacement may restore immutable
+client source and Hosts before their dependent renderers. Failed replacement may restore immutable
 old source snapshots at fresh generations under current trust. That temporary
 transaction recovery is distinct from keeping historical installed packages.
 

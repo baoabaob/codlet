@@ -15,6 +15,8 @@ pub(super) struct PendingRevocation {
     source_removal: Option<crate::source_removal::SourceRemovalPlan>,
     source_worker: Option<std::sync::mpsc::Receiver<crate::source_removal::SourceRemovalResult>>,
     source_result: Option<crate::source_removal::SourceRemovalResult>,
+    client_source_worker:
+        Option<std::sync::mpsc::Receiver<Result<serde_json::Value, crate::plugin_host::HostError>>>,
 }
 struct Retiring {
     id: String,
@@ -214,6 +216,14 @@ impl HostControl {
         for id in &affected {
             self.watch_sources.remove(id);
         }
+        let client_source_worker = renderer.client_source().map(|source| {
+            let affected = affected.clone();
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            std::thread::spawn(move || {
+                let _ = sender.send(source.retire_if_affected(&affected));
+            });
+            receiver
+        });
         PendingRevocation {
             job,
             request,
@@ -226,6 +236,7 @@ impl HostControl {
             source_removal,
             source_worker: None,
             source_result: None,
+            client_source_worker,
         }
     }
 
@@ -344,6 +355,28 @@ impl PendingRevocation {
         generations: &BTreeMap<String, u64>,
     ) -> Option<PluginControlReport> {
         let observations = hosts.observations();
+        if let Some(worker) = &self.client_source_worker {
+            match worker.try_recv() {
+                Ok(Ok(_)) => self.client_source_worker = None,
+                Ok(Err(error)) => {
+                    self.failures.push(failure(
+                        &self.request.plugin_id,
+                        "client_source_cleanup",
+                        error.code,
+                    ));
+                    self.client_source_worker = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(_) => {
+                    self.failures.push(failure(
+                        &self.request.plugin_id,
+                        "client_source_cleanup",
+                        "Client entry cleanup was not confirmed",
+                    ));
+                    self.client_source_worker = None;
+                }
+            }
+        }
         renderer.set_external_observations(observations.clone());
         let mut index = 0;
         let mut admitted = self
@@ -435,6 +468,17 @@ impl PendingRevocation {
             for owner in self.retiring.drain(..) {
                 self.failures.push(failure(&owner.id, "revoke_cleanup", "Authority is revoked, but native retirement was not confirmed within the receipt budget."));
             }
+        }
+        if self.client_source_worker.is_some() {
+            if Instant::now() < self.deadline {
+                return None;
+            }
+            self.failures.push(failure(
+                &self.request.plugin_id,
+                "client_source_cleanup",
+                "Client entry cleanup deadline reached",
+            ));
+            self.client_source_worker = None;
         }
         if let Ok(registry) = PluginRegistry::load(self.registry.path()) {
             self.registry = registry;

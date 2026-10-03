@@ -268,6 +268,8 @@ export interface RuntimeManagePlugin {
   /** Launch-local suspension; enabled preferences and permission grants remain intact. */
   temporarilyDisabled?: boolean;
   temporaryDisableReason?: string | null;
+  /** Whether the current client has a transport for retrying a suspended entry. */
+  reloadAvailable?: boolean;
   active: boolean;
   registered: boolean;
   loaded: boolean;

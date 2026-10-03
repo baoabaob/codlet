@@ -237,6 +237,12 @@ export interface ClientAttachContext extends ClientLaunchContext {
 export interface HostPlugin {
   activate(context: HostContext): void | Promise<void>;
   deactivate(cleanup: HostCleanupContext): void | Promise<void>;
+  /** Optional client-owned entry, installed/replaced/retired in the same package receipt.
+   * Requires codlet.client.launch@1, host.process and cdp.raw. Core owns the
+   * authenticated process-bound transport and validates the immutable snapshot.
+   * Application source fingerprints and private bindings remain plugin code.
+   */
+  clientSource?(context: Readonly<{signal:AbortSignal;features:Readonly<{clientBridge:1}>}>): {code:string} | Promise<{code:string}>;
   /** Optional startup ABI. Requires host.process + cdp.raw and the exact launch capability. */
   prepareClientLaunch?(context: ClientLaunchContext): { arguments: readonly string[] } | Promise<{ arguments: readonly string[] }>;
   /** Bounded, exact-child handshake. Success does not claim verified coverage of every request path. */

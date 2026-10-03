@@ -61,7 +61,14 @@ async function fixture(mode) {
     await copyFile(new URL('../scripts/Start-TestClient.cmd', import.meta.url), path.join(directory, 'Start-TestClient.cmd'));
     await copyFile(new URL('../scripts/Restart-TestClient.ps1', import.meta.url), path.join(directory, 'Restart-TestClient.ps1'));
     await writeFile(path.join(directory, 'isolated-client.mjs'), fakeCoordinator);
-    await writeFile(path.join(directory, 'lab-config.json'), JSON.stringify({ schema: 1, labRoot, nodeRelative: path.relative(directory, process.execPath), officialCli: mode === 'missing-cli' ? path.join(base, 'removed-official-cli/codex.exe') : process.execPath, fixtureMode: mode }));
+    let nodeRelative = path.relative(directory, process.execPath);
+    // A runtime on another Windows volume cannot be represented relatively.
+    // Keep this fixture's launcher contract valid without changing production.
+    if (path.isAbsolute(nodeRelative)) {
+        nodeRelative = 'fixture-node.exe';
+        await copyFile(process.execPath, path.join(directory, nodeRelative));
+    }
+    await writeFile(path.join(directory, 'lab-config.json'), JSON.stringify({ schema: 1, labRoot, nodeRelative, officialCli: mode === 'missing-cli' ? path.join(base, 'removed-official-cli/codex.exe') : process.execPath, fixtureMode: mode }));
     return {
         directory, labRoot,
         async starts() {

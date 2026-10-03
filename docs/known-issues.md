@@ -26,10 +26,25 @@ Preview 26 recovers optional launch-adapter compatibility failures by temporaril
 suspending that launch's providers, interception consumers and their dependency
 closure, then starting the original client with the remaining plugins. The
 failed owned child, adapter and IPC owners unwind before one ordinary retry.
-Enablement and grants are preserved. The plugin list reports the suspension;
-restart Codlet after updating the adapter to retry these startup-dependent
-plugins. Unrelated process, authorization and protocol failures still fail.
-This is separate from manually selected safe mode, which suspends every plugin.
+Enablement and grants are preserved. Preview 26 needs a restart after updating
+that adapter because its temporary startup executor has already exited.
+
+Preview 27 establishes a generic client bridge independently of adapters and
+keeps it through an authenticated Core connection. A plugin-specific unsupported
+source leaves the client and bridge running. Updating or reloading the adapter
+replaces its client entry and restores the affected dependent closure in the
+same client. The management list identifies these suspensions as reloadable.
+The old Core must be upgraded and started once to establish the bridge; it
+cannot be added retroactively to an already running Preview 26 client.
+
+First-time source recovery may reconnect a verified idle local app-server;
+pending requests and active turns reject that operation. Replacements retain
+client-owned forwarding routes until their backend child exits. Source hooks,
+subscriptions and plugin callback authority retire with the generation. These
+paths passed owned Node/Host lifecycle fixtures, including rollback, disable and
+revocation. Final signed-client Windows/macOS acceptance remains separate.
+Unrelated process, authorization and protocol failures still fail. Safe mode
+suspends every plugin and does not establish the client bridge.
 
 ## Renderer environments after repeated reloads
 

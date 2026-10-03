@@ -5,12 +5,19 @@ use std::collections::BTreeSet;
 
 fn reason(error: &ProbeError) -> Option<&str> {
     let code = match error {
-        ProbeError::Process(ProcessError::ClientBootstrap(message)) => {
-            message.strip_prefix("client_launch_adapter_failed: Client launch adapter failed: ")?
-        }
+        ProbeError::Process(ProcessError::ClientBootstrap(message)) => message
+            .strip_prefix("client_launch_adapter_failed: Client launch adapter failed: ")
+            .or_else(|| {
+                message.strip_prefix(
+                    "client_bridge_bootstrap_failed: Client bridge bootstrap failed: ",
+                )
+            })?,
         ProbeError::PluginHost(error) if error.code == "client_launch_adapter_failed" => error
             .message
             .strip_prefix("Client launch adapter failed: ")?,
+        ProbeError::PluginHost(error) if error.code == "client_bridge_bootstrap_failed" => error
+            .message
+            .strip_prefix("Client bridge bootstrap failed: ")?,
         _ => return None,
     };
     // Legacy launch ABI codes are finite identifiers. Compatibility meanings
@@ -40,22 +47,7 @@ pub(super) fn attempt<T>(
 }
 
 pub(super) fn affected(plugins: &[LoadedPlugin]) -> BTreeSet<String> {
-    let mut affected = BTreeSet::new();
-    for plugin in plugins {
-        let provider = plugin.manifest.host_provides().iter().any(|capability| {
-            capability.name.as_str() == crate::client_launch::CAPABILITY
-                && capability.api.get() == 1
-                && capability.scope == crate::capabilities::CapabilityScope::Runtime
-        });
-        let consumer = crate::traffic_owner::required_for_plugins(std::slice::from_ref(plugin));
-        if provider || consumer {
-            affected.extend(crate::plugin_lifecycle::dependent_closure(
-                plugins,
-                &plugin.manifest.id,
-            ));
-        }
-    }
-    affected
+    crate::client_launch::startup_affected(plugins)
 }
 
 #[cfg(test)]

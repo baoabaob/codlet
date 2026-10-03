@@ -136,6 +136,28 @@ impl PluginCatalog {
     pub(crate) fn startup_suspension(&self, id: &str) -> Option<&str> {
         self.startup_suspensions.get(id).map(String::as_str)
     }
+    pub(crate) fn resume_startup(&mut self, ids: &BTreeSet<String>) {
+        self.startup_suspensions.retain(|id, _| !ids.contains(id));
+    }
+    pub(crate) fn enabled_with_suspensions(
+        &self,
+        registry: &PluginRegistry,
+    ) -> Result<Vec<LoadedPlugin>, CatalogError> {
+        self.entries
+            .iter()
+            .filter(|entry| registry.is_enabled(&entry.id))
+            .map(|entry| {
+                entry
+                    .plugin
+                    .as_ref()
+                    .cloned()
+                    .map_err(|message| CatalogError::InvalidPlugin {
+                        id: entry.id.clone(),
+                        message: message.to_string(),
+                    })
+            })
+            .collect()
+    }
 
     /// Read only the explicitly selected registration. Unrelated entries remain
     /// launch snapshots, including disabled or invalid local plugins.
