@@ -11,6 +11,7 @@ mod desktop_acceptance;
 mod package_refresh;
 mod runtime_update_owner;
 mod safe_mode;
+mod startup_recovery;
 #[cfg(all(feature = "desktop-acceptance", not(test)))]
 pub fn run_desktop_acceptance() {
     desktop_acceptance::isolated_full_runtime();
@@ -810,15 +811,19 @@ fn start_connected_codex_with_traffic(
 
 fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeError> {
     let package = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
-    start_codlet_runtime_with_connector(
-        options,
-        Some(&package.full_name),
-        start_connected_codex_with_traffic,
-    )
+    startup_recovery::attempt(|reason| {
+        start_codlet_runtime_with_connector_filtered(
+            options,
+            reason.is_none().then_some(package.full_name.as_str()),
+            start_connected_codex_with_traffic,
+            reason,
+        )
+    })
 }
 
 // The isolated desktop acceptance test supplies only the owned child and scoped
 // IPC listeners. Plugin preparation, activation and the event loop stay shared.
+#[cfg(any(test, feature = "desktop-acceptance"))]
 fn start_codlet_runtime_with_connector(
     options: LaunchOptions,
     refresh_client: Option<&str>,
@@ -826,6 +831,18 @@ fn start_codlet_runtime_with_connector(
         Option<PreparedServices>,
         Option<&crate::traffic_owner::TrafficOwner>,
     ) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError>,
+) -> Result<CodletRuntime, ProbeError> {
+    start_codlet_runtime_with_connector_filtered(options, refresh_client, connect, None)
+}
+
+fn start_codlet_runtime_with_connector_filtered(
+    options: LaunchOptions,
+    refresh_client: Option<&str>,
+    connect: impl FnOnce(
+        Option<PreparedServices>,
+        Option<&crate::traffic_owner::TrafficOwner>,
+    ) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError>,
+    suspension: Option<&str>,
 ) -> Result<CodletRuntime, ProbeError> {
     let scope = RegistryScope::for_path(&default_registry_path()?)?;
     let lease = scope
@@ -847,7 +864,7 @@ fn start_codlet_runtime_with_connector(
         registry = PluginRegistry::load(scope.path())?;
     }
     let mut host_control = HostControl::new(registry.path().to_owned());
-    let (mut renderer, host_plugins) = prepare_plugin_runtimes(registry)?;
+    let (mut renderer, host_plugins) = prepare_plugin_runtimes_filtered(registry, suspension)?;
     renderer.enable_runtime_skill();
     host_control.seed_watch_sources(&renderer, &host_plugins);
     let traffic_required = crate::traffic_owner::required_for_plugins(&host_plugins);
@@ -1073,7 +1090,39 @@ pub fn prepare_renderer_runtime(registry: PluginRegistry) -> Result<RendererRunt
 pub fn prepare_plugin_runtimes(
     registry: PluginRegistry,
 ) -> Result<(RendererRuntime, Vec<LoadedPlugin>), ProbeError> {
-    let catalog = PluginCatalog::load(&registry)?;
+    prepare_plugin_runtimes_filtered(registry, None)
+}
+
+fn prepare_plugin_runtimes_filtered(
+    registry: PluginRegistry,
+    suspension: Option<&str>,
+) -> Result<(RendererRuntime, Vec<LoadedPlugin>), ProbeError> {
+    let mut catalog = PluginCatalog::load(&registry)?;
+    if let Some(reason) = suspension {
+        let enabled = catalog
+            .enabled_plugins(&registry)
+            .map_err(RendererError::from)?;
+        let affected = startup_recovery::affected(&enabled);
+        if affected.is_empty() {
+            return Err(HostError::new(
+                "startup_recovery_unavailable",
+                "No incompatible launch plugins could be isolated",
+            )
+            .into());
+        }
+        for id in &affected {
+            eprintln!(
+                "startup-plugin-suspended: plugin-id={id}; reason={reason}; preference=preserved"
+            );
+            crate::runtime_log::error(
+                "startup_plugin_suspended",
+                &format!(
+                    "{id}: temporarily disabled for this launch ({reason}); enabled preferences and grants are preserved"
+                ),
+            );
+        }
+        catalog.suspend_startup(&affected, reason);
+    }
     let host_plugins: Vec<_> = catalog
         .enabled_plugins(&registry)
         .map_err(RendererError::from)?

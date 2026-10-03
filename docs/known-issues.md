@@ -20,6 +20,17 @@ cleanup and permission revocation. Reloading an already enabled plugin restores
 its current instance on Preview 24; re-enabling after disable can trigger the
 defect again, so the permanent fix requires the newer Core.
 
+## Startup compatibility recovery
+
+Preview 26 recovers optional launch-adapter compatibility failures by temporarily
+suspending that launch's providers, interception consumers and their dependency
+closure, then starting the original client with the remaining plugins. The
+failed owned child, adapter and IPC owners unwind before one ordinary retry.
+Enablement and grants are preserved. The plugin list reports the suspension;
+restart Codlet after updating the adapter to retry these startup-dependent
+plugins. Unrelated process, authorization and protocol failures still fail.
+This is separate from manually selected safe mode, which suspends every plugin.
+
 ## Renderer environments after repeated reloads
 
 **Accepted Preview limitation.** A new isolated renderer generation creates a new

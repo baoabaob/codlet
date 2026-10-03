@@ -77,7 +77,9 @@ pub(super) fn plugin_list(
         });
         let metadata = observed_plugin.or_else(|| current_cached_entry.and_then(|entry| entry.plugin.as_ref().ok()));
         let metadata_source = if observed_plugin.is_some() { "runtime" } else if current_cached_entry.is_some() { "catalog_snapshot" } else { "unavailable" };
-        let validation = if observed_plugin.is_some() {
+        let validation = if let Some(reason) = catalog.startup_suspension(id) {
+            json!({"status":"failed","basis":"startup_compatibility","error":{"code":"startup_plugin_suspended","message":format!("Temporarily disabled for this launch ({reason}); update the adapter and restart Codlet to retry. Enabled preferences and grants are preserved.")}})
+        } else if observed_plugin.is_some() {
             json!({"status":"ok","basis":"runtime"})
         } else if let Some(entry) = current_cached_entry {
             match &entry.plugin {
@@ -98,6 +100,8 @@ pub(super) fn plugin_list(
         };
         let mut row = json!({
             "id":id,
+            "temporarilyDisabled":catalog.startup_suspension(id).is_some(),
+            "temporaryDisableReason":catalog.startup_suspension(id),
             "name":metadata.map(|plugin| plugin.manifest.display_name()).unwrap_or(id),
             "description":metadata.and_then(|plugin| plugin.manifest.description.as_deref()),
             "i18n":metadata.map(|plugin| &plugin.manifest.i18n),
@@ -151,6 +155,36 @@ mod tests {
             .iter()
             .find(|plugin| plugin["id"] == id)
             .expect("plugin should be listed")
+    }
+
+    #[test]
+    fn startup_suspension_preserves_enablement_and_explains_the_missing_runtime() {
+        let directory = tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        let plugins = bundled_plugins().unwrap();
+        let mut catalog = PluginCatalog::from_bundled(plugins);
+        catalog.suspend_startup(
+            &BTreeSet::from(["codex.ui.adapter".into(), "codlet-gui".into()]),
+            "adapter_version_unsupported",
+        );
+        let list = plugin_list(&catalog, &[], &registry, &BTreeSet::new(), &[]);
+        let suspended = row(&list, "codex.ui.adapter");
+        assert_eq!(suspended["enabled"], true);
+        assert_eq!(suspended["active"], false);
+        assert_eq!(suspended["temporarilyDisabled"], true);
+        assert_eq!(suspended["validation"]["basis"], "startup_compatibility");
+        assert_eq!(
+            suspended["validation"]["error"]["code"],
+            "startup_plugin_suspended"
+        );
+        assert_eq!(
+            suspended["temporaryDisableReason"],
+            "adapter_version_unsupported"
+        );
+        assert!(
+            !registry.path().exists(),
+            "inspection never persists suspension preferences"
+        );
     }
 
     #[test]

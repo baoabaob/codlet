@@ -74,7 +74,10 @@ On Windows, unavailable renderer discovery is reported as
 `renderer_executor_unavailable`; Core and a still-running official client remain
 available even for a renderer-only plugin configuration. The launcher reports that
 UI plugins did not load. An official process that itself exits is still a startup
-failure, and required traffic source attachment continues to fail closed.
+failure. Preview 26 isolates optional launch-adapter incompatibility by suspending
+its startup providers, interception consumers and dependents for the current
+launch. Required interception is never reported active when its source failed;
+the remaining plugins and original client can still run with preserved preferences.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-PreviewDistribution.ps1 `

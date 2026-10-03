@@ -44,6 +44,15 @@ impl RendererRuntime {
         &self,
         plugin: &LoadedPlugin,
     ) -> Result<(), PluginControlError> {
+        if let Some(reason) = self.catalog.startup_suspension(&plugin.manifest.id) {
+            return Err(PluginControlError::new(
+                "startup_plugin_suspended",
+                format!(
+                    "Plugin {} is temporarily disabled for this launch ({reason}); restart Codlet to retry after updating its adapter",
+                    plugin.manifest.id
+                ),
+            ));
+        }
         let shape = (
             plugin.manifest.renderer.is_some(),
             plugin.manifest.host.is_some(),

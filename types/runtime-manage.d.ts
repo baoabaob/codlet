@@ -236,7 +236,7 @@ export interface ControlReport {
 
 export type PluginValidation =
   | { status: 'ok'; basis: 'runtime' | 'catalog_snapshot' }
-  | { status: 'failed'; basis: 'catalog_snapshot'; error: PluginControlError }
+  | { status: 'failed'; basis: 'catalog_snapshot' | 'startup_compatibility'; error: PluginControlError }
   | { status: 'not_loaded'; basis: 'registration' };
 
 export interface RuntimeManagePlugin {
@@ -265,6 +265,9 @@ export interface RuntimeManagePlugin {
   providedCapabilities?: ImportCapability[] | null;
   validation: PluginValidation;
   enabled: boolean;
+  /** Launch-local suspension; enabled preferences and permission grants remain intact. */
+  temporarilyDisabled?: boolean;
+  temporaryDisableReason?: string | null;
   active: boolean;
   registered: boolean;
   loaded: boolean;

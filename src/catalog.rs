@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -59,6 +59,7 @@ impl PluginCatalogEntry {
 #[derive(Debug)]
 pub struct PluginCatalog {
     entries: Vec<PluginCatalogEntry>,
+    startup_suspensions: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Error)]
@@ -117,11 +118,23 @@ impl PluginCatalog {
             })
             .collect();
         entries.sort_by(|left, right| left.id.cmp(&right.id));
-        Self { entries }
+        Self {
+            entries,
+            startup_suspensions: BTreeMap::new(),
+        }
     }
 
     pub fn entries(&self) -> &[PluginCatalogEntry] {
         &self.entries
+    }
+
+    pub(crate) fn suspend_startup(&mut self, ids: &BTreeSet<String>, reason: &str) {
+        self.startup_suspensions
+            .extend(ids.iter().map(|id| (id.clone(), reason.to_owned())));
+    }
+
+    pub(crate) fn startup_suspension(&self, id: &str) -> Option<&str> {
+        self.startup_suspensions.get(id).map(String::as_str)
     }
 
     /// Read only the explicitly selected registration. Unrelated entries remain
@@ -194,7 +207,9 @@ impl PluginCatalog {
     ) -> Result<Vec<LoadedPlugin>, CatalogError> {
         self.entries
             .iter()
-            .filter(|entry| registry.is_enabled(&entry.id))
+            .filter(|entry| {
+                registry.is_enabled(&entry.id) && !self.startup_suspensions.contains_key(&entry.id)
+            })
             .map(|entry| {
                 entry
                     .plugin
