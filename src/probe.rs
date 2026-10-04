@@ -916,6 +916,11 @@ fn start_codlet_runtime_with_connector_filtered(
     );
     let servers = servers.expect("runtime launch prepared its IPC servers");
     let control = servers.control.broker();
+    // The client connection and its pipe reader are already live. Only now
+    // evaluate source readiness, so Native initialization can make progress.
+    if let Some(traffic) = &traffic {
+        traffic.complete_bridge_startup()?;
+    }
     if source_requested
         && traffic
             .as_ref()

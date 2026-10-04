@@ -6613,6 +6613,11 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   }
   async function replace(command2) {
     if (closed || command2.expectedEpoch !== epoch) throw fail("client_bridge_stale_epoch");
+    if (command2.op === "ready") {
+      if (epoch !== 0) throw fail("client_bridge_initial_state_invalid");
+      await bridge.ready();
+      return { outcome: "applied", ...status() };
+    }
     const previous = active && { owner: active.owner, generation: active.generation, code: active.code, configuration: active.configuration };
     if (command2.op === "replace" && (!label(command2.owner) || !Number.isSafeInteger(command2.generation) || command2.generation < 1 || typeof command2.code !== "string" || Buffer.byteLength(command2.code) > MAX_FRAME / 2)) throw fail("client_bridge_selection_invalid");
     if (active && command2.previousOwner !== active.owner) throw fail("client_bridge_owner_changed");
@@ -6638,7 +6643,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   }
   async function command(input) {
     if (input.op === "status") return input.operationId ? receipts.get(input.operationId) ?? { pending: false, unknown: true } : status();
-    if (!label(input.operationId) || !["replace", "clear"].includes(input.op)) throw fail("client_bridge_request_invalid");
+    if (!label(input.operationId) || !["replace", "clear", "ready"].includes(input.op)) throw fail("client_bridge_request_invalid");
     if (receipts.has(input.operationId)) return receipts.get(input.operationId);
     if (receipts.size >= 128) receipts.delete(receipts.keys().next().value);
     receipts.set(input.operationId, { pending: true });

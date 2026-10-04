@@ -229,42 +229,24 @@ impl TrafficOwner {
             if let Some(bootstrap) = self.bootstrap.borrow_mut().take() {
                 bootstrap.restore(deadline).map_err(|e| failure(e.code))?;
             }
-            let (runtime, registry, configuration, provider) = self
+            let (runtime, registry, configuration, _provider) = self
                 .bridge_inputs
                 .as_ref()
                 .expect("bridge configuration prepared");
-            let activation_metadata = crate::client_launch::validate_client_source_activation(
+            crate::client_launch::validate_client_source_activation(
                 &activation,
                 &configuration["source"],
             )?;
-            let mut supported = activation["installed"] == true;
             let source = crate::client_bridge::ClientSourceRuntime::new(
                 endpoint,
                 runtime.clone(),
                 registry.clone(),
                 configuration.clone(),
-                supported.then(|| provider.clone()).flatten(),
+                None,
                 self.traffic.clone(),
                 Instant::now() + Duration::from_secs(10),
             )?;
-            if supported
-                && let Some(provider) = provider
-                && crate::client_launch::validate_source_authority(provider, registry).is_err()
-            {
-                source.replace(None)?;
-                supported = false;
-            }
-            self.bridge_supported.set(supported);
             self.client_source.replace(Some(source));
-            if !supported {
-                self.traffic
-                    .set_source_activation(json!([]), activation_metadata.unsupported);
-                return Ok(());
-            }
-            self.traffic.set_source_activation(
-                activation_metadata.activated,
-                activation_metadata.unsupported,
-            );
             return Ok(());
         }
         let adapter = self
@@ -282,6 +264,16 @@ impl TrafficOwner {
         self.check_alive()?;
         self.traffic
             .set_source_activation(activation.activated, activation.unsupported);
+        Ok(())
+    }
+
+    pub(crate) fn complete_bridge_startup(&self) -> Result<(), HostError> {
+        if let (Some(source), Some((_, _, _, provider))) =
+            (self.client_source(), self.bridge_inputs.as_ref())
+        {
+            self.bridge_supported
+                .set(source.complete_startup(provider.as_ref())?);
+        }
         Ok(())
     }
 

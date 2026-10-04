@@ -296,6 +296,75 @@ impl ClientSourceRuntime {
             _lease: lease,
         })))
     }
+    pub(crate) fn complete_startup(
+        &self,
+        provider: Option<&LoadedPlugin>,
+    ) -> Result<bool, HostError> {
+        let mut result = match self
+            .request(json!({"op":"ready","operationId":"startup-ready","expectedEpoch":0}))
+        {
+            Ok(result) => result,
+            Err(error) if error.code == "client_bridge_uncertain" => {
+                // Query the original receipt; never replay uncertain readiness.
+                self.request(json!({"op":"status","operationId":"startup-ready"}))?
+            }
+            Err(error) => return Err(error),
+        };
+        let until = Instant::now() + Duration::from_secs(3);
+        while result["pending"] == true && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(25));
+            result = self.request(json!({"op":"status","operationId":"startup-ready"}))?;
+        }
+        if result["outcome"] != "applied" || result["epoch"] != 0 {
+            return Err(error("client_bridge_protocol"));
+        }
+        let selected = if result["owner"].is_null() {
+            None
+        } else {
+            Some(
+                provider
+                    .filter(|provider| {
+                        result["owner"] == provider.manifest.id
+                            && result["generation"] == provider.generation
+                    })
+                    .ok_or_else(|| error("client_bridge_identity_invalid"))?,
+            )
+        };
+        let activation = crate::client_launch::validate_client_source_activation(
+            &result["activation"],
+            &self.0.configuration["source"],
+        )?;
+        let supported = result["activation"]["installed"] == true;
+        if supported != selected.is_some() {
+            return Err(error("client_bridge_protocol"));
+        }
+        self.0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?
+            .provider = selected.cloned();
+        if let Some(provider) = selected
+            && let Err(authority) =
+                crate::client_launch::validate_source_authority(provider, &self.0.registry)
+        {
+            self.replace(None)?;
+            return Err(authority);
+        }
+        if let Some(code) = result["sourceError"].as_str().filter(|code| {
+            !code.is_empty()
+                && code.len() <= 80
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        }) {
+            crate::runtime_log::error("client_source_not_ready", code);
+            eprintln!("client-source-not-ready: reason={code}");
+        }
+        self.0
+            .traffic
+            .set_source_activation(activation.activated, activation.unsupported);
+        Ok(supported)
+    }
     pub(crate) fn replace(&self, plugin: Option<&LoadedPlugin>) -> Result<Value, HostError> {
         let mut state = self
             .0

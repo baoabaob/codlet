@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "codlet"
-version = "0.2.0-preview.28"
+version = "0.2.0-preview.29"
 dependencies = [
  "base64",
  "bytes",

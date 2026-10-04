@@ -95,6 +95,16 @@ test('startup source failures retain only a finite diagnostic code and keep the 
   assert.equal(JSON.stringify(result).includes('private payload'),false);
   assert.equal((await request(f.endpoint,{op:'status'})).result.sourceError,'backend_route_timeout');
 });
+
+test('initial readiness runs over the authenticated transport and its receipt does not replay initialization',async t=>{
+  const f=await fixture(t);compile(f.directory);
+  await f.bridge.installInitial({owner:'dev.adapter',generation:1,configuration:{},code:`module.exports={installElectronTraffic(){let calls=0;return {ready:async()=>{if(++calls!==1)throw Error('replayed');return {installed:true,activatedSources:[],unsupportedSources:[]};},close(){}};}};`});
+  assert.equal(f.bridge.inspect().activation.installed,false);f.ready();
+  const input={op:'ready',operationId:'startup-ready',expectedEpoch:0};
+  const first=(await request(f.endpoint,input)).result,repeated=(await request(f.endpoint,input)).result;
+  assert.equal(first.outcome,'applied');assert.equal(first.activation.installed,true);assert.equal(first.epoch,0);
+  assert.deepEqual(repeated,first);assert.equal(first.owner,'dev.adapter');
+});
 test('Core establishes its recovery transport before entry without an adapter and closes the temporary inspector',async t=>{
   const {attach}=require('../runtime/client-bridge-bootstrap.cjs');
   const root=await mkdtemp(path.join(tmpdir(),'codlet-owned-bridge-'));

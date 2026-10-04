@@ -75,7 +75,10 @@ async function attach(context,source) {
     if(installed.exceptionDetails||installed.result?.value!==true)throw fail('client_bridge_install_failed');
     await request('Debugger.resume');
     const resultKey=JSON.stringify('codlet.client.bridge.ready.'+token);
-    await request('Runtime.evaluate',{expression:`globalThis[Symbol.for(${key})].ready().then(async status=>{globalThis[Symbol.for(${resultKey})]={status,bridge:await globalThis[Symbol.for(${key})].endpoint()};},()=>{globalThis[Symbol.for(${resultKey})]={error:true};});true`,returnByValue:true});
+    // Finish the temporary inspector transaction once the transport is live.
+    // Source readiness is evaluated over that transport after Native's CDP
+    // connection has been started; it must not hold up Native initialization.
+    await request('Runtime.evaluate',{expression:`globalThis[Symbol.for(${key})].endpoint().then(bridge=>{globalThis[Symbol.for(${resultKey})]={status:globalThis[Symbol.for(${key})].inspect(),bridge};},()=>{globalThis[Symbol.for(${resultKey})]={error:true};});true`,returnByValue:true});
     let result;
     const until=Date.now()+11000;
     while(Date.now()<until){const reply=await request('Runtime.evaluate',{expression:`globalThis[Symbol.for(${resultKey})]`,returnByValue:true});result=reply.result?.value;if(result?.error)throw fail('client_bridge_ready_failed');if(result?.bridge)break;await new Promise(resolve=>setTimeout(resolve,25));}

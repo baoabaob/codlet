@@ -22,6 +22,15 @@ defect again, so the permanent fix requires the newer Core.
 
 ## Startup compatibility recovery
 
+Preview 29 finishes the generic transport/inspector transaction before checking
+application-specific source readiness. The owned client pipe reader starts
+before that readiness operation runs over the authenticated bridge. A source
+that waits for native initialization no longer blocks the connection needed
+by that initialization. Readiness uses a queried receipt, retains the initial
+generation and rechecks source authority before publishing coverage. Controlled
+Node fixtures cover initialization after debugger detach and native connection;
+these are not full signed-client or model-request acceptance.
+
 Preview 28 gives the authenticated client lease its own bounded ten-second
 handshake after the temporary inspector closes. Preview 27's fixed two-second
 read wait can fail while the resumed native main loop is still busy and report

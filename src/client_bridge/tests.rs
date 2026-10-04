@@ -66,6 +66,9 @@ impl Fixture {
         Self::new_with_lease_delay(suspended, 0)
     }
     fn new_with_lease_delay(suspended: bool, lease_delay_ms: u64) -> Self {
+        Self::new_with_options(suspended, lease_delay_ms, false)
+    }
+    fn new_with_options(suspended: bool, lease_delay_ms: u64, initial_source: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let registry_path = directory.path().join("state/config.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
@@ -147,6 +150,12 @@ impl Fixture {
             return write.call(this,bytes,...args);
           }};
           const bridge=require('./bridge.cjs').startClientBridge({{app:{{isReady:()=>ready,getAppPath:()=>__dirname}}}},{{token:'a'.repeat(48)}});
+          if({initial_source}){{
+            const file=require('node:path').join(__dirname,'connected.marker');
+            let code=require('./dev.fixture.source/host.cjs').clientSource().code;
+            code+='\nconst original=module.exports.installElectronTraffic;module.exports.installElectronTraffic=(...args)=>{{const runtime=original(...args);return {{...runtime,ready:async()=>{{if(!require("node:fs").existsSync('+JSON.stringify(file)+'))throw Object.assign(Error(),{{code:"native_connection_pending"}});return runtime.ready();}}}};}};';
+            bridge.installInitial({{owner:'dev.fixture.source',generation:1,code,configuration:{{}}}}).catch(()=>{{}});
+          }}
           ready=true;bridge.endpoint().then(endpoint=>process.stdout.write(JSON.stringify(endpoint)+'\n'));
         "#)).unwrap();
         let (peer, stdio) = OwnedPluginProcess::spawn(
@@ -358,6 +367,30 @@ fn authority_changed_during_activation_retires_the_main_entry_and_preserves_the_
 fn startup_lease_survives_a_native_reply_delayed_beyond_two_seconds() {
     let f = Fixture::new_with_lease_delay(false, 2300);
     assert_eq!(f.inspect()["pid"], f.peer.pid());
+    assert!(f.inspect()["owner"].is_null());
+}
+
+#[test]
+fn startup_source_is_confirmed_only_after_the_native_connection_can_initialize() {
+    let f = Fixture::new_with_options(true, 0, true);
+    assert_eq!(f.inspect()["owner"], SOURCE);
+    assert_eq!(f.inspect()["activation"]["installed"], false);
+    std::fs::write(
+        f.directory.path().join("connected.marker"),
+        "native-connected",
+    )
+    .unwrap();
+    let registry = PluginRegistry::load(&f.registry).unwrap();
+    let provider = crate::local_plugins::load_local_plugin_with_registration(
+        SOURCE,
+        &registry.local_plugins()[SOURCE],
+        1,
+    )
+    .unwrap();
+    assert!(f.source.complete_startup(Some(&provider)).unwrap());
+    assert_eq!(f.inspect()["activation"]["installed"], true);
+    assert_eq!(f.inspect()["pid"], f.peer.pid());
+    f.source.replace(None).unwrap();
     assert!(f.inspect()["owner"].is_null());
 }
 
