@@ -139,7 +139,14 @@ impl TrafficOwner {
         )?);
         self.original_environment.clear();
         self.descriptor = Value::Null;
-        self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
+        #[cfg(windows)]
+        {
+            self.stderr = Some(crate::client_stderr::ClientStderr::capture_startup()?);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
+        }
         Ok(())
     }
 
@@ -168,7 +175,14 @@ impl TrafficOwner {
             provider.cloned(),
         ));
         self.launch_arguments = vec![OsString::from("--inspect-brk=127.0.0.1:0")];
-        self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
+        #[cfg(windows)]
+        {
+            self.stderr = Some(crate::client_stderr::ClientStderr::capture_startup()?);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
+        }
         Ok(())
     }
     pub(crate) fn client_source(&self) -> Option<crate::client_bridge::ClientSourceRuntime> {
@@ -231,6 +245,7 @@ impl TrafficOwner {
                 configuration.clone(),
                 supported.then(|| provider.clone()).flatten(),
                 self.traffic.clone(),
+                Instant::now() + Duration::from_secs(10),
             )?;
             if supported
                 && let Some(provider) = provider

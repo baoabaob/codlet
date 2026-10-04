@@ -776,7 +776,11 @@ fn start_connected_codex_with_traffic(
                     Ok((launched, executable))
                 })?;
             if let Some(traffic) = traffic {
-                traffic.attach_client(launched.0.process_id(), &executable, || false)?;
+                traffic
+                    .attach_client(launched.0.process_id(), &executable, || false)
+                    .inspect_err(|_| {
+                        traffic.stderr().report_startup_failure();
+                    })?;
             }
             Ok(((package, launched, executable), server))
         },
@@ -877,7 +881,7 @@ fn start_codlet_runtime_with_connector_filtered(
             .iter()
             .any(|capability| capability.name.as_str() == crate::client_launch::CAPABILITY)
     });
-    let traffic = if suspension.is_some_and(|reason| reason == "client_bridge_fuse_unsupported") {
+    let traffic = if suspension.is_some_and(startup_recovery::without_bridge) {
         None
     } else {
         Some({
@@ -1039,6 +1043,9 @@ fn start_codlet_runtime_with_connector_filtered(
     control.set_ready();
     if let Some(stderr) = &connected.stderr {
         stderr.finish_startup();
+    }
+    if let Some(traffic) = &traffic {
+        traffic.stderr().finish_startup();
     }
     let runtime_update = runtime_update_owner::RuntimeUpdateOwner::start(
         &manage_service,

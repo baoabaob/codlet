@@ -84,6 +84,17 @@ test('captured module bindings remain available after readiness and subscription
   unsubscribe();assert.equal(registry.inspect().subscribers,0);
   compile('second.cjs',code);assert.equal(count,1);assert.equal(registry.inspect().modules,2);
 });
+
+test('startup source failures retain only a finite diagnostic code and keep the generic bridge alive',async t=>{
+  const f=await fixture(t);compile(f.directory);
+  await f.bridge.installInitial({owner:'dev.adapter',generation:1,configuration:{},code:`module.exports={installElectronTraffic(){return {ready:async()=>{throw Object.assign(Error('private payload must not be logged'),{code:'backend_route_timeout'});},close(){}};}};`});
+  f.ready();
+  const result=await f.bridge.ready();
+  assert.equal(result.owner,null);assert.equal(result.activation.installed,false);
+  assert.equal(result.sourceError,'backend_route_timeout');assert.ok(result.moduleObserver.modules>0);
+  assert.equal(JSON.stringify(result).includes('private payload'),false);
+  assert.equal((await request(f.endpoint,{op:'status'})).result.sourceError,'backend_route_timeout');
+});
 test('Core establishes its recovery transport before entry without an adapter and closes the temporary inspector',async t=>{
   const {attach}=require('../runtime/client-bridge-bootstrap.cjs');
   const root=await mkdtemp(path.join(tmpdir(),'codlet-owned-bridge-'));

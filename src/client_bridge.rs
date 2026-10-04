@@ -123,6 +123,16 @@ impl Bootstrap {
         let endpoint: Endpoint = serde_json::from_value(result["bridge"].clone())
             .map_err(|_| error("client_bridge_identity_invalid"))?;
         endpoint.validate(pid, executable)?;
+        if let Some(code) = result["sourceError"].as_str().filter(|code| {
+            !code.is_empty()
+                && code.len() <= 80
+                && code
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        }) {
+            crate::runtime_log::error("client_source_not_ready", code);
+            eprintln!("client-source-not-ready: reason={code}");
+        }
         Ok((endpoint, result["activation"].clone()))
     }
     fn call(&self, phase: &str, context: Value, deadline: Instant) -> Result<Value, HostError> {
@@ -190,6 +200,75 @@ struct State {
     epoch: u64,
     provider: Option<LoadedPlugin>,
 }
+
+fn acquire_lease(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, HostError> {
+    let deadline = deadline.min(Instant::now() + Duration::from_secs(10));
+    let remaining = || {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        if wait.is_zero() {
+            Err(error("client_bridge_lease_timeout"))
+        } else {
+            Ok(wait)
+        }
+    };
+    let io_error = |failure: std::io::Error| {
+        error(
+            if matches!(
+                failure.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) {
+                "client_bridge_lease_timeout"
+            } else {
+                "client_bridge_lease_unavailable"
+            },
+        )
+    };
+    let mut lease = TcpStream::connect_timeout(
+        &SocketAddrV4::new(Ipv4Addr::LOCALHOST, endpoint.port).into(),
+        remaining()?.min(Duration::from_secs(2)),
+    )
+    .map_err(io_error)?;
+    lease
+        .set_write_timeout(Some(remaining()?))
+        .map_err(io_error)?;
+    let mut bytes = serde_json::to_vec(&json!({"op":"lease","token":endpoint.token}))
+        .map_err(|_| error("client_bridge_protocol"))?;
+    bytes.push(b'\n');
+    lease.write_all(&bytes).map_err(io_error)?;
+    let mut response = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        lease
+            .set_read_timeout(Some(remaining()?))
+            .map_err(io_error)?;
+        let count = lease.read(&mut buffer).map_err(io_error)?;
+        if count == 0 {
+            return Err(error("client_bridge_lease_unavailable"));
+        }
+        if response.len() + count > 65536 {
+            return Err(error("client_bridge_protocol"));
+        }
+        response.extend_from_slice(&buffer[..count]);
+        if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
+            if end != response.len() - 1 {
+                return Err(error("client_bridge_protocol"));
+            }
+            response.pop();
+            break;
+        }
+    }
+    let result: Value =
+        serde_json::from_slice(&response).map_err(|_| error("client_bridge_protocol"))?;
+    if result["ok"] != true
+        || result["result"]["leased"] != true
+        || result["result"]["pid"] != endpoint.pid
+    {
+        return Err(error("client_bridge_identity_invalid"));
+    }
+    lease.set_read_timeout(None).map_err(io_error)?;
+    Ok(lease)
+}
+
 impl ClientSourceRuntime {
     pub(crate) fn new(
         endpoint: Endpoint,
@@ -198,45 +277,14 @@ impl ClientSourceRuntime {
         configuration: Value,
         provider: Option<LoadedPlugin>,
         traffic: crate::core_services::traffic::Traffic,
+        deadline: Instant,
     ) -> Result<Self, HostError> {
         let directory = tempfile::Builder::new()
             .prefix("codlet-client-source-")
             .tempdir()
             .map_err(|_| error("client_bridge_directory"))?;
         crate::traffic_owner::secure_directory(directory.path())?;
-        let mut lease = TcpStream::connect_timeout(
-            &SocketAddrV4::new(Ipv4Addr::LOCALHOST, endpoint.port).into(),
-            Duration::from_secs(2),
-        )
-        .map_err(|_| error("client_bridge_disconnected"))?;
-        lease
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|_| error("client_bridge_disconnected"))?;
-        let mut bytes = serde_json::to_vec(&json!({"op":"lease","token":endpoint.token}))
-            .map_err(|_| error("client_bridge_protocol"))?;
-        bytes.push(b'\n');
-        lease
-            .write_all(&bytes)
-            .map_err(|_| error("client_bridge_disconnected"))?;
-        let mut response = Vec::new();
-        let mut byte = [0];
-        while response.len() < 65536 {
-            lease
-                .read_exact(&mut byte)
-                .map_err(|_| error("client_bridge_disconnected"))?;
-            if byte[0] == b'\n' {
-                break;
-            }
-            response.push(byte[0]);
-        }
-        let result: Value =
-            serde_json::from_slice(&response).map_err(|_| error("client_bridge_protocol"))?;
-        if result["ok"] != true
-            || result["result"]["leased"] != true
-            || result["result"]["pid"] != endpoint.pid
-        {
-            return Err(error("client_bridge_identity_invalid"));
-        }
+        let lease = acquire_lease(&endpoint, deadline)?;
         Ok(Self(Arc::new(SourceOwner {
             endpoint,
             runtime,

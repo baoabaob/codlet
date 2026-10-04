@@ -6517,7 +6517,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     new Function("module", "exports", "require", code)(module2, module2.exports, require);
     return module2.exports;
   });
-  let active = null, epoch = 0, closed = false, chain = Promise.resolve(), lastActivation = { installed: false, activatedSources: [], unsupportedSources: [] };
+  let active = null, epoch = 0, closed = false, chain = Promise.resolve(), lastActivation = { installed: false, activatedSources: [], unsupportedSources: [] }, sourceError = null;
   const receipts = /* @__PURE__ */ new Map(), connections = /* @__PURE__ */ new Set();
   let leased = false;
   const context = Object.freeze({
@@ -6582,6 +6582,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     owner: active?.owner ?? null,
     generation: active?.generation ?? null,
     activation: active?.activation ?? lastActivation,
+    sourceError,
     moduleObserver: modules.inspect()
   });
   async function closeActive() {
@@ -6607,6 +6608,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       await closeActive();
       throw error;
     }
+    sourceError = null;
     return active.activation;
   }
   async function replace(command2) {
@@ -6735,12 +6737,17 @@ function startClientBridge(electron, configuration, dependencies = {}) {
         try {
           activation = await bounded(() => active.runtime.ready(), "client_bridge_activation_timeout");
         } catch (error) {
+          sourceError = codeOf(error);
           activation = { installed: false, activatedSources: [], unsupportedSources: [{ id: "client-source", reason: "hook_unavailable" }] };
         }
         if (!activation?.installed) {
+          sourceError ??= "client_bridge_source_unavailable";
           await closeActive();
           lastActivation = activation;
-        } else active.activation = activation;
+        } else {
+          active.activation = activation;
+          sourceError = null;
+        }
       }
       return status();
     },

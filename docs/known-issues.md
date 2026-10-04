@@ -22,6 +22,16 @@ defect again, so the permanent fix requires the newer Core.
 
 ## Startup compatibility recovery
 
+Preview 28 gives the authenticated client lease its own bounded ten-second
+handshake after the temporary inspector closes. Preview 27's fixed two-second
+read wait can fail while the resumed native main loop is still busy and report
+`client_bridge_disconnected`. The new deadline applies to the entire reply,
+including fragmented reads. Malformed replies and wrong identities remain
+failures. A confirmed lease timeout permits one owned startup retry without
+the optional bridge, suspending only affected plugins while preserving grants
+and enablement. Other transport or process failures are not retried. Source
+readiness codes and bounded owned-child startup stderr are retained for diagnosis.
+
 Preview 26 recovers optional launch-adapter compatibility failures by temporarily
 suspending that launch's providers, interception consumers and their dependency
 closure, then starting the original client with the remaining plugins. The

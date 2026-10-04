@@ -63,6 +63,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(suspended: bool) -> Self {
+        Self::new_with_lease_delay(suspended, 0)
+    }
+    fn new_with_lease_delay(suspended: bool, lease_delay_ms: u64) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let registry_path = directory.path().join("state/config.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
@@ -135,11 +138,17 @@ impl Fixture {
         )
         .unwrap();
         let peer_file = directory.path().join("peer.cjs");
-        std::fs::write(&peer_file, r#"
+        std::fs::write(&peer_file, format!(r#"
           process.type='browser';let ready=false;
-          const bridge=require('./bridge.cjs').startClientBridge({app:{isReady:()=>ready,getAppPath:()=>__dirname}},{token:'a'.repeat(48)});
+          const socket=require('node:net').Socket.prototype,write=socket.write;
+          socket.write=function(bytes,...args){{
+            let value;try{{value=JSON.parse(bytes);}}catch{{}}
+            if(value?.result?.leased===true&&{lease_delay_ms}>0){{setTimeout(()=>write.call(this,bytes,...args),{lease_delay_ms});return true;}}
+            return write.call(this,bytes,...args);
+          }};
+          const bridge=require('./bridge.cjs').startClientBridge({{app:{{isReady:()=>ready,getAppPath:()=>__dirname}}}},{{token:'a'.repeat(48)}});
           ready=true;bridge.endpoint().then(endpoint=>process.stdout.write(JSON.stringify(endpoint)+'\n'));
-        "#).unwrap();
+        "#)).unwrap();
         let (peer, stdio) = OwnedPluginProcess::spawn(
             runtime.executable_path(),
             &[peer_file.to_string_lossy().into_owned()],
@@ -167,6 +176,7 @@ impl Fixture {
             json!({"source":{"operations":["http.intercept"],"protocols":["http"]}}),
             None,
             services.prepare_traffic().unwrap(),
+            Instant::now() + WAIT,
         )
         .unwrap();
         renderer.set_client_source(Some(source.clone()));
@@ -342,4 +352,67 @@ fn authority_changed_during_activation_retires_the_main_entry_and_preserves_the_
     assert!(f.inspect()["owner"].is_null());
     assert_eq!(f.inspect()["pid"], f.peer.pid());
     assert_eq!(f.inspect()["activation"]["installed"], false);
+}
+
+#[test]
+fn startup_lease_survives_a_native_reply_delayed_beyond_two_seconds() {
+    let f = Fixture::new_with_lease_delay(false, 2300);
+    assert_eq!(f.inspect()["pid"], f.peer.pid());
+    assert!(f.inspect()["owner"].is_null());
+}
+
+#[test]
+fn startup_lease_deadline_is_total_and_malformed_or_wrong_identity_replies_are_rejected() {
+    for (drip, response, expected) in [
+        (
+            true,
+            "{\"ok\":true,\"result\":{\"leased\":true,\"pid\":42}}\n",
+            "client_bridge_lease_timeout",
+        ),
+        (false, "invalid\n", "client_bridge_protocol"),
+        (
+            false,
+            "{\"ok\":true,\"result\":{\"leased\":true,\"pid\":43}}\n",
+            "client_bridge_identity_invalid",
+        ),
+    ] {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = Endpoint {
+            version: 1,
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            token: "a".repeat(48),
+            pid: 42,
+            executable: "owned-fixture".into(),
+            kind: "browser".into(),
+        };
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut byte = [0];
+            loop {
+                socket.read_exact(&mut byte).unwrap();
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            if drip {
+                for byte in response.as_bytes() {
+                    if socket.write_all(&[*byte]).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            } else {
+                let _ = socket.write_all(response.as_bytes());
+            }
+        });
+        let started = Instant::now();
+        let failure = acquire_lease(&endpoint, started + Duration::from_millis(150)).unwrap_err();
+        assert_eq!(failure.code, expected);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        peer.join().unwrap();
+    }
 }

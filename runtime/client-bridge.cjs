@@ -93,7 +93,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     new Function('module', 'exports', 'require', code)(module, module.exports, require);
     return module.exports;
   });
-  let active = null, epoch = 0, closed = false, chain = Promise.resolve(),lastActivation={installed:false,activatedSources:[],unsupportedSources:[]};
+  let active = null, epoch = 0, closed = false, chain = Promise.resolve(),lastActivation={installed:false,activatedSources:[],unsupportedSources:[]},sourceError=null;
   const receipts = new Map(), connections = new Set();let leased=false;
   const context = Object.freeze({ modules, resources,
     trackBackend(record,rule) {
@@ -120,7 +120,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   });
 
   const status = () => ({ ...identity(), epoch, owner: active?.owner ?? null, generation: active?.generation ?? null,
-    activation: active?.activation ?? lastActivation, moduleObserver: modules.inspect() });
+    activation: active?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect() });
   async function closeActive() {
     if (!active) return;
     const previous = active;
@@ -140,7 +140,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     active = { ...selection, configuration, runtime, activation: null };
     try { active.activation = await bounded(() => runtime.ready(), 'client_bridge_activation_timeout'); if(active.activation?.installed!==true)throw fail('client_bridge_source_unavailable'); }
     catch (error) { await closeActive(); throw error; }
-    return active.activation;
+    sourceError=null;return active.activation;
   }
   async function replace(command) {
     if (closed || command.expectedEpoch !== epoch) throw fail('client_bridge_stale_epoch');
@@ -218,8 +218,8 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       active = { ...selection, configuration, runtime, activation: null };
     },
     async ready() { await listening; if (active) {
-      let activation;try{activation=await bounded(() => active.runtime.ready(), 'client_bridge_activation_timeout');}catch(error){activation={installed:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:'hook_unavailable'}]};}
-      if(!activation?.installed){await closeActive();lastActivation=activation;}else active.activation=activation;
+      let activation;try{activation=await bounded(() => active.runtime.ready(), 'client_bridge_activation_timeout');}catch(error){sourceError=codeOf(error);activation={installed:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:'hook_unavailable'}]};}
+      if(!activation?.installed){sourceError??='client_bridge_source_unavailable';await closeActive();lastActivation=activation;}else {active.activation=activation;sourceError=null;}
     } return status(); },
     inspect: status,
     closeInspector() { setTimeout(()=>require('node:inspector').close(),50);return true; },

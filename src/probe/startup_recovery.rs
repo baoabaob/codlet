@@ -4,6 +4,11 @@ use super::*;
 use std::collections::BTreeSet;
 
 fn reason(error: &ProbeError) -> Option<&str> {
+    if let ProbeError::PluginHost(error) = error
+        && error.code == "client_bridge_lease_timeout"
+    {
+        return Some(error.code);
+    }
     let code = match error {
         ProbeError::Process(ProcessError::ClientBootstrap(message)) => message
             .strip_prefix("client_launch_adapter_failed: Client launch adapter failed: ")
@@ -27,6 +32,13 @@ fn reason(error: &ProbeError) -> Option<&str> {
         && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
         && (code.ends_with("_unsupported") || code.ends_with("_unverified")))
     .then_some(code)
+}
+
+pub(super) fn without_bridge(reason: &str) -> bool {
+    matches!(
+        reason,
+        "client_bridge_fuse_unsupported" | "client_bridge_lease_timeout"
+    )
 }
 
 pub(super) fn attempt<T>(
@@ -143,6 +155,36 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(calls, 2, "recovery never loops");
+    }
+
+    #[test]
+    fn only_the_bounded_lease_timeout_retries_without_the_optional_bridge() {
+        let mut calls = Vec::new();
+        let result = attempt(|reason| {
+            calls.push(reason.map(str::to_owned));
+            if reason.is_none() {
+                Err(ProbeError::PluginHost(HostError::new(
+                    "client_bridge_lease_timeout",
+                    "bounded wait expired",
+                )))
+            } else {
+                assert!(without_bridge(reason.unwrap()));
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            calls,
+            vec![None, Some("client_bridge_lease_timeout".to_owned())]
+        );
+        for code in [
+            "client_bridge_protocol",
+            "client_bridge_identity_invalid",
+            "client_bridge_lease_unavailable",
+        ] {
+            assert!(!without_bridge(code));
+            assert!(reason(&ProbeError::PluginHost(HostError::new(code, "rejected"))).is_none());
+        }
     }
 
     #[test]

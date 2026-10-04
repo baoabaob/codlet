@@ -81,7 +81,7 @@ async function attach(context,source) {
     while(Date.now()<until){const reply=await request('Runtime.evaluate',{expression:`globalThis[Symbol.for(${resultKey})]`,returnByValue:true});result=reply.result?.value;if(result?.error)throw fail('client_bridge_ready_failed');if(result?.bridge)break;await new Promise(resolve=>setTimeout(resolve,25));}
     if(!result?.bridge)throw fail('client_bridge_ready_timeout');
     await request('Runtime.evaluate',{expression:`delete globalThis[Symbol.for(${resultKey})];globalThis[Symbol.for(${key})].closeInspector()`,returnByValue:true});
-    activation={installed:true,exactChildVerified:true,bridge:result.bridge,epoch:result.status.epoch,activation:result.status.activation};
+    activation={installed:true,exactChildVerified:true,bridge:result.bridge,epoch:result.status.epoch,activation:result.status.activation,sourceError:result.status.sourceError};
   } finally {clearTimeout(timeout);for(const call of pending.values()){clearTimeout(call.timer);call.reject(fail('client_bridge_inspector_closed'));}pending.clear();ws.close();}
   const until=Date.now()+1500;let closed=false;
   while(Date.now()<until){closed=await new Promise(resolve=>{const peer=net.createConnection({host:'127.0.0.1',port:Number(url.port)});const finish=value=>{peer.destroy();resolve(value);};peer.once('connect',()=>finish(false));peer.once('error',error=>finish(error.code==='ECONNREFUSED'));peer.setTimeout(100,()=>finish(false));});if(closed)break;await new Promise(resolve=>setTimeout(resolve,25));}
