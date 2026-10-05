@@ -60,7 +60,7 @@ if($StructureOnly){
   return
 }
 $related=@($installer.RelatedProducts('{941C0F18-D41F-46E9-A3D1-A9562D75BF76}'))
-if($related.Count -gt 0){throw 'A Codlet Preview MSI is already installed; refuse to replace it during testing'}
+if($related.Count -gt 0){throw 'A Codlet MSI is already installed; refuse to replace it during testing'}
 $database=$installer.OpenDatabase($msi,0)
 $view=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductCode'")
 $view.Execute();$product=$view.Fetch().StringData(1);$view.Close()

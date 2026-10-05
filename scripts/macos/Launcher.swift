@@ -100,7 +100,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         ui = checkbox("UI Adapter · 侧栏与插件页面（GUI 必需）", 235, firstSetup || pending.contains("codex.ui.adapter"))
         desktop = checkbox("Desktop Adapter · 客户端与对话接口", 199, firstSetup || pending.contains("codex.desktop.adapter"))
         shortcut = checkbox("在桌面创建 Codlet 快捷入口", 153, false)
-        setupLabel = label("新安装插件获得声明的权限；已有授权与禁用状态保留。\n这是未经 Apple 公证的预览版，使用前请确认来源。", 86, 55, 12)
+        setupLabel = label("新安装插件获得声明的权限；已有授权与禁用状态保留。\n此版本尚未经过 Apple 公证，使用前请确认来源。", 86, 55, 12)
         setupLabel.textColor = .secondaryLabelColor
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelSetup))
         cancel.frame = NSRect(x: 324, y: 28, width: 92, height: 32); view.addSubview(cancel)

@@ -17,7 +17,9 @@ class PackagingTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="codlet-macos-packaging-")
         self.addCleanup(temporary.cleanup)
-        self.directory = Path(temporary.name)
+        # macOS /var is a system alias; packaging inputs deliberately reject
+        # linked path components, so use the fixture's physical directory.
+        self.directory = Path(temporary.name).resolve(strict=True)
         self.source = self.directory / "source"
         self.runtime = self.directory / "runtime"
         self.plugins = self.directory / "plugins"

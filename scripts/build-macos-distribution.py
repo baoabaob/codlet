@@ -162,6 +162,8 @@ def stage_payload(executable, node_directory, output, core_commit):
     copy(ROOT / "docs/THIRD_PARTY_RUST_LICENSES.txt", resources / "licenses/THIRD_PARTY_RUST_LICENSES.txt")
     for source in (ROOT / "types").glob("*.d.ts"):
         copy(source, resources / "sdk/types" / source.name)
+    # Retain the shipped bundle identity/version key so Preview installations
+    # remain recognizable by the updater after the first stable release.
     info = {
         "CFBundleIdentifier": "io.github.baoabaob.codlet.preview",
         "CFBundleName": "Codlet", "CFBundleDisplayName": "Codlet",
@@ -237,7 +239,7 @@ def build(args):
         run(*native)
         os.symlink("/Applications", volume / "Applications")
         (volume / "开始使用.txt").write_text(
-            f"Codlet {version} · macOS Apple Silicon Preview\n\n"
+            f"Codlet {version} · macOS Apple Silicon\n\n"
             "1. 将 Codlet 拖入 Applications，再从应用程序打开。\n"
             "2. 首次打开可选择从 GitHub 下载最新官方插件及创建桌面快捷入口。GUI 自动包含 UI Adapter。\n"
             "3. 如果 Codex 正在运行，Codlet 会先提示你完成任务，并仅请求正常退出。\n\n"
@@ -247,7 +249,7 @@ def build(args):
             "配置、插件和日志在 ~/Library/Application Support/Codlet。\n"
             "首次启用主机插件时，若没有可复用的已验证运行时，Codlet 需要联网准备固定 Node；之后会复用缓存。\n"
             "拖走 Codlet.app 不删除这些用户数据。菜单栏可补选官方插件或打开日志。\n"
-            "安装到 Applications 后，可在 Codlet GUI 中检查并安装预览版更新。更新会先校验整个应用包，请按提示正常退出，完成后 Codlet 会重新打开。\n",
+            "安装到 Applications 后，可在 Codlet GUI 中检查并安装正式版更新。更新会先校验整个应用包，请按提示正常退出，完成后 Codlet 会重新打开。\n",
             encoding="utf-8",
         )
         manifest["files"] = [{"path": str(file.relative_to(app)).replace(os.sep, "/"), "bytes": file.stat().st_size, "sha256": digest(file)} for file in sorted(app.rglob("*")) if file.is_file()]
