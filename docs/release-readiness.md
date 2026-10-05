@@ -18,6 +18,7 @@
 - 将已有 SDK 类型示例接入固定版本 TypeScript 和 CI；稳定版发布计划校验也进入 CI。
 - 跨平台 CI 暴露并修复了两个问题：reqwest 升级后显式保持 WebPKI 对系统根证书与附加 CA 的校验语义；客户端模块观察器同时识别应用目录及其真实路径，避免 macOS `/var` 别名或 Windows junction 使启动 source 无法激活。目录别名回归已先复现失败，再验证修复及相邻目录排除。
 - Mac 分发流水线中的官方 CUA Node 验收脚本也已从旧 `prepare` 阶段迁移到 `clientSource`；子进程失败直接报告退出结果，不再表现成无响应超时。
+- Mac 完整检查发现并修复了启动 source 缺少就绪确认的问题：在 CDP reader 已启动后完成握手，再决定是否暂停不受支持的插件。删除无调用者的旧 Mac 启动错误转换函数；打包 fixtures 使用物理临时目录，并加入日常 macOS CI。
 
 ## 按最初设计核对
 

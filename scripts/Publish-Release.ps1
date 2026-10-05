@@ -684,16 +684,16 @@ function Read-ReleasePlan([string]$Path) {
     }
     elseif ($legacyChannelAsset.Count -ne 0) { Fail 'A managed-only release must not advertise its ZIPs to Preview 5.' }
     $expectedPlatforms=if($windowsOnlyPlan){1}else{2}
-    if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'stable' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne $expectedPlatforms) { Fail 'Preview channel manifest is not compatible with the runtime updater.' }
+    if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'stable' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne $expectedPlatforms) { Fail 'Stable channel manifest is not compatible with the runtime updater.' }
     foreach ($supported in @(@{ platform = 'win-x64'; profile = 'portable' }, @{ platform = 'darwin-arm64'; profile = 'macApp' })) {
         if($supported.platform -eq 'darwin-arm64' -and $windowsOnlyPlan){continue}
         $matches = @($channel.artifacts | Where-Object { $_.platform -eq $supported.platform -and $_.profile -eq $supported.profile })
-        if ($matches.Count -ne 1) { Fail "Preview channel manifest must contain one $($supported.platform)/$($supported.profile) updater artifact." }
+        if ($matches.Count -ne 1) { Fail "Stable channel manifest must contain one $($supported.platform)/$($supported.profile) updater artifact." }
         $artifact = $matches[0]
         $zipRecords = @($plan.assets | Where-Object { $_.name -eq $artifact.assetName })
         if ($zipRecords.Count -ne 1 -or [long]$zipRecords[0].bytes -ne [long]$artifact.bytes -or $zipRecords[0].sha256 -ne $artifact.sha256 -or
             $artifact.bytes -le 0 -or $artifact.bytes -gt 512MB -or $artifact.sha256 -notmatch '^[0-9a-f]{64}$') {
-            Fail "Preview channel manifest does not pin the exact $($supported.platform) updater ZIP asset."
+            Fail "Stable channel manifest does not pin the exact $($supported.platform) updater ZIP asset."
         }
         $zipPath = Resolve-PlanAsset $root ([string]$artifact.assetName)
         if ($supported.platform -eq 'win-x64') {

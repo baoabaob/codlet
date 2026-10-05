@@ -146,6 +146,11 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     });
     drop(launch_lease);
     let (client, events) = CdpClient::spawn(pipes.into_parent())?;
+    // Drain native CDP before awaiting source readiness, as on Windows. The
+    // resumed client must finish initialization before source support is known.
+    if let Some(traffic) = &traffic {
+        traffic.complete_bridge_startup()?;
+    }
     println!(
         "Codlet {} · macOS ARM64 · client {} ({}) · PID {}",
         env!("CARGO_PKG_VERSION"),

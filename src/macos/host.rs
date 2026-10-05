@@ -13,46 +13,6 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 pub(crate) type StopSignal = Arc<AtomicBool>;
-pub(crate) fn spawn_failure(
-    code: &'static str,
-    error: &io::Error,
-) -> crate::plugin_host::HostError {
-    // Only fixed stage identifiers plus OS classifications cross this boundary.
-    // Never forward command paths, arguments, environment, or arbitrary messages.
-    let message = error.to_string();
-    let stage = message
-        .strip_prefix("owner_stage=")
-        .and_then(|text| text.split(';').next())
-        .filter(|stage| {
-            matches!(
-                *stage,
-                "owner_exec"
-                    | "plan_write"
-                    | "plan_delimiter"
-                    | "startup_reply"
-                    | "plugin_exec"
-                    | "parent_identity_inspect"
-                    | "parent_identity_rejected"
-            )
-        })
-        .unwrap_or("prepare");
-    let errno = error.raw_os_error().or_else(|| {
-        message.split(';').find_map(|field| {
-            field
-                .strip_prefix("errno=Some(")?
-                .strip_suffix(')')?
-                .parse::<i32>()
-                .ok()
-        })
-    });
-    crate::plugin_host::HostError::new(
-        code,
-        format!(
-            "Native process startup failed: owner_stage={stage};io_kind={:?};errno={errno:?}",
-            error.kind()
-        ),
-    )
-}
 pub(crate) fn signal(stop: &StopSignal) {
     stop.store(true, Ordering::Release);
 }
@@ -445,19 +405,5 @@ mod tests {
         } else {
             121
         });
-    }
-
-    #[test]
-    fn spawn_diagnostics_do_not_include_arbitrary_error_text() {
-        let error = std::io::Error::other("secret-token /private/config.json");
-        let failure = super::spawn_failure("spawn_failed", &error);
-        assert!(!failure.message.contains("secret-token"));
-        assert!(!failure.message.contains("/private"));
-        let error = std::io::Error::other("owner_stage=parent_identity_rejected");
-        assert!(
-            super::spawn_failure("spawn_failed", &error)
-                .message
-                .contains("parent_identity_rejected")
-        );
     }
 }

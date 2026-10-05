@@ -103,10 +103,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - run: cargo check --locked --all-targets --all-features
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: python3 tests/test_macos_distribution.py
       - name: Test platform-independent services on Apple silicon
         run: 'cargo test --locked --lib plugin_services::'
