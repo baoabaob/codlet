@@ -54,7 +54,11 @@ try {
   assert.equal(execFileSync(process.execPath, flags, { cwd: temporary, env: clean, timeout: 10000, encoding: 'utf8' }), 'Host modules and exact flags passed');
 
   const entry = plugins ? path.join(plugins, 'bundled/codex-desktop-adapter/host.cjs') : path.join(temporary, 'launch-fixture.cjs');
-  if (!plugins) fs.writeFileSync(entry, 'exports.prepareClientLaunch = async () => ({ arguments: ["--inspect-brk=127.0.0.1:0"] }); exports.attachClientLaunch = async () => { throw Error("prepare-only fixture"); };');
+  const fixtureCode = 'module.exports = {fixture: true};';
+  if (!plugins) fs.writeFileSync(entry, `exports.clientSource = ({signal}) => {
+    if (!(signal instanceof AbortSignal) || signal.aborted) throw Error('source signal missing');
+    return {code: ${JSON.stringify(fixtureCode)}};
+  };`);
   const snapshot = path.join(temporary, 'desktop-snapshot.cjs');
   fs.copyFileSync(entry, snapshot);
   const bootstrap = path.join(core, 'runtime/client-launch.cjs');
@@ -62,33 +66,25 @@ try {
     '--no-addons', '--no-experimental-strip-types', '--no-global-search-paths',
     '--no-experimental-require-module', bootstrap, entry, snapshot,
   ], { cwd: temporary, env: clean, stdio: ['pipe', 'pipe', 'pipe'] });
-  let stderr = '';
-  launch.stderr.on('data', bytes => stderr += bytes);
-  const closed = new Promise((resolve, reject) => {
-    launch.once('error', reject);
-    launch.once('close', resolve);
-  });
-  const reply = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { launch.kill('SIGTERM'); reject(new Error('Client launch prepare timed out: ' + stderr)); }, 5000);
-    let pending = '';
-    const onData = bytes => {
-      pending += bytes;
-      const end = pending.indexOf('\n');
-      if (end < 0) return;
+  const reply = await new Promise((resolve, reject) => {
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => { launch.kill('SIGTERM'); reject(new Error('Client source timed out: ' + stderr)); }, 5000);
+    launch.stdout.on('data', bytes => stdout += bytes);
+    launch.stderr.on('data', bytes => stderr += bytes);
+    launch.once('error', error => { clearTimeout(timer); reject(error); });
+    launch.once('close', code => {
       clearTimeout(timer);
-      launch.stdout.off('data', onData);
-      try { resolve(JSON.parse(pending.slice(0, end))); } catch (error) { reject(error); }
-    };
-    launch.stdout.on('data', onData);
+      try { assert.equal(code, 0, 'Client source exited: ' + stderr); resolve(JSON.parse(stdout)); }
+      catch (error) { reject(error); }
+    });
+    launch.stdin.write(JSON.stringify({phase: 'source', context: {}}) + '\n');
   });
-  launch.stdin.write(JSON.stringify({ phase: 'prepare', context: { traffic: { source: {
-    version: 1, kind: 'plaintext', endpoint: { host: '127.0.0.1', port: 12345, token: 'fixture' },
-    routeBaseUrl: 'http://127.0.0.1:12345/routes/',
-  } } } }) + '\n');
-  assert.deepEqual(await reply, { ok: true, result: { arguments: ['--inspect-brk=127.0.0.1:0'] } });
-  launch.stdin.end();
-  assert.equal(await closed, 1, stderr); // The one-phase fixture closes before attach.
-  console.log('Reviewed Mac CUA Node modules and Core client-launch ABI passed.');
+  assert.equal(reply.ok, true);
+  assert.equal(typeof reply.result.code, 'string');
+  assert.ok(reply.result.code.length > 0);
+  if (!plugins) assert.deepEqual(reply.result, {code: fixtureCode});
+  console.log('Reviewed Mac CUA Node modules and Core clientSource ABI passed.');
 } finally {
-  fs.rmSync(temporary, { recursive: true, force: true });
+  assert.equal(path.dirname(path.resolve(temporary)), path.resolve(os.tmpdir()));
+  fs.rmSync(temporary, { recursive: true });
 }

@@ -17,6 +17,7 @@
 - 升级 lodash、PostCSS、selector parser、reqwest/Hickory 和 rustls；统一 HTTP 客户端初始化，显式安装已有 ring 加密实现，并由业务层决定重试。保留异步 DNS、系统证书校验及明确授权的附加 CA。依赖声明和实际三方许可同步更新。
 - 将已有 SDK 类型示例接入固定版本 TypeScript 和 CI；稳定版发布计划校验也进入 CI。
 - 跨平台 CI 暴露并修复了两个问题：reqwest 升级后显式保持 WebPKI 对系统根证书与附加 CA 的校验语义；客户端模块观察器同时识别应用目录及其真实路径，避免 macOS `/var` 别名或 Windows junction 使启动 source 无法激活。目录别名回归已先复现失败，再验证修复及相邻目录排除。
+- Mac 分发流水线中的官方 CUA Node 验收脚本也已从旧 `prepare` 阶段迁移到 `clientSource`；子进程失败直接报告退出结果，不再表现成无响应超时。
 
 ## 按最初设计核对
 

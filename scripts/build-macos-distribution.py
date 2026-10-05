@@ -1,4 +1,4 @@
-"""Build a native Apple Silicon .app and an unsigned, unnotarized preview DMG."""
+"""Build a native Apple Silicon .app and an unsigned, unnotarized DMG."""
 import argparse
 import hashlib
 import json
@@ -136,10 +136,10 @@ def stage_payload(executable, node_directory, output, core_commit):
     license_expression = license_match[1] if license_match else "See bundled license files"
     pin = json.loads((ROOT / "runtime/node-runtime.json").read_text())
     if pin.get("mode") != "managed":
-        raise ValueError("The default Mac preview app requires managed Node mode")
+        raise ValueError("The default Mac app requires managed Node mode")
     channel = json.loads((ROOT / "runtime/update-channel.json").read_text(encoding="utf-8"))
     if channel.get("source", {}).get("manifestAsset") != "codlet-update-managed.json":
-        raise ValueError("Managed Mac preview requires the managed update channel")
+        raise ValueError("Managed Mac app requires the managed update channel")
     spec = pin["platforms"]["darwin-arm64"]
     for name, checksum in (("bin/node", spec["executableSha256"]), ("LICENSE", spec["licenseSha256"])):
         plain(node_directory / name)
