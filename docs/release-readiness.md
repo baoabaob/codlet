@@ -4,7 +4,7 @@
 
 本轮检查日期为 2026-10-05（Asia/Shanghai），覆盖 Core 和官方插件两个仓库。基线分别为 `b381460`、`60bb8e9`。最初方案和研究依据可从 `9f2eccb^:docs/PRODUCT_TECHNICAL_PLAN.md`、`9f2eccb^:docs/RESEARCH_BASELINE.md` 读取；当前契约以 `docs/spec/` 为准。旧设计文档不重新复制到工作目录。
 
-先前候选绑定 Core 提交 `b2a8249893e66c8149d4e51eabb01b768c2957f5`；本轮根据维护者决定更新 Windows x64 安装与启动流程，重新生成 Windows 候选。具体源码身份以新 `release-plan.json` 为准。官方插件审查提交仍为 `425148bdd7c7065f98fe76799ce718fa118289cb`。Mac 和 ARM64 实际验收暂缓，Windows G1 由维护者执行；Windows 证书申请和签名也已明确暂缓。
+当前 Windows x64 候选绑定 Core 提交 `11a76afe37e3c4ffaa385dd4d40011f865b1cf34`，包含本轮安装/启动与可选清理变更，已替代先前 `b2a8249` 的候选制品。官方插件审查提交仍为 `425148bdd7c7065f98fe76799ce718fa118289cb`。Mac 和 ARM64 实际验收暂缓，Windows G1 由维护者执行；Windows 证书申请和签名也已明确暂缓。后续报告提交仅更新文档，不改变制品源码身份。
 
 ## 已完成的清理和修复
 
@@ -59,6 +59,10 @@
 
 ## 验证记录
 
+本轮最终提交的 [CI 四个作业全部通过](https://github.com/baoabaob/codlet/actions/runs/37327314670)：Windows Core、Windows UI、Windows launch scripts、macOS。包含完整现有 Rust/Node 套件，以及新加入的清理边界测试和 Swift 启动器类型检查；没有进行 Mac/ARM64 实际客户端验收。
+
+本机补充检查通过：清理的 14 项行为断言、中英文原生安装/清理界面、门禁重试/取消、真实 MSI 静默预检拒绝、启动器失败恢复、编码及稳定发布计划 fixtures。新候选的 MSI 结构检查验证清理只位于成功提交之后，条件排除升级/修复/静默卸载；实际更新 ZIP 在独立目录完成替换、重启和失败回滚。最终计划迁移到统一目录后再次通过 `PrepareDraft` 本地校验，`externalWrites: false`。
+
 本机使用 Rust 1.97.1（Windows GNU）、固定 Node 24.21.0。前轮清空旧构建目录后重新构建；测试构建关闭调试符号和增量缓存以控制磁盘占用，保留 debug assertions 和测试功能。正式构建使用 `--release --bin codlet --no-default-features`。下表完整套件结果来自前轮；本轮没有修改 Core/插件运行时代码，新增验证集中于安装/启动和清理边界。
 
 | 检查 | 结果 | 证据边界 |
@@ -82,9 +86,11 @@
 | 真实固定 Node 镜像下载及缓存复用 | 补跑通过 | 校验实际公开镜像和可复用私有缓存 |
 | 指定旧官方 CUA Node 复用验收 | 环境前提未满足 | 该 opt-in 测试要求 `26.917.6896.0`，本机已是 `26.930.3930.0`，无法取得其精确旧源；不能记为通过。当前固定下载路径已验收 |
 
-最终远端检查：[Core CI（4/4 作业通过）](https://github.com/baoabaob/codlet/actions/runs/37299209599)、[官方插件 CI（Windows/Mac 均通过）](https://github.com/baoabaob/codlet-plugins/actions/runs/37292963126)、[Mac 原生分发构建](https://github.com/baoabaob/codlet/actions/runs/37299859591)。插件 CI 使用的 Core JS/SDK 与候选一致；其后 Core 变更是 Mac Rust 启动、打包及测试修复。
+前轮远端基线：[Core CI（4/4 作业通过）](https://github.com/baoabaob/codlet/actions/runs/37299209599)、[官方插件 CI（Windows/Mac 均通过）](https://github.com/baoabaob/codlet-plugins/actions/runs/37292963126)、[Mac 原生分发构建](https://github.com/baoabaob/codlet/actions/runs/37299859591)。插件 CI 使用的 Core JS/SDK 与候选一致；其后 Core 变更是 Mac Rust 启动、打包及测试修复。
 
-前轮完整证据保存在 `.codlet-artifacts/release-0.2.0/evidence/`。本轮更新候选位于 `.codlet-artifacts/release-0.2.0-followup/release/`，测试日志和清理/安装界面截图在相邻 `evidence/`。新计划只包含 Windows x64 setup、兼容已有 portable 用户的更新 ZIP、stable 通道和 SHA-256。前轮 Mac 构建不作为这次 Windows 安装修改的验收结果。目录不提交到 Git；具体源码身份以最新 `release-plan.json` 和构建清单为准。
+全部材料统一保存在 `.codlet-artifacts/release-0.2.0/`。`release/` 只保留当前 Windows x64 setup、兼容已有 portable 用户的更新 ZIP、stable 通道、SHA-256 和校验输入。`evidence/installer-cleanup/` 保存本轮安装与清理日志、截图和结构报告，`evidence/` 中另保留前轮完整基线。旧候选和本轮中间 MSI/展开目录/测试二进制均已删除；前轮 Mac 构建不能视为本次源码的桌面验收。目录不提交到 Git。
+
+G1 使用 `release/Codlet-0.2.0-windows-x64-setup.exe`，SHA-256 为 `557ef0a87e9e60b19633c54b2b28294bef5d1f39bde7c1ebaec418af0df1fedd`（未签名）。先验证保留数据的卸载/重装，再在可丢弃数据上验证主动勾选清理；确认官方 Codex 账号和会话、外部插件源码、自定义目录均保留。安装/启动中已有 Codex 运行时应只显示重新检查与取消，操作后客户端继续运行，直到用户自行退出。
 
 已完成的浏览器预览检查：插件搜索及清除、市场入口、详情、更新审核在未勾选授信时禁用、勾选后可提交、返回导航、中文/英文、浅/深色、设置失败后的禁用与重新读取恢复、720px 窄窗无横向溢出。控制台无错误。该预览全部使用模拟管理数据。
 
