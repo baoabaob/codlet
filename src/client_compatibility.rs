@@ -304,8 +304,7 @@ async fn fetch_sources(
 async fn fetch_request(url: &str, etag: Option<&str>, github_api: bool) -> Result<Fetched, String> {
     // Only the compiled source reaches this function in production. Redirects
     // are rejected; no API token, plugin credentials or client identity is sent.
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
+    let client = crate::http_client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
@@ -443,27 +442,22 @@ impl ClientCompatibility {
         if worker.is_some() {
             return;
         }
-        let state = self.0.state.clone();
-        let path = self.0.path.clone();
-        let running = self.0.running.clone();
-        let platform = self.0.platform.clone();
-        let settings = self.0.settings.clone();
-        let cancellation = self.0.cancellation.clone();
+        // Copy the worker inputs, not the Owner: retaining it would prevent Drop
+        // from cancelling and joining this worker.
+        let input = RefreshInput {
+            state: self.0.state.clone(),
+            path: self.0.path.clone(),
+            running: self.0.running.clone(),
+            platform: self.0.platform.clone(),
+            settings: self.0.settings.clone(),
+            cancellation: self.0.cancellation.clone(),
+        };
         let source = source.to_owned();
         let (sender, receiver) = mpsc::sync_channel(1);
         match std::thread::Builder::new()
             .name("client-compatibility".into())
             .spawn(move || {
-                refresh_loop(
-                    state,
-                    path,
-                    running,
-                    platform,
-                    settings,
-                    source,
-                    receiver,
-                    cancellation,
-                );
+                refresh_loop(input, source, receiver);
             }) {
             Ok(handle) => *worker = Some(Worker { sender, handle }),
             Err(_) => {
@@ -506,16 +500,24 @@ impl ClientCompatibility {
     }
 }
 
-fn refresh_loop(
+struct RefreshInput {
     state: Arc<Mutex<State>>,
     path: PathBuf,
     running: String,
     platform: String,
     settings: Option<RuntimeSettings>,
-    source: String,
-    receiver: mpsc::Receiver<()>,
     cancellation: CancellationToken,
-) {
+}
+
+fn refresh_loop(input: RefreshInput, source: String, receiver: mpsc::Receiver<()>) {
+    let RefreshInput {
+        state,
+        path,
+        running,
+        platform,
+        settings,
+        cancellation,
+    } = input;
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

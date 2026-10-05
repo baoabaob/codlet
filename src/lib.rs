@@ -61,6 +61,7 @@ mod traffic_owner;
 pub mod host_control;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod host_runtime;
+mod http_client;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod js_runtime;
 #[cfg(windows)]

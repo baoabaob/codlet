@@ -70,7 +70,7 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, PluginRegistry, Vec<LoadedPlugin>) {
         let directory = tempfile::tempdir().unwrap();
-        let mut registry = PluginRegistry::load(&directory.path().join("registry.json")).unwrap();
+        let mut registry = PluginRegistry::load(directory.path().join("registry.json")).unwrap();
         let declarations = [
             json!({"schema":1,"id":"dev.adapter","version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[{"name":"codlet.client.launch","api":1,"scope":"runtime"}]},"permissions":["host.process","cdp.raw"],"provides":[{"name":"dev.desktop","api":1,"scope":"target"}]}),
             json!({"schema":1,"id":"dev.traffic","version":"1","host":{"entry":"host.js"},"permissions":["host.process","traffic.intercept"]}),
@@ -162,14 +162,14 @@ mod tests {
         let mut calls = Vec::new();
         let result = attempt(|reason| {
             calls.push(reason.map(str::to_owned));
-            if reason.is_none() {
+            if let Some(reason) = reason {
+                assert!(without_bridge(reason));
+                Ok(())
+            } else {
                 Err(ProbeError::PluginHost(HostError::new(
                     "client_bridge_lease_timeout",
                     "bounded wait expired",
                 )))
-            } else {
-                assert!(without_bridge(reason.unwrap()));
-                Ok(())
             }
         });
         assert!(result.is_ok());

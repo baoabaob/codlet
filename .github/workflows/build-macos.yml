@@ -1,4 +1,4 @@
-name: Build macOS preview
+name: Build macOS distribution
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-preview-${{ github.ref }}
+  group: macos-distribution-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -99,21 +99,21 @@ jobs:
           sh scripts/test-macos.sh
       - name: Build release Core and pinned runtime
         run: sh scripts/build-macos.sh release
-      - name: Assemble app and preview disk image
+      - name: Assemble app and distribution disk image
         env:
           NODE_VERSION: ${{ steps.runtime.outputs.node_version }}
         run: |
           codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-          python3 scripts/build-preview-macos.py \
+          python3 scripts/build-macos-distribution.py \
             --executable "$codlet_target_root/aarch64-apple-darwin/release/codlet" \
             --node-directory "$codlet_target_root/aarch64-apple-darwin/release/runtime/node-v$NODE_VERSION-darwin-arm64" \
             --reviewed-client-node-directory .codlet-artifacts/official-mac/validated-cua-node \
             --source-commit "$(git rev-parse HEAD)" \
-            --output .codlet-artifacts/preview-macos/package
-      - name: Upload native preview and provenance
+            --output .codlet-artifacts/distribution-macos/package
+      - name: Upload native distribution and provenance
         uses: actions/upload-artifact@v4
         with:
-          name: codlet-macos-arm64-preview
-          path: core/.codlet-artifacts/preview-macos/package/
+          name: codlet-macos-arm64-distribution
+          path: core/.codlet-artifacts/distribution-macos/package/
           if-no-files-found: error
           retention-days: 3

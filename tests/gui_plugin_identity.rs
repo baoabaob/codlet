@@ -165,6 +165,7 @@ fn old_cli_gui_id_is_an_alias_and_reports_only_the_new_identity() {
     let invoke = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_codlet"))
             .env("LOCALAPPDATA", directory.path())
+            .env_remove("CODLET_HOME")
             .args(args)
             .output()
             .unwrap()

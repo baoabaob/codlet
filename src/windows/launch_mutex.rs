@@ -19,7 +19,11 @@ use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcess, OpenProcessToken, ReleaseMutex, WaitForSingleObject,
 };
 
-const MUTEX_PREFIX: &str = r"Global\Codlet.CodexLaunch.";
+const MUTEX_PREFIX: &str = if cfg!(feature = "test-fixtures") {
+    r"Global\Codlet.TestFixtures.CodexLaunch."
+} else {
+    r"Global\Codlet.CodexLaunch."
+};
 
 #[derive(Debug, Error)]
 pub enum LaunchMutexError {

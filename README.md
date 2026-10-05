@@ -4,7 +4,7 @@ Codlet is an extension runtime for Codex Desktop. It launches a managed desktop 
 
 Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. The management GUI and the Desktop/UI adapters are optional plugins maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). They are not compiled into Core.
 
-This is an experimental Preview with public source. Tagged test builds are distributed separately through [GitHub prereleases](https://github.com/baoabaob/codlet/releases). Windows x64 is the primary tested platform. macOS Apple Silicon has a native build and installer path; see [platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) before testing. Linux is outside the current scope.
+The first stable release, **0.2.0**, is in preparation and has not been published. See the [release readiness checklist](docs/release-readiness.md) for remaining acceptance and product decisions. Windows x64 is the primary tested platform; macOS Apple Silicon has a native build and installer path. [Platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) define the actual support boundaries. Linux is outside the current scope.
 
 ## Use Codlet
 

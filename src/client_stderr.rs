@@ -31,6 +31,7 @@ fn error(code: &'static str) -> HostError {
 }
 
 impl ClientStderr {
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn new() -> Result<Self, HostError> {
         Self::start(false)
     }

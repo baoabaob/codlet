@@ -176,7 +176,7 @@ def stage_payload(executable, node_directory, output, core_commit):
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
     (app / "Contents/MacOS").mkdir()
     return app, version, {
-        "schema": 1, "kind": "codlet-macos-preview", "version": version,
+        "schema": 1, "kind": "codlet-macos-distribution", "version": version,
         "platform": "darwin-arm64", "sourceCommit": core_commit,
         "pluginDelivery": "github-latest", "appleDeveloperSigned": False,
         "notarized": False, "signature": "ad-hoc app seal; managed Node verified outside the bundle",
@@ -253,7 +253,7 @@ def build(args):
         manifest["files"] = [{"path": str(file.relative_to(app)).replace(os.sep, "/"), "bytes": file.stat().st_size, "sha256": digest(file)} for file in sorted(app.rglob("*")) if file.is_file()]
         output.mkdir()
         dmg = output / f"Codlet-{version}-macos-arm64.dmg"
-        run("hdiutil", "create", "-volname", "Codlet Preview", "-srcfolder", volume, "-ov", "-format", "UDZO", dmg)
+        run("hdiutil", "create", "-volname", "Codlet", "-srcfolder", volume, "-ov", "-format", "UDZO", dmg)
         run("hdiutil", "verify", dmg)
         mounted = temporary / "mounted"
         mounted.mkdir()

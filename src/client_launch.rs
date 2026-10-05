@@ -4,10 +4,9 @@ use crate::js_runtime::{JsInvocation, JsRuntime};
 use crate::platform::host::{OwnedPluginProcess, PluginStdio};
 use crate::plugin_host::HostError;
 use crate::plugins::{LoadedPlugin, Permission, PluginRegistry};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub(crate) const CAPABILITY: &str = "codlet.client.launch";
@@ -63,21 +62,10 @@ pub(crate) fn select(plugins: &[LoadedPlugin]) -> Result<&LoadedPlugin, HostErro
     Ok(provider)
 }
 
-pub(crate) struct LaunchAdapter {
-    provider: LoadedPlugin,
-    registry: PathBuf,
+struct SourceLoader {
     process: OwnedPluginProcess,
     stdio: PluginStdio,
     _invocation: JsInvocation,
-    context: Value,
-    arguments: Vec<OsString>,
-    before_resume: bool,
-}
-
-pub(crate) struct LaunchAuthorization {
-    id: String,
-    registration: crate::plugins::LocalPluginRegistration,
-    registry: PathBuf,
 }
 
 #[derive(Debug)]
@@ -86,168 +74,12 @@ pub(crate) struct SourceActivation {
     pub(crate) unsupported: Value,
 }
 
-impl LaunchAuthorization {
-    pub(crate) fn new(provider: &LoadedPlugin, registry: &Path) -> Result<Self, HostError> {
-        Ok(Self {
-            id: provider.manifest.id.clone(),
-            registration: provider
-                .authorization
-                .clone()
-                .ok_or_else(|| error("client_launch_adapter_denied"))?,
-            registry: registry.into(),
-        })
-    }
-    pub(crate) fn check(&self) -> Result<(), HostError> {
-        let registry = PluginRegistry::load(&self.registry)
-            .map_err(|_| error("client_launch_authorization_unavailable"))?;
-        if !registry.is_enabled(&self.id)
-            || registry.local_plugins().get(&self.id) != Some(&self.registration)
-        {
-            return Err(error("client_launch_authorization_revoked"));
-        }
-        Ok(())
-    }
-}
-
-impl LaunchAdapter {
-    pub(crate) fn start(
-        provider: &LoadedPlugin,
-        registry: &Path,
-        runtime: &JsRuntime,
-        directory: &Path,
-        traffic: Value,
-        original: &[(OsString, OsString)],
-    ) -> Result<Self, HostError> {
-        revalidate(provider, registry)?;
-        let invocation = runtime.prepare_client_launch(
-            provider
-                .host
-                .as_ref()
-                .ok_or_else(|| error("client_launch_adapter_denied"))?,
-            directory,
-        )?;
-        let original: serde_json::Map<String, Value> = original
-            .iter()
-            .map(|(key, value)| {
-                Ok((
-                    key.to_str()
-                        .ok_or_else(|| error("client_launch_environment_invalid"))?
-                        .to_owned(),
-                    Value::String(
-                        value
-                            .to_str()
-                            .ok_or_else(|| error("client_launch_environment_invalid"))?
-                            .to_owned(),
-                    ),
-                ))
-            })
-            .collect::<Result<_, HostError>>()?;
-        let context = json!({"traffic": traffic, "originalEnvironment": original,
-            "features": {"moduleDataBootstrap": if cfg!(windows) { 1 } else { 0 }}});
-        let (process, stdio) = OwnedPluginProcess::spawn(
-            &invocation.executable,
-            &invocation.arguments,
-            &invocation.cwd,
-            Some(&invocation.environment),
-        )
-        .map_err(|cause| {
-            #[cfg(target_os = "macos")]
-            {
-                crate::macos::host::spawn_failure("client_launch_adapter_spawn_failed", &cause)
-            }
-            #[cfg(windows)]
-            {
-                let _ = cause;
-                error("client_launch_adapter_spawn_failed")
-            }
-        })?;
-        let mut adapter = Self {
-            provider: provider.clone(),
-            registry: registry.into(),
-            process,
-            stdio,
-            _invocation: invocation,
-            context,
-            arguments: Vec::new(),
-            before_resume: false,
-        };
-        let plan = adapter.call(
-            "prepare",
-            adapter.context.clone(),
-            Instant::now() + Duration::from_secs(10),
-        )?;
-        adapter.arguments = validate_arguments(&plan)?;
-        adapter.before_resume = match plan.get("beforeResume") {
-            None | Some(Value::Bool(false)) => false,
-            Some(Value::Bool(true)) if cfg!(windows) => true,
-            _ => return Err(error("client_launch_phase_unsupported")),
-        };
-        revalidate(&adapter.provider, &adapter.registry)?;
-        Ok(adapter)
-    }
-
-    pub(crate) fn arguments(&self) -> &[OsString] {
-        &self.arguments
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn before_resume(
-        &self,
-        pid: u32,
-        executable: &Path,
-        deadline: Instant,
-    ) -> Result<Option<crate::windows::client_bootstrap::ModuleDataPlan>, HostError> {
-        if !self.before_resume {
-            return Ok(None);
-        }
-        revalidate(&self.provider, &self.registry)?;
-        let mut context = self.context.clone();
-        context["expectedPid"] = json!(pid);
-        context["executable"] = json!(executable);
-        let reply = self.call("beforeResume", context, deadline)?;
-        if reply
-            .as_object()
-            .is_none_or(|object| object.len() != 1 || !object.contains_key("moduleData"))
-        {
-            return Err(error("client_launch_adapter_protocol"));
-        }
-        revalidate(&self.provider, &self.registry)?;
-        if reply["moduleData"].is_null() {
-            return Ok(None);
-        }
-        crate::windows::client_bootstrap::ModuleDataPlan::parse(reply["moduleData"].clone())
-            .map(Some)
-            .map_err(|e| error(e.code))
-    }
-
-    pub(crate) fn attach(
-        &self,
-        inspector_url: &str,
-        pid: u32,
-        executable: &Path,
-        deadline: Instant,
-    ) -> Result<SourceActivation, HostError> {
-        revalidate(&self.provider, &self.registry)?;
-        let mut context = self.context.clone();
-        context["inspectorUrl"] = json!(inspector_url);
-        context["expectedPid"] = json!(pid);
-        context["executable"] = json!(executable);
-        let reply = self.call("attach", context, deadline)?;
-        let activation = validate_activation(&reply, &self.context["traffic"]["source"])?;
-        revalidate(&self.provider, &self.registry)?;
-        Ok(activation)
-    }
-
-    fn call(&self, phase: &str, context: Value, deadline: Instant) -> Result<Value, HostError> {
-        let mut request = serde_json::to_vec(&json!({"phase":phase,"context":context}))
-            .map_err(|_| error("client_launch_adapter_protocol"))?;
-        if request.len() >= 512 * 1024 {
-            return Err(error("client_launch_adapter_protocol"));
-        }
-        request.push(b'\n');
+impl SourceLoader {
+    fn load(&self, deadline: Instant) -> Result<Value, HostError> {
+        let request = b"{\"phase\":\"source\",\"context\":{\"features\":{\"clientBridge\":1}}}\n";
         self.stdio
             .stdin
-            .write_all(&request, deadline)
+            .write_all(request, deadline)
             .map_err(|_| error("client_launch_adapter_timeout"))?;
         let mut reply = Vec::new();
         let mut buffer = [0u8; 4096];
@@ -257,14 +89,7 @@ impl LaunchAdapter {
                 .stdout
                 .read_some(&mut buffer, Some(deadline))
                 .map_err(|_| error("client_launch_adapter_timeout"))?;
-            if count == 0
-                || reply.len() + count
-                    > if phase == "source" {
-                        1024 * 1024
-                    } else {
-                        16 * 1024
-                    }
-            {
+            if count == 0 || reply.len() + count > 1024 * 1024 {
                 return Err(error("client_launch_adapter_protocol"));
             }
             reply.extend_from_slice(&buffer[..count]);
@@ -300,16 +125,7 @@ pub(crate) fn source_snapshot(
     runtime: &JsRuntime,
     directory: &Path,
 ) -> Result<Value, HostError> {
-    select(std::slice::from_ref(provider))?;
-    let current = PluginRegistry::load(registry)
-        .map_err(|_| error("client_launch_authorization_unavailable"))?;
-    if provider
-        .authorization
-        .as_ref()
-        .is_none_or(|record| current.local_plugins().get(&provider.manifest.id) != Some(record))
-    {
-        return Err(error("client_launch_authorization_revoked"));
-    }
+    validate_source_authority(provider, registry)?;
     let invocation = runtime.prepare_client_launch(
         provider
             .host
@@ -324,21 +140,12 @@ pub(crate) fn source_snapshot(
         Some(&invocation.environment),
     )
     .map_err(|_| error("client_launch_adapter_spawn_failed"))?;
-    let adapter = LaunchAdapter {
-        provider: provider.clone(),
-        registry: registry.to_owned(),
+    let adapter = SourceLoader {
         process,
         stdio,
         _invocation: invocation,
-        context: Value::Null,
-        arguments: Vec::new(),
-        before_resume: false,
     };
-    let value = adapter.call(
-        "source",
-        json!({"features":{"clientBridge":1}}),
-        Instant::now() + Duration::from_secs(10),
-    )?;
+    let value = adapter.load(Instant::now() + Duration::from_secs(10))?;
     validate_source_authority(provider, registry)?;
     if value.as_object().is_none_or(|record| record.len() != 1)
         || value["code"]
@@ -367,7 +174,7 @@ pub(crate) fn validate_source_authority(
     Ok(())
 }
 
-impl Drop for LaunchAdapter {
+impl Drop for SourceLoader {
     fn drop(&mut self) {
         let _ = self.process.terminate();
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -383,50 +190,6 @@ impl Drop for LaunchAdapter {
             "Private launch adapter process-scope retirement was not confirmed within its cleanup budget",
         );
     }
-}
-
-pub(crate) fn revalidate(provider: &LoadedPlugin, registry: &Path) -> Result<(), HostError> {
-    let registry = PluginRegistry::load(registry)
-        .map_err(|_| error("client_launch_authorization_unavailable"))?;
-    if !registry.is_enabled(&provider.manifest.id)
-        || provider.authorization.as_ref().is_none_or(|record| {
-            registry.local_plugins().get(&provider.manifest.id) != Some(record)
-        })
-    {
-        return Err(error("client_launch_authorization_revoked"));
-    }
-    Ok(())
-}
-
-fn validate_arguments(plan: &Value) -> Result<Vec<OsString>, HostError> {
-    const INSPECTOR: &str = "--inspect-brk=127.0.0.1:0";
-    let arguments = plan["arguments"]
-        .as_array()
-        .ok_or_else(|| error("client_launch_arguments_denied"))?;
-    if arguments.len() != 1 || arguments[0].as_str() != Some(INSPECTOR) {
-        return Err(error("client_launch_arguments_denied"));
-    }
-    Ok(vec![OsString::from(INSPECTOR)])
-}
-
-fn validate_activation(reply: &Value, source: &Value) -> Result<SourceActivation, HostError> {
-    let invalid = || error("client_launch_adapter_unconfirmed");
-    let object = reply.as_object().ok_or_else(invalid)?;
-    if reply["installed"] != true
-        || reply["exactChildVerified"] != true
-        || object.keys().any(|key| {
-            ![
-                "installed",
-                "exactChildVerified",
-                "activatedSources",
-                "unsupportedSources",
-            ]
-            .contains(&key.as_str())
-        })
-    {
-        return Err(invalid());
-    }
-    validate_activation_metadata(reply, source, true)
 }
 
 pub(crate) fn validate_client_source_activation(
@@ -563,6 +326,8 @@ fn label(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::plugins::LocalPluginRegistration;
+    use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn a_bridge_source_entry_does_not_need_the_legacy_startup_exports() {
@@ -594,13 +359,7 @@ mod tests {
         );
     }
 
-    const SOURCE: &str = r#"
-exports.prepareClientLaunch = () => ({arguments:['--inspect-brk=127.0.0.1:0']});
-exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
- if (!Number.isInteger(expectedPid) || expectedPid < 1 || !executable || !inspectorUrl.startsWith('ws://127.0.0.1:')) throw Error('identity');
- return {installed:true,exactChildVerified:true,activatedSources:[{id:'test-http',operations:['http.intercept'],protocols:['http'],coverage:['test-http-path']}],unsupportedSources:[{id:'test-ws',reason:'hook_unavailable'}]};
-};
-"#;
+    const SOURCE: &str = "exports.clientSource=()=>({code:'module.exports={};'});";
 
     fn fixture() -> (tempfile::TempDir, PathBuf, LoadedPlugin, JsRuntime) {
         fixture_source(SOURCE)
@@ -684,107 +443,6 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
         );
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn optional_resume_phase_uses_snapshot_and_rechecks_authorization() {
-        let source = SOURCE.replace(
-            "({arguments:['--inspect-brk=127.0.0.1:0']})",
-            "({arguments:['--inspect-brk=127.0.0.1:0'],beforeResume:true})",
-        ) + "\nexports.beforeClientResume = ({features,expectedPid,executable}) => { if(features.moduleDataBootstrap!==1 || expectedPid!==123 || !executable) throw Error('bad_context'); return {moduleData:null}; };";
-        let (directory, registry, provider, runtime) = fixture_source(&source);
-        let adapter = LaunchAdapter::start(
-            &provider,
-            &registry,
-            &runtime,
-            directory.path(),
-            traffic(),
-            &[],
-        )
-        .unwrap();
-        let image = std::env::current_exe().unwrap();
-        std::fs::write(
-            provider.host.as_ref().unwrap().entry.clone(),
-            "throw Error('edited');",
-        )
-        .unwrap();
-        assert!(
-            adapter
-                .before_resume(123, &image, Instant::now() + Duration::from_secs(2))
-                .unwrap()
-                .is_none()
-        );
-        adapter
-            .attach(
-                "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
-                123,
-                &image,
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-        drop(adapter);
-        let adapter = LaunchAdapter::start(
-            &provider,
-            &registry,
-            &runtime,
-            directory.path(),
-            traffic(),
-            &[],
-        )
-        .unwrap();
-        let mut changed = PluginRegistry::load(&registry).unwrap();
-        changed.set_enabled(&provider.manifest.id, false).unwrap();
-        changed.save().unwrap();
-        assert_eq!(
-            adapter
-                .before_resume(123, &image, Instant::now() + Duration::from_secs(2))
-                .unwrap_err()
-                .code,
-            "client_launch_authorization_revoked"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn opt_in_requires_an_export_and_never_skips_the_resume_phase() {
-        let source = SOURCE.replace(
-            "({arguments:['--inspect-brk=127.0.0.1:0']})",
-            "({arguments:['--inspect-brk=127.0.0.1:0'],beforeResume:true})",
-        );
-        let (directory, registry, provider, runtime) = fixture_source(&source);
-        assert!(
-            LaunchAdapter::start(
-                &provider,
-                &registry,
-                &runtime,
-                directory.path(),
-                traffic(),
-                &[]
-            )
-            .is_err()
-        );
-        let (directory, registry, provider, runtime) =
-            fixture_source(&(source + "\nexports.beforeClientResume=()=>({moduleData:null});"));
-        let adapter = LaunchAdapter::start(
-            &provider,
-            &registry,
-            &runtime,
-            directory.path(),
-            traffic(),
-            &[],
-        )
-        .unwrap();
-        assert!(
-            adapter
-                .attach(
-                    "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
-                    123,
-                    &std::env::current_exe().unwrap(),
-                    Instant::now() + Duration::from_secs(2)
-                )
-                .is_err()
-        );
-    }
-
     #[test]
     fn provider_uses_existing_host_grants_and_rejects_ambiguity() {
         let (_, _, provider, _) = fixture();
@@ -802,26 +460,27 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
     }
 
     #[test]
-    fn launch_plan_requires_only_the_exact_private_inspector_flag() {
-        let accepted =
-            validate_arguments(&json!({"arguments":["--inspect-brk=127.0.0.1:0"]})).unwrap();
-        assert_eq!(accepted, vec![OsString::from("--inspect-brk=127.0.0.1:0")]);
-        assert!(validate_arguments(&json!({"arguments":[]})).is_err());
-        assert!(validate_arguments(
-            &json!({"arguments":["--inspect-brk=127.0.0.1:0","--proxy-bypass-list=<-loopback>"]})
-        )
-        .is_err());
+    fn source_callback_cannot_publish_after_revoking_its_registration() {
+        let (directory, registry, provider, runtime) = fixture_source(
+            "exports.clientSource=()=>{const fs=require('node:fs'),p=require('node:path').join(__dirname,'registry.json');const r=JSON.parse(fs.readFileSync(p,'utf8'));r.localPlugins['test.launch-adapter'].grants=[];fs.writeFileSync(p,JSON.stringify(r));return {code:'module.exports={};'};};",
+        );
+        assert_eq!(
+            source_snapshot(&provider, &registry, &runtime, directory.path())
+                .unwrap_err()
+                .code,
+            "client_launch_authorization_revoked"
+        );
     }
 
     #[test]
-    fn launch_plan_rejects_ambient_inspectors_and_unsafe_flags() {
-        for args in [
-            vec!["--ignore-certificate-errors"],
-            vec!["--inspect-brk=0.0.0.0:9229"],
-            vec!["--inspect=127.0.0.1:9229"],
-            vec!["--no-sandbox"],
+    fn source_loader_rejects_invalid_and_oversized_results() {
+        for source in [
+            "exports.clientSource=()=>({code:''});",
+            "exports.clientSource=()=>({code:'x',extra:true});",
+            "exports.clientSource=()=>({code:'x'.repeat(1024*1024)});",
         ] {
-            assert!(validate_arguments(&json!({"arguments":args})).is_err());
+            let (directory, registry, provider, runtime) = fixture_source(source);
+            assert!(source_snapshot(&provider, &registry, &runtime, directory.path()).is_err());
         }
     }
 
@@ -829,9 +488,9 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
     fn activation_requires_explicit_bounded_per_source_coverage() {
         let descriptor = traffic();
         let source = &descriptor["source"];
-        let valid = json!({"installed":true,"exactChildVerified":true,"activatedSources":[{"id":"example-http","operations":["route.register","route.update","route.close","http.intercept"],"protocols":["http","sse"],"coverage":["example-fetch-path"]}],"unsupportedSources":[{"id":"example-backend","reason":"child_unavailable"}]});
+        let valid = json!({"installed":true,"activatedSources":[{"id":"example-http","operations":["route.register","route.update","route.close","http.intercept"],"protocols":["http","sse"],"coverage":["example-fetch-path"]}],"unsupportedSources":[{"id":"example-backend","reason":"child_unavailable"}]});
         assert_eq!(
-            validate_activation(&valid, source)
+            validate_client_source_activation(&valid, source)
                 .unwrap()
                 .activated
                 .as_array()
@@ -840,128 +499,17 @@ exports.attachClientLaunch = ({expectedPid, executable, inspectorUrl}) => {
             1
         );
         for change in [
-            json!({"installed":true,"exactChildVerified":true,"activatedSources":[],"unsupportedSources":[]}),
-            json!({"installed":true,"exactChildVerified":true,"configuredSessions":1,"activatedSources":valid["activatedSources"],"unsupportedSources":valid["unsupportedSources"]}),
-            json!({"installed":true,"exactChildVerified":true,"activatedSources":[{"id":"example-http","operations":["tls.bypass"],"protocols":["http"],"coverage":["all"]}],"unsupportedSources":[]}),
-            json!({"installed":true,"exactChildVerified":true,"activatedSources":[{"id":"example-http","operations":["http.intercept"],"protocols":["http2"],"coverage":["all"]}],"unsupportedSources":[]}),
-            json!({"installed":true,"exactChildVerified":true,"activatedSources":valid["activatedSources"],"unsupportedSources":[{"id":"example-http","reason":"child_unavailable"}]}),
-            json!({"installed":true,"exactChildVerified":true,"activatedSources":valid["activatedSources"],"unsupportedSources":[{"id":"example-backend","reason":"arbitrary message"}]}),
+            json!({"installed":true,"activatedSources":[],"unsupportedSources":[]}),
+            json!({"installed":true,"configuredSessions":1,"activatedSources":valid["activatedSources"],"unsupportedSources":valid["unsupportedSources"]}),
+            json!({"installed":true,"activatedSources":[{"id":"example-http","operations":["tls.bypass"],"protocols":["http"],"coverage":["all"]}],"unsupportedSources":[]}),
+            json!({"installed":true,"activatedSources":[{"id":"example-http","operations":["http.intercept"],"protocols":["http2"],"coverage":["all"]}],"unsupportedSources":[]}),
+            json!({"installed":true,"activatedSources":valid["activatedSources"],"unsupportedSources":[{"id":"example-http","reason":"child_unavailable"}]}),
+            json!({"installed":true,"activatedSources":valid["activatedSources"],"unsupportedSources":[{"id":"example-backend","reason":"arbitrary message"}]}),
         ] {
-            assert!(validate_activation(&change, source).is_err(), "{change}");
+            assert!(
+                validate_client_source_activation(&change, source).is_err(),
+                "{change}"
+            );
         }
-    }
-
-    #[test]
-    fn fixed_wrapper_executes_snapshot_and_rechecks_full_registration_between_phases() {
-        let (directory, registry, provider, runtime) = fixture();
-        // On-disk edits do not replace the checked generation's source.
-        std::fs::write(
-            provider.host.as_ref().unwrap().entry.clone(),
-            "throw Error('edited');",
-        )
-        .unwrap();
-        let adapter = LaunchAdapter::start(
-            &provider,
-            &registry,
-            &runtime,
-            directory.path(),
-            traffic(),
-            &[],
-        )
-        .unwrap();
-        assert_eq!(adapter.arguments().len(), 1);
-        adapter
-            .attach(
-                "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
-                123,
-                &std::env::current_exe().unwrap(),
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap();
-        drop(adapter);
-        let adapter = LaunchAdapter::start(
-            &provider,
-            &registry,
-            &runtime,
-            directory.path(),
-            traffic(),
-            &[],
-        )
-        .unwrap();
-        let mut changed = PluginRegistry::load(&registry).unwrap();
-        changed.set_enabled(&provider.manifest.id, false).unwrap();
-        changed.save().unwrap();
-        assert_eq!(
-            adapter
-                .attach(
-                    "ws://127.0.0.1:49152/12345678-abcd-1234-abcd-123456789abc",
-                    123,
-                    &std::env::current_exe().unwrap(),
-                    Instant::now() + Duration::from_secs(2)
-                )
-                .unwrap_err()
-                .code,
-            "client_launch_authorization_revoked"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn native_owner_completes_private_handshake_and_reaps_temporary_adapter() {
-        use crate::core_services::SharedCoreServices;
-        use crate::traffic_owner::TrafficOwner;
-        use crate::windows::{
-            environment::ChildEnvironment, process::launch_with_owned_traffic_capture,
-        };
-        let (directory, registry, provider, runtime) = fixture();
-        let services = SharedCoreServices::new(&registry).unwrap();
-        let mut owner = TrafficOwner::start(&services).unwrap();
-        owner
-            .prepare_adapter(&provider, &registry, &runtime)
-            .unwrap();
-        let executable = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("codlet-fake-child.exe");
-        // A synthetic endpoint exercises transport and owner lifetime. It does
-        // not count as Electron protocol or real-request acceptance evidence.
-        let (child, pipes) = launch_with_owned_traffic_capture(
-            &executable,
-            &["--scenario=lab-inspector".into()],
-            &ChildEnvironment::from_entries(owner.environment().iter().cloned()).unwrap(),
-            owner.stderr(),
-        )
-        .unwrap();
-        owner
-            .attach_client(child.process_id(), &executable, || false)
-            .unwrap();
-        owner.check_alive().unwrap();
-        assert!(!std::fs::read_dir(directory.path()).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("launch-adapter-")
-        }));
-        let (client, _) = crate::cdp::CdpClient::spawn(pipes).unwrap();
-        client
-            .request("Fake.environment", None, None, Duration::from_secs(2))
-            .unwrap();
-        client
-            .request("Browser.close", None, None, Duration::from_secs(2))
-            .unwrap();
-        assert_eq!(child.wait(Duration::from_secs(2)).unwrap(), Some(0));
-        client.shutdown().unwrap();
-        let mut changed = PluginRegistry::load(&registry).unwrap();
-        changed.set_enabled(&provider.manifest.id, false).unwrap();
-        changed.save().unwrap();
-        std::thread::sleep(Duration::from_millis(1050));
-        assert_eq!(
-            owner.check_alive().unwrap_err().code,
-            "client_launch_authorization_revoked"
-        );
     }
 }

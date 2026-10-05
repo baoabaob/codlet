@@ -190,7 +190,7 @@ fn unconfigured_development_is_truthful_offline_and_creates_no_update_directory(
 }
 
 #[test]
-fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
+fn only_the_exact_built_in_preview_sources_move_to_stable() {
     let root = tempfile::tempdir().unwrap();
     let path = if PLATFORM == "darwin-arm64" {
         root.path()
@@ -221,12 +221,22 @@ fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
     let migrated = read_channel(root.path()).unwrap();
     assert_eq!(migrated.check_interval_seconds, 901);
+    assert_eq!(migrated.channel, "stable");
     assert_eq!(selected_asset(migrated), "codlet-update-managed.json");
+    if let Some(RuntimeUpdateSource::Github { manifest_asset, .. }) = &mut channel.source {
+        *manifest_asset = "codlet-update-managed.json".into();
+    }
+    std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(read_channel(root.path()).unwrap().channel, "stable");
+    if let Some(RuntimeUpdateSource::Github { manifest_asset, .. }) = &mut channel.source {
+        *manifest_asset = "codlet-update.json".into();
+    }
     channel.check_interval_seconds = 900;
     if let Some(RuntimeUpdateSource::Github { repository_url, .. }) = &mut channel.source {
         *repository_url = "https://github.com/community/codlet".into();
     }
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(read_channel(root.path()).unwrap().channel, "preview");
     assert_eq!(
         selected_asset(read_channel(root.path()).unwrap()),
         "codlet-update.json"
@@ -240,6 +250,7 @@ fn only_the_exact_built_in_preview_channel_moves_to_managed_release_asset() {
         *manifest_asset = "custom-update.json".into();
     }
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(read_channel(root.path()).unwrap().channel, "preview");
     assert_eq!(
         selected_asset(read_channel(root.path()).unwrap()),
         "custom-update.json"

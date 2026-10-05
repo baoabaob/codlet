@@ -66,6 +66,7 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
+      - run: npm run typecheck --prefix frontend
       - run: node --test --test-concurrency=2 tests/*.test.mjs
 
   windows-acceptance:
@@ -92,6 +93,8 @@ jobs:
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-NativeInstaller.ps1 -ArtifactsDirectory .codlet-artifacts/native-installer-ci
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-launcher.test.ps1
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-Release.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
 
   macos:

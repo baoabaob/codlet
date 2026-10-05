@@ -94,8 +94,8 @@ namespace Codlet.Setup {
             System.Windows.Automation.AutomationProperties.SetName(Control<TextBox>("InstallPath"), T("location"));
             System.Windows.Automation.AutomationProperties.SetName(Control<TextBlock>("VersionLabel"), T("version") + " " + SetupBuild.Version);
             System.Windows.Automation.AutomationProperties.SetHelpText(Control<Button>("PluginsButton"), T("expandPlugins"));
-            folders["user"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codlet Preview");
-            folders["machine"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Codlet Preview");
+            folders["user"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codlet");
+            folders["machine"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Codlet");
             if (!preview) {
                 ReadExisting("user", RegistryHive.CurrentUser); ReadExisting("machine", RegistryHive.LocalMachine);
                 if (!existing.ContainsKey("user") && existing.ContainsKey("machine")) scope = "machine";
@@ -371,7 +371,7 @@ namespace Codlet.Setup {
             if (!Properties("user", folders["user"], new[]{"Core"}).Contains("MSIINSTALLPERUSER=1")) throw new Exception("Per-user scope failed");
             bool rejected = false; try { NormalizePath("C:\\"); } catch (ArgumentException) { rejected = true; }
             if (!rejected) throw new Exception("Drive root accepted");
-            string normalized = NormalizePath(@"%LOCALAPPDATA%\Programs\Codlet Preview");
+            string normalized = NormalizePath(@"%LOCALAPPDATA%\Programs\Codlet");
             if (normalized.Contains("%")) throw new Exception("Environment variable not expanded");
             ApplyTheme(false); Capture(Path.Combine(output, "installer-light.png"));
             Control<RadioButton>("MachineScope").IsChecked = true;

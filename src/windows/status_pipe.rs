@@ -23,7 +23,11 @@ use crate::runtime_status::{
     StatusPublisher, StatusReport, validate_request,
 };
 
-const PIPE_PREFIX: &str = r"\\.\pipe\Codlet.RuntimeStatus.";
+const PIPE_PREFIX: &str = if cfg!(feature = "test-fixtures") {
+    r"\\.\pipe\Codlet.TestFixtures.RuntimeStatus."
+} else {
+    r"\\.\pipe\Codlet.RuntimeStatus."
+};
 pub const STATUS_QUERY_TIMEOUT: Duration = Duration::from_millis(1500);
 const SERVER_TRANSACTION_TIMEOUT: Duration = Duration::from_millis(750);
 const RESPONSE_ACK: u8 = 6;

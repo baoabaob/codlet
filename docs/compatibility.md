@@ -4,7 +4,7 @@ Codlet follows the systems and architectures offered by the official desktop cli
 
 | Target | Implementation and evidence |
 | --- | --- |
-| Windows x64 | Native launch, Core, GUI/adapters, lifecycle, and local client tests; primary development Preview target. x64/AMD64 supports both Intel and AMD processors. |
+| Windows x64 | Native launch, Core, GUI/adapters, lifecycle, and local client tests; primary delivery target. x64/AMD64 supports both Intel and AMD processors. |
 | Windows ARM64 | Platform-specific Node pin and compile path; no ARM64 device acceptance recorded. |
 | macOS Apple Silicon | Native Core/process ownership, compatibility profiles, Swift launcher, DMG and app updater. Controlled native Desktop/model HTTP/SSE/WS checks cover client 26.917.62051; manual GUI/installer acceptance remains separate. |
 | macOS Intel | Not part of the currently selected official-client download target; no Universal/Intel package is produced. |
@@ -18,7 +18,7 @@ Reviewed client mappings live in `compatibility/client-profiles.json`; actual ac
 
 ## Independently published acceptance records
 
-Preview.24 reads the schema-3 acceptance catalog from the fixed public URL
+Core reads the schema-3 acceptance catalog from the fixed public URL
 `https://raw.githubusercontent.com/baoabaob/codlet/main/compatibility/tested-client-versions.json`.
 This is advisory JSON; it cannot change plugin grants, execute code, install
 updates, enable capabilities, or supply new private-interface mappings. The
@@ -63,10 +63,9 @@ revision is rejected. A deliberate correction/removal uses a new revision.
 Review adapter changes and obtain real-client evidence before adding records;
 an interface change still needs the appropriate adapter/Core repair.
 
-Preview.23 was withdrawn to a GitHub draft at the user's request. Its tag and
-assets are preserved, but it is excluded from public release/update discovery.
-Preview.24 introduces the remote reader; subsequent record-only changes need
-no installer release.
+Old Core Preview releases, drafts and version tags have been removed while
+preparing 0.2.0. The independent acceptance catalog remains available; changing
+an acceptance record does not require publishing another installer.
 
 Windows package 26.924.2738.0 (frontend 26.924.22138 / 11645, local App Server
 0.158.0-alpha.2.1) has isolated real-client acceptance for the Core runtime skill,
@@ -102,9 +101,8 @@ The normal functional fixture passed its 20 checks and scoped CLI
 reload/disable/enable cleanup in the same run. The runtime skill was ready,
 both sources activated, the client exited normally and there were zero plugin
 errors. Tests used an owned fresh profile and synthetic loopback fixtures.
-The 489 passing Core tests include raw/API fallback, bounded/invalid responses,
-ETags, cache/revision validation, preferences and cancellation; six tests retain
-their existing ignored status. The public settings API suite passed six tests.
+The regression suite separately covers raw/API fallback, bounded/invalid
+responses, ETags, cache/revision validation, preferences and cancellation.
 
 Windows package `26.930.2377.0` (frontend `26.930.21537` / `12776`, AppServer
 `0.159.0-alpha.12.1`) passed the extended `compatibility.acceptance` 0.0.2

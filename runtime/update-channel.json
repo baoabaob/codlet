@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "channel": "preview",
+  "channel": "stable",
   "checkIntervalSeconds": 900,
   "source": {
     "kind": "github",

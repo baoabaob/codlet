@@ -160,6 +160,7 @@ impl Fixture {
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_codlet"));
         command.env("LOCALAPPDATA", &self.local_app_data);
+        command.env_remove("CODLET_HOME");
         command.current_dir(self.directory.path());
         command
     }

@@ -2,6 +2,7 @@ import {readFile,writeFile,mkdir,stat} from 'node:fs/promises';
 import {resolve,dirname,basename} from 'node:path';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
+import {windowsVersion} from './windows-version.mjs';
 const [input,wix,output]=process.argv.slice(2);
 if(!input||!wix||!output)throw Error('Usage: node scripts/build-msi.mjs PORTABLE_DIRECTORY WIX_DIRECTORY OUTPUT.msi');
 const root=resolve(input),out=resolve(output),build=out+'.build';await mkdir(build,{recursive:true});
@@ -56,17 +57,15 @@ for(const [scope,system,condition] of [['User','no','NOT ALLUSERS'],['Machine','
   components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('cli-path:'+scope)}" Win64="yes"><Condition>${condition}</Condition><Environment Id="${component}Environment" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" Permanent="no" System="${system}"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="${component}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
   features.CliPath.push(component);
 }
-const app=manifest.version,parts=/^(\d+)\.(\d+)\.(\d+)-preview\.(\d+)$/.exec(app);
-if(!parts)throw Error('This builder accepts an explicit preview version only');
-const msiVersion=`${parts[1]}.${parts[2]}.${Number(parts[4])}`;
-if(Number(parts[4])>65535)throw Error('Preview sequence exceeds MSI version range');
+const app=manifest.version;
+const {msiVersion}=windowsVersion(app);
 const licenseText=await readFile(resolve(root,'LICENSE'),'utf8');
 const rtfText=value=>value.replaceAll('\\','\\\\').replaceAll('{','\\{').replaceAll('}','\\}').replaceAll('\r','').replaceAll('\n','\\par\n');
-const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet local Preview\n\nCore and official plugins are licensed under Apache-2.0. Installation can be per-user or all-users; plugin data remains per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
+const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet\n\nCore and official plugins are licensed under Apache-2.0. Installation can be per-user or all-users; plugin data remains per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
 await writeFile(resolve(build,'notice.rtf'),license);
 const source=`<?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="*" Name="Codlet Preview ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
-<Package InstallerVersion="500" Compressed="yes" InstallPrivileges="elevated" Platform="x64" SummaryCodepage="936" Description="Codlet 本地测试版"/>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="*" Name="Codlet ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
+<Package InstallerVersion="500" Compressed="yes" InstallPrivileges="elevated" Platform="x64" SummaryCodepage="936" Description="Codlet"/>
 <Property Id="ALLUSERS" Value="2" Secure="yes"/><Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes"/>
 <Property Id="INSTALLFOLDER" Secure="yes"/>
 <Property Id="PRIORUSERFOLDER"><RegistrySearch Id="PriorUserInstallFolder" Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="raw" Win64="yes"/></Property>
@@ -78,16 +77,16 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 <Binary Id="CodletInstallerActions" SourceFile="${xml(resolve(build,'Codlet-Installer-Preflight.exe'))}"/>
 <CustomAction Id="CheckRunningApplications" BinaryKey="CodletInstallerActions" ExeCommand="&quot;[INSTALLFOLDER].&quot; [UILevel] &quot;[TempFolder]Codlet-Installer-[ProductCode].log&quot;" Execute="immediate" Return="check"/>
 <InstallExecuteSequence><Custom Action="CheckRunningApplications" Before="InstallValidate">NOT UPGRADINGPRODUCTCODE</Custom></InstallExecuteSequence>
-<MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更新版本的 Codlet Preview"/>
+<MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更新版本的 Codlet"/>
 <MediaTemplate EmbedCab="yes" CompressionLevel="medium"/>
 <Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动将从 GitHub 下载所选插件，需要网络。已有插件保持不变。卸载保留用户数据。"/>
 <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 Codlet"/>
 <CustomAction Id="LaunchCodletAfterInstall" FileKey="${id('F_','Codlet-Launcher.exe')}" ExeCommand="" Return="asyncNoWait" Impersonate="yes"/>
 <Icon Id="CodletIcon" SourceFile="${xml(resolve(root,'codlet.ico'))}"/>
-<Directory Id="TARGETDIR" Name="SourceDir"><Directory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Codlet Preview">${tree('')}</Directory></Directory><Directory Id="ProgramMenuFolder"><Directory Id="CodletMenu" Name="Codlet Preview"/></Directory><Directory Id="DesktopFolder"/></Directory>
+<Directory Id="TARGETDIR" Name="SourceDir"><Directory Id="ProgramFiles64Folder"><Directory Id="INSTALLFOLDER" Name="Codlet">${tree('')}</Directory></Directory><Directory Id="ProgramMenuFolder"><Directory Id="CodletMenu" Name="Codlet"/></Directory><Directory Id="DesktopFolder"/></Directory>
 ${components.join('\n')}
-<DirectoryRef Id="CodletMenu"><Component Id="StartMenu" Guid="${guid('start-menu')}" Win64="yes"><Shortcut Id="LaunchCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RemoveFolder Id="RemoveMenu" On="uninstall"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
-<DirectoryRef Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="${guid('desktop-shortcut')}" Win64="yes"><Shortcut Id="DesktopCodlet" Name="Codlet Preview" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
+<DirectoryRef Id="CodletMenu"><Component Id="StartMenu" Guid="${guid('start-menu')}" Win64="yes"><Shortcut Id="LaunchCodlet" Name="Codlet" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RemoveFolder Id="RemoveMenu" On="uninstall"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="Shortcuts" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
+<DirectoryRef Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="${guid('desktop-shortcut')}" Win64="yes"><Shortcut Id="DesktopCodlet" Name="Codlet" Target="[INSTALLFOLDER]Codlet-Launcher.exe" WorkingDirectory="INSTALLFOLDER" Icon="CodletIcon"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>
 <Feature Id="Core" Title="Codlet Core（必需）" Description="CLI 与 codlet 技能。运行时首次使用时由 Codlet 自动准备；不修改官方客户端的数据目录。" Level="1" Absent="disallow" ConfigurableDirectory="INSTALLFOLDER">${refs(features.Core)}</Feature>
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>

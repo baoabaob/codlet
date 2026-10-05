@@ -1330,14 +1330,14 @@ async fn download_archive_attempt(
     source: DownloadSource,
     total_timeout: Duration,
 ) -> Result<(), HostError> {
-    let builder = reqwest::Client::builder()
+    let builder = crate::http_client::builder()
         .http1_only()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15))
         .timeout(total_timeout)
         .user_agent("Codlet-managed-Node/1");
     #[cfg(windows)]
-    let builder = builder.use_native_tls();
+    let builder = builder.tls_backend_native();
     let client = builder.build().map_err(network_error)?;
     let mut current = url::Url::parse(url).map_err(|_| invalid("Official Node URL is invalid"))?;
     let archive = path

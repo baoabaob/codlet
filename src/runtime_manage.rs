@@ -519,10 +519,10 @@ impl RuntimeManageService {
                     "Runtime updates expect empty params.",
                 ));
             }
-            if method == "checkRuntimeUpdate" {
-                if let Some(compatibility) = self.client_compatibility_service() {
-                    compatibility.check();
-                }
+            if method == "checkRuntimeUpdate"
+                && let Some(compatibility) = self.client_compatibility_service()
+            {
+                compatibility.check();
             }
             let service = self
                 .runtime_update

@@ -7,6 +7,7 @@ Use Rust from `rust-toolchain.toml`, the npm lockfile in `frontend/`, and the pl
 ```powershell
 npm ci --prefix frontend
 node frontend/build.mjs
+npm run typecheck --prefix frontend
 cargo build --locked --bin codlet
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Install-JsRuntime.ps1 -Destination target/debug
 ```
@@ -34,7 +35,7 @@ cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
 node --test --test-concurrency=2 tests/*.test.mjs
 ```
 
-Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins and the isolated native traffic harness only for tests and is rejected when debug assertions are disabled. The harness uses temporary registries and in-memory credentials. The official plugin repository validates its own adapters and GUI against a prepared Core SDK snapshot; its opt-in native traffic acceptance additionally needs the compiled Core fixture.
+Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins and the isolated native traffic harness only for tests and is rejected when debug assertions are disabled. Windows fixture builds use separate status/control/launch IPC names, and CLI fixtures clear inherited `CODLET_HOME` before selecting temporary data. The harness uses temporary registries and in-memory credentials. The official plugin repository validates its own adapters and GUI against a prepared Core SDK snapshot; its opt-in native traffic acceptance additionally needs the compiled Core fixture.
 
 Installer-specific checks are described in [distribution](distribution.md). Keep tests that exercise real invariants, failure paths, and public contracts. Avoid making tests depend on incidental documentation filenames or dated experiment output.
 

@@ -78,7 +78,7 @@ not proof that arbitrary plugin code is harmless.
 ## Renderer lifetime decision
 
 The current renderer architecture is retained. The known Chromium world
-accumulation on repeated plugin replacement is accepted for Preview; see
+accumulation on repeated plugin replacement remains a documented limitation; see
 [the measurements and mitigation](known-issues.md#renderer-environments-after-repeated-reloads).
 The real SDK listener leak has been fixed. No public Worker execution mode or
 remote-widget-only UI contract is being introduced.

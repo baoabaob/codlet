@@ -12,7 +12,8 @@ in the [traffic contract](spec/traffic.md).
 | --- | --- |
 | [Architecture](architecture.md) | Ownership, Core/Adapter boundary and execution model |
 | [Development](development.md) | Reproducible builds, checks and isolated desktop testing |
-| [Distribution](distribution.md) | Windows and macOS Preview packaging and installation |
+| [Distribution](distribution.md) | Windows and macOS packaging and installation |
+| [Release readiness](release-readiness.md) | 0.2.0 design audit, validation and remaining release gates |
 | [Troubleshooting](troubleshooting.md) | CLI recovery, safe mode, logs and diagnostics |
 | [Compatibility](compatibility.md) | Platform matrix and client-build evidence |
 | [Known issues](known-issues.md) | Accepted limits, incomplete features and practical workarounds |

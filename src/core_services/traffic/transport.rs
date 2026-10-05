@@ -288,8 +288,7 @@ impl Engine {
                 return Ok(client);
             }
         }
-        let mut builder = reqwest::Client::builder()
-            .use_rustls_tls()
+        let mut builder = crate::http_client::builder()
             .no_proxy()
             .http1_only()
             .redirect(reqwest::redirect::Policy::none())
@@ -325,14 +324,14 @@ impl Engine {
             for certificate in reqwest::Certificate::from_pem_bundle(pem.as_bytes())
                 .map_err(|_| error("invalid_ca_bundle", "invalid CA bundle"))?
             {
-                builder = builder.add_root_certificate(certificate);
+                builder = builder.tls_certs_merge([certificate]);
             }
         }
         if let Some(pem) = &self.inherited_ca {
             for certificate in reqwest::Certificate::from_pem_bundle(pem.as_bytes())
                 .map_err(|_| error("invalid_ca_bundle", "invalid inherited CA bundle"))?
             {
-                builder = builder.add_root_certificate(certificate);
+                builder = builder.tls_certs_merge([certificate]);
             }
         }
         let permit = self

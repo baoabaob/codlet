@@ -899,18 +899,22 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
             "Invalid update channel schema, name or check interval.",
         ));
     }
-    // Preview 5's installed channel file cannot be replaced by the Windows
-    // updater. Only migrate that exact built-in source to the managed asset;
-    // an explicitly configured third-party source keeps its chosen manifest.
+    // Existing portable installs retain their channel file during Core updates.
+    // Move only the two historical built-in sources to the first stable channel;
+    // custom repositories and manifests keep their explicitly chosen channel.
     if channel.channel == "preview"
         && let Some(RuntimeUpdateSource::Github {
             repository_url,
             manifest_asset,
         }) = &mut channel.source
         && repository_url == "https://github.com/baoabaob/codlet"
-        && manifest_asset == "codlet-update.json"
+        && matches!(
+            manifest_asset.as_str(),
+            "codlet-update.json" | "codlet-update-managed.json"
+        )
     {
         *manifest_asset = "codlet-update-managed.json".into();
+        channel.channel = "stable".into();
     }
     Ok(channel)
 }

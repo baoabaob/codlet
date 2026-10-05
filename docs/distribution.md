@@ -1,14 +1,14 @@
 # Distribution
 
-Preview installers contain Codlet, license/attribution files, SDK types, and plugin download options. They contain no plugin code or fixed plugin versions. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
+Installers contain Codlet, license/attribution files, SDK types, and plugin download options. They contain no plugin code or fixed plugin versions. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
 
 Reusing the official client means copying its verified executable and license into Codlet's own data directory. The original client can then update independently. This reduces installer and repeat-download size, not Node's memory use or the space occupied by the prepared runtime. The cache follows `CODLET_HOME`: installed builds reuse their normal data directory, while each portable installation keeps its own cache. First use needs network access when neither an approved official runtime nor a valid cached copy is available; subsequent use can reuse the verified cache offline.
 
 Fallback downloads first try the unchanged official archive mirrored in Codlet's `node-runtimes` dependency release, then the official Node.js URL. Both sources must match the same archive, executable and license hashes. When changing a Node pin, run the **Publish pinned Node.js runtimes** workflow before publishing installers; it verifies the original archives and never overwrites a same-name asset with different bytes. These dependency archives are kept out of ordinary Codlet release downloads.
 
-The source and independent official-plugin repositories are public. Preview binaries are published as versioned test assets after validation. Building a local Preview does not publish its files; the installed preview channel discovers published prereleases from the Core repository.
+The source and independent official-plugin repositories are public. Version 0.2.0 is the first stable release candidate; publication is pending the [readiness checklist](release-readiness.md). Old Core Preview releases and tags have been removed. Building and preparing a release plan do not publish files. The stable updater selects published final releases.
 
-`Publish-PreviewRelease.ps1` requires `-WindowsSetup PATH` and validates the native EXE against its embedded MSI build receipt. The setup EXE is the only Windows installation download in future releases. Standalone MSI and portable distribution ZIPs remain internal build inputs and are rejected as public installation assets. Existing published releases are retained. `-WindowsOnly` supports Windows testing releases without advertising unbuilt macOS artifacts; omitting it requires both Windows and macOS build evidence.
+`Publish-Release.ps1` requires `-WindowsSetup PATH` and validates the native EXE against its embedded MSI build receipt. The setup EXE is the only Windows installation download. Standalone MSI and portable distribution ZIPs remain internal build inputs and are rejected as public installation assets. `-WindowsOnly` prepares a Windows release without advertising unbuilt macOS artifacts; omitting it requires both Windows and macOS build evidence.
 
 ## Windows x64
 
@@ -17,6 +17,8 @@ The recommended Windows installer is the native `-setup.exe`: a WPF window using
 Installation defaults to the current user. Selecting all users chooses Program Files and lets Windows Installer request elevation; the setup window and post-install launcher remain unelevated. The MSI is dual-purpose (`ALLUSERS=2`, `MSIINSTALLPERUSER=1` by default). Shortcuts, installer registration, plugin download choices and optional PATH entries follow the selected scope. Uninstall removes only the PATH entry for its own installation. Open a new terminal after setup to use `codlet`.
 
 An existing installation retains its directory and choices. Switching between user and machine scopes requires uninstalling the other-scope installation first; setup explains this instead of silently creating two conflicting installations. Plugin/config/runtime data remain per user under LocalAppData in either scope. All-users Core/launcher upgrades require the installer; an unelevated runtime cannot replace files in Program Files.
+
+New installations use a Codlet folder and shortcuts. Upgrades retain the registered installation directory, even when its historical name contains Preview. The MSI UpgradeCode, component identities and installer registry keys are retained for upgrade compatibility. `windows-version.mjs` maps stable `major.minor.patch` to MSI `major.minor.(1000 + patch)`: 0.2.0 becomes 0.2.1000, above Preview 29's 0.2.29. Assembly/file metadata remains 0.2.0.0. The builder rejects values outside the Windows Installer field limits.
 
 The installer offers GUI, UI Adapter, Desktop Adapter, and shortcut options. GUI requires UI Adapter; Desktop Adapter is independently optional. The completion page can launch Codlet. The native `Codlet-Launcher.exe` is the normal entrypoint; internal PowerShell helpers remain implementation details. Windows Installer continues to manage upgrade, repair, and uninstall through the embedded MSI payload.
 
@@ -74,20 +76,20 @@ On Windows, unavailable renderer discovery is reported as
 `renderer_executor_unavailable`; Core and a still-running official client remain
 available even for a renderer-only plugin configuration. The launcher reports that
 UI plugins did not load. An official process that itself exits is still a startup
-failure. Preview 26 isolates optional launch-adapter incompatibility by suspending
+failure. Core isolates optional launch-adapter incompatibility by suspending
 its startup providers, interception consumers and dependents for the current
 launch. Required interception is never reported active when its source failed;
 the remaining plugins and original client can still run with preserved preferences.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-PreviewDistribution.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Distribution.ps1 `
   -CodletExecutable C:\build\codlet.exe `
   -SourceCommit FULL_CORE_SHA `
-  -OutputDirectory C:\output\codlet-preview -Zip
-node scripts/build-msi.mjs C:\output\codlet-preview C:\tools\wix-3.14.1 C:\output\Codlet-Preview.msi
+  -OutputDirectory C:\output\codlet-0.2.0
+node scripts/build-msi.mjs C:\output\codlet-0.2.0 C:\tools\wix-3.14.1 C:\output\Codlet-0.2.0.msi
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-WindowsInstaller.ps1 `
-  -MsiPath C:\output\Codlet-Preview.msi -OutputPath C:\output\Codlet-Preview-setup.exe `
-  -Version VERSION_FROM_CARGO_TOML
+  -MsiPath C:\output\Codlet-0.2.0.msi -OutputPath C:\output\Codlet-0.2.0-setup.exe `
+  -Version 0.2.0
 ```
 
 WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The manifest records Core's source revision, distributed files and SHA-256 values. Plugin source commits and package hashes belong to the independently downloaded releases, not to Core's build.
@@ -104,56 +106,52 @@ The launcher requests normal quit of a recognized running Codex client, waits at
 
 ```sh
 sh scripts/build-macos.sh release
-python3 scripts/build-preview-macos.py \
+python3 scripts/build-macos-distribution.py \
   --executable target/aarch64-apple-darwin/release/codlet \
   --node-directory target/aarch64-apple-darwin/release/runtime/node-v22.23.2-darwin-arm64 \
   --source-commit FULL_CORE_SHA \
   --output /absolute/new/output
 ```
 
-The `Build macOS preview` workflow accepts one full Core commit SHA. It checks out only Core, verifies the ARM64 runner, builds Core/Swift, tests Core-only initialization in an isolated Codlet home, mounts the DMG and uploads artifacts with Core provenance. Building Core no longer checks out or builds the plugin repository. Pass `--verify-online-plugins` for additional real GitHub installation acceptance; this requires public API quota and is recorded separately as `pluginDownloadsVerified`. Plugin service availability does not gate a Core-only build.
+The `Build macOS distribution` workflow accepts one full Core commit SHA. It checks out only Core, verifies the ARM64 runner, builds Core/Swift, tests Core-only initialization in an isolated Codlet home, mounts the DMG and uploads artifacts with Core provenance. Building Core does not check out or build the plugin repository. Pass `--verify-online-plugins` for additional real GitHub installation acceptance; this requires public API quota and is recorded separately as `pluginDownloadsVerified`. Plugin service availability does not gate a Core-only build.
 
-Current Preview signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
+Current Mac signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
 
 ## Licensing and release checks
 
 Ship root `LICENSE` (Apache-2.0), `NOTICE`, third-party UI and Rust notices, and each optional plugin's license/notice. The prepared Node executable and its verified license are kept together in the runtime cache. A bundled transition update also carries that license. Third-party plugins keep their author's actual licenses and are not automatically relicensed to Apache-2.0.
 
-Before delivery, verify the source revisions, package version, architecture, file hashes, installed/portable data scope, cancellation, existing data, optional components, and shortcuts. Record remaining limitations honestly in [known issues](known-issues.md). Publishing a Preview does not establish signed stable-release readiness or replace real-client installation acceptance on each platform.
+Before delivery, verify source revisions, package version, architecture, file hashes, installed/portable data scope, cancellation, existing data, optional components, and shortcuts. Record remaining limitations in [known issues](known-issues.md) and complete the [release gates](release-readiness.md). A build does not establish signing or real-client installation acceptance on each platform.
 
-## Preparing a Preview release
+## Preparing the stable release
 
-`scripts/Publish-PreviewRelease.ps1` consumes the Windows payload directory, internal MSI with its build receipt and distribution manifest, and the setup EXE with its receipt. A portable ZIP is optional validation input. Combined releases also require the macOS DMG, distribution manifest, and updater ZIP. The script verifies versions, source revisions, payload hashes, installer receipts, and updater contents, then writes a fresh versioned release directory with assets, checksums, release notes, and `release-plan.json`. Build-time distribution manifests and the setup receipt stay in the local `.verification` directory and are checked again when reading the plan. The default `Preview` action creates no remote state.
+`scripts/Publish-Release.ps1` consumes the Windows payload directory, internal MSI with its build receipt and distribution manifest, and the setup EXE with its receipt. A portable ZIP is optional validation input. Combined releases also require the macOS DMG, distribution manifest, and updater ZIP. The script verifies final versions, source revisions, payload hashes, installer receipts, and updater contents, then writes a fresh release directory with assets, checksums, release notes, and `release-plan.json`. Build-time distribution manifests and the setup receipt stay in `.verification` and are checked again when reading the plan. The default `Plan` action creates no remote state. Stable plans and GitHub releases have `prerelease: false`.
 
-The generated `codlet-update-managed.json` uses the in-client GitHub manifest asset name and schema: `schema: 1`, `kind: "codlet-runtime-channel"`, `channel: "preview"`, `version`, and an artifact per supported platform/profile. Each artifact pins its versioned update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. The updater ZIPs retain `runtime-update-manifest.json` at their root. A Windows-only release has four public assets: the setup EXE, the runtime update ZIP for existing portable installations, `codlet-update-managed.json`, and `SHA256SUMS.txt`. A combined release additionally contains the Mac DMG and Mac updater ZIP. Only the setup EXE is linked as a Windows installation download.
+The generated `codlet-update-managed.json` uses `schema: 1`, `kind: "codlet-runtime-channel"`, `channel: "stable"`, `version`, and an artifact per selected platform/profile. Each artifact pins its update ZIP using `platform`, `profile`, `bytes`, `sha256`, and `assetName`. Update ZIPs retain `runtime-update-manifest.json` at their root. A Windows-only release has four public assets: setup EXE, runtime update ZIP for existing portable installations, channel manifest, and `SHA256SUMS.txt`. A combined release adds the Mac DMG and updater ZIP. Only setup EXE is linked as a Windows installation download.
 
-Preview 5 cannot read managed-runtime update packages. The Preview 6 transition therefore uses `-LegacyUpdateBridge -WindowsBridgeNodeDirectory <pinned-node-directory>` and the Mac builder's separate legacy updater ZIP. It publishes complete old-format updater payloads plus the additional `codlet-update.json` channel that Preview 5 understands; the ordinary MSI, portable ZIP and DMG remain small. Both channels name the same transition payloads. Core 6 reads the managed channel after that update. Later releases omit the legacy channel so older clients find the compatible transition release instead of attempting an unsupported small ZIP.
+Old Preview users should upgrade with the new installer when published. New Core promotes only its known built-in Preview channel files to the stable managed channel; it leaves custom channels alone. Historical transition payload support remains in the low-level packaging fixtures but is not the 0.2.0 delivery path.
 
 Use a new output directory and pass the explicit package paths from the build artifacts:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
-  -Action Preview `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-Release.ps1 `
+  -Action Plan -WindowsOnly `
   -WindowsPortableDirectory C:\build\windows\package\portable `
-  -WindowsMsi C:\build\windows\package\Codlet-0.2.0-preview.6-windows-x64.msi `
+  -WindowsMsi C:\build\windows\package\Codlet-0.2.0-windows-x64.msi `
   -WindowsMsiManifest C:\build\windows\package\msi.build\distribution-manifest.json `
-  -WindowsSetup C:\build\windows\package\Codlet-0.2.0-preview.6-windows-x64-setup.exe `
-  -MacDmg C:\build\macos\package\Codlet-0.2.0-preview.6-macos-arm64.dmg `
-  -MacDistributionManifest C:\build\macos\package\distribution-manifest.json `
-  -MacUpdateZip C:\build\macos\package\Codlet-0.2.0-preview.6-darwin-arm64-legacy-update.zip `
-  -LegacyUpdateBridge -WindowsBridgeNodeDirectory C:\build\node-v24.21.0-win-x64 `
-  -OutputDirectory C:\build\preview-release
+  -WindowsSetup C:\build\windows\package\Codlet-0.2.0-windows-x64-setup.exe `
+  -OutputDirectory C:\build\release-0.2.0
 ```
 
 Inspect `release-plan.json`, `release-notes.md`, and the asset hashes before preparing a draft. `PrepareDraft` and `Publish` without `-Apply` only validate the local plan and print the intended action. Draft upload is explicit and separate from publication:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
-  -Action PrepareDraft -PlanPath C:\build\preview-release\release-plan.json -Apply
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-Release.ps1 `
+  -Action PrepareDraft -PlanPath C:\build\release-0.2.0\release-plan.json -Apply
 
 # Publish only after reviewing the complete GitHub draft and its uploaded assets.
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-PreviewRelease.ps1 `
-  -Action Publish -PlanPath C:\build\preview-release\release-plan.json -Apply
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Publish-Release.ps1 `
+  -Action Publish -PlanPath C:\build\release-0.2.0\release-plan.json -Apply
 ```
 
-The publisher accepts `CODLET_CORE_RELEASE_TOKEN`, `GH_TOKEN`, or a Git Credential Manager credential without printing it. It never changes repository visibility. A version tag or same-version release with different notes, metadata, or assets is rejected; existing assets are never overwritten. Run `scripts/Test-PreviewRelease.ps1` for an isolated packaging/manifest contract test with synthetic inputs and no GitHub writes.
+The publisher accepts `CODLET_CORE_RELEASE_TOKEN`, `GH_TOKEN`, or a Git Credential Manager credential without printing it. It never changes repository visibility. A version tag or same-version release with different notes, metadata, or assets is rejected; existing assets are never overwritten. Run `scripts/Test-Release.ps1` for an isolated packaging/manifest contract test with synthetic inputs and no GitHub writes.

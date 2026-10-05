@@ -25,12 +25,8 @@ pub(crate) struct TrafficOwner {
     traffic: Traffic,
     directory: tempfile::TempDir,
     environment: Vec<(OsString, OsString)>,
-    original_environment: Vec<(OsString, OsString)>,
     descriptor: Value,
-    adapter: std::cell::RefCell<Option<crate::client_launch::LaunchAdapter>>,
     launch_arguments: Vec<OsString>,
-    launch_provider: Option<crate::client_launch::LaunchAuthorization>,
-    last_authorization_check: std::cell::Cell<Option<Instant>>,
     stderr: Option<crate::client_stderr::ClientStderr>,
     #[cfg(windows)]
     bootstrap: std::cell::RefCell<Option<crate::windows::client_bootstrap::BootstrapSession>>,
@@ -90,17 +86,13 @@ impl TrafficOwner {
         let descriptor = traffic
             .launch_descriptor()
             .ok_or_else(|| failure("traffic_engine_unavailable"))?;
-        let environment = apply_descriptor(original.clone(), &descriptor)?;
+        let environment = apply_descriptor(original, &descriptor)?;
         let owner = Self {
             traffic,
             directory,
             environment,
-            original_environment: original.clone(),
             descriptor,
-            adapter: std::cell::RefCell::new(None),
             launch_arguments: Vec::new(),
-            launch_provider: None,
-            last_authorization_check: std::cell::Cell::new(None),
             stderr: None,
             #[cfg(windows)]
             bootstrap: std::cell::RefCell::new(None),
@@ -116,38 +108,6 @@ impl TrafficOwner {
 
     pub(crate) fn environment(&self) -> &[(OsString, OsString)] {
         &self.environment
-    }
-
-    pub(crate) fn prepare_adapter(
-        &mut self,
-        provider: &crate::plugins::LoadedPlugin,
-        registry: &Path,
-        runtime: &JsRuntime,
-    ) -> Result<(), HostError> {
-        let adapter = crate::client_launch::LaunchAdapter::start(
-            provider,
-            registry,
-            runtime,
-            self.directory.path(),
-            self.descriptor.clone(),
-            &self.original_environment,
-        )?;
-        self.launch_arguments = adapter.arguments().to_vec();
-        self.adapter = std::cell::RefCell::new(Some(adapter));
-        self.launch_provider = Some(crate::client_launch::LaunchAuthorization::new(
-            provider, registry,
-        )?);
-        self.original_environment.clear();
-        self.descriptor = Value::Null;
-        #[cfg(windows)]
-        {
-            self.stderr = Some(crate::client_stderr::ClientStderr::capture_startup()?);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            self.stderr = Some(crate::client_stderr::ClientStderr::new()?);
-        }
-        Ok(())
     }
 
     pub(crate) fn prepare_bridge(
@@ -249,22 +209,7 @@ impl TrafficOwner {
             self.client_source.replace(Some(source));
             return Ok(());
         }
-        let adapter = self
-            .adapter
-            .borrow_mut()
-            .take()
-            .ok_or_else(|| failure("client_launch_adapter_required"))?;
-        let activation = adapter.attach(&endpoint, pid, executable, deadline)?;
-        drop(adapter);
-        #[cfg(windows)]
-        if let Some(bootstrap) = self.bootstrap.borrow_mut().take() {
-            bootstrap.restore(deadline).map_err(|e| failure(e.code))?;
-            eprintln!("client-bootstrap: restored; debugger detached");
-        }
-        self.check_alive()?;
-        self.traffic
-            .set_source_activation(activation.activated, activation.unsupported);
-        Ok(())
+        Err(failure("client_bridge_unavailable"))
     }
 
     pub(crate) fn complete_bridge_startup(&self) -> Result<(), HostError> {
@@ -298,18 +243,7 @@ impl TrafficOwner {
                 }
                 return Ok(());
             }
-            let adapter = self.adapter.borrow();
-            let adapter = adapter
-                .as_ref()
-                .ok_or_else(|| failure("client_launch_adapter_required"))?;
-            if let Some(plan) = adapter.before_resume(child.pid, executable, deadline)? {
-                let session = crate::windows::client_bootstrap::BootstrapSession::arm(
-                    child, executable, plan, deadline,
-                )
-                .map_err(|e| failure(e.code))?;
-                *self.bootstrap.borrow_mut() = Some(session);
-            }
-            Ok(())
+            Err(failure("client_bridge_unavailable"))
         };
         run().map_err(|e| crate::windows::process::ProcessError::ClientBootstrap(e.to_string()))
     }
@@ -324,15 +258,6 @@ impl TrafficOwner {
     }
 
     pub(crate) fn check_alive(&self) -> Result<(), HostError> {
-        if let Some(provider) = &self.launch_provider
-            && self
-                .last_authorization_check
-                .get()
-                .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
-        {
-            provider.check()?;
-            self.last_authorization_check.set(Some(Instant::now()));
-        }
         if !self.traffic.native_alive() {
             self.traffic.set_attached(false);
             return Err(failure("traffic_engine_stopped"));
@@ -606,7 +531,7 @@ mod tests {
         let parent_before: Vec<_> = std::env::vars_os().collect();
         let owner = TrafficOwner::start(&services).unwrap();
         let owned_directory = owner.directory.path().to_owned();
-        assert_eq!(owner.environment(), owner.original_environment.as_slice());
+        assert_eq!(owner.environment(), original_environment().unwrap());
         assert!(
             owner.descriptor["source"]["endpoint"]["token"]
                 .as_str()

@@ -1,7 +1,10 @@
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$MsiPath,[Parameter(Mandatory=$true)][string]$OutputPath,[Parameter(Mandatory=$true)][ValidatePattern('^\d+\.\d+\.\d+-preview\.\d+$')][string]$Version,[switch]$FixturePayload)
+param([Parameter(Mandatory=$true)][string]$MsiPath,[Parameter(Mandatory=$true)][string]$OutputPath,[Parameter(Mandatory=$true)][string]$Version,[switch]$FixturePayload)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+$versionJson=& node (Join-Path $PSScriptRoot 'windows-version.mjs') $Version
+if($LASTEXITCODE -ne 0){throw 'Invalid Windows package version'}
+$windowsVersion=$versionJson|ConvertFrom-Json
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $msi=[IO.Path]::GetFullPath($MsiPath);$output=[IO.Path]::GetFullPath($OutputPath)
 if(-not [IO.File]::Exists($msi)){throw 'Build the MSI payload first'}
@@ -12,8 +15,7 @@ if(-not $FixturePayload){
     $database=$installer.OpenDatabase($msi,0)
     $query=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'");$query.Execute()
     $msiVersion=$query.Fetch().StringData(1);$query.Close()
-    $parts=[regex]::Match($Version,'^(\d+)\.(\d+)\.\d+-preview\.(\d+)$')
-    if($msiVersion -ne ($parts.Groups[1].Value+'.'+$parts.Groups[2].Value+'.'+$parts.Groups[3].Value)){throw 'MSI version differs from the native installer'}
+    if($msiVersion -ne $windowsVersion.msiVersion){throw 'MSI version differs from the native installer'}
     $query=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='UpgradeCode'");$query.Execute()
     $upgradeCode=$query.Fetch().StringData(1);$query.Close()
     if($upgradeCode -ne '{941C0F18-D41F-46E9-A3D1-A9562D75BF76}'){throw 'Expected the Codlet MSI product family'}
@@ -27,7 +29,7 @@ $buildDirectory=$output+'.build'
 [IO.Directory]::CreateDirectory($buildDirectory)|Out-Null
 $versionSource=Join-Path $buildDirectory 'Version.cs'
 $digest=(Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
-$numeric=$Version -replace '-preview\.','.'
+$numeric=$windowsVersion.fileVersion
 $versionText='using System.Reflection; [assembly: AssemblyTitle("Codlet Setup")] [assembly: AssemblyProduct("Codlet")] [assembly: AssemblyVersion("'+$numeric+'")] [assembly: AssemblyFileVersion("'+$numeric+'")] namespace Codlet.Setup { static class SetupBuild { public const string Version="'+$Version+'"; public const string PayloadHash="'+$digest+'"; } }'
 [IO.File]::WriteAllText($versionSource,$versionText,[Text.UTF8Encoding]::new($false))
 $refs=@('System.dll','System.Core.dll','System.Xaml.dll','System.Windows.Forms.dll','System.Drawing.dll')

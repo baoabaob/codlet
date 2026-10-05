@@ -502,8 +502,7 @@ impl OsBroker {
                 .thread_name("codlet-os-dns")
                 .build()
                 .map_err(|error| OsBrokerError::new("broker_start_failed", error.to_string()))?;
-            let client = reqwest::Client::builder()
-                .use_rustls_tls()
+            let client = crate::http_client::builder()
                 .hickory_dns(true)
                 .redirect(reqwest::redirect::Policy::none())
                 .no_proxy()

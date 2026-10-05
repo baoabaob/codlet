@@ -8,16 +8,16 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("macos_distribution", ROOT / "scripts/build-preview-macos.py")
+spec = importlib.util.spec_from_file_location("macos_distribution", ROOT / "scripts/build-macos-distribution.py")
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 
 
 class PackagingTests(unittest.TestCase):
     def setUp(self):
-        artifacts = ROOT / ".codlet-artifacts/installer-refresh-2026-09-22/macos/packaging-tests"
-        artifacts.mkdir(parents=True, exist_ok=True)
-        self.directory = Path(tempfile.mkdtemp(prefix="case-", dir=artifacts))
+        temporary = tempfile.TemporaryDirectory(prefix="codlet-macos-packaging-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
         self.source = self.directory / "source"
         self.runtime = self.directory / "runtime"
         self.plugins = self.directory / "plugins"
@@ -25,14 +25,14 @@ class PackagingTests(unittest.TestCase):
         self.binary.write_bytes(bytes.fromhex("cffaedfe0c00000100000000"))
         self.original_root = builder.ROOT
         builder.ROOT = self.source
-        self.write(self.source / "Cargo.toml", 'version = "0.2.0-preview.6"\nlicense = "Apache-2.0"\n')
+        self.write(self.source / "Cargo.toml", 'version = "0.2.0"\nlicense = "Apache-2.0"\n')
         self.write(self.runtime / "bin/node", b"fixture node")
         self.write(self.runtime / "LICENSE", "fixture license")
         pin = {"version": "24.0.0", "mode": "managed", "platforms": {"darwin-arm64": {"version": "22.0.0", "executableSha256": self.hash(self.runtime / "bin/node"), "licenseSha256": self.hash(self.runtime / "LICENSE")}}}
         self.write(self.source / "runtime/node-runtime.json", json.dumps(pin))
         self.write(self.source / "runtime/client-node-profiles.json", '{"schema":1,"profiles":[]}')
         self.write(self.source / "LICENSE", "Fixture license text; never distributed.\n" * 10)
-        self.write(self.source / "runtime/update-channel.json", '{"schema":1,"channel":"preview","source":{"manifestAsset":"codlet-update-managed.json"}}')
+        self.write(self.source / "runtime/update-channel.json", '{"schema":1,"channel":"stable","source":{"manifestAsset":"codlet-update-managed.json"}}')
         for name in ["scripts/macos/initialize.mjs", "NOTICE", "docs/THIRD_PARTY_UI_LICENSES.txt", "docs/THIRD_PARTY_RUST_LICENSES.txt", "types/host.d.ts"]:
             self.write(self.source / name, "fixture")
         self.write(self.source / "scripts/distribution/official-plugins.json", (ROOT / "scripts/distribution/official-plugins.json").read_bytes())
@@ -54,7 +54,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_managed_bundle_has_provenance_licenses_and_no_embedded_node(self):
         app, version, manifest = self.stage()
-        self.assertEqual(version, "0.2.0-preview.6")
+        self.assertEqual(version, "0.2.0")
         self.assertEqual(manifest["sourceCommit"], "a" * 40)
         self.assertEqual(manifest["pluginDelivery"], "github-latest")
         self.assertNotIn("pluginsSourceCommit", manifest)

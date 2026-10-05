@@ -13,6 +13,7 @@ fn status_json_does_not_read_or_modify_invalid_plugin_configuration() {
     let output = Command::new(env!("CARGO_BIN_EXE_codlet"))
         .args(["status", "--json"])
         .env("LOCALAPPDATA", directory.path())
+        .env_remove("CODLET_HOME")
         .output()
         .unwrap();
     let report: codlet::runtime_status::StatusReport =

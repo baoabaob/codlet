@@ -51,6 +51,7 @@ impl Worker {
             .env("CODLET_TEST_REGISTRY_CONTROL", directory)
             .env("CODLET_TEST_REGISTRY_ID", id)
             .env("LOCALAPPDATA", directory)
+            .env_remove("CODLET_HOME")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

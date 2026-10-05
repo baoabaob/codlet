@@ -33,10 +33,11 @@ impl RegistryScope {
         }
         let id = sha256(&bytes)?;
         let sid = user_suffix()?;
+        let namespace = super::IPC_NAMESPACE;
         Ok(Self {
             path,
-            pipe_name: OsString::from(format!(r"\\.\pipe\Codlet.RuntimeControl.{sid}.{id}")),
-            mutex_name: OsString::from(format!(r"Global\Codlet.RegistryControl.{sid}.{id}")),
+            pipe_name: OsString::from(format!(r"\\.\pipe\{namespace}.RuntimeControl.{sid}.{id}")),
+            mutex_name: OsString::from(format!(r"Global\{namespace}.RegistryControl.{sid}.{id}")),
             id,
         })
     }
@@ -78,7 +79,8 @@ impl RegistryScopeGuard {
 
 pub(crate) fn discovery_pipe_name() -> Result<OsString, LocalIpcError> {
     Ok(OsString::from(format!(
-        r"\\.\pipe\Codlet.RuntimeControlDiscovery.{}",
+        r"\\.\pipe\{}.RuntimeControlDiscovery.{}",
+        super::IPC_NAMESPACE,
         user_suffix()?
     )))
 }

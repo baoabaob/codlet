@@ -13,6 +13,7 @@ fn run(local_app_data: &Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_codlet"))
         .args(arguments)
         .env("LOCALAPPDATA", local_app_data)
+        .env_remove("CODLET_HOME")
         .output()
         .unwrap()
 }

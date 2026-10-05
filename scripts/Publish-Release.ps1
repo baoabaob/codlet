@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Preview', 'PrepareDraft', 'Publish')][string]$Action = 'Preview',
+    [ValidateSet('Plan', 'PrepareDraft', 'Publish')][string]$Action = 'Plan',
     [string]$WindowsPortableDirectory,
     [string]$WindowsPortableZip,
     [string]$WindowsMsi,
@@ -145,7 +145,7 @@ function Assert-PortableZip([string]$ZipPath, [string]$PortableRoot, $Manifest) 
         $entries = @{}
         $files = 0
         foreach ($entry in $archive.Entries) {
-            # Build-PreviewDistribution uses the Windows ZipFile helper, whose
+            # Build-Distribution uses the Windows ZipFile helper, whose
             # archive entry separator is a backslash on Windows.
             $name = $entry.FullName.Replace('\', '/')
             $isDirectory = $name.EndsWith('/')
@@ -407,14 +407,14 @@ function Assert-OutputStage([string]$Path, [string]$Parent) {
     $resolved
 }
 
-function New-PreviewPlan {
+function New-ReleasePlan {
     $requiredInputs=@('WindowsPortableDirectory', 'WindowsMsi', 'WindowsMsiManifest', 'WindowsSetup', 'OutputDirectory')
     if(-not $WindowsOnly){$requiredInputs+=@('MacDmg', 'MacDistributionManifest', 'MacUpdateZip')}
     foreach ($required in $requiredInputs) {
-        if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) { Fail "Preview action requires -$($required)." }
+        if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $required -ValueOnly))) { Fail "Plan action requires -$($required)." }
     }
     $version = Get-CoreVersion
-    if (-not $version.Contains('-')) { Fail 'Preview publication requires a prerelease version in Cargo.toml.' }
+    if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') { Fail 'Stable publication requires a final version in Cargo.toml.' }
     $portableRoot = Assert-PlainPath $WindowsPortableDirectory $true
     if ($WindowsPortableZip) { $portableZip = Assert-PlainPath $WindowsPortableZip }
     $msiPath = Assert-PlainPath $WindowsMsi
@@ -450,7 +450,7 @@ function New-PreviewPlan {
        [long]$setupReceipt.bytes -ne (Get-Item -LiteralPath $setupPath).Length){Fail 'Native installer receipt or embedded MSI identity does not match.'}
     if(-not $WindowsOnly){
     $macManifest = Read-JsonFile $macManifestPath
-    Assert-DistributionEnvelope $macManifest 'codlet-macos-preview' 'darwin-arm64' $version
+    Assert-DistributionEnvelope $macManifest 'codlet-macos-distribution' 'darwin-arm64' $version
     if ($macManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only macOS distribution.' }
     if ($macManifest.sourceCommit.ToLowerInvariant() -ne $portableManifest.sourceCommit) { Fail 'macOS and Windows builds come from different Core commits.' }
     if ($null -eq $macManifest.dmg -or $macManifest.dmg.file -ne [IO.Path]::GetFileName($dmgPath) -or
@@ -489,7 +489,7 @@ function New-PreviewPlan {
         $runtimeBuild = Join-Path $stage '.runtime-update-build'
         $builder = Join-Path $PSScriptRoot 'Build-RuntimeUpdate.ps1'
         if (-not (Test-Path -LiteralPath $builder)) { Fail 'Build-RuntimeUpdate.ps1 is missing.' }
-        $buildArguments = @{ InputDirectory = $portableRoot; PayloadProfile = 'portable'; Version = $version; Channel = 'preview'; OutputDirectory = $runtimeBuild }
+        $buildArguments = @{ InputDirectory = $portableRoot; PayloadProfile = 'portable'; Version = $version; Channel = 'stable'; OutputDirectory = $runtimeBuild }
         if ($LegacyUpdateBridge) { $buildArguments.LegacyBundledBridgeNodeDirectory = $bridgeNode }
         $buildResult = & $builder @buildArguments
         if ($null -eq $buildResult -or -not $buildResult.archive) { Fail 'Runtime update packager did not return an archive.' }
@@ -502,7 +502,7 @@ function New-PreviewPlan {
         $channelManifest = [ordered]@{
             schema = 1
             kind = 'codlet-runtime-channel'
-            channel = 'preview'
+            channel = 'stable'
             version = $version
             artifacts = @([ordered]@{
                 platform = 'win-x64'
@@ -538,9 +538,9 @@ function New-PreviewPlan {
         $assets.Add((Add-GeneratedAsset $stage $sumName 'sha256-summary'))
 
         $notesLines = @(
-            "# Codlet Core $version Preview",
+            "# Codlet $version",
             '',
-            "This prerelease was built from Core commit ``$($portableManifest.sourceCommit)`` only. Optional plugins are downloaded from their published GitHub Releases.",
+            "Built from Core commit ``$($portableManifest.sourceCommit)``. Optional plugins are downloaded from their published GitHub Releases.",
             '',
             '## Downloads',
             '',
@@ -550,17 +550,18 @@ function New-PreviewPlan {
             'Use the installer above for Windows installation and upgrades. The update ZIPs and `codlet-update-managed.json` support existing portable and macOS installations. `SHA256SUMS.txt` lists download checksums.',
             $(if ($LegacyUpdateBridge) { 'This transition release also provides `codlet-update.json` and full updater payloads so Preview 5 can upgrade. New installations use the smaller packages; later updates use the managed-runtime channel.' } else { 'Node is prepared automatically from a verified official-client runtime or the pinned fallback download, then reused from the managed cache.' }),
             '',
-            '## Preview changes',
+            '## Features',
             '',
-            '- Native installation follows system appearance and language; user and machine scope have matching shortcuts, registry and optional PATH entries.',
-            '- A single plugin consent can grant declared capabilities within the desktop user context. Existing scoped permissions remain unchanged until explicitly reauthorized.',
+            '- A shared Host/renderer plugin lifecycle with explicit permissions, capabilities, cancellation and diagnostics.',
+            '- Optional Desktop/UI adapters and a GUI for plugin discovery, installation, updates and management; CLI and runtime skill work independently.',
+            '- Native installation follows system appearance and language, with user or machine scope, shortcuts and optional PATH entries.',
             '- Run the setup EXE to upgrade installed Windows versions, including earlier MSI installations. Existing portable in-app runtime updates replace Core only. Switching installation scope requires uninstalling the old-scope application first; plugin data is preserved.',
             '',
             '## Signing and verification',
             '',
             $(if($WindowsOnly){'Windows packages are unsigned. Review `SHA256SUMS.txt` before use.'}else{'Windows packages are unsigned. The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.'}),
             '',
-            'This is preview software; see [known issues](https://github.com/baoabaob/codlet/blob/main/docs/known-issues.md) for current platform and acceptance limits.'
+            'See [known issues](https://github.com/baoabaob/codlet/blob/main/docs/known-issues.md) and [release readiness](https://github.com/baoabaob/codlet/blob/main/docs/release-readiness.md) for platform evidence and remaining acceptance limits.'
         )
         $notes = ($notesLines -join "`n") + "`n"
         Write-Utf8 (Join-Path $stage 'release-notes.md') $notes
@@ -568,17 +569,17 @@ function New-PreviewPlan {
 
         $plan = [ordered]@{
             schema = 1
-            kind = 'codlet-core-preview-release-plan'
+            kind = 'codlet-core-release-plan'
             repository = $Repository
             version = $version
             tag = 'v' + $version
-            channel = 'preview'
-            prerelease = $true
+            channel = 'stable'
+            prerelease = $false
             legacyUpdateBridge = [bool]$LegacyUpdateBridge
             windowsOnly = [bool]$WindowsOnly
             sourceCommit = $portableManifest.sourceCommit
             pluginDelivery = 'github-latest'
-            releaseName = "Codlet $version Preview"
+            releaseName = "Codlet $version"
             releaseNotesFile = 'release-notes.md'
             releaseNotesBytes = [long](Get-Item -LiteralPath $notesPath).Length
             releaseNotesSha256 = Get-Sha256 $notesPath
@@ -588,11 +589,11 @@ function New-PreviewPlan {
         Write-Utf8 (Join-Path $stage 'release-plan.json') (($plan | ConvertTo-Json -Depth 20) + "`n")
         [IO.Directory]::Move($stage, $output)
         $report = [ordered]@{
-            action = 'Preview'
+            action = 'Plan'
             outputDirectory = $output
             version = $version
             tag = $plan.tag
-            prerelease = $true
+            prerelease = $false
             updaterPlatforms = @($channelManifest.artifacts | ForEach-Object { $_.platform })
             assets = @($plan.assets | ForEach-Object { [ordered]@{ name = $_.name; bytes = $_.bytes; sha256 = $_.sha256; kind = $_.kind } })
             releasePlan = (Join-Path $output 'release-plan.json')
@@ -621,8 +622,9 @@ function Resolve-PlanAsset([string]$Root, [string]$Name) {
 function Read-ReleasePlan([string]$Path) {
     $planPath = Assert-PlainPath $Path
     $plan = Read-JsonFile $planPath 2MB
-    if ($plan.schema -ne 1 -or $plan.kind -ne 'codlet-core-preview-release-plan' -or $plan.channel -ne 'preview' -or $plan.prerelease -ne $true) { Fail 'Expected a Codlet Core preview release plan.' }
+    if ($plan.schema -ne 1 -or $plan.kind -ne 'codlet-core-release-plan' -or $plan.channel -ne 'stable' -or $plan.prerelease -ne $false) { Fail 'Expected a Codlet Core stable release plan.' }
     Assert-Version ([string]$plan.version) | Out-Null
+    if ($plan.version -notmatch '^\d+\.\d+\.\d+$') { Fail 'Stable release plans cannot contain prerelease versions.' }
     if ($plan.tag -ne ('v' + $plan.version) -or $plan.repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
         $plan.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $plan.pluginDelivery -ne 'github-latest') { Fail 'Release plan version, repository or provenance is invalid.' }
     if ($plan.assets -isnot [System.Array] -or $plan.assets.Count -lt 4 -or $plan.assets.Count -gt 128) { Fail 'Release plan asset list is empty or too large.' }
@@ -682,7 +684,7 @@ function Read-ReleasePlan([string]$Path) {
     }
     elseif ($legacyChannelAsset.Count -ne 0) { Fail 'A managed-only release must not advertise its ZIPs to Preview 5.' }
     $expectedPlatforms=if($windowsOnlyPlan){1}else{2}
-    if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'preview' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne $expectedPlatforms) { Fail 'Preview channel manifest is not compatible with the runtime updater.' }
+    if ($channel.schema -ne 1 -or $channel.kind -ne 'codlet-runtime-channel' -or $channel.channel -ne 'stable' -or $channel.version -ne $plan.version -or $channel.artifacts.Count -ne $expectedPlatforms) { Fail 'Preview channel manifest is not compatible with the runtime updater.' }
     foreach ($supported in @(@{ platform = 'win-x64'; profile = 'portable' }, @{ platform = 'darwin-arm64'; profile = 'macApp' })) {
         if($supported.platform -eq 'darwin-arm64' -and $windowsOnlyPlan){continue}
         $matches = @($channel.artifacts | Where-Object { $_.platform -eq $supported.platform -and $_.profile -eq $supported.profile })
@@ -699,7 +701,7 @@ function Read-ReleasePlan([string]$Path) {
         }
         else {
             $macManifest = Read-JsonFile $macManifestPath
-            if ($macManifest.schema -ne 1 -or $macManifest.kind -ne 'codlet-macos-preview' -or $macManifest.version -ne $plan.version -or
+            if ($macManifest.schema -ne 1 -or $macManifest.kind -ne 'codlet-macos-distribution' -or $macManifest.version -ne $plan.version -or
                 $macManifest.platform -ne 'darwin-arm64' -or $macManifest.sourceCommit -ne $plan.sourceCommit -or $macManifest.pluginDelivery -ne 'github-latest') {
                 Fail 'Saved macOS distribution manifest has different release provenance.'
             }
@@ -810,7 +812,7 @@ function Get-RemoteTagCommit([string]$RepositoryName, [string]$Tag) {
     Fail 'Release tag has too many nested annotated tags.'
 }
 
-function Ensure-PreviewTag([string]$RepositoryName, [string]$Tag, [string]$SourceCommit) {
+function Ensure-ReleaseTag([string]$RepositoryName, [string]$Tag, [string]$SourceCommit) {
     if ($SourceCommit -notmatch '^[0-9a-f]{40}$') { Fail 'Release plan source commit is not a full lowercase Git object ID.' }
     $tagCommit = Get-RemoteTagCommit $RepositoryName $Tag
     if ($tagCommit) {
@@ -859,8 +861,8 @@ function Get-RemoteAssets([string]$RepositoryName, [long]$ReleaseId) {
 }
 
 function Assert-ReleaseIdentity($Release, $Plan, [string]$Notes) {
-    if ($Release.tag_name -ne $Plan.tag -or $Release.name -ne $Plan.releaseName -or $Release.body -cne $Notes -or $Release.prerelease -ne $true) {
-        Fail 'This tag already has different release content or is not marked as a prerelease; refusing to overwrite it.'
+    if ($Release.tag_name -ne $Plan.tag -or $Release.name -ne $Plan.releaseName -or $Release.body -cne $Notes -or $Release.prerelease -ne $false) {
+        Fail 'This tag already has different release content or channel; refusing to overwrite it.'
     }
 }
 
@@ -890,7 +892,7 @@ function Assert-RemoteAssetSet($RepositoryName, $Release, $Plan, [switch]$AllowM
 function Invoke-DraftAction($Loaded, [bool]$DoApply) {
     $plan = $Loaded.Plan
     if (-not $DoApply) {
-        return [ordered]@{ action = 'PrepareDraft'; tag = $plan.tag; repository = $plan.repository; prerelease = $true; assets = $plan.assets.Count; externalWrites = $false; applyRequired = $true }
+        return [ordered]@{ action = 'PrepareDraft'; tag = $plan.tag; repository = $plan.repository; prerelease = $false; assets = $plan.assets.Count; externalWrites = $false; applyRequired = $true }
     }
     Initialize-GitHubCredential
     $repository = Invoke-ReleaseApi GET ("/repos/$($plan.repository)")
@@ -898,19 +900,19 @@ function Invoke-DraftAction($Loaded, [bool]$DoApply) {
     $release = Find-RemoteRelease $plan.repository $plan.tag
     if ($release) {
         Assert-ReleaseIdentity $release $plan $Loaded.Notes
-        $tagCommit = Ensure-PreviewTag $plan.repository $plan.tag $plan.sourceCommit
+        $tagCommit = Ensure-ReleaseTag $plan.repository $plan.tag $plan.sourceCommit
         $remoteByName = Assert-RemoteAssetSet $plan.repository $release $plan -AllowMissing
         if (-not $release.draft) {
             if ($remoteByName.Count -ne $plan.assets.Count) { Fail 'Published release is missing an expected asset; it will not be modified.' }
-            return [ordered]@{ action = 'PrepareDraft'; tag = $plan.tag; releaseUrl = $release.html_url; draft = $false; prerelease = $true; alreadyComplete = $true; assets = $remoteByName.Count; externalWrites = $false }
+            return [ordered]@{ action = 'PrepareDraft'; tag = $plan.tag; releaseUrl = $release.html_url; draft = $false; prerelease = $false; alreadyComplete = $true; assets = $remoteByName.Count; externalWrites = $false }
         }
     }
     else {
-        $tagCommit = Ensure-PreviewTag $plan.repository $plan.tag $plan.sourceCommit
+        $tagCommit = Ensure-ReleaseTag $plan.repository $plan.tag $plan.sourceCommit
         $release = Invoke-ReleaseApi POST ("/repos/$($plan.repository)/releases") @{
-            tag_name = $plan.tag; target_commitish = $plan.sourceCommit; name = $plan.releaseName; body = $Loaded.Notes; draft = $true; prerelease = $true
+            tag_name = $plan.tag; target_commitish = $plan.sourceCommit; name = $plan.releaseName; body = $Loaded.Notes; draft = $true; prerelease = $false
         }
-        if (-not $release.id -or -not $release.draft -or -not $release.prerelease) { Fail 'GitHub did not create the expected prerelease draft.' }
+        if (-not $release.id -or -not $release.draft -or $release.prerelease -ne $false) { Fail 'GitHub did not create the expected stable release draft.' }
         $remoteByName = @{}
     }
     foreach ($expected in $plan.assets) {
@@ -931,7 +933,7 @@ function Invoke-DraftAction($Loaded, [bool]$DoApply) {
 function Invoke-PublishAction($Loaded, [bool]$DoApply) {
     $plan = $Loaded.Plan
     if (-not $DoApply) {
-        return [ordered]@{ action = 'Publish'; tag = $plan.tag; repository = $plan.repository; prerelease = $true; assets = $plan.assets.Count; externalWrites = $false; applyRequired = $true }
+        return [ordered]@{ action = 'Publish'; tag = $plan.tag; repository = $plan.repository; prerelease = $false; assets = $plan.assets.Count; externalWrites = $false; applyRequired = $true }
     }
     Initialize-GitHubCredential
     $release = Find-RemoteRelease $plan.repository $plan.tag
@@ -941,18 +943,18 @@ function Invoke-PublishAction($Loaded, [bool]$DoApply) {
     if ($tagCommit -ne $plan.sourceCommit) { Fail 'Release tag does not point to the exact Core source commit in the plan.' }
     $remoteByName = Assert-RemoteAssetSet $plan.repository $release $plan
     if ($release.draft) {
-        $release = Invoke-ReleaseApi PATCH ("/repos/$($plan.repository)/releases/$($release.id)") @{ draft = $false; prerelease = $true }
+        $release = Invoke-ReleaseApi PATCH ("/repos/$($plan.repository)/releases/$($release.id)") @{ draft = $false; prerelease = $false }
     }
-    if ($release.draft -or -not $release.prerelease) { Fail 'GitHub did not publish the expected prerelease.' }
-    [ordered]@{ action = 'Publish'; tag = $plan.tag; releaseUrl = $release.html_url; draft = $false; prerelease = $true; assets = $remoteByName.Count; externalWrites = $true }
+    if ($release.draft -or $release.prerelease -ne $false) { Fail 'GitHub did not publish the expected stable release.' }
+    [ordered]@{ action = 'Publish'; tag = $plan.tag; releaseUrl = $release.html_url; draft = $false; prerelease = $false; assets = $remoteByName.Count; externalWrites = $true }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { Fail 'Repository must use owner/name form.' }
-        if ($Action -eq 'Preview') {
+        if ($Action -eq 'Plan') {
             if ($Apply) { Fail '-Apply is only valid with PrepareDraft or Publish.' }
-            New-PreviewPlan | Write-Output
+            New-ReleasePlan | Write-Output
         }
         else {
             if ([string]::IsNullOrWhiteSpace($PlanPath)) { Fail "-$Action requires -PlanPath." }

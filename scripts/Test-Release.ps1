@@ -5,9 +5,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
 $coreRoot = Split-Path -Parent $PSScriptRoot
-$releaseScript = Join-Path $PSScriptRoot 'Publish-PreviewRelease.ps1'
+$releaseScript = Join-Path $PSScriptRoot 'Publish-Release.ps1'
 $versionMatch = [regex]::Match([IO.File]::ReadAllText((Join-Path $coreRoot 'Cargo.toml')), '(?m)^version\s*=\s*"([^"]+)"')
-if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -notmatch '-preview\.') { throw 'Test fixture expects a preview package version.' }
+if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -notmatch '^\d+\.\d+\.\d+$') { throw 'Test fixture expects a stable package version.' }
 $version = $versionMatch.Groups[1].Value
 . $releaseScript
 $root = Join-Path ($env:SystemDrive.TrimEnd('\') + '\') ('cpr-' + [Guid]::NewGuid().ToString('N'))
@@ -80,7 +80,7 @@ function Invoke-ReleaseApi([string]$Method, [string]$Path, $Body = $null, [switc
     }
     if ($Method -eq 'POST' -and $Path -match '/git/refs$') {
         $script:mockTagCreateCount++
-        if ($Body.ref -ne 'refs/tags/v0.0.0-preview-fixture' -or $Body.sha -notmatch '^[0-9a-f]{40}$') { throw 'Tag creation request did not contain the exact expected ref and source commit.' }
+        if ($Body.ref -ne 'refs/tags/v0.0.1' -or $Body.sha -notmatch '^[0-9a-f]{40}$') { throw 'Tag creation request did not contain the exact expected ref and source commit.' }
         if ($script:mockTagCreateMode -eq 'exact-conflict') {
             $script:mockTagState = $Body.sha
             throw 'Synthetic already-created ref response.'
@@ -124,32 +124,32 @@ function Assert-OfflineTagCreation {
     $script:mockTagState = $null
     $script:mockTagCreateCount = 0
     $script:mockTagCreateMode = 'normal'
-    $created = Ensure-PreviewTag 'owner/repo' 'v0.0.0-preview-fixture' $commit
+    $created = Ensure-ReleaseTag 'owner/repo' 'v0.0.1' $commit
     if ($created -ne $commit -or $script:mockTagCreateCount -ne 1) { throw 'Missing release tag was not created at the planned commit.' }
 
-    $repeated = Ensure-PreviewTag 'owner/repo' 'v0.0.0-preview-fixture' $commit
+    $repeated = Ensure-ReleaseTag 'owner/repo' 'v0.0.1' $commit
     if ($repeated -ne $commit -or $script:mockTagCreateCount -ne 1) { throw 'Exact existing release tag was not idempotent.' }
 
     $script:mockTagState = 'd' * 40
     $rejected = $false
-    try { $null = Ensure-PreviewTag 'owner/repo' 'v0.0.0-preview-fixture' $commit } catch { $rejected = $true }
+    try { $null = Ensure-ReleaseTag 'owner/repo' 'v0.0.1' $commit } catch { $rejected = $true }
     if (-not $rejected -or $script:mockTagCreateCount -ne 1) { throw 'A tag pointing to another commit was not refused without replacement.' }
 
     $script:mockTagState = $null
     $script:mockTagCreateMode = 'exact-conflict'
-    $recovered = Ensure-PreviewTag 'owner/repo' 'v0.0.0-preview-fixture' $commit
+    $recovered = Ensure-ReleaseTag 'owner/repo' 'v0.0.1' $commit
     if ($recovered -ne $commit -or $script:mockTagCreateCount -ne 2) { throw 'Interrupted tag creation retry did not accept the exact ref created by the prior attempt.' }
 
     $script:mockTagState = $null
     $script:mockTagCreateMode = 'wrong-conflict'
     $rejected = $false
-    try { $null = Ensure-PreviewTag 'owner/repo' 'v0.0.0-preview-fixture' $commit } catch { $rejected = $true }
+    try { $null = Ensure-ReleaseTag 'owner/repo' 'v0.0.1' $commit } catch { $rejected = $true }
     if (-not $rejected) { throw 'A concurrent different-commit tag was not rejected.' }
 
     $script:mockTagState = $null
     $script:mockTagCreateMode = 'fail-without-ref'
     $rejected = $false
-    try { $null = Ensure-PreviewTag 'owner/repo' 'v0.0.0-preview-fixture' $commit } catch { $rejected = $true }
+    try { $null = Ensure-ReleaseTag 'owner/repo' 'v0.0.1' $commit } catch { $rejected = $true }
     if (-not $rejected) { throw 'A failed tag creation with no resulting ref was not rejected.' }
 }
 
@@ -162,8 +162,8 @@ function Assert-OfflineDraftPublishRecovery {
     $script:mockReleaseCreateMode = 'lost-response-once'
     $loaded = [pscustomobject]@{
         Plan = [pscustomobject]@{
-            repository = 'owner/repo'; tag = 'v0.0.0-preview-fixture'; sourceCommit = $commit
-            releaseName = 'Codlet Preview Fixture'; assets = @()
+            repository = 'owner/repo'; tag = 'v0.0.1'; sourceCommit = $commit
+            releaseName = 'Codlet Release Fixture'; assets = @()
         }
         Notes = 'synthetic immutable notes'
         Root = 'unused'
@@ -180,8 +180,8 @@ function Assert-OfflineDraftPublishRecovery {
         throw 'PrepareDraft retry did not resume the exact draft without recreating its tag.'
     }
     $published = Invoke-PublishAction $loaded $true
-    if ($published.draft -or -not $published.prerelease -or $script:mockRelease.draft -or $script:mockTagState -ne $commit) {
-        throw 'The prepared exact-tag draft could not transition to a prerelease publish.'
+    if ($published.draft -or $published.prerelease -ne $false -or $script:mockRelease.draft -or $script:mockTagState -ne $commit) {
+        throw 'The prepared exact-tag draft could not transition to a stable publish.'
     }
 }
 
@@ -319,7 +319,7 @@ try {
     $dmgPath = Join-Path $mac $dmgName
     [IO.File]::WriteAllBytes($dmgPath, $utf8.GetBytes('synthetic unsigned DMG fixture' + "`n"))
     $macManifest = [ordered]@{
-        schema = 1; kind = 'codlet-macos-preview'; version = $version; platform = 'darwin-arm64'
+        schema = 1; kind = 'codlet-macos-distribution'; version = $version; platform = 'darwin-arm64'
         sourceCommit = $coreCommit; pluginDelivery = 'github-latest'; appleDeveloperSigned = $false; notarized = $false
         files = $slimMacRecords
         dmg = [ordered]@{ file = $dmgName; bytes = [long](Get-Item -LiteralPath $dmgPath).Length; sha256 = Hash-File $dmgPath }
@@ -334,7 +334,7 @@ try {
     Write-Json $macManifestPath $macManifest
 
     $arguments = @(
-        '-Action', 'Preview', '-Repository', 'baoabaob/codlet',
+        '-Action', 'Plan', '-Repository', 'baoabaob/codlet',
         '-WindowsPortableDirectory', $portable, '-WindowsPortableZip', $portableZip,
         '-WindowsMsi', $msiPath, '-WindowsMsiManifest', $msiManifestPath,
         '-WindowsSetup', $setupPath,
@@ -342,7 +342,7 @@ try {
         '-OutputDirectory', $outputDirectory
     )
     if ($TestLegacyBridge) { $arguments += @('-LegacyUpdateBridge', '-WindowsBridgeNodeDirectory', $nodeDirectory) }
-    Assert-PublisherRejects @($arguments | Where-Object { $_ -ne '-WindowsSetup' -and $_ -ne $setupPath }) 'Preview action requires -WindowsSetup.'
+    Assert-PublisherRejects @($arguments | Where-Object { $_ -ne '-WindowsSetup' -and $_ -ne $setupPath }) 'Plan action requires -WindowsSetup.'
     $resultText = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Preview release fixture was rejected by the publisher.' }
     $report = ($resultText -join "`n") | ConvertFrom-Json
@@ -379,14 +379,14 @@ try {
         throw 'SHA256SUMS must contain only the other public assets.'
     }
     $releaseNotes = [IO.File]::ReadAllText((Join-Path $outputDirectory 'release-notes.md'))
-    foreach ($expectedText in @('Windows x64 installer', 'Apple Silicon DMG', 'PATH', 'declared capabilities', 'runtime updates', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
+    foreach ($expectedText in @('Windows x64 installer', 'Apple Silicon DMG', 'PATH', 'permissions', 'runtime updates', 'SHA256SUMS.txt', 'ad-hoc signed', 'not Developer ID signed or notarized', 'known issues')) {
         if ($releaseNotes -notmatch [regex]::Escape($expectedText)) { throw "Release notes omitted expected reader-facing detail: $expectedText" }
     }
     if ($releaseNotes -match 'Windows x64 MSI|Windows x64 portable ZIP|releases/download/[^)]+\.msi') { throw 'Release notes still advertise a separate Windows installation package.' }
     if ($releaseNotes -match '(?m)^\| Asset \|' -or $releaseNotes -match '(?m)^\| ``[^|]+`` \|') { throw 'Release notes duplicate the per-asset hash table instead of directing readers to SHA256SUMS.txt.' }
     $channel = [IO.File]::ReadAllText((Join-Path $outputDirectory 'codlet-update-managed.json')) | ConvertFrom-Json
     if ($TestLegacyBridge -and (Hash-File (Join-Path $outputDirectory 'codlet-update.json')) -ne (Hash-File (Join-Path $outputDirectory 'codlet-update-managed.json'))) { throw 'Bridge channels disagree about the update payloads.' }
-    if ($plan.version -ne $version -or $plan.prerelease -ne $true -or $channel.channel -ne 'preview' -or $channel.version -ne $version -or $channel.artifacts.Count -ne 2) { throw 'Versioned Preview channel contract is incorrect.' }
+    if ($plan.version -ne $version -or $plan.prerelease -ne $false -or $channel.channel -ne 'stable' -or $channel.version -ne $version -or $channel.artifacts.Count -ne 2) { throw 'Versioned Preview channel contract is incorrect.' }
     foreach ($artifact in $channel.artifacts) {
         $asset = @($plan.assets | Where-Object { $_.name -eq $artifact.assetName })
         if ($asset.Count -ne 1 -or $asset[0].bytes -ne $artifact.bytes -or $asset[0].sha256 -ne $artifact.sha256) { throw 'Updater manifest does not match the release asset inventory.' }
@@ -415,7 +415,7 @@ try {
     $validationPath = Join-Path $outputDirectory $plan.verificationInputs.macos.file
     if(-not $TestLegacyBridge){
         $windowsOutput=$outputDirectory+'-windows-only'
-        $windowsArguments=@('-Action','Preview','-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-WindowsSetup',$setupPath,'-OutputDirectory',$windowsOutput)
+        $windowsArguments=@('-Action','Plan','-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-WindowsSetup',$setupPath,'-OutputDirectory',$windowsOutput)
         $windowsReport=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @windowsArguments
         if($LASTEXITCODE -ne 0){throw 'Windows-only Preview fixture failed'}
         $windowsReport=($windowsReport -join "`n")|ConvertFrom-Json
@@ -464,7 +464,7 @@ try {
             'draft preparation tag creation is exact-commit, idempotent, retryable after interruption, and refuses conflicting refs',
             'synthetic draft creation interruption recovers through PrepareDraft and Publish without remote network access',
             'release notes explain package choices, preview improvements, checksums, and the precise macOS signing status',
-            'preview plan remains a prerelease and plan-only draft/publish actions make no external writes',
+            'stable plan is a final release and plan-only draft/publish actions make no external writes',
             'distribution manifests and the native setup receipt remain local verification inputs',
             'changed local-only verification manifest is refused',
             'changed same-version local asset is refused'

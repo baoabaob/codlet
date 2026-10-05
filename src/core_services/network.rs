@@ -166,8 +166,7 @@ impl Network {
         persistent: &PluginServices,
         check: &dyn Fn() -> Result<()>,
     ) -> Result<Value> {
-        let mut builder = reqwest::Client::builder()
-            .use_rustls_tls()
+        let mut builder = crate::http_client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
@@ -199,7 +198,7 @@ impl Network {
             for certificate in reqwest::Certificate::from_pem_bundle(pem.as_bytes())
                 .map_err(|_| error("invalid_ca", "additional CA is invalid"))?
             {
-                builder = builder.add_root_certificate(certificate);
+                builder = builder.tls_certs_merge([certificate]);
             }
         }
         let client = builder

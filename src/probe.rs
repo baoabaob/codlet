@@ -827,7 +827,7 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
 
 // The isolated desktop acceptance test supplies only the owned child and scoped
 // IPC listeners. Plugin preparation, activation and the event loop stay shared.
-#[cfg(any(test, feature = "desktop-acceptance"))]
+#[cfg(all(not(test), feature = "desktop-acceptance"))]
 fn start_codlet_runtime_with_connector(
     options: LaunchOptions,
     refresh_client: Option<&str>,
