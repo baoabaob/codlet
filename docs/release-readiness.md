@@ -4,6 +4,8 @@
 
 本轮检查日期为 2026-10-05（Asia/Shanghai），覆盖 Core 和官方插件两个仓库。基线分别为 `b381460`、`60bb8e9`。最初方案和研究依据可从 `9f2eccb^:docs/PRODUCT_TECHNICAL_PLAN.md`、`9f2eccb^:docs/RESEARCH_BASELINE.md` 读取；当前契约以 `docs/spec/` 为准。旧设计文档不重新复制到工作目录。
 
+候选制品绑定 Core 提交 `b2a8249893e66c8149d4e51eabb01b768c2957f5`，覆盖 Windows x64 和 macOS Apple Silicon；官方插件审查提交为 `425148bdd7c7065f98fe76799ce718fa118289cb`。本报告在制品生成后补充最终结果，发布计划中的源码身份保持不变。
+
 ## 已完成的清理和修复
 
 - 删除 22 条本地历史分支、3 条远端历史分支、6 个 Core Preview 标签和 6 个 Preview 发布（含草稿）。两个仓库各保留 `main` 和一个主工作树。清理前的提交保存在各自 `.git/pre-release-cleanup.bundle`；没有重写主分支历史。
@@ -19,6 +21,7 @@
 - 跨平台 CI 暴露并修复了两个问题：reqwest 升级后显式保持 WebPKI 对系统根证书与附加 CA 的校验语义；客户端模块观察器同时识别应用目录及其真实路径，避免 macOS `/var` 别名或 Windows junction 使启动 source 无法激活。目录别名回归已先复现失败，再验证修复及相邻目录排除。
 - Mac 分发流水线中的官方 CUA Node 验收脚本也已从旧 `prepare` 阶段迁移到 `clientSource`；子进程失败直接报告退出结果，不再表现成无响应超时。
 - Mac 完整检查发现并修复了启动 source 缺少就绪确认的问题：在 CDP reader 已启动后完成握手，再决定是否暂停不受支持的插件。删除无调用者的旧 Mac 启动错误转换函数；打包 fixtures 使用物理临时目录，并加入日常 macOS CI。
+- 兼容性后台任务测试使用每个平台自己的合成记录，避免将 Windows 验收样本当作 Mac 样本。macOS 日常 CI 现运行完整原生脚本，包括所有 Rust 目标、功能开关和严格 Clippy；正式兼容性目录没有添加未经实际客户端验收的记录。
 
 ## 按最初设计核对
 
@@ -34,14 +37,14 @@
 | 官方入口总能打开纯净实例 | 扩展实例在运行时，官方入口仍可能复用该主实例 | **未满足，DEFECT-001，见 G3** |
 | Core 与其客户端同寿命，包括 Core 异常终止 | pipe EOF 只保证请求协作退出，不能保证客户端必然退出 | **未满足，DEFECT-002，见 G3** |
 | 安装不关闭现有 Codex；卸载可明确选择是否保留数据 | 现有安装器提供正常关闭流程；卸载固定保留用户数据 | **与初稿有差异，见 G4/G7** |
-| 跟随官方客户端的目标平台 | Windows x64 为主要验证目标；ARM64/Mac 有实现但缺少本次完整设备验收 | 见 G2 |
+| 跟随官方客户端的目标平台 | Windows x64 与 Mac ARM64 已构建并通过原生自动化；Windows ARM64 未准备本轮安装包 | 完整客户端桌面验收见 G1/G2 |
 
 ## 发布门禁和待办
 
 | ID | 优先级 | 需要完成的工作 | 完成标准 |
 | --- | --- | --- | --- |
 | G1 | P0 | 在可丢弃 Windows VM/主机上用最终 0.2.0 安装包和当前签名 Codex 做完整验收 | 首次安装、从 Preview 升级、修复、卸载、PATH/快捷方式/安装范围；首次启动、两种流量 source、skill、GUI/CLI 导入/启停/撤权/重载/更新/回滚、安全模式、冷启动与多窗口；正常退出无遗留拥有者。记录准确包版本、源码提交、日志和通过项 |
-| G2 | P0（若首发包含该平台） | 明确首发平台；补 macOS Apple Silicon、Windows ARM64 真机验收 | 对选入发布的每个平台执行安装和完整 Desktop 功能测试；否则发行清单和宣传明确仅 Windows x64。本机不能代替 Mac/ARM64 设备 |
+| G2 | P0（若首发包含该平台） | 补 macOS Apple Silicon 签名客户端的桌面验收；若增加 Windows ARM64，另补构建及真机验收 | 当前 Mac runner 已验证原生 Core、应用封装及更新回滚；仍需登录客户端的完整 GUI/插件流程。只公布完成验收的平台；暂不包含 Mac 时，用 `-WindowsOnly` 重新生成对应计划 |
 | G3 | P1 / 原始契约 | 处理官方入口复用实例及 Core 崩溃后客户端残留 | 修复并复测 DEFECT-001/002，或明确将其从 0.2.0 保证中排除；不得继续宣称完全实现最初的独立纯净入口和崩溃同寿命保证 |
 | G4 | P1 / 产品决定 | 确认安装/启动器的“请求已有客户端正常关闭”行为 | 若严格遵循初稿，改为仅提示用户自行关闭；若接受现行为，更新正式产品约定并验收取消、不强制终止、不自动重启 |
 | G5 | P1 / 分发 | 决定并完成 Windows 签名及 Mac Developer ID/notarization | 校验最终安装包签名和安装体验；当前构建工具产生的未签名/ad-hoc 产物不能标为已签名或已公证 |
@@ -50,7 +53,7 @@
 | G8 | P2 / 生命周期 | 热重载的 Chromium world 累积及 loaded-thread provider 自动恢复 | 长时间/高频重载提供明确边界；新增恢复协议前，插件必须先恢复原 provider 再关闭 route，不能把关闭通道当成恢复成功 |
 | G9 | P2 / 维护性 | 持续拆分大型协调模块，保持回归覆盖 | 后续按职责拆分 renderer、lab、Host 与管理协调代码；每次独立变更验证 ABI、事务与生命周期，不为本次清理一次性重写所有模块 |
 
-G1/G2 的完整 Windows 原生 turn 验收不能在共享日常主机上补跑：官方沙箱初始化可能修改系统用户和防火墙。当前环境没有可用的可丢弃 Windows VM，也不是 Mac/ARM64 设备。工具检查和浏览器预览均不能关闭这些门禁。
+完整 Windows 原生 turn 验收不能在共享日常主机上补跑：官方沙箱初始化可能修改系统用户和防火墙。当前环境没有可用的可丢弃 Windows VM。已使用 GitHub Apple Silicon runner 完成 Mac 原生自动化，但没有打开实际登录的官方 GUI；这部分和浏览器模拟预览都不能关闭 G1/G2 的桌面验收门禁。
 
 ## 验证记录
 
@@ -62,6 +65,8 @@ G1/G2 的完整 Windows 原生 turn 验收不能在共享日常主机上补跑�
 | `cargo test --locked --all-targets --all-features -- --test-threads=2` | **754 通过，7 ignored** | 包括受控进程、IPC、权限、RPC、生命周期、网络及更新事务；ignored 不算通过 |
 | Core Node 全套 | **212 通过，0 跳过** | 包括真实 Core 原生 HTTP/SSE/WS/WSS fixtures 和目录别名回归 |
 | 官方插件 Node 全套，配置匹配的 `CODLET_CORE_ROOT` | **256 通过，2 跳过** | 两个真实 AppServer turn 测试需可丢弃 Windows 主机；受控 Node 冷启动/Host ABI 已运行 |
+| Mac 全目标/全功能 Rust、严格 Clippy | **423 通过，3 ignored** | Apple Silicon runner 的真实进程、IPC、文件系统与网络；未运行官方 GUI |
+| Mac Core 网络与桥接 Node 子集 | **74 通过，1 平台跳过** | HTTP/SSE/WS/WSS、冷启动桥接、目录别名；Windows PE fuse 检查在 Mac 上跳过 |
 | TypeScript SDK 检查 | 通过 | 固定 TypeScript 7.0.2，检查现有声明与使用示例 |
 | npm 审计 | 两个仓库均 0 项 | 当前锁文件已知漏洞记录 |
 | Rust 锁文件 OSV/RustSec 查询 | 234 个 registry 包，0 命中 | `cargo-audit` 安装遇到 registry 网络超时，改为数据库批量查询；不是 cargo-audit 的结果 |
@@ -69,11 +74,15 @@ G1/G2 的完整 Windows 原生 turn 验收不能在共享日常主机上补跑�
 | 稳定版发布计划测试 | 通过 | 合成包、摘要、篡改拒绝、精确提交标签和模拟 draft/publish；无 GitHub 写入 |
 | 真实候选 MSI、安装器和更新 ZIP | 构建及结构校验通过 | MSI 产品版本为 `0.2.1000`；未安装到当前日常系统 |
 | 候选 ZIP 更新及失败回滚 | opt-in 验收通过 | 实际解包、替换、重启成功和回滚路径；使用独立临时目录与受控假客户端 |
-| macOS 打包规则 | 5 项通过 | 离线 Python 载荷检查，没有执行 Mac 二进制 |
+| macOS 打包规则 | 5 项通过 | 本机离线检查及 Mac runner 均通过 |
+| Mac DMG / 应用更新包 | 构建、挂载、原生初始化与更新回滚通过 | Swift launcher smoke、ad-hoc seal、实际 Core CLI、完整应用替换及回滚；无 Developer ID 签名或公证 |
+| Mac 官方 CUA Node 复用 | opt-in 验收通过 | 验证 `26.917.62051` 官方应用与独立 Node 的签名、摘要、Host flags/模块、source ABI、原生解析与运行时复用；未启动该应用 GUI |
 | 真实固定 Node 镜像下载及缓存复用 | 补跑通过 | 校验实际公开镜像和可复用私有缓存 |
 | 指定旧官方 CUA Node 复用验收 | 环境前提未满足 | 该 opt-in 测试要求 `26.917.6896.0`，本机已是 `26.930.3930.0`，无法取得其精确旧源；不能记为通过。当前固定下载路径已验收 |
 
-本轮 Windows 候选材料使用 `.codlet-artifacts/release-0.2.0/`，其中 `evidence/` 保留最终日志和截图，`release/` 保留发布计划、安装包和摘要。目录不提交到 Git；具体源码身份以 `release-plan.json` 和构建清单为准。
+最终远端检查：[Core CI（4/4 作业通过）](https://github.com/baoabaob/codlet/actions/runs/37299209599)、[官方插件 CI（Windows/Mac 均通过）](https://github.com/baoabaob/codlet-plugins/actions/runs/37292963126)、[Mac 原生分发构建](https://github.com/baoabaob/codlet/actions/runs/37299859591)。插件 CI 使用的 Core JS/SDK 与候选一致；其后 Core 变更是 Mac Rust 启动、打包及测试修复。
+
+本轮候选材料统一保存在 `.codlet-artifacts/release-0.2.0/`。`release/` 包含 Windows setup、Mac DMG、两种更新 ZIP、stable 通道、SHA-256、发布说明和不可变计划；`.verification/` 保存本地校验输入。`evidence/` 保存最终日志、CI 状态、归档摘要及截图。中间 MSI、展开目录、旧候选和本轮临时脚本在校验后删除。目录不提交到 Git；具体源码身份以 `release-plan.json` 和构建清单为准。
 
 已完成的浏览器预览检查：插件搜索及清除、市场入口、详情、更新审核在未勾选授信时禁用、勾选后可提交、返回导航、中文/英文、浅/深色、设置失败后的禁用与重新读取恢复、720px 窄窗无横向溢出。控制台无错误。该预览全部使用模拟管理数据。
 
