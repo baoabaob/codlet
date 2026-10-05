@@ -272,6 +272,9 @@
 
     function closeRecord(record, error) {
         record.closed = true;
+        if (record.cleanups.size || record.cleanupPending) record.disposeError ??= 'Asynchronous cleanup was interrupted; restoration is unconfirmed';
+        record.cleanupController?.abort(error);
+        record.cleanups.clear();
         disposeListeners(record);
         for (const invocation of record.invocations.values()) invocation.cancel(error);
         rejectPending(record, error);
@@ -303,7 +306,8 @@
         stopping.add(record);
         disposeListeners(record);
         try {
-            const result = await record.definition.deactivate();
+            await runCleanups(record);
+            const result = record.closed ? undefined : await record.definition.deactivate();
             if (result?.reloadRequired === true) {
                 throw rpcError('renderer_reload_required', `Renderer reload required: ${typeof result.reason === 'string' ? result.reason : 'the plugin cannot undo its page changes'}`);
             }
@@ -311,6 +315,31 @@
         } finally {
             closeRecord(record, rpcError('plugin_deactivated', 'renderer plugin was deactivated'));
         }
+    }
+
+    async function runCleanups(record) {
+        const listeners = [...record.cleanups]; record.cleanups.clear();
+        if (!listeners.length) return;
+        const signal = record.cleanupController.signal;
+        record.cleanupPending = true;
+        try {
+            for (const listener of listeners) {
+                if (signal.aborted) break;
+                let abort;
+                try {
+                    const result = await new Promise((resolve, reject) => {
+                        abort = () => reject(signal.reason);
+                        signal.addEventListener('abort', abort, { once: true });
+                        Promise.resolve().then(() => {
+                            if (signal.aborted) throw signal.reason;
+                            return listener(Object.freeze({ signal }));
+                        }).then(resolve, reject);
+                    });
+                    if (result?.reloadRequired === true) record.disposeError ??= `Renderer reload required: ${result.reason ?? 'restoration is unconfirmed'}`;
+                } catch (error) { record.disposeError ??= message(error); }
+                finally { signal.removeEventListener('abort', abort); }
+            }
+        } finally { record.cleanupPending = false; }
     }
 
     async function invokeProvider(record, request) {
@@ -406,6 +435,9 @@
                     invocations: new Map(),
                     notifications: new Set(),
                     disposers: new Set(),
+                    cleanups: new Set(),
+                    cleanupController: null,
+                    cleanupPending: false,
                     disposeError: null,
                     diagnosticCount: 0,
                     closed: false,
@@ -440,6 +472,14 @@
                         if (record.disposers.size >= 64) throw rpcError('request_limit', 'renderer cleanup listener limit reached');
                         record.disposers.add(listener);
                         return () => record.disposers.delete(listener);
+                    },
+                    onCleanup(listener) {
+                        if (typeof listener !== 'function') throw rpcError('invalid_listener', 'onCleanup requires a function');
+                        if (record.closed || stopping.has(record)) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+                        if (record.cleanups.size >= 16) throw rpcError('request_limit', 'renderer asynchronous cleanup limit reached');
+                        record.cleanupController ??= new AbortController();
+                        record.cleanups.add(listener);
+                        return () => record.cleanups.delete(listener);
                     },
                     rpc: createRpc(record),
                     ...(services ? { services } : {}),

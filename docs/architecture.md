@@ -80,6 +80,11 @@ not proof that arbitrary plugin code is harmless.
 The current renderer architecture is retained. The known Chromium world
 accumulation on repeated plugin replacement remains a documented limitation; see
 [the measurements and mitigation](known-issues.md#renderer-environments-after-repeated-reloads).
+Core now budgets explicit isolated generations and reserves replacement/rollback
+capacity before retiring current plugins. Independent document startup cannot
+consume a transaction's reservations. Ordinary renderer cleanup can await
+ownership-aware restoration before Host teardown; forced cleanup remains bounded
+and reports unfinished work. See the [renderer lifecycle contract](spec/ui.md).
 The real SDK listener leak has been fixed. No public Worker execution mode or
 remote-widget-only UI contract is being introduced.
 
@@ -92,6 +97,12 @@ page injection capabilities are not removed to make a memory measurement pass.
 ## Source layout
 
 - `src/`: Rust Core, CLI, platform integration and lifecycle.
+- `src/renderer/bootstrap.rs`: CDP context/binding/script operations with explicit
+  inputs; it does not own or mutate the runtime coordinator's state.
+- `src/renderer/observation.rs`: bounded status and inspection sampled together;
+  no transport, plugin writes or management execution.
+- `src/renderer/world_budget.rs`: isolated-generation admission and transaction
+  reservations; renderer unit tests live separately in `src/renderer/tests.rs`.
 - `runtime/`: managed Host runtime and runtime skill sources.
 - `frontend/src/`: generic UI SDK sources; `frontend/build.mjs` builds the bundles.
 - `bundled/runtime/`: generated SDK artifacts required by Rust's embedded runtime.

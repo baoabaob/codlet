@@ -15,8 +15,13 @@ product decisions are tracked in [release readiness](release-readiness.md).
 - macOS process groups cannot contain a descendant that deliberately detaches.
 - Cancellation cannot undo a disk write, remote request or arbitrary page patch.
   Query the original operation after an uncertain result instead of repeating it.
-- Changing a loaded thread's provider does not have an automatic ownership-aware
-  restoration protocol. Restore the original provider before retiring its route.
+- Desktop Adapter 0.2.14 adds opt-in owned restoration for loaded-thread changes
+  made through a configuration handle with `restoreOnDeactivate: true` on Core
+  0.2.0. Normal cleanup waits for the original provider/model receipt before
+  Host teardown. Unknown originals, active/background tasks, a conflicting model
+  choice, forced retirement or lost native ownership still require inspection;
+  these cannot be called successful restoration. Legacy unleased writes continue
+  to require explicit restoration before route closure.
 
 For 0.2.0, the two original lifetime guarantees above are explicitly excluded.
 Separating Electron's singleton would require a distinct profile or changes to
@@ -37,6 +42,13 @@ A new isolated renderer generation creates a new Chromium world. Core revokes
 its capabilities and clears managed resources, but CDP cannot individually
 destroy that old parent-page world. Repeated reloads can retain memory until
 the owning client exits. Reusing an old world would weaken generation isolation.
+
+Core now limits explicit isolated-generation creation attempts to 256 across
+targets for its lifetime. Reload admission accounts for both replacement and
+rollback before retiring current plugins. Failed attempts count too; navigation
+does not reset the counter. `status --json` reports `renderer.isolated_worlds`;
+at 75% Core emits a diagnostic, and exhausted admission asks for a complete
+client restart. This is a generation budget, not a Chromium memory measurement.
 
 The separate SDK selection listener leak was fixed. Historical Windows x64
 measurements on Core `3acf85c`, Codex `26.915.4065.0` found:

@@ -155,7 +155,7 @@ impl RendererRuntime {
                     "required renderer provider {provider} is unavailable in this document"
                 ),
             }),
-            None => self.install_plugins(target, vec![plugin], authorization),
+            None => self.install_plugins(target, vec![plugin], authorization, false),
         };
         if let Err(error) = result {
             if self

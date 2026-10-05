@@ -74,6 +74,16 @@ pub struct RendererStatus {
     pub targets: Vec<TargetStatus>,
     pub recent_events: Vec<StatusEvent>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated_worlds: Option<RendererWorldBudget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RendererWorldBudget {
+    pub attempted: usize,
+    pub limit: usize,
+    pub reserved: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

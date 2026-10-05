@@ -10,6 +10,161 @@ use serde_json::json;
 use tempfile::tempdir;
 
 #[test]
+fn isolated_world_budget_refuses_reload_before_retirement_and_reserves_rollback() {
+    let directory = tempdir().unwrap();
+    let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+    for plugin in bundled_plugins().unwrap() {
+        registry.set_enabled(&plugin.manifest.id, false).unwrap();
+    }
+    for world in ["isolated", "main"] {
+        let path = directory.path().join(world);
+        std::fs::create_dir(&path).unwrap();
+        let id = format!("test.{world}");
+        let grants = if world == "main" {
+            vec![Permission::UiMainWorld]
+        } else {
+            vec![]
+        };
+        std::fs::write(path.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":world},"permissions":grants,"provides":[],"requires":[]}).to_string()).unwrap();
+        std::fs::write(path.join("renderer.js"), "module.exports={activate(ctx){globalThis.ownerGeneration=ctx.generation},deactivate(){delete globalThis.ownerGeneration}};").unwrap();
+        registry
+            .register_local(
+                &id,
+                LocalPluginRegistration {
+                    path,
+                    grants,
+                    broker_policy: Default::default(),
+                },
+            )
+            .unwrap();
+        registry.set_enabled(&id, true).unwrap();
+    }
+    registry.save().unwrap();
+    let saved = std::fs::read(registry.path()).unwrap();
+    let mut renderer =
+        RendererRuntime::from_catalog(PluginCatalog::load(&registry).unwrap(), registry.clone())
+            .unwrap();
+    renderer.set_world_limit_for_test(6);
+    let (mut peer, events) = VmPeer::start();
+    let (_controller, sessions) =
+        TargetController::discover(peer.client.clone(), events, Duration::from_secs(5)).unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert!(
+        renderer
+            .attach_all(&sessions)
+            .iter()
+            .all(|(_, result)| result.is_ok())
+    );
+    let request = |action, id: &str| PluginControlRequest {
+        action,
+        plugin_id: id.into(),
+        permission: None,
+        cascade: false,
+        remove_source: None,
+        local_import: None,
+    };
+    let report = renderer
+        .manage_plugin(request(PluginControlAction::Reload, "test.isolated"))
+        .unwrap();
+    assert_eq!(report.outcome, PluginControlOutcome::Applied);
+    assert_eq!(
+        renderer
+            .status_snapshot()
+            .isolated_worlds
+            .as_ref()
+            .unwrap()
+            .attempted,
+        4
+    );
+    let before = peer.request("Fixture.inspect", json!({"keys":["ownerGeneration"]}));
+    let error = renderer
+        .manage_plugin(request(PluginControlAction::Reload, "test.isolated"))
+        .unwrap_err();
+    assert_eq!(error.code, "renderer_restart_required");
+    assert_eq!(
+        peer.request("Fixture.inspect", json!({"keys":["ownerGeneration"]}))["contexts"],
+        before["contexts"]
+    );
+    assert_eq!(std::fs::read(registry.path()).unwrap(), saved);
+    // A navigation during a package transaction cannot spend the worlds held
+    // for its candidate/rollback on an unrelated document bootstrap.
+    renderer.set_world_limit_for_test(8);
+    let generations = renderer.package_generations();
+    let replacements = renderer.logical_plugins();
+    renderer
+        .begin_package_management(generations.clone(), &replacements)
+        .unwrap();
+    assert_eq!(
+        renderer
+            .status_snapshot()
+            .isolated_worlds
+            .as_ref()
+            .unwrap()
+            .reserved,
+        4
+    );
+    peer.request("Fixture.navigate", json!({"targetId":"window-a"}));
+    renderer.pump_bindings().unwrap();
+    assert_eq!(
+        renderer
+            .status_snapshot()
+            .isolated_worlds
+            .as_ref()
+            .unwrap()
+            .attempted,
+        4
+    );
+    renderer.finish_package_management(registry.clone(), generations);
+    assert_eq!(
+        renderer
+            .status_snapshot()
+            .isolated_worlds
+            .as_ref()
+            .unwrap()
+            .reserved,
+        0
+    );
+    peer.request("Fixture.navigate", json!({"targetId":"window-a"}));
+    renderer.pump_bindings().unwrap();
+    assert_eq!(
+        renderer
+            .status_snapshot()
+            .isolated_worlds
+            .as_ref()
+            .unwrap()
+            .attempted,
+        5
+    );
+    assert_eq!(
+        renderer
+            .manage_plugin(request(PluginControlAction::Reload, "test.main"))
+            .unwrap()
+            .outcome,
+        PluginControlOutcome::Applied
+    );
+    assert_eq!(
+        renderer
+            .manage_plugin(request(PluginControlAction::Disable, "test.isolated"))
+            .unwrap()
+            .outcome,
+        PluginControlOutcome::Applied
+    );
+    assert_eq!(
+        renderer
+            .status_snapshot()
+            .isolated_worlds
+            .as_ref()
+            .unwrap()
+            .attempted,
+        5
+    );
+    for session in &sessions {
+        renderer.deactivate_target(session.target_id()).unwrap();
+    }
+    peer.close();
+}
+
+#[test]
 fn main_world_rpc_navigation_reload_and_cleanup_preserve_world_identity() {
     let directory = tempdir().unwrap();
     let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();

@@ -122,6 +122,49 @@ test('forced retirement reports failed synchronous disposal without leaving the 
     assert.equal(fixture.runtime.status().length, 0);
 });
 
+test('normal retirement waits for asynchronous restoration before plugin deactivate and reports failures', async () => {
+    const f = rpcFixture(), order = []; let finish;
+    await f.runtime.activate(f.metadata, {
+        activate(ctx) {
+            ctx.onDeactivate(() => order.push('detach'));
+            ctx.onCleanup(async ({ signal }) => { order.push('restore'); await new Promise(resolve => { finish = resolve; }); assert.equal(signal.aborted, false); order.push('restored'); });
+            ctx.onCleanup(() => { throw new Error('restoration refused'); });
+            ctx.onCleanup(() => order.push('other cleanup'));
+        }, deactivate() { order.push('deactivate'); }
+    });
+    const pending = f.runtime.deactivate('dev.example', 1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(order, ['detach', 'restore']);
+    finish(); const result = await pending;
+    assert.equal(result.ok, false); assert.match(result.error, /restoration refused/);
+    assert.deepEqual(order, ['detach', 'restore', 'restored', 'other cleanup', 'deactivate']);
+});
+
+test('forced retirement aborts waiting restoration, never starts deferred cleanup or revives the generation', async () => {
+    const f = rpcFixture(); let signal, context; const calls = [];
+    await f.runtime.activate(f.metadata, {
+        activate(ctx) { context = ctx; ctx.onCleanup(args => { signal = args.signal; return new Promise(() => {}); }); ctx.onCleanup(() => calls.push('late')); },
+        deactivate() { calls.push('deactivate'); }
+    });
+    const pending = f.runtime.deactivate('dev.example', 1);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(signal.aborted, false);
+    const forced = f.runtime.__rpcClose('test_binding');
+    assert.equal(forced.ok, false); assert.match(forced.error, /restoration is unconfirmed/);
+    assert.equal(signal.aborted, true);
+    assert.equal((await pending).ok, false);
+    assert.deepEqual(calls, []);
+    assert.throws(() => context.onCleanup(() => {}), { code: 'plugin_deactivated' });
+});
+
+test('forced retirement skips unstarted async callbacks and unregister removes their obligation', async () => {
+    const f = rpcFixture(); let unregister;
+    await f.runtime.activate(f.metadata, { activate(ctx) { unregister = ctx.onCleanup(() => assert.fail('forced retirement cannot start restoration')); }, deactivate() {} });
+    unregister(); assert.equal(f.runtime.__rpcClose('test_binding').ok, true);
+    await f.runtime.activate(metadata(2, { binding: 'second' }), { activate(ctx) { ctx.onCleanup(() => assert.fail('must not run')); }, deactivate() {} });
+    assert.equal(f.runtime.__rpcClose('second').ok, false);
+});
+
 test('a capability can withhold publication, publish after readiness, and withdraw without retiring peers', async () => {
     const f = rpcFixture(); let ctx;
     await f.runtime.activate(f.metadata, { activate(value) { ctx = value; ctx.rpc.unavailable(capability, 'waiting for external service'); }, deactivate() {} });

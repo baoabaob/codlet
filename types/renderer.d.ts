@@ -50,6 +50,10 @@ export interface RendererContext {
   readonly ui?: RendererUiFactory;
   /** At most 64 synchronous cleanup callbacks; run once before deactivate or forced retirement. */
   onDeactivate(listener: () => void): () => void;
+  /** At most 16 callbacks, awaited after synchronous disposal and before deactivate().
+   * Shares Core's existing cleanup deadline; forced retirement aborts signal and
+   * reports incomplete cleanup. Callbacks must check signal before later writes. */
+  onCleanup(listener: (cleanup: Readonly<{ signal: AbortSignal }>) => void | RendererReloadRequired | Promise<void | RendererReloadRequired>): () => void;
   /** Bounded, source-attributed observations for runtime inspection/doctor; no authority change. */
   reportDiagnostic(diagnostic: { code: string; message: string; level?: 'info' | 'error' }): void;
 }

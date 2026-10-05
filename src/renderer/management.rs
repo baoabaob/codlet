@@ -53,6 +53,7 @@ impl RendererRuntime {
         self.drive_deadline = self.management_phase_deadline();
         self.publish_status();
         let result = self.manage_plugin_inner(&request, source_policy);
+        self.world_reservations.clear();
         self.drive_deadline = None;
         self.management_active = false;
         self.publish_status();
@@ -197,6 +198,7 @@ impl RendererRuntime {
                 }
                 plugin_lifecycle::verify_registrations(&registry, &plan.affected)
                     .map_err(control_error)?;
+                self.reserve_world_capacity(&plan.replacements())?;
                 self.generations = generations;
                 self.plugin_registry = registry.clone();
                 Ok(self.execute_activation(request, plan, registry))
@@ -485,7 +487,7 @@ impl RendererRuntime {
                     )
                     .map_err(RendererError::from)
                     .and_then(|authorizations| {
-                        self.install_plugins(target_id, vec![plugin.clone()], authorizations)
+                        self.install_plugins(target_id, vec![plugin.clone()], authorizations, true)
                     })
                 };
                 if let Err(error) = result {

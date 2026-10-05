@@ -990,7 +990,12 @@ fn scenario_renderer_runtime(
         }
         expect_root_command(&mut reader, output, "Fake.subframeEventsSent")?;
     }
-    complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", 43, 44)?;
+    let (codlet, adapter) = if context_scenario == "renderer-status-context" {
+        (142, 141)
+    } else {
+        (42, 41)
+    };
+    complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "", codlet, adapter)?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
@@ -1021,7 +1026,11 @@ fn scenario_renderer_document_recovery(
         &json!({"method":"Runtime.executionContextsCleared","sessionId":session,"params":{}}),
     )?;
     expect_root_command(&mut reader, output, "Fake.navigationEventsSent")?;
-    complete_bundled_renderer_deactivation(&mut reader, output, &session, "", 143, 144)?;
+    // Cleared contexts must never be recreated merely to run empty cleanup.
+    for name in ["script-bootstrap-codlet", "script-bootstrap-adapter"] {
+        expect_remove_renderer_script(&mut reader, output, &session, name)?;
+        expect_remove_renderer_binding(&mut reader, output, &session)?;
+    }
 
     if timeout_first_recovery {
         let world = "codlet.plugin.codex.ui.adapter.g1.d2";
@@ -1129,8 +1138,6 @@ fn scenario_renderer_document_recovery(
         ("codlet-gui", 42, "recovery-codlet"),
         ("codex.ui.adapter", 41, "recovery-adapter"),
     ] {
-        let world = format!("codlet.plugin.{plugin}.g1.d{epoch}");
-        complete_renderer_context(&mut reader, output, &session, &world, context)?;
         complete_renderer_evaluation(
             &mut reader,
             output,
@@ -1405,13 +1412,6 @@ fn scenario_renderer_reentrant(
         expect_consumer_success_response(&mut reader, output, &session, 202)?;
     }
     expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
-    complete_renderer_context(
-        &mut reader,
-        output,
-        &session,
-        "codlet.plugin.codlet-gui.g1",
-        202,
-    )?;
     let deactivate =
         expect_held_evaluation(&mut reader, &session, 202, ".deactivate(\"codlet-gui\", 1)")?;
     if mode == "renderer-reentrant-destroy-deactivate" {
@@ -1487,7 +1487,7 @@ fn scenario_renderer_ready_handshake(
         121,
         122,
     )?;
-    complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "ready", 123, 124)?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &session_id, "ready", 122, 121)?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
@@ -1562,7 +1562,7 @@ fn scenario_renderer_ready_rejection(
         output,
         &session_id,
         "ready-rejection",
-        127,
+        125,
     )?;
     expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
     expect_root_command(&mut reader, output, "Fake.finish")
@@ -1612,7 +1612,7 @@ fn scenario_renderer_ready_timeout(
         "script-bootstrap-codlet-ready-timeout",
     )?;
     expect_remove_renderer_binding(&mut reader, output, &session_id)?;
-    complete_adapter_renderer_deactivation(&mut reader, output, &session_id, "ready-timeout", 129)?;
+    complete_adapter_renderer_deactivation(&mut reader, output, &session_id, "ready-timeout", 127)?;
     expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
@@ -1793,13 +1793,6 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
         }),
     )?;
 
-    complete_renderer_context(
-        &mut reader,
-        output,
-        &session_id,
-        "codlet.plugin.codlet-gui.g1",
-        bindings.codlet_context,
-    )?;
     complete_renderer_evaluation(
         &mut reader,
         output,
@@ -1816,13 +1809,6 @@ fn scenario_renderer_rpc(input: &mut File, output: &mut File) -> Result<(), Fake
     )?;
     expect_remove_renderer_binding(&mut reader, output, &session_id)?;
 
-    complete_renderer_context(
-        &mut reader,
-        output,
-        &session_id,
-        "codlet.plugin.codex.ui.adapter.g1",
-        bindings.adapter_context,
-    )?;
     complete_renderer_evaluation(
         &mut reader,
         output,
@@ -1891,18 +1877,11 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         bindings.codlet_context,
     )?;
 
-    complete_renderer_context(
-        &mut reader,
-        output,
-        &failure_session,
-        "codlet.plugin.codlet-gui.g1",
-        105,
-    )?;
     complete_renderer_evaluation(
         &mut reader,
         output,
         &failure_session,
-        105,
+        104,
         ".deactivate(\"codlet-gui\", 1)",
         json!({"ok": false, "error": "simulated codlet cleanup failure"}),
     )?;
@@ -1910,7 +1889,7 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         &mut reader,
         output,
         &failure_session,
-        105,
+        104,
         "__rpcClose",
         json!({"ok": true}),
     )?;
@@ -1922,18 +1901,11 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
     )?;
     expect_remove_renderer_binding(&mut reader, output, &failure_session)?;
 
-    complete_renderer_context(
-        &mut reader,
-        output,
-        &session_id,
-        "codlet.plugin.codlet-gui.g1",
-        106,
-    )?;
     complete_renderer_evaluation(
         &mut reader,
         output,
         &session_id,
-        106,
+        102,
         ".deactivate(\"codlet-gui\", 1)",
         json!({"ok": true, "id": "codlet-gui", "generation": 1, "inactive": true}),
     )?;
@@ -1974,15 +1946,15 @@ fn scenario_renderer_manage(input: &mut File, output: &mut File) -> Result<(), F
         output,
         &after_disable_session,
         "after-disable",
-        108,
+        107,
     )?;
-    complete_adapter_renderer_deactivation(&mut reader, output, &session_id, "manage", 109)?;
+    complete_adapter_renderer_deactivation(&mut reader, output, &session_id, "manage", 101)?;
     complete_adapter_renderer_deactivation(
         &mut reader,
         output,
         &failure_session,
         "manage-failure",
-        110,
+        103,
     )?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
@@ -2033,7 +2005,6 @@ fn scenario_renderer_local_manage(
         expect_root_command(&mut reader, output, "Fake.hostStillAlive")?;
     }
 
-    complete_renderer_context(&mut reader, output, session, world, 303)?;
     let deactivate =
         expect_held_evaluation(&mut reader, session, 303, ".deactivate(\"dev.local\", 1)")?;
     emit_local_manage_request(output, session, &binding, 4, "list")?;
@@ -2154,18 +2125,11 @@ fn scenario_renderer_manage_response_failure(
         bindings.codlet_context,
     )?;
 
-    complete_renderer_context(
-        &mut reader,
-        output,
-        &session_id,
-        "codlet.plugin.codlet-gui.g1",
-        113,
-    )?;
     complete_renderer_evaluation(
         &mut reader,
         output,
         &session_id,
-        113,
+        bindings.codlet_context,
         ".deactivate(\"codlet-gui\", 1)",
         json!({"ok": true, "id": "codlet-gui", "generation": 1, "inactive": true}),
     )?;
@@ -2183,7 +2147,7 @@ fn scenario_renderer_manage_response_failure(
         output,
         &session_id,
         "manage-response-failure",
-        114,
+        bindings.adapter_context,
     )?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
@@ -2506,7 +2470,7 @@ fn scenario_renderer_target_replacement(
             "params": {"sessionId": "session-main-1", "targetId": "main"}
         }),
     )?;
-    complete_bundled_renderer_deactivation(&mut reader, output, &second_session, "second", 63, 64)?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &second_session, "second", 62, 61)?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
@@ -2567,7 +2531,7 @@ fn scenario_renderer_navigation(input: &mut File, output: &mut File) -> Result<(
     let second_session =
         establish_target_session_with_id(&mut reader, output, "main", "session-main-nav-2")?;
     complete_bundled_renderer_install(&mut reader, output, &second_session, "nav-2", 81, 82)?;
-    complete_bundled_renderer_deactivation(&mut reader, output, &second_session, "nav-2", 83, 84)?;
+    complete_bundled_renderer_deactivation(&mut reader, output, &second_session, "nav-2", 82, 81)?;
     expect_root_command(&mut reader, output, "Fake.finish")
 }
 
@@ -2846,9 +2810,7 @@ fn complete_bundled_renderer_deactivation(
     codlet_context: u64,
     adapter_context: u64,
 ) -> Result<(), FakeChildError> {
-    let codlet_world = "codlet.plugin.codlet-gui.g1";
     let bootstrap_codlet = renderer_identifier("script-bootstrap-codlet", identifier_suffix);
-    complete_renderer_context(reader, output, session_id, codlet_world, codlet_context)?;
     complete_renderer_evaluation(
         reader,
         output,
@@ -2876,9 +2838,7 @@ fn complete_adapter_renderer_deactivation(
     identifier_suffix: &str,
     adapter_context: u64,
 ) -> Result<(), FakeChildError> {
-    let adapter_world = "codlet.plugin.codex.ui.adapter.g1";
     let bootstrap_adapter = renderer_identifier("script-bootstrap-adapter", identifier_suffix);
-    complete_renderer_context(reader, output, session_id, adapter_world, adapter_context)?;
     complete_renderer_evaluation(
         reader,
         output,

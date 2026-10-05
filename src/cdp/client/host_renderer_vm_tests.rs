@@ -187,6 +187,35 @@ struct Fixture {
     closed: bool,
 }
 
+#[test]
+fn async_renderer_cleanup_finishes_its_host_rpc_before_combined_host_stop() {
+    let mut fixture = Fixture::new();
+    let source = EXAMPLE_RENDERER.replace(
+        "globalThis.__codletCombinedExample = result;",
+        "globalThis.__codletCombinedExample = result; context.onCleanup(async ({signal}) => { const restored = await context.rpc.request(capability, 'describe', null); if(signal.aborted || !restored.ready) throw new Error('restoration unconfirmed'); globalThis.__vmCleanupCount = 1; });",
+    ).replace("delete globalThis.__codletCombinedExample;", "if(globalThis.__vmCleanupCount !== 1) throw new Error('route closed before restoration'); delete globalThis.__codletCombinedExample;");
+    std::fs::write(fixture.root.join("renderer.js"), source).unwrap();
+    assert_eq!(
+        fixture.command(PluginControlAction::Enable).outcome,
+        PluginControlOutcome::Applied
+    );
+    assert_eq!(
+        fixture.command(PluginControlAction::Disable).outcome,
+        PluginControlOutcome::Applied
+    );
+    let snapshot = fixture.inspect(&[]);
+    assert_eq!(
+        snapshot["contexts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|context| context["globals"]["__vmCleanupCount"] == 1)
+            .count(),
+        2
+    );
+    fixture.close();
+}
+
 impl Fixture {
     fn new() -> Self {
         let directory = tempdir().unwrap();

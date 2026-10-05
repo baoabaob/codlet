@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt::Write as FmtWrite;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -18,23 +17,8 @@ use crate::cdp::{
 };
 use crate::plugin_execution::PluginExecutionObservation;
 use crate::plugins::{LoadedPlugin, ManifestError, PluginRegistry, RendererWorld, bundled_plugins};
-use crate::runtime_inspection::{
-    InspectedTarget, MAX_INSPECTION_CAPABILITIES, MAX_INSPECTION_CAPABILITIES_PER_PROVIDER,
-    MAX_INSPECTION_ID_BYTES, MAX_INSPECTION_PROVIDERS, ProviderKind, RegisteredProvider,
-    RendererInspection,
-};
-use crate::runtime_status::{
-    MAX_STATUS_PLUGINS_PER_TARGET, MAX_STATUS_TARGETS, PluginLifecycle as RendererPluginState,
-    PluginStatus, RendererStatus, StatusEvent, StatusPublisher, TargetStatus,
-};
+use crate::runtime_status::{PluginLifecycle as RendererPluginState, StatusEvent, StatusPublisher};
 
-const BOOTSTRAP_SOURCE: &str = include_str!("../bundled/runtime/bootstrap.js");
-const UI_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/ui.js");
-const HELPERS_OWNER_SOURCE: &str = include_str!("../bundled/runtime/helpers.js");
-const FACADE_SOURCE: &str = include_str!("../bundled/runtime/facade.js");
-const PAGE_HELPERS_SOURCE: &str = include_str!("../bundled/runtime/page.js");
-const I18N_SOURCE: &str = include_str!("../bundled/runtime/i18n.js");
-const CORE_SERVICES_SOURCE: &str = include_str!("../runtime/core-services.cjs");
 const MAX_JAVASCRIPT_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_RENDERER_RPC_PAYLOAD_BYTES: usize = 1024 * 1024;
 const MAX_RENDERER_RPC_METHOD_BYTES: usize = 256;
@@ -47,6 +31,12 @@ const BUILTIN_MANAGE_CAPABILITY_API: u32 = 1;
 const RUNTIME_MANAGE_GRANT: &str = "runtime.manage";
 const MAX_RENDERER_WAIT_DEPTH: usize = 8;
 
+mod bootstrap;
+mod observation;
+mod world_budget;
+use bootstrap::*;
+use observation::status_text;
+
 mod combined;
 mod host_rpc;
 mod listing;
@@ -55,6 +45,10 @@ mod rpc_startup;
 
 #[derive(Debug, Error)]
 pub enum RendererError {
+    #[error(
+        "isolated renderer budget exhausted; save your work, fully quit the client and restart Codlet"
+    )]
+    WorldBudgetExhausted,
     #[error(transparent)]
     Manifest(#[from] ManifestError),
     #[error(transparent)]
@@ -132,6 +126,9 @@ pub struct RendererRuntime {
     management_active: bool,
     owner_lifecycle_depth: usize,
     runtime_skills: Option<crate::runtime_skills::RuntimeSkills>,
+    world_attempts: usize,
+    world_limit: usize,
+    world_reservations: BTreeMap<String, usize>,
 }
 
 struct RendererSession {
@@ -168,12 +165,6 @@ type TargetAuthorization = (
     BTreeMap<CapabilityDescriptor, CapabilityLease>,
 );
 type TargetAuthorizations = BTreeMap<String, TargetAuthorization>;
-
-#[derive(Deserialize)]
-struct LifecycleResult {
-    ok: bool,
-    error: Option<String>,
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -372,6 +363,9 @@ impl RendererRuntime {
             management_active: false,
             owner_lifecycle_depth: 0,
             runtime_skills: None,
+            world_attempts: 0,
+            world_limit: world_budget::WORLD_LIMIT,
+            world_reservations: BTreeMap::new(),
         })
     }
 
@@ -470,6 +464,7 @@ impl RendererRuntime {
         target_id: &str,
         catalog: Vec<LoadedPlugin>,
         mut authorizations: TargetAuthorizations,
+        managed: bool,
     ) -> Result<(), RendererError> {
         for plugin in &catalog {
             require_renderer_entry(plugin)?;
@@ -494,6 +489,7 @@ impl RendererRuntime {
                 .expect("renderer was validated")
                 .world;
             let world_name = document_name(renderer_world_name(&plugin), document_epoch);
+            self.charge_world(target_id, world, managed)?;
             let (context_id, frame_id) = current_renderer_context(&session, world, &world_name)?;
             let owner = self
                 .sessions
@@ -785,139 +781,6 @@ impl RendererRuntime {
     }
 
     /// Samples owner records only. It issues no CDP requests and reads no config.
-    pub fn status_snapshot(&self) -> RendererStatus {
-        self.sample_runtime_observation().0
-    }
-
-    fn sample_runtime_observation(&self) -> (RendererStatus, RendererInspection) {
-        let mut target_ids: Vec<_> = self.sessions.keys().collect();
-        target_ids.sort();
-        let mut truncated = target_ids.len() > MAX_STATUS_TARGETS;
-        let mut targets = Vec::new();
-        let mut inspected_targets = Vec::new();
-        for target_id in target_ids.into_iter().take(MAX_STATUS_TARGETS) {
-            let session = &self.sessions[target_id];
-            // This flag is changed by the CDP worker. Both views must use the
-            // same read rather than taking two independent runtime snapshots.
-            let session_live = session.session.is_live();
-            let session_id = session.session.session_id();
-            truncated |= session.plugins.len() > MAX_STATUS_PLUGINS_PER_TARGET;
-            truncated |= target_id.len() > 1024 || session_id.len() > 1024;
-            truncated |= session
-                .plugins
-                .iter()
-                .any(|plugin| plugin.id.len() > 1024 || plugin.version.len() > 1024);
-            let mut plugins = Vec::new();
-            let mut inspected_plugins = Vec::new();
-            for plugin in session.plugins.iter().take(MAX_STATUS_PLUGINS_PER_TARGET) {
-                let status = PluginStatus {
-                    id: status_text(&plugin.id),
-                    version: status_text(&plugin.version),
-                    generation: plugin.generation,
-                    lifecycle: plugin.state,
-                    context_present: plugin.context_id.is_some(),
-                    activation_confirmed: plugin.activation_confirmed,
-                    active: session_live
-                        && !session.recovery_pending
-                        && plugin.context_id.is_some()
-                        && plugin.activation_confirmed
-                        && plugin.state == RendererPluginState::Active,
-                };
-                if plugin.id.len() <= MAX_INSPECTION_ID_BYTES
-                    && plugin.version.len() <= MAX_INSPECTION_ID_BYTES
-                {
-                    inspected_plugins.push(status.clone());
-                }
-                plugins.push(status);
-            }
-            targets.push(TargetStatus {
-                target_id: status_text(target_id),
-                session_id: status_text(session_id),
-                session_live,
-                plugins,
-            });
-            // Inspection never turns a truncated identity into a join key.
-            if target_id.len() <= MAX_INSPECTION_ID_BYTES
-                && session_id.len() <= MAX_INSPECTION_ID_BYTES
-            {
-                inspected_targets.push(InspectedTarget {
-                    target_id: target_id.clone(),
-                    session_id: session_id.to_owned(),
-                    session_live,
-                    document_epoch: session.document_epoch,
-                    recovery_pending: session.recovery_pending,
-                    scope_active: self
-                        .capabilities
-                        .scope_is_active(&CapabilityScopeInstance::Target(target_id.clone())),
-                    plugins: inspected_plugins,
-                });
-            }
-        }
-        let (providers, providers_truncated) = self.sample_registered_providers();
-        (
-            RendererStatus {
-                targets,
-                recent_events: self.status_events.clone(),
-                truncated,
-            },
-            RendererInspection {
-                providers,
-                targets: inspected_targets,
-                recent_events: self.status_events.clone(),
-                truncated: truncated || providers_truncated,
-                lifecycle_busy: self.management_active
-                    || self.has_pending_host_capabilities()
-                    || self.owner_lifecycle_depth != 0
-                    || self.drive_depth != 0
-                    || self.drive_deadline.is_some()
-                    || self
-                        .sessions
-                        .values()
-                        .any(|session| session.recovery_pending),
-            },
-        )
-    }
-
-    fn sample_registered_providers(&self) -> (Vec<RegisteredProvider>, bool) {
-        let mut providers = Vec::new();
-        let mut remaining_capabilities = MAX_INSPECTION_CAPABILITIES;
-        let mut truncated = false;
-        for (index, (id, generation, provides)) in self
-            .capabilities
-            .registered_providers()
-            .filter(|(_, _, provides)| !provides.is_empty())
-            .enumerate()
-        {
-            if index == MAX_INSPECTION_PROVIDERS {
-                truncated = true;
-                break;
-            }
-            let mut descriptors: Vec<_> = provides.iter().collect();
-            descriptors.sort();
-            let keep = descriptors
-                .len()
-                .min(MAX_INSPECTION_CAPABILITIES_PER_PROVIDER)
-                .min(remaining_capabilities);
-            let capabilities_truncated = keep < descriptors.len();
-            remaining_capabilities -= keep;
-            truncated |= capabilities_truncated;
-            providers.push(RegisteredProvider {
-                id: id.to_owned(),
-                generation,
-                kind: if id == BUILTIN_HOST_PROVIDER_ID
-                    || crate::capabilities::host_provider_plugin_id(id).is_some()
-                {
-                    ProviderKind::Host
-                } else {
-                    ProviderKind::Renderer
-                },
-                provides: descriptors.into_iter().take(keep).cloned().collect(),
-                capabilities_truncated,
-            });
-        }
-        (providers, truncated)
-    }
-
     pub fn publish_status(&self) {
         if let Some(publisher) = &self.status_publisher {
             let (legacy, inspection) = self.sample_runtime_observation();
@@ -1955,46 +1818,29 @@ impl RendererRuntime {
         };
         let was_activating = plugin.state == RendererPluginState::Activating;
         plugin.state = RendererPluginState::Stopping;
-        let mut plugin = plugin.clone();
+        let plugin = plugin.clone();
         let target_session = session.session.clone();
         self.retire_rpc_renderer(target_id, Some(plugin_id));
         self.publish_status();
         let previous_deadline = self.drive_deadline;
         self.drive_deadline = Some(previous_deadline.unwrap_or(target_session.request_deadline()?));
-        let lifecycle_session = target_session.until(
-            self.drive_deadline
-                .expect("cleanup lifecycle has a deadline"),
-        );
         let mut first_error = None;
-        if !was_activating {
-            match current_renderer_context(&lifecycle_session, plugin.world, &plugin.world_name) {
-                Ok((context_id, _frame_id)) => {
-                    plugin.context_id = Some(context_id);
-                    if let Some(current) = self
-                        .sessions
-                        .get_mut(target_id)
-                        .and_then(|s| s.plugins.iter_mut().find(|p| p.id == plugin_id))
-                    {
-                        current.context_id = Some(context_id);
-                    }
-                    if let Err(message) = self
-                        .evaluate_with_binding_pump(
-                            target_id,
-                            &deactivation_expression(&plugin.id, plugin.generation),
-                            context_id,
-                        )
-                        .and_then(parse_lifecycle_result)
-                    {
-                        first_error = Some(RendererError::PluginRejected {
-                            plugin_id: plugin.id.clone(),
-                            message,
-                        });
-                    }
-                }
-                Err(error) => {
-                    first_error = Some(error);
-                }
-            }
+        // Use only the tracked live context. Looking up an isolated world with
+        // Page.createIsolatedWorld during teardown can create a new empty world.
+        if !was_activating
+            && let Some(context_id) = plugin.context_id
+            && let Err(message) = self
+                .evaluate_with_binding_pump(
+                    target_id,
+                    &deactivation_expression(&plugin.id, plugin.generation),
+                    context_id,
+                )
+                .and_then(parse_lifecycle_result)
+        {
+            first_error = Some(RendererError::PluginRejected {
+                plugin_id: plugin.id.clone(),
+                message,
+            });
         }
         self.drive_deadline = previous_deadline;
         // Retirement is a separate, bounded cleanup phase. It never pumps plugin
@@ -2051,14 +1897,6 @@ impl RendererRuntime {
     }
 }
 
-fn status_text(text: &str) -> String {
-    let mut end = text.len().min(1024);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_owned()
-}
-
 impl RendererSession {
     fn remove_persisted_resources(&self) -> Result<(), RendererError> {
         let mut first_error = None;
@@ -2074,287 +1912,6 @@ impl RendererSession {
         }
         first_error.map_or(Ok(()), Err)
     }
-}
-
-fn current_renderer_context(
-    session: &TargetSession,
-    world: RendererWorld,
-    world_name: &str,
-) -> Result<(u64, String), RendererError> {
-    let frame_tree = session.request("Page.getFrameTree", None)?;
-    if !frame_tree
-        .pointer("/frameTree/frame/url")
-        .and_then(Value::as_str)
-        .is_some_and(is_main_renderer_url)
-    {
-        return Err(RendererError::InvalidResponse {
-            method: "Page.getFrameTree",
-            message: "main frame is outside the supported document",
-        });
-    }
-    let frame_id = frame_tree
-        .pointer("/frameTree/frame/id")
-        .and_then(Value::as_str)
-        .ok_or(RendererError::InvalidResponse {
-            method: "Page.getFrameTree",
-            message: "frameTree.frame.id is not a string",
-        })?;
-    if world == RendererWorld::Main {
-        let context_id =
-            session
-                .default_context(frame_id)
-                .ok_or(RendererError::InvalidResponse {
-                    method: "Runtime.executionContextCreated",
-                    message: "the main frame has no live default execution context",
-                })?;
-        return Ok((context_id, frame_id.to_owned()));
-    }
-    let result = session.request(
-        "Page.createIsolatedWorld",
-        Some(json!({"frameId": frame_id, "worldName": world_name})),
-    )?;
-    let context_id = result
-        .get("executionContextId")
-        .and_then(Value::as_u64)
-        .ok_or(RendererError::InvalidResponse {
-            method: "Page.createIsolatedWorld",
-            message: "executionContextId is not an unsigned integer",
-        })?;
-    Ok((context_id, frame_id.to_owned()))
-}
-
-fn add_new_document_script(
-    session: &TargetSession,
-    expression: &str,
-    world: RendererWorld,
-    world_name: &str,
-) -> Result<String, RendererError> {
-    let source = new_document_expression(expression);
-    let mut params = json!({"source": source});
-    if world == RendererWorld::Isolated {
-        params["worldName"] = json!(world_name);
-    }
-    let result = session.request("Page.addScriptToEvaluateOnNewDocument", Some(params))?;
-    result
-        .get("identifier")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or(RendererError::InvalidResponse {
-            method: "Page.addScriptToEvaluateOnNewDocument",
-            message: "identifier is not a string",
-        })
-}
-
-fn remove_new_document_script(
-    session: &TargetSession,
-    identifier: &str,
-) -> Result<(), RendererError> {
-    session.request(
-        "Page.removeScriptToEvaluateOnNewDocument",
-        Some(json!({"identifier": identifier})),
-    )?;
-    Ok(())
-}
-
-fn remove_bootstrap_scripts(
-    session: &TargetSession,
-    identifiers: &[String],
-) -> Result<(), RendererError> {
-    let mut first_error = None;
-    // Remove the helper producer first. A navigation between removals must not
-    // stage a large helper graph after its consuming bootstrap was removed.
-    for identifier in identifiers {
-        if let Err(error) = remove_new_document_script(session, identifier) {
-            first_error.get_or_insert(error);
-        }
-    }
-    first_error.map_or(Ok(()), Err)
-}
-
-fn add_renderer_binding(
-    session: &TargetSession,
-    binding_name: &str,
-    world: RendererWorld,
-    world_name: &str,
-    context_id: u64,
-) -> Result<(), RendererError> {
-    let mut params = json!({"name": binding_name});
-    match world {
-        RendererWorld::Isolated => params["executionContextName"] = json!(world_name),
-        RendererWorld::Main => params["executionContextId"] = json!(context_id),
-    }
-    session.request("Runtime.addBinding", Some(params))?;
-    Ok(())
-}
-
-fn remove_renderer_binding(
-    session: &TargetSession,
-    binding_name: &str,
-) -> Result<(), RendererError> {
-    session.request("Runtime.removeBinding", Some(json!({"name": binding_name})))?;
-    Ok(())
-}
-
-fn evaluate_lifecycle(
-    session: &TargetSession,
-    expression: &str,
-    context_id: u64,
-) -> Result<(), String> {
-    let result = session
-        .evaluate_in_context(expression, Some(context_id))
-        .map_err(|error| error.to_string())?;
-    parse_lifecycle_result(result)
-}
-
-fn parse_lifecycle_result(result: Value) -> Result<(), String> {
-    if result.get("exceptionDetails").is_some() {
-        return Err("Runtime.evaluate reported exceptionDetails".to_owned());
-    }
-    let value = result
-        .pointer("/result/value")
-        .cloned()
-        .ok_or_else(|| "Runtime.evaluate did not return a value".to_owned())?;
-    let lifecycle: LifecycleResult = serde_json::from_value(value)
-        .map_err(|error| format!("Runtime.evaluate returned invalid lifecycle data: {error}"))?;
-    if lifecycle.ok {
-        Ok(())
-    } else {
-        Err(lifecycle
-            .error
-            .unwrap_or_else(|| "renderer lifecycle returned ok=false".to_owned()))
-    }
-}
-
-const CLEAR_STAGED_HELPERS: &str = "(() => { const helpers=globalThis.__codletRendererHelpersV1; delete globalThis.__codletRendererHelpersV1; helpers?.dispose(); return {ok:true}; })()";
-
-fn bootstrap_expressions(world: RendererWorld) -> [String; 2] {
-    let options = json!({"world": world, "lazyUI": true, "retireOnEmpty": true});
-    // Keep the large SDK in a different V8 Script. A retired isolated world's
-    // immutable ABI methods still reference their defining Script and its entire
-    // source; inlining helpers would pin the SDK source even after its functions
-    // were released. Both persisted scripts belong to the same generation.
-    let helpers = format!(
-        "({HELPERS_OWNER_SOURCE})((MessageChannel) => ({UI_HELPERS_SOURCE}), {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})(), {PAGE_HELPERS_SOURCE}, {BOOTSTRAP_SOURCE})"
-    );
-    let bootstrap = format!("({FACADE_SOURCE})({options})");
-    [helpers, bootstrap]
-}
-
-fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
-    let metadata = json!({
-        "id": plugin.manifest.id,
-        "version": plugin.manifest.version,
-        "generation": plugin.generation,
-        "binding": binding_name,
-        "provides": plugin.manifest.provides,
-        "requires": plugin.manifest.requires
-    });
-    format!(
-        r#"(async () => {{
-            try {{
-                const runtime = globalThis.__codletRendererV1;
-                if (!runtime || runtime.abi !== 1) return {{ ok: false, error: 'renderer bootstrap is unavailable' }};
-                const module = {{ exports: {{}} }};
-                ((module, exports) => {{
-{source}
-                }})(module, module.exports);
-                return await runtime.activate({metadata}, module.exports);
-            }} catch (error) {{
-                return {{ ok: false, error: error instanceof Error ? error.message : String(error) }};
-            }}
-        }})()
-//# sourceURL=codlet://{id}/renderer.js"#,
-        source = plugin
-            .source
-            .as_deref()
-            .expect("renderer entry was validated before installation"),
-        metadata = metadata,
-        id = plugin.manifest.id
-    )
-}
-
-fn require_renderer_entry(plugin: &LoadedPlugin) -> Result<(), RendererError> {
-    let message = if plugin.manifest.renderer.is_none() {
-        "a renderer entry is required; host-only entries belong to the Host executor"
-    } else if plugin.source.is_none() {
-        "renderer source was not loaded"
-    } else if plugin.manifest.host.is_some() && plugin.host.is_none() {
-        "combined host source was not loaded"
-    } else if plugin
-        .manifest
-        .renderer_provides()
-        .iter()
-        .any(|capability| capability.scope != crate::capabilities::CapabilityScope::Target)
-    {
-        "renderer instances may provide only Target capabilities"
-    } else {
-        return Ok(());
-    };
-    Err(RendererError::UnsupportedEntry {
-        plugin_id: plugin.manifest.id.clone(),
-        message,
-    })
-}
-
-fn deactivation_expression(plugin_id: &str, generation: u64) -> String {
-    let plugin_id = serde_json::to_string(plugin_id).expect("string serialization cannot fail");
-    format!(
-        "globalThis.__codletRendererV1 ? globalThis.__codletRendererV1.deactivate({plugin_id}, {generation}) : ({{ ok: true, inactive: true }})"
-    )
-}
-
-fn document_name(base: String, epoch: u64) -> String {
-    if epoch == 1 {
-        base
-    } else {
-        format!("{base}.d{epoch}")
-    }
-}
-
-fn new_document_expression(expression: &str) -> String {
-    format!(
-        r#"(() => {{
-            if (globalThis.top !== globalThis) return;
-            const url = new URL(globalThis.location.href);
-            if (url.protocol !== 'app:' || url.host !== '-' || url.pathname !== '/index.html') return;
-            void ({expression});
-        }})()"#
-    )
-}
-
-fn renderer_world_name(plugin: &LoadedPlugin) -> String {
-    format!(
-        "codlet.plugin.{}.g{}",
-        plugin.manifest.id, plugin.generation
-    )
-}
-
-fn renderer_binding_name(target_id: &str, session_id: &str, plugin: &LoadedPlugin) -> String {
-    format!(
-        "codlet_rpc_v1_p_{}_t_{}_s_{}_g_{}{}",
-        hex_component(&plugin.manifest.id),
-        hex_component(target_id),
-        hex_component(session_id),
-        plugin.generation,
-        if plugin
-            .manifest
-            .renderer
-            .as_ref()
-            .is_some_and(|renderer| renderer.world == RendererWorld::Main)
-        {
-            "_main"
-        } else {
-            ""
-        }
-    )
-}
-
-fn hex_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len() * 2);
-    for byte in value.bytes() {
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
 }
 
 fn parse_binding_call(event: &CdpEvent) -> Result<BindingCall, RendererError> {
@@ -2822,554 +2379,7 @@ fn builtin_manage_capability() -> CapabilityDescriptor {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::capabilities::{CapabilityRegistryError, CapabilityScope};
-    use crate::plugins::{
-        PluginManifest, bundled_codex_ui_adapter, bundled_codlet, bundled_plugins,
-    };
-    use tempfile::{TempDir, tempdir};
-
-    #[test]
-    fn provider_bootstrap_failure_codes_preserve_the_original_diagnostic() {
-        for code in ["ui_host_drift", "request_timeout", "invocation_cancelled"] {
-            assert_eq!(
-                parse_provider_result(json!({"result":{"value":{
-                    "ok":false,"code":code,"error":"provider stopped"
-                }}})),
-                Err(format!("{code}: provider stopped"))
-            );
-        }
-        assert_eq!(
-            parse_provider_result(json!({"result":{"value":{"ok":false,"error":"legacy"}}})),
-            Err("legacy".to_owned())
-        );
-        assert_eq!(
-            parse_provider_result(json!({"result":{"value":{"ok":true,"value":null}}})),
-            Ok(Value::Null)
-        );
-        for value in [
-            json!({"ok":false,"code":7,"error":"bad code"}),
-            json!({"ok":false,"code":"provider_error","error":"failed","unknown":true}),
-            json!({"ok":true}),
-        ] {
-            assert!(parse_provider_result(json!({"result":{"value":value}})).is_err());
-        }
-    }
-
-    fn test_registry() -> (TempDir, PluginRegistry) {
-        let directory = tempdir().unwrap();
-        let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
-        (directory, registry)
-    }
-
-    #[test]
-    fn inspection_provider_evidence_comes_from_current_kernel_registrations_not_catalog_caches() {
-        let (_directory, registry) = test_registry();
-        let mut runtime = RendererRuntime::bundled(registry).unwrap();
-        let publisher = StatusPublisher::new();
-        publisher
-            .bind_runtime_identity([1; 16], "fixture-scope")
-            .unwrap();
-        runtime.set_status_publisher(publisher.clone());
-        let original = publisher.inspection_snapshot().unwrap();
-        let original_provider = original
-            .renderer
-            .as_ref()
-            .unwrap()
-            .providers
-            .iter()
-            .find(|provider| provider.id == "codex.ui.adapter")
-            .unwrap()
-            .clone();
-        let cached = runtime
-            .plugins
-            .iter_mut()
-            .find(|plugin| plugin.manifest.id == "codex.ui.adapter")
-            .unwrap();
-        cached.generation = 99;
-        cached.manifest.provides =
-            vec![CapabilityDescriptor::new("dev.cached.only", 1, CapabilityScope::Target).unwrap()];
-        runtime.publish_status();
-        let current = publisher.inspection_snapshot().unwrap().renderer.unwrap();
-        assert_eq!(
-            current
-                .providers
-                .iter()
-                .find(|provider| provider.id == "codex.ui.adapter")
-                .unwrap(),
-            &original_provider
-        );
-        runtime
-            .capabilities
-            .unregister_provider("codex.ui.adapter")
-            .unwrap();
-        runtime.publish_status();
-        assert!(
-            publisher
-                .inspection_snapshot()
-                .unwrap()
-                .renderer
-                .unwrap()
-                .providers
-                .iter()
-                .all(|provider| provider.id != "codex.ui.adapter")
-        );
-        let actual =
-            CapabilityDescriptor::new("dev.actual.registration", 1, CapabilityScope::Target)
-                .unwrap();
-        runtime
-            .capabilities
-            .register_provider(
-                "codex.ui.adapter",
-                7,
-                std::slice::from_ref(&actual),
-                &[],
-                &[],
-            )
-            .unwrap();
-        runtime.publish_status();
-        let current = publisher.inspection_snapshot().unwrap().renderer.unwrap();
-        let provider = current
-            .providers
-            .iter()
-            .find(|provider| provider.id == "codex.ui.adapter")
-            .unwrap();
-        assert_eq!(provider.generation, 7);
-        assert_eq!(provider.provides, [actual]);
-        assert_eq!(provider.kind, ProviderKind::Renderer);
-        assert!(
-            current
-                .providers
-                .iter()
-                .any(|provider| provider.id == BUILTIN_HOST_PROVIDER_ID
-                    && provider.kind == ProviderKind::Host)
-        );
-        assert!(
-            current
-                .providers
-                .iter()
-                .all(|provider| provider.id != "codlet-gui")
-        ); // A consumer is not a capability provider.
-        assert_eq!(
-            original
-                .renderer
-                .unwrap()
-                .providers
-                .iter()
-                .find(|provider| provider.id == "codex.ui.adapter")
-                .unwrap(),
-            &original_provider
-        );
-    }
-
-    #[test]
-    fn inspection_truncates_complete_provider_records_without_changing_legacy_status_limits() {
-        let (_directory, registry) = test_registry();
-        let mut runtime = RendererRuntime::new(Vec::new(), registry).unwrap();
-        let wide: Vec<_> = (0..MAX_INSPECTION_CAPABILITIES_PER_PROVIDER + 7)
-            .map(|index| {
-                CapabilityDescriptor::new(format!("dev.cap{index:03}"), 1, CapabilityScope::Target)
-                    .unwrap()
-            })
-            .collect();
-        runtime
-            .capabilities
-            .register_provider("dev.wide", 1, &wide, &[], &[])
-            .unwrap();
-        let (legacy, inspection) = runtime.sample_runtime_observation();
-        assert!(!legacy.truncated);
-        assert!(inspection.truncated);
-        let provider = inspection
-            .providers
-            .iter()
-            .find(|provider| provider.id == "dev.wide")
-            .unwrap();
-        assert_eq!(
-            provider.provides.len(),
-            MAX_INSPECTION_CAPABILITIES_PER_PROVIDER
-        );
-        assert!(provider.capabilities_truncated);
-        assert_eq!(provider.provides[0], wide[0]);
-        for group in 0..8 {
-            let provides: Vec<_> = (0..MAX_INSPECTION_CAPABILITIES_PER_PROVIDER)
-                .map(|index| {
-                    CapabilityDescriptor::new(
-                        format!("dev.group{group}.cap{index:03}"),
-                        1,
-                        CapabilityScope::Target,
-                    )
-                    .unwrap()
-                })
-                .collect();
-            runtime
-                .capabilities
-                .register_provider(&format!("dev.group{group}"), 1, &provides, &[], &[])
-                .unwrap();
-        }
-        let (_, inspection) = runtime.sample_runtime_observation();
-        assert_eq!(
-            inspection
-                .providers
-                .iter()
-                .map(|provider| provider.provides.len())
-                .sum::<usize>(),
-            MAX_INSPECTION_CAPABILITIES
-        );
-        for index in 0..MAX_INSPECTION_PROVIDERS + 1 {
-            let descriptor = CapabilityDescriptor::new(
-                format!("dev.small{index:03}"),
-                1,
-                CapabilityScope::Target,
-            )
-            .unwrap();
-            runtime
-                .capabilities
-                .register_provider(&format!("dev.small{index:03}"), 1, &[descriptor], &[], &[])
-                .unwrap();
-        }
-        let (legacy, inspection) = runtime.sample_runtime_observation();
-        assert!(!legacy.truncated);
-        assert!(inspection.truncated);
-        assert_eq!(inspection.providers.len(), MAX_INSPECTION_PROVIDERS);
-        assert!(
-            inspection
-                .providers
-                .windows(2)
-                .all(|pair| pair[0].id < pair[1].id)
-        );
-        assert!(
-            inspection
-                .providers
-                .iter()
-                .all(|provider| provider.id.len() < MAX_INSPECTION_ID_BYTES)
-        );
-    }
-
-    #[test]
-    fn generated_plugin_script_carries_generation_and_main_frame_guard() {
-        let plugin = bundled_codlet().unwrap();
-        let activation = activation_expression(&plugin, "codlet_rpc_test");
-        assert!(activation.contains("runtime.activate"));
-        assert!(activation.contains("\"generation\":1"));
-        assert!(activation.contains("module.exports"));
-
-        let persisted = new_document_expression(&activation);
-        assert!(persisted.contains("globalThis.top !== globalThis"));
-        assert!(persisted.contains("url.protocol !== 'app:'"));
-        assert!(persisted.contains("url.pathname !== '/index.html'"));
-        assert!(BOOTSTRAP_SOURCE.contains("runExclusive"));
-        assert!(!activation.contains("CapabilityPrincipal"));
-        assert!(activation.contains("\"binding\""));
-        assert!(activation.contains("\"provides\""));
-        assert!(activation.contains("\"requires\""));
-        assert!(!BOOTSTRAP_SOURCE.contains("context.capabilities"));
-    }
-
-    #[test]
-    fn bundled_capability_graph_orders_adapter_before_gui() {
-        let (ordered, _) = order_plugins(bundled_plugins().unwrap()).unwrap();
-        assert_eq!(
-            ordered
-                .iter()
-                .map(|plugin| plugin.manifest.id.as_str())
-                .collect::<Vec<_>>(),
-            ["codex.ui.adapter", "codlet-gui"]
-        );
-    }
-
-    #[test]
-    fn every_plugin_generation_gets_a_distinct_world() {
-        let plugins = bundled_plugins().unwrap();
-        assert_eq!(
-            renderer_world_name(&plugins[0]),
-            "codlet.plugin.codex.ui.adapter.g1"
-        );
-        assert_eq!(
-            renderer_world_name(&plugins[1]),
-            "codlet.plugin.codlet-gui.g1"
-        );
-        assert_ne!(
-            renderer_world_name(&plugins[0]),
-            renderer_world_name(&plugins[1])
-        );
-    }
-
-    #[test]
-    fn binding_namespace_is_unique_per_plugin_target_session_and_generation() {
-        let plugin = bundled_codlet().unwrap();
-        let first = renderer_binding_name("target-a", "session-a", &plugin);
-        let mut replacement = plugin.clone();
-        replacement.generation = 2;
-
-        let variants = [
-            first.clone(),
-            renderer_binding_name("target-b", "session-a", &plugin),
-            renderer_binding_name("target-a", "session-b", &plugin),
-            renderer_binding_name("target-a", "session-a", &replacement),
-        ];
-        assert_eq!(
-            variants
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            4
-        );
-        assert!(variants.iter().all(|binding| {
-            binding.starts_with("codlet_rpc_v1_")
-                && binding
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        }));
-    }
-
-    #[test]
-    fn binding_messages_reject_ids_outside_javascript_safe_range() {
-        let payload = format!(
-            r#"{{"v":1,"type":"request","pluginId":"dev.consumer","generation":1,"id":{},"capability":{{"name":"renderer.example","api":1,"scope":"target"}},"method":"call","params":null}}"#,
-            MAX_JAVASCRIPT_SAFE_INTEGER + 1
-        );
-        let error = parse_binding_message(&payload)
-            .err()
-            .expect("an unsafe request id must be rejected");
-        assert!(error.contains("between 1 and"));
-    }
-
-    #[test]
-    fn renderer_runtime_rejects_an_unresolved_capability() {
-        let manifest = PluginManifest::parse(
-            r#"{
-                "schema": 1,
-                "id": "dev.consumer",
-                "version": "1",
-                "renderer": {"entry": "dist/renderer.js", "world": "isolated"},
-                "requires": [
-                    {"name": "runtime.missing", "api": 1, "scope": "runtime"}
-                ]
-            }"#,
-        )
-        .unwrap();
-        let plugin = LoadedPlugin {
-            authorization: None,
-            manifest,
-            source: Some("module.exports = {};".into()),
-            host: None,
-            generation: 1,
-        };
-        let (_registry_directory, registry) = test_registry();
-
-        assert!(matches!(
-            RendererRuntime::new(vec![plugin], registry),
-            Err(RendererError::Capability(
-                CapabilityRegistryError::MissingRequirement { requirement, .. }
-            )) if requirement.scope == CapabilityScope::Runtime
-        ));
-    }
-
-    #[test]
-    fn renderer_runtime_rejects_generation_above_javascript_safe_integer() {
-        let mut plugin = bundled_codex_ui_adapter().unwrap();
-        plugin.generation = 9_007_199_254_740_992;
-        let (_registry_directory, registry) = test_registry();
-
-        assert!(matches!(
-            RendererRuntime::new(vec![plugin], registry),
-            Err(RendererError::InvalidGeneration {
-                plugin_id,
-                generation: 9_007_199_254_740_992,
-            }) if plugin_id == "codex.ui.adapter"
-        ));
-    }
-
-    #[test]
-    fn renderer_runtime_rejects_missing_source_and_incomplete_combined_snapshots_before_registration()
-     {
-        let mut missing_source = bundled_codex_ui_adapter().unwrap();
-        missing_source.source = None;
-        let mut combined = bundled_codex_ui_adapter().unwrap();
-        combined.manifest.host = Some(crate::plugins::HostManifest {
-            entry: "host.js".to_owned(),
-            provides: Vec::new(),
-            requires: Vec::new(),
-        });
-        for plugin in [missing_source, combined] {
-            let (_directory, registry) = test_registry();
-            assert!(matches!(
-                RendererRuntime::new(vec![plugin], registry),
-                Err(RendererError::UnsupportedEntry { plugin_id, .. }) if plugin_id == "codex.ui.adapter"
-            ));
-        }
-    }
-
-    #[test]
-    fn built_in_host_ping_is_strict_and_side_effect_free() {
-        let (_registry_directory, mut registry) = test_registry();
-        let catalog = PluginCatalog::from_bundled(Vec::new());
-        let descriptor = builtin_host_capability();
-        let request = BindingMessage {
-            v: 1,
-            message_type: "request".to_owned(),
-            plugin_id: "dev.consumer".to_owned(),
-            generation: 1,
-            id: Some(1),
-            capability: descriptor.clone(),
-            method: "ping".to_owned(),
-            params: Value::Null,
-            timeout_ms: None,
-            parent_token: None,
-        };
-        let result = invoke_builtin_host_endpoint(
-            HostEndpointContext {
-                registry: &mut registry,
-                catalog: &catalog,
-                plugins: &[],
-                external_observations: &[],
-                manage_service: None,
-                active_plugin_ids: BTreeSet::new(),
-            },
-            "dev.consumer",
-            false,
-            &descriptor,
-            &request,
-        )
-        .unwrap();
-        assert_eq!(result.value, json!({"pong": true, "abi": 1}));
-        assert!(result.after_response.is_none());
-
-        let mut unknown_method = request;
-        unknown_method.method = "anything-else".to_owned();
-        assert_eq!(
-            invoke_builtin_host_endpoint(
-                HostEndpointContext {
-                    registry: &mut registry,
-                    catalog: &catalog,
-                    plugins: &[],
-                    external_observations: &[],
-                    manage_service: None,
-                    active_plugin_ids: BTreeSet::new(),
-                },
-                "dev.consumer",
-                false,
-                &descriptor,
-                &unknown_method,
-            )
-            .unwrap_err()
-            .code,
-            "method_not_found"
-        );
-    }
-
-    #[test]
-    fn runtime_manage_persists_before_scheduling_self_disable() {
-        let (registry_directory, mut registry) = test_registry();
-        let path = registry.path().to_owned();
-        let plugins = bundled_plugins().unwrap();
-        let descriptor = builtin_manage_capability();
-        let catalog = PluginCatalog::from_bundled(plugins.clone());
-        let request = BindingMessage {
-            v: 1,
-            message_type: "request".to_owned(),
-            plugin_id: "codlet-gui".to_owned(),
-            generation: 1,
-            id: Some(1),
-            capability: descriptor.clone(),
-            method: "disableSelf".to_owned(),
-            params: Value::Null,
-            timeout_ms: None,
-            parent_token: None,
-        };
-
-        let denied = invoke_builtin_host_endpoint(
-            HostEndpointContext {
-                registry: &mut registry,
-                catalog: &catalog,
-                plugins: &plugins,
-                external_observations: &[],
-                manage_service: None,
-                active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
-            },
-            "codlet-gui",
-            false,
-            &descriptor,
-            &request,
-        )
-        .unwrap_err();
-        assert_eq!(denied.code, "permission_denied");
-        assert!(!path.exists());
-
-        let result = invoke_builtin_host_endpoint(
-            HostEndpointContext {
-                registry: &mut registry,
-                catalog: &catalog,
-                plugins: &plugins,
-                external_observations: &[],
-                manage_service: None,
-                active_plugin_ids: BTreeSet::from(["codlet-gui".to_owned()]),
-            },
-            "codlet-gui",
-            true,
-            &descriptor,
-            &request,
-        )
-        .unwrap();
-        assert_eq!(
-            result.value,
-            json!({"pluginId": "codlet-gui", "enabled": false})
-        );
-        assert_eq!(
-            result.after_response,
-            Some(HostAction::DisablePlugin {
-                plugin_id: "codlet-gui".to_owned()
-            })
-        );
-        assert!(
-            !PluginRegistry::load(&path)
-                .unwrap()
-                .is_enabled("codlet-gui")
-        );
-        drop(registry_directory);
-    }
-
-    #[test]
-    fn host_requirement_is_resolved_without_exposing_a_renderer_provider() {
-        let manifest = PluginManifest::parse(
-            r#"{
-                "schema": 1,
-                "id": "dev.consumer",
-                "version": "1",
-                "renderer": {"entry": "dist/renderer.js", "world": "isolated"},
-                "requires": [
-                    {"name": "codlet.runtime.ping", "api": 1, "scope": "target"}
-                ]
-            }"#,
-        )
-        .unwrap();
-        let (ordered, _) = order_plugins(vec![LoadedPlugin {
-            authorization: None,
-            manifest,
-            source: Some("module.exports = {};".into()),
-            host: None,
-            generation: 1,
-        }])
-        .unwrap();
-        assert_eq!(
-            ordered
-                .iter()
-                .map(|plugin| plugin.manifest.id.as_str())
-                .collect::<Vec<_>>(),
-            ["dev.consumer"]
-        );
-    }
-
-    #[test]
-    fn renderer_rpc_payload_limit_is_enforced_before_json_parsing() {
-        let payload = "{".repeat(MAX_RENDERER_RPC_PAYLOAD_BYTES + 1);
-        let error = parse_binding_message(&payload)
-            .err()
-            .expect("an oversized payload must be rejected");
-        assert!(error.contains("payload exceeds"));
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod manage_endpoint_tests;

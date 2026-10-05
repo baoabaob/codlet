@@ -106,6 +106,7 @@ impl RendererRuntime {
             ));
         }
         self.flush_host_actions();
+        self.reserve_world_capacity(plugins)?;
         self.management_active = true;
         self.generations = generations;
         for plugin in plugins {
@@ -126,6 +127,7 @@ impl RendererRuntime {
         registry: PluginRegistry,
         generations: BTreeMap<String, u64>,
     ) {
+        self.world_reservations.clear();
         self.plugin_registry = registry;
         self.generations = generations;
         self.management_active = false;
