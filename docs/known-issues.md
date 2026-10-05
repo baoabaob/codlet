@@ -18,9 +18,18 @@ product decisions are tracked in [release readiness](release-readiness.md).
 - Changing a loaded thread's provider does not have an automatic ownership-aware
   restoration protocol. Restore the original provider before retiring its route.
 
-The installer currently offers normal close of recognized running clients.
-This differs from the original installation goal of never closing Codex and
-requires an explicit release-scope decision; see the readiness checklist.
+For 0.2.0, the two original lifetime guarantees above are explicitly excluded.
+Separating Electron's singleton would require a distinct profile or changes to
+official launch behavior. A blanket Windows kill-on-close job could terminate
+official updater descendants; a reliable narrower supervisor needs crash/update
+handoff acceptance. These changes are deferred. To open an unextended client,
+fully quit the extended client first, then use the official launcher. After a
+Core crash, save and quit any remaining client before restarting Codlet.
+
+Installation and startup only prompt the user to close running applications.
+They offer check again/cancel and never send close requests. Windows interactive
+uninstall optionally cleans an explicitly listed Codlet-only data scope; see
+[distribution](distribution.md).
 
 ## Renderer environments after repeated reloads
 
@@ -68,12 +77,14 @@ clean-device installer/upgrade/uninstall and signed-client functional acceptance
 The native Windows harness requires a disposable VM/host: a separate profile
 does not isolate Windows sandbox accounts or firewall changes.
 
-Windows ARM64 and macOS desktop/installer behavior need their own device
-acceptance. Native builds and controlled transport tests are narrower evidence.
+Windows ARM64 and macOS desktop/installer acceptance are deferred by the
+maintainer for this preparation round. Native builds and controlled transport
+tests are narrower evidence.
 Linux remains outside the current implementation scope.
 See [compatibility](compatibility.md).
 
 Windows signing and macOS Developer ID/notarization have not been established.
+The maintainer has deferred obtaining a Windows signing certificate.
 The current Windows builder emits unsigned installers; the Mac builder provides
 ad-hoc bundle integrity only. A stable version label does not change these facts.
 

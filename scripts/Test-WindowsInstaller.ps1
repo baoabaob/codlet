@@ -64,7 +64,7 @@ if($WixDirectory){
     try{if($installer.ProductState($product) -ne -1){throw 'Probe registered an installed product'}}finally{[Runtime.InteropServices.Marshal]::ReleaseComObject($installer)|Out-Null}
   }finally{if(-not $fixture.HasExited){$fixture.Kill();$null=$fixture.WaitForExit(3000)};$fixture.Dispose()}
 }
-$report=[ordered]@{passed=$true;scope='owned-fake-processes-only';userClientTouched=$false;checks=@('scoped-process-list','quiet-failure','pid-identity','normal-close','no-force-on-refusal','unrelated-process-preserved','durable-detached-output')}
+$report=[ordered]@{passed=$true;scope='owned-fake-processes-only';userClientTouched=$false;checks=@('scoped-process-list','quiet-failure','retry-and-cancel-preserve-processes','manual-exit-then-continue','unrelated-process-preserved','durable-detached-output')}
 if($null -ne $msiExit){$report.msiQuietExitCode=$msiExit;$report.checks+='real-msi-quiet-preflight-before-transaction'}
 $report|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $output 'report.json') -Encoding UTF8
 $report|ConvertTo-Json -Compress

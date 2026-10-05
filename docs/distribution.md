@@ -54,7 +54,13 @@ require review. Custom or modified directories are skipped. Legacy seed commands
 migration support. Core has no runtime dependency on these plugins and grants them no
 special capabilities.
 
-The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, requests normal close with a bounded wait, and offers retry/cancel. Restart Manager automatic shutdown is disabled; no client is force-killed. An unattended busy install fails explicitly. Uninstall removes program files/shortcuts and preserves plugin/config/data.
+The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, and asks the user to save and quit them. Its only actions are check again and cancel. Neither the installer nor the launcher's gate sends a close request. Restart Manager automatic shutdown is disabled. An unattended busy install fails explicitly.
+
+After a successful full interactive uninstall, a separate optional dialog offers to keep or remove the current user's default Codlet data. Keeping data is the default; deletion needs a checked consent box and a separate click. Upgrade, repair, cancellation, failed uninstall, quiet/basic-UI uninstall and SYSTEM execution cannot run cleanup. This option is Windows-only.
+
+The dialog lists the exact whitelist under the invoking user's `%LOCALAPPDATA%/Codlet`: configuration/preferences/compatibility metadata, downloaded `packages`, `config.json.plugin-services` (plugin storage), `js-runtimes`, `runtime-skills`, setup state and logs. When the original `config.json` is present, cleanup also removes only generic Windows credentials under the matching `Codlet/<canonical-registry-hash>/` namespace. Missing configuration leaves unidentifiable credentials untouched. No credential values are displayed. Active runtime locks prevent cleanup before any deletion; busy or read-only entries are retained and reported.
+
+Official Codex accounts, chats and settings, other Windows users, portable or custom `CODLET_HOME` directories, external plugin source projects, unknown files and directory links are retained. Cleanup never follows plugin registrations into source directories. Directory handles pin ordinary ancestors during traversal; junctions/reparse points are refused or left in place. This deliberately limited cleanup is not a general filesystem cleaner. MSI removes its own application files, shortcuts and PATH registration independently.
 
 The Windows launcher retains the exact native Core process handle so early exits
 preserve their actual exit code and log, even if Core exits before the first poll.
@@ -96,13 +102,13 @@ WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launche
 
 Use `Test-DistributionEncoding.ps1` for Windows PowerShell/encoding checks and `Test-WindowsInstaller.ps1` for controlled process and MSI preflight scenarios. `Test-NativeInstaller.ps1` renders the actual native UI in both languages, validates feature/scope/path commands, and exercises real MSI record progress/cancellation without installing. Fixture builds cannot install. `Test-MsiDistribution.ps1 -StructureOnly` inspects tables, scopes, PATH components and features without changing the user's installation. Never deliver fixture or stale-Core packages used by these tests.
 
-The native shell uses [MSI's external UI record handler](https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msisetexternaluirecord) and `NONE | UACONLY` so it suppresses the old wizard while retaining the system elevation prompt. Scope handling follows [Microsoft's single-package authoring contract](https://learn.microsoft.com/en-us/windows/win32/msi/single-package-authoring). MSI log files remain under `%LOCALAPPDATA%\Codlet\installer-logs`. Cancelling requests MSI rollback, never terminates the Windows Installer process. Native normal-close requests remain bounded and do not force-kill clients.
+The native shell uses [MSI's external UI record handler](https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msisetexternaluirecord) and `NONE | UACONLY` so it suppresses the old wizard while retaining the system elevation prompt. Scope handling follows [Microsoft's single-package authoring contract](https://learn.microsoft.com/en-us/windows/win32/msi/single-package-authoring). MSI log files remain under `%LOCALAPPDATA%\Codlet\installer-logs`. Cancelling requests MSI rollback, never terminates the Windows Installer process. `Test-UserDataCleanup.ps1` exercises consent, active-scope refusal, exact credential scoping, unknown files and junction boundaries using disposable fixture data.
 
 ## macOS Apple Silicon
 
 Open the DMG and drag `Codlet.app` to Applications. The native Swift launcher offers optional official plugins and a Desktop shortcut on first use. Later explicit configuration starts with no plugin selected, so removed plugins stay removed. Existing registrations, grants, and disabled states are preserved.
 
-The launcher requests normal quit of a recognized running Codex client, waits at most 15 seconds, and permits cancellation. It does not force-kill the client. Normal startup does not repeatedly run initialization.
+The launcher asks the user to save and quit a recognized running Codex client, then offers check again or cancel. It does not request or force client closure during startup. Normal startup does not repeatedly run initialization.
 
 ```sh
 sh scripts/build-macos.sh release

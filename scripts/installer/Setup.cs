@@ -66,9 +66,7 @@ namespace Codlet.Setup {
             {"switch", new[]{"已存在另一安装范围的 Codlet。切换范围前，请先卸载旧版本；插件和配置会保留。", "Codlet is installed in the other scope. Uninstall it before switching scope; plugins and settings are retained."}},
             {"running", new[]{"请先关闭 Codex", "Close Codex to continue"}},
             {"save", new[]{"保存当前任务后，请关闭下列应用以继续安装。", "Save your work, then close these applications to continue."}},
-            {"closeContinue", new[]{"关闭并继续", "Close and continue"}}, {"recheck", new[]{"重新检查", "Check again"}},
-            {"waiting", new[]{"正在等待应用正常退出…", "Waiting for applications to close…"}},
-            {"manual", new[]{"应用仍在运行。请手动退出后重新检查。", "Some applications are still running. Close them manually and check again."}},
+            {"recheck", new[]{"重新检查", "Check again"}},
             {"installing", new[]{"正在安装 Codlet", "Installing Codlet"}}, {"prepare", new[]{"正在准备安装", "Preparing installation"}},
             {"files", new[]{"正在写入程序文件", "Installing application files"}}, {"shortcuts", new[]{"正在设置快捷方式", "Creating shortcuts"}},
             {"environment", new[]{"正在更新环境变量", "Updating PATH"}}, {"register", new[]{"正在完成安装", "Completing installation"}},
@@ -246,7 +244,13 @@ namespace Codlet.Setup {
                 Window.Close(); return;
             }
             if (phase == "failed" || phase == "cancelled") { RestoreSetup(); return; }
-            if (phase == "gate") { await CloseApplications(); return; }
+            if (phase == "gate") {
+                if (gateBusy) return;
+                gateBusy = true; Control<Button>("PrimaryButton").IsEnabled = false;
+                try { if (await CheckApplications()) await Install(); }
+                finally { gateBusy = false; if (!closed) Control<Button>("PrimaryButton").IsEnabled = true; }
+                return;
+            }
             if (phase != "setup" || !Validate()) return;
             NormalizeDisplayedPath(); folders[scope] = Control<TextBox>("InstallPath").Text;
             if (!preview && !await CheckApplications()) return;
@@ -256,25 +260,12 @@ namespace Codlet.Setup {
             running = await Task.Run(() => ProcessGate.Find(folders[scope], true));
             if (closed) return false;
             if (running.Count == 0) return true;
-            Status("gate", T("running"), T("save"), T("closeContinue"));
+            Status("gate", T("running"), T("save"), T("recheck"));
             Control<TextBox>("ProcessList").Text = String.Join(Environment.NewLine, running.Select(x => x.Name + "  ·  PID " + x.Id));
             Control<TextBox>("ProcessList").Visibility = Visibility.Visible;
-            Control<Button>("SecondaryButton").Content = T("recheck"); return false;
+            Control<Button>("SecondaryButton").Content = T("cancel"); return false;
         }
-        async Task CloseApplications() {
-            if (gateBusy) return; gateBusy = true; Control<Button>("PrimaryButton").IsEnabled = false;
-            foreach (var process in running) ProcessGate.RequestClose(process);
-            Control<TextBlock>("StatusText").Text = T("waiting");
-            for (int attempt = 0; attempt < 24 && !closed; attempt++) {
-                await Task.Delay(500); running = await Task.Run(() => ProcessGate.Find(folders[scope], true));
-                if (!closed && running.Count == 0) { gateBusy = false; await Install(); return; }
-            }
-            gateBusy = false; if (!closed) { Control<Button>("PrimaryButton").IsEnabled = true; Control<TextBlock>("StatusText").Text = T("manual"); }
-        }
-        async void Secondary() {
-            if (phase == "gate") { if (gateBusy) return; if (await CheckApplications()) await Install(); }
-            else CloseOrCancel();
-        }
+        void Secondary() { CloseOrCancel(); }
         void CloseOrCancel() {
             if (phase == "installing") {
                 cancelPending = true;
@@ -379,6 +370,12 @@ namespace Codlet.Setup {
             Capture(Path.Combine(output, "installer-machine.png"));
             ApplyTheme(true); SetPluginsExpanded(true);
             Capture(Path.Combine(output, "installer-dark.png"));
+            Status("gate", T("running"), T("save"), T("recheck"));
+            Control<Button>("SecondaryButton").Content = T("cancel");
+            Control<TextBox>("ProcessList").Text = "Codex  ·  PID 1234 (fixture)";
+            Control<TextBox>("ProcessList").Visibility = Visibility.Visible;
+            if ((string)Control<Button>("PrimaryButton").Content != T("recheck") || (string)Control<Button>("SecondaryButton").Content != T("cancel")) throw new Exception("Process gate must offer only check/cancel");
+            Capture(Path.Combine(output, "installer-running.png"));
             var payload = ExtractPayload(output); File.Delete(payload);
             File.WriteAllText(Path.Combine(output, "report.json"), "{\"passed\":true,\"installationPerformed\":false,\"nativeUi\":true,\"payloadHashVerified\":true,\"scopeAndFeatures\":true,\"msiProgressAndCancellation\":true,\"version\":\"" + SetupBuild.Version + "\"}", new UTF8Encoding(false));
             Window.Close();

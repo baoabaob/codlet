@@ -92,6 +92,8 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-NativeInstaller.ps1 -ArtifactsDirectory .codlet-artifacts/native-installer-ci
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-UserDataCleanup.ps1 -ArtifactsDirectory .codlet-artifacts/cleanup-ci
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-launcher.test.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-Release.ps1
@@ -109,6 +111,7 @@ jobs:
         with:
           cache-on-failure: true
       - run: python3 tests/test_macos_distribution.py
+      - run: swiftc -typecheck scripts/macos/Launcher.swift
       - name: Test all native Core targets and features on Apple silicon
         run: sh scripts/test-macos.sh
       - uses: actions/setup-node@v4

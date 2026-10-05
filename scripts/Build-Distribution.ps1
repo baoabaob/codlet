@@ -88,7 +88,11 @@ the official client's account, configuration or conversation database location.
 The native setup EXE offers current-user or all-users installation, folder browsing,
 shortcut and PATH options. Use a newer setup EXE to upgrade installed versions.
 The MSI is an internal installer payload; new releases distribute the setup EXE.
-Uninstall removes application files and shortcuts; plugin/config/data are retained.
+Uninstall removes application files and shortcuts. After a successful interactive
+uninstall, you may explicitly choose to remove the listed current-user Codlet data;
+keeping data is the default. Quiet uninstall, upgrades and repairs retain data.
+Official Codex data, custom data directories, external sources and unknown files
+are outside this cleanup scope. Startup only asks you to quit existing clients.
 MSI repair does not overwrite downloaded plugins in the user data directory.
 
 This unsigned package targets Windows x64. Install the official Codex client

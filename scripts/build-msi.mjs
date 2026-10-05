@@ -61,7 +61,7 @@ const app=manifest.version;
 const {msiVersion}=windowsVersion(app);
 const licenseText=await readFile(resolve(root,'LICENSE'),'utf8');
 const rtfText=value=>value.replaceAll('\\','\\\\').replaceAll('{','\\{').replaceAll('}','\\}').replaceAll('\r','').replaceAll('\n','\\par\n');
-const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet\n\nCore and official plugins are licensed under Apache-2.0. Installation can be per-user or all-users; plugin data remains per-user. Optional plugins are initialized on first launch; uninstall preserves user data. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
+const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet\n\nCore and official plugins are licensed under Apache-2.0. Installation can be per-user or all-users; plugin data remains per-user. Optional plugins are initialized on first launch; uninstall retains data by default and offers optional, scoped Codlet data cleanup. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
 await writeFile(resolve(build,'notice.rtf'),license);
 const source=`<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="*" Name="Codlet ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
@@ -77,9 +77,11 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 <Binary Id="CodletInstallerActions" SourceFile="${xml(resolve(build,'Codlet-Installer-Preflight.exe'))}"/>
 <CustomAction Id="CheckRunningApplications" BinaryKey="CodletInstallerActions" ExeCommand="&quot;[INSTALLFOLDER].&quot; [UILevel] &quot;[TempFolder]Codlet-Installer-[ProductCode].log&quot;" Execute="immediate" Return="check"/>
 <InstallExecuteSequence><Custom Action="CheckRunningApplications" Before="InstallValidate">NOT UPGRADINGPRODUCTCODE</Custom></InstallExecuteSequence>
+<CustomAction Id="OfferUserDataCleanup" BinaryKey="CodletInstallerActions" ExeCommand="--offer-user-cleanup" Execute="immediate" Return="ignore" Impersonate="yes"/>
+<InstallExecuteSequence><Custom Action="OfferUserDataCleanup" After="InstallFinalize">Installed AND REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt;= 4</Custom></InstallExecuteSequence>
 <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更新版本的 Codlet"/>
 <MediaTemplate EmbedCab="yes" CompressionLevel="medium"/>
-<Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动将从 GitHub 下载所选插件，需要网络。已有插件保持不变。卸载保留用户数据。"/>
+<Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动将从 GitHub 下载所选插件，需要网络。已有插件保持不变。卸载默认保留数据，完成后可明确选择清理所列 Codlet 数据。"/>
 <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 Codlet"/>
 <CustomAction Id="LaunchCodletAfterInstall" FileKey="${id('F_','Codlet-Launcher.exe')}" ExeCommand="" Return="asyncNoWait" Impersonate="yes"/>
 <Icon Id="CodletIcon" SourceFile="${xml(resolve(root,'codlet.ico'))}"/>

@@ -242,7 +242,7 @@ def build(args):
             f"Codlet {version} · macOS Apple Silicon\n\n"
             "1. 将 Codlet 拖入 Applications，再从应用程序打开。\n"
             "2. 首次打开可选择从 GitHub 下载最新官方插件及创建桌面快捷入口。GUI 自动包含 UI Adapter。\n"
-            "3. 如果 Codex 正在运行，Codlet 会先提示你完成任务，并仅请求正常退出。\n\n"
+            "3. 如果 Codex 正在运行，请完成并保存任务后自行退出，再点击“重新检查”继续。\n\n"
             "本包没有 Apple Developer ID 签名或公证。Gatekeeper 可能阻止首次打开。\n"
             "确认下载来源和 SHA-256 后，可使用 macOS 系统设置中的隐私与安全性页\n"
             "允许这一个应用；不要关闭系统安全保护。工作与视觉验收仍需真实 Mac 客户端。\n\n"

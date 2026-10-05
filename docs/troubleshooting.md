@@ -12,11 +12,11 @@ codlet plugin list --json
 
 ## Startup and installation
 
-The native Windows launcher reports running recognized clients before launch. Close them normally or cancel; unsaved work is never a reason for the launcher to force-kill the app. Its initial normal-close wait is bounded. If the client remains open, retry after closing it yourself.
+The native Windows launcher reports recognized running clients before launch. Save your work and quit them yourself, then choose Check again; Cancel leaves them running. The installer and startup gates never send close requests.
 
 Launch logs are under the selected Codlet data directory's `launcher-logs/`. Startup confirmation is limited to five minutes. On timeout, already started processes remain available for investigation; the launcher reports the failure instead of hiding an indefinite wait. MSI process-check logs are `%TEMP%/Codlet-Installer-{ProductCode}.log`. An unattended installation refuses a busy client before changing installation files (MSI error 1603, process-gate result 1618).
 
-The macOS launcher similarly requests normal quit, waits up to 15 seconds, and permits cancellation. Preview apps are ad-hoc signed, not Developer ID signed/notarized. Do not globally disable OS protections to test them.
+The macOS launcher also waits for you to quit Codex yourself, offering Check again or Cancel. Current Mac packages are ad-hoc signed, not Developer ID signed/notarized. Device acceptance and certificate signing are deferred during this release preparation.
 
 For an independent developer lab, follow the printed startup/error/coordinator paths. Recovery requires the previous owner to have exited; see [development](development.md).
 

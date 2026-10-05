@@ -24,17 +24,21 @@ namespace Codlet.Setup {
                 Assert(found.Count == 2 && !found.Any(p => p.Id == other.Id), "enumeration selects only owned test directory");
                 var watch = Stopwatch.StartNew();
                 Assert(ProcessGate.Check(root, false, false, Console.WriteLine) == 1618 && watch.ElapsedMilliseconds < 3000, "quiet preflight fails promptly without interaction");
-                var app = found.Single(p => p.Id == cooperative.Id);
-                var stale = new RunningApplication { Id = app.Id, Created = app.Created - 1, Path = app.Path };
-                Assert(!ProcessGate.RequestClose(stale) && !cooperative.HasExited, "stale PID identity cannot close a process");
                 using (var dialog = new ApplicationsDialog(root, false, found)) {
                     dialog.ShowInTaskbar = false; dialog.Opacity = 0; dialog.Show(); Application.DoEvents();
                     using (var bitmap = new Bitmap(dialog.Width, dialog.Height)) { dialog.DrawToBitmap(bitmap, new Rectangle(0, 0, bitmap.Width, bitmap.Height)); bitmap.Save(Path.Combine(root, "process-dialog.png")); }
+                    var buttons = dialog.Controls.OfType<Button>().ToArray();
+                    Assert(buttons.Length == 2, "process gate offers only retry and cancel");
+                    buttons.Single(button => button.DialogResult != DialogResult.Cancel).PerformClick(); Application.DoEvents();
+                    Assert(!cooperative.HasExited && !stubborn.HasExited && dialog.Visible, "rechecking never closes applications");
+                    buttons.Single(button => button.DialogResult == DialogResult.Cancel).PerformClick(); Application.DoEvents();
+                    Assert(!cooperative.HasExited && !stubborn.HasExited, "cancelling leaves applications running");
                 }
-                Assert(ProcessGate.RequestClose(app) && cooperative.WaitForExit(5000), "normal window close exits cooperative test application");
-                Assert(ProcessGate.RequestClose(found.Single(p => p.Id == stubborn.Id)), "normal close request is sent to stubborn test application");
-                Assert(!stubborn.WaitForExit(500), "refused close never becomes forced termination");
                 Assert(!other.HasExited, "unrelated same-name application remains running");
+                // Simulate the user closing only the fixtures; production has no
+                // close/terminate operation in its process gate.
+                cooperative.Kill(); stubborn.Kill(); cooperative.WaitForExit(3000); stubborn.WaitForExit(3000);
+                Assert(ProcessGate.Check(root, false, false, Console.WriteLine) == 0, "manual exit allows the next check to continue");
                 string exitFile = Path.Combine(root, "fixture-exit-code");
                 try {
                     foreach (int code in new[] { 23, 0, 259 }) {

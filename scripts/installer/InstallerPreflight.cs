@@ -7,6 +7,14 @@ namespace Codlet.Setup {
     static class InstallerPreflight {
         [STAThread]
         static int Main(string[] args) {
+            if (args.Length == 1 && args[0] == "--offer-user-cleanup") {
+                try {
+                    Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+                    CleanupDialog.Offer(); return 0;
+                } catch (Exception error) {
+                    MessageBox.Show(error.Message, "Codlet", MessageBoxButtons.OK, MessageBoxIcon.Warning); return 1;
+                }
+            }
             // MSI's Binary EXE action extracts and runs this helper before
             // InstallInitialize. No managed custom-action extraction runtime.
             if (args.Length != 3) return 87;

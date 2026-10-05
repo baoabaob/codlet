@@ -164,23 +164,15 @@ final class Launcher: NSObject, NSApplicationDelegate {
     }
     private func prepareLaunch() {
         guard core == nil, !waitingForClientExit else { return }
-        let clients = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
-        guard !clients.isEmpty else { launch(); return }
-        let answer = alert("Codex 仍在运行", "请先完成并保存正在进行的任务。继续会请求 Codex 正常退出，最多等待 15 秒；你也可以取消后自行退出。", buttons: ["请求正常退出", "取消"])
-        guard answer == .alertFirstButtonReturn else { NSApp.terminate(nil); return }
         waitingForClientExit = true
-        clients.forEach { _ = $0.terminate() }
-        let deadline = Date().addingTimeInterval(15)
-        Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] timer in
-            guard let self else { timer.invalidate(); return }
-            if clients.allSatisfy({ $0.isTerminated }) { timer.invalidate(); self.waitingForClientExit = false; self.launch() }
-            else if Date() >= deadline {
-                timer.invalidate()
-                self.waitingForClientExit = false
-                _ = self.alert("Codex 尚未退出", "Codlet 没有强制结束任何任务。请在 Codex 中处理保存或退出提示，再打开 Codlet。")
-                NSApp.terminate(nil)
+        defer { waitingForClientExit = false }
+        while !NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").isEmpty {
+            let answer = alert("Codex 仍在运行", "请在 Codex 中完成并保存任务，然后自行退出。退出后点击“重新检查”继续。", buttons: ["重新检查", "取消"])
+            if answer != .alertFirstButtonReturn {
+                NSApp.terminate(nil); return
             }
         }
+        launch()
     }
     private func launch() {
         guard core == nil else { return }

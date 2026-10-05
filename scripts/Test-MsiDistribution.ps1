@@ -51,6 +51,11 @@ if($StructureOnly){
     if([int]$action[0] -ne 2 -or $action[1] -notlike '*[[]UILevel[]]*' -or $action[1] -notlike '*Codlet-Installer-*'){throw 'MSI preflight must pass UI level and a diagnostic log path'}
     $restart=@(Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MSIRESTARTMANAGERCONTROL'" 1)[0][0]
     if($restart -ne 'DisableShutdown'){throw 'MSI may automatically close user applications'}
+    $cleanup=@(Rows "SELECT ``Sequence``,``Condition`` FROM ``InstallExecuteSequence`` WHERE ``Action``='OfferUserDataCleanup'" 2)[0]
+    $finalize=[int](@($sequences|Where-Object{$_[0] -eq 'InstallFinalize'})[0][1])
+    if([int]$cleanup[0] -le $finalize -or $cleanup[1] -ne 'Installed AND REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel >= 4'){throw 'Optional cleanup must follow a successful interactive full uninstall, excluding upgrades'}
+    $cleanupAction=@(Rows "SELECT ``Type``,``Target`` FROM ``CustomAction`` WHERE ``Action``='OfferUserDataCleanup'" 2)[0]
+    if([int]$cleanupAction[0] -ne 66 -or $cleanupAction[1] -ne '--offer-user-cleanup'){throw 'Cleanup must be an impersonated, optional EXE action with no caller-selected data path'}
     $launch=@(Rows "SELECT ``Condition`` FROM ``ControlEvent`` WHERE ``Event``='DoAction' AND ``Argument``='LaunchCodletAfterInstall'" 1)[0][0]
     if($launch -notlike '*WIXUI_EXITDIALOGOPTIONALCHECKBOX*'){throw 'Post-install launch is not opt-in'}
     $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;bundledNode=$false;bundledPlugins=$false;pluginDownloadChoices=$choices;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}

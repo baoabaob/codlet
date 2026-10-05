@@ -555,11 +555,14 @@ function New-ReleasePlan {
             '- A shared Host/renderer plugin lifecycle with explicit permissions, capabilities, cancellation and diagnostics.',
             '- Optional Desktop/UI adapters and a GUI for plugin discovery, installation, updates and management; CLI and runtime skill work independently.',
             '- Native installation follows system appearance and language, with user or machine scope, shortcuts and optional PATH entries.',
-            '- Run the setup EXE to upgrade installed Windows versions, including earlier MSI installations. Existing portable in-app runtime updates replace Core only. Switching installation scope requires uninstalling the old-scope application first; plugin data is preserved.',
+            '- Run the setup EXE to upgrade installed Windows versions, including earlier MSI installations. Existing portable in-app runtime updates replace Core only. Switching installation scope requires uninstalling the old-scope application first; keep the default data-retention option when switching.',
+            '- Installation and startup ask you to save and quit existing clients yourself, then check again or cancel. They do not send close requests.',
+            '- After a successful interactive Windows uninstall, optionally remove only the listed Codlet data for the current user. Data is retained by default; official Codex data, custom homes, external sources and unknown files are preserved.',
             '',
             '## Signing and verification',
             '',
             $(if($WindowsOnly){'Windows packages are unsigned. Review `SHA256SUMS.txt` before use.'}else{'Windows packages are unsigned. The macOS app is ad-hoc signed for bundle integrity. It is not Developer ID signed or notarized. Review `SHA256SUMS.txt` before use.'}),
+            'Version 0.2.0 does not guarantee that the official launcher opens a separate unextended instance while Codlet is running, or that a Core crash always closes its desktop client. Fully quit the extended client before opening an official-only session or restarting after a crash.',
             '',
             'See [known issues](https://github.com/baoabaob/codlet/blob/main/docs/known-issues.md) and [release readiness](https://github.com/baoabaob/codlet/blob/main/docs/release-readiness.md) for platform evidence and remaining acceptance limits.'
         )
