@@ -122,6 +122,7 @@ dependencies = [
  "libc",
  "reqwest",
  "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2",

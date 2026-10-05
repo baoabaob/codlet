@@ -16,6 +16,7 @@
 - 修复 MSI 版本回退：正式 `0.2.0` 映射为 MSI `0.2.1000`，高于 Preview 29 的 `0.2.29`；后续 patch 递增。已知内置 Preview 更新配置迁移到 stable，自定义来源保持原配置。
 - 升级 lodash、PostCSS、selector parser、reqwest/Hickory 和 rustls；统一 HTTP 客户端初始化，显式安装已有 ring 加密实现，并由业务层决定重试。保留异步 DNS、系统证书校验及明确授权的附加 CA。依赖声明和实际三方许可同步更新。
 - 将已有 SDK 类型示例接入固定版本 TypeScript 和 CI；稳定版发布计划校验也进入 CI。
+- 跨平台 CI 暴露并修复了两个问题：reqwest 升级后显式保持 WebPKI 对系统根证书与附加 CA 的校验语义；客户端模块观察器同时识别应用目录及其真实路径，避免 macOS `/var` 别名或 Windows junction 使启动 source 无法激活。目录别名回归已先复现失败，再验证修复及相邻目录排除。
 
 ## 按最初设计核对
 
@@ -57,13 +58,15 @@ G1/G2 的完整 Windows 原生 turn 验收不能在共享日常主机上补跑�
 | --- | --- | --- |
 | `cargo fmt`、全目标/全功能 `clippy -D warnings` | 通过 | 包括平台条件编译可在 Windows 上检查的部分 |
 | `cargo test --locked --all-targets --all-features -- --test-threads=2` | **754 通过，7 ignored** | 包括受控进程、IPC、权限、RPC、生命周期、网络及更新事务；ignored 不算通过 |
-| Core Node 全套 | **211 通过，0 跳过** | 包括真实 Core 原生 HTTP/SSE/WS/WSS fixtures |
+| Core Node 全套 | **212 通过，0 跳过** | 包括真实 Core 原生 HTTP/SSE/WS/WSS fixtures 和目录别名回归 |
 | 官方插件 Node 全套，配置匹配的 `CODLET_CORE_ROOT` | **256 通过，2 跳过** | 两个真实 AppServer turn 测试需可丢弃 Windows 主机；受控 Node 冷启动/Host ABI 已运行 |
 | TypeScript SDK 检查 | 通过 | 固定 TypeScript 7.0.2，检查现有声明与使用示例 |
 | npm 审计 | 两个仓库均 0 项 | 当前锁文件已知漏洞记录 |
 | Rust 锁文件 OSV/RustSec 查询 | 234 个 registry 包，0 命中 | `cargo-audit` 安装遇到 registry 网络超时，改为数据库批量查询；不是 cargo-audit 的结果 |
 | 原生安装器、启动器、进程隔离、M0/M0 crash 脚本测试 | 通过 | 原生 UI/受控假客户端；没有在日常 Codex 上做崩溃或安装实验 |
 | 稳定版发布计划测试 | 通过 | 合成包、摘要、篡改拒绝、精确提交标签和模拟 draft/publish；无 GitHub 写入 |
+| 真实候选 MSI、安装器和更新 ZIP | 构建及结构校验通过 | MSI 产品版本为 `0.2.1000`；未安装到当前日常系统 |
+| 候选 ZIP 更新及失败回滚 | opt-in 验收通过 | 实际解包、替换、重启成功和回滚路径；使用独立临时目录与受控假客户端 |
 | macOS 打包规则 | 5 项通过 | 离线 Python 载荷检查，没有执行 Mac 二进制 |
 | 真实固定 Node 镜像下载及缓存复用 | 补跑通过 | 校验实际公开镜像和可复用私有缓存 |
 | 指定旧官方 CUA Node 复用验收 | 环境前提未满足 | 该 opt-in 测试要求 `26.917.6896.0`，本机已是 `26.930.3930.0`，无法取得其精确旧源；不能记为通过。当前固定下载路径已验收 |

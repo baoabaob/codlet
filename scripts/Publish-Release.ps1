@@ -547,7 +547,7 @@ function New-ReleasePlan {
             "- **[Windows x64 installer](https://github.com/$Repository/releases/download/v$version/Codlet-$version-windows-x64-setup.exe)** - native Codlet UI, install scope, folder picker, shortcut and PATH options.",
             $(if(-not $WindowsOnly){"- **[Apple Silicon DMG](https://github.com/$Repository/releases/download/v$version/Codlet-$version-macos-arm64.dmg)** - drag Codlet.app to Applications."}else{'This release provides Windows builds only; it does not update macOS installations.'}),
             '',
-            'Use the installer above for Windows installation and upgrades. The update ZIPs and `codlet-update-managed.json` support existing portable and macOS installations. `SHA256SUMS.txt` lists download checksums.',
+            ('Use the installer above for Windows installation and upgrades. The update ZIPs and `codlet-update-managed.json` support {0}. `SHA256SUMS.txt` lists download checksums.' -f $(if($WindowsOnly){'existing Windows portable installations'}else{'existing portable and macOS installations'})),
             $(if ($LegacyUpdateBridge) { 'This transition release also provides `codlet-update.json` and full updater payloads so Preview 5 can upgrade. New installations use the smaller packages; later updates use the managed-runtime channel.' } else { 'Node is prepared automatically from a verified official-client runtime or the pinned fallback download, then reused from the managed cache.' }),
             '',
             '## Features',

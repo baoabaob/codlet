@@ -2,6 +2,7 @@
 // Core-owned transport and CommonJS observation. No client symbols or profiles.
 const net = require('node:net');
 const path = require('node:path');
+const { realpathSync } = require('node:fs');
 const Module = require('node:module');
 const { createHash, timingSafeEqual } = require('node:crypto');
 const { connectPlaintextSource } = require('./plaintext-source-client.cjs');
@@ -20,6 +21,9 @@ async function bounded(operation, code) {
 }
 
 function observeModules(root, key, dependencies = {}) {
+  // Native require resolves directory aliases (for example /var -> /private/var
+  // on macOS), while Electron's app path may retain the caller's spelling.
+  const roots = [...new Set([path.resolve(root), realpathSync(root)])];
   const prototype = dependencies.prototype ?? Module.prototype;
   const original = prototype._compile;
   const records = new Map(), subscribers = new Set(), instances = new Set();
@@ -51,9 +55,11 @@ function observeModules(root, key, dependencies = {}) {
     },
   });
   const compile = function(code, filename) {
-    const relative = typeof filename === 'string' ? path.relative(root, filename) : '..';
-    if (closed || typeof code !== 'string' || !relative || relative.startsWith('..') || path.isAbsolute(relative)
-      || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
+    const inScope = typeof filename === 'string' && roots.some(root => {
+      const relative = path.relative(root, filename);
+      return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+    });
+    if (closed || typeof code !== 'string' || !inScope || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
     const hash = createHash('sha256').update(code).digest('hex');
     const reference=`globalThis[Symbol.for(${JSON.stringify(Symbol.keyFor(key))})]`;
     const registration = `\n;${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(expression)=>eval(expression));`;

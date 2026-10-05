@@ -123,4 +123,4 @@ jobs:
       - run: node frontend/build.mjs
       - run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
       - name: Test native HTTP, SSE, WS, WSS and plugin contracts
-        run: node --test --test-concurrency=2 tests/native_traffic.test.mjs tests/host_traffic.test.mjs tests/plaintext_source.test.mjs tests/traffic_interceptors.test.mjs tests/traffic_profiles.test.mjs tests/traffic_wire.test.mjs
+        run: node --test --test-concurrency=2 tests/native_traffic.test.mjs tests/host_traffic.test.mjs tests/plaintext_source.test.mjs tests/traffic_interceptors.test.mjs tests/traffic_profiles.test.mjs tests/traffic_wire.test.mjs tests/client_bridge.test.mjs

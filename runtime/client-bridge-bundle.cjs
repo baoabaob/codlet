@@ -6395,6 +6395,7 @@ var require_acorn = __commonJS({
 // runtime/client-bridge.cjs
 var net = require("node:net");
 var path = require("node:path");
+var { realpathSync } = require("node:fs");
 var Module = require("node:module");
 var { createHash, timingSafeEqual } = require("node:crypto");
 var { connectPlaintextSource } = require_plaintext_source_client();
@@ -6414,6 +6415,7 @@ async function bounded(operation, code) {
   }
 }
 function observeModules(root, key, dependencies = {}) {
+  const roots = [.../* @__PURE__ */ new Set([path.resolve(root), realpathSync(root)])];
   const prototype = dependencies.prototype ?? Module.prototype;
   const original = prototype._compile;
   const records = /* @__PURE__ */ new Map(), subscribers = /* @__PURE__ */ new Set(), instances = /* @__PURE__ */ new Set();
@@ -6472,8 +6474,11 @@ function observeModules(root, key, dependencies = {}) {
     }
   });
   const compile = function(code, filename) {
-    const relative = typeof filename === "string" ? path.relative(root, filename) : "..";
-    if (closed || typeof code !== "string" || !relative || relative.startsWith("..") || path.isAbsolute(relative) || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
+    const inScope = typeof filename === "string" && roots.some((root2) => {
+      const relative = path.relative(root2, filename);
+      return relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+    });
+    if (closed || typeof code !== "string" || !inScope || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
     const hash = createHash("sha256").update(code).digest("hex");
     const reference = `globalThis[Symbol.for(${JSON.stringify(Symbol.keyFor(key))})]`;
     const registration = `

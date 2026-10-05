@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,rm,symlink,unlink,realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -83,6 +83,23 @@ test('captured module bindings remain available after readiness and subscription
   assert.equal(count,1);assert.equal(registry.inspect().subscribers,1);
   unsubscribe();assert.equal(registry.inspect().subscribers,0);
   compile('second.cjs',code);assert.equal(count,1);assert.equal(registry.inspect().modules,2);
+});
+
+test('the module observer follows an aliased app root without observing neighboring modules',async t=>{
+  const directory=await mkdtemp(path.join(tmpdir(),'codlet-client-alias-'));
+  const actual=path.join(await realpath(directory),'app'),alias=path.join(directory,'alias');
+  await mkdir(actual);
+  await writeFile(path.join(actual,'native.cjs'),'class Native {value(){return "native";}};module.exports={Native};');
+  const outside=path.join(directory,'outside.cjs');await writeFile(outside,'module.exports={outside:true};');
+  await symlink(actual,alias,process.platform==='win32'?'junction':'dir');
+  const registry=observeModules(alias,Symbol.for('codlet.test.aliased-modules'));
+  t.after(async()=>{
+    registry.close();delete require.cache[require.resolve(path.join(alias,'native.cjs'))];delete require.cache[require.resolve(outside)];
+    await unlink(alias);assert.equal(path.dirname(path.resolve(directory)),path.resolve(tmpdir()));await rm(directory,{recursive:true});
+  });
+  const native=require(path.join(alias,'native.cjs'));assert.equal(require(outside).outside,true);
+  const records=registry.list();assert.deepEqual(records.map(record=>record.name),['native.cjs']);
+  assert.equal(records[0].evaluate('Native'),native.Native);
 });
 
 test('startup source failures retain only a finite diagnostic code and keep the generic bridge alive',async t=>{
