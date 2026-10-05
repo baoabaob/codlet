@@ -108,15 +108,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: python3 tests/test_macos_distribution.py
-      - name: Test platform-independent services on Apple silicon
-        run: 'cargo test --locked --lib plugin_services::'
-      - run: python3 scripts/install-js-runtime.py --destination target/debug/deps --platform darwin-arm64
-      - run: 'cargo test --locked --lib core_resources::'
-      - name: Test unreaped native process-group retirement
-        run: 'cargo test --locked --lib macos::process_owner::tests::'
-      - run: cargo test --locked --test macos_native -- --test-threads=2
+      - name: Test all native Core targets and features on Apple silicon
+        run: sh scripts/test-macos.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '24.21.0'

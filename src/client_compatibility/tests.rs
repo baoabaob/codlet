@@ -65,9 +65,13 @@ fn public_management_observes_cached_records_and_changed_adapter_state_without_m
 fn updated_catalog() -> Catalog {
     let mut catalog = parse_catalog(BASELINE.as_bytes()).unwrap();
     catalog.revision += 1;
-    let mut record = catalog.records.last().unwrap().clone();
-    record.client_version = "26.999.1.0".into();
-    catalog.records.push(record);
+    let template = catalog.records.last().unwrap().clone();
+    for platform in ["windows-x86_64", "windows-aarch64", "macos-aarch64"] {
+        let mut record = template.clone();
+        record.platform = platform.into();
+        record.client_version = "26.999.1.0".into();
+        catalog.records.push(record);
+    }
     catalog
 }
 fn catalog_bytes(catalog: &Catalog) -> Vec<u8> {
@@ -450,7 +454,7 @@ async fn fresh_cache_skips_startup_network_and_new_client_refreshes_even_with_fr
     save_state(&cache_path(&registry), updated_catalog());
     let settings = RuntimeSettings::for_registry(&registry);
     let server = server(vec![Some(response(304, b"", ""))]).await;
-    let known = ClientCompatibility::new("26.930.2377.0", &registry, Some(settings.clone()));
+    let known = ClientCompatibility::new("26.999.1.0", &registry, Some(settings.clone()));
     known.start_with_source(&server.url);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(server.requests.lock().unwrap().is_empty());
@@ -473,7 +477,7 @@ async fn changed_automatic_preference_updates_metadata_state_without_a_restart()
     values.automatic_update_checks = false;
     settings.save(0, values.clone()).unwrap();
     let server = server(vec![None]).await;
-    let service = ClientCompatibility::new("26.930.2377.0", &registry, Some(settings.clone()));
+    let service = ClientCompatibility::new("26.999.1.0", &registry, Some(settings.clone()));
     service.start_with_source(&server.url);
     wait_for(|| service.status(&plugins())["compatibilityCatalog"]["phase"] == "disabled").await;
     values.automatic_update_checks = true;
@@ -487,12 +491,14 @@ async fn changed_automatic_preference_updates_metadata_state_without_a_restart()
 async fn unreachable_source_retains_cached_acceptance_and_stopping_cancels_a_hanging_fetch() {
     let temp = tempfile::tempdir().unwrap();
     let registry = temp.path().join("config.json");
+    save_state(&cache_path(&registry), updated_catalog());
     let settings = RuntimeSettings::for_registry(&registry);
     let server = server(vec![None]).await;
-    let service = ClientCompatibility::new("26.930.2377.0", &registry, Some(settings));
+    let service = ClientCompatibility::new("26.999.1.0", &registry, Some(settings));
     service.start_with_source(&server.url);
+    service.check();
     wait_for(|| !server.requests.lock().unwrap().is_empty()).await;
-    assert_eq!(service.status(&plugins())["source"], "local-package");
+    assert_eq!(service.status(&plugins())["source"], "remote-cache");
     assert_eq!(service.status(&plugins())["matchesRunningClient"], true);
     let started = Instant::now();
     service.stop();
