@@ -6,6 +6,8 @@
 
 当前 Windows x64 候选绑定 Core 提交 `eee906ac73ee0f4bacd7a27689458ce0ba340e1c`，包含安装/启动、可选清理以及 G8/G9 变更，已替代先前 `11a76af` 的候选制品。官方插件制品绑定 `dae600b081e929169c89a071ba326088aed47bcf`；Desktop Adapter `0.2.14` 已完成本次客户端适配并独立发布、安装。Mac 和 ARM64 实际验收暂缓，Windows G1 由维护者执行；Windows 证书申请和签名也已明确暂缓。后续报告提交仅更新文档，不改变 Core 制品源码身份。
 
+2026-10-07 已按维护者要求下载并核验最新 Mac Apple Silicon 候选，采用与 Windows 相同的 `eee906a` 功能源码，包含 G8/G9。DMG 和两种应用更新 ZIP 保存在 `macos/`，原生构建及打包检查通过；实际客户端桌面验收仍暂缓。现有 Windows-only 发布计划保持原范围，生成 Mac 候选不代表已发布或已完成 G2。
+
 **2026-10-06 客户端适配已修复（G10）：** Windows `26.930.7945.0`（前端 `26.930.61225` / build `13232`，App Server `0.160.1`）曾因主进程模块和后端指纹变化而暂停 Desktop Adapter。现已审查新的 main/bootstrap/Stdio 绑定和方法契约，完成后端受控验证，并通过原 GitHub 通道将日常实例更新至 Desktop Adapter `0.2.14`。两个窗口均确认激活，桌面和任务配置 source 已就绪。当前后端仍有活动任务，晚期恢复报告 `client_source_backend_busy`，因此模型流量 source 尚未接管；任务空闲后重载插件，或完全退出客户端后通过 Codlet 重开。完整冷启动与正式 Core 的集成组合仍由 G1 验收。
 
 ## 已完成的清理和修复
@@ -51,10 +53,10 @@
 | ID | 优先级 | 需要完成的工作 | 完成标准 |
 | --- | --- | --- | --- |
 | G1 | P0 / 维护者验收 | 维护者在可丢弃 Windows VM/主机上验收最终候选 | 首次安装、Preview 升级、修复、卸载保留/清理两种选择、PATH/快捷方式/范围；首次启动、两种流量 source、skill、GUI/CLI 导入/启停/撤权/重载/更新/回滚、安全模式、冷启动与多窗口；记录准确源码和安装包 SHA-256 |
-| G2 | 暂缓 | 本轮不做 Mac 和 ARM64 实际验收 | 既有 Mac 原生自动化只作构建证据；本轮更新的发布计划使用 `-WindowsOnly`，并不替维护者决定未来首发的平台范围 |
+| G2 | 候选已生成 / 实际验收暂缓 | Mac Apple Silicon 0.2.0 候选已构建；Mac 和 ARM64 实际客户端验收仍暂缓 | 原生自动化只作构建与受控运行证据；当前发布计划仍使用 `-WindowsOnly`，不因生成 Mac 包自动改变未来首发的平台范围 |
 | G3 | 已作范围取舍 | 0.2.0 不承诺官方入口始终纯净，也不承诺 Core 崩溃后必然带走客户端 | 独立 Electron 实例通常需要不同用户目录或改动官方入口；整树 kill-on-close 又可能终止官方更新子进程。更窄的监督需要异常退出与更新交接的设备验收，当前成本/风险不适合首版。保留现有所有权及协作退出；恢复办法见 known-issues |
 | G4 | 已实现 | 安装/启动器仅提示用户自行关闭 | Windows 门禁的重新检查/取消不关闭进程；用户退出后继续。Mac 同步调整代码，实际验收暂缓 |
-| G5 | 暂缓 | 维护者确认本轮不申请证书、不接入签名流水线 | 当前 Windows 候选未签名；Mac 为既有 ad-hoc 构建。不得标为公信签名或公证完成 |
+| G5 | 暂缓 | 维护者确认本轮不申请证书、不接入签名流水线 | 当前 Windows 候选未签名；Mac 候选只有 ad-hoc 完整性签名。不得标为公信签名或公证完成 |
 | G6 | P1 / 功能验收 | 补真实账户 OAuth 刷新、实际 provider、远端/cloud、附件、浏览器网络和 Realtime 的覆盖证据 | 按网络路径逐项声明支持；未实现/未验收的路径明确不可据此声称“全部流量透明拦截” |
 | G7 | 已实现 / G1 待验收 | 成功卸载后提供仅 Codlet 相关的可选清理 | 受控测试覆盖默认保留、主动确认、活动锁、精确凭据范围、普通文件删除、未知文件/外部源码/目录链接保留；MSI 顺序检查确保只在完整交互卸载提交后进入 |
 | G8 | 已实现受限恢复与重载额度 / G1 待验收 | Core 0.2.0 + Desktop Adapter 0.2.14 的显式恢复租约、可等待清理及 world 预算 | 正常清理等待恢复确认；用户改用另一 provider 则保留其选择。原值未知、忙碌/后台任务、同一 provider 的模型冲突、强制退休等仍报告未确认；旧 RPC 与未通过 handle 发起的请求不自动纳入。Chromium 原生环境仍需完全退出回收 |
@@ -93,14 +95,16 @@
 | 真实候选 MSI、安装器和更新 ZIP | 构建及结构校验通过 | MSI 产品版本为 `0.2.1000`；未安装到当前日常系统 |
 | 候选 ZIP 更新及失败回滚 | opt-in 验收通过 | 实际解包、替换、重启成功和回滚路径；使用独立临时目录与受控假客户端 |
 | macOS 打包规则 | 本轮 CI 通过 | Mac runner 的离线规则检查 |
-| Mac DMG / 应用更新包 | 历史基线：构建、挂载、原生初始化与更新回滚通过 | 本轮没有生成 Mac 候选；Swift launcher smoke、ad-hoc seal、实际 Core CLI、完整应用替换及回滚；无 Developer ID 签名或公证 |
-| Mac 官方 CUA Node 复用 | 历史基线：opt-in 验收通过 | 验证 `26.917.62051` 官方应用与独立 Node 的签名、摘要、Host flags/模块、source ABI、原生解析与运行时复用；未启动该应用 GUI |
+| Mac DMG / 应用更新包 | 当前候选：构建、挂载、原生初始化与更新回滚通过 | [Apple Silicon 构建](https://github.com/baoabaob/codlet/actions/runs/37474348016)；Swift launcher smoke、ad-hoc seal、实际 Core CLI、完整应用替换及回滚；无 Developer ID 签名或公证 |
+| Mac 官方 CUA Node 复用 | 当前候选：opt-in 验收通过 | 验证 `26.917.62051` 官方应用与独立 Node 的签名、摘要、Host flags/模块、source ABI、原生解析与运行时复用；未启动该应用 GUI |
 | 真实固定 Node 镜像下载及缓存复用 | 历史基线：补跑通过 | 校验实际公开镜像和可复用私有缓存 |
 | 指定旧官方 CUA Node 复用验收 | 环境前提未满足 | 该 opt-in 测试要求 `26.917.6896.0`，本机已是 `26.930.3930.0`，无法取得其精确旧源；不能记为通过。当前固定下载路径已验收 |
 
 前轮远端基线：[Core CI（4/4 作业通过）](https://github.com/baoabaob/codlet/actions/runs/37299209599)、[官方插件 CI（Windows/Mac 均通过）](https://github.com/baoabaob/codlet-plugins/actions/runs/37292963126)、[Mac 原生分发构建](https://github.com/baoabaob/codlet/actions/runs/37299859591)。插件 CI 使用的 Core JS/SDK 与候选一致；其后 Core 变更是 Mac Rust 启动、打包及测试修复。
 
 全部材料统一保存在 `.codlet-artifacts/release-0.2.0/`。`release/` 只保留当前 Windows x64 setup、兼容已有 portable 用户的更新 ZIP、stable 通道、SHA-256 和校验输入。`plugins/` 保存本轮三个官方插件的完整分发计划、归档及可供本地导入的 `packages/`；Desktop Adapter 为 0.2.14，UI 0.1.10 与 GUI 0.1.9 内容未变。`evidence/g8-g9/` 保存本轮完整套件与候选构建日志；`evidence/installer-cleanup/` 和其他基线材料保留既有安装、清理和平台证据。旧候选和中间 MSI/展开的 Core 分发目录已删除；前轮 Mac 构建不能视为本次源码的桌面验收。目录不提交到 Git。
+
+`macos/Codlet-0.2.0-macos-arm64.dmg` 为当前 Mac 安装候选（7,118,059 字节），SHA-256 为 `085be36ccb5a3244b9568f9c1ff1ad4d41afa3f5ec8070e4f450064cc781741b`。同目录保留完整应用更新 ZIP、旧 Preview 更新兼容 ZIP、分发清单和 `SHA256SUMS.txt`；`evidence/macos-current/` 保存源码身份、CI 日志与下载核验。Mac 端插件按既有 GitHub 通道独立下载，本次打包检查没有执行在线插件下载或登录客户端的完整验收。
 
 新版客户端的检查及更新材料位于 `.codlet-artifacts/client-26.930.7945/`：更新前后运行状态、source 诊断、安装包指纹、绑定审查、后端镜像比较、CI 原生回执、本机回归和插件更新回执。提取的模块副本和下载中间文件已清理；正式插件包统一归入 `release-0.2.0/plugins/`。
 
