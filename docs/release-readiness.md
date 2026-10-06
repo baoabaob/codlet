@@ -6,6 +6,8 @@
 
 当前 Windows x64 候选绑定 Core 提交 `eee906ac73ee0f4bacd7a27689458ce0ba340e1c`，包含安装/启动、可选清理以及本轮 G8/G9 变更，已替代先前 `11a76af` 的候选制品。官方插件候选绑定 `b93a37abcee36568c1a54b9ec0857f92f6988204`，其中 Desktop Adapter 升至 `0.2.14`。Mac 和 ARM64 实际验收暂缓，Windows G1 由维护者执行；Windows 证书申请和签名也已明确暂缓。后续报告提交仅更新文档，不改变制品源码身份。
 
+**2026-10-06 新增客户端兼容性阻塞（G10）：** 日常客户端已通过 Codlet 的更新交接从 Windows 包 `26.930.3930.0` 升至 `26.930.7945.0`（前端 `26.930.61225` / build `13232`，App Server `0.160.1`）。Core Preview 29、运行时 skill、UI Adapter 0.1.10 和 GUI 0.1.9 仍有运行/激活证据；Desktop Adapter 0.2.13 因 `client_source_build_unverified` 被本次启动临时停用。三个主进程模块的文件名及摘要已变化，新后端摘要也未经审查。0.2.14 候选的 Host bundle 与 0.2.13 字节一致，生产校验同样拒绝新版，因此现有候选不能作为这个新客户端的完整功能验收包。这是运行状态、日志及静态准入校验的结论，不是新接口语义或真实请求的验收。
+
 ## 已完成的清理和修复
 
 - 删除 22 条本地历史分支、3 条远端历史分支、6 个 Core Preview 标签和 6 个 Preview 发布（含草稿）。两个仓库各保留 `main` 和一个主工作树。清理前的提交保存在各自 `.git/pre-release-cleanup.bundle`；没有重写主分支历史。
@@ -57,6 +59,7 @@
 | G7 | 已实现 / G1 待验收 | 成功卸载后提供仅 Codlet 相关的可选清理 | 受控测试覆盖默认保留、主动确认、活动锁、精确凭据范围、普通文件删除、未知文件/外部源码/目录链接保留；MSI 顺序检查确保只在完整交互卸载提交后进入 |
 | G8 | 已实现受限恢复与重载额度 / G1 待验收 | Core 0.2.0 + Desktop Adapter 0.2.14 的显式恢复租约、可等待清理及 world 预算 | 正常清理等待恢复确认；用户改用另一 provider 则保留其选择。原值未知、忙碌/后台任务、同一 provider 的模型冲突、强制退休等仍报告未确认；旧 RPC 与未通过 handle 发起的请求不自动纳入。Chromium 原生环境仍需完全退出回收 |
 | G9 | 首轮拆分完成 / 持续维护 | renderer 启动、观察、预算、测试分离；Desktop 恢复协调独立 | 保持现有 ABI、事务和生命周期回归。后续再按具体变更拆分 lab、Host 等协调模块，避免仅为缩短文件重写稳定逻辑 |
+| G10 | P0 / 新客户端兼容性阻塞 | 适配 Windows `26.930.7945.0` 的 Desktop source 和 App Server `0.160.1` | 审查新的 main/bootstrap/Stdio 模块及私有绑定，完成新后端的受控 HTTP/SSE/WS 验证，更新并打包 Desktop Adapter；随后由 G1 验收集成组合。不能仅改版本号/摘要或直接将新组合记入已验收目录 |
 
 完整 Windows 原生 turn 验收不能在共享日常主机上补跑：官方沙箱初始化可能修改系统用户和防火墙。当前环境没有可用的可丢弃 Windows VM。已使用 GitHub Apple Silicon runner 完成 Mac 原生自动化，但没有打开实际登录的官方 GUI；这部分和浏览器模拟预览都不能关闭 G1/G2 的桌面验收门禁。
 
@@ -96,6 +99,8 @@
 前轮远端基线：[Core CI（4/4 作业通过）](https://github.com/baoabaob/codlet/actions/runs/37299209599)、[官方插件 CI（Windows/Mac 均通过）](https://github.com/baoabaob/codlet-plugins/actions/runs/37292963126)、[Mac 原生分发构建](https://github.com/baoabaob/codlet/actions/runs/37299859591)。插件 CI 使用的 Core JS/SDK 与候选一致；其后 Core 变更是 Mac Rust 启动、打包及测试修复。
 
 全部材料统一保存在 `.codlet-artifacts/release-0.2.0/`。`release/` 只保留当前 Windows x64 setup、兼容已有 portable 用户的更新 ZIP、stable 通道、SHA-256 和校验输入。`plugins/` 保存本轮三个官方插件的完整分发计划、归档及可供本地导入的 `packages/`；Desktop Adapter 为 0.2.14，UI 0.1.10 与 GUI 0.1.9 内容未变。`evidence/g8-g9/` 保存本轮完整套件与候选构建日志；`evidence/installer-cleanup/` 和其他基线材料保留既有安装、清理和平台证据。旧候选和中间 MSI/展开的 Core 分发目录已删除；前轮 Mac 构建不能视为本次源码的桌面验收。目录不提交到 Git。
+
+新版客户端的只读检查材料位于 `.codlet-artifacts/client-26.930.7945/`：当前运行观察、此次更新/停用日志、source 就绪诊断、实际安装包指纹，以及现有/候选插件的生产准入结果。未重载日常插件、重启客户端或发起真实账户请求；提取的分析用模块副本在记录摘要后清理。
 
 G1 使用 `release/Codlet-0.2.0-windows-x64-setup.exe`，SHA-256 为 `2a010fa463f037ca25ccf0d79195d0ab1be8fbe869939ba647c4f618ac40a295`（未签名）。先验证保留数据的卸载/重装，再在可丢弃数据上验证主动勾选清理；确认官方 Codex 账号和会话、外部插件源码、自定义目录均保留。安装/启动中已有 Codex 运行时应只显示重新检查与取消，操作后客户端继续运行，直到用户自行退出。
 
