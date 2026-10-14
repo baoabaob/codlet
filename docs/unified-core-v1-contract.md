@@ -1,6 +1,6 @@
 # Unified Core v1 implementation contract
 
-Status: implementation in progress; this document is a contract, not validation evidence.
+Status: implemented for the local `1.0.0-rc.1` candidate. See [validation evidence and platform boundaries](validation-unified-core-v1.md); this document defines the contract, not certification.
 
 ## Product and release
 

@@ -2,7 +2,7 @@
 
 ## 1.0.0-rc.1 统一 Core 本地候选
 
-当前工作将完整 UI/Desktop 实现纳入 Core，向普通插件提供 `context.codex`，同步迁移 GUI、完整功能测试插件和独立分屏插件。旧 Adapter 的注册、授权与数据保留，运行时由 Core 接管提供者身份；安装器只列出可选 GUI。候选没有公开发布，也没有安装到日常 Native。
+本地候选已将完整 UI/Desktop 实现纳入 Core，向普通插件提供 `context.codex`，同步迁移 GUI、完整功能测试插件和独立分屏插件。旧 Adapter 的注册、授权与数据保留，运行时由 Core 接管提供者身份；安装器只列出可选 GUI。候选没有公开发布，也没有安装到日常 Native。
 
 兼容在线更新覆盖明确列出的 Core JavaScript 模块、Native source 和显式插件状态。Rust/Node、固定桥接与注入组件继续常驻，这些组件变化延后到自然退出后的下一次启动；首次由旧架构升级也需新启动。Native 连接、后端路由和正在转发的流必须实际保留。回执未知时持续查询原操作，不盲目重放。实现与边界见 [在线更新契约](core-online-update.md) 和 [SDK 整合契约](unified-core-v1-contract.md)。
 
