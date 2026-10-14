@@ -1708,6 +1708,15 @@ impl PendingControl {
         generations: &BTreeMap<String, u64>,
         mut report: PluginControlReport,
     ) -> PluginControlReport {
+        let core_failure = self
+            .core_update
+            .as_ref()
+            .map(|_| core_failure_summary(&report));
+        if !report.target_failures.is_empty()
+            && let Some(details) = &core_failure
+        {
+            crate::runtime_log::error("core_update_lifecycle_failed", details);
+        }
         if self.core_update.as_ref().is_some_and(|core| {
             core.uncertain
                 || !matches!(
@@ -1727,8 +1736,7 @@ impl PendingControl {
                     guard.commit();
                 }
                 OnlineCoreModulesCompletion::Unknown {
-                    error: report
-                        .message
+                    error: core_failure
                         .clone()
                         .unwrap_or_else(|| "Core takeover outcome is unknown".into()),
                 }
@@ -1747,16 +1755,13 @@ impl PendingControl {
                 }
             } else if report.outcome == PluginControlOutcome::RolledBack {
                 OnlineCoreModulesCompletion::RolledBack {
-                    error: report
-                        .message
+                    error: core_failure
                         .clone()
                         .unwrap_or_else(|| "Core module takeover rolled back".into()),
                 }
             } else {
                 OnlineCoreModulesCompletion::Unknown {
-                    error: report
-                        .message
-                        .clone()
+                    error: core_failure
                         .unwrap_or_else(|| "Core module restoration was not confirmed".into()),
                 }
             };
@@ -1775,6 +1780,51 @@ impl PendingControl {
         }
         report
     }
+}
+
+/// Keep lifecycle failures in the original completion receipt. The updater
+/// cannot recover a dropped synthetic foreground job through public management.
+fn core_failure_summary(report: &PluginControlReport) -> String {
+    fn bounded(value: &str, bytes: usize) -> &str {
+        let mut end = value.len().min(bytes);
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        &value[..end]
+    }
+    let message = bounded(
+        report
+            .message
+            .as_deref()
+            .unwrap_or("Core lifecycle did not settle"),
+        512,
+    );
+    if report.target_failures.is_empty() {
+        return message.to_owned();
+    }
+    let mut failures = Vec::new();
+    for failure in report.target_failures.iter().take(8) {
+        failures.push(serde_json::json!({
+            "pluginId":bounded(&failure.plugin_id,128),
+            "stage":bounded(&failure.stage,64),
+            "targetId":bounded(&failure.target_id,128),
+            "error":bounded(&failure.error,512),
+        }));
+        // JSON escaping may increase byte size. Bound the serialized result,
+        // without cutting a JSON value or a UTF-8 character in half.
+        if serde_json::to_vec(&failures)
+            .expect("bounded strings serialize")
+            .len()
+            > 7 * 1024
+        {
+            failures.pop();
+            break;
+        }
+    }
+    format!(
+        "{message}; targetFailures={}",
+        serde_json::to_string(&failures).expect("bounded strings serialize")
+    )
 }
 
 fn client_entry(plugin: &LoadedPlugin) -> bool {

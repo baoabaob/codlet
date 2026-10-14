@@ -50,7 +50,7 @@ fn renderer_source(with_state: bool) -> String {
  state.host=await ctx.rpc.request({{name:'test.foreground.host',api:1,scope:'runtime'}},'inspect',null);globalThis.__foregroundState=state;}},
  {}deactivate(){{delete globalThis.__foregroundState;}}}};"#,
         if with_state {
-            "saveState(){return {schema:1,value:{draft:state.draft}};},restoreState(snapshot){state.draft=snapshot.value.draft;},"
+            "saveState(){return {schema:1,value:{draft:state.draft}};},async restoreState(snapshot){state.draft=snapshot.value.draft;state.restoredHost=await ctx.rpc.request({name:'test.foreground.host',api:1,scope:'runtime'},'inspect',null);},"
         } else {
             ""
         }
@@ -75,7 +75,7 @@ fn modules_for_fixture(stamp: &str) -> BTreeMap<String, String> {
 
 #[test]
 fn core_update_uses_the_actual_foreground_coordinator_for_apply_and_defer() {
-    for scenario in ["applied", "nextStart"] {
+    for scenario in ["applied", "nextStart", "failed"] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--ignored",
@@ -99,10 +99,15 @@ fn core_update_uses_the_actual_foreground_coordinator_for_apply_and_defer() {
 #[ignore = "isolated owned subprocess entry for verified global Core module generations"]
 fn foreground_child() {
     let scenario = std::env::var("CODLET_FOREGROUND_CHILD").unwrap();
-    assert!(matches!(scenario.as_str(), "applied" | "nextStart"));
-    run_foreground(scenario == "applied");
+    assert!(matches!(
+        scenario.as_str(),
+        "applied" | "nextStart" | "failed"
+    ));
+    run_foreground(&scenario);
 }
-fn run_foreground(with_state: bool) {
+fn run_foreground(scenario: &str) {
+    let with_state = scenario != "nextStart";
+    let fails_both_generations = scenario == "failed";
     let directory = tempfile::tempdir().unwrap();
     let install = directory.path().join("install");
     let stage = directory.path().join("stage");
@@ -110,7 +115,7 @@ fn run_foreground(with_state: bool) {
     for root in [&install, &stage, &state_root] {
         std::fs::create_dir(root).unwrap();
     }
-    let initial = OnlineCoreModulesRequest {
+    let mut initial = OnlineCoreModulesRequest {
         id: "foreground-baseline".into(),
         version: CURRENT_VERSION.into(),
         module_abi: 1,
@@ -118,6 +123,16 @@ fn run_foreground(with_state: bool) {
         client_source: SOURCE.into(),
         deadline_unix_ms: now_ms() + 180_000,
     };
+    if fails_both_generations {
+        initial.modules.insert(
+            "core-ui-provider".into(),
+            UI.replacen(
+                "activate(){}",
+                "activate(ctx){if(ctx.generation>=3)throw Error('fixture_rollback_ui_activation_failed '+'界'.repeat(4096));}",
+                1,
+            ),
+        );
+    }
     activate_online_modules(&initial).unwrap().commit();
     let registry_path = state_root.join("config.json");
     let root = directory.path().join("plugin");
@@ -202,7 +217,13 @@ fn run_foreground(with_state: bool) {
             std::fs::write(path, bytes).unwrap();
         }
     }
-    let candidate_modules = modules_for_fixture("candidate");
+    let mut candidate_modules = modules_for_fixture("candidate");
+    if fails_both_generations {
+        candidate_modules.insert(
+            "core-ui-provider".into(),
+            UI.replacen("activate(){}", "activate(){throw Error('fixture_candidate_ui_activation_failed '+'界'.repeat(4096));}", 1),
+        );
+    }
     let candidate_source = format!("{SOURCE}\n// candidate");
     let mut online = package::OnlineRuntime::current();
     for (id, path) in modules::module_paths() {
@@ -265,7 +286,7 @@ fn run_foreground(with_state: bool) {
     manage.set_runtime_update(updates.clone());
     renderer.set_manage_service(manage);
     let mut control = HostControl::new(registry_path.clone());
-    if with_state {
+    if with_state && !fails_both_generations {
         std::fs::write(directory.path().join("lose-source-reply"), b"once").unwrap();
         std::fs::write(directory.path().join("lose-release-reply"), b"once").unwrap();
     }
@@ -303,7 +324,7 @@ fn run_foreground(with_state: bool) {
         "Core update must not write user registry intent"
     );
     assert!(updates.take_install_request().is_none());
-    if with_state {
+    if with_state && !fails_both_generations {
         assert_eq!(
             status.phase,
             RuntimeUpdatePhase::UpToDate,
@@ -312,6 +333,71 @@ fn run_foreground(with_state: bool) {
             std::fs::read_to_string(directory.path().join("bridge-commands.log"))
                 .unwrap_or_default()
         );
+    }
+    if fails_both_generations {
+        assert_eq!(status.phase, RuntimeUpdatePhase::Failed, "{status:?}");
+        assert_eq!(status.activation.as_ref().unwrap().mode, "unknown");
+        let receipt: Value = serde_json::from_slice(
+            &std::fs::read(state_root.join("runtime-update-online-receipt.json")).unwrap(),
+        )
+        .unwrap();
+        let failure = receipt["error"].as_str().unwrap();
+        assert_eq!(receipt["phase"], "unknown");
+        assert!(
+            failure.contains("fixture_candidate_ui_activation_failed"),
+            "{receipt}"
+        );
+        assert!(
+            failure.contains("fixture_rollback_ui_activation_failed"),
+            "{receipt}"
+        );
+        assert!(failure.contains("targetFailures="), "{receipt}");
+        assert!(failure.len() <= 8 * 1024);
+        assert!(!failure.contains("admissionToken"));
+        let failures: Vec<Value> =
+            serde_json::from_str(failure.split_once("; targetFailures=").unwrap().1).unwrap();
+        for stage in ["activate", "rollback_activate"] {
+            assert!(
+                failures
+                    .iter()
+                    .any(|failure| failure["pluginId"] == "codex.ui.adapter"
+                        && failure["stage"] == stage),
+                "{receipt}"
+            );
+        }
+        assert_eq!(
+            core_module_source("core-ui-provider", "missing"),
+            initial.modules["core-ui-provider"]
+        );
+        assert!(renderer.ensure_core_management_available().is_err());
+        let bridge_status = source.confirm_core_code(SOURCE).unwrap();
+        assert_eq!(bridge_status["onlineUpdate"]["writes"]["accepting"], false);
+        assert_eq!(bridge_status["onlineUpdate"]["admission"]["phase"], "held");
+        assert!(
+            std::fs::read_to_string(directory.path().join("bridge-commands.log"))
+                .unwrap_or_default()
+                .is_empty(),
+            "renderer failure must not issue a Native source replacement or release"
+        );
+        let events = std::fs::read_to_string(root.join("host-events.jsonl")).unwrap();
+        for generation in [2, 3] {
+            assert!(
+                events
+                    .lines()
+                    .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                    .any(|event| event["name"] == "restore" && event["generation"] == generation)
+            );
+        }
+        assert!(
+            inspection["contexts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|context| context["plugins"].as_array().unwrap().is_empty())
+        );
+        hosts.stop().unwrap();
+        peer.close();
+        return;
     }
     let bridge_status = source
         .confirm_core_code(if with_state {
@@ -378,6 +464,9 @@ fn run_foreground(with_state: bool) {
         if let Some(state) = context["globals"].get("__foregroundState") {
             assert_eq!(state["draft"], "owned draft");
             assert_eq!(state["generation"], if with_state { 2 } else { 1 });
+            if with_state {
+                assert_eq!(state["restoredHost"]["generation"], 2);
+            }
         }
         if let Some(state) = context["globals"].get("__foregroundIngress") {
             assert!(state["held"].is_null());
@@ -436,7 +525,7 @@ fn run_foreground(with_state: bool) {
         std::thread::sleep(Duration::from_millis(5));
     };
     assert_eq!(result["generation"], generation);
-    assert_eq!(result["count"], if with_state { 5 } else { 3 });
+    assert_eq!(result["count"], if with_state { 7 } else { 3 });
     let probe = peer.request("Fixture.inspect", json!({"keys":[]}));
     assert_eq!(probe["evaluations"], 0);
     hosts.stop().unwrap();
