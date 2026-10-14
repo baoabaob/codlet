@@ -207,16 +207,7 @@ impl Authority {
                 "Owned launcher record is invalid.",
             )
         })?;
-        if run["schema"] != 1
-            || run["hostPid"] != value.host_pid
-            || run["desktopPid"] != value.native.pid
-            || run["desktopCreated"] != value.native.creation_time
-            || run["backendPid"] != value.backend.pid
-            || run["labRoot"].as_str().map(Path::new) != Some(self.root.as_path())
-            || value.fixture.pid == value.backend.pid
-            || value.fixture.pid == value.native.pid
-            || value.fixture.pid == value.host_pid
-        {
+        if !self.matches_launcher_record(&run, &value)? {
             return Err(error(
                 "core_fixture_source_identity_invalid",
                 "Source fixture does not match the existing owned backend.",
@@ -288,6 +279,46 @@ impl Authority {
         verify_listener(port, value.fixture.pid)?;
         self.route_pending = Some(value.clone());
         Ok(Some(value))
+    }
+    fn matches_launcher_record(
+        &self,
+        run: &serde_json::Value,
+        value: &SourceDescriptor,
+    ) -> Result<bool> {
+        // The launcher writes an ordinary drive path, while canonical Windows
+        // paths use the verbatim prefix. Resolve the real directory with the
+        // same no-link checks as Authority::new rather than comparing spelling.
+        let launcher_root = run["labRoot"]
+            .as_str()
+            .map(Path::new)
+            .map(package::canonical_directory)
+            .transpose()?;
+        Ok(run["schema"] == 1
+            && run["hostPid"] == value.host_pid
+            && run["desktopPid"] == value.native.pid
+            && run["desktopCreated"] == value.native.creation_time
+            && run["backendPid"] == value.backend.pid
+            && launcher_root.as_deref() == Some(self.root.as_path())
+            && value.fixture.pid != value.backend.pid
+            && value.fixture.pid != value.native.pid
+            && value.fixture.pid != value.host_pid)
+    }
+    fn write_source_receipt(&self, receipt: &serde_json::Value) -> Result<()> {
+        if package::canonical_directory(&self.root)? != self.root
+            || package::file_record(&self.root.join(&self.marker.path), &self.marker.path)?
+                != self.marker
+        {
+            return Err(error(
+                "core_fixture_owner_changed",
+                "Experimental lab marker changed before source receipt publication.",
+            ));
+        }
+        package::canonical_directory(&self.root.join("codlet"))?;
+        let destination = self.root.join("codlet/online-update-source-receipt.json");
+        if destination.exists() {
+            package::ordinary(&destination, false)?;
+        }
+        package::atomic_json(&destination, receipt)
     }
     fn stage(
         &self,
@@ -402,19 +433,34 @@ fn poll_source(shared: &Arc<Mutex<super::State>>, install: &Path) -> Result<()> 
         let Some(authority) = state.owned_fixture.as_mut() else {
             return Ok(());
         };
-        let Some(descriptor) = authority.read_source_descriptor(install)? else {
+        let descriptor = match authority.read_source_descriptor(install) {
+            Ok(value) => value,
+            Err(failure) => {
+                // The input never established its declared identity. Publish
+                // only a bounded code to this already attested owner's fixed
+                // receipt path; no input path, token or other field is echoed.
+                authority.write_source_receipt(&serde_json::json!({
+                    "schema":1,"kind":"fixture-explicit-source","id":null,
+                    "status":"rejected","error":failure.code
+                }))?;
+                return Err(failure);
+            }
+        };
+        let Some(descriptor) = descriptor else {
             return Ok(());
         };
-        (
-            authority.clone(),
-            descriptor,
-            target.ok_or_else(|| {
-                error(
-                    "core_fixture_target_missing",
-                    "Owned source is not attached.",
-                )
-            })?,
-        )
+        let Some(target) = target else {
+            authority.write_source_receipt(&serde_json::json!({
+                "schema":1,"kind":"fixture-explicit-source","id":descriptor.id,
+                "status":"rejected","error":"core_fixture_target_missing"
+            }))?;
+            authority.route_pending = None;
+            return Err(error(
+                "core_fixture_target_missing",
+                "Owned source is not attached.",
+            ));
+        };
+        (authority.clone(), descriptor, target)
     };
     let (authority, descriptor, target) = selected;
     match target.install_owned_fixture_route(&descriptor.id, &descriptor.upstream_base_url) {
@@ -428,12 +474,7 @@ fn poll_source(shared: &Arc<Mutex<super::State>>, install: &Path) -> Result<()> 
                     serde_json::json!({"schema":1,"kind":"fixture-explicit-source","id":descriptor.id,"status":"rejected","error":failure.code})
                 }
             };
-            package::atomic_json(
-                &authority
-                    .root
-                    .join("codlet/online-update-source-receipt.json"),
-                &receipt,
-            )?;
+            authority.write_source_receipt(&receipt)?;
             if let Some(current) = shared.lock().unwrap().owned_fixture.as_mut() {
                 current.route_pending = None;
                 if result.is_ok() {
@@ -553,6 +594,130 @@ fn verify_listener(_: u16, _: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn source_value(authority: &Authority, install: &Path) -> serde_json::Value {
+        serde_json::json!({"schema":1,"kind":"codlet-owned-online-update-source","id":"a".repeat(64),"hostPid":std::process::id(),"hostCreationTime":super::super::install::current_process_identity().unwrap().creation_time,"native":authority.native,"labRoot":authority.root,"installRoot":install,"markerSha256":authority.marker.sha256,"backend":{"pid":10,"creationTime":"1"},"fixture":{"pid":11,"creationTime":"2"},"upstreamBaseUrl":"http://127.0.0.1:49123/v1"})
+    }
+    #[cfg(windows)]
+    #[test]
+    fn source_launcher_accepts_real_ordinary_and_verbatim_spellings_of_the_same_owned_root() {
+        let (_temp, authority, install, _) = fixture();
+        let descriptor: SourceDescriptor =
+            serde_json::from_value(source_value(&authority, &install)).unwrap();
+        let ordinary = PathBuf::from(
+            authority
+                .root
+                .to_str()
+                .unwrap()
+                .strip_prefix(r"\\?\")
+                .expect("Windows canonical paths use the verbatim prefix"),
+        );
+        assert_ne!(ordinary, authority.root);
+        let mut run = serde_json::json!({"schema":1,"hostPid":descriptor.host_pid,"desktopPid":descriptor.native.pid,"desktopCreated":descriptor.native.creation_time,"backendPid":descriptor.backend.pid,"labRoot":ordinary});
+        assert!(
+            authority
+                .matches_launcher_record(&run, &descriptor)
+                .unwrap()
+        );
+        run["labRoot"] = serde_json::json!(authority.root);
+        assert!(
+            authority
+                .matches_launcher_record(&run, &descriptor)
+                .unwrap()
+        );
+        run["labRoot"] = serde_json::json!(install);
+        assert!(
+            !authority
+                .matches_launcher_record(&run, &descriptor)
+                .unwrap()
+        );
+        run["labRoot"] = serde_json::json!(ordinary);
+        run["backendPid"] = serde_json::json!(descriptor.backend.pid + 1);
+        assert!(
+            !authority
+                .matches_launcher_record(&run, &descriptor)
+                .unwrap()
+        );
+        run["backendPid"] = serde_json::json!(descriptor.backend.pid);
+        run["desktopCreated"] = serde_json::json!("changed");
+        assert!(
+            !authority
+                .matches_launcher_record(&run, &descriptor)
+                .unwrap()
+        );
+    }
+    #[test]
+    fn source_validation_failure_publishes_one_bounded_owned_receipt_without_replay() {
+        let (temp, authority, install, _) = fixture();
+        let mut value = source_value(&authority, &install);
+        value["native"]["creationTime"] = "changed".into();
+        std::fs::write(
+            authority.root.join("codlet/online-update-source.json"),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let receipt_path = authority
+            .root
+            .join("codlet/online-update-source-receipt.json");
+        let service = super::super::RuntimeUpdateService::start(
+            install.clone(),
+            temp.path().join("state"),
+            None,
+        )
+        .unwrap();
+        service.shared.lock().unwrap().owned_fixture = Some(authority);
+        assert_eq!(
+            poll_source(&service.shared, &install).unwrap_err().code,
+            "core_fixture_source_identity_invalid"
+        );
+        let bytes = package::read_file(&receipt_path, 4096).unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            receipt,
+            serde_json::json!({"schema":1,"kind":"fixture-explicit-source","id":null,"status":"rejected","error":"core_fixture_source_identity_invalid"})
+        );
+        assert!(
+            service
+                .shared
+                .lock()
+                .unwrap()
+                .owned_fixture
+                .as_ref()
+                .unwrap()
+                .route_consumed
+        );
+        poll_source(&service.shared, &install).unwrap();
+        assert_eq!(package::read_file(&receipt_path, 4096).unwrap(), bytes);
+    }
+    #[test]
+    fn source_receipt_refuses_changed_owner_and_linked_destinations() {
+        let (temp, authority, _install, _) = fixture();
+        let outside = temp.path().join("outside-receipt.json");
+        std::fs::write(&outside, b"preserved").unwrap();
+        std::fs::hard_link(
+            &outside,
+            authority
+                .root
+                .join("codlet/online-update-source-receipt.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            authority
+                .write_source_receipt(&serde_json::json!({}))
+                .unwrap_err()
+                .code,
+            "runtime_update_path_invalid"
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"preserved");
+        std::fs::write(authority.root.join(&authority.marker.path), b"changed").unwrap();
+        assert_eq!(
+            authority
+                .write_source_receipt(&serde_json::json!({}))
+                .unwrap_err()
+                .code,
+            "core_fixture_owner_changed"
+        );
+        assert_eq!(std::fs::read(&outside).unwrap(), b"preserved");
+    }
     #[test]
     fn source_fixture_rejects_another_native_identity_and_consumes_once() {
         let (_root, mut authority, install, template) = fixture();
