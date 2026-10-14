@@ -525,6 +525,20 @@ function composerLease(args, invocation2) {
 // src/native-navigation.js
 var bridges = /* @__PURE__ */ new WeakMap();
 var subscribable = /* @__PURE__ */ new WeakSet();
+var identities = /* @__PURE__ */ new WeakMap();
+function nativeNavigatorIdentity(navigator) {
+  const identity2 = identities.get(navigator);
+  if (identity2) return identity2.router.navigate === identity2.navigate && identity2.router.subscribe === identity2.subscribe ? identity2 : null;
+  if (typeof navigator?.location?.pathname === "string" && ["push", "replace", "listen"].every((name) => typeof navigator[name] === "function"))
+    return Object.freeze({
+      kind: "history",
+      navigator,
+      push: navigator.push,
+      replace: navigator.replace,
+      listen: navigator.listen
+    });
+  return null;
+}
 function subscribeNativeRoute(navigator, listener) {
   return subscribable.has(navigator) ? navigator.listen(listener) : null;
 }
@@ -563,6 +577,7 @@ function reviewedNavigator(navigators, contexts) {
     }
   };
   bridges.set(router, { navigator, navigate, subscribe, bridge });
+  identities.set(bridge, Object.freeze({ kind: "data-router", navigator, router, navigate, subscribe }));
   subscribable.add(bridge);
   return bridge;
 }
@@ -9960,14 +9975,14 @@ function createWorkspaceMetrics(options4) {
 }
 
 // src/adapter/workspace-location.js
-var TRANSFERS = Symbol.for("codlet.core.workspace.locationTransfers.v1");
+var TRANSFERS = Symbol.for("codlet.core.workspace.locationTransfers.v2");
 var TRANSFER_LIFETIME = 10 * 60 * 1e3;
 var TRANSFER_LIMIT = 64;
 function connectTransferRegistry(document2) {
   const target = document2.defaultView;
-  if (!target[TRANSFERS]) Object.defineProperty(target, TRANSFERS, { value: { api: 1, entries: /* @__PURE__ */ new Map(), epoch: 0, timer: null } });
+  if (!target[TRANSFERS]) Object.defineProperty(target, TRANSFERS, { value: { api: 2, entries: /* @__PURE__ */ new Map(), epoch: 0, timer: null } });
   const registry = target[TRANSFERS];
-  if (registry.api !== 1 || !(registry.entries instanceof Map)) throw workspaceError("workspace_location_transfer_unavailable", "Core location resource registry is incompatible");
+  if (registry.api !== 2 || !(registry.entries instanceof Map)) throw workspaceError("workspace_location_transfer_unavailable", "Core location resource registry is incompatible");
   const epoch = ++registry.epoch;
   if (registry.timer !== null) target.clearTimeout(registry.timer);
   registry.timer = null;
@@ -9988,6 +10003,11 @@ function connectTransferRegistry(document2) {
   }
   schedule();
   return { entries: registry.entries, schedule };
+}
+function sameNativeHost(document2, current3, rootNode, identity2) {
+  if (!identity2 || current3?.rootNode !== rootNode || rootNode?.ownerDocument !== document2 || !rootNode.isConnected) return false;
+  const next = nativeNavigatorIdentity(current3.navigator);
+  return !!next && next.kind === identity2.kind && next.navigator === identity2.navigator && (identity2.kind === "data-router" ? next.router === identity2.router && next.navigate === identity2.navigate && next.subscribe === identity2.subscribe : next.push === identity2.push && next.replace === identity2.replace && next.listen === identity2.listen);
 }
 function createWorkspaceLocations({ document: document2, host, load, check, changed, beforeCapture, beforeRestore, retainGuard, readInput = nativeMainInput, readBinding = nativeInputBinding }) {
   const transfers = connectTransferRegistry(document2);
@@ -10012,9 +10032,10 @@ function createWorkspaceLocations({ document: document2, host, load, check, chan
       if (!retained || retained.expires < Date.now() || retained.pluginId !== owner2?.pluginId || !Number.isSafeInteger(owner2?.generation) || owner2.generation <= retained.exportedGeneration) throw workspaceError("workspace_location_transfer_retired", "Captured location transfer expired or belongs to another generation");
       if (retained.holder) throw workspaceError("workspace_location_transfer_busy", "Captured location still has a live owner");
     }
-    const source = retained?.source ?? host(), origin = source?.navigator?.location;
+    const source = host(), origin = source?.navigator?.location;
     if (!origin || !source.rootNode?.isConnected) throw workspaceError("workspace_host_pending", "Native main page is not ready for capture");
-    if (retained && (host().navigator !== source.navigator || host().rootNode !== source.rootNode)) throw workspaceError("workspace_host_drift", "Captured location belongs to another Native host");
+    const identity2 = retained ? retained.nativeIdentity : nativeNavigatorIdentity(source.navigator), rootNode = retained ? retained.rootNode : source.rootNode;
+    if (retained && retained.document !== document2 || !sameNativeHost(document2, source, rootNode, identity2)) throw workspaceError("workspace_host_drift", "Captured location belongs to another Native host");
     const saved = retained?.saved ?? { ...origin };
     if (source.auxiliary || !saved.pathname?.startsWith("/") || saved.pathname.startsWith("/codlet/")) throw workspaceError("workspace_location_unsupported", "Capture requires a Native main page");
     const record = { active: true, saved, source, pending: null, releaseGuard: retainGuard?.(), draft: retained?.draft ?? null, transfer: retained ? options4.restoreState.token : null, holder: {} };
@@ -10027,7 +10048,7 @@ function createWorkspaceLocations({ document: document2, host, load, check, chan
       check();
       live();
       if (!record.active) throw workspaceError("workspace_retired", "Captured location retired");
-      if (host().navigator !== source.navigator || host().rootNode !== source.rootNode || !retained && host().navigator.location !== origin) throw workspaceError("workspace_location_superseded", "Native location changed before capture readiness");
+      if (!sameNativeHost(document2, host(), rootNode, identity2) || !retained && host().navigator.location !== origin) throw workspaceError("workspace_location_superseded", "Native location changed before capture readiness");
       if (retained) return;
       beforeCapture?.();
       const input = readInput(document2, native);
@@ -10069,13 +10090,13 @@ function createWorkspaceLocations({ document: document2, host, load, check, chan
         if (!record.active) throw workspaceError("workspace_retired", "Captured location retired");
         if (record.pending) throw workspaceError("workspace_location_busy", "Cannot transfer a pending location restoration");
         if (typeof owner2?.pluginId !== "string" || !Number.isSafeInteger(owner2.generation)) throw workspaceError("invalid_owner", "Location transfer requires a Core-authenticated workspace owner");
-        if (host().navigator !== source.navigator || host().rootNode !== source.rootNode) throw workspaceError("workspace_host_drift", "Captured location belongs to another Native host");
+        if (!sameNativeHost(document2, host(), rootNode, identity2)) throw workspaceError("workspace_host_drift", "Captured location belongs to another Native host");
         registry = transfers.entries;
         if (!record.transfer) {
           if (registry.size >= TRANSFER_LIMIT) throw workspaceError("resource_limit", "Too many retained location transfers");
           record.transfer = document2.defaultView.crypto.randomUUID();
         }
-        registry.set(record.transfer, { source, saved, draft: record.draft, pluginId: owner2.pluginId, exportedGeneration: owner2.generation, holder: record.holder, expires: Date.now() + TRANSFER_LIFETIME });
+        registry.set(record.transfer, { document: document2, rootNode, nativeIdentity: identity2, saved, draft: record.draft, pluginId: owner2.pluginId, exportedGeneration: owner2.generation, holder: record.holder, expires: Date.now() + TRANSFER_LIFETIME });
         transfers.schedule();
         return Object.freeze({ api: 1, token: record.transfer });
       },
@@ -10100,7 +10121,7 @@ function createWorkspaceLocations({ document: document2, host, load, check, chan
           check();
           live();
           if (controller.signal.aborted) throw workspaceError("invocation_cancelled", "Location restoration cancelled");
-          if (host().navigator !== source.navigator || host().rootNode !== source.rootNode) throw workspaceError("workspace_host_drift", "Captured page belongs to another Native host");
+          if (!sameNativeHost(document2, host(), rootNode, identity2)) throw workspaceError("workspace_host_drift", "Captured page belongs to another Native host");
           releaseRestore = beforeRestore?.();
           const current3 = readInput(document2, native);
           if (current3?.controller.view.composing) throw workspaceError("workspace_composer_busy", "Native main input is composing");
@@ -10113,6 +10134,7 @@ function createWorkspaceLocations({ document: document2, host, load, check, chan
                 check();
                 live();
                 if (controller.signal.aborted) throw workspaceError("invocation_cancelled", "Location restoration cancelled");
+                if (!sameNativeHost(document2, host(), rootNode, identity2)) throw workspaceError("workspace_host_drift", "Captured page belongs to another Native host");
                 const location2 = host().navigator.location;
                 if (location2.pathname !== saved.pathname || (location2.search ?? "") !== (saved.search ?? "") || (location2.hash ?? "") !== (saved.hash ?? "") || (location2.state ?? null) !== (saved.state ?? null)) {
                   if (location2 === restoringFrom) return;

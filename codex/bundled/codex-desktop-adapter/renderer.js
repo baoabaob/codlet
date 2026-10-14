@@ -1203,6 +1203,7 @@ function createThreadOpener({ manager, selection, navigation, request: request2,
 // src/native-navigation.js
 var bridges = /* @__PURE__ */ new WeakMap();
 var subscribable = /* @__PURE__ */ new WeakSet();
+var identities = /* @__PURE__ */ new WeakMap();
 function reviewedNavigator(navigators, contexts) {
   if (navigators.size !== 1) return null;
   const navigator = [...navigators][0];
@@ -1238,6 +1239,7 @@ function reviewedNavigator(navigators, contexts) {
     }
   };
   bridges.set(router, { navigator, navigate, subscribe, bridge });
+  identities.set(bridge, Object.freeze({ kind: "data-router", navigator, router, navigate, subscribe }));
   subscribable.add(bridge);
   return bridge;
 }

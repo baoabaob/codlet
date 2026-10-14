@@ -6,10 +6,11 @@ import { createWorkspaceSelection } from '../frontend/src/adapter/workspace-sele
 import { createWorkspaceViewports } from '../frontend/src/adapter/workspace-viewport.js';
 const require=createRequire(new URL('../frontend/package.json',import.meta.url)),{JSDOM}=require('jsdom');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+const history=location=>({location,push(){},replace(){},listen(){}});
 
 test('opaque location restores exact Native page state without returning state or invoking a draft API',async t=>{
   const dom=new JSDOM('<div id="root"></div>'),document=dom.window.document;t.after(()=>dom.window.close());
-  const state={privateDraft:'never-export'},navigator={location:{pathname:'/settings/preferences',search:'?a=1',hash:'#section',state,key:'origin'}};
+  const state={privateDraft:'never-export'},navigator=history({pathname:'/settings/preferences',search:'?a=1',hash:'#section',state,key:'origin'});
   const host={navigator,rootNode:document.getElementById('root')},calls=[];
   const provider=createWorkspaceLocations({document,host:()=>host,load:async()=>({restoreLocation(location){calls.push(location);navigator.location={...location};}}),check(){},changed(){}});
   t.after(()=>provider.dispose());const handle=provider.capture(()=>{});await handle.ready;
@@ -22,7 +23,7 @@ test('opaque location restores exact Native page state without returning state o
 
 test('capture cannot silently bind a different page during Native readiness and cancellation releases its guard',async t=>{
   const dom=new JSDOM('<div id="root"></div>'),document=dom.window.document;t.after(()=>dom.window.close());
-  const navigator={location:{pathname:'/',state:null}},host={navigator,rootNode:document.getElementById('root')};let resolve,released=0;
+  const navigator=history({pathname:'/',state:null}),host={navigator,rootNode:document.getElementById('root')};let resolve,released=0;
   const provider=createWorkspaceLocations({document,host:()=>host,load:()=>new Promise(yes=>{resolve=yes;}),check(){},changed(){},retainGuard:()=>()=>released++});
   const handle=provider.capture(()=>{});await tick();navigator.location={pathname:'/settings',state:null};resolve({restoreLocation(){assert.fail('must not restore unready capture');}});
   await assert.rejects(handle.ready,{code:'workspace_location_superseded'});handle.dispose();assert.equal(released,1);provider.dispose();
@@ -84,7 +85,7 @@ test('viewport driver failure retires readiness, keeps its primary cause and com
 
 test('location restoration waits for an asynchronous Native route commit and releases its route guard on cancellation',async t=>{
   const dom=new JSDOM('<div id="root"></div>'),document=dom.window.document;t.after(()=>dom.window.close());
-  const navigator={location:{pathname:'/',state:{private:'original'}}},host={navigator,rootNode:document.getElementById('root')};let pending,released=0;
+  const navigator=history({pathname:'/',state:{private:'original'}}),host={navigator,rootNode:document.getElementById('root')};let pending,released=0;
   const provider=createWorkspaceLocations({document,host:()=>host,load:async()=>({restoreLocation(value){pending=value;}}),check(){},changed(){},beforeRestore:()=>()=>released++});
   t.after(()=>provider.dispose());const handle=provider.capture(()=>{});await handle.ready;
   navigator.location={pathname:'/settings',state:null};const restored=handle.restore();await tick();
@@ -95,7 +96,7 @@ test('location restoration waits for an asynchronous Native route commit and rel
 });
 
 test('capture respects shared IME preflight and does not retain a usable draft handle while composing',async t=>{
-  const dom=new JSDOM('<div id="root"></div>'),document=dom.window.document;t.after(()=>dom.window.close());const host={navigator:{location:{pathname:'/',state:null}},rootNode:document.getElementById('root')};let routed=0;
+  const dom=new JSDOM('<div id="root"></div>'),document=dom.window.document;t.after(()=>dom.window.close());const host={navigator:history({pathname:'/',state:null}),rootNode:document.getElementById('root')};let routed=0;
   const provider=createWorkspaceLocations({document,host:()=>host,load:async()=>({restoreLocation(){routed++;}}),check(){},changed(){},beforeCapture(){throw Object.assign(Error('composing'),{code:'workspace_composer_busy'});}});
   const handle=provider.capture(()=>{});await assert.rejects(handle.ready,{code:'workspace_composer_busy'});await assert.rejects(handle.restore(),{code:'workspace_composer_busy'});assert.equal(routed,0);handle.dispose();provider.dispose();
 });
@@ -124,7 +125,7 @@ function draftLocation(t,{kind='local',conversationId='fixture-five',entrypoint=
   const dom=new JSDOM('<div id="root"></div>'),document=dom.window.document;t.after(()=>dom.window.close());
   const draft=Object.freeze({key,kind,conversationId,clientThreadId,routeKind,entrypoint});
   const makeInput=identity=>({scope:{node:{},value:{...identity}},controller:{view:{composing:false},getPersistedText(){assert.fail('must not read draft text');}},draft:Object.freeze({...identity})});
-  let input=makeInput(draft);const navigator={location:{pathname:kind==='local'?'/local/'+conversationId:'/',state:null,key:'original'}},host={navigator,rootNode:document.getElementById('root')};
+  let input=makeInput(draft);const navigator=history({pathname:kind==='local'?'/local/'+conversationId:'/',state:null,key:'original'}),host={navigator,rootNode:document.getElementById('root')};
   const provider=createWorkspaceLocations({document,host:()=>host,load:async()=>({restoreLocation(value){navigator.location={...value};}}),check(){},changed(){},readInput:()=>input,readBinding:value=>value.scope.value.conversationId?{threadId:value.scope.value.conversationId,hostId:'local'}:null});t.after(()=>provider.dispose());
   return{document,navigator,provider,draft,makeInput,setInput(value){input=value;},pulse(){document.getElementById('root').append(document.createElement('span'));}};
 }

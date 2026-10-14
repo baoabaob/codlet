@@ -3,6 +3,20 @@
 // route tree. Observe that router; never construct a replacement native router.
 const bridges = new WeakMap();
 const subscribable = new WeakSet();
+const identities = new WeakMap();
+
+// Transfer ownership by Native references, never by the Core-created bridge.
+// A new provider evaluates a fresh bridge cache for the same Native data router.
+export function nativeNavigatorIdentity(navigator) {
+  const identity = identities.get(navigator);
+  if (identity) return identity.router.navigate === identity.navigate &&
+    identity.router.subscribe === identity.subscribe ? identity : null;
+  if (typeof navigator?.location?.pathname === 'string' &&
+      ['push', 'replace', 'listen'].every(name => typeof navigator[name] === 'function'))
+    return Object.freeze({ kind: 'history', navigator, push: navigator.push,
+      replace: navigator.replace, listen: navigator.listen });
+  return null;
+}
 
 export function subscribeNativeRoute(navigator, listener) {
   // React Router data routers support several subscribers. Legacy memory
@@ -41,6 +55,7 @@ export function reviewedNavigator(navigators, contexts) {
     },
   };
   bridges.set(router, { navigator, navigate, subscribe, bridge });
+  identities.set(bridge, Object.freeze({ kind: 'data-router', navigator, router, navigate, subscribe }));
   subscribable.add(bridge);
   return bridge;
 }
