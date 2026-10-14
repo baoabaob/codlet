@@ -89,7 +89,7 @@ pub fn run(arguments: &[OsString]) -> Result<(), CommandError> {
         {
             let registry = PluginRegistry::load_default()?;
             let catalog = PluginCatalog::load(&registry)?;
-            let plugins:Vec<_>=catalog.entries().iter().filter(|entry| !catalog.is_core(&entry.id)).map(|entry|json!({"id":entry.id,"enabled":registry.is_enabled(&entry.id),"manifest":entry.plugin.as_ref().ok().map(|p|&p.manifest),"validationError":entry.plugin.as_ref().err().map(ToString::to_string),"source":if registry.managed_plugins().contains_key(&entry.id){"github"}else if matches!(entry.source,PluginSource::Bundled){"bundled"}else{"local"},"path":registry.local_plugins().get(&entry.id).map(|r|&r.path)})).collect();
+            let plugins:Vec<_>=catalog.entries().iter().filter(|entry| !catalog.is_core(&entry.id)).map(|entry|json!({"id":entry.id,"enabled":registry.is_enabled(&entry.id),"manifest":entry.plugin.as_ref().ok().map(|p|&p.manifest),"validationError":entry.plugin.as_ref().err().map(ToString::to_string),"source":if registry.managed_plugins().get(&entry.id).and_then(|record| record.current()).is_some(){"github"}else if matches!(entry.source,PluginSource::Bundled){"bundled"}else{"local"},"path":registry.local_plugins().get(&entry.id).map(|r|&r.path)})).collect();
             let core:Vec<_>=catalog.entries().iter().filter(|entry| catalog.is_core(&entry.id)).map(|entry| json!({"id":entry.id,"owner":"core","version":env!("CARGO_PKG_VERSION"),"capabilities":entry.plugin.as_ref().ok().map(|plugin| plugin.manifest.all_provides().collect::<Vec<_>>())})).collect();
             println!(
                 "{}",
