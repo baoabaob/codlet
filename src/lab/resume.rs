@@ -141,7 +141,7 @@ impl ResumeEvidence {
             }
             evidence.interrupted_recovery = Some(InterruptedRecovery {
                 checked_retired_pids: pids.into_iter().collect(),
-                previous_cleanup: "not_recorded",
+                previous_cleanup: "clean_application_exit_not_confirmed",
             });
         }
         Ok(evidence)
@@ -173,6 +173,7 @@ impl ResumeEvidence {
         let mut host = None;
         let mut child = None;
         let mut exited = false;
+        let mut abnormal_exit = false;
         let mut reaped = false;
         let mut header = false;
         let mut no_child = false;
@@ -229,8 +230,10 @@ impl ResumeEvidence {
                 Some("child_exited") => {
                     exited = child.is_some_and(|(pid, _)| row["child_pid"] == pid)
                         && detail["exit_code"] == 0;
+                    abnormal_exit = child.is_some_and(|(pid, _)| row["child_pid"] == pid)
+                        && detail["exit_code"].as_u64().is_some_and(|code| code != 0);
                 }
-                Some("cdp_workers_reaped") => reaped = exited,
+                Some("cdp_workers_reaped") => reaped = exited || abnormal_exit,
                 Some("plugin_runtime_stopped") => plugin_cleanup = Some(detail["clean"] == true),
                 Some("no_child_created") => no_child = child.is_none(),
                 _ => {}
@@ -239,7 +242,11 @@ impl ResumeEvidence {
         let closed = (child.is_some() && exited && reaped) || (child.is_none() && no_child);
         if !header
             || plugin_cleanup == Some(false)
-            || !(closed || (recover_interrupted && child.is_some() && plugin_cleanup.is_none()))
+            || !(closed
+                || (recover_interrupted
+                    && child.is_some()
+                    && (plugin_cleanup.is_none()
+                        || (plugin_cleanup == Some(true) && abnormal_exit && reaped))))
         {
             return Err(blocked(
                 "resume requires a closed run or a recorded preparation-only exit",
@@ -752,6 +759,29 @@ mod tests {
             .is_err()
         );
         assert!(process_still_running(std::process::id(), None).unwrap());
+    }
+
+    #[test]
+    fn abnormal_exit_with_clean_plugin_teardown_requires_explicit_recovery() {
+        let root = Path::new("C:/lab-fixture");
+        let mut bytes = report(root, false);
+        bytes.extend_from_slice(b"{\"schema_version\":1,\"host_pid\":9,\"event\":\"plugin_runtime_stopped\",\"detail\":{\"clean\":true}}\n");
+        assert!(ResumeEvidence::parse_with_policy(&bytes, root, "fixture", "1", true).is_err());
+        bytes.extend_from_slice(b"{\"schema_version\":1,\"host_pid\":9,\"child_pid\":10,\"event\":\"child_exited\",\"detail\":{\"exit_code\":4294967295}}\n");
+        assert!(ResumeEvidence::parse_with_policy(&bytes, root, "fixture", "1", true).is_err());
+        bytes.extend_from_slice(b"{\"schema_version\":1,\"host_pid\":9,\"event\":\"cdp_workers_reaped\",\"detail\":{}}\n");
+        assert!(ResumeEvidence::parse(&bytes, root, "fixture", "1").is_err());
+        let evidence =
+            ResumeEvidence::parse_with_policy(&bytes, root, "fixture", "1", true).unwrap();
+        // verify() must still check the matching coordinator and every retired PID.
+        assert!(!evidence.previous_lifecycle_closed);
+        let invalid = String::from_utf8(bytes)
+            .unwrap()
+            .replace("\"clean\":true", "\"clean\":false");
+        assert!(
+            ResumeEvidence::parse_with_policy(invalid.as_bytes(), root, "fixture", "1", true)
+                .is_err()
+        );
     }
 
     #[test]

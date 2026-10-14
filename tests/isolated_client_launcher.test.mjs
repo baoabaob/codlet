@@ -23,8 +23,9 @@ fs.mkdirSync(logs, { recursive: true });
 const state = { schema: 1, runId, labRoot: config.labRoot, managerPid: process.pid, managerCreated: created, logs, state: 'preparing' };
 const publish = value => fs.writeFileSync(path.join(logs, 'state.json'), JSON.stringify(value));
 publish(state);
-if (config.fixtureMode === 'ready') {
-  state.state = 'ready';
+if (config.fixtureMode === 'ready' || config.fixtureMode === 'onboarding') {
+  state.state = config.fixtureMode === 'onboarding' ? 'awaiting_authentication' : 'ready';
+  if(config.fixtureMode === 'onboarding')state.desktopPid=12345;
   publish(state);
   fs.writeFileSync(path.join(config.labRoot, 'logs/manual-client.json'), JSON.stringify(state));
 } else if (config.fixtureMode === 'stale') {
@@ -123,6 +124,17 @@ test('the existing launcher forwards safe mode for one launch without changing c
         assert.deepEqual((await f.starts())[0].flags,['--safe-mode']);
         assert.deepEqual(await readFile(path.join(f.directory,'lab-config.json')),config);
     } finally { await f.cleanup(); }
+});
+
+test('explicit onboarding opens only a matching unready window and does not claim readiness', {skip:!windows,timeout:15000},async()=>{
+    const f=await fixture('onboarding');
+    try{
+        const result=await launch(f,false,'Start-TestClient.ps1',['-Onboarding']).completion;
+        assert.equal(result.code,0,result.stderr);
+        assert.match(result.stdout,/NOT READY for tests/);assert.match(result.stdout,/awaiting_authentication/);
+        assert.doesNotMatch(result.stdout,/Test client is ready/);
+        assert.deepEqual((await f.starts())[0].flags,['--onboarding']);
+    }finally{await f.cleanup();}
 });
 
 test('missing pinned CLI reports the upgrade problem and the actual cmd pauses only on failure', { skip: !windows, timeout: 15000 }, async () => {

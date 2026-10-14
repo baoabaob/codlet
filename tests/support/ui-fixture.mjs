@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 const require=createRequire(new URL('../../frontend/package.json',import.meta.url));
 const {JSDOM,VirtualConsole}=require('jsdom');
-export const uiSource=readFileSync(new URL('../../bundled/runtime/ui.js',import.meta.url),'utf8');
+export const uiSource=readFileSync(process.env.CODLET_UI_FIXTURE_SOURCE??new URL('../../bundled/runtime/ui.js',import.meta.url),'utf8');
 const i18nSource=readFileSync(new URL('../../bundled/runtime/i18n.js',import.meta.url),'utf8');
 const pageSource=readFileSync(new URL('../../bundled/runtime/page.js',import.meta.url),'utf8');
 export const tick=async()=>{for(let i=0;i<4;i++)await new Promise(resolve=>setTimeout(resolve,0));};
@@ -21,6 +21,15 @@ export function uiFixture({locale='en',request=async()=>({plugins:[]})}={}){
   window.ResizeObserver=class{observe(){}unobserve(){}disconnect(){}};
   window.HTMLElement.prototype.scrollIntoView=function(){};
   window.PointerEvent=window.MouseEvent;
+  // jsdom has no native top layer. nwsapi 2.2.27 routes these native-state
+  // selectors back through Element.matches, recursively (Floating UI probes
+  // :modal/:popover-open). Model the absent state for this offline fixture;
+  // these tests do not validate native dialog/fullscreen/popover rendering.
+  const matches=window.Element.prototype.matches;
+  window.Element.prototype.matches=function(selector){
+    if([':modal',':popover-open',':fullscreen'].includes(selector))return false;
+    return matches.call(this,selector);
+  };
   const cleanups=new Set(),calls=[],overrides=new Map();let entry,host,toolbar;
   const context={pluginId:'codlet-gui',generation:1,onDeactivate(fn){cleanups.add(fn);return()=>cleanups.delete(fn);},reportDiagnostic(error){errors.push(error);},rpc:{async request(capability,method,args){
     calls.push({capability,method,args:structuredClone(args)});

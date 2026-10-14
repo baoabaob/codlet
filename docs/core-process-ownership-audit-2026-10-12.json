@@ -1,0 +1,588 @@
+{
+  "schema": 1,
+  "auditedAt": "2026-10-11T18:01:04.081Z",
+  "coreRun": "core-e674f238-bc43-483c-bdb1-8b90802cbe3e",
+  "coordinatorRunId": "1791709980865-52104",
+  "scope": "Historical files only; no live process lookup, client startup, measurement rerun or process control",
+  "sourceInputs": [
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\owned-runtime-evidence.json",
+      "sha256": "e727d0aad31ea366414b7bac8f1608b1c055035cb7727abeadff1c09fe2bfbe4",
+      "bytes": 2470
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\profile\\logs\\coordinator-1791709980865-52104\\state.json",
+      "sha256": "7cebbceb17d30e6fdda9bb9293ed58986b0f46ffc24ef8a2298eb90b86f4790f",
+      "bytes": 2952
+    },
+    {
+      "path": "X:\\codlet-plugins\\.artifacts\\adapter-native\\adapter-44f7b16a-5596-4bf0-b079-f70095b71696\\retirement-1791739786973-55160.before.json",
+      "sha256": "e318a98613b90898068540401ce3116d4dd2509f7996da82a02aa947f5c18f66",
+      "bytes": 6920
+    },
+    {
+      "path": "X:\\codlet-plugins\\.artifacts\\adapter-native\\adapter-44f7b16a-5596-4bf0-b079-f70095b71696\\retirement-1791739786973-55160.closed.json",
+      "sha256": "8a4f8e41b7314b1a43d2ad67a5a5f77f6d275154e88bd26db80572207e7c0ab9",
+      "bytes": 1773
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-0-neutral-split.json",
+      "sha256": "84945dfd287c6eba38d0bf5d2d0df8b0b552c571b347a6abfc48f4110501b975",
+      "bytes": 20762
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-0-styled.json",
+      "sha256": "347f207aaea5f42de43ca2284a8bdc7fc1ffdcc3c5cc40748857b4915c01eece",
+      "bytes": 20770
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-1-neutral-split.json",
+      "sha256": "09ca5576107e205438584d0d929b69c1d5ab993edb5623f3db2eebcb50b7ecee",
+      "bytes": 20745
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-1-styled.json",
+      "sha256": "3a6e4a918fff57a157edd015a8813f27fa61790fb18479d66507c4c9b76eeccd",
+      "bytes": 20744
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-2-neutral-split.json",
+      "sha256": "34002d30cb906273c8709558f951f80e00aa00d788b7fa8d33a7290f2ee67ba3",
+      "bytes": 20766
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-2-styled.json",
+      "sha256": "3085442d6fb0a979db6f04991863a219eafbd96fb1f390c7bca63570c3102b7f",
+      "bytes": 20754
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-4-neutral-split.json",
+      "sha256": "eb5e8bb7fc54419ad7fef86ef571ae9c0cdd4c1cf506a42088f7881ba2e097a1",
+      "bytes": 20749
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-4-styled.json",
+      "sha256": "cc64dcfeb3f64097f58994bba1d653e14a9b29f408854706378d01e481172ba0",
+      "bytes": 20754
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-5-neutral-split.json",
+      "sha256": "1d1f47186b5f98b6e8dce5efc74347845ed579edc6baaf1bd33bd75eac15b096",
+      "bytes": 20756
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-5-styled.json",
+      "sha256": "594701c3dc7d4a5fe8a4e74c6ed23551cd9df2563bcd34c843e3398106c664f2",
+      "bytes": 20764
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-8-neutral-split.json",
+      "sha256": "8a9aa01cb12d17787ff47b2183361023e2d74f60100350a8bdc78faa0c43de7a",
+      "bytes": 20756
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\idle-8-styled.json",
+      "sha256": "f8c8629026f165ce7b286e8961c598a71bfa32a6402c166b11f096f348e19099",
+      "bytes": 20768
+    },
+    {
+      "path": "X:\\codlet\\.codlet-artifacts\\core-native\\core-e674f238-bc43-483c-bdb1-8b90802cbe3e\\background-exit-receipt.json",
+      "sha256": "b2ea4cc84360816bf92e5a4aa44a5cc087676c40e2b2ac4ed454cbe2a8c49925",
+      "bytes": 8395
+    }
+  ],
+  "roots": [
+    {
+      "pid": 52104,
+      "filetime": "134361835796491298",
+      "created": "2026-10-11T09:12:59.6491298Z"
+    },
+    {
+      "pid": 53980,
+      "filetime": "134361835819992387",
+      "created": "2026-10-11T09:13:01.9992387Z"
+    },
+    {
+      "pid": 6768,
+      "filetime": "134361835835180051",
+      "created": "2026-10-11T09:13:03.5180051Z"
+    },
+    {
+      "pid": 19084,
+      "filetime": "134361835875941543",
+      "created": "2026-10-11T09:13:07.5941543Z"
+    }
+  ],
+  "samples": [
+    {
+      "file": "idle-0-neutral-split.json",
+      "startedAt": "2026-10-11T09:19:52.4885692Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-0-styled.json",
+      "startedAt": "2026-10-11T09:21:01.4622741Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-1-neutral-split.json",
+      "startedAt": "2026-10-11T09:22:10.5950122Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-1-styled.json",
+      "startedAt": "2026-10-11T09:23:19.6958426Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-2-neutral-split.json",
+      "startedAt": "2026-10-11T09:24:28.9456346Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-2-styled.json",
+      "startedAt": "2026-10-11T09:25:38.1454342Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-4-neutral-split.json",
+      "startedAt": "2026-10-11T09:26:47.7384316Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-4-styled.json",
+      "startedAt": "2026-10-11T09:27:57.3336196Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-5-neutral-split.json",
+      "startedAt": "2026-10-11T09:29:07.0246979Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-5-styled.json",
+      "startedAt": "2026-10-11T09:30:16.6296470Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-8-neutral-split.json",
+      "startedAt": "2026-10-11T09:31:26.5268916Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    },
+    {
+      "file": "idle-8-styled.json",
+      "startedAt": "2026-10-11T09:32:36.0928335Z",
+      "rowsBefore": 27,
+      "rowsAfter": 27,
+      "uniqueBefore": 27,
+      "sameEndpoints": true,
+      "sameAsFirst": true,
+      "allRootsMatch": true,
+      "olderThanEarliestRoot": [],
+      "knownPriorOverlap": [],
+      "suspectIdentityOverlap": [],
+      "cpuDeltaMatches": true,
+      "hasParentEdges": false,
+      "hasSamplerDigest": false
+    }
+  ],
+  "identities": [
+    {
+      "pid": 57752,
+      "filetime": "134361835904743726",
+      "createdUtc": "2026-10-11T09:13:10.474Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 43416,
+      "filetime": "134361835880283218",
+      "createdUtc": "2026-10-11T09:13:08.028Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 53980,
+      "filetime": "134361835819992387",
+      "createdUtc": "2026-10-11T09:13:01.999Z",
+      "name": "codlet-lab.exe",
+      "independentlyAnchoredRoot": true
+    },
+    {
+      "pid": 42208,
+      "filetime": "134361835919429863",
+      "createdUtc": "2026-10-11T09:13:11.942Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 42716,
+      "filetime": "134361836022615935",
+      "createdUtc": "2026-10-11T09:13:22.261Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 44292,
+      "filetime": "134361836094555125",
+      "createdUtc": "2026-10-11T09:13:29.455Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 23508,
+      "filetime": "134361836066831190",
+      "createdUtc": "2026-10-11T09:13:26.683Z",
+      "name": "codex.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 4268,
+      "filetime": "134361836096835522",
+      "createdUtc": "2026-10-11T09:13:29.683Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 58908,
+      "filetime": "134361837241574260",
+      "createdUtc": "2026-10-11T09:15:24.157Z",
+      "name": "conhost.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 56144,
+      "filetime": "134361835880460287",
+      "createdUtc": "2026-10-11T09:13:08.046Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 22164,
+      "filetime": "134361835880227512",
+      "createdUtc": "2026-10-11T09:13:08.022Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 46144,
+      "filetime": "134361836220545761",
+      "createdUtc": "2026-10-11T09:13:42.054Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 51628,
+      "filetime": "134361835876155370",
+      "createdUtc": "2026-10-11T09:13:07.615Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 6768,
+      "filetime": "134361835835180051",
+      "createdUtc": "2026-10-11T09:13:03.518Z",
+      "name": "codex.exe",
+      "independentlyAnchoredRoot": true
+    },
+    {
+      "pid": 26916,
+      "filetime": "134361835796568957",
+      "createdUtc": "2026-10-11T09:12:59.656Z",
+      "name": "conhost.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 52104,
+      "filetime": "134361835796491298",
+      "createdUtc": "2026-10-11T09:12:59.649Z",
+      "name": "node.exe",
+      "independentlyAnchoredRoot": true
+    },
+    {
+      "pid": 44208,
+      "filetime": "134361837241480514",
+      "createdUtc": "2026-10-11T09:15:24.148Z",
+      "name": "node.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 3044,
+      "filetime": "134361836024850234",
+      "createdUtc": "2026-10-11T09:13:22.485Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 46900,
+      "filetime": "134361836006705572",
+      "createdUtc": "2026-10-11T09:13:20.670Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 39364,
+      "filetime": "134361836138280896",
+      "createdUtc": "2026-10-11T09:13:33.828Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 21612,
+      "filetime": "134361836066913707",
+      "createdUtc": "2026-10-11T09:13:26.691Z",
+      "name": "conhost.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 6052,
+      "filetime": "134361835904757606",
+      "createdUtc": "2026-10-11T09:13:10.475Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 34592,
+      "filetime": "134361835820094242",
+      "createdUtc": "2026-10-11T09:13:02.009Z",
+      "name": "conhost.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 19084,
+      "filetime": "134361835875941543",
+      "createdUtc": "2026-10-11T09:13:07.594Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": true
+    },
+    {
+      "pid": 59284,
+      "filetime": "134361836132072643",
+      "createdUtc": "2026-10-11T09:13:33.207Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 31628,
+      "filetime": "134361836188204399",
+      "createdUtc": "2026-10-11T09:13:38.820Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    },
+    {
+      "pid": 1876,
+      "filetime": "134361836228276562",
+      "createdUtc": "2026-10-11T09:13:42.827Z",
+      "name": "ChatGPT.exe",
+      "independentlyAnchoredRoot": false
+    }
+  ],
+  "sampleSummary": {
+    "cells": 12,
+    "endpointRows": 648,
+    "uniqueIdentities": 27,
+    "allCellsSameIdentities": true,
+    "earliestCreatedUtc": "2026-10-11T09:12:59.649Z",
+    "latestCreatedUtc": "2026-10-11T09:15:24.157Z",
+    "allRootIdentitiesPresent": true,
+    "allCpuDeltasRecompute": true,
+    "olderThanEarliestRoot": false,
+    "knownPriorIdentityOverlap": false
+  },
+  "adapterComparison": {
+    "suspectSelection": "Created before that run coordinator; no process-name filter",
+    "suspectCount": 9,
+    "suspects": [
+      {
+        "pid": 57832,
+        "created": "2026-10-11T12:08:42.4257982Z",
+        "filetime": "134361941224257982"
+      },
+      {
+        "pid": 60136,
+        "created": "2026-10-11T12:08:42.5319349Z",
+        "filetime": "134361941225319349"
+      },
+      {
+        "pid": 49848,
+        "created": "2026-10-11T12:08:42.5690095Z",
+        "filetime": "134361941225690095"
+      },
+      {
+        "pid": 54256,
+        "created": "2026-10-11T12:08:42.6873371Z",
+        "filetime": "134361941226873371"
+      },
+      {
+        "pid": 30568,
+        "created": "2026-10-11T12:08:42.8942826Z",
+        "filetime": "134361941228942826"
+      },
+      {
+        "pid": 16656,
+        "created": "2026-10-11T12:08:42.9035435Z",
+        "filetime": "134361941229035435"
+      },
+      {
+        "pid": 45396,
+        "created": "2026-10-11T12:08:43.0982087Z",
+        "filetime": "134361941230982087"
+      },
+      {
+        "pid": 49248,
+        "created": "2026-10-11T12:10:41.3400015Z",
+        "filetime": "134361942413400015"
+      },
+      {
+        "pid": 54960,
+        "created": "2026-10-11T14:18:59.1212955Z",
+        "filetime": "134362019391212955"
+      }
+    ],
+    "allSuspectsInClosedRemaining": true,
+    "coreSampleIdentityMatches": [],
+    "coreExitIdentityMatches": []
+  },
+  "exit": {
+    "recorded": 27,
+    "uniqueIdentities": 27,
+    "exactRootIdentitiesPresent": true,
+    "overlapWithSample": 25,
+    "olderThanEarliestRoot": [],
+    "knownPriorOverlap": [],
+    "receiptState": "closed",
+    "hostExit": {
+      "code": 0,
+      "signal": null
+    },
+    "recordedRemaining": 0,
+    "independentReceiptRemaining": 0,
+    "missingAncestry": true
+  },
+  "conclusion": {
+    "knownReportedExternalIdentitiesPresent": false,
+    "completeHistoricalOwnershipCertification": false,
+    "limitation": "Files retain PID+creation identity but not historical parent PID/creation edges, full selection snapshots or the sampler digest. Age bounds and non-overlap exclude the reported older-process pattern and known identities, but cannot prove that every later-created non-root was an owned descendant or eliminate a scan-to-handle PID-reuse race. Do not infer total ownership from executable names."
+  }
+}

@@ -20,7 +20,7 @@ use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage,
     find_unique_current_user_package, resolve_package_executable,
 };
-use crate::windows::process::{ChildProcess, launch_with_cdp_pipes_in_environment};
+use crate::windows::process::{ChildProcess, launch_packaged_cdp_in_directory};
 
 mod input;
 mod management;
@@ -47,6 +47,9 @@ const AUDITED_PACKAGE_VERSIONS: &[&str] = &[
     "26.908.9136.0",
     "26.915.3509.0",
     "26.915.4065.0",
+    // Static Dev/WS/IPC evidence: docs/native-isolation-26.1007.2314.0.json.
+    // Still requires fresh data paths and an owned literal-loopback backend.
+    "26.1007.2314.0",
 ];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
@@ -200,6 +203,14 @@ impl LabOptions {
 
 pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError> {
     let arguments: Vec<_> = arguments.collect();
+    // Package activation re-enters the same executable. Reuse the authenticated
+    // one-shot helper protocol; it validates its caller and exact official image.
+    if let [command, pipe] = arguments.as_slice()
+        && command == OsStr::new(crate::windows::package_launch::COMMAND)
+    {
+        return crate::windows::package_launch::run_helper(pipe)
+            .map_err(|error| LabError::Runtime(error.to_string()));
+    }
     if let [flag, root_flag, root, command, tail @ ..] = arguments.as_slice()
         && flag == OsStr::new(EXPERIMENT_FLAG)
         && root_flag == OsStr::new("--root")
@@ -259,6 +270,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             .app_server_url
             .as_deref()
             .expect("audited WS policy"),
+        &package.version.to_string(),
     )?;
     let shell_check = shell::check(&environment, &root.path.join("project"))?;
     let environment_manifest = root.write_environment_manifest(&environment)?;
@@ -318,12 +330,15 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     // explicit lab binary. Resume inspected only the previous process identity;
     // no existing Desktop is attached or controlled.
     let child_arguments = startup_trace_arguments(&root.path, options.startup_trace);
-    let (child, pipes) = launch_with_cdp_pipes_in_environment(
+    let startup_stderr = crate::client_stderr::ClientStderr::capture_startup()
+        .map_err(|error| LabError::Runtime(error.to_string()))?;
+    let (child, pipes) = launch_packaged_cdp_in_directory(
         &executable,
         &child_arguments,
-        false,
-        Some(&environment),
-        Some(&root.path.join("project")),
+        &environment,
+        &root.path.join("project"),
+        &package,
+        &startup_stderr,
     )
     .map_err(|error| {
         reporter.emit(
@@ -373,6 +388,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         input,
         startup,
         options.startup_trace,
+        &startup_stderr,
         &mut reporter,
     )
 }
@@ -521,6 +537,7 @@ fn hold_lab_child(
     mut input: ControlInput,
     mut startup: StartupCheck,
     startup_trace: bool,
+    startup_stderr: &crate::client_stderr::ClientStderr,
     reporter: &mut Reporter,
 ) -> Result<(), LabError> {
     runtime.configure_runtime_updates(&child, reporter);
@@ -718,6 +735,7 @@ fn hold_lab_child(
             match startup.poll() {
                 Ok(true) => {
                     startup_verified = true;
+                    startup_stderr.finish_startup();
                     reporter.emit("startup_verified", json!({"evidence": startup.evidence, "elapsed_ms": startup.elapsed_ms(), "gui_mount_verified": false}));
                     if let Some(client) = &client
                         && let Err(error) = runtime.activate(client.clone(), &sessions, reporter)
@@ -735,6 +753,7 @@ fn hold_lab_child(
                 }
                 Ok(false) => {}
                 Err(reason) => {
+                    startup_stderr.report_startup_failure();
                     failure = Some(format!("startup verification failed: {reason}"));
                     reporter.emit("startup_failed", json!({"reason": reason, "elapsed_ms": startup.elapsed_ms(), "renderer_plugins_loaded": false}));
                     request_own_child_quit(&mut quit, &sessions, "startup_failed", reporter);
@@ -1135,7 +1154,11 @@ fn new_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn lab_environment(root: &LabRoot, app_server_url: &str) -> Result<ChildEnvironment, LabError> {
+fn lab_environment(
+    root: &LabRoot,
+    app_server_url: &str,
+    package_version: &str,
+) -> Result<ChildEnvironment, LabError> {
     validate_loopback_url(OsStr::new(app_server_url))?;
     // Build from zero. No credential/proxy/bridge variables are retained or
     // backed up in the child manifest, even temporarily as a policy fallback.
@@ -1198,13 +1221,13 @@ fn lab_environment(root: &LabRoot, app_server_url: &str) -> Result<ChildEnvironm
     )?;
     environment.set(
         OsStr::new("CODEX_ELECTRON_DESKTOP_FEATURE_OVERRIDES"),
-        OsStr::new(&restricted_features().to_string()),
+        OsStr::new(&restricted_features(package_version).to_string()),
     )?;
     Ok(environment)
 }
 
-fn restricted_features() -> Value {
-    json!({
+fn restricted_features(package_version: &str) -> Value {
+    let mut features = json!({
         "externalBrowserUseAllowed": false, "externalBrowserUse": false,
         "inAppBrowserUseAllowed": false, "inAppBrowserUse": false,
         "browserExtensions": false, "browserSettingsCloudSync": false,
@@ -1216,7 +1239,15 @@ fn restricted_features() -> Value {
         "workLocalAccess": false, "ambientSuggestions": false,
         "ambientSuggestionsFeatureDiscovery": false, "artifactSession": false,
         "recordAndReplay": false
-    })
+    });
+    if package_version == "26.1007.2314.0" {
+        // Removed from this build's strict partial feature schema. Keeping
+        // unknown keys aborts Native bootstrap before a renderer exists.
+        let object = features.as_object_mut().unwrap();
+        object.remove("computerUseNodeRepl");
+        object.remove("quickChat");
+    }
+    features
 }
 
 struct Reporter {
@@ -1290,7 +1321,8 @@ mod tests {
         assert!(!path.join("codex-home/auth.json").exists());
         assert!(LabRoot::claim(&path).is_err());
         assert!(fs::rename(&path, directory.path().join("moved")).is_err());
-        let environment = lab_environment(&root, "ws://127.0.0.1:49233").unwrap();
+        let environment =
+            lab_environment(&root, "ws://127.0.0.1:49233", AUDITED_PACKAGE_VERSION).unwrap();
         let block = String::from_utf16(&environment.block().unwrap()).unwrap();
         assert!(block.contains(&format!(
             "CODEX_HOME={}\0",
@@ -1576,8 +1608,51 @@ mod tests {
         package.full_name = "OpenAI.Codex_26.908.4834.0_x64__2p2nqsd0c76g0".into();
         require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).unwrap();
         assert!(require_reviewed_ipc_isolation(&package, None).is_err());
+        package.version.minor = 1007;
+        package.version.build = 2314;
+        package.full_name = "OpenAI.Codex_26.1007.2314.0_x64__2p2nqsd0c76g0".into();
+        require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).unwrap();
+        assert!(require_reviewed_ipc_isolation(&package, None).is_err());
+        assert!(require_reviewed_ipc_isolation(&package, Some("ws://localhost:49233")).is_err());
+        assert!(require_reviewed_ipc_isolation(&package, Some("ws://192.168.0.1:49233")).is_err());
         package.full_name = package.full_name.replace("x64", "arm64");
         assert!(require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).is_err());
+        package.version.build = 2315;
+        package.full_name = "OpenAI.Codex_26.1007.2315.0_x64__2p2nqsd0c76g0".into();
+        assert!(require_reviewed_ipc_isolation(&package, Some("ws://127.0.0.1:49233")).is_err());
+    }
+
+    #[test]
+    fn package_helper_entry_rejects_unowned_endpoints_before_connecting() {
+        let error = run_cli(
+            [
+                OsString::from(crate::windows::package_launch::COMMAND),
+                OsString::from(r"\\.\pipe\unowned"),
+            ]
+            .into_iter(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid package helper endpoint")
+        );
+    }
+
+    #[test]
+    fn current_feature_schema_removes_only_retired_flags_and_keeps_restrictions() {
+        let legacy = restricted_features(AUDITED_PACKAGE_VERSION);
+        let current = restricted_features("26.1007.2314.0");
+        assert_eq!(legacy["quickChat"], false);
+        assert_eq!(legacy["computerUseNodeRepl"], false);
+        assert!(current.get("quickChat").is_none());
+        assert!(current.get("computerUseNodeRepl").is_none());
+        for (key, value) in legacy.as_object().unwrap() {
+            if key != "quickChat" && key != "computerUseNodeRepl" {
+                assert_eq!(current.get(key), Some(value));
+                assert_eq!(*value, false);
+            }
+        }
     }
 
     #[test]

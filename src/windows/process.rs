@@ -284,6 +284,51 @@ pub(crate) fn launch_packaged_cdp_with_bootstrap(
     package: &super::packages::InstalledPackage,
     before_resume: &mut impl FnMut(&SuspendedChild) -> Result<(), ProcessError>,
 ) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_packaged_cdp_at(
+        executable,
+        arguments,
+        environment,
+        own_scope,
+        stderr,
+        package,
+        None,
+        before_resume,
+    )
+}
+
+/// The lab uses the same package/ordinary-path validation as production while
+/// keeping its explicitly owned working directory and child environment.
+pub(crate) fn launch_packaged_cdp_in_directory(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: &ChildEnvironment,
+    current_directory: &Path,
+    package: &super::packages::InstalledPackage,
+    stderr: &crate::client_stderr::ClientStderr,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_packaged_cdp_at(
+        executable,
+        arguments,
+        Some(environment),
+        false,
+        Some(stderr),
+        package,
+        Some(current_directory),
+        &mut |_| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_packaged_cdp_at(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: Option<&ChildEnvironment>,
+    own_scope: bool,
+    stderr: Option<&crate::client_stderr::ClientStderr>,
+    package: &super::packages::InstalledPackage,
+    current_directory: Option<&Path>,
+    before_resume: &mut impl FnMut(&SuspendedChild) -> Result<(), ProcessError>,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
     // Keep canonical paths for package/identity checks, but not for Owl's
     // application resource URL bootstrap: a verbatim path makes it exit 13.
     let program = client_program_path(executable)?;
@@ -293,7 +338,7 @@ pub(crate) fn launch_packaged_cdp_with_bootstrap(
         arguments,
         environment,
         no_window: false,
-        current_directory: None,
+        current_directory,
         cdp: pipes.child_handles(),
         stderr: stderr.map(|capture| capture.handles()),
         preserve_package_identity: false,

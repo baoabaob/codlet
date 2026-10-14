@@ -67,23 +67,33 @@ export default function createUI(context) {
     sharedStyle = document.createElement('style'); sharedStyle.setAttribute(STYLE_ID, '0.2.2');
     sharedStyle.textContent = stylesheet; document.head?.appendChild(sharedStyle);
   }
-  const syncTheme = () => {
+  let themeSignature;
+  const syncTheme = (target) => {
+    if(!containers.size||![...containers].some(node=>node.hasAttribute('data-codlet-official-ui')))return;
     if (!document.documentElement) return;
     const theme = themeOf(), native = getComputedStyle(document.body??document.documentElement);
-    for (const node of containers) {
-      node.dataset.theme = theme;
-      node.lang = context.i18n?.locale === 'zh' ? 'zh' : 'en';
-      node.dir = document.documentElement.dir || 'ltr';
-      node.style.fontFamily = native.fontFamily;
-      node.style.colorScheme = theme;
-      for(const [target,source] of Object.entries(hostTokens)) {
-        const value=native.getPropertyValue(source).trim();
-        if(value)node.style.setProperty(target,value);else node.style.removeProperty(target);
+    const lang=context.i18n?.locale === 'zh' ? 'zh' : 'en', dir=document.documentElement.dir || 'ltr';
+    const values=Object.entries(hostTokens).map(([name,source])=>[name,native.getPropertyValue(source).trim()]);
+    const signature=JSON.stringify([theme,lang,dir,native.fontFamily,values]);
+    if(!(target instanceof Element)&&signature===themeSignature)return;
+    // Targeted creation may observe a transient host theme before the observer
+    // runs. Invalidate the full-pass cache so that node also gets reconciled if
+    // the host returns to its previous theme in the same task.
+    themeSignature=target instanceof Element?undefined:signature;
+    for (const node of target instanceof Element?[target]:containers) {
+      if (!node.hasAttribute('data-codlet-official-ui')) continue;
+      if(node.dataset.theme!==theme)node.dataset.theme = theme;
+      if(node.lang!==lang)node.lang=lang;
+      if(node.dir!==dir)node.dir=dir;
+      if(node.style.fontFamily!==native.fontFamily)node.style.fontFamily = native.fontFamily;
+      if(node.style.colorScheme!==theme)node.style.colorScheme = theme;
+      for(const [target,value] of values) {
+        if(node.style.getPropertyValue(target)!==value){if(value)node.style.setProperty(target,value);else node.style.removeProperty(target);}
       }
       // The SDK's dark disabled-on default is blue. Keep disabled controls in
       // the host accent family as well, using the public component token.
-      if(node.style.getPropertyValue('--switch-track-color-checked'))node.style.setProperty('--switch-track-color-checked-disabled','color-mix(in srgb, var(--switch-track-color-checked) 40%, var(--color-surface))');
-      else node.style.removeProperty('--switch-track-color-checked-disabled');
+      const disabled=node.style.getPropertyValue('--switch-track-color-checked')?'color-mix(in srgb, var(--switch-track-color-checked) 40%, var(--color-surface))':'';
+      if(node.style.getPropertyValue('--switch-track-color-checked-disabled')!==disabled){if(disabled)node.style.setProperty('--switch-track-color-checked-disabled',disabled);else node.style.removeProperty('--switch-track-color-checked-disabled');}
     }
   };
   const themeObserver = new MutationObserver(syncTheme);
@@ -93,22 +103,30 @@ export default function createUI(context) {
   const stopLocale = context.i18n?.onChange?.(syncTheme);
   const media = matchMedia('(prefers-color-scheme: dark)');
   media.addEventListener('change', syncTheme);
-  function container(parent = document.body) {
+  function container(parent = document.body, {styled = true} = {}) {
     assertLive();
     if (!(parent instanceof Element)) throw new Error('A DOM mount parent is required');
     if (!sharedStyle.isConnected) document.head.appendChild(sharedStyle);
     const node = document.createElement('div');
-    node.setAttribute('data-codlet-official-ui', context.pluginId); node.setAttribute('data-codlet-generation', String(context.generation));
-    containers.add(node); parent.appendChild(node); syncTheme(); return node;
+    node.setAttribute(styled?'data-codlet-official-ui':'data-codlet-react-ui', context.pluginId); node.setAttribute('data-codlet-generation', String(context.generation));
+    containers.add(node); parent.appendChild(node); if(styled)syncTheme(node); return node;
   }
-  function mount(node, content, overlay = node, scope = node) {
+  function mount(node, content, overlay = node, scope = node, options = {sync:true}) {
     assertLive();
     if (!containers.has(node)) throw new Error('UI mount must belong to this plugin');
     if (roots.has(node)) throw new Error('This UI container already has a React root');
     let live = true, unmounting = false;
     const reactErrors=[];
     const root = createRoot(node,{onUncaughtError(error){if(unmounting)reactErrors.push(error);else reportCleanup(error);}});
-    const handle=Object.freeze({ render(next) { assertLive(); if (!live) throw new Error('UI mount retired'); flushSync(() => root.render(<AppsSDKUIProvider><PortalScope value={scope}><PortalContainer value={overlay}>{next}</PortalContainer></PortalScope></AppsSDKUIProvider>)); },
+    let revision=0;
+    function Commit({children, version}) {
+      React.useLayoutEffect(()=>{if(live)options.onCommit?.(version);},[version]);
+      return children;
+    }
+    const handle=Object.freeze({ render(next, {sync=options.sync} = {}) { assertLive(); if (!live) throw new Error('UI mount retired'); const version=++revision;
+      const content=options.onCommit?<Commit version={version}>{next}</Commit>:next;
+      const render=()=>root.render(<AppsSDKUIProvider><PortalScope value={scope}><PortalContainer value={overlay}>{content}</PortalContainer></PortalScope></AppsSDKUIProvider>);
+      if(sync)flushSync(render);else render(); return version; },
       unmount() {
         if (!live) return; live = false; unmounting = true;
         // React 19 reports effect/WillUnmount errors through onUncaughtError.
@@ -120,6 +138,14 @@ export default function createUI(context) {
     roots.set(node,handle);
     try { handle.render(content); } catch(error) { throwCleanup([error,...cleanAll([()=>handle.unmount()])]); }
     return handle;
+  }
+  function mountReact(node, content, options = {}) {
+    return mount(node,content,options.overlay??node,options.scope??node,{...options,sync:options.sync??false});
+  }
+  function removeContainer(node) {
+    if(!containers.has(node))return;
+    const errors=cleanAll([()=>roots.get(node)?.unmount(),()=>node.remove()]);
+    containers.delete(node);throwCleanup(errors);
   }
   async function page(options) {
     assertLive();
@@ -140,5 +166,5 @@ export default function createUI(context) {
     throwCleanup(errors);
   }
   const focusReturn = document.activeElement;
-  return Object.freeze({ api: 2, React, components, icons, PortalContainer, useEscCloseStack, createPortal, flushSync, container, mount, page, signal: abort.signal, dispose });
+  return Object.freeze({ api: 2, React, components, icons, PortalContainer, useEscCloseStack, createPortal, flushSync, container, removeContainer, mount, mountReact, page, signal: abort.signal, dispose });
 }

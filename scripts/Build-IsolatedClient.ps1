@@ -34,6 +34,8 @@ foreach ($codletFile in @('node.exe', 'LICENSE')) {
     Copy-Item -LiteralPath (Join-Path $codletNodeSource $codletFile) -Destination (Join-Path $codletOutput $codletNodeRelative)
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-client.mjs') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-readiness.mjs') -Destination $codletOutput
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated-state.mjs') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.ps1') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-TestClient.cmd') -Destination $codletOutput
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Restart-TestClient.ps1') -Destination $codletOutput
@@ -85,6 +87,15 @@ foreach ($codletName in @('Stop-TestClient', 'Test-Plugins', 'Test-Doctor', 'Exp
     }
     [IO.File]::WriteAllText((Join-Path $codletOutput ($codletName + '.cmd')), $codletCommand, [Text.Encoding]::ASCII)
 }
+$codletLogin = @'
+$ErrorActionPreference = 'Stop'
+$codletConfigPath = Join-Path $PSScriptRoot 'lab-config.json'
+$codletConfig = [IO.File]::ReadAllText($codletConfigPath) | ConvertFrom-Json
+& (Join-Path $PSScriptRoot $codletConfig.nodeRelative) (Join-Path $PSScriptRoot 'isolated-client.mjs') login $codletConfigPath
+exit $LASTEXITCODE
+'@
+[IO.File]::WriteAllText((Join-Path $codletOutput 'Login-TestProfile.ps1'), $codletLogin, $codletUtf8)
+[IO.File]::WriteAllText((Join-Path $codletOutput 'Login-TestProfile.cmd'), ('@echo off' + [Environment]::NewLine + 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Login-TestProfile.ps1"' + [Environment]::NewLine + 'pause' + [Environment]::NewLine), [Text.Encoding]::ASCII)
 $codletPluginOutput = Join-Path $codletOutput 'plugins/hide-usage-banner'
 $null = New-Item -ItemType Directory -Path $codletPluginOutput
 foreach ($codletFile in @('codlet.json', 'renderer.js', 'README.md')) {

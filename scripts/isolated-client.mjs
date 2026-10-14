@@ -7,6 +7,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
+import { backendReadiness, onboardingRestartRequired } from './isolated-readiness.mjs';
+import { atomicJson } from './isolated-state.mjs';
 
 const exec = promisify(execFile);
 const [action, configPath, ...pluginArguments] = process.argv.slice(2);
@@ -18,6 +20,7 @@ const officialCli = path.resolve(config.officialCli);
 const statePath = path.join(root, 'logs', 'manual-client.json');
 const powershell = path.join(process.env.SYSTEMROOT ?? 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const inherited = /^(SYSTEMROOT|WINDIR|SYSTEMDRIVE|COMSPEC|PATH|PATHEXT|OS|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|PROCESSOR_IDENTIFIER|PROCESSOR_LEVEL|PROCESSOR_REVISION|NUMBER_OF_PROCESSORS|USERNAME|USERDOMAIN|USERDNSDOMAIN|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432)$/i;
+let onboardingRestartUsed = false;
 
 function plain(file, isDirectory = false) {
   const stat = fs.lstatSync(file);
@@ -82,26 +85,24 @@ function latestReport() {
   if (!reports.length || (reports[1] && reports[0].born === reports[1].born)) throw new Error('No unambiguous latest lab report');
   return reports[0].file;
 }
-function atomicJson(file, value) {
-  const temporary = file + '.' + process.pid + '.tmp';
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
-  fs.renameSync(temporary, file);
-}
-function pumpLines(stream, onLine, log) {
+function pumpLines(stream, onLine, log, onError) {
   let buffer = '';
   stream.setEncoding('utf8');
   stream.on('data', chunk => {
-    log?.write(chunk);
-    buffer += chunk;
-    if (buffer.length > 4 * 1024 * 1024) throw new Error('Lab output exceeded the line limit');
-    let index;
-    while ((index = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
-      if (line.trim()) onLine(line);
-    }
+    try {
+      log?.write(chunk);
+      buffer += chunk;
+      if (buffer.length > 4 * 1024 * 1024) { buffer = ''; throw new Error('Lab output exceeded the line limit'); }
+      let index;
+      while ((index = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+        if (line.trim()) onLine(line);
+      }
+    } catch (error) { onError(error); }
   });
   stream.once('end', () => log?.end());
-  stream.once('error', () => log?.end());
+  stream.once('error', error => { log?.end(); onError(error); });
+  log?.on('error', onError);
 }
 function exited(child) {
   return new Promise(resolve => {
@@ -142,7 +143,7 @@ async function originCheck(port) {
     });
   });
 }
-async function probe(endpoint, port) {
+async function probe(endpoint, port, onboarding = false) {
   const socket = new WebSocket(endpoint);
   const pending = new Map();
   let id = 0;
@@ -181,8 +182,8 @@ async function probe(endpoint, port) {
     if (!Array.isArray(plugins.marketplaces) || plugins.marketplaceLoadErrors?.length) throw new Error('Installed plugin state could not be verified');
     const chromeInstalled = plugins.marketplaces.flatMap(market => market.plugins).some(plugin => plugin.installed && /^chrome(?:-|$)/i.test(plugin.name));
     const originRejected = await originCheck(port);
-    const result = { initialized: true, authenticated, fileCredentialStore, readOnlyBackend, desktopAppToolsDisabled, windowsReadiness: readiness, chromeInstalled, originRejected };
-    if (!authenticated || !fileCredentialStore || !readOnlyBackend || !desktopAppToolsDisabled || readiness !== 'ready' || chromeInstalled || !originRejected) throw new Error('Backend isolation/readiness checks failed: ' + JSON.stringify(result));
+    const result = { initialized: true, authenticated, fileCredentialStore, readOnlyBackend, desktopAppToolsDisabled, windowsReadiness: readiness, windowsMode: effective?.windows?.sandbox ?? null, chromeInstalled, originRejected };
+    backendReadiness(result,{onboarding});
     return result;
   } finally {
     for (const call of pending.values()) clearTimeout(call.timer);
@@ -191,11 +192,11 @@ async function probe(endpoint, port) {
 }
 
 async function start(recoverInterrupted = false) {
-  if(pluginArguments.length && !(pluginArguments.length===1 && pluginArguments[0]==='--safe-mode'))throw new Error('Start accepts only --safe-mode');
-  const safeMode=pluginArguments[0]==='--safe-mode';
+  if(pluginArguments.some(flag=>!['--safe-mode','--onboarding'].includes(flag))||new Set(pluginArguments).size!==pluginArguments.length)throw new Error('Start accepts only --safe-mode and --onboarding');
+  const safeMode=pluginArguments.includes('--safe-mode'),onboarding=pluginArguments.includes('--onboarding');
   verifyHash(officialCli, config.officialCliSha256);
   const previous = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
-  if (previous?.state === 'ready') {
+  if (['ready','starting','preparing','stopping','awaiting_authentication','awaiting_sandbox'].includes(previous?.state)) {
     const live = await ps("$labProcess=Get-Process -Id ([int]$env:CODLET_CHECK_PID) -ErrorAction SilentlyContinue; if ($labProcess) { [pscustomobject]@{pid=$labProcess.Id;created=$labProcess.StartTime.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress } else { ConvertTo-Json -InputObject $null -Compress }",
       { CODLET_CHECK_PID: String(previous.managerPid) });
     if (live?.created === previous.managerCreated) throw new Error('The test client is already running; use Stop-TestClient before starting another');
@@ -208,14 +209,34 @@ async function start(recoverInterrupted = false) {
   const quitFile = path.join(logs, 'quit.request');
   const managerFacts = await ps("$codletStarted=(Get-Process -Id ([int]$env:CODLET_CHECK_PID)).StartTime.ToUniversalTime(); [pscustomobject]@{created=$codletStarted.ToString('o');filetime=$codletStarted.ToFileTimeUtc().ToString()} | ConvertTo-Json -Compress", { CODLET_CHECK_PID: String(process.pid) });
   const managerIdentity = managerFacts.created;
-  let state = { schema: 1, runId, state: 'preparing', safeMode, labRoot: root, managerPid: process.pid, managerCreated: managerIdentity, logs, quitFile, before };
+  let state = { schema: 1, runId, state: 'preparing', safeMode, onboarding, labRoot: root, managerPid: process.pid, managerCreated: managerIdentity, logs, quitFile, before };
   atomicJson(path.join(logs, 'state.json'), state);
   let backend, backendExit, lab, labExit, labOutputEnded, prepared, deadline, wroteState = false;
   let startupVerified = false, pluginReady = false;
   let labFailure = null;
   let restartAfterUpdate = false;
+  let restartAfterOnboarding = false;
+  let asynchronousError = null;
+  const captureAsyncError = error => { asynchronousError ??= error; };
+  const checkAsyncError = () => { if (asynchronousError) throw asynchronousError; };
+  const running = child => child?.pid != null && child.exitCode === null && child.signalCode === null;
+  function secondaryFailure(phase, error) {
+    process.exitCode = 1;
+    state.error ??= error.message;
+    if (state.state !== 'needs_attention') state.state = 'failed';
+    (state.cleanupErrors ??= []).push({ phase, message: error.message, code: error.code ?? null, temporary: error.stateTemporary ?? null });
+    console.error(phase + ': ' + error.message + (error.stateTemporary ? '; unpublished temporary: ' + error.stateTemporary : ''));
+  }
   const rows = [];
   function publish() { atomicJson(path.join(logs, 'state.json'), state); if (prepared) { atomicJson(statePath, state); wroteState = true; } }
+  function publishDuringCleanup() {
+    // The run record and shared pointer are separate atomic writes. Try both;
+    // failure of either cannot abort handle cleanup or replace the first error.
+    for (const file of [path.join(logs, 'state.json'), ...(wroteState || prepared ? [statePath] : [])]) {
+      try { atomicJson(file, state); }
+      catch (error) { secondaryFailure('state publication failed (state files may be stale)', error); }
+    }
+  }
   try {
     const port = await freePort();
     const endpoint = 'ws://127.0.0.1:' + port;
@@ -227,6 +248,8 @@ async function start(recoverInterrupted = false) {
     lab.stdin.on('error', () => {});
     const hostOutput = fs.createWriteStream(path.join(logs, 'lab-stdout.jsonl'), { flags: 'wx' });
     const hostErrors = fs.createWriteStream(path.join(logs, 'lab-stderr.log'), { flags: 'wx' });
+    hostErrors.on('error', captureAsyncError);
+    lab.stderr.on('error', captureAsyncError);
     lab.stderr.pipe(hostErrors);
     pumpLines(lab.stdout, line => {
       let row; try {
@@ -239,13 +262,15 @@ async function start(recoverInterrupted = false) {
       if (['startup_failed', 'plugin_startup_failed', 'renderer_pump_failed', 'quit_timed_out'].includes(row.event)) labFailure = row.event;
       if (row.event === 'child_created') { state.desktopPid = row.child_pid; state.desktopCreated = row.detail.creation_time_windows_100ns; publish(); }
       if (row.event === 'official_update_restart') { restartAfterUpdate = row.detail.rehearsal === true; state.updateRestart = row.detail; publish(); }
-    }, hostOutput);
+    }, hostOutput, captureAsyncError);
     deadline = Date.now() + 120000;
     while (!prepared) {
+      checkAsyncError();
       if (lab.exitCode !== null || lab.signalCode !== null) throw new Error('Lab preparation failed; see ' + path.join(logs, 'lab-stderr.log'));
       if (Date.now() > deadline) throw new Error('Lab preparation timed out');
       await delay(100);
     }
+    checkAsyncError();
     if (prepared.root.toLowerCase() !== root.toLowerCase() || prepared.requested_app_server_url !== endpoint || prepared.resumed_profile !== true) throw new Error('Unexpected prepared lab identity');
     const manifest = path.resolve(prepared.environment_manifest);
     if (!manifest.toLowerCase().startsWith((path.join(root, 'logs') + path.sep).toLowerCase())) throw new Error('Environment manifest is outside lab logs');
@@ -266,23 +291,42 @@ async function start(recoverInterrupted = false) {
     backendExit = exited(backend);
     state = { ...state, endpoint, hostPid: lab.pid, report: path.join(prepared.run_logs ?? path.dirname(manifest), 'report.jsonl'), backendPid: backend.pid };
     state.backendIdentity = await verifyListener(port, backend.pid);
-    state.backendProbe = await probe(endpoint, port);
+    state.backendProbe = await probe(endpoint, port, onboarding);
     state.state = 'starting'; publish();
     lab.stdin.write('start\n');
     deadline = Date.now() + 45000;
     while (!startupVerified || !pluginReady) {
+      checkAsyncError();
       if (labFailure || lab.exitCode !== null || backend.exitCode !== null) throw new Error('Test client startup failed: ' + (labFailure ?? 'owned process exited'));
       if (Date.now() > deadline) throw new Error('Test client did not publish startup and plugin readiness');
       await delay(100);
     }
+    checkAsyncError();
     const after = array(await snapshot());
+    checkAsyncError();
     state.originalProcessesUnchanged = before.every(a => after.some(b => a.pid === b.pid && a.created === b.created && a.image === b.image));
     if (!state.originalProcessesUnchanged) throw new Error('An original client process identity changed during startup');
-    state.state = 'ready'; state.readyAt = new Date().toISOString(); publish();
-    console.log(JSON.stringify({ state: 'ready', labRoot: root, desktopPid: state.desktopPid, report: state.report, localPluginsSupported: true, originalProcessesUnchanged: true }));
+    state.state = backendReadiness(state.backendProbe,{onboarding});
+    if(state.state==='ready')state.readyAt = new Date().toISOString();
+    publish();
+    console.log(JSON.stringify({ state: state.state, labRoot: root, desktopPid: state.desktopPid, report: state.report, localPluginsSupported: true, originalProcessesUnchanged: true }));
     let quitRequested = false;
     let rehearsalRequested = false;
+    let nextReadinessProbe=Date.now()+5000;
     while (lab.exitCode === null && lab.signalCode === null) {
+      checkAsyncError();
+      if(!quitRequested&&onboarding&&state.state.startsWith('awaiting_')&&Date.now()>=nextReadinessProbe){
+        state.backendProbe=await probe(endpoint,port,true);
+        const next=backendReadiness(state.backendProbe,{onboarding:true});
+        if(next!==state.state){state.state=next;if(next==='ready')state.readyAt=new Date().toISOString();publish();}
+        if(!onboardingRestartUsed&&onboardingRestartRequired(state.backendProbe)){
+          onboardingRestartUsed=true;restartAfterOnboarding=true;
+          state.restartReason='onboarding_config_reload';
+          lab.stdin.write('quit\n');quitRequested=true;
+          state.state='stopping';publish();
+        }
+        nextReadinessProbe=Date.now()+5000;
+      }
       if (!quitRequested && (fs.existsSync(quitFile) || backend.exitCode !== null || backend.signalCode !== null || labFailure)) {
         lab.stdin.write('quit\n'); quitRequested = true;
         state.state = 'stopping'; publish();
@@ -298,39 +342,50 @@ async function start(recoverInterrupted = false) {
     }
     state.hostExit = await labExit;
     await labOutputEnded;
+    checkAsyncError();
     state.state = state.hostExit.code === 0 ? 'closed' : 'failed';
     if (state.hostExit.code !== 0) process.exitCode = 1;
   } catch (error) {
     state.state = 'failed'; state.error = error.message; process.exitCode = 1;
-    console.error(error.message);
-    if (lab && lab.exitCode === null && lab.signalCode === null) {
-      lab.stdin.write('quit\n');
+    if (error.stateTemporary) state.unpublishedTemporary = error.stateTemporary;
+    console.error(error.message + (error.stateTemporary ? '; unpublished temporary: ' + error.stateTemporary : ''));
+  } finally {
+    if (running(lab)) {
+      try { lab.stdin.write('quit\n'); } catch (error) { secondaryFailure('request owned Desktop quit', error); }
       await Promise.race([labExit, delay(20000)]);
-      if (lab.exitCode === null && lab.signalCode === null) {
-        state.state = 'needs_attention'; state.error += '; the owned Desktop did not exit; its backend is retained';
-        publish();
+      if (running(lab)) {
+        state.state = 'needs_attention';
+        state.cleanupPending = 'The owned Desktop did not exit; its backend is retained';
+        publishDuringCleanup();
         console.error('Owned test Desktop still running. Backend retained. Close this test client through its Quit menu.');
         // Keep the same owned handles and services until the user closes the test Desktop.
         await labExit;
       }
     }
-  } finally {
-    if (lab && lab.exitCode !== null && !state.hostExit) state.hostExit = await labExit;
-    if (lab && (lab.exitCode !== null || lab.signalCode !== null)) await labOutputEnded;
-    if (backend && backend.exitCode === null && backend.signalCode === null) {
-      backend.kill('SIGTERM'); // Windows: terminate only this retained, newly created backend handle.
+    if (lab && !state.hostExit) state.hostExit = await labExit;
+    if (lab) {
+      try { await labOutputEnded; } catch (error) { secondaryFailure('read owned Desktop output completion', error); }
+    }
+    if (running(backend)) {
+      try {
+        // Windows: terminate only this retained, newly created backend handle.
+        if (!backend.kill('SIGTERM')) throw new Error('Owned backend did not accept termination; waiting for its recorded exit');
+      } catch (error) { state.state = 'needs_attention'; secondaryFailure('stop owned backend', error); }
       await backendExit;
       state.backendStop = 'owned backend process stopped after lab Desktop exit';
     }
+    delete state.cleanupPending;
     state.endedAt = new Date().toISOString();
-    if (wroteState || prepared) publish(); else atomicJson(path.join(logs, 'state.json'), state);
+    // Surface late stream errors without losing an earlier startup failure.
+    if (asynchronousError && !state.error) secondaryFailure('owned process output', asynchronousError);
+    publishDuringCleanup();
     console.log(JSON.stringify({ state: state.state, logs, error: state.error ?? null }));
   }
   // Keep the known coordinator while replacing its retired child. A detached
   // PowerShell child can disappear during parent teardown on Windows.
   // Combined Codlet replacement deliberately returns false so its checked
   // external helper can wait for this coordinator and replace the binary.
-  return restartAfterUpdate && state.state === 'closed' && state.hostExit?.code === 0;
+  return (restartAfterUpdate || restartAfterOnboarding) && state.state === 'closed' && state.hostExit?.code === 0;
 }
 async function rehearseUpdate() {
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -342,7 +397,7 @@ async function rehearseUpdate() {
 }
 async function stop() {
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  if (!['ready', 'starting', 'stopping'].includes(state.state)) { console.log('Test client is not running.'); return; }
+  if (!['ready', 'starting', 'stopping','awaiting_authentication','awaiting_sandbox'].includes(state.state)) { console.log('Test client is not running.'); return; }
   const expected = path.join(root, 'logs', 'coordinator-' + state.runId, 'quit.request');
   if (path.resolve(state.quitFile).toLowerCase() !== expected.toLowerCase()) throw new Error('Invalid lab quit location');
   fs.writeFileSync(expected, 'quit\n', { flag: 'w' });
@@ -365,6 +420,17 @@ async function doctor(command = 'doctor') {
   process.exitCode = result.code ?? 1;
 }
 
+async function login() {
+  if(pluginArguments.length)throw new Error('Login accepts no extra arguments');
+  verifyHash(officialCli,config.officialCliSha256);
+  // Explicit user-run device login. Never import the daily credential store,
+  // log tokens, or let the CLI choose a default home/keychain backend.
+  const child=spawn(officialCli,['-c','cli_auth_credentials_store="file"','login','--device-auth'],{
+    cwd:path.join(root,'project'),env:environment(),windowsHide:true,stdio:'inherit',
+  });
+  const result=await exited(child);process.exitCode=result.code??1;
+}
+
 validateRoot();
 verifyHash(labBinary, config.labBinarySha256);
 if (action === 'start') { while(await start()) {} }
@@ -374,4 +440,5 @@ else if (action === 'plugins') await plugins();
 else if (action === 'doctor') await doctor();
 else if (action === 'diagnostics') await doctor('diagnostics');
 else if (action === 'rehearse-update') await rehearseUpdate();
-else throw new Error('Expected start, recover, stop, plugins, doctor or diagnostics');
+else if (action === 'login') await login();
+else throw new Error('Expected start, recover, stop, plugins, doctor, diagnostics or login');

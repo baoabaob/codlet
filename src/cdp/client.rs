@@ -1352,7 +1352,25 @@ fn route_response(
         error,
         session_id: session_id.clone(),
     };
-    ensure_response_session(id, &pending.expected_session, &session_id)?;
+    // Chromium reports a detached flattened session from the browser router,
+    // without echoing sessionId. This is a failure of this request, not of the
+    // entire pipe. Keep successful replies and all other errors strictly scoped.
+    let session_gone = pending.expected_session.is_some()
+        && session_id.is_none()
+        && response.error.as_ref().is_some_and(|error| {
+            error.code == -32001 && error.message == "Session with given id not found."
+        });
+    if session_gone {
+        let session = pending.expected_session.as_ref().unwrap().clone();
+        if let Some((_, live)) = state.sessions.get(&session)
+            && let Some(live) = live.upgrade()
+        {
+            live.store(false, Ordering::Release);
+        }
+        state.default_contexts.forget(&session);
+    } else {
+        ensure_response_session(id, &pending.expected_session, &session_id)?;
+    }
     let pending = state
         .pending
         .remove(&id)
@@ -1751,6 +1769,63 @@ mod tests {
                 actual: Some("session-b".to_owned()),
             })
         );
+    }
+
+    #[test]
+    fn detached_session_error_does_not_close_other_sessions() {
+        let (shared, receiver) = shared_with_pending(9, Some("session-a"));
+        let live = Arc::new(AtomicBool::new(true));
+        shared.state.lock().unwrap().sessions.insert(
+            "session-a".into(),
+            ("target-a".into(), Arc::downgrade(&live)),
+        );
+        route_message(
+            &shared,
+            json!({"id":9,"error":{
+                "code":-32001,"message":"Session with given id not found."
+            }}),
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.recv().unwrap().unwrap().error.unwrap().code,
+            -32001
+        );
+        assert!(!live.load(Ordering::Acquire));
+        assert!(shared.state.lock().unwrap().terminal.is_none());
+        let (sender, receiver) = mpsc::channel();
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.last_issued_id = 10;
+            state.pending.insert(
+                10,
+                PendingRequest {
+                    expected_session: Some("session-b".into()),
+                    sender,
+                },
+            );
+        }
+        route_message(
+            &shared,
+            json!({"id":10,"sessionId":"session-b","result":{}}),
+        )
+        .unwrap();
+        assert!(receiver.recv().unwrap().is_ok());
+    }
+
+    #[test]
+    fn sessionless_success_and_unrelated_errors_still_fail_closed() {
+        for reply in [
+            json!({"id":9,"result":{}}),
+            json!({"id":9,"error":{"code":-32000,"message":"Session with given id not found."}}),
+            json!({"id":9,"error":{"code":-32001,"message":"Another error"}}),
+            json!({"id":9,"sessionId":"session-b","error":{"code":-32001,"message":"Session with given id not found."}}),
+        ] {
+            let (shared, _) = shared_with_pending(9, Some("session-a"));
+            assert!(matches!(
+                route_message(&shared, reply),
+                Err(ConnectionError::ResponseSessionMismatch { .. })
+            ));
+        }
     }
 
     #[test]

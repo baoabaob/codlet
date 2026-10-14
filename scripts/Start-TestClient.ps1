@@ -2,6 +2,7 @@
 param(
     [switch]$RecoverInterrupted,
     [switch]$SafeMode,
+    [switch]$Onboarding,
     [ValidateRange(20, 60)][int]$StartupTimeoutSeconds = 60
 )
 $ErrorActionPreference = 'Stop'
@@ -111,6 +112,7 @@ try {
     $codletAction = if ($RecoverInterrupted) { 'recover' } else { 'start' }
     $codletArguments = '"' + $codletScript + '" ' + $codletAction + ' "' + $codletConfigPath + '"'
     if ($SafeMode) { $codletArguments += ' --safe-mode' }
+    if ($Onboarding) { $codletArguments += ' --onboarding' }
     $codletProcess = Start-Process -FilePath $codletNode -ArgumentList $codletArguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $codletOutputLog -RedirectStandardError $codletErrorLog
     $codletCreated = $codletProcess.StartTime.ToUniversalTime()
     Write-Output ('Waiting for test client startup; manager PID: ' + $codletProcess.Id)
@@ -132,6 +134,13 @@ try {
         if ($null -ne $codletState -and $codletState.state -eq 'ready') {
             if ($codletProcess.StartTime.ToUniversalTime().Ticks -ne $codletCreated.Ticks) { throw 'The startup manager process identity changed; readiness was not accepted.' }
             Write-Output ('Test client is ready. Background manager PID: ' + $codletProcess.Id)
+            Write-Output ('Coordinator state: ' + $codletStatePath)
+            exit 0
+        }
+        if ($Onboarding -and $null -ne $codletState -and $codletState.state -in @('awaiting_authentication','awaiting_sandbox')) {
+            if ($codletProcess.StartTime.ToUniversalTime().Ticks -ne $codletCreated.Ticks) { throw 'The startup manager identity changed.' }
+            Write-Output ('Owned onboarding window opened; NOT READY for tests. State: ' + $codletState.state)
+            Write-Output ('Test Desktop PID: ' + $codletState.desktopPid)
             Write-Output ('Coordinator state: ' + $codletStatePath)
             exit 0
         }

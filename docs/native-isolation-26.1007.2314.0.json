@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "packageVersion": "26.1007.2314.0",
+  "kind": "static-source-review",
+  "sourceHashes": {
+    "application-network-startup-CfAQmSYg.js": "cd6e8a8fbc4354a6e6ff19c6e4bf6fc1fb3960c63708c83871357c6238f516a8",
+    "bootstrap-487kJHw_.js": "ea76cfdf390fb549577879d98967a646638b2a2c8b7eede9a61dda6401471c3b",
+    "build-flavor-CYXpoCFI.js": "23229dac961a82c52237acc32598ddb2c1cf370b24c64fc507b9c24bcf2c4d93",
+    "main-BklS_2Y2.js": "5cf1544463be9497b85b69051aa5ad32320f9ebdca063ec2ab41abb75b6cadf7",
+    "src-BJv5Mk7n.js": "72e2b366d574206f76fc079c79b64c31ce378970a797475ded8709908d338f08",
+    "startup-requirements-C6B1x9gL.js": "73f93b81152bff48cd27bcebcf27c430fb763e5c7418c67824950f4092ba933d"
+  },
+  "checks": {
+    "envBuildFlavorPrecedesMetadata": true,
+    "explicitUserData": true,
+    "userDataBeforeSingleInstance": true,
+    "windowsSingleInstanceRemainsEnabled": true,
+    "windowsProtocolRegistrationSkipped": true,
+    "websocketOverride": true,
+    "websocketExport": true,
+    "localRouterGate": true,
+    "hostManagerGate": true,
+    "threadReadGate": true,
+    "queryBroadcastGate": true,
+    "rendererClientGate": true,
+    "fourReviewedIpcClientSites": true,
+    "ipcClientAlias": true,
+    "shellRetainsExplicitHome": true,
+    "updaterDisable": true,
+    "primaryRuntimeManual": true,
+    "sqliteMigrationOptOut": true,
+    "startupLogEvidence": true,
+    "strictCurrentFeatureOverrides": true
+  },
+  "limitations": [
+    "Requires dedicated literal-loopback WebSocket backend; stdio still reaches a fixed production IPC name.",
+    "Does not prove runtime PID/Target/data ownership or Native performance.",
+    "New empty profile still needs its own authentication before authenticated fixtures."
+  ]
+}

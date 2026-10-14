@@ -22,7 +22,8 @@ export interface OfficialComponents {
 export type OfficialIcons = Pick<typeof import('@openai/apps-sdk-ui/components/Icon'),
   'ArrowLeft' | 'ArrowRotateCw' | 'ArrowUpRight' | 'ChevronDown' | 'Cube' | 'Download' | 'ExclamationMarkCircle' | 'ExternalLink' | 'FolderOpen' | 'InfoCircle' | 'Plus' | 'QuestionMarkCircle' | 'Regenerate' | 'Search' | 'TriangleExclamationErrorWarning' | 'X'>;
 export interface RendererUiMount {
-  render(content: React.ReactNode): void;
+  /** Returns the requested revision; scheduled requests may coalesce before commit. */
+  render(content: React.ReactNode, options?: {sync?: boolean}): number;
   /** Synchronously runs React cleanups; a later mount may reuse the container. */
   unmount(): void;
 }
@@ -46,8 +47,22 @@ export interface RendererUi {
   useEscCloseStack(listening: boolean, callback: () => void): void;
   createPortal(children: React.ReactNode, container: Element | DocumentFragment, key?: string | null): React.ReactPortal;
   flushSync(callback: () => void): void;
-  container(parent?: Element): HTMLDivElement;
+  /** styled:false creates an owned neutral mount without SDK reset/utilities. */
+  container(parent?: Element, options?: {styled?: boolean}): HTMLDivElement;
+  /** Idempotently unmounts, removes and releases this owner's container. */
+  removeContainer(container: HTMLDivElement): void;
+  /** Legacy synchronous mount retained for API 2 compatibility. */
   mount(container: HTMLDivElement, content: React.ReactNode): RendererUiMount;
+  /** Scheduled by default. onCommit runs in a parent layout effect, before paint;
+   * it is not an input-ready, passive-effect or visible-frame receipt.
+   * Feature-detect on older API 2 runtimes. Unmount cancels pending commits. */
+  mountReact(container: HTMLDivElement, content: React.ReactNode, options?: {
+    sync?: boolean;
+    overlay?: Element;
+    /** May span separate mount, toolbar and overlay containers. */
+    scope?: Pick<Element, 'contains'>;
+    onCommit?(revision: number): void;
+  }): RendererUiMount;
   /** Requires codex.ui.navigation.page@1. Path is null in reviewed auxiliary windows. */
   page(options: RendererUiPageOptions): Promise<Readonly<{ path: string | null; dispose(): void }>>;
   /** Aborts the owner, unregisters pages and synchronously unmounts every root. */
