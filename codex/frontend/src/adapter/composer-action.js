@@ -10,6 +10,31 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 const TOKEN = /^[a-zA-Z0-9-]{16,80}$/;
 const PLACEMENT = /^[a-zA-Z0-9_-]{1,40}$/;
 
+// Current Native thread composers place their add-context and permission
+// controls in AdaptiveFooter's leading outlet, rather than a scroll group.
+// Reviewed against the 9446 Native source and an owned live thread. These
+// landmarks also reject nested composers, duplicate controls and layout drift.
+function threadFooterOutlet(root, rootSelector) {
+  if (root.getAttribute('data-composer-placement') !== 'thread') return null;
+  const selector = '[data-composer-footer-responsive][data-composer-layout="multiline"][data-composer-rows="stacked"]';
+  const footers = [...root.querySelectorAll(selector)].filter(node => node.closest(rootSelector) === root);
+  if (footers.length !== 1) return null;
+  const footer = footers[0], sections = [...footer.children];
+  if (sections.length !== 3 || sections.some(node => node.tagName !== 'DIV')) return null;
+  const [input, leading] = sections, outlets = [...leading.children];
+  if (outlets.length !== 1 || outlets[0].tagName !== 'DIV') return null;
+  const outlet = outlets[0];
+  const editors = [...footer.querySelectorAll('[data-codex-composer="true"][role="textbox"]')];
+  if (editors.length !== 1 || !input.contains(editors[0]) || editors[0].closest(rootSelector) !== root ||
+      outlet.querySelector('[data-composer-input], [data-codex-composer], [contenteditable="true"]')) return null;
+  for (const target of ['add-context', 'permissions']) {
+    const controls = [...footer.querySelectorAll(`[data-composer-navigation-target="${target}"]`)];
+    if (controls.length !== 1 || controls[0].tagName !== 'BUTTON' || !outlet.contains(controls[0]) ||
+        controls[0].closest(rootSelector) !== root || controls[0].closest(selector) !== footer) return null;
+  }
+  return outlet;
+}
+
 function owner(args, invocation) {
   const caller = invocation?.caller;
   if (!caller || typeof caller.pluginId !== 'string' || !Number.isSafeInteger(caller.generation))
@@ -55,6 +80,11 @@ export function createComposerActions(context, host, profile) {
       const placement = root.getAttribute('data-composer-placement');
       if (!PLACEMENT.test(placement || '')) continue;
       const areas = [...root.querySelectorAll(areaSelector)].filter(area => area.closest(rootSelector) === root);
+      if (areas.length === 0) {
+        const outlet = threadFooterOutlet(root, rootSelector);
+        if (outlet) result.push({ root, placement, outlet });
+        continue;
+      }
       if (areas.length !== 1 || areas[0].getAttribute('role') !== 'group' ||
           areas[0].children.length !== 1 || areas[0].firstElementChild?.tagName !== 'DIV') continue;
       result.push({ root, placement, outlet: areas[0].firstElementChild });
@@ -132,7 +162,9 @@ export function createComposerActions(context, host, profile) {
   };
   const observer = supported ? new MutationObserver(schedule) : null;
   observer?.observe(document.documentElement, { childList: true, subtree: true, attributes: true,
-    attributeFilter: [...new Set(['data-composer-placement', 'role', profile.rootAttribute, profile.scrollAreaAttribute])] });
+    attributeFilter: [...new Set(['data-composer-placement', 'role', 'data-composer-footer-responsive',
+      'data-composer-layout', 'data-composer-rows', 'data-composer-navigation-target', 'data-codex-composer',
+      'contenteditable', profile.rootAttribute, profile.scrollAreaAttribute])] });
   return {
     register(args, invocation) {
       if (!alive || invocation?.signal?.aborted) throw fail('ui_retired', 'Composer action provider retired');

@@ -45,6 +45,70 @@ const caller = { pluginId: 'test.consumer', generation: 7 };
 const args = { label: 'Provider', token: 'test-action-token-123456' };
 const buttons = f => [...f.document.querySelectorAll('[data-codlet-composer-action-instance] button')];
 
+function currentThreadFooter(f) {
+  const root = f.document.querySelector('[data-codex-composer-root]');
+  root.setAttribute('data-composer-placement', 'thread');
+  root.innerHTML = `<div data-composer-body data-composer-layout="multiline">
+    <div data-composer-footer-responsive data-composer-layout="multiline" data-composer-rows="stacked">
+      <div><div data-composer-input><div data-codex-composer="true" role="textbox" contenteditable="true"></div></div></div>
+      <div><div><span><button data-composer-navigation-target="add-context">Context</button></span><button data-composer-navigation-target="permissions">Permissions</button></div></div>
+      <div><div><button aria-label="Send">Send</button></div></div>
+    </div></div>`;
+  return { root, footer: root.querySelector('[data-composer-footer-responsive]'), outlet: root.querySelector('[data-composer-footer-responsive]').children[1].firstElementChild };
+}
+
+test('current Native thread footer mounts a leased action without altering the editor or Send control', async t => {
+  const f = fixture(t), node = lease(f), native = currentThreadFooter(f), received = [];
+  const editor = native.root.querySelector('[contenteditable="true"]'), send = native.root.querySelector('[aria-label="Send"]');
+  node.addEventListener('codlet:composer-action', event => received.push(JSON.parse(event.detail)));
+  const result = f.navigation.registerComposer(args, { caller }); await tick();
+  assert.equal(result.mounted, 1);
+  assert.equal(buttons(f)[0].parentElement.parentElement, native.outlet);
+  assert.equal(native.root.querySelector('[contenteditable="true"]'), editor);
+  assert.equal(native.root.querySelector('[aria-label="Send"]'), send);
+  buttons(f)[0].click(); assert.equal(received[0].placement, 'thread');
+  assert.throws(() => f.navigation.registerComposer(args, { caller: { pluginId: caller.pluginId, generation: 8 } }), { code: 'invalid_owner' });
+  f.navigation.unregisterComposer({ token: args.token }, { caller }); await tick();
+  assert.equal(buttons(f).length, 0); assert.equal(editor.isConnected, true); assert.equal(send.isConnected, true);
+});
+
+test('thread footer drift and ambiguity retire mounted actions, and Native outlet replacement recovers once', async t => {
+  const f = fixture(t), node = lease(f); let native = currentThreadFooter(f); const events = [];
+  node.addEventListener('codlet:composer-action', event => events.push(event.detail));
+  f.navigation.registerComposer(args, { caller }); await tick(); const retired = buttons(f)[0];
+  native.footer.setAttribute('data-composer-rows', 'unreviewed'); await tick(); assert.equal(buttons(f).length, 0);
+  native.footer.setAttribute('data-composer-rows', 'stacked'); await tick(); assert.equal(buttons(f).length, 1);
+  const duplicate = native.outlet.querySelector('[data-composer-navigation-target="permissions"]').cloneNode(true);
+  native.outlet.append(duplicate); await tick(); assert.equal(buttons(f).length, 0);
+  duplicate.remove(); await tick(); assert.equal(buttons(f).length, 1);
+  const extraFooter = native.footer.cloneNode(false); native.root.append(extraFooter); await tick(); assert.equal(buttons(f).length, 0);
+  extraFooter.remove(); native = currentThreadFooter(f); await tick(); assert.equal(buttons(f).length, 1);
+  retired.click(); assert.equal(events.length, 0); buttons(f)[0].click(); assert.equal(events.length, 1);
+  native.root.setAttribute('data-composer-placement', 'home'); await tick(); assert.equal(buttons(f).length, 0);
+});
+
+test('a malformed old scroll outlet cannot borrow the current thread footer fallback', async t => {
+  const f = fixture(t), node = lease(f), native = currentThreadFooter(f);
+  const area = f.document.createElement('div'); area.setAttribute('data-composer-utility-bar-scroll-area', '');
+  area.append(f.document.createElement('div')); native.root.append(area);
+  assert.equal(f.navigation.registerComposer(args, { caller }).mounted, 0);
+  area.remove(); await tick(); assert.equal(buttons(f).length, 1);
+});
+
+test('thread footer requires Native controls and a separate uniquely owned input section', async t => {
+  const f = fixture(t), node = lease(f); let native = currentThreadFooter(f);
+  f.navigation.registerComposer(args, { caller }); await tick(); assert.equal(buttons(f).length, 1);
+  const add = native.outlet.querySelector('[data-composer-navigation-target="add-context"]');
+  add.removeAttribute('data-composer-navigation-target'); await tick(); assert.equal(buttons(f).length, 0);
+  add.setAttribute('data-composer-navigation-target', 'add-context'); await tick(); assert.equal(buttons(f).length, 1);
+  const editor = native.footer.querySelector('[contenteditable="true"]'); native.outlet.append(editor);
+  await tick(); assert.equal(buttons(f).length, 0);
+  native = currentThreadFooter(f); await tick(); assert.equal(buttons(f).length, 1);
+  const nested = f.document.createElement('div'); nested.setAttribute('data-codex-composer-root', '');
+  native.footer.firstElementChild.append(nested); nested.append(native.footer.querySelector('[contenteditable="true"]'));
+  await tick(); assert.equal(buttons(f).length, 0);
+});
+
 test('legacy Windows profile records the composer landmarks for its entry', t => {
   const f = fixture(t);
   const profile = f.adapter.pageProfile({ appVersion: '26.917.62051', buildNumber: 10789 }, 'app://-/assets/index-897000035213.js');
