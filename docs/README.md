@@ -14,6 +14,7 @@ in the [traffic contract](spec/traffic.md).
 | [Development](development.md) | Reproducible builds, checks and isolated desktop testing |
 | [Distribution](distribution.md) | Windows and macOS packaging and installation |
 | [Release readiness](release-readiness.md) | Current candidate scope and separately retained historical evidence |
+| [1.0.0-rc.1 validation](validation-unified-core-v1.md) | Exact source and package identities, automated checks and isolated Native evidence |
 | [Online Core updates](core-online-update.md) | Explicit state, admission, receipts and resident component boundaries |
 | [Troubleshooting](troubleshooting.md) | CLI recovery, safe mode, logs and diagnostics |
 | [Compatibility](compatibility.md) | Platform matrix and client-build evidence |
