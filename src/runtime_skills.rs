@@ -213,6 +213,28 @@ impl RuntimeSkills {
                 "types/codex-desktop.d.ts",
                 include_str!("../types/codex-desktop.d.ts"),
             ),
+            ("types/codex.d.ts", include_str!("../types/codex.d.ts")),
+            (
+                "types/codex-ui.d.ts",
+                include_str!("../types/codex-ui.d.ts"),
+            ),
+            (
+                "types/codex-workspace.d.ts",
+                include_str!("../types/codex-workspace.d.ts"),
+            ),
+            (
+                "types/codex-permissions.d.ts",
+                include_str!("../types/codex-permissions.d.ts"),
+            ),
+            (
+                "types/codex-traffic.d.ts",
+                include_str!("../types/codex-traffic.d.ts"),
+            ),
+            ("codex/README.md", include_str!("../codex/README.md")),
+            (
+                "docs/core-online-update.md",
+                include_str!("../docs/core-online-update.md"),
+            ),
             (
                 "types/runtime-manage.d.ts",
                 include_str!("../types/runtime-manage.d.ts"),
@@ -222,6 +244,11 @@ impl RuntimeSkills {
                 include_str!("../docs/spec/plugin-format.md"),
             ),
             ("docs/spec/ui.md", include_str!("../docs/spec/ui.md")),
+            ("docs/spec/codex.md", include_str!("../docs/spec/codex.md")),
+            (
+                "docs/spec/client-source.md",
+                include_str!("../docs/spec/client-source.md"),
+            ),
             (
                 "docs/spec/management.md",
                 include_str!("../docs/spec/management.md"),

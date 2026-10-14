@@ -2,7 +2,7 @@
 const { connectTrafficPeer, createTrafficStreams } = require('./traffic-wire.cjs');
 const fail = code => Object.assign(new Error(code), { code });
 
-function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn(), extension }) {
+function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn(), extension, beforeRequest }) {
   const registrations = new Map(), leases = new Map(), sources = new Set();
   let peer, connecting, retired = false, connectionEpoch = 0;
   const check = () => { if (retired || rootSignal.aborted) throw fail('host_stopping'); };
@@ -90,7 +90,14 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
     const epoch = ++connectionEpoch;
     connecting = detach(async () => {
       const endpoint = await coreRequest('services.traffic.connectPeer', {}, rootSignal);
-      const connected = await connectTrafficPeer(endpoint, { signal: rootSignal, handle, event: message => { if (connectionEpoch === epoch) event(message); }, detach });
+      const connected = await connectTrafficPeer(endpoint, { signal: rootSignal, handle, event: message => { if (connectionEpoch === epoch) event(message); }, detach,
+        beforeRequest(method, params) {
+          const continuation = (method === 'relay' && (leases.has(params?.lease) || extension?.matches(method, params)) && ['stream.read','stream.cancel'].includes(params?.operation)) ||
+            (['channel.forward','channel.cancel'].includes(method) && extension?.matches(method, params)) ||
+            (method === 'synchronized' && registrations.has(params?.registration)) ||
+            (method === 'setEnabled' && params?.enabled === false && registrations.has(params?.registration));
+          beforeRequest?.(method, params, continuation);
+        } });
       if (retired || connectionEpoch !== epoch) { connected.close(); throw fail('host_stopping'); }
       peer = connected; return connected;
     }).catch(error => { if (connectionEpoch === epoch) connecting = null; throw error; });
@@ -179,6 +186,8 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
   rootSignal.addEventListener('abort', closeAll, { once: true });
   return Object.freeze({ registerInterceptor: (options, handlers) => detach(() => registerInterceptor(options, handlers)),
     openSource: options => detach(() => openSource(options)),
-    inspect: () => coreRequest('services.traffic.status', {}, rootSignal), closeAll, getPeer });
+    inspect: () => coreRequest('services.traffic.status', {}, rootSignal), closeAll, getPeer,
+    activity: () => ({registrations:registrations.size,sources:sources.size,leases:leases.size,pending:peer?.status().pending ?? 0,incoming:peer?.status().incoming ?? 0,connecting:connecting && !peer ? 1 : 0}),
+  });
 }
 module.exports = { createHostedInterceptors };

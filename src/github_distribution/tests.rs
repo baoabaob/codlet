@@ -520,6 +520,64 @@ fn no_source_archive_build_fallback_and_metadata_is_separate() {
 }
 
 #[test]
+fn sdk_packages_declare_api_compatibility_independently_of_native_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let declaration = serde_json::json!({"schema":1,"runtimeApi":1,"sdk":{"api":1,"capabilities":[{"name":"codex.backend.read","api":1,"scope":"target"}]},"verification":[{"kind":"automated","status":"passed","evidence":"VALIDATION.md"},{"kind":"native","platform":"macos-aarch64","status":"notRun"}]});
+    let package = test_prepare_archive(
+        &temp.path().join("config.json"),
+        &with_extra(
+            "codlet-package.json",
+            &serde_json::to_vec(&declaration).unwrap(),
+        ),
+    )
+    .unwrap();
+    let compatibility = device_compatibility(package.metadata.as_ref());
+    assert_eq!(compatibility.status, "compatible");
+    assert_eq!(compatibility.basis, "sdk-declaration");
+    let metadata = package.metadata.unwrap();
+    assert!(metadata.platforms.is_none());
+    assert_eq!(metadata.verification[1].status, "notRun");
+    assert_eq!(metadata.sdk.unwrap().capabilities.len(), 1);
+}
+
+#[test]
+fn sdk_support_does_not_override_explicit_exclusions_or_unsupported_apis() {
+    for declaration in [
+        serde_json::json!({"schema":1,"runtimeApi":1,"sdk":{"api":2}}),
+        serde_json::json!({"schema":1,"runtimeApi":2,"sdk":{"api":1}}),
+        serde_json::json!({"schema":1,"runtimeApi":1,"sdk":{"api":1},"platforms":["unsupported-fixture"]}),
+    ] {
+        let metadata: PackageMetadata = serde_json::from_value(declaration).unwrap();
+        validate_metadata(&metadata).unwrap();
+        assert_eq!(device_compatibility(Some(&metadata)).status, "incompatible");
+        assert!(require_device_compatibility(Some(&metadata)).is_err());
+    }
+    assert_eq!(device_compatibility(None).status, "unknown");
+}
+
+#[test]
+fn invalid_author_verification_is_rejected_before_import() {
+    let temp = tempfile::tempdir().unwrap();
+    for record in [
+        serde_json::json!({"kind":"certified","status":"passed"}),
+        serde_json::json!({"kind":"native","status":"assumed"}),
+        serde_json::json!({"kind":"automated","status":"passed","evidence":"unbounded\nrecord"}),
+    ] {
+        let declaration =
+            serde_json::json!({"schema":1,"runtimeApi":1,"sdk":{"api":1},"verification":[record]});
+        let failure = test_prepare_archive(
+            &temp.path().join("config.json"),
+            &with_extra(
+                "codlet-package.json",
+                &serde_json::to_vec(&declaration).unwrap(),
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(failure.code, "github_metadata_invalid");
+    }
+}
+
+#[test]
 fn hardlinked_prepared_files_are_rejected() {
     let temp = tempfile::tempdir().unwrap();
     let registry = temp.path().join("config.json");

@@ -94,7 +94,16 @@ fn renderer_list_refresh_observes_removals_and_additions_but_preserves_unregiste
     let (_targets, sessions) =
         TargetController::discover(client.clone(), events, DEADLINE).unwrap();
     for session in &sessions {
-        assert_eq!(runtime.attach(session).unwrap().plugin_count, 3);
+        assert_eq!(
+            runtime.attach(session).unwrap().plugin_count,
+            if cfg!(feature = "test-fixtures") {
+                3
+            } else {
+                5
+            },
+            "production Core providers and three author renderers: {:?}",
+            runtime.status_snapshot()
+        );
     }
     let initial = query_list(&client, &mut runtime);
     assert_eq!(initial["ok"], true);

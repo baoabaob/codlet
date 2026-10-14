@@ -922,6 +922,7 @@ fn actual_host_os_example_uses_public_sdk_and_its_old_generation_is_denied_after
             document_epoch: 1,
         },
         deadline: Instant::now() + WAIT,
+        cleanup: false,
     };
     let mut operation = hosts.capability_client().begin_request(request()).unwrap();
     let read = loop {

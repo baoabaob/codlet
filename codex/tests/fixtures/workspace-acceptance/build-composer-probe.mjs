@@ -1,0 +1,11 @@
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildPlugin } from '../../../frontend/build-plugin.mjs';
+const here = dirname(fileURLToPath(import.meta.url)), root = resolve(here, '../../..'), out = resolve(root, '.artifacts/workspace-composer-profile');
+await mkdir(out, { recursive: true });
+await writeFile(resolve(out, 'renderer.js'), (await buildPlugin(resolve(root, 'frontend'), '../tests/fixtures/workspace-acceptance/profile/composer-consumer.js')).code);
+const host = (await readFile(resolve(here, 'cold/host.cjs'), 'utf8')).replaceAll('codlet.workspace.cold.audit', 'codlet.workspace.composer.profile');
+await writeFile(resolve(out, 'host.cjs'), host);
+await writeFile(resolve(out, 'codlet.json'), JSON.stringify({ schema: 1, id: 'dev.workspace.composer-profile', name: 'Native independent composer feasibility probe', version: '0.0.1', renderer: { entry: 'renderer.js', world: 'main' }, host: { entry: 'host.cjs' }, permissions: ['ui.dom', 'ui.mainWorld', 'host.process', 'cdp.raw'], requires: [{ name: 'codex.ui.workspace', api: 1, scope: 'target' }] }, null, 2) + '\n');
+console.log(out);

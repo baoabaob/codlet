@@ -55,7 +55,7 @@ impl HostOperation {
     }
 }
 
-struct OperationPermit(Arc<AtomicUsize>);
+pub(super) struct OperationPermit(pub(super) Arc<AtomicUsize>);
 
 impl Drop for OperationPermit {
     fn drop(&mut self) {
@@ -75,14 +75,46 @@ impl Completion {
 }
 
 pub(super) enum Command {
-    Start(Box<LoadedPlugin>, Completion),
+    Start(Box<LoadedPlugin>, Option<Value>, Completion),
     Stop(HostIdentity, Completion),
+    Snapshot(HostIdentity, state::Completion),
+    Resume(HostIdentity, state::Completion),
+    CoreAdmission(HostIdentity, String, bool, state::Completion),
 }
 
 impl HostRuntime {
     /// Enqueues a validated source snapshot. Registry/grant reads, generation
     /// allocation and persistence belong to the caller, never this executor.
     pub fn begin_start(&self, plugin: LoadedPlugin) -> Result<HostOperation, HostError> {
+        self.begin_start_state(plugin, None)
+    }
+
+    pub fn begin_start_restored(
+        &self,
+        plugin: LoadedPlugin,
+        snapshot: Value,
+    ) -> Result<HostOperation, HostError> {
+        state::validate_snapshot(&snapshot)?;
+        self.begin_start_state(plugin, Some(snapshot))
+    }
+
+    fn begin_start_state(
+        &self,
+        plugin: LoadedPlugin,
+        snapshot: Option<Value>,
+    ) -> Result<HostOperation, HostError> {
+        if self
+            .services
+            .core_admission
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .releasing
+        {
+            return Err(HostError::new(
+                "core_updating",
+                "Host starts wait until the Core admission release receipt settles",
+            ));
+        }
         if plugin.manifest.native_launch_only() {
             return Err(HostError::new(
                 "native_launch_only",
@@ -90,7 +122,7 @@ impl HostRuntime {
             ));
         }
         Self::validate_plugins(std::slice::from_ref(&plugin))?;
-        self.submit(|completion| Command::Start(Box::new(plugin), completion))
+        self.submit(|completion| Command::Start(Box::new(plugin), snapshot, completion))
     }
 
     pub fn begin_stop(
@@ -167,8 +199,12 @@ pub(super) fn launch(
     let stopping = Arc::new(AtomicBool::new(false));
     let operations = Arc::new(AtomicUsize::new(0));
     let (commands, receiver) = mpsc::sync_channel(COMMAND_QUEUE);
-    let (capabilities, capability_receiver) =
-        capability::channel(Arc::clone(&stopping), client.clone(), services.rpc.clone());
+    let (capabilities, capability_receiver) = capability::channel(
+        Arc::clone(&stopping),
+        client.clone(),
+        services.rpc.clone(),
+        services.core_admission.clone(),
+    );
     services.rpc.register_plugins(&plugins)?;
     *services
         .capability_client
@@ -240,13 +276,18 @@ pub(super) fn launch(
                 thread::sleep(TICK);
             }
             while let Ok(command) = receiver.try_recv() {
-                let completion = match command {
-                    Command::Start(_, completion) | Command::Stop(_, completion) => completion,
-                };
-                completion.finish(Err(HostError::new(
+                let error = HostError::new(
                     "runtime_stopping",
                     "the runtime stopped before this command was applied",
-                )));
+                );
+                match command {
+                    Command::Start(_, _, completion) | Command::Stop(_, completion) => {
+                        completion.finish(Err(error))
+                    }
+                    Command::Snapshot(_, completion)
+                    | Command::Resume(_, completion)
+                    | Command::CoreAdmission(_, _, _, completion) => completion.finish(Err(error)),
+                }
             }
             while let Ok(command) = capability_receiver.try_recv() {
                 capability::reject_stopped(command);
@@ -318,7 +359,7 @@ fn apply(
     launcher: &Launcher,
 ) {
     match command {
-        Command::Start(plugin, completion) => {
+        Command::Start(plugin, snapshot, completion) => {
             let plugin = *plugin;
             let id = &plugin.manifest.id;
             if owners
@@ -359,12 +400,19 @@ fn apply(
             owners.retain(|owner| owner.observation.plugin.manifest.id != *id);
             let mut owner = HostOwner::new(plugin.clone());
             owner.launching = true;
-            if let Err(error) = launcher.begin(plugin) {
+            if let Err(error) = launcher.begin_restored(plugin, snapshot) {
                 owner.launching = false;
                 owner.fail(error);
             }
             owner.start_operation = Some(completion);
             owners.push(owner);
+        }
+        Command::Snapshot(identity, completion) => {
+            state::begin(owners, identity, completion, false)
+        }
+        Command::Resume(identity, completion) => state::begin(owners, identity, completion, true),
+        Command::CoreAdmission(identity, operation, resume, completion) => {
+            state::begin_core(owners, identity, operation, completion, resume)
         }
         Command::Stop(identity, completion) => {
             if generations

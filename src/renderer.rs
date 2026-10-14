@@ -38,6 +38,7 @@ use bootstrap::*;
 use observation::status_text;
 
 mod combined;
+pub(crate) use combined::CoreIngressTarget;
 mod host_rpc;
 mod listing;
 mod management;
@@ -124,11 +125,18 @@ pub struct RendererRuntime {
     status_events: Vec<StatusEvent>,
     generations: BTreeMap<String, u64>,
     management_active: bool,
+    core_management_unsettled: bool,
     owner_lifecycle_depth: usize,
     runtime_skills: Option<crate::runtime_skills::RuntimeSkills>,
     world_attempts: usize,
     world_limit: usize,
     world_reservations: BTreeMap<String, usize>,
+    // Explicit JSON state only, scoped to the exact document being replaced.
+    reload_snapshots: BTreeMap<(String, u64, String), Value>,
+    reload_state_missing: BTreeSet<String>,
+    // Independent of per-package snapshot pause. Future worlds inherit the
+    // whole-Core transaction identity through their embedded bootstrap options.
+    core_admission_operation: Option<String>,
 }
 
 struct RendererSession {
@@ -361,11 +369,15 @@ impl RendererRuntime {
             status_events: Vec::new(),
             generations,
             management_active: false,
+            core_management_unsettled: false,
             owner_lifecycle_depth: 0,
             runtime_skills: None,
             world_attempts: 0,
             world_limit: world_budget::WORLD_LIMIT,
             world_reservations: BTreeMap::new(),
+            reload_snapshots: BTreeMap::new(),
+            reload_state_missing: BTreeSet::new(),
+            core_admission_operation: None,
         })
     }
 
@@ -512,7 +524,10 @@ impl RendererRuntime {
             );
             add_renderer_binding(&session, &binding_name, world, &world_name, context_id)?;
             let mut bootstrap_identifiers = Vec::new();
-            for bootstrap in bootstrap_expressions(world) {
+            for bootstrap in bootstrap_expressions_with_core_admission(
+                world,
+                self.core_admission_operation.as_deref(),
+            ) {
                 match add_new_document_script(&session, &bootstrap, world, &world_name) {
                     Ok(identifier) => bootstrap_identifiers.push(identifier),
                     Err(error) => {
@@ -559,7 +574,12 @@ impl RendererRuntime {
                 });
             self.publish_status();
 
-            let expression = activation_expression(&plugin, &binding_name);
+            let snapshot = self.reload_snapshots.get(&(
+                target_id.to_owned(),
+                document_epoch,
+                plugin.manifest.id.clone(),
+            ));
+            let expression = activation_expression_with_snapshot(&plugin, &binding_name, snapshot);
             if let Err(message) = self
                 .evaluate_with_binding_pump(target_id, &expression, context_id)
                 .and_then(parse_lifecycle_result)
@@ -962,7 +982,9 @@ impl RendererRuntime {
                             plugin,
                         })
                     }
-                    crate::catalog::PluginSource::Bundled => None,
+                    crate::catalog::PluginSource::Core | crate::catalog::PluginSource::Bundled => {
+                        None
+                    }
                 }
             })
             .collect()
@@ -1845,11 +1867,12 @@ impl RendererRuntime {
         self.drive_deadline = previous_deadline;
         // Retirement is a separate, bounded cleanup phase. It never pumps plugin
         // code and cannot renew the deadline of an abandoned nested evaluation.
-        let cleanup_deadline = if self.management_active {
-            previous_deadline.unwrap_or(target_session.request_deadline()?)
-        } else {
-            target_session.request_deadline()?
-        };
+        // An activation deadline may already be expired. Retirement must still
+        // deliver the synchronous close that cancels its JS activation gate;
+        // this fresh bounded phase does not renew or replay any original call.
+        let cleanup_deadline = target_session
+            .request_deadline()?
+            .min(Instant::now() + Duration::from_secs(3));
         let cleanup_session = target_session.until(cleanup_deadline);
         if (was_activating || first_error.is_some())
             && target_session.is_live()

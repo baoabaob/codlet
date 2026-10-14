@@ -13,6 +13,7 @@ pub(super) const FACADE_SOURCE: &str = include_str!("../../bundled/runtime/facad
 pub(super) const PAGE_HELPERS_SOURCE: &str = include_str!("../../bundled/runtime/page.js");
 pub(super) const I18N_SOURCE: &str = include_str!("../../bundled/runtime/i18n.js");
 pub(super) const CORE_SERVICES_SOURCE: &str = include_str!("../../runtime/core-services.cjs");
+pub(super) const CODEX_SDK_SOURCE: &str = include_str!("../../bundled/runtime/codex.js");
 #[derive(Deserialize)]
 struct LifecycleResult {
     ok: bool,
@@ -170,20 +171,183 @@ pub(super) fn parse_lifecycle_result(result: Value) -> Result<(), String> {
 
 pub(super) const CLEAR_STAGED_HELPERS: &str = "(() => { const helpers=globalThis.__codletRendererHelpersV1; delete globalThis.__codletRendererHelpersV1; helpers?.dispose(); return {ok:true}; })()";
 
-pub(super) fn bootstrap_expressions(world: RendererWorld) -> [String; 2] {
-    let options = json!({"world": world, "lazyUI": true, "retireOnEmpty": true});
+pub(super) fn bootstrap_expressions_with_core_admission(
+    world: RendererWorld,
+    operation: Option<&str>,
+) -> [String; 2] {
+    let module = crate::runtime_update::core_module_source;
+    let bootstrap_source = module("renderer-bootstrap", BOOTSTRAP_SOURCE);
+    let ui_source = module("renderer-ui", UI_HELPERS_SOURCE);
+    let helpers_source = module("renderer-helpers", HELPERS_OWNER_SOURCE);
+    let facade_source = module("renderer-facade", FACADE_SOURCE);
+    let page_source = module("renderer-page", PAGE_HELPERS_SOURCE);
+    let i18n_source = module("renderer-i18n", I18N_SOURCE);
+    let services_source = module("renderer-core-services", CORE_SERVICES_SOURCE);
+    let codex_source = module("renderer-codex-sdk", CODEX_SDK_SOURCE);
+    let options = json!({"world": world, "lazyUI": true, "retireOnEmpty": true, "coreAdmissionId": operation});
     // Keep the large SDK in a different V8 Script. A retired isolated world's
     // immutable ABI methods still reference their defining Script and its entire
     // source; inlining helpers would pin the SDK source even after its functions
     // were released. Both persisted scripts belong to the same generation.
+    compose_bootstrap_expressions(
+        [
+            &bootstrap_source,
+            &ui_source,
+            &helpers_source,
+            &facade_source,
+            &page_source,
+            &i18n_source,
+            &services_source,
+            &codex_source,
+        ],
+        &options,
+    )
+}
+
+fn compose_bootstrap_expressions(
+    [bootstrap, ui, helpers, facade, page, i18n, services, codex]: [&str; 8],
+    options: &serde_json::Value,
+) -> [String; 2] {
+    // Valid module bytes can end in a line comment without a final newline.
+    // Keep every source boundary on its own line so comments cannot consume
+    // the enclosing syntax. Expression factories also get their own grouping.
     let helpers = format!(
-        "({HELPERS_OWNER_SOURCE})((MessageChannel) => ({UI_HELPERS_SOURCE}), {I18N_SOURCE}, (()=>{{const module={{exports:{{}}}};{CORE_SERVICES_SOURCE};return module.exports.createCoreServicesRuntime;}})(), {PAGE_HELPERS_SOURCE}, {BOOTSTRAP_SOURCE})"
+        "(\n{helpers}\n)((MessageChannel) => (\n{ui}\n), (\n{i18n}\n), (()=>{{const module={{exports:{{}}}};\n{services}\n;return module.exports.createCoreServicesRuntime;}})(), (\n{page}\n), (\n{bootstrap}\n), (\n{codex}\n))"
     );
-    let bootstrap = format!("({FACADE_SOURCE})({options})");
+    let bootstrap = format!("(\n{facade}\n)({options})");
     [helpers, bootstrap]
 }
 
+#[cfg(all(test, windows))]
+#[test]
+fn bootstrap_composition_preserves_trailing_line_comments_in_all_modules() {
+    use std::io::Write;
+    let paths = [
+        "renderer-bootstrap.js",
+        "renderer-ui.js",
+        "renderer-helpers.js",
+        "renderer-facade.js",
+        "renderer-page.js",
+        "renderer-i18n.js",
+        "renderer-core-services.cjs",
+        "renderer-codex-sdk.js",
+    ];
+    let embedded = [
+        BOOTSTRAP_SOURCE,
+        UI_HELPERS_SOURCE,
+        HELPERS_OWNER_SOURCE,
+        FACADE_SOURCE,
+        PAGE_HELPERS_SOURCE,
+        I18N_SOURCE,
+        CORE_SERVICES_SOURCE,
+        CODEX_SDK_SOURCE,
+    ];
+    let generated = paths.map(|path| {
+        std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/core-modules")
+                .join(path),
+        )
+        .unwrap()
+    });
+    for sources in [embedded, generated.each_ref().map(String::as_str)] {
+        let commented = sources.map(|source| format!("{source}\n// no final newline"));
+        let expressions = compose_bootstrap_expressions(
+            commented.each_ref().map(String::as_str),
+            &json!({"world":"isolated","lazyUI":true,"retireOnEmpty":true}),
+        );
+        let mut child = std::process::Command::new("node")
+            .args(["-e", "const vm=require('node:vm'),fs=require('node:fs');for(const source of JSON.parse(fs.readFileSync(0,'utf8')))new vm.Script(source);"])
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&expressions).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[cfg(test)]
 pub(super) fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -> String {
+    activation_expression_with_snapshot(plugin, binding_name, None)
+}
+
+pub(super) fn snapshot_expression(id: &str, generation: u64) -> String {
+    format!(
+        "globalThis.__codletRendererV1.__snapshot({}, {generation})",
+        json!(id)
+    )
+}
+
+pub(super) fn resume_expression(id: &str, generation: u64) -> String {
+    format!(
+        "globalThis.__codletRendererV1.__resume({}, {generation})",
+        json!(id)
+    )
+}
+
+pub(super) fn core_admission_expression(operation: &str, paused: bool) -> String {
+    let method = if paused {
+        "__coreAdmissionPause"
+    } else {
+        "__coreAdmissionResume"
+    };
+    format!(
+        "(() => {{ const runtime=globalThis.__codletRendererV1; if(typeof runtime?.{method}!== 'function') return {{ok:false,error:'Renderer does not support Core transaction admission'}}; return runtime.{method}({}); }})()",
+        json!(operation)
+    )
+}
+
+pub(super) fn parse_snapshot_result(result: Value) -> Result<Option<Value>, String> {
+    if result.get("exceptionDetails").is_some() {
+        return Err("Runtime.evaluate reported exceptionDetails while saving plugin state".into());
+    }
+    let value = result
+        .pointer("/result/value")
+        .ok_or("Runtime.evaluate did not return plugin state")?;
+    if value["ok"] != true {
+        return Err(value["error"]
+            .as_str()
+            .unwrap_or("renderer state snapshot failed")
+            .into());
+    }
+    let snapshot = value
+        .get("snapshot")
+        .ok_or("renderer state snapshot is absent")?;
+    if snapshot.is_null() {
+        return Ok(None);
+    }
+    if snapshot
+        .as_object()
+        .is_none_or(|object| object.len() != 2 || !object.contains_key("value"))
+        || snapshot["schema"]
+            .as_u64()
+            .is_none_or(|schema| schema == 0 || schema > 9_007_199_254_740_991)
+        || serde_json::to_vec(snapshot)
+            .map_err(|error| error.to_string())?
+            .len()
+            > 256 * 1024
+    {
+        return Err("renderer returned an invalid plugin state snapshot".into());
+    }
+    Ok(Some(snapshot.clone()))
+}
+
+pub(super) fn activation_expression_with_snapshot(
+    plugin: &LoadedPlugin,
+    binding_name: &str,
+    snapshot: Option<&Value>,
+) -> String {
     let metadata = json!({
         "id": plugin.manifest.id,
         "version": plugin.manifest.version,
@@ -201,7 +365,7 @@ pub(super) fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -
                 ((module, exports) => {{
 {source}
                 }})(module, module.exports);
-                return await runtime.activate({metadata}, module.exports);
+                return await runtime.activate({metadata}, module.exports, {snapshot});
             }} catch (error) {{
                 return {{ ok: false, error: error instanceof Error ? error.message : String(error) }};
             }}
@@ -212,6 +376,7 @@ pub(super) fn activation_expression(plugin: &LoadedPlugin, binding_name: &str) -
             .as_deref()
             .expect("renderer entry was validated before installation"),
         metadata = metadata,
+        snapshot = snapshot.map_or_else(|| "null".to_owned(), Value::to_string),
         id = plugin.manifest.id
     )
 }

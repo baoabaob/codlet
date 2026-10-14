@@ -1,0 +1,13 @@
+import {readFile,writeFile,mkdir,copyFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {resolve,dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {buildPlugin} from '../../../frontend/build-plugin.mjs';
+const here=dirname(fileURLToPath(import.meta.url)),root=resolve(here,'../../..'),out=resolve(root,'.artifacts/workspace-cold-probe');
+await mkdir(out,{recursive:true});
+const original=execFileSync('git',['show','bb72717515f98a9ec034299618a0101fb36aad8a:frontend/src/adapter/workspace-transcript.js'],{cwd:root,encoding:'utf8'}).replace("'./workspace-dom.js'","'../../frontend/src/adapter/workspace-dom.js'");
+await writeFile(resolve(out,'original-transcript.js'),original);
+await writeFile(resolve(out,'renderer.js'),(await buildPlugin(resolve(root,'frontend'),'../tests/fixtures/workspace-acceptance/cold/renderer-source.js')).code);
+await copyFile(resolve(here,'cold/host.cjs'),resolve(out,'host.cjs'));
+await writeFile(resolve(out,'codlet.json'),JSON.stringify({schema:1,id:'dev.workspace.cold-probe',name:'Distinct cold native transcript probe',version:'0.0.1',renderer:{entry:'renderer.js',world:'main'},host:{entry:'host.cjs'},permissions:['ui.dom','ui.mainWorld','host.process','cdp.raw']},null,2)+'\n');
+console.log(out);

@@ -16,7 +16,8 @@ Rust dependencies and standard-library attribution are included in
 THIRD_PARTY_RUST_LICENSES.txt (generated from the same-named docs file).
 Individual plugins and their dependencies carry their own applicable notices.
 
-The Core client bridge includes Acorn, distributed under the MIT License:
+The Core client bridge and SDK Host source parser include Acorn, distributed
+under the MIT License:
 
 Copyright (C) 2012-2022 by various contributors (see AUTHORS)
 

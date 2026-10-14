@@ -1,0 +1,10 @@
+import { writeFile, mkdir, copyFile } from 'node:fs/promises';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildPlugin } from '../../../frontend/build-plugin.mjs';
+const here = dirname(fileURLToPath(import.meta.url)), root = resolve(here, '../../..'), out = resolve(root, '.artifacts/workspace-navigation-profile');
+await mkdir(out, { recursive: true });
+await writeFile(resolve(out, 'renderer.js'), (await buildPlugin(resolve(root, 'frontend'), '../tests/fixtures/workspace-acceptance/profile/consumer.js')).code);
+await copyFile(resolve(here, 'profile/host.cjs'), resolve(out, 'host.cjs'));
+await writeFile(resolve(out, 'codlet.json'), JSON.stringify({ schema: 1, id: 'dev.workspace.navigation-profile', name: 'Bounded workspace navigation profiling', version: '0.0.1', renderer: { entry: 'renderer.js', world: 'main' }, host: { entry: 'host.cjs' }, permissions: ['ui.dom', 'ui.mainWorld', 'host.process', 'cdp.raw'], requires: [{ name: 'codex.ui.workspace', api: 1, scope: 'target' },{name:'codex.backend.read',api:1,scope:'target'}] }, null, 2) + '\n');
+console.log(out);

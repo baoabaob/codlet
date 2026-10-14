@@ -50,7 +50,7 @@ for (const world of ['isolated', 'main']) test(`${world} renderer language obser
         observe() { observers.add(this); }
         disconnect() { observers.delete(this); }
     }
-    const scope = vm.createContext({ document: { documentElement: { lang: 'zh-CN' } }, MutationObserver, TextEncoder, MessageChannel, setTimeout, clearTimeout });
+    const scope = vm.createContext({ document: { documentElement: { lang: 'zh-CN' } }, MutationObserver, TextEncoder, MessageChannel, AbortController, setTimeout, clearTimeout });
     vm.runInContext(`(${bootstrap})({world:'${world}'},null,(${source}))`, scope);
     const runtime = scope.__codletRendererV1, contexts = [];
     const plugin = { activate(context) { contexts.push(context); assert.equal(context.i18n.locale, 'zh'); }, deactivate() {} };

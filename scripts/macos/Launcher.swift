@@ -15,8 +15,6 @@ final class Launcher: NSObject, NSApplicationDelegate {
     private var status: NSStatusItem?
     private var panel: NSPanel?
     private var gui: NSButton!
-    private var ui: NSButton!
-    private var desktop: NSButton!
     private var shortcut: NSButton!
     private var startButton: NSButton!
     private var setupLabel: NSTextField!
@@ -73,7 +71,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         guard let bytes = try? Data(contentsOf: home.appendingPathComponent("macos-setup.json")),
               let state = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
               let decisions = state["decided"] as? [String: [String: Any]] else { return [] }
-        return Set(decisions.filter { $0.value["result"] as? String == "pending" }.map { $0.key })
+        return Set(decisions.filter { $0.key == "codlet-gui" && $0.value["result"] as? String == "pending" }.map { $0.key })
     }
     @objc private func configure() {
         guard setup == nil else { return }
@@ -97,8 +95,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         }
         let pending = pendingDownloads()
         gui = checkbox("Codlet GUI · 图形化管理插件", 271, firstSetup || pending.contains("codlet-gui"))
-        ui = checkbox("UI Adapter · 侧栏与插件页面（GUI 必需）", 235, firstSetup || pending.contains("codex.ui.adapter"))
-        desktop = checkbox("Desktop Adapter · 客户端与对话接口", 199, firstSetup || pending.contains("codex.desktop.adapter"))
+        _ = label("Core 已包含界面与桌面 SDK，无需单独安装 Adapter。", 223, 35, 13)
         shortcut = checkbox("在桌面创建 Codlet 快捷入口", 153, false)
         setupLabel = label("新安装插件获得声明的权限；已有授权与禁用状态保留。\n此版本尚未经过 Apple 公证，使用前请确认来源。", 86, 55, 12)
         setupLabel.textColor = .secondaryLabelColor
@@ -113,7 +110,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         panel?.close(); panel = nil
         if core == nil { NSApp.terminate(nil) }
     }
-    @objc private func syncDependencies() { if gui.state == .on { ui.state = .on }; ui.isEnabled = gui.state != .on }
+    @objc private func syncDependencies() { }
     private func environment() -> [String: String] {
         var env = ProcessInfo.processInfo.environment; env["CODLET_HOME"] = home.path; return env
     }
@@ -131,7 +128,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         guard setup == nil else { return }
         do {
             var selected: [String] = []
-            for (box, id) in [(ui!, "codex.ui.adapter"), (desktop!, "codex.desktop.adapter"), (gui!, "codlet-gui")] { if box.state == .on { selected.append(id) } }
+            if gui.state == .on { selected.append("codlet-gui") }
             let command = setupCommand(selected: selected, interactivePermissions: true)
             let process = Process(); process.executableURL = command.0
             process.arguments = command.1; process.environment = environment()

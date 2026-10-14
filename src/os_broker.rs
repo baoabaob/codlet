@@ -297,7 +297,23 @@ impl OsBrokerClient {
         let permission = permission_for_endpoint(endpoint).ok_or_else(|| {
             OsBrokerError::new("method_not_found", "OS broker endpoint is not registered")
         })?;
-        authorization.require(permission)?;
+        if endpoint == "host.process.run"
+            && authorization
+                .0
+                .declared
+                .contains(&Permission::HostProcessSpawn)
+            && authorization
+                .0
+                .registration
+                .grants
+                .contains(&Permission::HostProcessSpawn)
+        {
+            authorization.require(Permission::HostProcessSpawn)?;
+        } else {
+            // Legacy run keeps its existing host.process grant but never gains
+            // executable scopes from that full-Node admission alias.
+            authorization.require(permission)?;
+        }
         let now = Instant::now();
         if deadline <= now {
             return Err(expired());

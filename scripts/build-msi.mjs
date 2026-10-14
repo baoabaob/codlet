@@ -19,7 +19,7 @@ const xml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').re
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const id=(prefix,value)=>prefix+digest(value).slice(0,24);
 const guid=value=>{const h=digest('codlet-preview-msi-v1:'+value);return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;};
-const features={Core:[],UiAdapter:[],DesktopAdapter:[],GUI:[],StartMenu:[],DesktopShortcut:[],CliPath:[]},directories=new Map([['','INSTALLFOLDER']]),components=[];
+const features={Core:[],GUI:[],StartMenu:[],DesktopShortcut:[],CliPath:[]},directories=new Map([['','INSTALLFOLDER']]),components=[];
 const payload=manifest.files.filter(file=>file.path!=='portable.mode').map(file=>({...file,source:resolve(root,file.path)}));
 for(const name of ['msi-install.json','distribution-manifest.json']){
   const content=name==='msi-install.json'
@@ -41,7 +41,7 @@ for(const file of payload){
   features.Core.push(component);
 }
 // Optional features store the user's download choices, never plugin code.
-for(const [feature,plugin] of [['UiAdapter','codex.ui.adapter'],['DesktopAdapter','codex.desktop.adapter'],['GUI','codlet-gui']]){
+for(const [feature,plugin] of [['GUI','codlet-gui']]){
   const component=id('Download_',plugin);
   components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('download-choice:'+plugin)}" Win64="yes"><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer\\Plugins" Name="${plugin}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
   features[feature].push(component);
@@ -93,9 +93,7 @@ ${components.join('\n')}
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>
 <Feature Id="CliPath" Title="将 codlet 加入 PATH" Description="在新打开的终端中使用 codlet 命令；卸载时移除本安装目录的 PATH 项。" Level="1">${refs(features.CliPath)}</Feature>
-<Feature Id="UiAdapter" Title="下载 UI Adapter" Description="从 GitHub 获取最新发布版，接入侧栏和插件页面。需要界面访问权限。" Level="1">${refs(features.UiAdapter)}</Feature>
-<Feature Id="DesktopAdapter" Title="下载 Desktop Adapter" Description="从 GitHub 获取最新发布版，提供客户端、对话和流量接口。需要主界面访问、Host 进程及调试权限。" Level="1">${refs(features.DesktopAdapter)}</Feature>
-<Feature Id="GUI" Title="下载 Codlet GUI（包含 UI Adapter）" Description="从 GitHub 获取最新发布版，提供图形化管理。包含 UI Adapter；需要插件管理与界面访问权限。" Level="1">${refs([...features.GUI,...features.UiAdapter])}</Feature>
+<Feature Id="GUI" Title="下载 Codlet GUI" Description="从 GitHub 获取最新发布版，提供图形化插件管理。界面与桌面 SDK 已包含在 Core 中。" Level="1">${refs(features.GUI)}</Feature>
 <UIRef Id="WixUI_FeatureTree"/><WixVariable Id="WixUILicenseRtf" Value="${xml(resolve(build,'notice.rtf'))}"/>
 <WixVariable Id="WixUIBannerBmp" Value="${xml(resolve(build,'banner.bmp'))}"/><WixVariable Id="WixUIDialogBmp" Value="${xml(resolve(build,'dialog.bmp'))}"/>
 <UI>

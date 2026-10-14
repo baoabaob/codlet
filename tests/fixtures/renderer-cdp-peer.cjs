@@ -22,7 +22,9 @@ const contexts = new Map();
 const evaluations = new Map();
 const heldAttachments = new Map();
 let holdNextAttachment = false;
+let failNextResume = false;
 const trace = [];
+const evaluationErrors = [];
 const methods = new Map();
 let nextContext = 1, nextSession = 1, nextScript = 1;
 let partial = Buffer.alloc(0), queuedFrames = 0, writtenLog = 0;
@@ -187,10 +189,11 @@ function beginEvaluation(request, session, params) {
   const context = params.contextId === undefined ? createContext(session.target) : contexts.get(params.contextId);
   if (!context?.live || context.target !== session.target) throw failure('execution context does not belong to this live target');
   if (typeof params.expression !== 'string' || Buffer.byteLength(params.expression) > MAX_FRAME - 1024) throw failure('invalid fixture evaluation source');
+  if (failNextResume && params.expression.includes('__resume(')) { failNextResume = false; throw failure('fixture resume refused'); }
   const evaluation = { request, context, timer: undefined, settled: false, finish(value, error) {
     if (this.settled) return;
     this.settled = true; clearTimeout(this.timer); evaluations.delete(request.id);
-    if (error) response(request, undefined, error);
+    if (error) { if(evaluationErrors.length===16)evaluationErrors.shift();evaluationErrors.push(String(error.stack??error).slice(0,2048));response(request, undefined, error); }
     else {
       try {
         // Serialize only by-value results: no remote object emulation.
@@ -225,10 +228,11 @@ async function inspect(params) {
     sessions: [...sessions.values()].map(session => ({ id: session.id, targetId: session.target.id, scripts: session.scripts.size, bindings: session.bindings.size })),
     contexts: [...contexts.values()].map(context => ({ id: context.id, targetId: context.target.id, name: context.name, epoch: context.target.epoch,
       globals: Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(context.sandbox, key)).map(key => [key, context.sandbox[key]])),
+      coreAdmission: vm.runInContext('globalThis[Symbol.for("codlet.core.renderer-admission.v1")] ?? null', context.sandbox, { timeout: 1000 }),
       plugins: statuses.get(context.id) ?? [],
       bindings: [...context.bindings.keys()], timers: context.timers.size,
     })),
-    evaluations: evaluations.size, heldAttachments: heldAttachments.size, methods: Object.fromEntries(methods), trace,
+    evaluations: evaluations.size, heldAttachments: heldAttachments.size, methods: Object.fromEntries(methods), trace,evaluationErrors,
   };
 }
 
@@ -295,6 +299,7 @@ function handle(request) {
     case 'Runtime.evaluate': return beginEvaluation(request, requireSession(request), params);
     case 'Fixture.inspect': inspect(params).then(result => response(request, result), error => response(request, undefined, error)); return;
     case 'Fixture.holdNextAttach': holdNextAttachment = true; result = {}; break;
+    case 'Fixture.failNextResume': failNextResume = true; result = {}; break;
     case 'Fixture.sessionLimit': {
       if (!Number.isInteger(params.value) || params.value < MAX_SESSIONS || params.value > 128) throw failure('invalid fixture session limit');
       sessionLimit = params.value; result = {}; break;

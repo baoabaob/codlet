@@ -10,6 +10,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const exec = promisify(execFile), self = fileURLToPath(import.meta.url);
 const MAX_FILE = 512 * 1024 * 1024;
+const CORE_MODULES=new Map(['renderer-bootstrap','renderer-helpers','renderer-ui','renderer-facade','renderer-page','renderer-i18n','renderer-codex-sdk','renderer-core-services','core-ui-provider','core-desktop-provider','host-bootstrap'].map(id=>[id,'runtime/core-modules/'+id+(id==='renderer-core-services'||id.startsWith('core-')||id==='host-bootstrap'?'.cjs':'.js')]));
+const CORE_MODULE_PATHS=new Set(CORE_MODULES.values());
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -80,7 +82,12 @@ function expectedPaths(profile, runtime, includeOther = false) {
 }
 function records(files, profile, runtime) {
   const other = profile === 'portable' ? 'codlet-lab.exe' : 'codlet.exe';
-  if (!Array.isArray(files) || files.length > 8 || JSON.stringify(files.map(f => f.path).sort()) !== JSON.stringify(expectedPaths(profile, runtime, files.some(f => f.path === other)))) throw fail('plan_path_invalid', 'Update plan must name exactly the owned runtime files.');
+  if (!Array.isArray(files) || files.length > 20) throw fail('plan_path_invalid', 'Update plan must name exactly the owned runtime files.');
+  const expected=expectedPaths(profile,runtime,files.some(f=>f.path===other));
+  const component=files.find(file=>file.path==='runtime/core-modules/client-source.cjs');
+  if(component){if(component.bytes>1024*1024)throw fail('plan_size_limit','Online Core source exceeds the IPC limit.');expected.push(component.path);expected.sort();}
+  for(const module of files.filter(file=>CORE_MODULE_PATHS.has(file.path))){if(module.bytes>8*1024*1024)throw fail('plan_size_limit','Online Core module exceeds 8 MiB.');expected.push(module.path);}expected.sort();
+  if(JSON.stringify(files.map(f=>f.path).sort())!==JSON.stringify(expected))throw fail('plan_path_invalid','Update plan must name exactly the owned runtime files.');
   for (const file of files) if (!sha(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > MAX_FILE) throw fail('plan_invalid', 'Invalid runtime payload record.');
   if ((runtime.mode ?? 'bundled') === 'bundled') {
     const node = files.find(f => f.path.endsWith('/node.exe')), license = files.find(f => f.path.endsWith('/LICENSE'));
@@ -109,6 +116,7 @@ function fileIn(root, relative) {
   ancestors(file); return file;
 }
 function validatePlan(plan, planPath, planSha) {
+  if(plan.activateOnNextStart!==undefined&&(typeof plan.activateOnNextStart!=='boolean'||plan.activateOnNextStart&&plan.officialUpdate))throw fail('plan_invalid','Invalid next-start activation intent.');
   if (plan.officialUpdate != null && typeof plan.officialUpdate !== 'boolean') throw fail('plan_invalid', 'Invalid official update gate.');
   if (plan.schema !== 1 || plan.kind !== 'codlet-runtime-install-plan' || plan.platform !== 'win-x64' || !/^runtime-install-[A-Za-z0-9_-]+$/.test(plan.id) || !sha(planSha) || !sha(plan.manifestSha256)) throw fail('plan_invalid', 'Unrecognized runtime installation plan.');
   const job = path.dirname(absolute(planPath));
@@ -140,6 +148,7 @@ function validatePlan(plan, planPath, planSha) {
   const fileValues = files => files.map(f => [f.path, f.bytes, f.sha256]);
   const runtimeValues = runtime => [runtime.version, runtime.executableSha256, runtime.licenseSha256, runtime.mode ?? 'bundled'];
   if (manifest.schema !== 1 || manifest.kind !== 'codlet-runtime-update' || manifest.version !== plan.version || manifest.platform !== plan.platform || manifest.profile !== plan.profile || JSON.stringify(fileValues(manifest.files)) !== JSON.stringify(fileValues(plan.newFiles)) || JSON.stringify(runtimeValues(manifest.runtime)) !== JSON.stringify(runtimeValues(plan.newRuntime))) throw fail('plan_invalid', 'Release manifest no longer matches the checked plan.');
+  validateOnlineContract(manifest.online,plan.newFiles);
   if (plan.configPin) {
     const pin = plan.configPin, oldLab = plan.currentFiles.find(f => f.path === 'codlet-lab.exe'), newLab = plan.newFiles.find(f => f.path === 'codlet-lab.exe');
     absolute(pin.path);
@@ -243,12 +252,33 @@ function patchConfig(plan, receipt) {
   writeJson(pin.path, after);
   receipt.configAfterSha = digest(pin.path).sha256; receipt.configPatched = true;
 }
+function validateOnlineContract(contract,files) {
+  if(!contract)return;
+  const source=files.find(file=>file.path==='runtime/core-modules/client-source.cjs');
+  const modules=contract.modules??[];
+  if(contract.schema!==1||contract.bridgeProtocol!==1||!sha(contract.bridgeSha256)||!sha(contract.bootstrapSha256)||contract.clientSourcePath!==source?.path
+    ||!Array.isArray(modules)||modules.length>11||(modules.length&&contract.moduleAbi!==1)||new Set(modules.map(module=>module.id)).size!==modules.length||modules.some(module=>CORE_MODULES.get(module.id)!==module.path||!files.some(file=>file.path===module.path)))throw fail('plan_invalid','Invalid checked Core module startup pin.');
+  return {source,modules};
+}
+function patchOnlinePin(plan,receipt) {
+  const manifestBytes=read(path.join(plan.stagedRoot,'runtime-update-manifest.json'));
+  if(hashBytes(manifestBytes)!==plan.manifestSha256)throw fail('payload_changed','Release manifest changed before startup pin publication.');
+  const contract=JSON.parse(manifestBytes).online;if(!contract)return;
+  const {source,modules}=validateOnlineContract(contract,plan.newFiles);
+  const file=fileIn(plan.installRoot,'runtime/core-modules/activation.json');parentFor(file,plan.installRoot);
+  if(fs.existsSync(file)){const before=read(file);fs.writeFileSync(path.join(plan.backupRoot,'activation-pin.original'),before,{flag:'wx'});receipt.activationPinBefore={bytes:before.length,sha256:hashBytes(before)};}
+  else receipt.activationPinBefore=null;
+  writeJson(file,{schema:1,version:plan.version,contract,source,residentFiles:plan.newFiles.filter(item=>item.path!==source.path&&!modules.some(module=>module.path===item.path)),modules:modules.map(module=>({id:module.id,file:plan.newFiles.find(item=>item.path===module.path)}))});
+  receipt.activationPinAfter=digest(file).sha256;receipt.activationPinPatched=true;
+}
 function rollback(plan, receipt, persist) {
   // Validate every surviving new file before the first rollback mutation. A user
   // edit or still-running new process must not be overwritten or force-killed.
   for (const relative of receipt.movedNew) verify(fileIn(plan.installRoot, relative), plan.newFiles.find(f => f.path === relative));
   for (const relative of receipt.movedOld) verify(fileIn(plan.backupRoot, relative), plan.currentFiles.find(f => f.path === relative));
   if (receipt.configPatched && digest(plan.configPin.path).sha256 !== receipt.configAfterSha) throw fail('rollback_blocked', 'Launcher configuration changed after the update; rollback requires attention.');
+  const activationPin=fileIn(plan.installRoot,'runtime/core-modules/activation.json');
+  if(receipt.activationPinPatched&&digest(activationPin).sha256!==receipt.activationPinAfter)throw fail('rollback_blocked','Core module startup pin changed after installation.');
   for (const relative of [...receipt.movedNew].reverse()) {
     const source = fileIn(plan.installRoot, relative), target = fileIn(plan.stagedRoot, relative);
     if (fs.existsSync(target)) throw fail('rollback_blocked', 'Staged rollback destination is occupied.');
@@ -267,6 +297,11 @@ function rollback(plan, receipt, persist) {
     const temporary = plan.configPin.path + '.' + randomUUID() + '.tmp';
     fs.writeFileSync(temporary, read(original), { flag: 'wx' }); fs.renameSync(temporary, plan.configPin.path);
     receipt.configPatched = false; persist();
+  }
+  if(receipt.activationPinPatched){
+    if(receipt.activationPinBefore){const original=path.join(plan.backupRoot,'activation-pin.original');verify(original,receipt.activationPinBefore);const temporary=activationPin+'.'+randomUUID()+'.tmp';fs.writeFileSync(temporary,read(original),{flag:'wx'});fs.renameSync(temporary,activationPin);}
+    else fs.unlinkSync(activationPin);
+    receipt.activationPinPatched=false;persist();
   }
   verifyCurrent(plan);
 }
@@ -328,6 +363,8 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}) {
       receipt.movedNew.push(file.path); persist();
     }
     patchConfig(plan, receipt); persist();
+    patchOnlinePin(plan,receipt);persist();
+    if(plan.activateOnNextStart){receipt.phase='installedDeferred';persist();return receipt;}
     receipt.phase = 'restarting'; persist();
     const result = await restart(plan, true, receipt);
     // Once readiness succeeds or retirement is unknown, even a later journal
@@ -353,21 +390,23 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}) {
     } else if (mutated) {
       try {
         receipt.phase = 'rollingBack'; persist(); rollback(plan, receipt, persist);
-        const restarted = await restart(plan, false, receipt);
-        receipt.phase = restarted === 0 ? 'rolledBack' : restarted === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';
+        if(plan.activateOnNextStart)receipt.phase='rolledBack';
+        else {const restarted = await restart(plan, false, receipt);
+          receipt.phase = restarted === 0 ? 'rolledBack' : restarted === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';}
       } catch (rollbackError) { receipt.phase = 'rollbackBlocked'; receipt.error = { code: rollbackError.code ?? 'rollback_blocked', message: String(rollbackError.message ?? rollbackError).slice(0,4096) }; }
     } else if (ownersRetired) {
       try {
         verifyCurrent(plan); verifyLauncher(plan, false, receipt);
-        const restarted = await restart(plan, false, receipt);
-        receipt.phase = restarted === 0 ? 'oldRuntimeRestarted' : restarted === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';
+        if(plan.activateOnNextStart)receipt.phase='failed';
+        else {const restarted = await restart(plan, false, receipt);
+          receipt.phase = restarted === 0 ? 'oldRuntimeRestarted' : restarted === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';}
       } catch (restartError) { receipt.phase = 'rollbackBlocked'; receipt.error = { code: restartError.code ?? 'old_restart_blocked', message: String(restartError.message ?? restartError).slice(0,4096) }; }
     } else receipt.phase = 'failed';
     try { persist(); } catch (receiptError) { receipt.persistenceError = String(receiptError.message ?? receiptError).slice(0,4096); }
     throw Object.assign(error, { receipt });
   } finally {
     if (installLock) {
-      const safe = ['installed', 'rolledBack', 'oldRuntimeRestarted', 'failed'].includes(receipt.phase);
+      const safe = ['installed', 'installedDeferred','rolledBack', 'oldRuntimeRestarted', 'failed'].includes(receipt.phase);
       receipt.lockRetained = !releaseInstallLock(installLock, safe);
       try { persist(); } catch {}
     }
@@ -382,7 +421,7 @@ if (process.argv[1] && key(process.argv[1]) === key(self)) {
     let ready = false, id = null;
     try {
       const result = await runInstall(args[1], args[3], message => { ready = true; id = message.id; process.stdout.write(JSON.stringify(message) + '\n'); });
-      if (result.phase !== 'installed') process.exitCode = 1;
+      if (!['installed','installedDeferred'].includes(result.phase)) process.exitCode = 1;
     } catch (error) {
       if (!ready) process.stdout.write(JSON.stringify({ schema:1,event:'runtime-update-helper-failed',id:error.receipt?.id??id,error:{code:error.code??'runtime_update_failed',message:String(error.message??error).slice(0,4096)} })+'\n');
       process.exitCode = 1;

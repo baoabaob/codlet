@@ -583,6 +583,7 @@ fn require_supported_permission(
             && matches!(
                 permission,
                 Permission::HostProcess
+                    | Permission::HostRaw
                     | Permission::CdpRaw
                     | Permission::HostFs
                     | Permission::HostNetwork
@@ -592,7 +593,10 @@ fn require_supported_permission(
         || (manifest.renderer.is_some()
             && matches!(
                 permission,
-                Permission::UiDom | Permission::UiMainWorld | Permission::RuntimeManage
+                Permission::UiDom
+                    | Permission::UiNativeDom
+                    | Permission::UiMainWorld
+                    | Permission::RuntimeManage
             ));
     if supported {
         Ok(())

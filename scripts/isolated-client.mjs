@@ -182,7 +182,13 @@ async function probe(endpoint, port, onboarding = false) {
     if (!Array.isArray(plugins.marketplaces) || plugins.marketplaceLoadErrors?.length) throw new Error('Installed plugin state could not be verified');
     const chromeInstalled = plugins.marketplaces.flatMap(market => market.plugins).some(plugin => plugin.installed && /^chrome(?:-|$)/i.test(plugin.name));
     const originRejected = await originCheck(port);
-    const result = { initialized: true, authenticated, fileCredentialStore, readOnlyBackend, desktopAppToolsDisabled, windowsReadiness: readiness, windowsMode: effective?.windows?.sandbox ?? null, chromeInstalled, originRejected };
+    let emptyData;
+    if(config.requireEmptyBackend===true){
+      const pages=await Promise.all([false,true].map(archived=>request('thread/list',{limit:1,archived,useStateDbOnly:true})));
+      if(pages.some(page=>!Array.isArray(page.data)||page.data.length||page.nextCursor))throw Error('Fresh fixture backend contains thread data');
+      emptyData={activeThreads:0,archivedThreads:0,verifiedBeforeNative:true};
+    }
+    const result = { initialized: true, authenticated, fileCredentialStore, readOnlyBackend, desktopAppToolsDisabled, windowsReadiness: readiness, windowsMode: effective?.windows?.sandbox ?? null, chromeInstalled, originRejected,...(emptyData?{emptyData}:{}) };
     backendReadiness(result,{onboarding});
     return result;
   } finally {

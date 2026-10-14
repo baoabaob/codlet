@@ -116,6 +116,24 @@ impl TrafficOwner {
         registry: &Path,
         provider: Option<&crate::plugins::LoadedPlugin>,
     ) -> Result<(), HostError> {
+        self.prepare_bridge_inner(runtime, registry, provider, false)
+    }
+    #[cfg(feature = "desktop-acceptance")]
+    pub(crate) fn prepare_owned_fixture_bridge(
+        &mut self,
+        runtime: &JsRuntime,
+        registry: &Path,
+        provider: Option<&crate::plugins::LoadedPlugin>,
+    ) -> Result<(), HostError> {
+        self.prepare_bridge_inner(runtime, registry, provider, true)
+    }
+    fn prepare_bridge_inner(
+        &mut self,
+        runtime: &JsRuntime,
+        registry: &Path,
+        provider: Option<&crate::plugins::LoadedPlugin>,
+        owned_fixture_routes: bool,
+    ) -> Result<(), HostError> {
         let configuration = json!({"source":self.descriptor["source"],"runtimeExecutable":runtime.executable_path(),"deadlineUnixMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64+15000});
         let selected=provider.and_then(|provider|match crate::client_launch::source_snapshot(provider,registry,runtime,self.directory.path()){
             Ok(source)=>Some(json!({"owner":provider.manifest.id,"generation":provider.generation,"code":source["code"],"configuration":configuration})),
@@ -127,6 +145,7 @@ impl TrafficOwner {
                 self.directory.path(),
                 self.descriptor.clone(),
                 selected,
+                owned_fixture_routes,
             )?));
         self.bridge_inputs = Some((
             runtime.clone(),

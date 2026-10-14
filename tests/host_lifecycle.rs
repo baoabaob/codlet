@@ -21,6 +21,42 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const WAIT: Duration = Duration::from_secs(9);
+
+#[test]
+fn sdk_host_state_transfer_uses_real_jsonl_without_raw_node_or_new_native_connection() {
+    let directory = tempdir().unwrap();
+    let peer = Peer::start();
+    let runtime = runtime(&peer);
+    let root = directory.path().join("sdk-state");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("host.cjs"), "let count;module.exports={activate(){if(typeof process!=='undefined')throw Error('raw Node leaked');count=41;},saveState(){return {schema:1,value:{count}};},restoreState(snapshot){count=snapshot.value.count+1;},deactivate(){}};").unwrap();
+    std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":"test.sdk-state","version":"1","host":{"entry":"host.cjs","mode":"sdk"}}).to_string()).unwrap();
+    let first = load_local_plugin("test.sdk-state", &root, &[], 1).unwrap();
+    started(&runtime, first);
+    let snapshot = |generation| {
+        let mut operation = runtime
+            .begin_snapshot("test.sdk-state", generation)
+            .unwrap();
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(result) = operation.try_result() {
+                assert!(operation.try_result().is_none());
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    assert_eq!(snapshot(99).unwrap_err().code, "stale_generation");
+    let saved = snapshot(1).unwrap();
+    assert_eq!(saved, json!({"schema":1,"value":{"count":41}}));
+    stopped(&runtime, "test.sdk-state", 1);
+    let second = load_local_plugin("test.sdk-state", &root, &[], 2).unwrap();
+    result(&mut runtime.begin_start_restored(second, saved).unwrap()).unwrap();
+    assert_eq!(snapshot(2).unwrap()["value"]["count"], 42);
+    peer.ping();
+    stopped(&runtime, "test.sdk-state", 2);
+}
 const HEARTBEAT: &str = r#"
 const fs = require('node:fs');
 let timer;

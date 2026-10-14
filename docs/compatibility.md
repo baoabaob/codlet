@@ -4,7 +4,7 @@ Codlet follows the systems and architectures offered by the official desktop cli
 
 | Target | Implementation and evidence |
 | --- | --- |
-| Windows x64 | Native launch, Core, GUI/adapters, lifecycle, and local client tests; primary delivery target. x64/AMD64 supports both Intel and AMD processors. |
+| Windows x64 | Native launch, Core SDK, optional GUI, lifecycle, and bounded local client tests; primary delivery target. x64/AMD64 supports both Intel and AMD processors. |
 | Windows ARM64 | Platform-specific Node pin and compile path; no ARM64 device acceptance recorded. |
 | macOS Apple Silicon | Native Core/process ownership, compatibility profiles, Swift launcher, DMG and app updater. Controlled native Desktop/model HTTP/SSE/WS checks cover client 26.917.62051; manual GUI/installer acceptance remains separate. |
 | macOS Intel | Not part of the currently selected official-client download target; no Universal/Intel package is produced. |
@@ -14,7 +14,7 @@ The project's current platform scope is based on the official [Windows deploymen
 
 ## Client integration
 
-Reviewed client mappings live in `compatibility/client-profiles.json`; actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Optional adapters can validate the existing interfaces on an unlisted build; missing or ambiguous contracts make the affected capability unavailable. Core's runtime skill discovers the mounted local request client independently of optional adapters and version profiles. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists.
+Reviewed startup mappings live in `compatibility/client-profiles.json`; Core's modular Codex frontend/source mappings live under `codex/compatibility`. Actual accepted versions are recorded separately in `compatibility/tested-client-versions.json`. Version numbers alone do not determine plugin compatibility. Core probes individual interfaces on an unlisted build; a missing or ambiguous contract makes the affected capability unavailable or unknown. The runtime skill discovers the mounted local request client independently. The native official-update action retains its separately reviewed mapping. Do not add an acceptance record because a source profile or cross-compile exists. The 1.0.0-rc.1 candidate's local evidence does not rewrite historical acceptance records.
 
 ## Independently published acceptance records
 
@@ -29,7 +29,7 @@ ref through the fixed anonymous GitHub contents API using the raw-file media
 type. This fallback is bounded and validated identically. It does not reuse
 ETags across endpoints, follow redirect URLs, or send GitHub credentials.
 
-Each record identifies one exact official package and platform, the minimum
+Historical records identify one exact official package and platform, the minimum
 Core and required adapter versions, and the versions actually used for its
 acceptance. A matching package with an older Core or an inactive/older required
 adapter reports `requirements-unmet`; it does not inherit a passing result from
@@ -60,8 +60,8 @@ its monotonically increasing `revision`, validate the catalog and commit/push
 it to `main`. Do not change the baseline or bump Core merely to record another
 verified package. Reusing a revision with different content or serving an older
 revision is rejected. A deliberate correction/removal uses a new revision.
-Review adapter changes and obtain real-client evidence before adding records;
-an interface change still needs the appropriate adapter/Core repair.
+Review the Core compatibility modules and obtain real-client evidence before
+adding records; an interface change still needs the appropriate implementation repair.
 
 Old Core Preview releases, drafts and version tags have been removed while
 preparing 0.2.0. The independent acceptance catalog remains available; changing
@@ -75,7 +75,7 @@ grants and enabled preferences. This does not claim another real MSIX update was
 during that isolated test; updater restart registration is covered separately by native
 bridge tests and the observed user update.
 
-The optional Desktop and UI adapters own private frontend behavior. Core owns generic lifecycle, identity, RPC, permissions, and resource cleanup. Adapter-only plugins can inherit the portability of the adapter operations they actually use; direct OS calls, binaries, native libraries, or private mappings can narrow support. Dependency names alone do not prove portability.
+Core owns the Codex frontend and Desktop compatibility implementation as well as lifecycle, identity, RPC, permissions and cleanup. Standard SDK consumers use that adaptation without inheriting its raw permissions. Explicit direct OS calls, binaries, native libraries or private mappings can narrow the author's support scope. SDK declarations, runtime availability and actual platform verification are separate facts.
 
 Windows package `26.928.1915.0` (frontend `26.928.20755` / `12246`, AppServer
 `0.159.0`) passed isolated real-client checks for the runtime skill, plugin GUI,

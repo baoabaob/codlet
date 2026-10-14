@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
-ALLOWED = ["codex.ui.adapter", "codex.desktop.adapter", "codlet-gui"]
+ALLOWED = ["codlet-gui"]
 
 
 def digest(file):
@@ -241,7 +241,7 @@ def build(args):
         (volume / "开始使用.txt").write_text(
             f"Codlet {version} · macOS Apple Silicon\n\n"
             "1. 将 Codlet 拖入 Applications，再从应用程序打开。\n"
-            "2. 首次打开可选择从 GitHub 下载最新官方插件及创建桌面快捷入口。GUI 自动包含 UI Adapter。\n"
+            "2. 首次打开可选择下载 Codlet GUI 及创建桌面快捷入口。界面与桌面 SDK 已包含在 Core 中。\n"
             "3. 如果 Codex 正在运行，请完成并保存任务后自行退出，再点击“重新检查”继续。\n\n"
             "本包没有 Apple Developer ID 签名或公证。Gatekeeper 可能阻止首次打开。\n"
             "确认下载来源和 SHA-256 后，可使用 macOS 系统设置中的隐私与安全性页\n"
@@ -249,7 +249,7 @@ def build(args):
             "配置、插件和日志在 ~/Library/Application Support/Codlet。\n"
             "首次启用主机插件时，若没有可复用的已验证运行时，Codlet 需要联网准备固定 Node；之后会复用缓存。\n"
             "拖走 Codlet.app 不删除这些用户数据。菜单栏可补选官方插件或打开日志。\n"
-            "安装到 Applications 后，可在 Codlet GUI 中检查并安装正式版更新。更新会先校验整个应用包，请按提示正常退出，完成后 Codlet 会重新打开。\n",
+            "安装到 Applications 后，可在 Codlet GUI 中检查并安装正式版更新。普通更新会校验并暂存整个应用包，等待本次客户端自然退出后替换；不会自动退出或重新打开客户端。之后手动打开时使用新版本。\n",
             encoding="utf-8",
         )
         manifest["files"] = [{"path": str(file.relative_to(app)).replace(os.sep, "/"), "bytes": file.stat().st_size, "sha256": digest(file)} for file in sorted(app.rglob("*")) if file.is_file()]

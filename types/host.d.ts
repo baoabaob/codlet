@@ -1,4 +1,11 @@
-/** Host JS ABI v1. TS authors compile to CommonJS .js/.cjs before distribution. */
+/** Host JS ABI v1. TS authors compile to CommonJS .js/.cjs before distribution.
+ * host.mode="sdk": bundle dependencies; computation globals and the SDK are
+ * available, ambient process/Buffer/require/import loaders are absent. The JSON
+ * membrane preserves SDK callbacks, bytes, streams and opaque target handles.
+ * This is a trusted-plugin API boundary; Node vm is not a hostile-code sandbox.
+ * host.mode="node": full Node environment, requiring explicit host.raw.
+ * Omitted mode preserves legacy Node + host.process grants without conversion.
+ */
 export interface CdpEvent {
   method: string;
   params: Record<string, unknown> | null;
@@ -154,6 +161,11 @@ export interface HostCapabilityInvocation {
   remainingMs(): number;
 }
 export interface HostContext {
+  /** True during activate + restoreState when Core supplied an explicit state
+   * snapshot. Suppress automatic side effects; false after successful restore. */
+  readonly restoringState: boolean;
+  /** Core-owned semantics bound to this owner's broker and grants. */
+  readonly codex: import('./codex-traffic').CodexHostSdk;
   /** Requires the declared Runtime codlet.core.services@1 capability and each method's permission. */
   readonly services: import('./core-services').CoreServices;
   readonly plugin: Readonly<{ id: string; version: string; generation: number }>;
@@ -177,6 +189,8 @@ export interface HostContext {
     fetch(params: { url: string; method?: 'GET' | 'HEAD'; headers?: Record<string, string>; maxBytes?: number }, options?: ManagedOptions): Promise<{ status: number; url: string; headers: Record<string, string>; body: string; bytes: number }>;
   };
   readonly process: {
+    /** Requires host.process.spawn (legacy host.process also accepted) and an
+     * exact selected executable. Broad clientPermissions never selects one. */
     run(params: { executable: string; args: string[]; maxOutputBytes?: number }, options?: ManagedOptions): Promise<{ processId: number; exitCode: number; stdout: string; stderr: string; stdoutBytes: number; stderrBytes: number; processesReaped: boolean; ownershipScope: 'windows-job' | 'posix-process-group'; jobReaped?: boolean; processGroupReaped?: boolean }>;
   };
   readonly system: { info(options?: ManagedOptions): Promise<{ os: string; architecture: string; logicalCpus: number }> };
@@ -237,17 +251,24 @@ export interface ClientAttachContext extends ClientLaunchContext {
 export interface HostPlugin {
   activate(context: HostContext): void | Promise<void>;
   deactivate(cleanup: HostCleanupContext): void | Promise<void>;
+  /** Required for compatible online state transfer. <=256KiB, finite acyclic
+   * JSON only; functions, DOM, pending Promises and processes are not state. */
+  saveState?(context: HostContext): HostStateSnapshot | Promise<HostStateSnapshot>;
+  /** Runs after activate and before this generation is marked ready. */
+  restoreState?(snapshot: HostStateSnapshot, context: HostContext): void | Promise<void>;
   /** Optional client-owned entry, installed/replaced/retired in the same package receipt.
-   * Requires codlet.client.launch@1, host.process and cdp.raw. Core owns the
+   * Requires codlet.client.launch@1, host.raw (legacy host.process) and cdp.raw. Core owns the
    * authenticated process-bound transport and validates the immutable snapshot.
    * Application source fingerprints and private bindings remain plugin code.
    */
   clientSource?(context: Readonly<{signal:AbortSignal;features:Readonly<{clientBridge:1}>}>): {code:string} | Promise<{code:string}>;
-  /** Optional startup ABI. Requires host.process + cdp.raw and the exact launch capability. */
+  /** Optional startup ABI. Requires Node mode, host.raw (legacy host.process), cdp.raw and the exact launch capability. */
   prepareClientLaunch?(context: ClientLaunchContext): { arguments: readonly string[] } | Promise<{ arguments: readonly string[] }>;
   /** Bounded, exact-child handshake. Success does not claim verified coverage of every request path. */
   attachClientLaunch?(context: ClientAttachContext): Promise<{ installed: true; exactChildVerified: true; activatedSources: readonly ClientActivatedSource[]; unsupportedSources: readonly ClientUnsupportedSource[] }>;
 }
+export type HostStateJson = null | boolean | number | string | readonly HostStateJson[] | { readonly [key: string]: HostStateJson };
+export interface HostStateSnapshot { readonly schema: number; readonly value: HostStateJson; }
 
 /** A separate, generation-scoped phase; no subscriptions or renewed deadline.
  * Core's total shutdown budget is at most 1500 ms, including message delivery.

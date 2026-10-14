@@ -1,0 +1,12 @@
+'use strict';
+const { EventEmitter } = require('node:events');
+const Module = require('node:module');
+const app = new EventEmitter(); app.ready = false; app.isReady = () => app.ready;
+app.whenReady = () => app.ready ? Promise.resolve() : new Promise(resolve => app.once('ready', resolve));
+const switches=new Map([['inspect-brk','127.0.0.1:0'],['native-test','preserved']]);
+app.commandLine={getSwitchValue:name=>switches.get(name)??'',removeSwitch:name=>switches.delete(name)};
+const utilityProcess={fork:(...args)=>({args})};
+const load = Module._load;
+Module._load = function (name, ...args) { return name === 'electron' ? { app,utilityProcess } : load.call(this, name, ...args); };
+process.type = 'browser';
+globalThis.fixtureElectron = { app };

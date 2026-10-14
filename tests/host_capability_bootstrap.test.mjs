@@ -11,6 +11,9 @@ import { nativeTraffic } from './support/native-traffic.mjs';
 
 const bootstrap = (await Promise.all([
   readFile(new URL('../runtime/core-services.cjs', import.meta.url), 'utf8').then(source => `const createEmbeddedServicesRuntime = (() => { const module = {exports:{}};${source};return module.exports.createCoreServicesRuntime;})();`),
+  readFile(new URL('../runtime/sdk-source-parser.cjs', import.meta.url), 'utf8').then(source => `const parseEmbeddedSdkHostSource = (() => { const module = {exports:{}};${source};return module.exports.parse;})();`),
+  readFile(new URL('../runtime/sdk-host.cjs', import.meta.url), 'utf8').then(source => `const createEmbeddedSdkHost = (() => { const module = {exports:{}};${source};return module.exports.createSdkHost;})();`),
+  readFile(new URL('../runtime/codex-host-bundle.cjs', import.meta.url), 'utf8').then(source => `const createEmbeddedCodexHost = (() => { const module = {exports:{}};${source};return module.exports.createCodexHost;})();`),
   readFile(new URL('../runtime/host-traffic-bundle.cjs', import.meta.url), 'utf8'),
   readFile(new URL('../runtime/host.cjs', import.meta.url), 'utf8'),
 ])).join('\n');

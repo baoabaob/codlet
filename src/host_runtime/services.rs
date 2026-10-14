@@ -20,6 +20,7 @@ pub(super) struct CoreServices {
     pub config: HostCoreServices,
     pub rpc: rpc_state::CoreRpcShared,
     pub capability_client: Arc<Mutex<Option<HostCapabilityClient>>>,
+    pub(super) core_admission: Arc<Mutex<core_admission::Admission>>,
     invalidated: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 

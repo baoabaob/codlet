@@ -1,6 +1,6 @@
 # Traffic contract
 
-This document is the stable contract for transparent traffic and the Host traffic API. It describes ownership and wire limits; client specific endpoint names stay in the official Adapter.
+This document is the stable contract for transparent traffic and the Host traffic API. It describes ownership and wire limits; client-specific endpoint names stay in Core's internal Codex source module.
 
 The process ingress uses generic plaintext sources. The Adapter's [request-chain verification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/request-chain.md) established separate Desktop JS and model-provider plaintext paths on a reviewed Windows build. Each source must be activated and report its own supported paths; this contract alone does not prove installed Desktop coverage.
 
@@ -15,7 +15,7 @@ do not retry unchanged state or block channel close/forward operations. This
 prevents diagnostic bursts from exhausting the Host's RPC/frame queue while
 an HTTP, SSE or WebSocket test is using its transport.
 
-The Windows/macOS launch owner prepares the engine and generic client bridge before attachment and retains transport until the owned client retires. Core owns authority and private process-bound descriptors; an ordinary authorized plugin owns application-specific hooks. Core does not depend on an official Adapter package. Disable, revocation, generation replacement or peer failure retires plugin registrations, callbacks, channels and exchanges. Client-owned backend routes may continue forwarding without plugin callback authority until their child exits. A request already sent upstream is never replayed after retirement. Temporary source extraction and bootstrap executors exit after their bounded operations.
+The Windows/macOS launch owner prepares the engine and generic client bridge before attachment and retains transport until the owned client retires. Core owns authority, private process-bound descriptors and the internal Codex source hooks. A custom launch-source provider remains an explicit exceptional extension point. Disable, revocation, generation replacement or peer failure retires ordinary plugin registrations, callbacks, channels and exchanges. Client-owned backend routes may continue forwarding without plugin callback authority until their child exits. A request already sent upstream is never replayed after retirement. Temporary source extraction and bootstrap executors exit after their bounded operations.
 
 ## Registration
 
@@ -45,7 +45,7 @@ A source reports supported protocols, operations and path coverage individually.
 
 ## Native launch descriptor
 
-Normal launch installs transparent client hooks only when its enabled Host catalog contains a plugin that both declares and has an explicit grant for `traffic.intercept`. Installing or enabling the first transparent traffic consumer during an unprepared session still requires restarting the client. Moving forwarding into Rust does not remove the Adapter's early-hook timing requirement. Explicit channels can independently start the native engine lazily, including a headless Core without an Adapter; that does not claim official-client attachment. An already attached client supports registration, retirement and hot updates. Safe mode skips plugin attachment. Preparing official hooks with no initial consumer remains a separate, unverified product change.
+Normal launch prepares the generic bridge and Core's internal source before application entry, including when no traffic consumer is enabled. Actual path availability still depends on successful source activation; unsupported paths are reported separately. A later consumer can register against an attached source without creating a second AppServer connection. A launch without a usable bridge cannot gain early-hook coverage by changing a permission field. Explicit channels can independently start the engine in a headless Core; that does not claim official-client attachment. Safe mode skips source attachment. Compatible source updates retain existing routes and streams as described in [online update](../core-online-update.md).
 
 `Traffic::start_native()` prepares the engine and `Traffic::launch_descriptor()` supplies the unchanged descriptor before creating the client. It contains `source: {version:1,kind:'plaintext',protocols,operations,endpoint,routeBaseUrl}` and `environmentPatch: {set:{},removeCaseInsensitive:[]}`. The source endpoint carries a private token; `routeBaseUrl` contains an unpredictable loopback path prefix for synchronous route reservation. Native validates both loopback addresses, the bounded token and prefix, the offered operations and protocols, and the empty patch before passing the descriptor to a launch plugin.
 
@@ -73,7 +73,7 @@ The inspector URL comes only from that exact child's dedicated stderr pipe, with
 
 Rust error unwinding retains the engine and launch directory until the exact newly spawned client has been asked to quit and its retained process handle has been checked; failure cleanup may terminate that exact client. The client is not put in a kill-on-close Job, so independent updater descendants survive the normal update handoff. macOS update retirement waits for native traffic tasks before writing its cleanup receipt. A hard Core crash closes native sockets without running destructors; existing client hooks must fail closed. Automatic client recovery after such a crash is not currently verified or promised.
 
-## Official Adapter
+## Internal Codex source
 
 The official Adapter owns endpoint classification, task correlation and launch compatibility. Core does not know thread ids, providers or model names. Its Host SDK exposes reviewed task metadata to the consuming interceptor; it never borrows the Adapter's grants. Task-specific upstream selection uses the common traffic pipeline. The Adapter's general `codex.backend.write@1` task-configuration hook handles model/provider settings at thread start/resume, before backend auth and model setup. An optional `turn.start` registration chooses the model for each submission, including an already loaded task; provider changes remain limited to thread start/resume. The former dedicated `codex.backend.transport` layer has been removed. Existing active turns and established WebSockets are not migrated automatically; provider-specific continuation state remains plugin policy.
 

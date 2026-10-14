@@ -32,7 +32,9 @@ struct Item {
 fn sources(registry: &PluginRegistry) -> Vec<(String, PluginUpdateSource)> {
     PluginUpdateSource::all(registry)
         .into_iter()
-        .filter(|(id, source)| is_official_channel(id, &source.channel))
+        .filter(|(id, source)| {
+            !crate::codex::is_internal_id(id) && is_official_channel(id, &source.channel)
+        })
         .collect()
 }
 fn key(registry: &PluginRegistry, client: &str) -> String {
@@ -177,10 +179,10 @@ mod tests {
     #[test]
     fn legacy_sources_gain_the_pinned_channel_only_after_file_verification() {
         let temp = tempfile::tempdir().unwrap();
-        let registry = crate::plugin_update_source::fixture_seed(temp.path(), "codex.ui.adapter");
+        let registry = crate::plugin_update_source::fixture_seed(temp.path(), "codlet-gui");
         let receipt = temp
             .path()
-            .join(".official-seed-transactions/codex.ui.adapter.receipt.json");
+            .join(".official-seed-transactions/codlet-gui.receipt.json");
         let mut value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
         value["package"]
@@ -190,14 +192,14 @@ mod tests {
         std::fs::write(&receipt, value.to_string()).unwrap();
         let selected = sources(&registry);
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].1.channel.repository_id, Some(1379358711));
+        assert_eq!(selected[0].1.channel.repository_id, Some(1379359689));
         assert_eq!(
             selected[0].1.operation,
             crate::managed_plugins::ManagedOperation::Adopt
         );
-        assert!(!registry.is_enabled("codex.ui.adapter"));
+        assert!(!registry.is_enabled("codlet-gui"));
         std::fs::write(
-            registry.local_plugins()["codex.ui.adapter"]
+            registry.local_plugins()["codlet-gui"]
                 .path
                 .join("author.js"),
             "preserve me",
@@ -213,15 +215,30 @@ mod tests {
     #[test]
     fn an_official_id_in_a_different_repository_never_gets_automatic_updates() {
         let temp = tempfile::tempdir().unwrap();
-        let registry = crate::plugin_update_source::fixture_seed(temp.path(), "codex.ui.adapter");
+        let registry = crate::plugin_update_source::fixture_seed(temp.path(), "codlet-gui");
         assert!(sources(&registry).is_empty());
-        let mut channel =
-            crate::plugin_update_source::official_channel("codex.ui.adapter").unwrap();
+        let mut channel = crate::plugin_update_source::official_channel("codlet-gui").unwrap();
         channel.owner_id = Some(1);
-        assert!(!is_official_channel("codex.ui.adapter", &channel));
+        assert!(!is_official_channel("codlet-gui", &channel));
         channel.owner_id = Some(76909162);
         channel.repository_id = None;
-        assert!(!is_official_channel("codex.ui.adapter", &channel));
+        assert!(!is_official_channel("codlet-gui", &channel));
+    }
+
+    #[test]
+    fn old_adapter_registration_is_preserved_without_a_startup_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = crate::plugin_update_source::fixture_seed(temp.path(), "codex.ui.adapter");
+        let before = std::fs::read(registry.path()).unwrap();
+        let author = registry.local_plugins()["codex.ui.adapter"]
+            .path
+            .join("entry.js");
+        let source = std::fs::read(&author).unwrap();
+        assert!(sources(&registry).is_empty());
+        assert_eq!(std::fs::read(registry.path()).unwrap(), before);
+        assert_eq!(std::fs::read(author).unwrap(), source);
+        assert!(!registry.is_enabled("codex.ui.adapter"));
+        assert!(registry.managed_plugins().is_empty());
     }
 
     #[test]
@@ -239,7 +256,7 @@ mod tests {
                 .unwrap();
         let lease = scope.acquire(Duration::from_secs(1)).unwrap();
         let before = PluginRegistry::load(scope.path()).unwrap();
-        assert_eq!(sources(&before).len(), 3);
+        assert_eq!(sources(&before).len(), 1);
         for entry in before.local_plugins().values() {
             assert!(
                 entry
@@ -263,8 +280,16 @@ mod tests {
             assert_eq!(old.grants, after.local_plugins()[id].grants);
             assert_eq!(old.broker_policy, after.local_plugins()[id].broker_policy);
             assert_eq!(before.is_enabled(id), after.is_enabled(id));
-            assert!(after.managed_plugins().contains_key(id));
-            crate::managed_plugins::validate_current(&after, id).unwrap();
+            if crate::codex::is_internal_id(id) {
+                assert_eq!(old, &after.local_plugins()[id]);
+                assert_eq!(
+                    before.managed_plugins().get(id),
+                    after.managed_plugins().get(id)
+                );
+            } else {
+                assert!(after.managed_plugins().contains_key(id));
+                crate::managed_plugins::validate_current(&after, id).unwrap();
+            }
         }
         run(&lease, "fixture-26.924.2738.0").unwrap();
         assert_eq!(std::fs::read(checkpoint_path).unwrap(), bytes);

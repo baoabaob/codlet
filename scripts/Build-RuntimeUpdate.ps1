@@ -8,7 +8,8 @@ param(
     [string]$ArtifactBaseUrl,
     [string]$MergeChannelManifest,
     [switch]$IncludeOtherExecutable,
-    [string]$LegacyBundledBridgeNodeDirectory
+    [string]$LegacyBundledBridgeNodeDirectory,
+    [string]$OnlineCoreMetadata
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -70,6 +71,23 @@ $nodeDirectory = 'runtime/node-v' + $pin.version + '-' + $platform
 $executable = if ($PayloadProfile -eq 'portable') { 'codlet.exe' } else { 'codlet-lab.exe' }
 $otherExecutable = if ($PayloadProfile -eq 'portable') { 'codlet-lab.exe' } else { 'codlet.exe' }
 $files = @($executable, 'runtime/node-runtime.json')
+$online = $null
+if ($OnlineCoreMetadata) {
+    $metadataPath = Plain $OnlineCoreMetadata
+    if ((Get-Item -LiteralPath $metadataPath).Length -gt 16KB) { throw 'Online Core compatibility metadata exceeds 16 KiB.' }
+    $online = [IO.File]::ReadAllText($metadataPath) | ConvertFrom-Json
+    if ($online.schema -ne 1 -or $online.bridgeProtocol -ne 1 -or $online.bridgeSha256 -notmatch '^[0-9a-f]{64}$' -or $online.bootstrapSha256 -notmatch '^[0-9a-f]{64}$' -or $online.clientSourcePath -ne 'runtime/core-modules/client-source.cjs') { throw 'Unsupported online Core compatibility metadata.' }
+    $sourcePath = Plain (Join-Path $inputRoot $online.clientSourcePath)
+    if ((Get-Item -LiteralPath $sourcePath).Length -gt 1MB) { throw 'Online Core client source exceeds the IPC limit.' }
+    $files += $online.clientSourcePath
+    if ($online.PSObject.Properties['modules']) {
+        $modulePaths=@{
+          'renderer-bootstrap'='runtime/core-modules/renderer-bootstrap.js';'renderer-helpers'='runtime/core-modules/renderer-helpers.js';'renderer-ui'='runtime/core-modules/renderer-ui.js';'renderer-facade'='runtime/core-modules/renderer-facade.js';'renderer-page'='runtime/core-modules/renderer-page.js';'renderer-i18n'='runtime/core-modules/renderer-i18n.js';'renderer-codex-sdk'='runtime/core-modules/renderer-codex-sdk.js';'renderer-core-services'='runtime/core-modules/renderer-core-services.cjs';'core-ui-provider'='runtime/core-modules/core-ui-provider.cjs';'core-desktop-provider'='runtime/core-modules/core-desktop-provider.cjs';'host-bootstrap'='runtime/core-modules/host-bootstrap.cjs'
+        }
+        if (@($online.modules).Count -gt 11 -or @($online.modules|ForEach-Object{$_.id}|Sort-Object -Unique).Count -ne @($online.modules).Count -or -not $online.PSObject.Properties['moduleAbi'] -or $online.moduleAbi -lt 1 -or $online.moduleAbi -gt [uint32]::MaxValue) { throw 'Unsupported online Core module contract.' }
+        foreach($module in $online.modules){if(-not $modulePaths.ContainsKey([string]$module.id) -or $module.path -ne $modulePaths[$module.id]){throw 'Unsupported online Core module path.'};$moduleFile=Plain (Join-Path $inputRoot $module.path);if((Get-Item -LiteralPath $moduleFile).Length -gt 8MB){throw 'Online Core module exceeds 8 MiB.'};$files += $module.path}
+    }
+}
 if ($mode -eq 'bundled' -or $bridge) { $files += @(($nodeDirectory + '/node.exe'), ($nodeDirectory + '/LICENSE')) }
 if ($IncludeOtherExecutable) { $files += $otherExecutable }
 $files = @($files | Sort-Object)
@@ -112,6 +130,8 @@ if ($ArtifactBaseUrl) {
 $runtime = [ordered]@{ version = $pin.version; executableSha256 = $node.executableSha256; licenseSha256 = $node.licenseSha256 }
 if ($mode -eq 'managed' -and -not $bridge) { $runtime.mode = 'managed' }
 $manifest = [ordered]@{ schema = 1; kind = 'codlet-runtime-update'; version = $Version; platform = $platform; profile = $PayloadProfile; runtime = $runtime; files = $records }
+if ($online) { $manifest.online = [ordered]@{ schema = 1; bridgeProtocol = 1; bridgeSha256 = $online.bridgeSha256; bootstrapSha256 = $online.bootstrapSha256; clientSourcePath = $online.clientSourcePath } }
+if ($online -and $online.PSObject.Properties['modules']) {$manifest.online.modules=@($online.modules|ForEach-Object{[ordered]@{id=$_.id;path=$_.path}});$manifest.online.moduleAbi=$online.moduleAbi}
 $temporary = Join-Path $parent ('.codlet-runtime-publish-' + [Guid]::NewGuid().ToString('N'))
 $null = [IO.Directory]::CreateDirectory($temporary)
 $zipName = 'codlet-' + $Version + '-' + $platform + '-' + $PayloadProfile + $(if ($bridge) { '-legacy-bundled' } else { '' }) + '.zip'

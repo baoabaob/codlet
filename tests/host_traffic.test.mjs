@@ -7,6 +7,7 @@ import { nativeTraffic } from './support/native-traffic.mjs';
 
 const require = createRequire(import.meta.url);
 const { WebSocket, WebSocketServer } = require('../frontend/node_modules/ws');
+const { createTrafficRuntime } = require('../runtime/host-traffic.cjs');
 const tick = delay => new Promise(resolve => setTimeout(resolve, delay));
 const failure = (code, message, data) => Object.assign(new Error(message), { code, ...(data === undefined ? {} : { data }) });
 
@@ -100,6 +101,27 @@ test('explicit loopback channel rewrites a real binary POST and streams the sele
   assert.equal(response.body.toString(), 'data: prefix\n\ndata: first\n\ndata: second\n\n');
   assert.ok(response.arrivals.length >= 2);
   assert.ok(streamedBeforeEnd, 'the first upstream SSE chunk reaches the downstream before upstream completion');
+});
+
+test('Core hold denies new traffic roots while an accepted channel body and forward finish exactly once', async t => {
+  let calls=0,entered,continueAccepted;
+  const accepted=new Promise(resolve=>{entered=resolve;}),continuation=new Promise(resolve=>{continueAccepted=resolve;});
+  const upstream=await listen(async(req,res)=>{calls++;const chunks=[];for await(const chunk of req)chunks.push(chunk);res.end(Buffer.concat(chunks));});t.after(upstream.close);
+  const fixture=await nativeTraffic(t,{origins:[upstream.origin],noIntercept:true}),root=new AbortController();let held=false;
+  const seen=[];
+  const managed=createTrafficRuntime({rootSignal:root.signal,makeError:failure,
+    coreRequest:(method,params)=>{if(held&&!['services.traffic.closeChannel','services.traffic.status'].includes(method))throw failure('core_updating','New traffic root is paused');return fixture.call(method,params);},
+    beforeRequest(method,params,isContinuation){seen.push({method,operation:params?.operation,isContinuation});if(held&&!isContinuation)throw failure('core_updating','New peer root is paused');}});
+  t.after(()=>{root.abort();managed.closeAll();continueAccepted();});
+  const channel=await managed.api.openHttpChannel({},async(incoming,exchange)=>{entered();await continuation;return exchange.forward({url:upstream.origin+'/once',method:'POST',body:incoming.body});});
+  const response=request(channel.endpoint+'/owned',{method:'POST',body:'accepted bytes'});await accepted;
+  assert.equal(managed.activity().channels,1);assert.equal(managed.activity().exchanges,1);
+  held=true;await assert.rejects(managed.api.openHttpChannel({},()=>({status:204})),{code:'core_updating'});
+  continueAccepted();const result=await response;assert.equal(result.status,200);assert.equal(result.body.toString(),'accepted bytes');assert.equal(calls,1);
+  assert.ok(seen.some(item=>item.method==='channel.forward'&&item.isContinuation));
+  assert.ok(seen.some(item=>item.operation==='stream.read'&&item.isContinuation),'an accepted channel body retains its peer read lane');
+  await channel.close();const deadline=Date.now()+1000;while(managed.activity().exchanges&&Date.now()<deadline)await tick(5);
+  assert.equal(managed.activity().channels,0);assert.equal(managed.activity().exchanges,0);
 });
 
 test('origin denial, handler timeout, byte caps and a second forward have deterministic failures without replay', async t => {

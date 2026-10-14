@@ -412,6 +412,7 @@ pub(super) fn prepare(
     );
     let _ = temporary.keep();
     Ok(RuntimeInstallRequest {
+        activate_on_next_start: false,
         id,
         version: staged.candidate.version.clone(),
         plan_path,

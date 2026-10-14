@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "packageVersion": "26.1002.7124.0",
+  "backendVersion": "0.162.0-alpha.2",
+  "installedSha256": "3553cd6e7df5a093d8cb8301cd8088a57e0971aba71ddbe0e67f7f44a15cdf68",
+  "peImageSha256": "867870a14028516d6a0cfbc00809d6f5f9231dbe75407226074d8e4c0313001e",
+  "releaseUrl": "https://github.com/openai/codex/releases/download/rust-v0.162.0-alpha.2/codex-x86_64-pc-windows-msvc.exe",
+  "releaseSha256": "d83cc3582592e307df008411f02f61a93fb93580b53dc173608a63202d97bbe4",
+  "releaseBytes": 333357872,
+  "acceptance": {
+    "run": "https://github.com/baoabaob/codlet-plugins/actions/runs/37747179353",
+    "sourceCommit": "c903c60b4f30aa808210a696ddbc5e117751b837",
+    "casesPassed": 8,
+    "completedTurns": 30,
+    "authenticationPreserved": true,
+    "ownedProcessesRemaining": 0,
+    "cleanupCompleted": true,
+    "scope": "Synthetic HTTP/SSE/WS, custom/built-in/ChatGPT auth, cancellation, two-thread routing, cold resume and provider reconfiguration; full desktop and real OAuth acceptance remain separate"
+  }
+}

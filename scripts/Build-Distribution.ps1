@@ -71,8 +71,8 @@ Codlet prepares its private JavaScript runtime from a verified official Codex
 installation when available. Otherwise it downloads the pinned official Node
 archive into its private cache. A system Node installation is not required.
 
-The package contains Core only, with no plugin code or fixed plugin versions.
-GUI includes UI Adapter in the download selection. Desktop Adapter is optional.
+Core includes the Codex UI and desktop SDK with its native compatibility modules.
+Codlet GUI is an optional ordinary plugin; no separate Adapter installation is needed.
 Setup uses the latest published GitHub Release through the regular CLI importer.
 Existing plugins are never replaced, downgraded or re-enabled by Core setup.
 Network failure leaves an unfinished selection retryable; there is no bundled fallback.

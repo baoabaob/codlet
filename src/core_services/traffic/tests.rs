@@ -11,6 +11,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::in_mode(None, Some(Permission::HostProcess))
+    }
+    fn in_mode(mode: Option<crate::plugins::HostMode>, raw: Option<Permission>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let registry_path = directory.path().join("registry.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
@@ -19,11 +22,8 @@ impl Fixture {
             let root = directory.path().join(id);
             std::fs::create_dir(&root).unwrap();
             let root = root.canonicalize().unwrap();
-            let mut permissions = vec![
-                Permission::HostProcess,
-                Permission::HostNetwork,
-                Permission::TrafficIntercept,
-            ];
+            let mut permissions = vec![Permission::HostNetwork, Permission::TrafficIntercept];
+            permissions.extend(raw);
             if sensitive {
                 permissions.extend([
                     Permission::TrafficSensitiveHeaders,
@@ -31,7 +31,11 @@ impl Fixture {
                 ]);
             }
             std::fs::write(root.join("host.js"), "exports.activate=()=>{};").unwrap();
-            std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":{"entry":"host.js"},"permissions":permissions,"requires":[{"name":"codlet.core.services","api":1,"scope":"runtime"}]}).to_string()).unwrap();
+            let mut host = json!({"entry":"host.js"});
+            if let Some(mode) = mode {
+                host["mode"] = json!(mode);
+            }
+            std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":host,"permissions":permissions,"requires":[{"name":"codlet.core.services","api":1,"scope":"runtime"}]}).to_string()).unwrap();
             let registration = LocalPluginRegistration {
                 path: root,
                 grants: permissions,
@@ -103,6 +107,66 @@ impl Fixture {
         );
         peer
     }
+}
+
+#[test]
+fn traffic_peer_uses_actual_host_mode_without_lending_legacy_or_raw_authority() {
+    for (mode, permission) in [
+        (Some(crate::plugins::HostMode::Sdk), None),
+        (
+            Some(crate::plugins::HostMode::Node),
+            Some(Permission::HostRaw),
+        ),
+        (None, Some(Permission::HostProcess)),
+    ] {
+        let fixture = Fixture::in_mode(mode, permission);
+        let endpoint = fixture
+            .invoke("test.traffic-a", "connectPeer", json!({}), true)
+            .unwrap();
+        assert_eq!(endpoint["host"], "127.0.0.1");
+        assert!(endpoint["token"].is_string());
+        assert_eq!(
+            fixture
+                .invoke("test.traffic-a", "connectPeer", json!({}), false)
+                .unwrap_err()
+                .code,
+            "permission_denied"
+        );
+        assert_eq!(
+            fixture
+                .invoke(
+                    "test.traffic-a",
+                    "openSource",
+                    json!({"upstreamBaseUrl":"https://denied.invalid"}),
+                    true
+                )
+                .unwrap_err()
+                .code,
+            "policy_denied"
+        );
+    }
+    // Saved legacy grants cannot authorize an explicit Node mode. Exercise the
+    // broker itself independently of the loader's earlier admission rejection.
+    let fixture = Fixture::new();
+    fixture
+        .services
+        .0
+        .owners
+        .lock()
+        .unwrap()
+        .get_mut("test.traffic-a")
+        .unwrap()
+        .plugin
+        .manifest
+        .host
+        .as_mut()
+        .unwrap()
+        .mode = Some(crate::plugins::HostMode::Node);
+    let denied = fixture
+        .invoke("test.traffic-a", "connectPeer", json!({}), true)
+        .unwrap_err();
+    assert_eq!(denied.code, "permission_denied");
+    assert!(denied.message.contains("host.raw"));
 }
 
 #[test]

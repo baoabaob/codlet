@@ -16,7 +16,8 @@ var require_traffic_wire = __commonJS({
     var MAX_BODY = 64 * 1024 * 1024;
     var failure2 = (code) => Object.assign(new Error(code), { code });
     async function connectTrafficPeer2(endpoint, { signal, handle, event = () => {
-    }, detach = (fn) => fn() } = {}) {
+    }, detach = (fn) => fn(), beforeRequest = () => {
+    } } = {}) {
       if (endpoint?.host !== "127.0.0.1" || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== "string" || endpoint.token.length > 128) throw failure2("invalid_data_endpoint");
       if (signal?.aborted) throw failure2("host_stopping");
       const socket = net.createConnection({ host: endpoint.host, port: endpoint.port });
@@ -128,6 +129,11 @@ var require_traffic_wire = __commonJS({
       }));
       await connected;
       function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
+        try {
+          beforeRequest(method, params);
+        } catch (error) {
+          return Promise.reject(error);
+        }
         if (closed || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));
         if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure2("resource_limit"));
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));

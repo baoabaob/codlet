@@ -7,6 +7,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { buildClientBridge } from './build-client-bridge.mjs';
+import { buildCodex } from './build-codex.mjs';
 const base = dirname(fileURLToPath(import.meta.url));
 const root = resolve(base, '..'), out = resolve(base, '.build');
 const officialRequire = createRequire(resolve(base, 'node_modules/@openai/apps-sdk-ui/package.json'));
@@ -142,4 +143,5 @@ const runtimePath=resolve(root,'bundled/runtime/ui.js');
 artifacts.set(runtimePath,artifacts.get(runtimePath)+'\n/*\n'+licenseText.replaceAll('*/','* /')+'*/\n');
 // Compile and validate every output before replacing any checked-in bundle.
 for(const [path,contents] of artifacts)await writeFile(path,contents);
-console.log('Built Core UI SDK, Host traffic runtime and examples; official plugins build independently.');
+await buildCodex(root);
+console.log('Built Core UI SDK, Codex implementations, Host traffic runtime and examples; consumers build independently.');

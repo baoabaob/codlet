@@ -4,7 +4,7 @@
 use super::*;
 
 pub(super) struct Launcher {
-    requests: Option<mpsc::SyncSender<LoadedPlugin>>,
+    requests: Option<mpsc::SyncSender<(LoadedPlugin, Option<Value>)>>,
     results: Option<mpsc::Receiver<HostOwner>>,
     stopping: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -16,17 +16,18 @@ impl Launcher {
         services: services::CoreServices,
     ) -> Result<Self, HostError> {
         let mut runtime = runtime;
-        Self::with_prepare(move |plugin| {
+        Self::with_prepare(move |plugin, state| {
             let ready = if runtime.is_none() {
                 JsRuntime::discover().map(|value| runtime = Some(value))
             } else {
                 Ok(())
             };
             match ready {
-                Ok(()) => HostOwner::start_with_services(
+                Ok(()) => HostOwner::start_with_state(
                     plugin,
                     runtime.as_ref().unwrap(),
                     services.clone(),
+                    state,
                 ),
                 Err(error) => {
                     let mut owner = HostOwner::new(plugin);
@@ -38,7 +39,7 @@ impl Launcher {
     }
 
     fn with_prepare(
-        mut prepare: impl FnMut(LoadedPlugin) -> HostOwner + Send + 'static,
+        mut prepare: impl FnMut(LoadedPlugin, Option<Value>) -> HostOwner + Send + 'static,
     ) -> Result<Self, HostError> {
         let (requests, receiver) = mpsc::sync_channel(MAX_HOSTS);
         let (sender, results) = mpsc::sync_channel(1);
@@ -47,7 +48,7 @@ impl Launcher {
         let worker = thread::Builder::new()
             .name("codlet-host-launch".into())
             .spawn(move || {
-                while let Ok(plugin) = receiver.recv() {
+                while let Ok((plugin, state)) = receiver.recv() {
                     let mut owner = if worker_stopping.load(Ordering::Acquire) {
                         let mut owner = HostOwner::new(plugin);
                         owner.fail(HostError::new(
@@ -56,7 +57,7 @@ impl Launcher {
                         ));
                         owner
                     } else {
-                        prepare(plugin)
+                        prepare(plugin, state)
                     };
                     if worker_stopping.load(Ordering::Acquire) {
                         owner.fail(HostError::new(
@@ -80,11 +81,15 @@ impl Launcher {
         })
     }
 
-    pub(super) fn begin(&self, plugin: LoadedPlugin) -> Result<(), HostError> {
+    pub(super) fn begin_restored(
+        &self,
+        plugin: LoadedPlugin,
+        state: Option<Value>,
+    ) -> Result<(), HostError> {
         self.requests
             .as_ref()
             .ok_or_else(|| HostError::new("runtime_stopping", "the launch worker is stopping"))?
-            .try_send(plugin)
+            .try_send((plugin, state))
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => HostError::new(
                     "launch_queue_full",
@@ -215,7 +220,7 @@ mod tests {
             let (entered_sender, entered) = mpsc::sync_channel(1);
             let (resume, paused) = mpsc::sync_channel(1);
             let (created_sender, created) = mpsc::sync_channel(1);
-            let mut launcher = Launcher::with_prepare(move |plugin| {
+            let mut launcher = Launcher::with_prepare(move |plugin, _state| {
                 entered_sender.send(()).unwrap();
                 paused.recv().unwrap();
                 let owner = HostOwner::start(plugin, &runtime);
@@ -238,7 +243,7 @@ mod tests {
             let mut generations = BTreeMap::new();
             let (completion, mut starting) = receipt();
             apply(
-                Command::Start(Box::new(plugin), completion),
+                Command::Start(Box::new(plugin), None, completion),
                 &mut owners,
                 &mut generations,
                 &launcher,

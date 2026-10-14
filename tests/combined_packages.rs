@@ -43,7 +43,7 @@ let context;
 const record=(event,more={{}})=>fs.appendFileSync(path.join(context.root,'events.jsonl'),JSON.stringify({{event,revision,generation:context.plugin.generation,...more}})+'\n');
 module.exports={{
  activate(ctx){{context=ctx;record('activate');ctx.rpc.provide({capability},'inspect',(_params,invocation)=>{{record('inspect',{{caller:invocation.caller}});return {{ready:true,generation:ctx.plugin.generation,revision}};}});}},
- async deactivate(cleanup){{const stats=await cleanup.cdp.request('Fake.stats');record('deactivate',{{remainingWorlds:stats.scripts}});}}
+ async deactivate(cleanup){{const stats=await cleanup.cdp.request('Fake.stats');record('deactivate',{{remainingWorlds:stats.scripts,remainingOwnedWorlds:stats.scripts.filter(world=>world.startsWith('codlet.plugin.'+context.plugin.id+'.g'))}});}}
 }};
 "#,
         revision = serde_json::to_string(revision).unwrap(),
@@ -253,6 +253,21 @@ impl Fixture {
             }
         }
     }
+    fn assert_renderer_removed(&self, id: &str) {
+        assert!(
+            self.renderer
+                .local_watch_sources()
+                .iter()
+                .all(|source| source.plugin.manifest.id != id),
+            "disabled owner must release its loaded local renderer source"
+        );
+        for target in self.renderer.status_snapshot().targets {
+            assert!(
+                target.plugins.iter().all(|plugin| plugin.id != id),
+                "retired owner remains in target: {target:?}"
+            );
+        }
+    }
     fn events(root: &Path) -> Vec<Value> {
         std::fs::read_to_string(root.join("events.jsonl"))
             .unwrap()
@@ -306,9 +321,9 @@ fn combined_replacement_restores_both_immutable_sources_at_one_fresh_generation(
         && event["revision"] == "old"));
     for event in events.iter().filter(|event| event["event"] == "deactivate") {
         assert_eq!(
-            event["remainingWorlds"],
+            event["remainingOwnedWorlds"],
             json!([]),
-            "renderer must clean up before native stop: {event}"
+            "this owner's renderer scripts must clean up before its native stop: {event}"
         );
     }
     std::fs::write(root.join("codlet.json"), "broken manifest").unwrap();
@@ -319,12 +334,13 @@ fn combined_replacement_restores_both_immutable_sources_at_one_fresh_generation(
         fixture.apply(Action::Disable, COMBINED).outcome,
         Outcome::Applied
     );
-    assert_eq!(fixture.renderer.plugin_count(), 0);
+    fixture.assert_renderer_removed(COMBINED);
     assert!(
         fixture
             .hosts
             .observations()
             .iter()
+            .filter(|observation| observation.plugin.manifest.id == COMBINED)
             .all(|observation| observation.state != ExecutionState::Active)
     );
 }
@@ -437,12 +453,9 @@ fn combined_enable_receipt_waits_for_a_real_renderer_target_after_native_ready()
     // The coordinator requests a renderer as soon as Host startup is queued;
     // Host activation may itself await a renderer provider. This independent
     // Host becomes ready while the same receipt still waits for a live target.
-    while !fixture
-        .hosts
-        .observations()
-        .iter()
-        .any(|observation| observation.state == ExecutionState::Active)
-    {
+    while !fixture.hosts.observations().iter().any(|observation| {
+        observation.plugin.manifest.id == COMBINED && observation.state == ExecutionState::Active
+    }) {
         fixture.tick();
         assert!(
             Instant::now() < end,
@@ -462,11 +475,22 @@ fn combined_enable_receipt_waits_for_a_real_renderer_target_after_native_ready()
             .hosts
             .observations()
             .iter()
-            .any(|observation| observation.state == ExecutionState::Active)
+            .any(|observation| observation.plugin.manifest.id == COMBINED
+                && observation.state == ExecutionState::Active)
     );
     assert!(!fixture.registry().is_enabled(COMBINED));
     for session in &fixture.sessions {
-        assert_eq!(fixture.renderer.attach(session).unwrap().plugin_count, 0);
+        fixture.renderer.attach(session).unwrap();
+        let status = fixture.renderer.status_snapshot();
+        let target = status
+            .targets
+            .iter()
+            .find(|target| target.target_id == session.target_id())
+            .unwrap();
+        assert!(
+            target.plugins.iter().all(|plugin| plugin.id != COMBINED),
+            "the combined renderer must wait for its receipt even when Core providers are already attached: {target:?}"
+        );
     }
     fixture.control.renderer_executor_result(Ok(()));
     assert_eq!(fixture.result(&receipt).unwrap().outcome, Outcome::Applied);
@@ -529,26 +553,24 @@ fn combined_disable_self_preserves_response_and_retries_a_full_receipt_queue() {
             .hosts
             .observations()
             .iter()
-            .any(|observation| observation.state == ExecutionState::Active),
+            .any(|observation| observation.plugin.manifest.id == COMBINED
+                && observation.state == ExecutionState::Active),
         "full broker must retain pending native cleanup"
     );
-    while fixture
-        .hosts
-        .observations()
-        .iter()
-        .any(|observation| observation.state == ExecutionState::Active)
-        || fixture.control.is_pending()
+    while fixture.hosts.observations().iter().any(|observation| {
+        observation.plugin.manifest.id == COMBINED && observation.state == ExecutionState::Active
+    }) || fixture.control.is_pending()
     {
         fixture.tick();
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(fixture.renderer.plugin_count(), 0);
+    fixture.assert_renderer_removed(COMBINED);
     assert!(
         Fixture::events(&root)
             .iter()
             .filter(|event| event["event"] == "deactivate")
-            .all(|event| event["remainingWorlds"] == json!([]))
+            .all(|event| event["remainingOwnedWorlds"] == json!([]))
     );
     let stats = fixture.command("Fake.stats", Value::Null);
     let trace = stats["trace"].as_array().unwrap();

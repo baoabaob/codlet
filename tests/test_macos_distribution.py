@@ -6,6 +6,10 @@ from pathlib import Path
 import plistlib
 import tempfile
 import unittest
+import zipfile
+import os
+from contextlib import nullcontext
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("macos_distribution", ROOT / "scripts/build-macos-distribution.py")
@@ -104,6 +108,29 @@ class PackagingTests(unittest.TestCase):
         (self.source / "LICENSE").unlink()
         with self.assertRaisesRegex(ValueError, "license text"):
             self.stage()
+
+    def test_signed_bundle_update_format_is_explicitly_next_start_only(self):
+        app, version, _ = self.stage()
+        output = self.directory / "runtime-update.zip"
+        # Windows cannot preserve POSIX file modes. This offline fixture checks
+        # archive/metadata shape; real Mac packaging still validates each mode.
+        original_stat = Path.stat
+        def posix_file_modes(file, *args, **kwargs):
+            result = original_stat(file, *args, **kwargs)
+            if result.st_mode & 0o170000 == 0o100000:
+                values = list(result)
+                values[0] = (result.st_mode & ~0o777) | 0o644
+                return os.stat_result(values)
+            return result
+        modes = patch.object(Path, "stat", posix_file_modes) if os.name == "nt" else nullcontext()
+        with modes:
+            asset = builder.build_update_zip(app, output, version)
+        self.assertEqual(asset["sha256"], self.hash(output))
+        with zipfile.ZipFile(output) as archive:
+            manifest = json.loads(archive.read("runtime-update-manifest.json"))
+            self.assertEqual(manifest["profile"], "macApp")
+            self.assertNotIn("online", manifest)
+            self.assertTrue(all(file["path"].startswith("Codlet.app/") for file in manifest["files"]))
 
 
 if __name__ == "__main__":

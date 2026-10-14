@@ -298,6 +298,7 @@ pub(crate) fn launch_packaged_cdp_with_bootstrap(
 
 /// The lab uses the same package/ordinary-path validation as production while
 /// keeping its explicitly owned working directory and child environment.
+#[cfg(not(feature = "desktop-acceptance"))]
 pub(crate) fn launch_packaged_cdp_in_directory(
     executable: &Path,
     arguments: &[OsString],
@@ -315,6 +316,29 @@ pub(crate) fn launch_packaged_cdp_in_directory(
         package,
         Some(current_directory),
         &mut |_| Ok(()),
+    )
+}
+
+#[cfg(feature = "desktop-acceptance")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_packaged_cdp_in_directory_with_bootstrap(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: &ChildEnvironment,
+    current_directory: &Path,
+    package: &super::packages::InstalledPackage,
+    stderr: &crate::client_stderr::ClientStderr,
+    before_resume: &mut impl FnMut(&SuspendedChild) -> Result<(), ProcessError>,
+) -> Result<(ChildProcess, ParentCdpPipes), ProcessError> {
+    launch_packaged_cdp_at(
+        executable,
+        arguments,
+        Some(environment),
+        false,
+        Some(stderr),
+        package,
+        Some(current_directory),
+        before_resume,
     )
 }
 

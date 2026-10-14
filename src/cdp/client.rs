@@ -21,7 +21,7 @@ mod core_rpc_vm_tests;
 #[cfg(all(test, windows))]
 mod host_attachment_vm_tests;
 #[cfg(all(test, windows))]
-mod host_renderer_vm_tests;
+pub(crate) mod host_renderer_vm_tests;
 #[cfg(all(test, windows))]
 mod m2_raw_vm_tests;
 #[cfg(all(test, windows))]

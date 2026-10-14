@@ -220,7 +220,12 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
                 restart,
                 manage.preferences_for_start(),
             ) {
-                Ok(service) => manage.set_runtime_update(service),
+                Ok(service) => {
+                    if let Some(source) = renderer.client_source() {
+                        service.attach_online_target(source);
+                    }
+                    manage.set_runtime_update(service);
+                }
                 Err(e) => crate::runtime_log::error("runtime_update_unavailable", &e.to_string()),
             }
         }
@@ -371,7 +376,41 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
                 std::thread::sleep(Duration::from_millis(10));
             }
         })();
+        let natural_client_exit =
+            activation.is_ok() && child.try_wait()?.is_some_and(|exit| exit.success());
         let cleanup = session.stop();
+        let deferred_proof: Result<()> =
+            if natural_client_exit && cleanup.is_ok() && !session.update_armed {
+                if let Some(service) = session.manage.runtime_update_service() {
+                    match crate::runtime_update_owner::RuntimeUpdateHandoff::arm_deferred_on_exit(
+                        &service,
+                    ) {
+                        Ok(Some(request)) => {
+                            let traffic_retired = if let Some(owner) = &traffic {
+                                owner.retire_for_update().map_err(Into::into)
+                            } else {
+                                Ok(())
+                            };
+                            traffic_retired.and_then(|()| {
+                                write_owner_cleanup(
+                                    &request.plan_path.with_file_name("owner-cleanup.json"),
+                                    &request.id,
+                                    &request.plan_sha256,
+                                )
+                            })
+                        }
+                        Ok(None) => Ok(()),
+                        Err(failure) => {
+                            crate::runtime_log::error("runtime_update_deferred_retained", &failure);
+                            Ok(())
+                        }
+                    }
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            };
         let traffic_cleanup: Result<()> = if session.update_armed
             && session.update_client_exited
             && activation.is_ok()
@@ -399,7 +438,11 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         } else {
             Ok(())
         };
-        activation.and(cleanup).and(traffic_cleanup).and(proof)
+        activation
+            .and(cleanup)
+            .and(traffic_cleanup)
+            .and(proof)
+            .and(deferred_proof)
     } else {
         let recovery = crate::safe_mode::RecoverySession::new(
             scope.path().to_owned(),

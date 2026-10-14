@@ -1,0 +1,1 @@
+{"schema":1,"id":"dev.workspace.audit-consumer","name":"Workspace API acceptance consumer","version":"0.0.1","renderer":{"entry":"renderer.js","world":"main"},"host":{"entry":"host.cjs"},"permissions":["ui.dom","ui.mainWorld","host.process","cdp.raw"],"requires":[{"name":"codex.ui.workspace","api":1,"scope":"target"},{"name":"workspace.audit.metadata","api":1,"scope":"target"}]}

@@ -14,8 +14,8 @@ pub const MAX_POLICY_PATH_BYTES: usize = 4096;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct BrokerPolicy {
-    /// Explicit consent to use the desktop process's OS-user access for the
-    /// granted permission categories. Legacy scoped registrations stay intact.
+    /// Broad consent for standard file/network/desktop brokers only. It never
+    /// selects executables, inherits process environment, or authorizes raw Host.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub client_permissions: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -61,13 +61,10 @@ impl BrokerPolicy {
                 || !self.write_roots.is_empty()
                 || !self.watch_roots.is_empty()
                 || !self.network_origins.is_empty()
-                || !self.executables.is_empty()
-                || !self.cwd_roots.is_empty()
-                || !self.env_keys.is_empty()
                 || !self.shortcuts.is_empty())
         {
             return Err(policy_error(
-                "clientPermissions cannot be combined with per-plugin scopes",
+                "clientPermissions cannot be combined with standard file/network/shortcut scopes; executable/cwd/env selections remain explicit",
             ));
         }
         for (name, paths) in [
@@ -194,12 +191,9 @@ impl BrokerPolicy {
     }
 
     pub fn canonicalized(&self) -> Result<Self, PermissionPolicyError> {
-        if self.client_permissions {
-            self.validate()?;
-            return Ok(self.clone());
-        }
         let mut policy =
             Self::from_explicit_inputs(&self.read_roots, &self.network_origins, &self.executables)?;
+        policy.client_permissions = self.client_permissions;
         policy.write_roots = self
             .write_roots
             .iter()

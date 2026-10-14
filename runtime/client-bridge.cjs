@@ -4,8 +4,9 @@ const net = require('node:net');
 const path = require('node:path');
 const { realpathSync } = require('node:fs');
 const Module = require('node:module');
-const { createHash, timingSafeEqual } = require('node:crypto');
+const { createHash, timingSafeEqual, randomUUID } = require('node:crypto');
 const { connectPlaintextSource } = require('./plaintext-source-client.cjs');
+const { createWriteLedger, snapshotJson } = require('./online-update.cjs');
 const acorn = require('acorn');
 const MAX_FRAME = 2 * 1024 * 1024;
 const fail = code => Object.assign(new Error(code), { code });
@@ -92,6 +93,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   // generation. Keeping them forwarding while hooks retire preserves existing
   // backend pipes and conversations without granting an interceptor authority.
   resources.set('backendState', { owned: new WeakSet(), trust: new WeakMap(), accounts: new WeakMap(), providers: new WeakMap(), records: new Set(), pending: new Set(), prepared: 0 });
+  resources.set('desktopState', {taskRoutes: new Set(), routesByProcess: new WeakMap(), sendQueues: new WeakMap()});
   const modules = observeModules(electron.app.getAppPath(), Symbol.for(`codlet.client.modules.${configuration.token}`), dependencies);
   const identity = dependencies.identity ?? (() => ({ pid: process.pid, executable: process.execPath, type: process.type }));
   const load = dependencies.load ?? (code => {
@@ -100,7 +102,19 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     return module.exports;
   });
   let active = null, epoch = 0, closed = false, chain = Promise.resolve(),lastActivation={installed:false,activatedSources:[],unsupportedSources:[]},sourceError=null;
-  const receipts = new Map(), connections = new Set();let leased=false;
+  const receipts = new Map(), receiptFingerprints = new Map(), connections = new Set(), transactions = new Map();
+  const writes = createWriteLedger({getEpoch: () => epoch});
+  let lease = null, leaseEpoch = 0, leaseTransfer = null;
+  let admission = null;
+  let fixtureSelection = null;
+  const fixtureEvidence=()=>{
+    if(configuration.ownedFixtureRoutes!==true)return undefined;
+    const value=globalThis[Symbol.for('codlet.owned.online-factory-evidence.v1')];
+    if(!value||value.api!==1||typeof value.id!=='string'||!/^[a-f0-9]{64}$/.test(value.id)||typeof value.version!=='string'||value.version.length>64||!value.counts||typeof value.counts!=='object')return null;
+    const counts={};for(const [key,descriptor]of Object.entries(Object.getOwnPropertyDescriptors(value.counts)).slice(0,64)){
+      if(/^[a-zA-Z0-9._:-]{1,128}$/.test(key)&&'value'in descriptor&&Number.isSafeInteger(descriptor.value)&&descriptor.value>=0&&descriptor.value<=0xffffffff)counts[key]=descriptor.value;
+    }return {api:1,id:value.id,version:value.version,counts};
+  };
   const context = Object.freeze({ modules, resources,
     trackBackend(record,rule) {
       const state=resources.get('backendState');state.records.add(record);
@@ -126,7 +140,25 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   });
 
   const status = () => ({ ...identity(), epoch, owner: active?.owner ?? null, generation: active?.generation ?? null,
-    activation: active?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect() });
+    sourceSha256:active?createHash('sha256').update(active.code).digest('hex'):null,coreVersion:active?.coreVersion??null,
+    activation: active?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect(),
+    ...(configuration.ownedFixtureRoutes===true?{fixtureFactoryEvidence:fixtureEvidence()}:{}),
+    onlineUpdate: {protocol: 1, admissionVersion:1, fixtureExplicitSource:resources.has('ownedFixtureRoute')?{kind:'fixture-explicit-source',registered:true}:null, handoffVersion: active?.runtime.handoffVersion ?? null, writes: writes.inspect(), leaseEpoch,
+      admission:admission?{operationId:admission.id,epoch:admission.epoch,phase:admission.phase,lastSourceOutcome:admission.lastSourceOutcome??null}:null,
+      retainedCore: ['rust-traffic', 'client-bridge', 'module-observer'], retainedCoreActivation: 'nextStart'} });
+  const generationContext = signal => Object.freeze({...context, onlineUpdates: Object.freeze({
+    signal, epoch: () => epoch, accepting: () => writes.inspect().accepting,
+    execute: (input, handler) => writes.execute(input, handler),
+    result: id => writes.result(id),
+    receipts: () => writes.receipts(),
+    whenAccepting: signal => writes.whenAccepting(signal),
+    async run(method, operation) {
+      let value;
+      const result = await writes.executeGenerated({operationId:'native.'+randomUUID(),expectedEpoch:epoch,method,params:null},async (_params, metadata) => {value=await operation(metadata);return null;});
+      if(result.outcome!=='applied')throw Object.assign(fail(result.error??'core_write_unknown'),{outcome:result.outcome,operationId:result.operationId});
+      return value;
+    },
+  })});
   async function closeActive() {
     if (!active) return;
     const previous = active;
@@ -134,19 +166,111 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     if (result === false) throw fail('client_bridge_cleanup_unconfirmed');
     active = null;lastActivation={installed:false,activatedSources:[],unsupportedSources:[]};
   }
-  async function install(selection) {
+  async function install(selection, options = {}) {
     const exported = load(selection.code);
     if (typeof exported.installElectronTraffic !== 'function') throw fail('client_bridge_exports_invalid');
     // A hot replacement validates its profile against captured native modules
     // before retiring the previous package's hooks.
     await bounded(() => exported.validateClientSource?.(electron, context), 'client_bridge_preflight_timeout');
     const configuration = { ...selection.configuration, deadlineUnixMs: Date.now() + 8000 };
-    const runtime = exported.installElectronTraffic(electron, configuration, context);
+    const runtime = exported.installElectronTraffic(electron, configuration, generationContext(options.signal));
     if (!runtime || typeof runtime.ready !== 'function' || typeof runtime.close !== 'function') throw fail('client_bridge_exports_invalid');
     active = { ...selection, configuration, runtime, activation: null };
-    try { active.activation = await bounded(() => runtime.ready(), 'client_bridge_activation_timeout'); if(active.activation?.installed!==true)throw fail('client_bridge_source_unavailable'); }
+    try {
+      if (options.snapshot !== undefined) await bounded(() => runtime.restore(options.snapshot), 'core_update_restore_timeout');
+      active.activation = await bounded(() => runtime.ready(), 'client_bridge_activation_timeout'); if(active.activation?.installed!==true)throw fail('client_bridge_source_unavailable');
+      if (options.confirm) {
+        const confirmed = await bounded(() => runtime.confirmTakeover(), 'core_update_takeover_timeout');
+        if (confirmed !== true) throw fail('core_update_takeover_unconfirmed');
+      }
+    }
     catch (error) { await closeActive(); throw error; }
     sourceError=null;return active.activation;
+  }
+  async function compatibleReplace(command) {
+    const previous = active;
+    const candidate = load(command.code);
+    const methods = ['snapshot', 'suspend', 'resume', 'restore', 'confirmTakeover'];
+    if(command.drainTimeoutMs!==undefined&&(!Number.isInteger(command.drainTimeoutMs)||command.drainTimeoutMs<1||command.drainTimeoutMs>8000))throw fail('core_update_timeout_invalid');
+    if (candidate.handoffVersion !== 1 || previous && (previous.runtime.handoffVersion !== 1 || methods.some(name => typeof previous.runtime[name] !== 'function')))
+      throw fail('core_update_next_start_required');
+    await bounded(() => candidate.validateClientSource?.(electron, context), 'client_bridge_preflight_timeout');
+    const controller = transactions.get(command.operationId);
+    const checkCancelled=()=>{if(controller.signal.aborted)throw fail('core_update_cancelled');};
+    checkCancelled();
+    writes.pause();
+    let snapshot, suspended = false;
+    try {
+      if ((await writes.drain(command.drainTimeoutMs ?? 8000)).length) throw fail('core_update_writes_unsettled');
+      checkCancelled();
+      if (previous) {
+        snapshot = snapshotJson(await bounded(() => previous.runtime.snapshot(), 'core_update_snapshot_timeout'));
+        if (await bounded(() => candidate.validateSnapshot?.(snapshot), 'core_update_preflight_timeout') === false) throw fail('core_update_snapshot_incompatible');
+        checkCancelled();
+        const ack = await bounded(() => previous.runtime.suspend(), 'core_update_suspend_timeout');
+        if (ack !== true) throw fail('core_update_suspend_unconfirmed');
+        suspended = true;
+      }
+      active = null;
+      epoch++;
+      await install(command, {snapshot, signal: controller.signal, confirm: true});
+      checkCancelled();
+      // Previous hooks have already released authority, but their rollback state
+      // remains live until the replacement confirms restoration and takeover.
+      if (previous) {
+        try { await bounded(() => previous.runtime.close(), 'core_update_retire_timeout'); }
+        catch { return {outcome: 'applied', retirement: 'pending', ...status()}; }
+      }
+      return {outcome: 'applied', retirement: 'confirmed', snapshotRestored: previous !== null, ...status()};
+    } catch (error) {
+      controller.abort();
+      if (!suspended) {
+        if(!previous&&active===null)return {outcome:'degraded',error:codeOf(error),...status()};
+        throw error;
+      }
+      if (active) await closeActive();
+      active = previous;
+      try {
+        const restored = await bounded(() => previous.runtime.resume(snapshot), 'core_update_rollback_timeout');
+        if (restored !== true) throw fail('core_update_rollback_unconfirmed');
+        return {outcome: 'rolled_back', error: codeOf(error), ...status()};
+      } catch { return {outcome: 'degraded', error: 'core_update_restoration_failed', ...status()}; }
+    } finally { if(!admission)writes.resume(); }
+  }
+  const acceptedReceipts=()=>writes.receipts().map(({operationId,epoch,pending,outcome})=>({operationId,epoch,pending,outcome}));
+  async function ownedFixtureRoute(command) {
+    if(configuration.ownedFixtureRoutes!==true)throw fail('core_fixture_unavailable');
+    if(closed||command.expectedEpoch!==epoch||admission)throw fail('core_fixture_not_ready');
+    if(fixtureSelection)throw fail('core_fixture_already_used');
+    const value=command.upstreamBaseUrl;
+    if(typeof value!=='string'||value.length>256||!/^http:\/\/127\.0\.0\.1:[0-9]{4,5}(?:\/[A-Za-z0-9_/-]*)?$/.test(value))throw fail('core_fixture_upstream_invalid');
+    const url=new URL(value);if(!url.port||Number(url.port)<1024||url.search||url.hash||url.username||url.password)throw fail('core_fixture_upstream_invalid');
+    const source=resources.get('plaintextSource');if(!source||typeof source.reserveRoute!=='function')throw fail('core_fixture_source_unavailable');
+    fixtureSelection=Object.freeze({operationId:command.operationId,upstream:value});
+    const route=source.reserveRoute({upstreamBaseUrl:value});
+    try {await bounded(()=>route.ready,'core_fixture_route_timeout');}catch(error){await Promise.resolve(route.close()).catch(()=>{});throw error;}
+    resources.set('ownedFixtureRoute',route);
+    return {outcome:'fixture_route_registered',kind:'fixture-explicit-source',routeBaseUrl:route.baseUrl,...status()};
+  }
+  async function beginAdmission(command) {
+    if(closed||command.expectedEpoch!==epoch)throw fail('client_bridge_stale_epoch');
+    if(admission)throw fail('core_admission_owner_busy');
+    if(command.drainTimeoutMs!==undefined&&(!Number.isInteger(command.drainTimeoutMs)||command.drainTimeoutMs<1||command.drainTimeoutMs>8000))throw fail('core_update_timeout_invalid');
+    admission={id:command.operationId,token:randomUUID(),epoch,originSha256:status().sourceSha256,phase:'draining'};
+    writes.pause();
+    const unsettled=await writes.drain(command.drainTimeoutMs??8000);
+    admission.phase=unsettled.length?'blocked':'held';
+    return {outcome:unsettled.length?'blocked':'held',admissionToken:admission.token,admissionHeld:true,acceptedReceipts:acceptedReceipts(),
+      ...(unsettled.length?{error:'core_update_writes_unsettled'}:{}),...status()};
+  }
+  async function finishAdmission(command) {
+    if(closed||command.expectedEpoch!==epoch)throw fail('client_bridge_stale_epoch');
+    if(!admission||command.admissionId!==admission.id||command.admissionToken!==admission.token)throw fail('core_admission_owner_changed');
+    if(!['applied','rolled_back'].includes(command.disposition))throw fail('core_admission_disposition_invalid');
+    if(command.disposition==='applied'&&admission.lastSourceOutcome!=='applied')throw fail('core_admission_source_unconfirmed');
+    if(command.disposition==='rolled_back'&&(status().sourceSha256!==admission.originSha256||!['applied','rejected','rolled_back',undefined].includes(admission.lastSourceOutcome)))throw fail('core_admission_source_unconfirmed');
+    const id=admission.id;admission=null;writes.resume();
+    return {outcome:'admission_resumed',admissionId:id,disposition:command.disposition,acceptedReceipts:acceptedReceipts(),...status()};
   }
   async function replace(command) {
     if (closed || command.expectedEpoch !== epoch) throw fail('client_bridge_stale_epoch');
@@ -158,6 +282,9 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     if (command.op === 'replace' && (!label(command.owner) || !Number.isSafeInteger(command.generation) || command.generation < 1
       || typeof command.code !== 'string' || Buffer.byteLength(command.code) > MAX_FRAME / 2)) throw fail('client_bridge_selection_invalid');
     if (active && command.previousOwner !== active.owner) throw fail('client_bridge_owner_changed');
+    if(admission&&(command.compatibleUpdate!==true||command.admissionId!==admission.id||command.admissionToken!==admission.token))throw fail('core_admission_owner_changed');
+    if(!admission&&command.admissionId)throw fail('core_admission_owner_changed');
+    if (command.op === 'replace' && command.compatibleUpdate === true) return compatibleReplace(command);
     // Preflight must happen before disposal, including when the replacement's
     // module fingerprints do not match the currently running client.
     if (command.op === 'replace') await bounded(() => load(command.code).validateClientSource?.(electron, context), 'client_bridge_preflight_timeout');
@@ -176,14 +303,56 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   }
   async function command(input) {
     if (input.op === 'status') return input.operationId ? receipts.get(input.operationId) ?? { pending: false, unknown: true } : status();
-    if (!label(input.operationId) || !['replace', 'clear', 'ready'].includes(input.op)) throw fail('client_bridge_request_invalid');
-    if (receipts.has(input.operationId)) return receipts.get(input.operationId);
-    if (receipts.size >= 128) receipts.delete(receipts.keys().next().value);
+    if (input.op === 'writeResult') return {...writes.result(input.operationId), ...identity()};
+    if (input.op === 'writeReceipts') return {receipts:writes.receipts(),...identity()};
+    if (input.op === 'cancelWrite') return {...writes.cancel(input.operationId), ...identity()};
+    if (input.op === 'write') {
+      if (!label(input.method) || input.operationId?.startsWith('native.') || typeof active?.runtime.handleWrite !== 'function') throw fail('core_write_method_unavailable');
+      const runtime = active.runtime;
+      return {...writes.accept(input, (params, metadata) => runtime.handleWrite(input.method, params, metadata)), ...identity()};
+    }
+    if (input.op === 'prepareLeaseTransfer') {
+      if(leaseTransfer&&leaseTransfer.expires<Date.now())leaseTransfer=null;
+      if (!lease || input.expectedLeaseEpoch !== leaseEpoch || leaseTransfer) throw fail('core_update_lease_changed');
+      leaseTransfer = {id: randomUUID(), expires: Date.now() + 15000, epoch: leaseEpoch};
+      return {transferId: leaseTransfer.id, expires: leaseTransfer.expires, ...status()};
+    }
+    if(input.op==='abortLeaseTransfer') {
+      if(!leaseTransfer||input.transferId!==leaseTransfer.id||input.expectedLeaseEpoch!==leaseEpoch)throw fail('core_update_lease_changed');
+      leaseTransfer=null;return {outcome:'aborted',...status()};
+    }
+    if (input.op === 'cancelUpdate') {
+      const transaction=transactions.get(input.operationId);
+      if(transaction){transaction.abort();return {outcome:'cancellation_requested',...status()};}
+      return receipts.get(input.operationId)??{outcome:'unknown',unknown:true,...status()};
+    }
+    if(input.op==='preflightCore') {
+      if(input.expectedEpoch!==epoch||typeof input.code!=='string'||Buffer.byteLength(input.code)>MAX_FRAME/2)throw fail('client_bridge_stale_epoch');
+      const candidate=load(input.code);
+      if(candidate.handoffVersion!==1||active&&active.runtime.handoffVersion!==1)throw fail('core_update_next_start_required');
+      await bounded(()=>candidate.validateClientSource?.(electron,context),'client_bridge_preflight_timeout');
+      if(active){const snapshot=snapshotJson(await bounded(()=>active.runtime.snapshot(),'core_update_snapshot_timeout'));
+        if(await bounded(()=>candidate.validateSnapshot?.(snapshot),'core_update_preflight_timeout')===false)throw fail('core_update_snapshot_incompatible');}
+      return {outcome:'preflight_passed',...status()};
+    }
+    if (!label(input.operationId) || !['replace', 'clear', 'ready','beginAdmission','finishAdmission','ownedFixtureRoute'].includes(input.op)) throw fail('client_bridge_request_invalid');
+    const fingerprint=createHash('sha256').update(JSON.stringify([input.op,input.expectedEpoch,input.previousOwner,input.owner,input.generation,input.code,input.configuration,input.compatibleUpdate,input.coreVersion,input.drainTimeoutMs,input.admissionId,input.admissionToken,input.disposition,input.upstreamBaseUrl])).digest('hex');
+    if (receipts.has(input.operationId)) {
+      if(receiptFingerprints.get(input.operationId)!==fingerprint)throw fail('client_bridge_operation_id_conflict');
+      return receipts.get(input.operationId);
+    }
+    // Never evict an operation while it is running, and never forget an outcome
+    // then silently accept the same ID as a fresh side effect.
+    if (receipts.size >= 4096) throw fail('client_bridge_receipt_capacity');
     receipts.set(input.operationId, { pending: true });
-    const operation = chain.then(() => replace(input)).catch(error => ({ outcome: 'rejected', error: codeOf(error), ...status() }));
+    receiptFingerprints.set(input.operationId,fingerprint);
+    transactions.set(input.operationId,new AbortController());
+    const operation = chain.then(() => input.op==='beginAdmission'?beginAdmission(input):input.op==='finishAdmission'?finishAdmission(input):input.op==='ownedFixtureRoute'?ownedFixtureRoute(input):replace(input)).catch(error => ({ outcome: 'rejected', error: codeOf(error), ...status() }));
     chain = operation.then(() => {});
     const result = await operation;
+    if(admission&&input.op==='replace'&&input.admissionId===admission.id)admission.lastSourceOutcome=result.outcome;
     receipts.set(input.operationId, result);
+    transactions.delete(input.operationId);
     return result;
   }
   const server = net.createServer(socket => {
@@ -202,9 +371,12 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       if (candidate.length !== token.length || !timingSafeEqual(candidate, token)) { dependencies.diagnostic?.('auth_rejected');socket.destroy(); return; }
       accepted = true;
       if(input.op==='lease') {
-        if(leased){socket.destroy();return;}
-        leased=true;socket.setTimeout(0);socket.write(JSON.stringify({ok:true,result:{leased:true,...status()}})+'\n');
-        socket.once('close',()=>bridge.close().catch(()=>{}));return;
+        if (lease) {
+          if (!leaseTransfer || input.transferId !== leaseTransfer.id || leaseTransfer.expires < Date.now() || input.expectedLeaseEpoch !== leaseEpoch) {socket.destroy();return;}
+          leaseTransfer = null; leaseEpoch++;
+        } else if (input.transferId) {socket.destroy();return;}
+        lease=socket;socket.setTimeout(0);socket.write(JSON.stringify({ok:true,result:{leased:true,...status()}})+'\n');
+        socket.once('close',()=>{if(lease===socket){lease=null;bridge.close().catch(()=>{});}});return;
       }
       command(input).then(result => socket.end(JSON.stringify({ ok: true, result }) + '\n'), error => {
         const code = codeOf(error);
@@ -223,7 +395,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       const exported = load(selection.code);
       if (typeof exported.installElectronTraffic !== 'function') throw fail('client_bridge_exports_invalid');
       const configuration = { ...selection.configuration, deadlineUnixMs: Date.now() + 5000 };
-      const runtime = exported.installElectronTraffic(electron, configuration, context);
+      const runtime = exported.installElectronTraffic(electron, configuration, generationContext());
       if (!runtime || typeof runtime.ready !== 'function' || typeof runtime.close !== 'function') throw fail('client_bridge_exports_invalid');
       active = { ...selection, configuration, runtime, activation: null };
     },
@@ -236,6 +408,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     async close() {
       if (closed) return;
       closed = true;
+      writes.close();
       try { await chain; await closeActive(); }
       finally {
         modules.close();
@@ -243,6 +416,9 @@ function startClientBridge(electron, configuration, dependencies = {}) {
         await listening.catch(() => {});
         await new Promise(resolve => server.close(resolve));
         for (const record of resources.get('backendState').records) record.release();
+        for (const route of resources.get('desktopState').taskRoutes) await Promise.resolve(route.close()).catch(()=>{});
+        await Promise.resolve(resources.get('ownedFixtureRoute')?.close()).catch(()=>{});
+        resources.get('desktopState').scope?.disable();
         resources.get('plaintextSource')?.close(); resources.clear();
       }
     },

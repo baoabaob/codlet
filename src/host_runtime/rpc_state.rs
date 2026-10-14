@@ -66,6 +66,10 @@ pub(crate) struct RpcLineage {
     pub deadline: Instant,
     pub depth: u8,
     pub cancellations: Vec<Arc<AtomicBool>>,
+    /// Set by Core for a retiring renderer, then inherited only by its children.
+    pub cleanup: bool,
+    /// Core-authenticated activation/restore work under its original deadline.
+    pub lifecycle: bool,
 }
 
 impl RpcLineage {
@@ -695,6 +699,8 @@ impl CoreRpcShared {
             deadline: parent.map_or(deadline, |parent| deadline.min(parent.deadline)),
             depth,
             cancellations,
+            cleanup: parent.is_some_and(|parent| parent.cleanup),
+            lifecycle: parent.is_some_and(|parent| parent.lifecycle),
         };
         state.resolve(
             &host_provider_id(&plugin.manifest.id),
@@ -738,6 +744,8 @@ impl CoreRpcShared {
             deadline: parent.map_or(deadline, |parent| deadline.min(parent.deadline)),
             depth: parent.map_or(1, |parent| parent.depth.saturating_add(1)),
             cancellations: parent.map_or_else(Vec::new, |parent| parent.cancellations.clone()),
+            cleanup: parent.is_some_and(|parent| parent.cleanup),
+            lifecycle: parent.is_some_and(|parent| parent.lifecycle),
         };
         if lineage.depth > 8 {
             return Err(HostError::new(
@@ -1197,7 +1205,20 @@ mod tests {
         assert_eq!(route.generation, 1);
         assert_eq!(route.caller.plugin_id, "dev.consumer");
         assert_eq!(route.lineage.scope, RpcScope::Runtime);
+        assert!(
+            !route.lineage.cleanup,
+            "ordinary calls cannot invent cleanup authority"
+        );
         let mut parent = route.lineage.clone();
+        parent.cleanup = true;
+        let child = shared
+            .resolve_host(&consumer, &capability, None, Some(&parent), parent.deadline)
+            .unwrap();
+        assert!(
+            child.lineage.cleanup,
+            "a Core-authenticated cleanup child retains its finite lineage"
+        );
+        assert_eq!(child.lineage.deadline, parent.deadline);
         parent.depth = 8;
         assert_eq!(
             shared

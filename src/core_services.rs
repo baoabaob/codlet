@@ -473,6 +473,35 @@ impl SharedCoreServices {
     }
     fn check(&self, principal: &Principal, method: &str, host: bool, params: &Value) -> Result<()> {
         self.current_checked(principal, method.starts_with("traffic."))?;
+        if matches!(method, "traffic.connect" | "traffic.connectPeer") {
+            if !host || !principal.plugin.manifest.has_runtime_host() {
+                return Err(error(
+                    "permission_denied",
+                    "traffic data connections require an authenticated runtime Host entry",
+                ));
+            }
+            let raw = match principal.plugin.manifest.host_mode() {
+                Some(crate::plugins::HostMode::Sdk) => None,
+                Some(crate::plugins::HostMode::Node) => Some(Permission::HostRaw),
+                None => Some(Permission::HostProcess),
+            };
+            if let Some(permission) = raw
+                && (!principal.plugin.manifest.permissions.contains(&permission)
+                    || principal
+                        .plugin
+                        .authorization
+                        .as_ref()
+                        .is_some_and(|auth| !auth.grants.contains(&permission)))
+            {
+                return Err(error(
+                    "permission_denied",
+                    format!(
+                        "{} must authorize this Host execution mode",
+                        permission.as_str()
+                    ),
+                ));
+            }
+        }
         let permission = if params.get("reference").and_then(Value::as_str).is_some()
             && matches!(
                 method,
@@ -1127,7 +1156,10 @@ fn permission(method: &str) -> Result<Permission> {
         Some(("resources", "reportTraffic")) => HostNetwork,
         Some(("network", "fetch")) => HostNetwork,
         Some(("network", _)) => CoreNetwork,
-        Some(("traffic", "connectPeer")) => HostProcess,
+        // The implementation-owned loopback data plane is an ordinary network
+        // service, not legacy full Node authority. Host mode admission is checked
+        // separately and every channel/source retains its destination permissions.
+        Some(("traffic", "connectPeer")) => HostNetwork,
         Some(("traffic", "openChannel" | "closeChannel")) => HostNetwork,
         Some(("traffic", _)) => TrafficIntercept,
         Some(("desktop", "notify" | "dismissNotification" | "notificationEvents")) => {

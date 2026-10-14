@@ -29,6 +29,8 @@ pub struct HostCapabilityRequest {
     pub method: String,
     pub params: Value,
     pub caller: HostCapabilityCaller,
+    /// Core-authenticated renderer retirement work. Never read from plugin JSON.
+    pub cleanup: bool,
     pub deadline: Instant,
 }
 
@@ -41,6 +43,7 @@ pub struct HostCapabilityClient {
     count: Arc<AtomicUsize>,
     waker: CdpClient,
     pub(crate) shared: rpc_state::CoreRpcShared,
+    core_admission: Arc<Mutex<core_admission::Admission>>,
 }
 
 struct Permit(Arc<AtomicUsize>);
@@ -119,6 +122,7 @@ pub(super) struct Command {
     request: HostCapabilityRequest,
     route: Option<RpcRoute>,
     completion: Completion,
+    admitted: bool,
 }
 
 pub(super) struct Invocation {
@@ -168,6 +172,7 @@ impl HostCapabilityClient {
             method,
             params,
             caller: route.caller.clone(),
+            cleanup: route.lineage.cleanup,
             deadline: route.lineage.deadline,
         };
         self.begin(request, Some(route))
@@ -179,6 +184,21 @@ impl HostCapabilityClient {
         route: Option<RpcRoute>,
     ) -> Result<HostCapabilityOperation, HostError> {
         validate_request(&request)?;
+        let admission = self
+            .core_admission
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if admission.holding
+            && !request.cleanup
+            && !route
+                .as_ref()
+                .is_some_and(|route| route.lineage.lifecycle || route.lineage.depth > 1)
+        {
+            return Err(HostError::new(
+                "core_updating",
+                "Core holds new Host capability admission until the transaction settles",
+            ));
+        }
         if self.stopping.load(Ordering::Acquire) {
             return Err(HostError::new(
                 "runtime_stopping",
@@ -209,6 +229,7 @@ impl HostCapabilityClient {
                 request,
                 route,
                 completion,
+                admitted: true,
             })
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => HostError::new(
@@ -280,6 +301,7 @@ pub(super) fn channel(
     stopping: Arc<AtomicBool>,
     waker: CdpClient,
     shared: rpc_state::CoreRpcShared,
+    core_admission: Arc<Mutex<core_admission::Admission>>,
 ) -> (HostCapabilityClient, mpsc::Receiver<Command>) {
     let (sender, receiver) = mpsc::sync_channel(COMMAND_QUEUE);
     (
@@ -289,6 +311,7 @@ pub(super) fn channel(
             count: Arc::new(AtomicUsize::new(0)),
             waker,
             shared,
+            core_admission,
         },
         receiver,
     )
@@ -299,6 +322,7 @@ pub(super) fn apply(command: Command, owners: &mut [HostOwner]) {
         request,
         route,
         completion,
+        admitted,
     } = command;
     let Some(owner) = owners
         .iter_mut()
@@ -310,7 +334,7 @@ pub(super) fn apply(command: Command, owners: &mut [HostOwner]) {
         )));
         return;
     };
-    owner.begin_capability(request, route, completion);
+    owner.begin_capability(request, route, completion, admitted);
 }
 
 pub(super) fn reject_stopped(command: Command) {
@@ -348,6 +372,7 @@ impl HostOwner {
         request: HostCapabilityRequest,
         route: Option<RpcRoute>,
         completion: Completion,
+        admitted: bool,
     ) {
         let lineage = route.as_ref().map(|route| {
             let mut lineage = route.lineage.clone();
@@ -382,6 +407,12 @@ impl HostOwner {
                     "the capability provider is not active",
                 ));
             }
+            if self.state_paused && !request.cleanup {
+                return Err(HostError::new(
+                    "core_updating",
+                    "this Host has paused new capability invocations for a Core update",
+                ));
+            }
             if !self
                 .observation
                 .plugin
@@ -413,6 +444,8 @@ impl HostOwner {
                 "remainingMs": remaining_ms,
                 "scope": lineage.as_ref().map(|lineage| &lineage.scope),
                 "depth": lineage.as_ref().map_or(1, |lineage| lineage.depth),
+                "cleanup": request.cleanup,
+                "admitted": admitted,
             });
             self.supervisor
                 .as_mut()
@@ -512,6 +545,7 @@ impl HostOwner {
                         "capability_denied" => "capability_denied",
                         "undeclared_capability" => "undeclared_capability",
                         "host_unavailable" => "host_unavailable",
+                        "core_updating" => "core_updating",
                         "provider_unavailable" => "provider_unavailable",
                         _ => "provider_error",
                     };

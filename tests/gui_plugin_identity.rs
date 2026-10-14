@@ -8,6 +8,10 @@ use tempfile::tempdir;
 fn legacy_gui_preferences_are_read_only_and_explicit_new_preferences_win() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("config.json");
+    let has_bundled_gui = bundled_plugins()
+        .unwrap()
+        .iter()
+        .any(|plugin| plugin.manifest.id == GUI_PLUGIN_ID);
     for schema in [1, 2] {
         for old_enabled in [false, true] {
             for new_enabled in [None, Some(false), Some(true)] {
@@ -35,7 +39,7 @@ fn legacy_gui_preferences_are_read_only_and_explicit_new_preferences_win() {
                     enabled
                         .iter()
                         .any(|plugin| plugin.manifest.id == GUI_PLUGIN_ID),
-                    new_enabled.unwrap_or(old_enabled)
+                    has_bundled_gui && new_enabled.unwrap_or(old_enabled)
                 );
                 assert_eq!(std::fs::read(&path).unwrap(), bytes);
             }
@@ -160,8 +164,35 @@ fn old_cli_gui_id_is_an_alias_and_reports_only_the_new_identity() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("Codlet/config.json");
     std::fs::create_dir(path.parent().unwrap()).unwrap();
-    let original = br#"{"schema":1,"plugins":{"codlet":{"enabled":false}}}"#;
-    std::fs::write(&path, original).unwrap();
+    let bundled_gui = bundled_plugins()
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == GUI_PLUGIN_ID);
+    let mut document = json!({"schema":1,"plugins":{"codlet":{"enabled":false}}});
+    let (version, source) = if let Some(plugin) = bundled_gui {
+        (plugin.manifest.version, "bundled")
+    } else {
+        // Production Core has no bundled GUI: exercise the alias against an
+        // explicitly registered ordinary GUI package in this test's own root.
+        let root = directory.path().join("gui");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":GUI_PLUGIN_ID,"version":env!("CARGO_PKG_VERSION"),"renderer":{"entry":"renderer.js","world":"isolated"}}).to_string()).unwrap();
+        std::fs::write(
+            root.join("renderer.js"),
+            "module.exports={activate(){},deactivate(){}};",
+        )
+        .unwrap();
+        let registration = LocalPluginRegistration {
+            path: std::fs::canonicalize(root).unwrap(),
+            grants: vec![],
+            broker_policy: Default::default(),
+        };
+        document["schema"] = json!(2);
+        document["localPlugins"] = json!({(GUI_PLUGIN_ID):registration});
+        (env!("CARGO_PKG_VERSION").to_owned(), "local")
+    };
+    let original = serde_json::to_vec(&document).unwrap();
+    std::fs::write(&path, &original).unwrap();
     let invoke = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_codlet"))
             .env("LOCALAPPDATA", directory.path())
@@ -173,7 +204,12 @@ fn old_cli_gui_id_is_an_alias_and_reports_only_the_new_identity() {
     let list = invoke(&["plugin", "list"]);
     assert!(list.status.success());
     let text = String::from_utf8(list.stdout).unwrap();
-    assert!(text.contains("id=codlet-gui; version=0.1.0; source=bundled; enabled=false"));
+    assert!(
+        text.contains(&format!(
+            "id={GUI_PLUGIN_ID}; version={version}; source={source}; enabled=false"
+        )),
+        "CLI must report the actual registered/fixture GUI identity: {text}"
+    );
     assert!(!text.contains("id=codlet;"));
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let enabled = invoke(&["plugin", "enable", "codlet", "--json"]);

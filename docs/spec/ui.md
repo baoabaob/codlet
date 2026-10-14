@@ -1,12 +1,12 @@
 # Renderer and UI SDK
 
-Renderer plugins execute complete JavaScript in the declared `isolated` or `main` page world. They may use ordinary DOM, custom CSS, React components and third-party browser libraries. Core's optional `context.ui` API 2 supplies React, upstream components and ownership helpers; it does not reduce UI to a fixed component protocol or JSON language. [renderer.d.ts](../../types/renderer.d.ts) and [renderer-ui.d.ts](../../types/renderer-ui.d.ts) describe the public ABI.
+Renderer plugins execute complete JavaScript in the declared `isolated` or `main` page world. They may use ordinary DOM, custom CSS, React components and third-party browser libraries. Core's optional `context.ui` API 2 supplies React, upstream components and ownership helpers. `context.codex` API 1 supplies the Core-owned Codex UI and Desktop semantics; [codex.md](codex.md), [renderer.d.ts](../../types/renderer.d.ts), [codex.d.ts](../../types/codex.d.ts) and [renderer-ui.d.ts](../../types/renderer-ui.d.ts) describe the public ABI.
 
 ## Execution, permissions and lifetime
 
-Renderer instances belong to a target document and a plugin generation. `ui.dom` covers page DOM access; main-world execution additionally requires `ui.mainWorld`. Isolated JavaScript globals still operate on the shared underlying page DOM. Main-world access is explicitly high trust; neither UI ownership helpers nor DOM attributes create a hostile-code sandbox.
+Renderer instances belong to a target document and a plugin generation. `ui.dom` remains the ordinary rendering declaration; direct Native DOM access has the exceptional `ui.nativeDom` declaration. Main-world execution requires `ui.mainWorld`. Isolated JavaScript globals still operate on the shared underlying page DOM. Main-world access is explicitly high trust; neither UI ownership helpers nor DOM attributes create a hostile-code sandbox. Standard semantic methods do not lend Core's raw permissions to the consumer.
 
-`activate(context)` receives ID/version/generation/world, capability RPC, services, diagnostics, cleanup registration and optional UI support. `onDeactivate` admits at most 64 synchronous callbacks; Core runs them once before deactivation or forced retirement. Do not return a Promise from these callbacks.
+`activate(context)` receives ID/version/generation/world, capability RPC, Codex semantics, services, diagnostics, cleanup registration and optional UI support. `onDeactivate` admits at most 64 synchronous callbacks; Core runs them once before deactivation or forced retirement. Do not return a Promise from these callbacks.
 
 Core 0.2.0 also provides `onCleanup(async ({signal}) => ...)` for up to 16 restoration callbacks. Normal retirement first runs synchronous disposers, then awaits these callbacks in registration order, then awaits the plugin's `deactivate()`. They share Core's existing lifecycle deadline, and the combined-package coordinator keeps the Host alive until renderer cleanup completes. Stop new work in `onDeactivate`; restore external state in `onCleanup` or `deactivate`. Close a provider route only after restoration has been acknowledged. Feature-detect `onCleanup` when supporting older Cores.
 
@@ -42,10 +42,10 @@ The pinned library supplies Button/ButtonLink, Input/Textarea, Switch/Checkbox, 
 
 ## Native page integration
 
-To request a native full page, declare `codex.ui.navigation.page@1` with Target scope and use `ui.page(options)` or feature-detect the lighter `context.ui.page(options)`. The latter registers navigation without loading the UI SDK until entry and gives `render` a page-scoped UI owner:
+To request a native full page, declare `codex.ui.navigation.page@1` with Target scope and use `context.codex.navigation.page(options)`. Existing `ui.page(options)` and `context.ui.page(options)` remain compatible. The helper registers navigation without loading the UI SDK until entry and gives `render` a page-scoped UI owner:
 
 ```js
-const page = await context.ui.page({
+const page = await context.codex.navigation.page({
   label: 'Example', icon: 'Cube', toolbar: true,
   render({ ui, toolbar }) {
     const h = ui.React.createElement;
@@ -59,7 +59,15 @@ const page = await context.ui.page({
 
 `render` returns a complete ReactNode. Its optional toolbar is an owned DOM outlet, not a serializable control schema. Native route exit synchronously unmounts the React tree and disposes the page owner; callbacks describe activation/deactivation, not an independent floating overlay. On older API 2 runtimes without the factory helper, create an owner and call `ui.page` with the same options. Ordinary DOM mounting does not require a navigation provider.
 
-Core defines the generic helper contract. Native sidebar/router/header/composer discovery and private client exports belong to the independently distributed [official UI Adapter](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/adapters.md), not to this Core specification.
+Native sidebar/router/header/composer discovery and private client exports are maintained in Core's [codex source modules](../../codex/README.md). They are embedded into the executable and require no separate adapter installation. Historical capability names and provider IDs remain compatibility aliases; installed legacy adapter records are preserved and superseded by Core ownership.
+
+## Explicit state transfer
+
+A renderer definition may export `saveState(context)` and `restoreState(snapshot, context)`. A snapshot is `{schema: positiveInteger, value: JSON}`. Core accepts at most 256 KiB, with finite numbers, plain objects, dense arrays and depth at most 64; it rejects functions, Promises, DOM nodes, prototypes, accessors, symbols, cycles and hidden properties. A definition without `saveState` reports a null snapshot and makes no state-transfer promise.
+
+Checkpointing pauses new ordinary SDK/RPC operations with `core_updating` and waits for accepted RPC responses and broker-accepted provider invocations to settle. Their bound nested invocation RPC may finish. `saveState` computes JSON only; it cannot start new SDK writes. The deadline is at most 15 seconds. RPC timeouts report an explicitly unknown outcome and must not cause speculative write replay. A failed whole update resumes every paused old generation through Core's private `__resume(id, generation)` command. Existing lifecycle cleanup/restoration calls remain available during actual retirement.
+
+Core obtains the snapshot while the old owner is still active. Snapshot failure retains that owner. A restored candidate first runs `activate(context)`, then awaits `restoreState(snapshot, context)`, and only then reports activation success. `context.restoringState` is true during those calls and false after restoration succeeds; consumers use it to avoid automatic side effects before restored state has been applied. Restoration failure is an activation failure and runs candidate cleanup. [Management](management.md) describes the coordinator's rollback and ownership boundary. Arbitrary JavaScript closures and resources must be reacquired through the SDK; they are not serialized into state.
 
 ## Styling, locale and input
 

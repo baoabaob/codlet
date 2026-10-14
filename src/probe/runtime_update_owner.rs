@@ -34,6 +34,20 @@ pub(super) struct RuntimeUpdateOwner {
 }
 
 impl RuntimeUpdateOwner {
+    pub(super) fn install_deferred_after_client_exit(&self) {
+        if let Some(service) = &self.service {
+            match RuntimeUpdateHandoff::arm_deferred_on_exit(service) {
+                Ok(Some(request)) => eprintln!(
+                    "runtime-update: deferred install armed after natural client exit: {}; no Native restart requested",
+                    request.id
+                ),
+                Ok(None) => {}
+                Err(failure) => eprintln!(
+                    "runtime-update: deferred install retained for next attempt: {failure}"
+                ),
+            }
+        }
+    }
     pub(super) fn request_client_quit(&self) {
         if let Some(session) = self.sessions.values().find(|session| session.is_live()) {
             let _ = request_quit(session);
@@ -47,6 +61,7 @@ impl RuntimeUpdateOwner {
         child: &ChildProcess,
         package_version: &str,
         sessions: &[TargetSession],
+        client_source: Option<crate::client_bridge::ClientSourceRuntime>,
     ) -> Self {
         let mut owner = Self {
             service: None,
@@ -78,6 +93,9 @@ impl RuntimeUpdateOwner {
         })();
         match result {
             Ok(service) => {
+                if let Some(source) = client_source {
+                    service.attach_online_target(source);
+                }
                 manage.set_runtime_update(service.clone());
                 owner.service = Some(service);
             }
@@ -338,6 +356,7 @@ mod tests {
             install_available: true,
             unavailable_reason: None,
             error: None,
+            activation: None,
         };
         assert!(owner.installing());
         assert!(!owner.restore_management_after_terminal_failure(&status));

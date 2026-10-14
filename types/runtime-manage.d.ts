@@ -1,14 +1,15 @@
 /** Public codlet.runtime.manage@1 DTOs. Type-only authoring material; no runtime
  * module or automatic retry helper is supplied by this declaration file. */
 export type PluginPermission =
-  | 'ui.dom' | 'ui.mainWorld' | 'cdp.raw' | 'host.process'
+  | 'ui.dom' | 'ui.nativeDom' | 'ui.mainWorld' | 'cdp.raw' | 'host.process' | 'host.raw'
   | 'host.fs' | 'host.network' | 'host.system' | 'runtime.manage'
   | 'core.storage' | 'core.credentials' | 'core.credentials.use' | 'host.fs.write' | 'host.fs.watch' | 'core.files.dialog'
-  | 'core.events' | 'core.tasks' | 'host.process.spawn' | 'core.network' | 'core.notifications' | 'core.clipboard.read' | 'core.clipboard.write' | 'core.shortcuts' | 'core.diagnostics';
+  | 'core.events' | 'core.tasks' | 'host.process.spawn' | 'core.network' | 'core.notifications' | 'core.clipboard.read' | 'core.clipboard.write' | 'core.shortcuts' | 'core.diagnostics'
+  | 'traffic.intercept' | 'traffic.sensitiveHeaders' | 'traffic.redirect';
 
 export interface BrokerPolicy {
-  /** Granted categories use the desktop process's OS-user access. No per-plugin
-   * path/origin/program scopes; not the Codex conversation sandbox. */
+  /** Broad standard file/network/desktop broker consent. Executables, cwd and
+   * environment keys still require explicit selections. Does not grant raw Node. */
   readonly clientPermissions?: boolean;
   readonly readRoots?: readonly string[];
   readonly networkOrigins?: readonly string[];
@@ -44,7 +45,7 @@ export interface SourceRemovalPreview extends SourceRemovalRequest {
 
 export interface RuntimeUpdateStatus {
   currentVersion: string;
-  phase: 'development' | 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'downloaded' | 'installRequested' | 'failed';
+  phase: 'development' | 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'downloaded' | 'installRequested' | 'deferred' | 'failed';
   configured: boolean;
   channel: string;
   lastCheckedAt: number | null;
@@ -55,6 +56,8 @@ export interface RuntimeUpdateStatus {
   installAvailable: boolean;
   unavailableReason: string | null;
   error: { code: string; message: string } | null;
+  /** Actual component activation is separate from the resident executable version. */
+  activation?: { mode: 'online' | 'nextStart' | 'unknown'; version: string; components: string[]; retainedComponents: string[]; nextStartReason: string | null; persistencePending: boolean };
 }
 
 export interface RuntimePreferences {
@@ -164,7 +167,7 @@ export interface LocalImportPreview {
     /** Up to 8 literal labels, without #; recommended: UI, Adapter, Tool, Enhancement. */
     tags?: string[];
     renderer?: { entry: string; world: 'isolated' | 'main' };
-    host?: { entry: string; provides?: ImportCapability[]; requires?: ImportCapability[] };
+    host?: { entry: string; mode?: 'sdk' | 'node'; provides?: ImportCapability[]; requires?: ImportCapability[] };
     permissions: PluginPermission[]; provides: ImportCapability[]; requires: ImportCapability[];
   };
   metadata: PackageMetadata | null;

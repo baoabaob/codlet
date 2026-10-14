@@ -57,8 +57,8 @@ namespace Codlet.Setup {
             {"location", new[]{"安装位置", "Installation folder"}}, {"browse", new[]{"浏览…", "Browse…"}},
             {"menu", new[]{"添加到开始菜单", "Add to Start menu"}}, {"desktop", new[]{"创建桌面快捷方式", "Create a desktop shortcut"}},
             {"path", new[]{"将 codlet 加入 PATH", "Add codlet to PATH"}}, {"plugins", new[]{"官方插件", "Official plugins"}},
-            {"gui", new[]{"Codlet 管理界面", "Codlet GUI"}}, {"ui", new[]{"Codex 界面适配器", "Codex UI Adapter"}},
-            {"adapter", new[]{"Codex 桌面适配器", "Codex Desktop Adapter"}}, {"download", new[]{"首次启动时下载所选插件", "Download selected plugins on first launch"}},
+            {"gui", new[]{"Codlet 管理界面", "Codlet GUI"}},
+            {"download", new[]{"首次启动时下载所选插件；Core 已包含界面与桌面 SDK", "Download selected plugins on first launch; Core includes the UI and desktop SDK"}},
             {"cancel", new[]{"取消", "Cancel"}}, {"install", new[]{"安装", "Install"}}, {"logs", new[]{"查看安装日志 ↗", "View installation log ↗"}},
             {"launch", new[]{"启动 Codlet", "Launch Codlet"}}, {"back", new[]{"返回", "Back"}}, {"done", new[]{"完成", "Done"}},
             {"selected", new[]{"已选择 {0} 项", "{0} selected"}}, {"none", new[]{"暂不安装", "None selected"}},
@@ -117,7 +117,7 @@ namespace Codlet.Setup {
             Control<Button>("PluginsButton").Click += delegate {
                 SetPluginsExpanded(Control<StackPanel>("PluginChoices").Visibility != Visibility.Visible);
             };
-            foreach (string name in new[]{"GuiChoice", "UiChoice", "DesktopAdapterChoice"}) {
+            foreach (string name in new[]{"GuiChoice"}) {
                 var box = Control<CheckBox>(name);
                 box.Checked += delegate { SyncPlugins(box); }; box.Unchecked += delegate { SyncPlugins(box); };
             }
@@ -172,7 +172,7 @@ namespace Codlet.Setup {
                 if (key == null) return;
                 Control<CheckBox>("StartMenuChoice").IsChecked = key.GetValue("Shortcuts") != null;
                 Control<CheckBox>("DesktopChoice").IsChecked = key.GetValue("DesktopShortcut") != null;
-                foreach (var pair in new[]{new[]{"GuiChoice", "codlet-gui"}, new[]{"UiChoice", "codex.ui.adapter"}, new[]{"DesktopAdapterChoice", "codex.desktop.adapter"}})
+                foreach (var pair in new[]{new[]{"GuiChoice", "codlet-gui"}})
                     Control<CheckBox>(pair[0]).IsChecked = plugins != null && Convert.ToInt32(plugins.GetValue(pair[1], 0)) == 1;
             }
         }
@@ -205,23 +205,21 @@ namespace Codlet.Setup {
         bool Checked(string name) { return Control<CheckBox>(name).IsChecked == true; }
         void SyncPlugins(CheckBox changed) {
             if (syncing) return; syncing = true;
-            if (changed == Control<CheckBox>("UiChoice") && !Checked("UiChoice")) Control<CheckBox>("GuiChoice").IsChecked = false;
-            if (Checked("GuiChoice")) Control<CheckBox>("UiChoice").IsChecked = true;
-            int count = new[]{"GuiChoice", "UiChoice", "DesktopAdapterChoice"}.Count(Checked);
+            int count = new[]{"GuiChoice"}.Count(Checked);
             Control<TextBlock>("PluginCount").Text = count == 0 ? T("none") : String.Format(T("selected"), count);
             syncing = false;
         }
         internal static string Properties(string scope, string folder, IEnumerable<string> selected) {
-            string[] allowed = {"Core", "StartMenu", "DesktopShortcut", "CliPath", "GUI", "UiAdapter", "DesktopAdapter"};
+            string[] allowed = {"Core", "StartMenu", "DesktopShortcut", "CliPath", "GUI"};
             var choices = new HashSet<string>(selected);
-            if ((scope != "user" && scope != "machine") || !choices.Contains("Core") || choices.Any(x => !allowed.Contains(x)) || (choices.Contains("GUI") && !choices.Contains("UiAdapter"))) throw new ArgumentException("Invalid install selection");
+            if ((scope != "user" && scope != "machine") || !choices.Contains("Core") || choices.Any(x => !allowed.Contains(x))) throw new ArgumentException("Invalid install selection");
             folder = NormalizePath(folder);
             string remove = String.Join(",", allowed.Where(x => !choices.Contains(x)));
             return "ALLUSERS=2 MSIINSTALLPERUSER=" + (scope == "user" ? "1" : "\"\"") + " REBOOT=ReallySuppress INSTALLFOLDER=\"" + folder + "\" ADDLOCAL=" + String.Join(",", allowed.Where(choices.Contains)) + (remove.Length == 0 ? "" : " REMOVE=" + remove);
         }
         string SelectedProperties() {
             var features = new List<string> {"Core"};
-            foreach (var pair in new[]{new[]{"StartMenuChoice", "StartMenu"}, new[]{"DesktopChoice", "DesktopShortcut"}, new[]{"PathChoice", "CliPath"}, new[]{"GuiChoice", "GUI"}, new[]{"UiChoice", "UiAdapter"}, new[]{"DesktopAdapterChoice", "DesktopAdapter"}}) if (Checked(pair[0])) features.Add(pair[1]);
+            foreach (var pair in new[]{new[]{"StartMenuChoice", "StartMenu"}, new[]{"DesktopChoice", "DesktopShortcut"}, new[]{"PathChoice", "CliPath"}, new[]{"GuiChoice", "GUI"}}) if (Checked(pair[0])) features.Add(pair[1]);
             return Properties(scope, folders[scope], features);
         }
         void Status(string name, string heading, string message, string primary) {
@@ -357,8 +355,8 @@ namespace Codlet.Setup {
         public void Verify(string output) {
             if (!preview) throw new InvalidOperationException("Verification cannot install software");
             Directory.CreateDirectory(output); MsiSession.CheckProgressContract();
-            string plan = Properties("machine", Path.Combine(Path.GetTempPath(), "Codlet Fixture"), new[]{"Core", "CliPath", "GUI", "UiAdapter"});
-            if (!plan.Contains("ALLUSERS=2 MSIINSTALLPERUSER=\"\"") || !plan.Contains(" REMOVE=StartMenu,DesktopShortcut,DesktopAdapter")) throw new Exception("Scope/feature selection failed");
+            string plan = Properties("machine", Path.Combine(Path.GetTempPath(), "Codlet Fixture"), new[]{"Core", "CliPath", "GUI"});
+            if (!plan.Contains("ALLUSERS=2 MSIINSTALLPERUSER=\"\"") || !plan.Contains(" REMOVE=StartMenu,DesktopShortcut")) throw new Exception("Scope/feature selection failed");
             if (!Properties("user", folders["user"], new[]{"Core"}).Contains("MSIINSTALLPERUSER=1")) throw new Exception("Per-user scope failed");
             bool rejected = false; try { NormalizePath("C:\\"); } catch (ArgumentException) { rejected = true; }
             if (!rejected) throw new Exception("Drive root accepted");

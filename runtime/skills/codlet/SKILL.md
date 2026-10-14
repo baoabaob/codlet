@@ -24,3 +24,5 @@ description: Explain and operate Codlet desktop extensions. Use for Codlet quest
 - 执行后读取结果、必要时复查列表或运行状态；遇到不确定提交只查询原 operation ID，不能重放安装/更新
 - 输出用户理解得了的结果、必要的下一步和未验证的限制，不倾倒内部字段；回答一般问题时引用本地事实，未知功能不要臆造
 - Core 提供本技能，无须启用 Codlet 管理界面。运行时目录由 Core 管理，不能用来存插件项目或持久数据
+- Core 1 提供统一 `context.codex` SDK，UI/Desktop Adapter 已内置；不要要求用户安装或升级同名旧插件。旧注册可能以 `legacyAdapterRegistrations` 保留，实际能力查看 `coreProviders` 和独立探针
+- 在线更新只以回执中的实际 `activation` 范围为准；模块生效、保留的常驻组件与下次启动生效项分别说明。不要用窗口或 PID 未变代替会话/流式请求连续性的证据

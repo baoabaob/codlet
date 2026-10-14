@@ -6,7 +6,294 @@ use crate::catalog::PluginCatalogEntry;
 use crate::plugin_control::{PluginControlError, PluginTargetFailure};
 use crate::plugin_execution::ExecutionState;
 
+#[derive(Clone)]
+pub(crate) struct CoreIngressTarget {
+    target: String,
+    epoch: u64,
+    context: u64,
+    gate_epoch: String,
+}
+
 impl RendererRuntime {
+    /// Close ordinary SDK admission in every live realm, independently of each
+    /// plugin's resumable snapshot. Future candidate/rollback realms inherit it.
+    pub(crate) fn begin_core_admission(&mut self, operation: &str) -> Vec<PluginTargetFailure> {
+        if operation.is_empty()
+            || operation.len() > 256
+            || operation.chars().any(|value| value.is_control())
+        {
+            return vec![failure(
+                "core-renderer",
+                "core_admission_pause",
+                "Invalid Core admission operation identity".into(),
+            )];
+        }
+        if self
+            .core_admission_operation
+            .as_deref()
+            .is_some_and(|current| current != operation)
+        {
+            return vec![failure(
+                "core-renderer",
+                "core_admission_pause",
+                "Another Core operation holds renderer admission".into(),
+            )];
+        }
+        self.core_admission_operation = Some(operation.to_owned());
+        self.set_core_admission_contexts(operation, true)
+    }
+
+    pub(crate) fn resume_core_admission(&mut self, operation: &str) -> Vec<PluginTargetFailure> {
+        if self.core_admission_operation.as_deref() != Some(operation) {
+            return vec![failure(
+                "core-renderer",
+                "core_admission_resume",
+                "This operation does not own renderer admission".into(),
+            )];
+        }
+        let failures = self.set_core_admission_contexts(operation, false);
+        if failures.is_empty() {
+            self.core_admission_operation = None;
+        } else {
+            // Keep future realms held and compensate realms which resumed before
+            // another realm refused. The coordinator still owns Native ingress.
+            let mut failures = failures;
+            failures.extend(self.set_core_admission_contexts(operation, true));
+            return failures;
+        }
+        failures
+    }
+
+    fn set_core_admission_contexts(
+        &mut self,
+        operation: &str,
+        paused: bool,
+    ) -> Vec<PluginTargetFailure> {
+        let stage = if paused {
+            "core_admission_pause"
+        } else {
+            "core_admission_resume"
+        };
+        let mut contexts = BTreeMap::new();
+        for (target, session) in &self.sessions {
+            if !session.session.is_live() || session.recovery_pending {
+                continue;
+            }
+            for plugin in &session.plugins {
+                if let Some(context) = plugin.context_id {
+                    contexts
+                        .entry((target.clone(), session.document_epoch, context))
+                        .or_insert_with(|| plugin.id.clone());
+                }
+            }
+        }
+        let expression = core_admission_expression(operation, paused);
+        let mut failures = Vec::new();
+        for ((target, epoch, context), plugin) in contexts {
+            let result = if self.sessions.get(&target).is_none_or(|session| {
+                !session.session.is_live()
+                    || session.document_epoch != epoch
+                    || session.recovery_pending
+            }) {
+                Err("Renderer document changed during Core admission transfer".into())
+            } else {
+                self.evaluate_with_binding_pump(&target, &expression, context)
+                    .and_then(parse_lifecycle_result)
+            };
+            if let Err(error) = result {
+                failures.push(PluginTargetFailure {
+                    target_id: target,
+                    plugin_id: plugin,
+                    stage: stage.into(),
+                    error,
+                });
+            }
+        }
+        failures
+    }
+
+    /// Hold new Native submissions above the replaceable Desktop hooks. Responses
+    /// and already admitted operations keep their original transport/receipt.
+    pub(crate) fn pause_core_ingress(
+        &mut self,
+        operation: &str,
+    ) -> (Vec<CoreIngressTarget>, Vec<PluginTargetFailure>) {
+        let mut targets = Vec::new();
+        let mut failures = Vec::new();
+        for (target, session) in &self.sessions {
+            if !session.session.is_live() || session.recovery_pending {
+                continue;
+            }
+            let context = session
+                .plugins
+                .iter()
+                .find(|plugin| {
+                    plugin.id == crate::codex::DESKTOP_PROVIDER_ID
+                        && plugin.activation_confirmed
+                        && plugin.world == RendererWorld::Main
+                })
+                .and_then(|plugin| plugin.context_id);
+            if let Some(context) = context {
+                targets.push(CoreIngressTarget {
+                    target: target.clone(),
+                    epoch: session.document_epoch,
+                    context,
+                    gate_epoch: String::new(),
+                });
+            } else {
+                failures.push(PluginTargetFailure {
+                    target_id: target.clone(),
+                    plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                    stage: "core_ingress_pause".into(),
+                    error: "Core Desktop ingress is not ready in this document".into(),
+                });
+            }
+        }
+        targets.sort_by(|a, b| a.target.cmp(&b.target));
+        if targets.is_empty() && failures.is_empty() {
+            failures.push(PluginTargetFailure {
+                target_id: String::new(),
+                plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                stage: "core_ingress_pause".into(),
+                error: "No owned Native ingress target is available".into(),
+            });
+        }
+        if !failures.is_empty() {
+            return (Vec::new(), failures);
+        }
+        let preflight = "(() => { const gate=globalThis[Symbol.for('codlet.core.native-ingress.v1')]; return gate?.api===1 && typeof gate.pause==='function' && typeof gate.resume==='function' && typeof gate.documentEpoch==='string' && gate.documentEpoch.length>0 && gate.documentEpoch.length<=256 ? {ok:true,documentEpoch:gate.documentEpoch} : {ok:false,error:'Core Native ingress does not support coordinated transfer'}; })()";
+        for target in &mut targets {
+            let result = self
+                .evaluate_with_binding_pump(&target.target, preflight, target.context)
+                .and_then(|value| {
+                    parse_lifecycle_result(value.clone())?;
+                    value
+                        .pointer("/result/value/documentEpoch")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| "Native ingress did not return its document identity".into())
+                });
+            match result {
+                Ok(epoch) => target.gate_epoch = epoch,
+                Err(error) => failures.push(PluginTargetFailure {
+                    target_id: target.target.clone(),
+                    plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                    stage: "core_ingress_pause".into(),
+                    error,
+                }),
+            }
+        }
+        if !failures.is_empty() {
+            return (Vec::new(), failures);
+        }
+        let encoded = serde_json::to_string(operation).expect("operation ID JSON");
+        let mut held = Vec::new();
+        for target in &targets {
+            let gate_epoch =
+                serde_json::to_string(&target.gate_epoch).expect("document identity JSON");
+            let expression = format!(
+                "(() => {{ const gate = globalThis[Symbol.for('codlet.core.native-ingress.v1')]; if (gate?.api !== 1 || gate.documentEpoch !== {gate_epoch} || typeof gate.pause !== 'function') return {{ok:false,error:'Core Native ingress identity changed'}}; const value=gate.pause({encoded}); return value?.ok===true && value.held===true && value.documentEpoch==={gate_epoch} ? {{ok:true}} : {{ok:false,error:value?.message ?? 'Native ingress pause was not confirmed'}}; }})()"
+            );
+            let raw = self.evaluate_with_binding_pump(&target.target, &expression, target.context);
+            // A definite refusal did not acquire this transaction's gate. A lost
+            // or malformed reply may have paused it, so retain that exact target
+            // for compensation instead of pretending admission stayed open.
+            if !raw
+                .as_ref()
+                .is_ok_and(|value| value.pointer("/result/value/ok") == Some(&Value::Bool(false)))
+            {
+                held.push(target.clone());
+            }
+            let result = raw.and_then(parse_lifecycle_result);
+            if let Err(error) = result {
+                failures.push(PluginTargetFailure {
+                    target_id: target.target.clone(),
+                    plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                    stage: "core_ingress_pause".into(),
+                    error,
+                });
+            }
+            if self.sessions.get(&target.target).is_none_or(|session| {
+                session.document_epoch != target.epoch || session.recovery_pending
+            }) {
+                failures.push(PluginTargetFailure {
+                    target_id: target.target.clone(),
+                    plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                    stage: "core_ingress_pause".into(),
+                    error: "Native document changed while admission was being paused".into(),
+                });
+            }
+        }
+        (held, failures)
+    }
+
+    pub(crate) fn resume_core_ingress(
+        &mut self,
+        operation: &str,
+        targets: &[CoreIngressTarget],
+        applied: bool,
+    ) -> Vec<PluginTargetFailure> {
+        let encoded = serde_json::to_string(operation).expect("operation ID JSON");
+        let outcome = if applied { "applied" } else { "rolledBack" };
+        let mut failures = Vec::new();
+        for target in targets {
+            let gate_epoch =
+                serde_json::to_string(&target.gate_epoch).expect("document identity JSON");
+            let expression = format!(
+                "(() => {{ const gate=globalThis[Symbol.for('codlet.core.native-ingress.v1')]; if(gate?.api!==1 || gate.documentEpoch!=={gate_epoch} || typeof gate.resume!=='function') return {{ok:false,error:'Core Native ingress owner changed'}}; const value=gate.resume({encoded},{{outcome:'{outcome}'}}); return value?.ok===true && value.resumed===true && value.documentEpoch==={gate_epoch} ? {{ok:true}} : {{ok:false,error:value?.message ?? 'Native ingress resume was not confirmed'}}; }})()"
+            );
+            let result = if self.sessions.get(&target.target).is_none_or(|session| {
+                !session.session.is_live()
+                    || session.document_epoch != target.epoch
+                    || session.recovery_pending
+            }) {
+                Err("Original Native document retired before admission could be resumed".into())
+            } else {
+                self.evaluate_with_binding_pump(&target.target, &expression, target.context)
+                    .and_then(parse_lifecycle_result)
+            };
+            if let Err(error) = result {
+                failures.push(PluginTargetFailure {
+                    target_id: target.target.clone(),
+                    plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                    stage: "core_ingress_resume".into(),
+                    error,
+                });
+            }
+        }
+        failures
+    }
+
+    pub(crate) fn validate_core_ingress_targets(
+        &self,
+        targets: &[CoreIngressTarget],
+    ) -> Result<(), String> {
+        let held = targets
+            .iter()
+            .map(|target| (target.target.clone(), target.epoch))
+            .collect::<BTreeSet<_>>();
+        let current = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.session.is_live())
+            .map(|(id, session)| (id.clone(), session.document_epoch))
+            .collect::<BTreeSet<_>>();
+        if current != held
+            || self
+                .sessions
+                .values()
+                .any(|session| session.session.is_live() && session.recovery_pending)
+        {
+            return Err("The owned Native document set changed during Core transfer; new forward work is not admitted".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn core_update_service(
+        &self,
+    ) -> Option<crate::runtime_update::RuntimeUpdateService> {
+        self.manage_service.as_ref()?.runtime_update_service()
+    }
     pub(crate) fn revoke_package_authority(&mut self, affected: &BTreeSet<String>) {
         self.remove_managed_providers(affected);
         for id in affected {
@@ -99,6 +386,7 @@ impl RendererRuntime {
         generations: BTreeMap<String, u64>,
         plugins: &[LoadedPlugin],
     ) -> Result<(), PluginControlError> {
+        self.ensure_core_management_available()?;
         if self.management_active || self.drive_depth != 0 || self.drive_deadline.is_some() {
             return Err(PluginControlError::new(
                 "runtime_busy",
@@ -128,12 +416,29 @@ impl RendererRuntime {
         generations: BTreeMap<String, u64>,
     ) {
         self.world_reservations.clear();
+        self.reload_snapshots.clear();
+        self.reload_state_missing.clear();
         self.plugin_registry = registry;
         self.generations = generations;
-        self.management_active = false;
+        self.management_active = self.core_management_unsettled;
         self.drive_deadline = None;
         self.publish_status();
         self.flush_host_actions();
+    }
+
+    pub(crate) fn ensure_core_management_available(&self) -> Result<(), PluginControlError> {
+        if self.core_management_unsettled || self.core_admission_operation.is_some() {
+            return Err(PluginControlError::new(
+                "core_update_unsettled",
+                "Core admission is held by an unresolved update. Read the original update status; new plugin lifecycle work requires confirmed recovery or a natural next start.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain_core_management(&mut self) {
+        self.core_management_unsettled = true;
+        self.management_active = true;
     }
 
     pub(crate) fn package_has_live_target(&self) -> bool {

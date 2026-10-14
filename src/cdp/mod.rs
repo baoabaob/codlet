@@ -2,6 +2,9 @@ mod client;
 mod framing;
 mod target;
 
+#[cfg(all(test, windows))]
+pub(crate) use client::host_renderer_vm_tests::VmPeer;
+
 pub(crate) use client::CdpRequest;
 pub use client::{
     BoundedCdpEvents, CancelIoFailure, CdpClient, CdpEvent, CdpEventFilter, CdpEventStream,

@@ -8,6 +8,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 mod install;
+mod modules;
+mod online;
+#[cfg(feature = "desktop-acceptance")]
+mod owned_fixture;
+pub(crate) use modules::{
+    CoreModulesGuard, OnlineCoreModulesCompletion, OnlineCoreModulesRequest,
+    activate_online_modules, core_module_override, core_module_source, core_module_source_trusted,
+};
+pub use online::RuntimeActivation;
+pub(crate) fn installed_online_source(install_root: &Path) -> Result<Option<String>> {
+    online::installed_source(install_root)
+}
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests;
 mod package;
@@ -112,6 +124,7 @@ pub enum RuntimeUpdatePhase {
     Downloading,
     Downloaded,
     InstallRequested,
+    Deferred,
     Failed,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +142,8 @@ pub struct RuntimeUpdateStatus {
     pub install_available: bool,
     pub unavailable_reason: Option<String>,
     pub error: Option<RuntimeUpdateError>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<RuntimeActivation>,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +156,7 @@ pub struct RuntimeInstallRequest {
     pub node_path: PathBuf,
     pub handoff_ack_path: PathBuf,
     pub official_update: bool,
+    pub activate_on_next_start: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -180,8 +196,18 @@ enum Command {
     Check,
     AutomaticCheck,
     Download,
-    Install { official: bool },
+    Install {
+        official: bool,
+        restart_now: bool,
+    },
+    PrepareDeferred {
+        reply: mpsc::SyncSender<Result<Option<RuntimeInstallRequest>>>,
+    },
     Reschedule,
+    #[cfg(feature = "desktop-acceptance")]
+    FixturePoll,
+    #[cfg(feature = "desktop-acceptance")]
+    FixtureInstall,
 }
 struct State {
     status: RuntimeUpdateStatus,
@@ -195,6 +221,16 @@ struct State {
     settings_revision: u64,
     automatic_checks: bool,
     check_interval_seconds: u64,
+    online_target: Option<crate::client_bridge::ClientSourceRuntime>,
+    online_modules: Option<PendingOnlineModules>,
+    deferred: bool,
+    #[cfg(feature = "desktop-acceptance")]
+    owned_fixture: Option<owned_fixture::Authority>,
+}
+struct PendingOnlineModules {
+    request: OnlineCoreModulesRequest,
+    taken: bool,
+    completion: Option<mpsc::SyncSender<OnlineCoreModulesCompletion>>,
 }
 
 impl RuntimeUpdateService {
@@ -259,6 +295,7 @@ impl RuntimeUpdateService {
             install_available: restart.is_some() && unavailable_reason.is_none(),
             unavailable_reason,
             error: None,
+            activation: online::installed_activation(&install_root)?,
         };
         let shared = Arc::new(Mutex::new(State {
             status,
@@ -272,6 +309,11 @@ impl RuntimeUpdateService {
             settings_revision: preferences.revision,
             automatic_checks,
             check_interval_seconds,
+            online_target: None,
+            online_modules: None,
+            deferred: false,
+            #[cfg(feature = "desktop-acceptance")]
+            owned_fixture: None,
         }));
         let (sender, receiver) = mpsc::channel();
         let worker_shared = shared.clone();
@@ -314,6 +356,7 @@ impl RuntimeUpdateService {
                             state.status.total_bytes = staged.candidate.size;
                             state.status.candidate = Some(staged.candidate.clone());
                             state.staged = Some(staged);
+                            restore_deferred(&mut state, &state_root);
                             state.busy = false;
                             next = automatic_checks.then(|| {
                                 std::time::Instant::now()
@@ -329,7 +372,16 @@ impl RuntimeUpdateService {
                 }
                 loop {
                     let watching = worker_shared.lock().unwrap().install_receipt.is_some();
-                    let timeout = if watching {
+                    #[cfg(feature = "desktop-acceptance")]
+                    let fixture_waiting = worker_shared
+                        .lock()
+                        .unwrap()
+                        .owned_fixture
+                        .as_ref()
+                        .is_some_and(|authority| !authority.consumed);
+                    #[cfg(not(feature = "desktop-acceptance"))]
+                    let fixture_waiting = false;
+                    let timeout = if watching || fixture_waiting {
                         Some(Duration::from_secs(1))
                     } else {
                         next.map(|at| at.saturating_duration_since(std::time::Instant::now()))
@@ -338,6 +390,27 @@ impl RuntimeUpdateService {
                         Some(wait) => match receiver.recv_timeout(wait) {
                             Ok(command) => command,
                             Err(mpsc::RecvTimeoutError::Timeout) => {
+                                #[cfg(feature = "desktop-acceptance")]
+                                if fixture_waiting {
+                                    match owned_fixture::poll(
+                                        &worker_shared,
+                                        &install_root,
+                                        &state_root,
+                                    ) {
+                                        Err(failure) => fail_state(&worker_shared, failure),
+                                        Ok(true) => self::install_fixture(
+                                            &runtime,
+                                            &client,
+                                            &channel,
+                                            &install_root,
+                                            &state_root,
+                                            restart.as_ref(),
+                                            &worker_shared,
+                                        ),
+                                        Ok(false) => {}
+                                    }
+                                    continue;
+                                }
                                 if watching {
                                     poll_install_receipt(&worker_shared);
                                     continue;
@@ -351,6 +424,10 @@ impl RuntimeUpdateService {
                             Err(_) => break,
                         },
                     };
+                    #[cfg(feature = "desktop-acceptance")]
+                    if matches!(command, Command::FixturePoll) {
+                        continue;
+                    }
                     if matches!(command, Command::Reschedule) {
                         let mut state = worker_shared.lock().unwrap();
                         next = (configured && state.automatic_checks).then(|| {
@@ -465,6 +542,73 @@ impl RuntimeUpdateService {
     pub fn status(&self) -> RuntimeUpdateStatus {
         self.shared.lock().unwrap().status.clone()
     }
+    /// Supplied only by the owned launcher after its authenticated Native bridge
+    /// is ready. Renderer RPC cannot select another process or source endpoint.
+    pub(crate) fn attach_online_target(&self, target: crate::client_bridge::ClientSourceRuntime) {
+        let mut state = self.shared.lock().unwrap();
+        state.online_target = Some(target);
+        state.status.install_available = true;
+        state.status.unavailable_reason = None;
+    }
+    #[cfg(feature = "desktop-acceptance")]
+    pub(crate) fn attach_owned_fixture(
+        &self,
+        lab_root: &Path,
+        native: RuntimeProcessIdentity,
+    ) -> Result<serde_json::Value> {
+        let authority = owned_fixture::Authority::new(lab_root, native)?;
+        let template = authority.template()?;
+        let mut state = self.shared.lock().unwrap();
+        if state.owned_fixture.is_some() {
+            return Err(error(
+                "core_fixture_owner_busy",
+                "An owned fixture is already attached.",
+            ));
+        }
+        state.owned_fixture = Some(authority);
+        drop(state);
+        self.sender.send(Command::FixturePoll).map_err(|_| {
+            error(
+                "runtime_update_worker",
+                "Runtime update worker is unavailable.",
+            )
+        })?;
+        Ok(template)
+    }
+    pub(crate) fn take_online_modules_request(&self) -> Option<OnlineCoreModulesRequest> {
+        let mut state = self.shared.lock().ok()?;
+        let pending = state.online_modules.as_mut()?;
+        if pending.taken {
+            return None;
+        }
+        pending.taken = true;
+        Some(pending.request.clone())
+    }
+    pub(crate) fn complete_online_modules(
+        &self,
+        id: &str,
+        completion: OnlineCoreModulesCompletion,
+    ) -> bool {
+        if let OnlineCoreModulesCompletion::Applied { receipt } = &completion
+            && serde_json::to_vec(receipt).map_or(true, |bytes| bytes.len() > 64 * 1024)
+        {
+            return false;
+        }
+        let mut state = match self.shared.lock() {
+            Ok(state) => state,
+            Err(_) => return false,
+        };
+        let Some(pending) = state.online_modules.as_mut() else {
+            return false;
+        };
+        if pending.request.id != id {
+            return false;
+        }
+        pending
+            .completion
+            .take()
+            .is_some_and(|sender| sender.send(completion).is_ok())
+    }
     pub fn check(&self) -> Result<RuntimeUpdateStatus> {
         self.enqueue(Command::Check)
     }
@@ -472,11 +616,48 @@ impl RuntimeUpdateService {
         self.enqueue(Command::Download)
     }
     pub fn request_install(&self) -> Result<RuntimeUpdateStatus> {
-        self.enqueue(Command::Install { official: false })
+        self.enqueue(Command::Install {
+            official: false,
+            restart_now: false,
+        })
+    }
+    pub fn request_install_restart(&self) -> Result<RuntimeUpdateStatus> {
+        self.enqueue(Command::Install {
+            official: false,
+            restart_now: true,
+        })
+    }
+    pub(crate) fn prepare_deferred_install_on_exit(&self) -> Result<Option<RuntimeInstallRequest>> {
+        {
+            let state = self.shared.lock().unwrap();
+            if !state.deferred || state.busy {
+                return Ok(None);
+            }
+        }
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(Command::PrepareDeferred { reply })
+            .map_err(|_| {
+                error(
+                    "runtime_update_worker",
+                    "Deferred update worker is unavailable.",
+                )
+            })?;
+        receiver
+            .recv_timeout(Duration::from_secs(45))
+            .map_err(|_| {
+                error(
+                    "core_update_deferred_unconfirmed",
+                    "Deferred preparation was not confirmed; Core files are retained.",
+                )
+            })?
     }
     #[cfg(windows)]
     pub(crate) fn request_combined_install(&self) -> Result<RuntimeUpdateStatus> {
-        self.enqueue(Command::Install { official: true })
+        self.enqueue(Command::Install {
+            official: true,
+            restart_now: true,
+        })
     }
     /// The owner starts the returned checked helper command, then requests normal
     /// shutdown of only its processes. Returning a request never kills anything.
@@ -528,13 +709,19 @@ impl RuntimeUpdateService {
             ));
         }
         match command {
-            Command::Reschedule | Command::AutomaticCheck => {
+            #[cfg(feature = "desktop-acceptance")]
+            Command::FixturePoll | Command::FixtureInstall => {
+                unreachable!("internal fixture command")
+            }
+            Command::Reschedule | Command::AutomaticCheck | Command::PrepareDeferred { .. } => {
                 unreachable!("internal worker command")
             }
             Command::Check => {
                 if matches!(
                     state.status.phase,
-                    RuntimeUpdatePhase::Downloaded | RuntimeUpdatePhase::InstallRequested
+                    RuntimeUpdatePhase::Downloaded
+                        | RuntimeUpdatePhase::InstallRequested
+                        | RuntimeUpdatePhase::Deferred
                 ) {
                     return Ok(state.status.clone());
                 }
@@ -562,7 +749,10 @@ impl RuntimeUpdateService {
                 }
                 state.status.phase = RuntimeUpdatePhase::Downloading;
             }
-            Command::Install { .. } => {
+            Command::Install { restart_now, .. } => {
+                if state.deferred && !restart_now {
+                    return Ok(state.status.clone());
+                }
                 if !state.status.install_available {
                     return Err(error(
                         "install_unavailable",
@@ -606,6 +796,36 @@ fn check_delay(interval: u64, failures: u32) -> u64 {
         .saturating_mul(1u64 << failures.min(5))
         .min(interval.max(21600))
 }
+fn restore_deferred(state: &mut State, root: &Path) {
+    let Some(staged) = state.staged.as_ref() else {
+        return;
+    };
+    let Ok(bytes) = package::read_file(&root.join("runtime-update-next-start.json"), 16 * 1024)
+    else {
+        return;
+    };
+    let Ok(intent) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    if intent["schema"] == 1
+        && intent["kind"] == "codlet-deferred-runtime-update"
+        && intent["candidateId"] == staged.candidate.id
+        && intent["manifestSha256"] == staged.manifest_sha256
+    {
+        state.deferred = true;
+        state.status.phase = RuntimeUpdatePhase::Deferred;
+        state.status.activation = Some(RuntimeActivation {
+            mode: "nextStart".into(),
+            version: staged.candidate.version.clone(),
+            components: vec!["core-runtime".into()],
+            retained_components: vec![],
+            next_start_reason: intent["reason"]
+                .as_str()
+                .map(|reason| reason.chars().take(4096).collect()),
+            persistence_pending: false,
+        });
+    }
+}
 
 fn reserve_check(state: &mut State, configured: bool, automatic: bool) -> bool {
     if automatic && (!state.automatic_checks || state.busy)
@@ -640,6 +860,30 @@ fn fail_state(shared: &Arc<Mutex<State>>, e: RuntimeUpdateError) {
     state.busy = false;
 }
 
+#[cfg(feature = "desktop-acceptance")]
+fn install_fixture(
+    runtime: &tokio::runtime::Runtime,
+    client: &source::UpdateClient,
+    channel: &RuntimeUpdateChannel,
+    install_root: &Path,
+    state_root: &Path,
+    restart: Option<&RuntimeRestartContext>,
+    shared: &Arc<Mutex<State>>,
+) {
+    if let Err(failure) = runtime.block_on(run_command(
+        Command::FixtureInstall,
+        client,
+        channel,
+        install_root,
+        state_root,
+        restart,
+        shared,
+    )) {
+        fail_state(shared, failure);
+    }
+    shared.lock().unwrap().busy = false;
+}
+
 async fn run_command(
     command: Command,
     client: &source::UpdateClient,
@@ -649,7 +893,22 @@ async fn run_command(
     restart: Option<&RuntimeRestartContext>,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
+    #[cfg(feature = "desktop-acceptance")]
+    let online_only = matches!(command, Command::FixtureInstall);
+    #[cfg(not(feature = "desktop-acceptance"))]
+    let online_only = false;
+    #[cfg(feature = "desktop-acceptance")]
+    let command = if online_only {
+        Command::Install {
+            official: false,
+            restart_now: false,
+        }
+    } else {
+        command
+    };
     match command {
+        #[cfg(feature = "desktop-acceptance")]
+        Command::FixturePoll | Command::FixtureInstall => unreachable!("private fixture polling"),
         Command::Reschedule => unreachable!("rescheduling does not fetch or install"),
         Command::Check | Command::AutomaticCheck => {
             if channel.source.is_none() {
@@ -660,7 +919,20 @@ async fn run_command(
             }
             let result = client.check(channel, restart.map(|r| r.profile)).await;
             shared.lock().unwrap().status.last_checked_at = Some(now_ms());
-            let candidate = result?;
+            let mut candidate = result?;
+            let active_version = shared
+                .lock()
+                .unwrap()
+                .status
+                .activation
+                .as_ref()
+                .filter(|activation| activation.mode == "online")
+                .map(|activation| activation.version.clone());
+            if let (Some(selected), Some(active)) = (&candidate, active_version)
+                && !source::newer(&selected.public.version, &active)?
+            {
+                candidate = None;
+            }
             let mut state = shared.lock().unwrap();
             state.status.phase = if candidate.is_some() {
                 RuntimeUpdatePhase::Available
@@ -688,19 +960,126 @@ async fn run_command(
             state.status.phase = RuntimeUpdatePhase::Downloaded;
             state.status.error = None;
         }
-        Command::Install { official } => {
-            let restart = restart.ok_or_else(|| {
-                error(
-                    "install_unavailable",
-                    "The launcher has not supplied a verified restart context.",
-                )
-            })?;
+        Command::PrepareDeferred { reply } => {
+            let prepared = (|| {
+                let staged = {
+                    let state = shared.lock().unwrap();
+                    if !state.deferred {
+                        return Ok(None);
+                    }
+                    state.staged.clone().ok_or_else(|| {
+                        error(
+                            "core_update_deferred_missing",
+                            "Deferred payload is missing.",
+                        )
+                    })?
+                };
+                let restart = restart.ok_or_else(|| {
+                    error(
+                        "core_update_deferred_unavailable",
+                        "The owner has no checked natural-exit installation context.",
+                    )
+                })?;
+                let request = install::prepare_deferred_install_plan(
+                    install_root,
+                    state_root,
+                    &staged,
+                    restart,
+                )?;
+                let mut state = shared.lock().unwrap();
+                state.deferred = false;
+                state.install_id = Some(request.id.clone());
+                state.install_receipt = Some((
+                    request.plan_path.with_file_name("install-receipt.json"),
+                    request.plan_sha256.clone(),
+                ));
+                Ok(Some(request))
+            })();
+            let _ = reply.send(prepared);
+        }
+        Command::Install {
+            official,
+            restart_now,
+        } => {
+            let mut next_start_reason =
+                "The executable, Node runtime, bootstrap protocol or component contract changed."
+                    .to_owned();
             let staged = shared.lock().unwrap().staged.clone().ok_or_else(|| {
                 error(
                     "runtime_update_not_downloaded",
                     "No verified update is staged.",
                 )
             })?;
+            if !official && online::compatible(install_root, &staged)? {
+                let target = shared
+                    .lock()
+                    .unwrap()
+                    .online_target
+                    .clone()
+                    .ok_or_else(|| {
+                        error(
+                            "core_update_bridge_unavailable",
+                            "The current owner has not supplied a ready online Core transport.",
+                        )
+                    })?;
+                let applied = if staged
+                    .manifest
+                    .online
+                    .as_ref()
+                    .is_some_and(|contract| !contract.modules.is_empty())
+                {
+                    online::apply_modules(install_root, state_root, &staged, &target, shared)
+                } else {
+                    online::apply(install_root, state_root, &staged, &target)
+                };
+                match applied {
+                    Ok(activation) => {
+                        let mut state = shared.lock().unwrap();
+                        state.status.activation = Some(activation);
+                        state.status.phase = RuntimeUpdatePhase::UpToDate;
+                        state.status.error = None;
+                        state.status.candidate = None;
+                        state.staged = None;
+                        state.candidate = None;
+                        return Ok(());
+                    }
+                    Err(failure) if failure.code == "core_update_next_start_required" => {
+                        next_start_reason = failure.message
+                    }
+                    Err(failure) => {
+                        if failure.code == "client_bridge_uncertain" {
+                            let mut state = shared.lock().unwrap();
+                            state.install_blocked = true;
+                            state.status.install_available = false;
+                            state.status.activation=Some(RuntimeActivation { mode:"unknown".into(),version:staged.candidate.version.clone(),components:vec!["native-client-source".into()],retained_components:online::retained_components(),next_start_reason:Some("Native source takeover outcome is not confirmed; no replay is allowed.".into()),persistence_pending:true });
+                        }
+                        return Err(failure);
+                    }
+                }
+            }
+            if online_only {
+                return Err(error("core_fixture_online_required", next_start_reason));
+            }
+            let restart = restart.ok_or_else(|| error("core_update_next_start_required","This update changes resident Core files or its bootstrap; activate it on the next start."))?;
+            if !official && !restart_now {
+                package::atomic_json(
+                    &state_root.join("runtime-update-next-start.json"),
+                    &serde_json::json!({"schema":1,"kind":"codlet-deferred-runtime-update","candidateId":staged.candidate.id,"version":staged.candidate.version,"manifestSha256":staged.manifest_sha256,"reason":next_start_reason}),
+                )?;
+                let mut state = shared.lock().unwrap();
+                state.deferred = true;
+                state.status.phase = RuntimeUpdatePhase::Deferred;
+                state.status.activation = Some(RuntimeActivation {
+                    mode: "nextStart".into(),
+                    version: staged.candidate.version.clone(),
+                    components: vec!["core-runtime".into()],
+                    retained_components: vec![],
+                    next_start_reason: Some(next_start_reason),
+                    persistence_pending: false,
+                });
+                state.status.error = None;
+                return Ok(());
+            }
             let request = install::prepare_install_plan_with_official(
                 install_root,
                 state_root,
@@ -721,6 +1100,14 @@ async fn run_command(
             state.install_request = Some(request);
             state.status.phase = RuntimeUpdatePhase::InstallRequested;
             state.status.error = None;
+            state.status.activation = Some(RuntimeActivation {
+                mode: "nextStart".into(),
+                version: staged.candidate.version.clone(),
+                components: vec!["core-runtime".into()],
+                retained_components: vec![],
+                next_start_reason: Some(next_start_reason),
+                persistence_pending: false,
+            });
         }
     }
     Ok(())
@@ -765,7 +1152,9 @@ fn restore_install_receipt(shared: &Arc<Mutex<State>>, state_root: &Path) {
     let path = state_root.join(&receipt.id).join("install-receipt.json");
     if !path.exists() {
         let mut state = shared.lock().unwrap();
-        if receipt.phase == "installed" && receipt.version.as_deref() == Some(CURRENT_VERSION) {
+        if matches!(receipt.phase.as_str(), "installed" | "installedDeferred")
+            && receipt.version.as_deref() == Some(CURRENT_VERSION)
+        {
             state.status.phase = RuntimeUpdatePhase::UpToDate;
             state.status.error = None;
             return;
@@ -813,10 +1202,18 @@ fn poll_install_receipt(shared: &Arc<Mutex<State>>) {
         && !receipt.config_patched;
     let blocked = matches!(
         receipt.phase.as_str(),
-        "rollbackBlocked" | "rollbackRestartFailed" | "installed"
+        "rollbackBlocked" | "rollbackRestartFailed" | "installed" | "installedDeferred"
     );
-    let completed =
-        receipt.phase == "installed" && receipt.version.as_deref() == Some(CURRENT_VERSION);
+    let active_version = shared
+        .lock()
+        .unwrap()
+        .status
+        .activation
+        .as_ref()
+        .map(|activation| activation.version.clone());
+    let completed = matches!(receipt.phase.as_str(), "installed" | "installedDeferred")
+        && (receipt.version.as_deref() == Some(CURRENT_VERSION)
+            || receipt.phase == "installedDeferred" && receipt.version == active_version);
     if !retry && !blocked && !completed {
         return;
     }
@@ -919,6 +1316,8 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
     Ok(channel)
 }
 
+#[cfg(all(test, windows))]
+mod foreground_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, windows))]

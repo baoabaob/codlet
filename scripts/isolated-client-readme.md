@@ -29,7 +29,7 @@
 
 `add` 默认停用；明确加 `--enable` 才立即启用。撤权、依赖级联和移除源文件有各自确认要求，见[管理契约](docs/spec/management.md)。默认不监听源码。随附的隐藏额度提示、本地管理及 GitHub 双版本样例用于验收，并不会因随包存在而自动授权。
 
-命令固定指向实验资料目录中的 `codlet/config.json`，不要用普通 `codlet launch` 代替这个开发启动入口。可选 GUI 依赖 UI Adapter；停用依赖后可用 CLI 依次启用 `codex.ui.adapter`、`codlet-gui` 恢复。
+命令固定指向实验资料目录中的 `codlet/config.json`，不要用普通 `codlet launch` 代替这个开发启动入口。Core 已包含界面与桌面 SDK；可选 GUI 使用 CLI 启用 `codlet-gui` 即可。旧 Adapter 注册保留但不执行第二份。
 
 启动日志是本目录的 `launch-*.stdout.log` / `launch-*.stderr.log`，协调器状态及报告路径由启动器显示。测试后端使用独立实验设置，工具可用范围可能与正式客户端不同。日志中的启动成功不能替代实际 UI、权限和插件行为验收。
 

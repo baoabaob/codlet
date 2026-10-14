@@ -1,0 +1,93 @@
+# Core online update implementation
+
+The compatible update path can replace the Core-owned Native client source and eleven declared Core JavaScript modules: renderer bootstrap, helpers, UI, facade, page, translations, Codex SDK, Core service bindings, UI/Desktop providers and Host bootstrap. It keeps the running Native connection, authenticated bridge lease, backend child objects, provider routes and Rust traffic/TLS owner. `RuntimeUpdateService::request_install` selects the path from a verified release payload. A foreground owner handles renderer/Host plugin snapshots and module reload; Native source takeover runs last.
+
+The compiled Rust executable/traffic transport, module observer, Native bridge and renderer ingress forwarder remain resident Core components. The forwarder retains a fixed ABI closure while its selected handler changes; a forwarder ABI change requires a next start. `status.currentVersion` remains the resident executable version. `status.activation` reports the component version, actual component list, retained Core components and persistence uncertainty. A source-only release updates one component; it does not report full module activation. Changes to resident executable/Node bytes, bridge/bootstrap digests, module ABI or unsupported plugin state handling are deferred to a natural next start. Initial migration from an older executable without this protocol also requires a new start. No Rust TLS process migration is claimed.
+
+Platform scope is explicit: Windows portable/isolated-client packages support the declared online module contract and have IPC/component tests; real Native acceptance is separate. macOS shares the renderer/Host foreground coordinator code, but its `macApp` package selector currently rejects online metadata and the signed bundle builder emits complete next-start packages only. The macOS natural-exit helper/lifecycle is implemented, with offline installer tests and no macOS live update evidence. Enabling macOS online packages requires a separate signed bundle component contract and bundle-relative activation pin validation. Windows evidence does not establish that path.
+
+## Release payload and selection
+
+A Windows runtime manifest can include `online` with `schema: 1`, `bridgeProtocol: 1`, exact `bridgeSha256` and `bootstrapSha256`, and `clientSourcePath: "runtime/core-modules/client-source.cjs"`. The source must be in the manifest file list with its size and SHA-256. It is limited to 1 MiB. Optional `modules` entries bind each fixed ID to `runtime/core-modules/<id>.js` or `.cjs`, with `moduleAbi: 1` and each file limited to 8 MiB. Unknown IDs, mismatched ID/path pairs, duplicates and arbitrary JavaScript paths are rejected.
+
+`node scripts/prepare-online-core.mjs <fresh-output.json> [exact-build-source-root] --all-modules` generates metadata for all eleven modules and the exact resident bridge/bootstrap. Omit the flag for source-only updates. `Build-RuntimeUpdate.ps1 -OnlineCoreMetadata <metadata.json>` adds the declared components from the input distribution. `frontend/build-codex.mjs` emits the fixed module artifacts and composes the Host bootstrap from the same sources embedded in Rust.
+
+At installation, Core rechecks the staged payload and hashes every resident candidate file other than the declared online components against the live installation. It compiles `.js` factories as expressions and `.cjs` sources as CommonJS wrappers with the checked Node runtime, without evaluating candidate code, then validates Native source compatibility before foreground work. Explicit source boundaries preserve valid trailing line comments. A matching version label alone never permits online activation. The owned launcher supplies `attach_online_target`; RPC callers cannot choose Native PIDs, tokens, endpoints or code paths.
+
+After confirmed takeover, exact module bytes are persisted with `runtime/core-modules/activation.json`. The next launch validates the fixed paths, bridge/bootstrap identities, resident file identities and every component digest before accepting overrides. Unpinned adjacent files are ignored. A changed resident build falls back to its embedded modules. Malformed or changed component pins fail closed. A persistence failure after acknowledged takeover is reported explicitly; it does not cause speculative live rollback after writes have resumed.
+
+## Transaction and ownership
+
+1. Validate code exports, client-module fingerprints, protocol and snapshot compatibility while the old owner runs.
+2. Close new write admission. Existing streams keep forwarding. Accepted operations retain receipts attached to the retained transport, and the transaction drains their work before changing hook ownership.
+3. Save explicit bounded JSON state. Functions, promises, external processes, DOM nodes, accessors, non-finite numbers, cycles and non-plain objects are rejected. Backend/process/stream objects remain live Core resources; their logical identities appear in source snapshots instead of being serialized.
+4. Suspend old hooks while retaining rollback state and live routes. Install the new hooks, restore the snapshot, await readiness and require positive takeover confirmation.
+5. Retire the old generation only after confirmation, then resume admission. Restore the old generation on takeover failure. A preflight, drain or snapshot failure leaves it operating.
+
+The source module exports `handoffVersion: 1` and optional `validateSnapshot(snapshot)`. Its runtime exposes `handoffVersion`, `snapshot`, `suspend`, `resume`, `restore`, `confirmTakeover`, `ready` and `close`. `suspend`, `resume` and `confirmTakeover` must return `true` to acknowledge their respective transitions.
+
+The authenticated bridge supports deduplicated operation receipts, stale epoch rejection, operation ID conflict detection, explicit cancellation and lease transfer. A new lease adopts one prepared transfer ID before the old Core lease closes; closing the former lease cannot retire the adopted owner. Normal loss of the current lease still closes the owned bridge. This does not transfer a Rust TLS session to a new process.
+
+Whole-module updates acquire one private Native admission lease before plugin snapshots, in addition to the renderer ingress gate. Both retain existing responses and streams. The immutable transaction ID owns the lease across renderer/Host retirement, restoration and final source takeover; source replacement does not release it. Only confirmed application or confirmed rollback resumes queued writes. Its private token stays in authenticated IPC and the Rust owner state, and is removed from returned update evidence. A blocked accepted-write drain leaves the original owner live and preserves each accepted receipt.
+
+Renderer and Host SDK admission also stays held across current, candidate and rollback generations. Snapshot resume cannot clear this separate Core lease. Runtime-authenticated activation, state restoration, cleanup and already accepted invocation descendants may finish; ordinary APIs remain paused after readiness. The foreground coordinator releases the Native source lease, waits for Host admission receipts, resumes renderer SDK admission, and finally releases Native renderer ingress. A partial release re-holds SDK admission and reports uncertainty.
+
+Live plugin-owned Host traffic channels, interceptors, HTTP operations or streams cannot be serialized into a replacement Host. They make preflight return `core_admission_traffic_busy` and defer activation to a natural next start, while their accepted work continues on the original owner. This restriction is separate from Native bridge-owned backend routes, which remain live across source replacement. Plugins may release settled traffic resources before another update attempt; Core does not cancel an active exchange to make an update eligible.
+
+The source-owner sequence above retains its live bridge resources while it changes hooks. Renderer/Host plugins use a different, explicit reload sequence: capture JSON state, retire the old generation, activate the replacement, then restore state before readiness. This may briefly remove plugin UI. A failed replacement recreates the previous immutable code with fresh generations and saved state; it does not resurrect arbitrary old closures or external processes.
+
+`poll_core_code_receipt` and `poll_core_admission_release` query only the saved source/release operation. They never resend candidate code or a release command. Unknown responses keep ownership reserved; a late definitive response validates its original epoch before settling. A release that has not yet been issued is reported explicitly so the same lease can advance once its original begin/source receipts settle.
+
+The foreground module mailbox carries immutable verified bytes, a unique operation ID and a total deadline. `CoreModulesGuard` admits one owner and restores the prior module set unless committed. Previously verified source hashes remain recognized while old owners retire. A timeout reports `unknown`, blocks new installation and retains the original completion channel. A late definitive receipt settles that operation and publishes its pin without replaying code. An explicit unknown completion remains blocked for owner attention.
+
+## Deferred installation
+
+Ordinary installation requests stage incompatible updates with `phase: "deferred"`, `activation.mode: "nextStart"` and a pinned `runtime-update-next-start.json` intent. They emit no generic install request, quit call or launcher command. On successful natural Native exit, the owned probe, lab or macOS lifecycle can prepare a fresh checked helper plan marked `activateOnNextStart`. The helper waits for the exact owner identities to retire, replaces files, publishes startup module pins, and returns `installedDeferred` without launching a Native process. Deferred rollback also never launches one. An explicitly requested restart remains a separate API/action.
+
+Core-generated Native operation receipts describe completion of the Core forwarding operation. They do not assert the business result of an upstream side effect. Cancelled or failed operations without a determinate result stay `unknown`, including after late replies. A pending or uncertain drain aborts takeover; no side-effecting request is replayed. Native writes arriving during the pause wait for admission and use the current hooks when resumed. Response bodies and task routes are retained through source retirement.
+
+## Verification and remaining acceptance
+
+`tests/client_bridge_online.test.mjs` runs actual sockets and three owned Node processes: a synthetic Native bridge plus old and new Core lease clients. It verifies a continuously numbered stream, state restoration, single application of an accepted write, admission pause across snapshots and source takeover, queued Native write deduplication, lease ownership transfer, stale epochs, rollback, cancellation and late responses. `tests/codex_source_online.test.mjs` verifies the imported source lifecycle retains the same backend identities and task provider routes without reconnecting them.
+
+The Rust `compatible_online_install_uses_the_real_native_bridge_and_persists_a_validated_source_pin` test invokes the actual update service worker and installation entrypoint with a verified synthetic payload and an owned Node bridge. `full_core_module_install_has_an_isolated_foreground_owner` runs an owned test subprocess, exercises all eleven generated modules through the production worker, unique overlay owner, mailbox and Native IPC, and verifies component persistence and retained resident reporting. It drops source/release replies through an owned TCP proxy, then confirms original receipt lookup settles both without replay and that public admission evidence contains no token. It also checks late definitive mailbox receipts and resident changes deferred without a restart request. The subprocess prevents synthetic global overlays from changing unrelated parallel tests.
+
+`tests/runtime_online_package.test.mjs` checks the Windows release builder against exact source/module hashes and rejects mismatched IDs. `tests/runtime_update_helper.test.mjs` verifies checked owner exit, file replacement, startup pin publication and rollback, including deferred success/failure paths that produce no launcher invocation.
+
+`src/runtime_update/foreground_tests.rs` separately exercises the production foreground coordinator, its management mailbox, VM-backed renderer targets, real managed Node Hosts and authenticated Native bridge. Both online application and deferred activation require active owners before the update. Assertions cover plugin state restoration, exact generation changes, lost source/release receipts queried without replay, unchanged registry intent, and released Native, Host and renderer admission gates. A post-update Host capability call must still return its restored counter.
+
+These tests are IPC and component integration evidence. The earlier full module test supplies a test foreground callback; the separate foreground test exercises actual orchestration with synthetic renderer providers. Neither establishes running Electron Native session acceptance or macOS acceptance. Real Native testing must use an owned isolated client and preserve ongoing drafts, attachments, backend responses and the Native UI session. The release validation report records which of those scenarios were actually exercised.
+
+## Owned Native fixture input
+
+Build only the isolated harness with `cargo build --bin codlet-lab --no-default-features --features desktop-acceptance` (optionally `--release`). This enables a private fixture reader and the ordinary TrafficOwner/client bridge in the claimed lab. It does not run the separate acceptance executable, add a backend or expose a management RPC. Builds without this feature contain no fixture input.
+
+After the Native connection is authenticated, the run journal emits `online_core_fixture_ready` with a `template` containing exact canonical paths, host PID, Native PID and creation-time string, and lab marker SHA-256. Copy those fields exactly; do not convert the creation-time string to a JavaScript number. Fill `id` with a fresh 64-character lowercase hexadecimal identifier, `version` with a newer semantic version, and `bytes`/`sha256` with the exact ZIP identity. The descriptor kind is `codlet-owned-online-update-fixture`, schema 1. Extra fields are rejected.
+
+Write the verified ZIP to `<claimed-lab>/codlet/online-update-fixture.zip`, then atomically publish its descriptor at the fixed sibling `online-update-fixture.json`. Both files, their ancestors and the marker must be ordinary paths without symlinks, junctions or hard links. The ZIP must contain all eleven declared module IDs plus the Native source, with resident executable, Node pin/files and bridge/bootstrap bytes matching the running build. Harmless source comments can establish different module hashes for the proof.
+
+The worker snapshots the ZIP, invokes production archive validation/staging and preflight, then uses the same foreground installation coordinator. It admits one fixture input per run, including an invalid input; a changed or duplicate descriptor cannot replay the operation. An incompatible fixture is rejected without restart or deferred fallback. Stale host/Native identities, another root, changed marker, tampered ZIP and linked descriptor are rejected before activation. Use a fresh owned run for another fixture.
+
+The development helper separates candidate preparation from publication. Save the returned template inside that run's `codlet` directory and run:
+
+```text
+node scripts/owned-online-core-fixture.mjs build <run/codlet/template.json> <fresh .codlet-artifacts output>
+```
+
+It copies only fixed resident files and wraps the source/module factories with bounded fixture evidence carrying `1.0.0-rc.2` and the unique candidate ID. Renderer/Native factory, provider activation/restore and Host factory counters distinguish loaded code from live invocation. These wrappers exist only in the owned candidate builder. It reports ZIP/manifest SHA-256 in `candidate-receipt.json` and never publishes the descriptor. After the owner has confirmed its local synthetic stream is running, invoke:
+
+```text
+node scripts/owned-online-core-fixture.mjs publish <template.json> <output/candidate-receipt.json>
+```
+
+Publication rechecks the exact Native identity, marker, resident hashes and candidate ZIP, then writes the fixed owned payload/descriptor. Repeated publication is rejected. `tests/owned_online_fixture.test.mjs` checks preparation without publication, stale identity/tampered ZIP rejection and explicit publication after an actual owned numbered TCP stream begins; this helper test is not Electron acceptance evidence.
+
+The feature lab can adopt one explicitly attested synthetic HTTP/SSE model source while keeping its existing coordinator-owned AppServer and Native WebSocket connection. Save `source-identity.json` inside the run's `codlet` directory with exact fields `schema: 1`, `kind: "codlet-owned-model-source"`, `backend` and `fixture` process identities (`pid` and Windows `creationTime` strings), and one literal-loopback `upstreamBaseUrl`, such as `http://127.0.0.1:<fixture-port>/v1`. Then run:
+
+```text
+node scripts/owned-online-core-fixture.mjs source <template.json> <candidate-receipt.json> <run/codlet/source-identity.json>
+```
+
+The publisher and Rust reader bind this to the same candidate ID, marker, Host/Native identities and `logs/manual-client.json` backend record. Both inspect literal-loopback listener ownership without opening another AppServer connection. Stale creation times, linked files, another run and second inputs are rejected. Only the explicitly enabled `desktop-acceptance` lab launch admits the private bridge operation; ordinary launch paths keep it disabled.
+
+Wait for `codlet/online-update-source-receipt.json` to report `status: "registered"` and `kind: "fixture-explicit-source"`. Configure only the owned synthetic thread's model-provider base with the returned `routeBaseUrl` exactly; its upstream registration already contains `/v1`. That route remains in Native bridge resources across module snapshots and source retirement, and closes when the complete bridge closes. This is explicit fixture source adoption, separate from Desktop HTTP coverage and automatic backend-spawn adaptation. It does not claim that an externally launched AppServer was discovered or migrated. Publication of the update then requires this same source ID's positive registration receipt, followed by the owner's stream-start confirmation.

@@ -61,7 +61,7 @@ pub(super) fn plugin_list(
             })
             .map(|observation| observation.plugin.clone()),
     );
-    let rows: Vec<_> = ids.into_iter().map(|id| {
+    let rows: Vec<_> = ids.into_iter().filter(|id| !catalog.is_core(id)).map(|id| {
         let entry = entries.get(id).copied();
         let runtime = loaded.get(id).copied();
         let observation = external.get(id).copied();
@@ -72,7 +72,7 @@ pub(super) fn plugin_list(
         let registration = registry.local_plugins().get(id);
         let bundled = entry.is_some_and(|entry| matches!(entry.source, PluginSource::Bundled));
         let current_cached_entry = entry.filter(|entry| match &entry.source {
-            PluginSource::Bundled => true,
+            PluginSource::Core | PluginSource::Bundled => true,
             PluginSource::Local { path, grants } => registration.is_some_and(|registration| registration.path == *path && registration.grants == *grants),
         });
         let metadata = observed_plugin.or_else(|| current_cached_entry.and_then(|entry| entry.plugin.as_ref().ok()));
@@ -140,7 +140,13 @@ pub(super) fn plugin_list(
         }
         row
     }).collect();
-    json!({"plugins":rows,"runtimeVersion":env!("CARGO_PKG_VERSION")})
+    let core: Vec<_> = catalog.entries().iter().filter(|entry| catalog.is_core(&entry.id)).map(|entry| json!({
+        "id": entry.id, "owner": "core", "version": env!("CARGO_PKG_VERSION"),
+        "available": active_plugin_ids.contains(&entry.id),
+        "capabilities": entry.plugin.as_ref().ok().map(|plugin| plugin.manifest.all_provides().collect::<Vec<_>>()),
+        "temporaryDisableReason": catalog.startup_suspension(&entry.id),
+    })).collect();
+    json!({"plugins":rows,"runtimeVersion":env!("CARGO_PKG_VERSION"),"coreProviders":core,"legacyAdapterRegistrations":catalog.legacy_adapter_registrations(registry)})
 }
 
 #[cfg(test)]

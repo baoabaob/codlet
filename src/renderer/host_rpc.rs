@@ -271,7 +271,7 @@ impl RendererRuntime {
                 .drive_deadline
                 .unwrap_or_else(|| Instant::now() + Duration::from_secs(15))
                 .min(Instant::now() + Duration::from_millis(request.timeout_ms.unwrap_or(15_000)));
-            let call = client
+            let mut call = client
                 .shared
                 .begin_renderer_call(
                     &endpoint,
@@ -281,6 +281,10 @@ impl RendererRuntime {
                     deadline,
                 )
                 .map_err(|error| (error.code, error.message))?;
+            // The binding is already authenticated against this live Core record.
+            // Plugin fields cannot promote an ordinary invocation into cleanup.
+            call.route.lineage.cleanup |= consumer.state == RendererPluginState::Stopping;
+            call.route.lineage.lifecycle |= consumer.state == RendererPluginState::Activating;
             return Ok(ScopedCall { inner: Some(call) });
         }
         #[cfg(not(any(windows, target_os = "macos")))]

@@ -1,6 +1,6 @@
 // Read-only installed-package preflight plus a NEW plan directory. Never starts
 // Desktop/backend, copies credentials, contacts CDP or selects a current target.
-import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync,lstatSync,realpathSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import path from 'node:path';
@@ -27,19 +27,30 @@ export function preflightBlockers(packages,versions,files){
 function main(){
   if(process.platform!=='win32')throw Error('This preparation targets the Windows isolated launcher');
   const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+  const args=process.argv.slice(2);
+  if(args.length!==0&&(args.length!==2||args[0]!=='--lab-binary'))throw Error('Optional argument is --lab-binary <absolute immutable owned executable>');
+  const selected=args.length?args[1]:null;
+  if(selected&&!path.isAbsolute(selected))throw Error('Selected lab executable must be absolute');
   const powershell=path.join(process.env.SYSTEMROOT??'C:/Windows','System32/WindowsPowerShell/v1.0/powershell.exe');
   const ps=(source,extra={})=>JSON.parse(execFileSync(powershell,['-NoProfile','-NonInteractive','-Command',source],{encoding:'utf8',windowsHide:true,env:{...process.env,...extra}}).trim()||'null');
   const found=ps('Get-AppxPackage -Name OpenAI.Codex | Select-Object Name,Version,PackageFullName,InstallLocation | ConvertTo-Json -Compress');
   const packages=found==null?[]:Array.isArray(found)?found:[found],versions=auditedVersions(readFileSync(path.join(repo,'src/lab.rs'),'utf8'));
   const installed=packages.length===1?packages[0]:null;
   const cli=installed?path.join(installed.InstallLocation,'app/resources/codex.exe'):null;
-  const lab=path.join(repo,'target/debug/codlet-lab.exe');
+  const native=installed?path.join(installed.InstallLocation,'app/ChatGPT.exe'):null;
+  const lab=selected?path.resolve(selected):path.join(repo,'target/debug/codlet-lab.exe');
+  if(selected){const relative=path.relative(repo,lab),stat=lstatSync(lab);if(relative.startsWith('..')||path.isAbsolute(relative)||stat.isSymbolicLink()||!stat.isFile()||stat.nlink!==1||path.resolve(realpathSync(lab)).toLowerCase()!==lab.toLowerCase())throw Error('Selected executable must be a detached plain file within this workspace');}
+  const nodeRuntime=path.join(path.dirname(lab),'runtime/node-v24.21.0-win-x64');
+  for(const name of ['node.exe','LICENSE'])if(!existsSync(path.join(nodeRuntime,name)))throw Error('Selected lab runtime is incomplete: '+name);
+  const runtimePin=path.join(path.dirname(lab),'runtime/node-runtime.json');
+  if(!existsSync(runtimePin))throw Error('Selected lab runtime pin is missing');
   const files={labBinaryPresent:existsSync(lab),officialCliPresent:!!cli&&existsSync(cli),officialCliSignature:null};
   if(files.officialCliPresent)files.officialCliSignature=ps('(Get-AuthenticodeSignature -LiteralPath $env:CODLET_CORE_PREFLIGHT_CLI).Status.ToString() | ConvertTo-Json -Compress',{CODLET_CORE_PREFLIGHT_CLI:cli});
   const sha=file=>createHash('sha256').update(readFileSync(file)).digest('hex');
   const runId='core-'+randomUUID(),directory=path.join(repo,'.codlet-artifacts/core-native',runId),profileRoot=path.join(directory,'profile');
   const record={schemaVersion:1,runId,state:'prepared_plan_only',launched:false,installedPackage:installed,reviewedIsolatedPackageVersions:versions,files,
-    hashes:{ui:sha(path.join(repo,'bundled/runtime/ui.js')),launcherSource:sha(path.join(repo,'src/lab.rs')),labBinary:files.labBinaryPresent?sha(lab):null,officialCli:files.officialCliPresent?sha(cli):null},
+    inputs:{labBinary:lab,nodeRuntime,runtimePin,nativeExecutable:native},
+    hashes:{ui:sha(path.join(repo,'bundled/runtime/ui.js')),launcherSource:sha(path.join(repo,'src/lab.rs')),labBinary:files.labBinaryPresent?sha(lab):null,officialCli:files.officialCliPresent?sha(cli):null,nativeExecutable:native&&existsSync(native)?sha(native):null,runtimeNode:sha(path.join(nodeRuntime,'node.exe')),runtimeLicense:sha(path.join(nodeRuntime,'LICENSE')),runtimePin:sha(runtimePin)},
     planned:{profileRoot,registry:path.join(profileRoot,'codlet/config.json'),userData:path.join(profileRoot,'user-data'),codexHome:path.join(profileRoot,'codex-home'),sqliteHome:path.join(profileRoot,'sqlite'),project:path.join(profileRoot,'project')},
     effective:{registry:null,profile:null,managerPid:null,corePid:null,backendPid:null,desktopPid:null,target:null,backendConfigVerified:false,syntheticDataVerified:false},
     blockers:preflightBlockers(packages,versions,files),noCredentialsOrSessionsCopied:true};

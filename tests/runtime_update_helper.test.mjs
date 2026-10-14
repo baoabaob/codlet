@@ -58,8 +58,20 @@ async function fixture(mode = 'success', profile = 'isolatedClient', nextMode = 
   function save() { const bytes = Buffer.from(JSON.stringify(plan)); fs.writeFileSync(planPath, bytes); planSha = sha(bytes); return planSha; }
   save();
   function armed(message) { assert.equal(message.event, 'runtime-update-helper-ready'); assert.equal(message.id, id); assert.equal(message.planSha256, planSha); assert.equal(fs.readFileSync(path.join(install, binary), 'utf8'), 'old runtime'); fs.writeFileSync(plan.handoffAckPath, JSON.stringify({ id, planSha256: planSha }), { flag: 'wx' }); owner.stdin.end(); }
-  async function cleanup() { owner.stdin.end(); await ownerExited; assert.ok(path.resolve(root).startsWith(path.resolve(temporaryRoot) + path.sep)); fs.rmSync(root, { recursive: true, force: true }); }
+  async function cleanup() { owner.stdin.end(); await ownerExited; assert.ok(path.resolve(root).startsWith(path.resolve(temporaryRoot) + path.sep)); fs.rmSync(root, { recursive: true }); }
   return { root, install, state, job, staged, owner, ownerExited, originalConfig, configPath, binary, plan, planPath, get planSha() { return planSha; }, save, armed, cleanup, log };
+}
+function addOnlinePayload(f) {
+  const sourcePath='runtime/core-modules/client-source.cjs',modulePath='runtime/core-modules/renderer-ui.js';
+  fs.mkdirSync(path.dirname(path.join(f.staged,sourcePath)),{recursive:true});
+  fs.writeFileSync(path.join(f.staged,sourcePath),'module.exports={handoffVersion:1};');
+  fs.writeFileSync(path.join(f.staged,modulePath),'(()=>({createUi(){}}))');
+  f.plan.newFiles.push(record(f.staged,sourcePath),record(f.staged,modulePath));
+  const manifestPath=path.join(f.staged,'runtime-update-manifest.json');
+  const manifest=JSON.parse(fs.readFileSync(manifestPath));
+  manifest.files=f.plan.newFiles;manifest.online={schema:1,bridgeProtocol:1,bridgeSha256:'a'.repeat(64),bootstrapSha256:'b'.repeat(64),moduleAbi:1,clientSourcePath:sourcePath,modules:[{id:'renderer-ui',path:modulePath}]};
+  fs.writeFileSync(manifestPath,JSON.stringify(manifest));f.plan.manifestSha256=checked(manifestPath).sha256;f.save();
+  return {manifest,manifestPath,sourcePath,modulePath};
 }
 
 test('helper waits for checked owner exit, replaces payload, patches only fixed pins and confirms the owner restart', async () => {
@@ -73,6 +85,59 @@ test('helper waits for checked owner exit, replaces payload, patches only fixed 
     assert.equal(JSON.parse(fs.readFileSync(f.log, 'utf8').trim()).current, 'new runtime');
     assert.equal(JSON.parse(fs.readFileSync(f.plan.summaryReceiptPath)).phase, 'installed');
   } finally { await f.cleanup(); }
+});
+
+test('natural-exit installation publishes exact Core module pins and never launches a new owner', async () => {
+  const f = await fixture('fail');
+  try {
+    f.plan.activateOnNextStart = true;
+    const {manifest,sourcePath,modulePath}=addOnlinePayload(f);
+    const result=await runInstall(f.planPath,f.planSha,f.armed);
+    assert.equal(result.phase,'installedDeferred');assert.equal(fs.existsSync(f.log),false);
+    assert.equal(fs.readFileSync(path.join(f.install,f.binary),'utf8'),'new runtime');
+    assert.equal(fs.readFileSync(path.join(f.plan.backupRoot,f.binary),'utf8'),'old runtime');
+    const pin=JSON.parse(fs.readFileSync(path.join(f.install,'runtime/core-modules/activation.json')));
+    assert.equal(pin.version,f.plan.version);assert.deepEqual(pin.contract,manifest.online);
+    assert.deepEqual(pin.source,record(f.install,sourcePath));assert.deepEqual(pin.modules,[{id:'renderer-ui',file:record(f.install,modulePath)}]);
+    assert.equal(pin.residentFiles.some(file=>file.path===sourcePath||file.path===modulePath),false);
+    assert.equal(JSON.parse(fs.readFileSync(f.plan.summaryReceiptPath)).phase,'installedDeferred');
+    assert.equal(fs.existsSync(path.join(f.install,'.codlet-runtime-update.lock.json')),false);
+  } finally {await f.cleanup();}
+});
+
+test('module identity mismatch is rejected before the owner receives helper readiness', async () => {
+  const f=await fixture();let ready=false;
+  try {
+    const {manifest,manifestPath}=addOnlinePayload(f);
+    manifest.online.modules[0].id='renderer-page';fs.writeFileSync(manifestPath,JSON.stringify(manifest));f.plan.manifestSha256=checked(manifestPath).sha256;f.save();
+    await assert.rejects(runInstall(f.planPath,f.planSha,()=>{ready=true;}),error=>error.code==='plan_invalid');
+    assert.equal(ready,false);assert.equal(fs.readFileSync(path.join(f.install,f.binary),'utf8'),'old runtime');
+  } finally {await f.cleanup();}
+});
+
+test('failed module installation restores the exact prior startup pin with the old payload', async () => {
+  const f=await fixture('fail');
+  try {
+    const {sourcePath,modulePath}=addOnlinePayload(f);
+    fs.mkdirSync(path.dirname(path.join(f.install,sourcePath)),{recursive:true});
+    for(const relative of [sourcePath,modulePath]){fs.writeFileSync(path.join(f.install,relative),'old Core module');f.plan.currentFiles.push(record(f.install,relative));}
+    const pinPath=path.join(f.install,'runtime/core-modules/activation.json'),oldPin=Buffer.from('{"schema":1,"version":"previous fixture"}\n');fs.writeFileSync(pinPath,oldPin);f.save();
+    await assert.rejects(runInstall(f.planPath,f.planSha,f.armed),error=>error.code==='restart_failed'&&error.receipt.phase==='rolledBack');
+    assert.deepEqual(fs.readFileSync(pinPath),oldPin);
+    assert.equal(fs.readFileSync(path.join(f.install,sourcePath),'utf8'),'old Core module');
+    assert.equal(fs.readFileSync(path.join(f.staged,sourcePath),'utf8'),'module.exports={handoffVersion:1};');
+  } finally {await f.cleanup();}
+});
+
+test('a deferred replacement failure retains the old payload without restarting it', async () => {
+  const f=await fixture(),originalRename=fs.renameSync;
+  f.plan.activateOnNextStart=true;f.save();
+  fs.renameSync=(from,to)=>{if(from===path.join(f.install,f.binary)&&to===path.join(f.plan.backupRoot,f.binary))throw Object.assign(new Error('deferred fixture rename failed'),{code:'EXDEV'});return originalRename(from,to);};
+  try {
+    await assert.rejects(runInstall(f.planPath,f.planSha,f.armed),error=>error.code==='EXDEV'&&error.receipt.phase==='failed');
+    assert.equal(fs.existsSync(f.log),false);assert.equal(fs.readFileSync(path.join(f.install,f.binary),'utf8'),'old runtime');
+    assert.deepEqual(fs.readFileSync(f.configPath),f.originalConfig);
+  } finally {fs.renameSync=originalRename;await f.cleanup();}
 });
 
 test('failed owner readiness rolls back exact old payload and original config bytes, then starts the old runtime once', async () => {

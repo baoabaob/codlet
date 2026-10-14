@@ -1,0 +1,1 @@
+{"schema":1,"id":"dev.workspace.audit-provider","name":"Workspace API acceptance provider","version":"0.0.1","renderer":{"entry":"renderer.js","world":"main"},"permissions":["ui.dom","ui.mainWorld"],"provides":[{"name":"codex.ui.workspace","api":1,"scope":"target"},{"name":"workspace.audit.metadata","api":1,"scope":"target"}],"requires":[]}

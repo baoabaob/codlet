@@ -12,6 +12,8 @@ use crate::renderer::{BUILTIN_HOST_PROVIDER_ID, builtin_host_capabilities};
 
 #[derive(Debug, Clone)]
 pub enum PluginSource {
+    /// Implementation shipped with Core; never a user-installable plugin.
+    Core,
     Bundled,
     Local {
         path: PathBuf,
@@ -22,6 +24,7 @@ pub enum PluginSource {
 impl PluginSource {
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Core => "core",
             Self::Bundled => "bundled",
             Self::Local { .. } => "local",
         }
@@ -29,6 +32,7 @@ impl PluginSource {
 
     pub fn path(&self) -> Option<&Path> {
         match self {
+            Self::Core => None,
             Self::Bundled => None,
             Self::Local { path, .. } => Some(path),
         }
@@ -45,7 +49,7 @@ pub struct PluginCatalogEntry {
 impl PluginCatalogEntry {
     pub fn grants(&self) -> &[Permission] {
         match &self.source {
-            PluginSource::Bundled => self
+            PluginSource::Core | PluginSource::Bundled => self
                 .plugin
                 .as_ref()
                 .map(|plugin| plugin.manifest.permissions.as_slice())
@@ -74,13 +78,42 @@ pub enum CatalogError {
 
 impl PluginCatalog {
     pub fn load(registry: &PluginRegistry) -> Result<Self, ManifestError> {
-        let mut catalog = Self::from_bundled(bundled_plugins()?);
+        let bundled = bundled_plugins()?;
+        // Synthetic renderer fixtures deliberately supply their own providers.
+        // Production builds always load the embedded Codex implementations.
+        let core = if bundled.is_empty() {
+            crate::codex::internal_plugins()?
+        } else {
+            Vec::new()
+        };
+        Self::load_with_core(registry, bundled, core)
+    }
+
+    fn load_with_core(
+        registry: &PluginRegistry,
+        bundled: Vec<LoadedPlugin>,
+        core: Vec<LoadedPlugin>,
+    ) -> Result<Self, ManifestError> {
+        let mut catalog = Self::from_bundled(bundled);
+        catalog
+            .entries
+            .extend(core.into_iter().map(|plugin| PluginCatalogEntry {
+                id: plugin.manifest.id.clone(),
+                source: PluginSource::Core,
+                plugin: Ok(plugin),
+            }));
         let bundled_ids: BTreeSet<_> = catalog
             .entries
             .iter()
             .map(|entry| entry.id.clone())
             .collect();
         for (id, registration) in registry.local_plugins() {
+            // A previous Adapter registration is retained verbatim, including
+            // author files, disabled preferences, grants and managed history.
+            // It can never shadow the Core provider or execute a second copy.
+            if catalog.is_core(id) {
+                continue;
+            }
             let plugin = if bundled_ids.contains(id) || id == BUILTIN_HOST_PROVIDER_ID {
                 Err(LocalPluginError::ReservedId(id.clone()))
             } else if let Err(error) = crate::managed_plugins::validate_current(registry, id) {
@@ -128,6 +161,24 @@ impl PluginCatalog {
         &self.entries
     }
 
+    pub fn is_core(&self, id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.id == id && matches!(entry.source, PluginSource::Core))
+    }
+
+    pub fn legacy_adapter_registrations(
+        &self,
+        registry: &PluginRegistry,
+    ) -> Vec<serde_json::Value> {
+        registry.local_plugins().iter().filter(|(id, _)| self.is_core(id)).map(|(id, registration)| serde_json::json!({
+            "id": id, "status": "supersededByCore", "path": registration.path,
+            "enabledPreference": registry.is_enabled(id), "grants": registration.grants,
+            "filesPreserved": true, "storagePreserved": true,
+            "message": "Core now supplies this capability. The previous registration and files are preserved; removing the old registration does not disable consumers."
+        })).collect()
+    }
+
     pub(crate) fn suspend_startup(&mut self, ids: &BTreeSet<String>, reason: &str) {
         self.startup_suspensions
             .extend(ids.iter().map(|id| (id.clone(), reason.to_owned())));
@@ -145,7 +196,7 @@ impl PluginCatalog {
     ) -> Result<Vec<LoadedPlugin>, CatalogError> {
         self.entries
             .iter()
-            .filter(|entry| registry.is_enabled(&entry.id))
+            .filter(|entry| self.is_core(&entry.id) || registry.is_enabled(&entry.id))
             .map(|entry| {
                 entry
                     .plugin
@@ -167,11 +218,9 @@ impl PluginCatalog {
         registry: &PluginRegistry,
         generation: u64,
     ) -> Result<PluginCatalogEntry, CatalogError> {
-        if let Some(entry) = self
-            .entries
-            .iter()
-            .find(|entry| entry.id == id && matches!(entry.source, PluginSource::Bundled))
-        {
+        if let Some(entry) = self.entries.iter().find(|entry| {
+            entry.id == id && matches!(entry.source, PluginSource::Core | PluginSource::Bundled)
+        }) {
             let mut plugin = entry
                 .plugin
                 .as_ref()
@@ -180,7 +229,7 @@ impl PluginCatalog {
             plugin.generation = generation;
             return Ok(PluginCatalogEntry {
                 id: id.to_owned(),
-                source: PluginSource::Bundled,
+                source: entry.source.clone(),
                 plugin: Ok(plugin),
             });
         }
@@ -230,7 +279,8 @@ impl PluginCatalog {
         self.entries
             .iter()
             .filter(|entry| {
-                registry.is_enabled(&entry.id) && !self.startup_suspensions.contains_key(&entry.id)
+                (self.is_core(&entry.id) || registry.is_enabled(&entry.id))
+                    && !self.startup_suspensions.contains_key(&entry.id)
             })
             .map(|entry| {
                 entry

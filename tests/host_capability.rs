@@ -141,6 +141,7 @@ fn request(id: &str, generation: u64, method: &str, budget: Duration) -> HostCap
             document_epoch: 17,
         },
         deadline: Instant::now() + budget,
+        cleanup: false,
     }
 }
 fn call(runtime: &HostRuntime, id: &str, generation: u64, method: &str) -> HostCapabilityOperation {
@@ -177,6 +178,60 @@ fn pending(runtime: &HostRuntime, id: &str) -> usize {
         .find(|plugin| plugin.id == id)
         .unwrap()
         .pending_core_requests
+}
+
+#[test]
+fn host_snapshot_pause_denies_plugin_cleanup_params_but_admits_core_cleanup_and_children() {
+    let directory = tempdir().unwrap();
+    let peer = Peer::start();
+    let mut runtime = runtime(
+        &peer,
+        vec![plugin(directory.path(), "dev.paused", 11, false, SOURCE)],
+    );
+    let mut snapshot = runtime.begin_snapshot("dev.paused", 11).unwrap();
+    let mut receipt = None;
+    until(|| {
+        receipt = snapshot.try_result();
+        receipt.is_some()
+    });
+    assert_eq!(receipt.take().unwrap().unwrap(), Value::Null);
+    let mut forged = request("dev.paused", 11, "raw", Duration::from_secs(3));
+    forged.params = json!({"cleanup":true});
+    assert_eq!(
+        result(runtime.capability_client().begin_request(forged).unwrap())
+            .unwrap_err()
+            .code,
+        "core_updating"
+    );
+    let mut cleanup = request("dev.paused", 11, "attach", Duration::from_secs(3));
+    cleanup.cleanup = true; // This field is owned by Core, not accepted plugin JSON.
+    let attached = result(runtime.capability_client().begin_request(cleanup).unwrap()).unwrap();
+    assert_eq!(
+        peer.request("Fixture.trace")["liveSessions"],
+        json!([attached["sessionId"]])
+    );
+    assert_eq!(
+        result(call(&runtime, "dev.paused", 11, "ping"))
+            .unwrap_err()
+            .code,
+        "core_updating"
+    );
+    let mut resume = runtime.begin_resume("dev.paused", 11).unwrap();
+    until(|| {
+        receipt = resume.try_result();
+        receipt.is_some()
+    });
+    assert_eq!(receipt.unwrap().unwrap()["resumed"], true);
+    assert!(result(call(&runtime, "dev.paused", 11, "ping")).is_ok());
+    assert_eq!(
+        runtime.stop().unwrap()[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .exit_code,
+        0
+    );
+    assert_eq!(peer.request("Fixture.trace")["liveSessions"], json!([]));
 }
 
 #[test]

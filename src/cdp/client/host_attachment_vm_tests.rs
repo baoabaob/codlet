@@ -74,6 +74,7 @@ impl Fixture {
                     document_epoch: 0,
                 },
                 deadline: Instant::now() + Duration::from_secs(6),
+                cleanup: false,
             })
             .unwrap()
     }

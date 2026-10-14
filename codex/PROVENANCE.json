@@ -1,0 +1,793 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/baoabaob/codlet-plugins",
+  "sourceCommit": "da7c0ea3f151532522b654341db7f8ef0ac5e1f8",
+  "importedAt": "2026-10-14",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "bundled/codex-desktop-adapter/codlet.json",
+      "sha256": "6a0820977af67749e7648bad42cb8775e906568f843251ef008469392a37bd47"
+    },
+    {
+      "path": "bundled/codex-desktop-adapter/host.cjs",
+      "sha256": "aa2fddd649a7330c818607c6ba9457fdf86b5e543ece11e32cdb21058ab0ff5f"
+    },
+    {
+      "path": "bundled/codex-desktop-adapter/renderer.js",
+      "sha256": "348ee82c1a9831809d52c87854d948f7be054d1e3bac46eaa8bc4e8526f10e19"
+    },
+    {
+      "path": "bundled/codex-ui-adapter/client-versions.json",
+      "sha256": "1effafd37b81855616b8288a43a62ceba47ca092b49413cef4a4f65e30e46c43"
+    },
+    {
+      "path": "bundled/codex-ui-adapter/codlet.json",
+      "sha256": "2c66ef3d27b9d8815ebbcca3eee30cbdb920036dd1b5416c2caf56327435f9ac"
+    },
+    {
+      "path": "bundled/codex-ui-adapter/dist/renderer.js",
+      "sha256": "58fab63da68fff69b7ed1df16a566cc0f7a993081ab39e6d9ca7cd98081700fd"
+    },
+    {
+      "path": "compatibility/client-profiles.js",
+      "sha256": "4b75a2f610d92eb268fb6b314a8e955a7e2c6f320865a9ea9e6728d7f96ce7c4"
+    },
+    {
+      "path": "compatibility/client-profiles.json",
+      "sha256": "68bcde02137dcedb2b20a47594a223288062b14312f1630834772e9f41b3cc32"
+    },
+    {
+      "path": "compatibility/official-sources.json",
+      "sha256": "0dea2a4ef773a408a9c9ccece025f88b7eac35f1e929d7fc43ebce4171f3e44d"
+    },
+    {
+      "path": "frontend/build-host.mjs",
+      "sha256": "d80d15620dd18ce632df2e26b16676f4e1a46d5c9450224d268d7b21663f127f"
+    },
+    {
+      "path": "frontend/build-plugin.mjs",
+      "sha256": "160fd4e3c77de7a7ce79650709830a9795104cda251d7aa7596b2acc28253a4e"
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "sha256": "e9aa95fe8110736921755d947d0c02e982284d58b366584b9f5a3a5214f9c14e"
+    },
+    {
+      "path": "frontend/package.json",
+      "sha256": "07bbb797a2a107fd997b38ceb1e3577a2f11790f79b7008e9bfbf0f5890de3cd"
+    },
+    {
+      "path": "frontend/src/adapter/composer-action.js",
+      "sha256": "4b3e9e58cdaa6f38b8eb2d8f40f2f234fd21cbfd1655c2fbd9b5104e82f35f74"
+    },
+    {
+      "path": "frontend/src/adapter/discovery.js",
+      "sha256": "411a8cbb09ab4569cd04d2b4d6cfaecf0760c865e4145d976310e5d9999306c3"
+    },
+    {
+      "path": "frontend/src/adapter/entry.js",
+      "sha256": "49e70c4501c1fa07ff3df50f4decdf65556ecda61bb58541e838553c1074f5a3"
+    },
+    {
+      "path": "frontend/src/adapter/native-permission-cache.js",
+      "sha256": "d875eafa00a945ae925328c614d6d9d4bd27c464fd40db2250657ab58d7dcfda"
+    },
+    {
+      "path": "frontend/src/adapter/navigation.js",
+      "sha256": "8749a07a602c77d1a9f2ea4efd73644e18a6cd550753c741bb6ad1cc2b8709d7"
+    },
+    {
+      "path": "frontend/src/adapter/react-factories.js",
+      "sha256": "e0a0a7cbd2d1ac38a5acb9e0da4945f1fb2e86fa6e9331c3a4e6908d6c193656"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-actions.js",
+      "sha256": "a6bf0d46439aa6fecbcce10fbd37034d894e0029ad5799c870b721d64908ecd3"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-composer-binding.js",
+      "sha256": "2481ec91c1a168af3373c0a689e985a7ce81f38fabff5229df4f7f9a3493f740"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-composer-controls.js",
+      "sha256": "063454641eb6a359121227e1fbc9e605d3803d84c48b2247e4c0e815fd129471"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-composer.js",
+      "sha256": "d9dddc693ce2e0fd8854a23d738df31ea7dc23001bb02126f92e477c6d7801f1"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-discovery.js",
+      "sha256": "ebc41a4910096260c40f7431f6cba6747d5a897d88d73e783e4089bf2e3627a8"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-dom.js",
+      "sha256": "d34cfb9603907c8ff6dadf18dc8f14e662afc8a8ed0f4a881124fdcc680ef9ac"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-location.js",
+      "sha256": "5970a3dbaefeaa5de7126cb5a376e85ce6c1228eac2c79329b2eaa46c0b2b991"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-metrics.js",
+      "sha256": "d894219ac1cf9ffe53bff2c5d4028b842680b168ec020a9e019b07684c2a90a9"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-native-composer.js",
+      "sha256": "a5c4103df172febfaf14d6f993f0e3ca02212137d72a12c841a7fe052fafbc3f"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-native-input.js",
+      "sha256": "3bcba4dc26162e067fda07e04c5d0d65ae03e20f262339ffbbc01f5f9521d475"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-native-navigation.js",
+      "sha256": "00a0c46530eddb2b2128359e9975072c7fa8edfa793a08613a955325d0611e4a"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-native-viewport.js",
+      "sha256": "b6beecbce09618570fd0f85c7d274a203c781e867d5d4df08a7bd177f16ecb0f"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-navigation.js",
+      "sha256": "f6146d145d2ec4c992b141ac73b02b0ccb40a8c6387e86430212e9d5dc3b7231"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-selection.js",
+      "sha256": "122fc13b688584c22b4b954ccdbd79aee30d18caf4e27c8916763d9a615dd0d2"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-shadow.js",
+      "sha256": "47bbbe2916fe447ba5904a0ba1d53fa7ce9ed102ad521f8d09c7c9bcd6661ccf"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-shortcuts.js",
+      "sha256": "9e78edaba9cbd7811de863e6a14d72031efc90f035817880cd566ea4025c5789"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-transcript.js",
+      "sha256": "636abbb991c5b72314a8e0e273c9776f969eb3973abbf5c5ba8a628b53470839"
+    },
+    {
+      "path": "frontend/src/adapter/workspace-viewport.js",
+      "sha256": "ea9d3f2269b066dae3cf2250682213d2cedbcf434bc2bfba5037d3026c44e71f"
+    },
+    {
+      "path": "frontend/src/adapter/workspace.js",
+      "sha256": "dcef7ab24b85d5bc808d527bf751cc2a17d5a715ba14f73c0cd90693221a3d18"
+    },
+    {
+      "path": "frontend/src/desktop/entry.js",
+      "sha256": "3c465898aad4b155057bcf66c794256b7d5321ad01c1132797c053fa695f5ffe"
+    },
+    {
+      "path": "frontend/src/desktop/loaded-threads.js",
+      "sha256": "d4df684511aa2a4f2705092cb2e5daca5cc9e2920c6054440dd8a0644d2a1009"
+    },
+    {
+      "path": "frontend/src/desktop/native-permissions.js",
+      "sha256": "6c8080cdc3a7c2a9f8ba0c2d8e2b3e01ea6b27c9f011786545e14ea194eb05c9"
+    },
+    {
+      "path": "frontend/src/desktop/native-working.js",
+      "sha256": "7788ab482ce1668566f822e39fb8dd66164cce8e00d9a0d5d37f210276c45421"
+    },
+    {
+      "path": "frontend/src/desktop/permissions.js",
+      "sha256": "288e98ae1cbee9e6005844dab9600193a99deb03927a37b55b269c622a66cd51"
+    },
+    {
+      "path": "frontend/src/desktop/thread-configuration.js",
+      "sha256": "196d898889dea254a0292ffa9f7a022b55fb929ef2fb29e758abc97ba8a97701"
+    },
+    {
+      "path": "frontend/src/desktop/thread-navigation.js",
+      "sha256": "9b66eaa533a03061ed1d4697d98d3252cc852e1fd1591f208add6ba373873563"
+    },
+    {
+      "path": "frontend/src/desktop/thread-reconfiguration.js",
+      "sha256": "47edd1c62a8dc6869fc4fdda63e11e58e1d2fa8de9e9234c4b7c22bf6affa3b1"
+    },
+    {
+      "path": "frontend/src/desktop/thread-restoration.js",
+      "sha256": "aeff0f0f78b175eb7231a2b1cab2e437196f425ef5bb0c11c31b66e3226bf276"
+    },
+    {
+      "path": "frontend/src/host-discovery.js",
+      "sha256": "60527ba1ce2ee03b7c5a752c0dc914a37d8d867b6fa2368f6dbdfed03bfcf416"
+    },
+    {
+      "path": "frontend/src/icons.js",
+      "sha256": "e053dfe6b0f96e4036c035d99e1c12c2a4c6c2c17967d2cc680fceb731219d9c"
+    },
+    {
+      "path": "frontend/src/native-navigation.js",
+      "sha256": "e21b2ef868ec15bb3ae81a684cff4cec9835abac69dcf23b9528539a5fc96b7c"
+    },
+    {
+      "path": "host/backend-config-probe.cjs",
+      "sha256": "be9a49a671f2f5ff373d349a1feebdde6194a2397f0055b327d3cb9bfd9c1695"
+    },
+    {
+      "path": "host/backend-launch.cjs",
+      "sha256": "450337b15c31d4d3822da9f9a9c3eb53965b50c9d4991cb787ac31bf176671d3"
+    },
+    {
+      "path": "host/backend-spawn.cjs",
+      "sha256": "b6ae3a855809d021dc0d81635828643d841b36b3ca2015af1f04aafe958541b1"
+    },
+    {
+      "path": "host/codex-traffic.cjs",
+      "sha256": "d1157a76a05306faa7815b9d9668237a47215148d461438040677cec1f97201d"
+    },
+    {
+      "path": "host/codex-traffic.d.ts",
+      "sha256": "5881cc62dde398a122f09a076ae755cd2cfa3413e3fc905ad3646c77beffb7d1"
+    },
+    {
+      "path": "host/desktop-launch.cjs",
+      "sha256": "36afc900e5f3b2492ba28535e18b2ce42a294018a1465defb95ad957d9c6270a"
+    },
+    {
+      "path": "host/electron-bootstrap.cjs",
+      "sha256": "e5073431bc4febf2d546430bf80c8dc20284d14ce32a1eee16fc22db382204e5"
+    },
+    {
+      "path": "host/electron-main.cjs",
+      "sha256": "e1e19e189dc2ccccbd633edb2a673d31a7fd1a7c5feb35667428d2ceb5c74501"
+    },
+    {
+      "path": "host/electron-plaintext.cjs",
+      "sha256": "32c38af429ff7478e02a5a3195658ff03081ad5797f8b33f795a740a2f4a4bce"
+    },
+    {
+      "path": "host/source-diagnostics.cjs",
+      "sha256": "fc322faf523c7bfeee4d95af29de6763297e4e47641edc42a216b32866624d4d"
+    },
+    {
+      "path": "host/vendor/plaintext-source-client.cjs",
+      "sha256": "bdfd47aed5ae6aecf14aa003893c412a54b697935a969d60194811df11078580"
+    },
+    {
+      "path": "host/windows-bootstrap.cjs",
+      "sha256": "f05f3719c036b51aac334aed3d0515fda13eba3a959e4c535855415db3fb1475"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "b92e617f2f6e4387072abd7fd0269dc9c66f9f8d619f275d59824024ee83cb6c"
+    },
+    {
+      "path": "tests/backend_config_probe.test.mjs",
+      "sha256": "31dd4e137955c46204e07418e8b7f773b182ae29acd1805e73b5a8836974fe0a"
+    },
+    {
+      "path": "tests/backend_spawn.test.mjs",
+      "sha256": "576ba3433e3816b0e1697940f5ec542279ddc87d5023e0fa3bed13d813aa1569"
+    },
+    {
+      "path": "tests/bootstrap_fixture_guard.test.mjs",
+      "sha256": "031431fa2e9893c9a56e3d4f11db9d06292e967335b92c93b416990a530c1a43"
+    },
+    {
+      "path": "tests/client_source_recovery.test.mjs",
+      "sha256": "1b39bed66e49c52abb18e6208e3ef1c565ca33d99556e0d2ad5f90ba6b2eae0b"
+    },
+    {
+      "path": "tests/client_source_startup.test.mjs",
+      "sha256": "8b758f4d122c5bbdaf975782d7f6346168b3d681da451453ed8704fe1f713644"
+    },
+    {
+      "path": "tests/codex_desktop_adapter.test.mjs",
+      "sha256": "a5fd87977eca6fa15f55983741e8e71a0191afe7e5e994a4c97fd37c3a290349"
+    },
+    {
+      "path": "tests/codex_traffic_api.test.mjs",
+      "sha256": "cff7fc12cd5b82baf4975173d9d1c7bb43d35bd02f4df2af4cab8fccc429f395"
+    },
+    {
+      "path": "tests/codex_traffic.test.mjs",
+      "sha256": "b0380a4a70e7249ae39fff1802c04b0079bc6a57f4110157a6042ce57c6ce01e"
+    },
+    {
+      "path": "tests/codex_ui_adapter.test.mjs",
+      "sha256": "0011ecc138157252b33cd28fc2779d90b9ce522db72bf5579d180702958f41cf"
+    },
+    {
+      "path": "tests/codex_ui_composer_action.test.mjs",
+      "sha256": "28609e1653f6c42260dc3e774406ab400d89fd585bc10b9885d2688d3e1b45b0"
+    },
+    {
+      "path": "tests/codlet_controller.test.mjs",
+      "sha256": "42cb4ff7dcb89ba908805c91cde6aa40e7168891b0dcd70d9a83e5669c6dee1a"
+    },
+    {
+      "path": "tests/codlet_gui.test.mjs",
+      "sha256": "a40187270c7f77d6c6343a5addacb1ccccd4a408144df41c062caba9140f199c"
+    },
+    {
+      "path": "tests/codlet_install_notice.test.mjs",
+      "sha256": "5e057d53df09c193cabadc47f8d521ef805b65580dcf7c7895bb25497fced99f"
+    },
+    {
+      "path": "tests/codlet_marketplace_gui.test.mjs",
+      "sha256": "ea9b3b7f0feaf9851bd6c9b6eb238d5f3357a584375a86bed996af4447f244fe"
+    },
+    {
+      "path": "tests/codlet_marketplace.test.mjs",
+      "sha256": "1214a2ba7b02daa97f047719ca6f4ce342f3c93c7172b3acb26485de0b7766dc"
+    },
+    {
+      "path": "tests/codlet_permissions.test.mjs",
+      "sha256": "13179d72ea4d3989b0c52800e6375bc7a133618af66a4a18e06ee1d6b5f01ab3"
+    },
+    {
+      "path": "tests/codlet_tag_search.test.mjs",
+      "sha256": "e26f49790d710a38e046dc1c00a1deb42a72d6d61b76c4d05ca446794848d984"
+    },
+    {
+      "path": "tests/codlet_version_notice.test.mjs",
+      "sha256": "90e8831cf752d305f99340e079362bd2c652899d223e5ab9b7907f8af9c077ab"
+    },
+    {
+      "path": "tests/combined_update.test.mjs",
+      "sha256": "3a54686baa545f8cb1b71aa311d378dfdcceb18004c18420768462ba1bd95298"
+    },
+    {
+      "path": "tests/desktop_host_abi.test.mjs",
+      "sha256": "1d9bc3262e81d50b5cbf105c3fba4eaf3c038078c4373421603327a2d218fd17"
+    },
+    {
+      "path": "tests/desktop_launch_bundle.test.mjs",
+      "sha256": "38e88c05deb1310870098d44b3098caf18ace4cb75bcd8e9f1c813e1f913f49f"
+    },
+    {
+      "path": "tests/desktop_permissions.test.mjs",
+      "sha256": "a3626f8e3c7903224dc61c5bcdcf4c6f07cd96ce62f9610d9c0ef72ddaabfd45"
+    },
+    {
+      "path": "tests/distribution.ps1",
+      "sha256": "4148b4db221d7eeb449717f26b4545a32b7f9dac905344e000814b4f880928f4"
+    },
+    {
+      "path": "tests/distribution.test.mjs",
+      "sha256": "71a81e2b0845f4f4a634d44ca5a3ffb5d87f6c049929136fb3cddcd665208776"
+    },
+    {
+      "path": "tests/electron_bootstrap_protocol.test.mjs",
+      "sha256": "2c2a52aa98d6a1397d9777c5bf5d4094e1b6c5ae42c0a7f2be3f18c157a58e71"
+    },
+    {
+      "path": "tests/electron_bootstrap.test.mjs",
+      "sha256": "31b69ca438a5fa8ef26f073ef6212d38a12eade6507291bb979eabb5931096ea"
+    },
+    {
+      "path": "tests/electron_plaintext.test.mjs",
+      "sha256": "75cf8194e1dc36860b8eb8829027393658d622cea18bd53ff25204b2cc34b16c"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/build-probe.mjs",
+      "sha256": "3c1daf7827f45c14dba6495b7f1ca594c6883d79ab79bfedd08afeb234804ddb"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/consumer/codlet-package.json",
+      "sha256": "ad758e5dd46d57dfcccf7e8e3b02256ddeb0afb7ce8fc96b784de54289d63197"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/consumer/codlet.json",
+      "sha256": "5acb8338fe142a115f777328d9f4ec4d62fafe9c2b4fac439c2b0ba421de8263"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/consumer/host.cjs",
+      "sha256": "faca6446d5f768e05873bbbda0b2dbc86a6ba9f0655db0d711fd56f0bb876304"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/consumer/README.md",
+      "sha256": "8e5a59d61587f9c392a3788981283421d30fa29d7ad5a1fe42f3a8def3fe0bb0"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/consumer/renderer.js",
+      "sha256": "c88137d7c07cfb93c2392da7a7d8667a30aff231092434b5760a8476b982bcf4"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/package.mjs",
+      "sha256": "de710bab814d2becb842e2de60d1ac19796c9816fc308f92dc0d79ccb191c19e"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/probe.js",
+      "sha256": "cbecf8031f22292057f9e7e571b2e7e845d32b0e42c61f3ac213bb8404179ea9"
+    },
+    {
+      "path": "tests/fixtures/runtime-compatibility/README.md",
+      "sha256": "5ff586fbdd627d33e5905834c67f93fc3d8eb095fa970a33f12afc4d4f781185"
+    },
+    {
+      "path": "tests/fixtures/traffic/mac-plaintext-reviewed.json",
+      "sha256": "f68bb99216713a7a74c96e4add618b5f0a5efba78471fa1e10b045071b416582"
+    },
+    {
+      "path": "tests/fixtures/traffic/main-entry.cjs",
+      "sha256": "136debbaa421e94ca25f9dd27bb11d5dd30f19feef1aff08f1e9345316fa8d90"
+    },
+    {
+      "path": "tests/fixtures/traffic/main-preload.cjs",
+      "sha256": "76e7cfcb94e0fbf20b0e30b362cb554beb3d4689cea78689ccec06dd7b2fc23f"
+    },
+    {
+      "path": "tests/fixtures/traffic/plaintext-main.cjs",
+      "sha256": "a5597b4ea9e4c1da2788fe818acf54bb63a0cd96aeb984f73b6fb05ed26a4718"
+    },
+    {
+      "path": "tests/fixtures/traffic/probe-app-server.cjs",
+      "sha256": "1ea9d3e1607e17598b1980de9aa5e7a48329db5c2b337e8c8fc290cb4ee715ba"
+    },
+    {
+      "path": "tests/fixtures/traffic/production-owned-main.cjs",
+      "sha256": "c48d8d4e0ed60855846e5a71a3d7aff9fa8837552ac2ebd6f380d6914ff46c6b"
+    },
+    {
+      "path": "tests/fixtures/traffic/startup-fork.cjs",
+      "sha256": "36be8ea7d4ca28d5765cef0a2848d38ca9d4563987ea67409217038014ca9886"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-backend-candidate.json",
+      "sha256": "ab840e536422302b039d1a5978368f5038fb264bd5383624f82537cc1ced87a8"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/consumer/codlet.json",
+      "sha256": "c9690b9dc93c7f5e0345669ccdd60392df739eccf26d8e6499aeb98fd4191850"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/consumer/host.cjs",
+      "sha256": "4a98951f6c59ce17d54b7f04e2a17eef84be8f53a50152260c2c459d796950a0"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/consumer/renderer.js",
+      "sha256": "13ff0f3b6094b4a303115f3da5b21ae216aa2051fa3b5d4509a00b2f76a3f0d0"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/guarded-main.cjs",
+      "sha256": "f6dfcacf363b65e9bb1661132c54951a01e2e8ad2ab2a632f32c01b59379fc6d"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/prepare.mjs",
+      "sha256": "738b325e00189d02948f800c41e65702e5055b6eb652f14e5d5279b436118d85"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/README.md",
+      "sha256": "f3eeac5f985da12cf0d9d7d120e8ce2fd88bbcf0418612e58c1c4642c57450fc"
+    },
+    {
+      "path": "tests/fixtures/traffic/windows-startup-bootstrap/traffic-probe.js",
+      "sha256": "18139cde7d1e2fc807d195ae5f138c5b1beffc9a1c3487fea266f92ae141b54e"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/analyze-native-selection-profile.mjs",
+      "sha256": "97a3ccb6833f3b38b574a623917ad846e27fb469f81ac13aaac5dd0638566591"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/analyze-navigation-waits.mjs",
+      "sha256": "794d49944d4157dba4b1f6d934855b83824278d6aa3eab2cc5973a142385db7d"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/audit-native-process-history.mjs",
+      "sha256": "08828588b05f0b27c96ac72233f9030988f3d3cab7e252229431f5565e0f8b04"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/bench-wrapper.mjs",
+      "sha256": "db98683e51d3806b6b5e6de468ad28acc3ce674865628968b6de83ae4f8c9eb1"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build-cold-probe.mjs",
+      "sha256": "004fc9c401172fbc5298269663597382b9a91badf0ba94a4c1d5458267e37065"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build-discovery-probe.mjs",
+      "sha256": "9b0eac43f378b58a6a403a23694613a343fa5f8385d05bcfcf8396a6f8844a0c"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build-native-discovery.mjs",
+      "sha256": "9d7cbd6ca839090419f2a7be2d7842b825831c45bd98382c9fd40b4e91386dd2"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build-native-investigation.mjs",
+      "sha256": "f3b920da0c9c9641ded55f0c7b94e9a999c11c59befb753b2defe1b62146a2bf"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build-native-navigation.mjs",
+      "sha256": "1925841a41731764dd28f55a9d3c086fff4651cf13f0bec72a8c6ee8d46e387b"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build-navigation-probe.mjs",
+      "sha256": "c772255bf063690af1557abdc2166ea07973555e04751e2db3d25fe81a966ef5"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/build.mjs",
+      "sha256": "c63470f60ebba185e70b49d19288ce7a25616aa10afb3098337091ab2386a2fe"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/cold/host.cjs",
+      "sha256": "01d38a5cc0d6607d511b4158db582990ceb2424f8b98ef6fbe13838e8f16c86a"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/cold/renderer-source.js",
+      "sha256": "35d53fa12f8d8e315cb00e0d25e941ceba3ad4bf66cfbbed62b2b604f05cfc64"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/consumer/codlet.json",
+      "sha256": "fbdf3d43a0368ee2d86c8cf70e7c703ec89c182de7b9aa0e4faffee596c12521"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/consumer/host.cjs",
+      "sha256": "d28ec21e3a3b78c3b5ced07308c7dd582f209e5d77eced6ab4d37460b29f0ae8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/consumer/renderer.js",
+      "sha256": "13a7c3309aa511870acf8691d590bc8bd68332e6c47c64298f22699b71042d9c"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/discovery-probe-host.cjs",
+      "sha256": "b69e7ea21b756c5074bf8c600ea8b2141bd826af47a3d86c475516c13063e3a8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/extract-composer-source.mjs",
+      "sha256": "47f64f8504039757eca52a812b53aa5e6b4cb773ba62ba25616a2b78ffcf5fe7"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/extract-native-anchor-source.mjs",
+      "sha256": "222e51d56300dc6dccfff8432b22e7e15e4132d2a6b8c909cdd5f07794bbe255"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/extract-native-error.mjs",
+      "sha256": "6e9d11b9d11774cf15f39f5ec3c62c8d27fb2e61b9ebff6c564ce18c27070c71"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/extract-native-navigation-source.mjs",
+      "sha256": "c91e2025af1d8cbb37c71ee36471854ffcbb82e6c11031ba93162a703bf08400"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/generate-history.mjs",
+      "sha256": "626f273b2c54320c38f073de4a4dd1d6bd63a89e8384bdc6206a271f3b4cb51f"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/inspect-history-protocol.mjs",
+      "sha256": "3bf1eea83b51c5d81fff5ce21a4a4e71b263d8eed6860f8bc6eaf46c8a8f707d"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/measure-native-baseline.mjs",
+      "sha256": "13faf96c05fc8c46039e032bc711b03e79f3faf85207d6da4713bba53b154dfb"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-canonical-entry.js",
+      "sha256": "cceea763ccdb9f68a342109cb0424a16a61bd86ccad57482d41bd2e91d12fa1c"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-discovery-source.js",
+      "sha256": "27b93c229cc03a617105153423b63ea0356cb0f039e40067302d5854c72e24b1"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-input-ownership-readonly.js",
+      "sha256": "e7a0b38b5bf058d85a86daa19b2b514edfd2d6688e011efab3556cc7b46412fc"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-navigation-source.js",
+      "sha256": "ac94b0c6a3f12dac1ebd28f946cf30c77027519a383aa7c50d23151fea23a1d8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-navigation-timeline.js",
+      "sha256": "e96d089cafa0699736d721a7c677853b99e338f16d1e06a323e4a3fec7a0fdcb"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-owned-probe-host.cjs",
+      "sha256": "e46ce3e1672bd57f20dbdc8aca5e576b9fe195775ccd127ef69a8c323ccf7eda"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-permission-ownership-readonly.js",
+      "sha256": "b2f983c843b2dbad07038c84cd10789659b5a6c9433e5fcca4defca42dd59c6a"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/native-permissions-readonly.js",
+      "sha256": "083455826bcef91dcd1f827a5e103d8b1c4bbd340b0c271c12c07d354b6ff9a8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/navigation/consumer.js",
+      "sha256": "075424c3e68a72c4c107b53b63bcb73997f7911af9662ef15d99da07e273fe86"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/navigation/host.cjs",
+      "sha256": "c0a35d3510c8aaebf2dd80d298ced781eae6c89306b013ddfa23ac3c8a8a41c8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/navigation/provider.js",
+      "sha256": "c2420332dc206de9d784552cc4e77844b601848c0635affead1c552e44a7028c"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/owned-process-snapshot.mjs",
+      "sha256": "118bf036ac7556f273f8d135f79b0ba05ee61eb898bd4f4e88eae65700da96fc"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/prepare-native-profile.mjs",
+      "sha256": "74cfc22e1b8e046154b50eeae07ee4113768207d122d7d729d22c241d5b0337d"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/prepare-native-run.mjs",
+      "sha256": "2de2ceb296d6bf5640198bb4405557184d41ac6fde61f3652182768c4ab65780"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/probe-native-history.mjs",
+      "sha256": "5aa9b9535788881e5a3772af8a6ea5efb0463c088405cfed6bc54a933288b92b"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/provider/codlet.json",
+      "sha256": "2f0d3d19ca1086d4babebe00385ab7c0548e445cc90e54d1f622b4244b1739c8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/provider/renderer-source.js",
+      "sha256": "dc3caeaa7d87aa6a86f8b03c7dd9d3e27e97c20bd52efa20d52abb4e363f17e1"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/README.md",
+      "sha256": "27da2cd62fc5a1d762ed799f22d4b85a7d758901db61448ec43b1a5206a43fcf"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/replay-desktop-history.mjs",
+      "sha256": "27cd6abb48f1a0341cccdfa85a0b4440ab168b36bbdd9072c18d8c6bea26dfe0"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/seed-native-threads.mjs",
+      "sha256": "92cc99cc6476a84237732d813904237dd04f1b36e4d97ad27917cda87c8ccad7"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/summarize-native-navigation.mjs",
+      "sha256": "b2272ee4c4f37e4942186fdc5b69defd87ae0a4198c1fcaccca783e4c6cd8595"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/summarize-native-timeline.mjs",
+      "sha256": "3eccb4dedce2e136befc401aaa2b1c5f35b24fe1189bae248ff48e24f0a522bf"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/summarize-navigation-test-points.mjs",
+      "sha256": "db1e821e55c48e6dc5dbeb74ad0f97485c061407df897b287261e33fa3a06bf8"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/synthetic-history.mjs",
+      "sha256": "d1d3b7e140d711ad512b9020a879bc8a7688626f57fdbdab2d60f41b8758ad4b"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/verify-native-retirement.mjs",
+      "sha256": "4b0b7be9c4150641d02a1e23ecdd6c6486c0017a8c65bb87ca651a5f859dc55d"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/verify-native-run.mjs",
+      "sha256": "2a82e65ab227e5b0c006b2addb815a51396eea15817548e1dd2fdd97b2b6889a"
+    },
+    {
+      "path": "tests/fixtures/workspace-acceptance/viewport-persistence-readonly.js",
+      "sha256": "8ff4277ba428e7fc4d4c845a8fe907b4e2d1490de8e716e45f1badee56043bff"
+    },
+    {
+      "path": "tests/functional_fixture.test.mjs",
+      "sha256": "a9236228c077bc9ba3ffe35fcde1923c86a54e4464559ce5028abcb548dfbd60"
+    },
+    {
+      "path": "tests/host_discovery.test.mjs",
+      "sha256": "04dd17a1fc0dac0c412193e63697c61924155c68e99bace08ab685b65c39f7f3"
+    },
+    {
+      "path": "tests/mac_plaintext_profile.test.mjs",
+      "sha256": "3ba96fcf12f0eda1b55ded280afa347451dffa36881457712e1defd47f9c39c3"
+    },
+    {
+      "path": "tests/marketplace-model.test.mjs",
+      "sha256": "03d1346cc650c8a72db14060e3612406572571c6146176cea8ba501486d2097b"
+    },
+    {
+      "path": "tests/native_navigation.test.mjs",
+      "sha256": "01d89e2ba3e5ea988944a43b08b57230c79fab51f2c72ed417efa693c3192cc2"
+    },
+    {
+      "path": "tests/native_working.test.mjs",
+      "sha256": "9d37f4ae2f46d140311ff02f98ffa51592b2292b86dd290d48ec69d594d24db6"
+    },
+    {
+      "path": "tests/process_identity.test.mjs",
+      "sha256": "d2c8f6a4b2eea6075946bdad35527b6221ceb62bd994108dae5e892a41e9956b"
+    },
+    {
+      "path": "tests/source_diagnostics.test.mjs",
+      "sha256": "93766251fcaaf7b547a978f3f00142b1aa9f7a1113a97b14399a196faa4ff8b0"
+    },
+    {
+      "path": "tests/support/native-shell.js",
+      "sha256": "c32fc87dc56e76e70df2412ce90c76bc7832deddfa547b90607fc99462775c79"
+    },
+    {
+      "path": "tests/support/ui-fixture.mjs",
+      "sha256": "4b617c8587baaafb3b36f81c72fb8045500ff613cb83b9e105eec9abc9f89815"
+    },
+    {
+      "path": "tests/synthetic_history.test.mjs",
+      "sha256": "51d35bbb51d4b0501ed5604f83ddac1a6eb529237529ed902a16f0ff2fe0b13a"
+    },
+    {
+      "path": "tests/thread_configuration_cli.test.mjs",
+      "sha256": "f0f68af7db788a2dc6b35799645d00b7f92542853814b5b754cd7aeed25bddad"
+    },
+    {
+      "path": "tests/thread_configuration.test.mjs",
+      "sha256": "6f73f8066420f0b5f0c1c2ddb8fd14606f72a3b8cae032f9e2bf923f89d1255e"
+    },
+    {
+      "path": "tests/thread_reconfiguration.test.mjs",
+      "sha256": "cb1763fbc8cf0af4112e2bcdf31776793179f8a4882607e91b1eea222f1a4220"
+    },
+    {
+      "path": "tests/thread_restoration.test.mjs",
+      "sha256": "d95b9f5687a909e8064a8ac97d645f2a3741e0de24d6463d5ca9efb393474407"
+    },
+    {
+      "path": "tests/windows_bootstrap.test.mjs",
+      "sha256": "319c44d1617be96627d3ddeea4ea556daa450076ebf0ed4bf62c4f06abf09b86"
+    },
+    {
+      "path": "tests/workspace_composer_binding.test.mjs",
+      "sha256": "6c5435e77b4f2b6580afe984322bb10fa19234ae2240288227fd78ed5aa006a1"
+    },
+    {
+      "path": "tests/workspace_composer_controls.test.mjs",
+      "sha256": "b289174710261c82463b49f73fabe3d043ef93203754eb06e8bdf2eed6b95bd9"
+    },
+    {
+      "path": "tests/workspace_context.test.mjs",
+      "sha256": "f69378354d0f0310206c9ca187b119cd42f8f0c6f96c3f955c8a20b7bfc27bde"
+    },
+    {
+      "path": "tests/workspace_metrics.test.mjs",
+      "sha256": "b4e41141d97637a031cf96677dcb386f55df92e516d4873a90cf863c010735de"
+    },
+    {
+      "path": "tests/workspace_native_composer.test.mjs",
+      "sha256": "26634833f66967b9d41183ab157d255ed6fe33536cdba5761378a8cc560cf6c3"
+    },
+    {
+      "path": "tests/workspace_native_navigation.test.mjs",
+      "sha256": "5cbdcb0f23cb447aee9acab49596dcbe03e539ba715d4b1124717a8247da1505"
+    },
+    {
+      "path": "tests/workspace_native_permissions.test.mjs",
+      "sha256": "3e46197373f7ebb09a0eb03648496250575108ae2479a6947851d097df0a285b"
+    },
+    {
+      "path": "tests/workspace_native_viewport.test.mjs",
+      "sha256": "159c40adab71f518a4a614d5615fa79d3e57e16db424340fa0ae9612f828fc16"
+    },
+    {
+      "path": "tests/workspace_navigation_input.test.mjs",
+      "sha256": "09be9423f5ca910bbf77a5adc0a37e22ddd17b5057b8bf13d2188514d56f58a3"
+    },
+    {
+      "path": "tests/workspace_permission_probe.test.mjs",
+      "sha256": "c6cd4fc656d48b9dae48f4158c6d2b270ce8cd443c6e23f40246de5a24f1ab9c"
+    },
+    {
+      "path": "tests/workspace.test.mjs",
+      "sha256": "c3fdaaf13a4fee7211884e2a5dc19f835065008cafa3d5facf1b72f8ec12176d"
+    },
+    {
+      "path": "types/codex-ui.d.ts",
+      "sha256": "308c04d6095febcf1369abf9f6804052d974e07b38cac8d2818f4edde64cc09f"
+    },
+    {
+      "path": "types/permissions.d.ts",
+      "sha256": "4d4dec40ee6ca687168c5446a223c3ab6b3de27d851bcbee84dcd4f97f9293c1"
+    },
+    {
+      "path": "types/workspace.d.ts",
+      "sha256": "3fae3969d4dbba3357082f36de7304e070731bb522bd94f00cd4b97fbdc2486b"
+    }
+  ]
+}

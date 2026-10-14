@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "packageVersion": "26.1007.9446.0",
+  "kind": "static-source-review",
+  "sourceHashes": {
+    "application-network-startup-YSC7OAs0.js": "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e",
+    "bootstrap-iULMfRBf.js": "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869",
+    "build-flavor-CYXpoCFI.js": "23229dac961a82c52237acc32598ddb2c1cf370b24c64fc507b9c24bcf2c4d93",
+    "main-Bgi5Xaw-.js": "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54",
+    "src-DCNiwad_.js": "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25",
+    "startup-requirements-CYrrMBwA.js": "ec6518de6f43d8247ae39bae82a348e345674e979b8990c40b8dbf7b1e908cd4"
+  },
+  "checks": {
+    "envBuildFlavorPrecedesMetadata": true,
+    "explicitUserData": true,
+    "userDataBeforeSingleInstance": true,
+    "windowsSingleInstanceRemainsEnabled": true,
+    "windowsProtocolRegistrationSkipped": true,
+    "websocketOverride": true,
+    "websocketExport": true,
+    "reviewedImports": true,
+    "localRouterGate": true,
+    "hostManagerGate": true,
+    "threadReadGate": true,
+    "queryBroadcastGate": true,
+    "rendererClientGate": true,
+    "fourReviewedIpcClientSites": true,
+    "ipcClientAlias": true,
+    "shellRetainsExplicitHome": true,
+    "updaterDisable": true,
+    "primaryRuntimeManual": true,
+    "sqliteMigrationOptOut": true,
+    "startupLogEvidence": true,
+    "strictCurrentFeatureOverrides": true,
+    "windowsRegisteredCoreNotInherited": true
+  },
+  "limitations": [
+    "Dedicated literal-loopback WebSocket backend is required; default stdio still uses production IPC.",
+    "This review never executes onboarding or Windows sandbox initialization.",
+    "Explicit profile paths and a synthetic backend account do not prove running PID/Target/data ownership.",
+    "Unit/static Windows checks do not establish macOS acceptance or a running stream handoff."
+  ]
+}

@@ -21,6 +21,27 @@ use crate::runtime_update::{RuntimeInstallRequest, RuntimeUpdateService};
 pub(crate) struct RuntimeUpdateHandoff(Receiver<Result<(), String>>);
 
 impl RuntimeUpdateHandoff {
+    pub(crate) fn arm_deferred_on_exit(
+        service: &RuntimeUpdateService,
+    ) -> Result<Option<RuntimeInstallRequest>, String> {
+        let Some(request) = service
+            .prepare_deferred_install_on_exit()
+            .map_err(|failure| failure.to_string())?
+        else {
+            return Ok(None);
+        };
+        if !request.activate_on_next_start {
+            return Err("Natural exit received a restart installation request.".into());
+        }
+        let mut ack_sent = false;
+        if let Err(failure) = handoff(&request, &mut ack_sent) {
+            if !ack_sent {
+                service.install_handoff_failed(&request.id, failure.clone());
+            }
+            return Err(failure);
+        }
+        Ok(Some(request))
+    }
     pub(crate) fn start(service: RuntimeUpdateService, request: RuntimeInstallRequest) -> Self {
         let (sender, result) = mpsc::channel();
         std::thread::spawn(move || {

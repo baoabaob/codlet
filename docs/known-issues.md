@@ -1,8 +1,29 @@
 # Known issues and current limits
 
-This page records current behavior, not a history of Preview fixes. The first
-stable release is being prepared as **0.2.0**. Its outstanding acceptance and
-product decisions are tracked in [release readiness](release-readiness.md).
+This page records current behavior. The unified Core candidate is
+**1.0.0-rc.1**; it has not been publicly released or installed into the daily
+client. Current and historical evidence are separated in
+[release readiness](release-readiness.md).
+
+## Unified Core and compatible online updates
+
+Core owns the Codex UI/Desktop implementation; ordinary consumers use
+`context.codex`. Existing legacy Adapter registrations and data are preserved,
+but those sources do not run alongside the Core providers. The GUI remains an
+optional plugin. Capability declarations and automated evidence do not certify
+every Native build or platform.
+
+Compatible online updates replace the declared JavaScript modules and Native
+source while retaining resident Rust, Node, transport and fixed injection/forwarder
+code. Updates to those resident components take effect on the next natural start.
+The initial upgrade from the former architecture also needs a new start. Plugins
+without explicit transferable state defer a whole-Core update instead of losing
+memory state. Unknown operations retain their original receipts and admission
+ownership; callers must not replay them. See [the update contract](core-online-update.md).
+
+The standard Host SDK has no ambient Node `require` or `process`. Explicit raw
+Host, raw CDP and Native access have separate permission boundaries. Shared DOM
+and raw Node execution remain trusted-code boundaries, not hostile-code sandboxes.
 
 ## Client lifetime and official entrypoints
 
@@ -15,15 +36,15 @@ product decisions are tracked in [release readiness](release-readiness.md).
 - macOS process groups cannot contain a descendant that deliberately detaches.
 - Cancellation cannot undo a disk write, remote request or arbitrary page patch.
   Query the original operation after an uncertain result instead of repeating it.
-- Desktop Adapter 0.2.14 adds opt-in owned restoration for loaded-thread changes
+- Core's Desktop implementation provides opt-in owned restoration for loaded-thread changes
   made through a configuration handle with `restoreOnDeactivate: true` on Core
-  0.2.0. Normal cleanup waits for the original provider/model receipt before
+  API 1. Normal cleanup waits for the original provider/model receipt before
   Host teardown. Unknown originals, active/background tasks, a conflicting model
   choice, forced retirement or lost native ownership still require inspection;
   these cannot be called successful restoration. Legacy unleased writes continue
   to require explicit restoration before route closure.
 
-For 0.2.0, the two original lifetime guarantees above are explicitly excluded.
+The two original lifetime guarantees above remain explicitly excluded.
 Separating Electron's singleton would require a distinct profile or changes to
 official launch behavior. A blanket Windows kill-on-close job could terminate
 official updater descendants; a reliable narrower supervisor needs crash/update
@@ -84,7 +105,7 @@ and the [adapter request-chain contract](https://github.com/baoabaob/codlet-plug
 
 ## Platforms and distribution
 
-Windows x64 has local desktop evidence. The final 0.2.0 source still needs a
+Windows x64 has bounded local desktop evidence. The current candidate still needs a
 clean-device installer/upgrade/uninstall and signed-client functional acceptance.
 The native Windows harness requires a disposable VM/host: a separate profile
 does not isolate Windows sandbox accounts or firewall changes.

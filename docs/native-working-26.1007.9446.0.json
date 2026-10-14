@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "packageVersion": "26.1007.9446.0",
+  "frontendVersion": "26.1007.71326",
+  "buildNumber": "20398",
+  "kind": "exact-source-working-selector-review",
+  "sourceHashes": {
+    "legacy": {
+      "initial": {
+        "name": "app-initial-b8e1c8014bb4.js",
+        "sha256": "799331dde54905c4df5e360f23a9621141759e2c0acb230aeab909f9904b646f"
+      },
+      "shared": {
+        "name": "app-shared-737655e1fb23.js",
+        "sha256": "a1daa891e89a395b8db399ff6eaa365f12a86880c3d8cf891caf4ccbcb9eebf5"
+      }
+    },
+    "current": {
+      "initial": {
+        "name": "app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57"
+      },
+      "shared": {
+        "name": "app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a"
+      }
+    }
+  },
+  "selectors": {
+    "response": {
+      "export": "vfn",
+      "legacy": "f9n",
+      "current": "tF"
+    },
+    "pending": {
+      "export": "nfn",
+      "legacy": "k9n",
+      "current": "P9n"
+    },
+    "publishing": {
+      "export": "AW",
+      "legacy": "lGo",
+      "current": "uGo"
+    }
+  },
+  "shapes": {
+    "responseSelector": {
+      "legacy": "f9n",
+      "current": "tF",
+      "normalizedAstSha256": "cc3d2846d64f95799e8429d7ed2315ea156d469d22acfe781f27418da051eb49"
+    },
+    "pendingSelector": {
+      "legacy": "k9n",
+      "current": "P9n",
+      "normalizedAstSha256": "da2f31a069f438914673ee2ceef5531928b3f0c8f418632cdb16a31588798119"
+    },
+    "publishingSelector": {
+      "legacy": "lGo",
+      "current": "uGo",
+      "normalizedAstSha256": "4c79d5d12a933c2a484ff4f97a27e54ddf0dcbbe6bba4d348ca1b62162680922"
+    },
+    "responseClassification": {
+      "legacy": "d9n",
+      "current": "y9n",
+      "normalizedAstSha256": "7a16e0fdc31eabf4727746932c968b57fdd40d4fb8b80a48a1886400d430a1d1"
+    },
+    "ownedChildWork": {
+      "legacy": "c9n",
+      "current": "g9n",
+      "normalizedAstSha256": "9e96a4f224dd098b46f99db85ed2772f124b8bca327f198ca8cd4cee4b151a33"
+    },
+    "blockingAndAsyncInput": {
+      "legacy": "T9n",
+      "current": "A9n",
+      "normalizedAstSha256": "c89bcc19448a65bdde27446af59a9e21b0cd242671f1074c0cace7df6e32808f"
+    },
+    "publicationIdentityAndState": {
+      "legacy": "cGo",
+      "current": "lGo",
+      "normalizedAstSha256": "30a35cc50985e6ec640cad7519ac7b33074f1ad3fb43aa3d4a4e690c1d05ec7c"
+    }
+  },
+  "checks": {
+    "responseExportBinding": true,
+    "pendingExportBinding": true,
+    "publishingExportBinding": true,
+    "responseSelectorPreserved": true,
+    "pendingSelectorPreserved": true,
+    "publishingSelectorPreserved": true,
+    "responseClassificationPreserved": true,
+    "ownedChildWorkPreserved": true,
+    "blockingAndAsyncInputPreserved": true,
+    "publicationIdentityAndStatePreserved": true
+  },
+  "limitations": [
+    "Identifier normalization alone is not a support declaration; selected dependency roles were reviewed separately.",
+    "Live selectors must still match the owned Native AppScope token and read/watch interface.",
+    "Running, blocked, async input, owned child work and publication behavior require actual owned scenarios; an empty read-only probe does not validate them.",
+    "No macOS acceptance is established."
+  ]
+}

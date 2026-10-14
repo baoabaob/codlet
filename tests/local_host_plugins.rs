@@ -187,7 +187,7 @@ fn host_grants_are_explicit_and_do_not_expand_the_declared_core_authority() {
 }
 
 #[test]
-fn catalog_keeps_a_js_host_without_any_official_functional_plugin_or_renderer_entry() {
+fn catalog_keeps_standalone_js_host_and_core_providers_without_optional_packages() {
     let fixture = Fixture::new();
     let mut registry = PluginRegistry::load(fixture.directory.path().join("config.json")).unwrap();
     registry
@@ -204,11 +204,152 @@ fn catalog_keeps_a_js_host_without_any_official_functional_plugin_or_renderer_en
     registry.set_enabled("codlet-gui", false).unwrap();
     let catalog = PluginCatalog::load(&registry).unwrap();
     let enabled = catalog.enabled_plugins(&registry).unwrap();
-    assert_eq!(enabled.len(), 1);
-    assert_eq!(enabled[0].manifest.id, "dev.host");
-    assert!(enabled[0].manifest.renderer.is_none());
+    let core_count = if cfg!(feature = "test-fixtures") {
+        0
+    } else {
+        2
+    };
+    assert_eq!(
+        enabled.len(),
+        1 + core_count,
+        "production Core providers plus the standalone author Host; synthetic fixtures were disabled"
+    );
+    let host = enabled
+        .iter()
+        .find(|plugin| plugin.manifest.id == "dev.host")
+        .unwrap();
+    assert!(host.manifest.renderer.is_none());
+    assert_eq!(
+        enabled
+            .iter()
+            .filter(|plugin| catalog.is_core(&plugin.manifest.id))
+            .count(),
+        core_count
+    );
+    assert!(
+        !enabled
+            .iter()
+            .any(|plugin| plugin.manifest.id == "codlet-gui")
+    );
     let runtime = codlet::renderer::RendererRuntime::from_catalog(catalog, registry).unwrap();
-    assert!(!runtime.has_renderer_plugins());
+    assert_eq!(
+        runtime.plugin_count(),
+        core_count,
+        "only production Core owns renderer entries"
+    );
+    assert_eq!(runtime.has_renderer_plugins(), core_count != 0);
+}
+
+#[test]
+fn sdk_host_does_not_inherit_saved_raw_grants_and_node_migration_requires_a_new_grant() {
+    let fixture = Fixture::new();
+    fixture.manifest(&json!({"schema":1,"id":"dev.host","version":"1","host":{"entry":"dist/host.js","mode":"sdk"}}));
+    let sdk = fixture.load(&[]);
+    assert_eq!(
+        sdk.manifest.host_mode(),
+        Some(codlet::plugins::HostMode::Sdk)
+    );
+    assert!(
+        fixture
+            .load(&[Permission::HostProcess, Permission::HostRaw])
+            .manifest
+            .permissions
+            .is_empty()
+    );
+    fixture.manifest(&json!({"schema":1,"id":"dev.host","version":"2","host":{"entry":"dist/host.js","mode":"node"},"permissions":["host.raw"]}));
+    assert!(
+        load_local_plugin("dev.host", &fixture.root, &[Permission::HostProcess], 8)
+            .unwrap_err()
+            .to_string()
+            .contains("host.raw")
+    );
+    assert_eq!(
+        fixture.load(&[Permission::HostRaw]).manifest.host_mode(),
+        Some(codlet::plugins::HostMode::Node)
+    );
+}
+
+#[test]
+#[cfg(not(feature = "test-fixtures"))]
+fn core_provider_migration_preserves_old_registration_files_data_and_disabled_preference() {
+    let fixture = Fixture::new();
+    let registry_path = fixture.directory.path().join("config.json");
+    let mut registry = PluginRegistry::load(&registry_path).unwrap();
+    for id in ["codex.ui.adapter", "codex.desktop.adapter"] {
+        let root = fixture.directory.path().join(id);
+        fs::create_dir_all(root.join("data")).unwrap();
+        fs::write(
+            root.join("codlet.json"),
+            "invalid old author manifest; must not be inspected",
+        )
+        .unwrap();
+        fs::write(
+            root.join("renderer.js"),
+            "throw Error('old copy must not execute');",
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/observations.json"),
+            "preserved observations",
+        )
+        .unwrap();
+        registry
+            .register_local(
+                id,
+                LocalPluginRegistration {
+                    path: fs::canonicalize(root).unwrap(),
+                    grants: vec![Permission::UiDom],
+                    broker_policy: Default::default(),
+                },
+            )
+            .unwrap();
+        registry.set_enabled(id, false).unwrap();
+    }
+    registry.save().unwrap();
+    let before = fs::read(&registry_path).unwrap();
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    for id in ["codex.ui.adapter", "codex.desktop.adapter"] {
+        assert!(catalog.is_core(id));
+        assert_eq!(
+            catalog
+                .entries()
+                .iter()
+                .filter(|entry| entry.id == id)
+                .count(),
+            1
+        );
+        let provider = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.id == id)
+            .unwrap()
+            .plugin
+            .as_ref()
+            .unwrap();
+        assert!(codlet::codex::is_internal_plugin(provider));
+        let old = &registry.local_plugins()[id];
+        assert_eq!(old.grants, [Permission::UiDom]);
+        assert!(!registry.is_enabled(id));
+        assert_eq!(
+            fs::read_to_string(old.path.join("data/observations.json")).unwrap(),
+            "preserved observations"
+        );
+        assert_eq!(
+            fs::read_to_string(old.path.join("codlet.json")).unwrap(),
+            "invalid old author manifest; must not be inspected"
+        );
+    }
+    assert_eq!(catalog.legacy_adapter_registrations(&registry).len(), 2);
+    assert_eq!(
+        catalog.enabled_plugins(&registry).unwrap().len(),
+        2,
+        "saved disabled preferences do not disable Core ownership"
+    );
+    assert_eq!(
+        fs::read(registry_path).unwrap(),
+        before,
+        "catalog migration is read-only"
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-((options = {}, createUI = null, createI18n = null, createServices = null, disposeHelpers = null, createPage = null, publish = null) => {
+((options = {}, createUI = null, createI18n = null, createServices = null, disposeHelpers = null, createPage = null, publish = null, createCodex = null) => {
     const world = options.world ?? 'isolated';
     if (world !== 'isolated' && world !== 'main') return { ok: false, error: 'invalid renderer world' };
     const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
@@ -28,6 +28,19 @@
 
     wakeEventLoop();
     const key = '__codletRendererV1';
+    const admissionKey = Symbol.for('codlet.core.renderer-admission.v1');
+    const validAdmissionId = id => typeof id === 'string' && id.length > 0 && id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(id);
+    let coreAdmission = globalThis[admissionKey];
+    if (coreAdmission !== undefined && (coreAdmission?.api !== 1 || !Object.hasOwn(coreAdmission, 'operationId') || coreAdmission.operationId !== null && !validAdmissionId(coreAdmission.operationId))) return { ok: false, error: 'Core renderer admission ABI collision' };
+    if (!coreAdmission) {
+        // Retained data has no dispatcher, owner context or old module closure.
+        coreAdmission = Object.seal({ api: 1, operationId: null });
+        Object.defineProperty(globalThis, admissionKey, { value: coreAdmission, configurable: true });
+    }
+    if (options.coreAdmissionId !== undefined && options.coreAdmissionId !== null) {
+        if (!validAdmissionId(options.coreAdmissionId) || coreAdmission.operationId !== null && coreAdmission.operationId !== options.coreAdmissionId) return { ok: false, error: 'Core renderer admission operation conflicts' };
+        coreAdmission.operationId = options.coreAdmissionId;
+    }
     const existing = globalThis[key];
     if (existing !== undefined) {
         return existing?.abi === 1 && existing.world === world
@@ -51,8 +64,44 @@
     const MAX_INVOCATIONS = 4;
     const now = () => globalThis.performance?.now?.() ?? Date.now();
     let nextRequestId = 1;
+    function signalDrain(record) {
+        if (!record.drains.size || record.pending.size || record.invocations.size || record.localPending.size || record.drainWake !== null) return;
+        // A browser task observes the microtask checkpoint after RPC consumers
+        // have applied accepted responses to their own explicit state.
+        record.drainWake = scheduleTimeout(() => {
+            record.drainWake = null;
+            if (record.pending.size || record.invocations.size || record.localPending.size) return;
+            for (const wake of [...record.drains]) wake();
+        }, 0);
+    }
 
     const message = (error) => typeof error?.message === 'string' ? error.message : String(error);
+    function validateSnapshot(snapshot) {
+        const plain = value => value && typeof value === 'object' && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+        const shape = plain(snapshot) && Object.getOwnPropertyDescriptors(snapshot);
+        if (!shape || shape.schema?.get || shape.schema?.set || !Number.isSafeInteger(shape.schema?.value) || shape.schema.value < 1 ||
+            Object.keys(shape).length !== 2 || !Object.hasOwn(shape, 'value')) throw rpcError('state_snapshot_invalid', 'Plugin state must contain positive schema and JSON value');
+        const seen = new Set();
+        const visit = (value, depth = 0) => {
+            if (depth > 64) throw rpcError('state_snapshot_invalid', 'Plugin state exceeds the nesting limit');
+            if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+            if (typeof value === 'number' && Number.isFinite(value)) return;
+            if (!Array.isArray(value) && !plain(value) || seen.has(value)) throw rpcError('state_snapshot_invalid', 'Plugin state must contain only finite plain JSON data');
+            seen.add(value);
+            const descriptors = Object.getOwnPropertyDescriptors(value);
+            if (Reflect.ownKeys(descriptors).some(key => typeof key !== 'string' || descriptors[key].get || descriptors[key].set ||
+                key !== 'length' && !descriptors[key].enumerable)) throw rpcError('state_snapshot_invalid', 'Plugin state cannot contain symbols, accessors or hidden data');
+            if (Array.isArray(value)) {
+                if (Object.keys(value).length !== value.length || Object.keys(value).some((key, index) => key !== String(index))) throw rpcError('state_snapshot_invalid', 'Plugin state arrays must be dense without properties');
+                for (const item of value) visit(item, depth + 1);
+            } else for (const descriptor of Object.values(descriptors)) visit(descriptor.value, depth + 1);
+            seen.delete(value);
+        };
+        visit(snapshot);
+        const json = JSON.stringify(snapshot);
+        if (new TextEncoder().encode(json).byteLength > 256 * 1024) throw rpcError('state_snapshot_too_large', 'Plugin state exceeds 256 KiB');
+        return JSON.parse(json);
+    }
     const rpcError = (code, text, data = null) => {
         const error = new Error(text);
         error.code = code;
@@ -122,7 +171,9 @@
             let options;
             let timeoutMs;
             try {
+                if (record.closed) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
                 if (lineage?.closed) throw rpcError('invocation_cancelled', 'the parent renderer invocation has retired');
+                if ((record.updating || coreAdmission.operationId !== null && !record.initializing) && !lineage && !stopping.has(record)) throw rpcError('core_updating', 'Core is checkpointing this plugin generation');
                 options = (typeof capabilityOrMethod === 'string' ? maybeParams : maybeOptions) ?? {};
                 if (!options || typeof options !== 'object' || Array.isArray(options)) throw rpcError('invalid_request', 'RPC options must be an object');
                 timeoutMs = options.timeoutMs ?? RPC_TIMEOUT_MS;
@@ -157,7 +208,7 @@
             const pending = new Promise((resolve, reject) => {
                 const timer = scheduleTimeout(() => {
                     const request = takePending(record, id);
-                    request?.reject(rpcError('rpc_timeout', 'Plugin request timed out. Please retry.'));
+                    request?.reject(rpcError('rpc_timeout', 'Plugin request timed out; its outcome is unknown.', { outcome: 'unknown' }));
                 }, timeoutMs);
                 const onAbort = () => {
                     const request = takePending(record, id);
@@ -178,7 +229,9 @@
         };
 
         const notify = (capabilityOrMethod, methodOrParams, maybeParams) => {
+            if (record.closed) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
             if (lineage?.closed) throw rpcError('invocation_cancelled', 'the parent renderer invocation has retired');
+            if ((record.updating || coreAdmission.operationId !== null && !record.initializing) && !lineage && !stopping.has(record)) throw rpcError('core_updating', 'Core is checkpointing this plugin generation');
             const requestData = parseRequestArguments(record, capabilityOrMethod, methodOrParams, maybeParams);
             if (typeof requestData.method !== 'string' || requestData.method.length === 0) {
                 throw rpcError('invalid_request', 'renderer RPC method must be a non-empty string');
@@ -243,11 +296,34 @@
         record.pending.delete(id);
         cancelTimeout(request.timer);
         request.signal?.removeEventListener('abort', request.onAbort);
+        signalDrain(record);
         return request;
     }
 
     function rejectPending(record, error) {
         for (const id of record.pending.keys()) takePending(record, id)?.reject(error);
+    }
+
+    // This closure is handed only to the embedded semantic SDK factory. Local
+    // Native handles share the same generation admission and checkpoint drain
+    // as RPC, without putting DOM handles or callbacks through Rust IPC.
+    function createLocalAdmission(record) {
+        const track = value => {
+            if (!value || typeof value.then !== 'function') return value;
+            const token = {};
+            record.localPending.add(token);
+            Promise.resolve(value).then(() => settled(), () => settled());
+            function settled() { record.localPending.delete(token); signalDrain(record); }
+            return value;
+        };
+        return Object.freeze({
+            run(operation, cleanup = false) {
+                if (record.closed || stopping.has(record) && !cleanup) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
+                if ((record.updating || coreAdmission.operationId !== null && !record.initializing) && !cleanup && !stopping.has(record)) throw rpcError('core_updating', 'Core is checkpointing this plugin generation');
+                return track(operation());
+            },
+            track
+        });
     }
 
     function releaseEmptyRuntime() {
@@ -262,7 +338,7 @@
                 // the immutable ABI tombstone, but release all helper loaders
                 // and reject attempts to revive this retired generation.
                 retired = true;
-                uiFactory = createUI = createI18n = createServices = createPage = null;
+                uiFactory = createUI = createI18n = createServices = createPage = createCodex = null;
             }
             if (retireFacade) { const retire = retireFacade; retireFacade = null; retire(); }
             else if (world === 'main' && globalThis[key] === runtime) delete globalThis[key];
@@ -272,6 +348,12 @@
 
     function closeRecord(record, error) {
         record.closed = true;
+        record.activationController?.abort(error);
+        record.snapshotController?.abort(rpcError('plugin_deactivated', 'Renderer snapshot owner retired'));
+        if (record.drainWake !== null) cancelTimeout(record.drainWake);
+        record.drainWake = null;
+        record.drains.clear();
+        record.localPending.clear();
         if (record.cleanups.size || record.cleanupPending) record.disposeError ??= 'Asynchronous cleanup was interrupted; restoration is unconfirmed';
         record.cleanupController?.abort(error);
         record.cleanups.clear();
@@ -317,6 +399,22 @@
         }
     }
 
+    function waitActivation(record, operation) {
+        const signal = record.activationController.signal;
+        if (signal.aborted) throw signal.reason;
+        // Preserve synchronous entry/setup and failure cleanup timing. Only an
+        // actually asynchronous hook needs a cancellable waiting promise.
+        const result = operation();
+        if (!result || typeof result.then !== 'function') return result;
+        return new Promise((resolve, reject) => {
+            const finish = (method, value) => { signal.removeEventListener('abort', abort); method(value); };
+            const abort = () => finish(reject, signal.reason ?? rpcError('activation_cancelled', 'Renderer activation was cancelled'));
+            if (signal.aborted) { abort(); return; }
+            signal.addEventListener('abort', abort, { once: true });
+            Promise.resolve(result).then(value => finish(resolve, value), error => finish(reject, error));
+        });
+    }
+
     async function runCleanups(record) {
         const listeners = [...record.cleanups]; record.cleanups.clear();
         if (!listeners.length) return;
@@ -354,6 +452,10 @@
             capabilityKey(request.capability) === null) {
             return { ok: false, error: 'invalid provider request' };
         }
+        // Core invocation metadata represents a broker-accepted request. Those
+        // receipts and their bound descendants remain eligible to settle after
+        // admission closes; new unadmitted/direct invocations receive a refusal.
+        if ((record.updating || coreAdmission.operationId !== null && !record.initializing) && request.coreInvocation === undefined) return { ok: false, code: 'core_updating', error: 'Core is checkpointing this provider generation' };
         const key = `${capabilityKey(request.capability)}\u0000${request.method}`;
         const endpoint = record.endpoints.get(key);
         if (!endpoint) return record.unavailable.has(capabilityKey(request.capability))
@@ -373,6 +475,7 @@
                 lineage.closed = true;
                 cancelTimeout(timer);
                 record.invocations.delete(token);
+                signalDrain(record);
                 const retired = failure ?? rpcError('invocation_cancelled', 'the renderer handler completed');
                 controller.abort(retired);
                 for (const [id, pending] of record.pending) if (pending.lineage === lineage) takePending(record, id)?.reject(retired);
@@ -399,7 +502,7 @@
     const runtime = {
         abi: 1,
         world,
-        async activate(metadata, definition) {
+        async activate(metadata, definition, snapshot = null) {
             wakeEventLoop();
             if (retired) return { ok: false, error: 'renderer generation has retired' };
             if (!metadata || typeof metadata.id !== 'string' || metadata.id.length === 0 ||
@@ -412,6 +515,11 @@
             }
             if (!definition || typeof definition.activate !== 'function' || typeof definition.deactivate !== 'function') {
                 return { ok: false, error: 'renderer entry must export activate and deactivate functions' };
+            }
+            if (snapshot !== null) {
+                try { snapshot = validateSnapshot(snapshot); }
+                catch (error) { return { ok: false, error: message(error), code: error.code }; }
+                if (typeof definition.restoreState !== 'function') return { ok: false, error: 'renderer entry does not support restoreState', code: 'state_restore_unavailable' };
             }
             return runExclusive(metadata.id, async () => {
                 const current = plugins.get(metadata.id);
@@ -430,6 +538,12 @@
                     provides: Array.isArray(metadata.provides) ? metadata.provides.slice() : [],
                     requires: Array.isArray(metadata.requires) ? metadata.requires.slice() : [],
                     pending: new Map(),
+                    localPending: new Set(),
+                    updating: false,
+                    drains: new Set(),
+                    drainWake: null,
+                    snapshotController: null,
+                    activationController: new AbortController(),
                     endpoints: new Map(),
                     unavailable: new Map(),
                     invocations: new Map(),
@@ -440,10 +554,12 @@
                     cleanupPending: false,
                     disposeError: null,
                     diagnosticCount: 0,
+                    restoringState: snapshot !== null,
+                    initializing: true,
                     closed: false,
                     definition
                 };
-                let i18n;
+                let i18n, codex;
                 const serviceAbort = typeof createServices === 'function' ? new AbortController() : null;
                 if (serviceAbort) record.disposers.add(() => serviceAbort.abort(rpcError('plugin_deactivated', 'renderer services retired')));
                 const services = typeof createServices === 'function' ? createServices({
@@ -456,6 +572,11 @@
                     version: metadata.version,
                     generation: metadata.generation,
                     world,
+                    get restoringState() { return record.restoringState; },
+                    get codex() {
+                        if (!codex && typeof createCodex === 'function') codex = createCodex(context, createLocalAdmission(record));
+                        return codex;
+                    },
                     get i18n() {
                         if (!i18n && typeof createI18n === 'function') i18n = createI18n(context);
                         return i18n;
@@ -492,10 +613,17 @@
                         return createPage(context, options, () => context.ui.create());
                     }} : {}) }) } : {})
                 });
+                record.context = context;
                 activating.set(metadata.id, record);
                 try {
-                    await definition.activate(context);
+                    await waitActivation(record, () => definition.activate(context));
+                    if (snapshot !== null) {
+                        if (record.closed) throw rpcError('activation_cancelled', 'renderer activation was cancelled');
+                        await waitActivation(record, () => definition.restoreState(snapshot, context));
+                        record.restoringState = false;
+                    }
                     if (record.closed) throw rpcError('activation_cancelled', 'renderer activation was cancelled');
+                    record.initializing = false;
                 } catch (error) {
                     activating.delete(metadata.id);
                     let cleanupError = null;
@@ -534,8 +662,12 @@
         },
         async deactivate(id, generation) {
             wakeEventLoop();
+            const pending = activating.get(id);
+            const cancelled = pending?.generation === generation;
+            if (cancelled) closeRecord(pending, rpcError('activation_cancelled', 'Renderer activation was cancelled by teardown'));
             return runExclusive(id, async () => {
                 const current = plugins.get(id);
+                if (cancelled && current?.generation !== generation) return { ok: true, id, generation, inactive: true, cancelled: true };
                 if (!current) return { ok: true, id, generation, inactive: true };
                 if (current.generation !== generation) {
                     return { ok: false, error: 'plugin generation mismatch' };
@@ -548,6 +680,61 @@
                     return { ok: false, error: message(error) };
                 }
             }).finally(releaseEmptyRuntime);
+        },
+        async __snapshot(id, generation) {
+            wakeEventLoop();
+            return runExclusive(id, async () => {
+                const record = plugins.get(id);
+                if (!record || record.generation !== generation || record.closed || stopping.has(record)) return { ok: false, code: 'plugin_deactivated', error: 'renderer snapshot owner is not active' };
+                record.updating = true;
+                if (typeof record.definition.saveState === 'function' && typeof record.definition.restoreState !== 'function') return { ok: false, code: 'state_restore_unsupported', error: 'saveState requires a matching restoreState hook for candidate takeover and rollback' };
+                const controller = new AbortController();
+                record.snapshotController = controller;
+                let timer, abort, drained;
+                try {
+                    const cancelled = new Promise((_, reject) => {
+                        abort = () => reject(controller.signal.reason);
+                        controller.signal.addEventListener('abort', abort, { once: true });
+                        timer = scheduleTimeout(() => controller.abort(rpcError('state_snapshot_timeout', 'Accepted renderer operations did not settle within the snapshot deadline')), RPC_TIMEOUT_MS);
+                    });
+                    const quiescent = new Promise((resolve, reject) => {
+                        drained = () => record.closed ? reject(rpcError('plugin_deactivated', 'Renderer snapshot owner retired')) : resolve();
+                        record.drains.add(drained); signalDrain(record);
+                    });
+                    await Promise.race([quiescent, cancelled]);
+                    record.drains.delete(drained);
+                    if (typeof record.definition.saveState !== 'function') return { ok: true, snapshot: null };
+                    const snapshot = validateSnapshot(await Promise.race([Promise.resolve().then(() => record.definition.saveState(record.context)), cancelled]));
+                    if (record.closed) throw rpcError('plugin_deactivated', 'renderer snapshot owner retired');
+                    return { ok: true, snapshot };
+                } catch (error) { return { ok: false, code: error.code ?? 'state_snapshot_failed', error: message(error) }; }
+                finally {
+                    cancelTimeout(timer);
+                    controller.signal.removeEventListener('abort', abort);
+                    record.drains.delete(drained);
+                    if (!record.drains.size && record.drainWake !== null) { cancelTimeout(record.drainWake); record.drainWake = null; }
+                    if (record.snapshotController === controller) record.snapshotController = null;
+                }
+            });
+        },
+        __resume(id, generation) {
+            wakeEventLoop();
+            const record = plugins.get(id);
+            if (!record || record.generation !== generation || record.closed || stopping.has(record)) return { ok: false, code: 'plugin_deactivated', error: 'renderer resume owner is not active' };
+            record.updating = false;
+            record.snapshotController?.abort(rpcError('state_snapshot_cancelled', 'Core cancelled this state checkpoint'));
+            return { ok: true };
+        },
+        __coreAdmissionPause(operationId) {
+            if (!validAdmissionId(operationId)) return { ok: false, error: 'Invalid Core admission operation identity' };
+            if (coreAdmission.operationId !== null && coreAdmission.operationId !== operationId) return { ok: false, error: 'Another Core operation holds renderer admission' };
+            coreAdmission.operationId = operationId;
+            return { ok: true, paused: true, operationId };
+        },
+        __coreAdmissionResume(operationId) {
+            if (!validAdmissionId(operationId) || coreAdmission.operationId !== operationId) return { ok: false, error: 'This operation does not own renderer admission' };
+            coreAdmission.operationId = null;
+            return { ok: true, resumed: true, operationId };
         },
         async __rpcInvoke(binding, request) {
             wakeEventLoop();

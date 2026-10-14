@@ -2,9 +2,9 @@
 
 Codlet is an extension runtime for Codex Desktop. It launches a managed desktop session and loads trusted JavaScript plugins with shared lifecycle, permissions, RPC, and management APIs.
 
-Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. The management GUI and the Desktop/UI adapters are optional plugins maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). They are not compiled into Core.
+Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. Core includes the Codex UI and Desktop compatibility modules and exposes them through `context.codex`. The management GUI remains an optional plugin maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). Separate Adapter installation is no longer required.
 
-The first stable release, **0.2.0**, is in preparation and has not been published. See the [release readiness checklist](docs/release-readiness.md) for remaining acceptance and product decisions. Windows x64 is the primary tested platform; macOS Apple Silicon has a native build and installer path. [Platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) define the actual support boundaries. Linux is outside the current scope.
+The **1.0.0-rc.1** major update is a local release candidate and has not been published. The [implementation contract](docs/unified-core-v1-contract.md) describes the SDK, permission and migration boundaries; [online updates](docs/core-online-update.md) distinguishes active modules from resident components that require the next launch. Windows x64 is the primary test platform; macOS Apple Silicon has a native build and installer path. [Platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) define the actual support boundaries. Linux is outside the current scope.
 
 ## Use Codlet
 
@@ -30,10 +30,10 @@ While Core runs, the `/codlet` skill can explain Codlet, manage plugins through 
 A plugin directory contains `codlet.json`, built JavaScript entrypoints, and optional resources. Renderer and Host entrypoints export CommonJS `activate(context)` and `deactivate()` functions. Combined entries share one lifecycle generation.
 
 - Renderer code uses the public DOM/UI SDK, or explicitly granted main-world/CDP access.
-- Host code runs in Codlet's verified Node runtime and can use managed storage, process, network, and traffic services.
-- Capabilities let plugins depend on adapters instead of duplicating private client integration.
+- Ordinary Host computation uses `host.mode: "sdk"` and managed services. Explicit `host.mode: "node"` requires `host.raw` for the full Node environment.
+- The [Codex SDK](docs/spec/codex.md) provides navigation, workspace, tasks, permissions, events, submission hooks and configuration; Core owns Native version adaptation.
 
-Start with the [plugin format](docs/spec/plugin-format.md), [Host contract](docs/spec/host.md), and [examples](examples). Public declarations are in [types](types). Trusted Host code has the user's OS privileges: broker permissions do not make ordinary Node code an OS sandbox.
+Start with the [plugin format](docs/spec/plugin-format.md), [Host contract](docs/spec/host.md), and [examples](examples). Public declarations are in [types](types). [Permission boundaries](docs/permission-boundaries-v1.md) distinguish broker/admission checks from declarations and trusted-code restrictions; neither a shared renderer realm nor a Node VM is an OS security sandbox.
 
 ## Develop
 

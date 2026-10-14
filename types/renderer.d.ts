@@ -39,12 +39,18 @@ export interface RendererRpc {
   onNotification(handler: (message: unknown) => void): () => void;
 }
 export interface RendererContext {
+  /** Core-owned Codex UI/Desktop semantics. Individual calls retain capability
+   * admission; local callback/DOM handles retire with this plugin generation. */
+  readonly codex: import('./codex').CodexSdk;
   /** Core services also work for renderer-only plugins. Callback runners retire with this document. */
   readonly services: import('./core-services').CoreServices;
   readonly pluginId: string;
   readonly version: string;
   readonly generation: number;
   readonly world: 'isolated' | 'main';
+  /** True while activate/restoreState receives an explicit saved state. Avoid
+   * automatic side effects before restoration; false after restore succeeds. */
+  readonly restoringState: boolean;
   readonly rpc: RendererRpc;
   /** Optional convenience library. Rendering controls does not grant runtime management. */
   readonly ui?: RendererUiFactory;
@@ -59,4 +65,13 @@ export interface RendererContext {
 }
 /** A plugin that cannot undo a page patch must report this on unload. */
 export interface RendererReloadRequired { readonly reloadRequired: true; readonly reason: string }
-export interface RendererPlugin { activate(context: RendererContext): void | Promise<void>; deactivate(): void | RendererReloadRequired | Promise<void | RendererReloadRequired> }
+export interface RendererStateSnapshot { readonly schema: number; readonly value: import('./plugin-storage').PluginJson }
+export interface RendererPlugin {
+  activate(context: RendererContext): void | Promise<void>;
+  deactivate(): void | RendererReloadRequired | Promise<void | RendererReloadRequired>;
+  /** Optional explicit state transfer. Failed/invalid snapshots leave this
+   * generation live; DOM nodes, callbacks, Promises and processes are excluded. */
+  saveState?(context: RendererContext): RendererStateSnapshot | Promise<RendererStateSnapshot>;
+  /** Called after activate; Core bounds plain JSON state to 256 KiB. */
+  restoreState?(snapshot: RendererStateSnapshot, context: RendererContext): void | Promise<void>;
+}

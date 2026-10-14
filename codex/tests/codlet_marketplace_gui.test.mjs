@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createPreviewRuntime} from '../scripts/preview-runtime.mjs';
+import {uiFixture,tick} from './support/ui-fixture.mjs';
+import reviewedProfiles from '../compatibility/client-profiles.json' with {type:'json'};
+
+test('production Add menu opens the Core-backed marketplace and reviews an exact managed package',async t=>{
+  const demo=createPreviewRuntime(),f=uiFixture({locale:'en',request:demo.request}),plugin=f.load('bundled/codlet/dist/renderer.js');
+  t.after(()=>{plugin.deactivate();f.dispose();});await plugin.activate(f.context);await f.open();
+  const add=f.control('Add');add.focus();await f.key(add,'ArrowDown');await f.click('Plugin marketplace');
+  assert.equal(f.document.querySelector('[data-codlet-panel]').dataset.codletView,'market');
+  assert.equal(f.document.querySelectorAll('.market-row').length,2);
+  const officialRow=[...f.document.querySelectorAll('.market-row')].find(row=>row.textContent.includes('Codlet GUI'));
+  assert.deepEqual([...officialRow.querySelectorAll('.codlet-plugin-tag')].map(tag=>tag.textContent),['UI','Tool']);
+  assert.match(officialRow.textContent,/18 downloads/);
+  assert.match(officialRow.textContent,/Author declares this device compatible/);
+  await f.click('Official');assert.equal(f.document.querySelectorAll('.market-row').length,1);
+  await f.click('Details for Codlet GUI');assert.equal(f.document.querySelector('[data-codlet-panel]').dataset.codletView,'marketDetails');
+  await f.click('Update');assert.equal(f.document.querySelector('[data-codlet-panel]').dataset.codletView,'import');
+  assert.match(f.document.querySelector('.codlet-local-preview').textContent,/codlet-gui.*0\.2\.0/);
+  assert.match(f.document.querySelector('.market-compatibility').textContent,/Publisher-declared client versions/);
+  assert.ok(f.document.querySelector('.market-compatibility').textContent.includes(reviewedProfiles.builds.at(-1).appVersion));
+  assert.equal(f.control('Confirm managed update').disabled,true);
+  await f.click('Agree and authorize');assert.equal(f.control('Confirm managed update').disabled,false);
+  await f.click('Confirm managed update');assert.ok(f.document.querySelector('[role="dialog"]'));
+  await f.click('Cancel');await tick();assert.equal(f.calls.some(call=>call.method==='prepare'),false);
+  await f.click('Back');await f.click('Back');await f.click('All');await f.click('Details for GitHub Notes');await f.click('Update');
+  assert.match(f.document.querySelector('.market-compatibility').textContent,/Author-declared client builds/);
+  assert.equal(f.errors.length,0);
+});

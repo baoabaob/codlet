@@ -20,6 +20,34 @@ pub(super) enum LabRuntime {
 }
 
 impl LabRuntime {
+    pub(super) fn prepare_client_bridge(&mut self) -> Result<(), LabError> {
+        if let Self::Normal(owner) = self {
+            owner.prepare_client_bridge()?;
+        }
+        Ok(())
+    }
+    pub(super) fn traffic(&self) -> Option<&crate::traffic_owner::TrafficOwner> {
+        match self {
+            Self::Normal(owner) => owner.traffic.as_ref(),
+            _ => None,
+        }
+    }
+    pub(super) fn complete_client_bridge(
+        &mut self,
+        pid: u32,
+        executable: &Path,
+    ) -> Result<(), LabError> {
+        if let Self::Normal(owner) = self
+            && let Some(traffic) = &owner.traffic
+        {
+            traffic
+                .attach_client(pid, executable, || false)
+                .map_err(preflight)?;
+            traffic.complete_bridge_startup().map_err(preflight)?;
+            owner.renderer.set_client_source(traffic.client_source());
+        }
+        Ok(())
+    }
     pub fn manage_service(&self) -> Option<crate::runtime_manage::RuntimeManageService> {
         match self {
             Self::Normal(owner) => Some(owner.manage_service.clone()),
@@ -77,6 +105,11 @@ impl LabRuntime {
     ) {
         if let Self::Normal(owner) = self {
             owner.configure_runtime_updates(child, reporter);
+        }
+    }
+    pub(super) fn install_deferred_after_client_exit(&self, reporter: &mut Reporter) {
+        if let Self::Normal(owner) = self {
+            owner.install_deferred_after_client_exit(reporter);
         }
     }
     pub fn take_update_restart_requested(&mut self) -> bool {

@@ -361,6 +361,7 @@ fn renderer_runtime_rejects_missing_source_and_incomplete_combined_snapshots_bef
     let mut combined = bundled_codex_ui_adapter().unwrap();
     combined.manifest.host = Some(crate::plugins::HostManifest {
         entry: "host.js".to_owned(),
+        mode: None,
         provides: Vec::new(),
         requires: Vec::new(),
     });

@@ -9,6 +9,28 @@ use url::Url;
 fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
+
+#[test]
+fn runtime_file_hashing_does_not_require_a_large_thread_stack() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("startup-marker.json");
+    let bytes = vec![0x5au8; 1024 * 1024 + 137];
+    std::fs::write(&path, &bytes).unwrap();
+    let expected_hash = sha(&bytes);
+    let expected_length = bytes.len() as u64;
+    let record = std::thread::Builder::new()
+        .name("small-stack-runtime-hash".into())
+        .stack_size(128 * 1024)
+        .spawn(move || package::file_record(&path, "startup-marker.json"))
+        .unwrap()
+        .join()
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.path, "startup-marker.json");
+    assert_eq!(record.bytes, expected_length);
+    assert_eq!(record.sha256, expected_hash);
+}
+
 fn pe(label: &str) -> Vec<u8> {
     let mut bytes = vec![0u8; 128];
     bytes[..2].copy_from_slice(b"MZ");
@@ -18,7 +40,7 @@ fn pe(label: &str) -> Vec<u8> {
     bytes.extend_from_slice(label.as_bytes());
     bytes
 }
-fn payload(
+pub(super) fn payload(
     profile: RuntimePayloadProfile,
     version: &str,
     node_version: &str,
@@ -70,9 +92,567 @@ fn payload(
             profile,
             runtime,
             files: records,
+            online: None,
         },
         files,
     )
+}
+
+#[test]
+fn compatible_online_install_uses_the_real_native_bridge_and_persists_a_validated_source_pin() {
+    online_install_fixture(false);
+}
+#[test]
+#[ignore = "owned subprocess entry, invoked by full_core_module_install_has_an_isolated_foreground_owner"]
+fn core_modules_child_fixture() {
+    assert_eq!(
+        std::env::var("CODLET_CORE_MODULE_TEST_CHILD").as_deref(),
+        Ok("1")
+    );
+    online_install_fixture(true);
+}
+#[test]
+fn full_core_module_install_has_an_isolated_foreground_owner() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "runtime_update::tests::core_modules_child_fixture",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("CODLET_CORE_MODULE_TEST_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+fn online_install_fixture(include_modules: bool) {
+    use crate::client_bridge::{ClientSourceRuntime, Endpoint};
+    use crate::platform::host::OwnedPluginProcess;
+    use std::time::Instant;
+    let directory = tempfile::tempdir().unwrap();
+    let install = directory.path().join("install");
+    let stage = directory.path().join("stage");
+    let state_root = directory.path().join("state");
+    for path in [&install, &stage, &state_root] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let (mut manifest, files) = payload(
+        RuntimePayloadProfile::Portable,
+        "1.0.1",
+        "24.21.0",
+        "unchanged-core",
+    );
+    for (relative, bytes) in &files {
+        for root in [&install, &stage] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+    }
+    let code = r#"module.exports={handoffVersion:1,validateClientSource(){},validateSnapshot:s=>s.schema===1,installElectronTraffic(){
+      let count=0;return {handoffVersion:1,snapshot:()=>({schema:1,count}),suspend:()=>true,resume(s){count=s.count;return true;},restore(s){if(s)count=s.count;},confirmTakeover:()=>true,
+      ready:async()=>({installed:true,activatedSources:[{id:'fixture-main',operations:['http.intercept'],protocols:['http'],coverage:['unchanged-stream']}],unsupportedSources:[]}),close(){}};}};"#;
+    let source_path = stage.join(package::ONLINE_CLIENT_SOURCE);
+    std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+    std::fs::write(&source_path, code).unwrap();
+    manifest
+        .files
+        .push(package::file_record(&source_path, package::ONLINE_CLIENT_SOURCE).unwrap());
+    manifest.online = Some(package::OnlineRuntime::current());
+    let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
+    std::fs::write(stage.join(package::MANIFEST), &manifest_bytes).unwrap();
+    let staged = package::StagedRuntime {
+        directory: stage,
+        manifest,
+        manifest_sha256: sha(&manifest_bytes),
+        candidate: RuntimeUpdateCandidate {
+            id: "a".repeat(64),
+            version: "1.0.1".into(),
+            platform: PLATFORM.into(),
+            size: 1,
+            sha256: "b".repeat(64),
+            release_url: None,
+        },
+    };
+    let runtime = crate::js_runtime::JsRuntime::discover().unwrap();
+    let bridge = directory.path().join("bridge.cjs");
+    std::fs::write(
+        &bridge,
+        include_bytes!("../../runtime/client-bridge-bundle.cjs"),
+    )
+    .unwrap();
+    let peer_path = directory.path().join("peer.cjs");
+    std::fs::write(&peer_path,format!(r#"process.type='browser';const bridge=require('./bridge.cjs').startClientBridge({{app:{{isReady:()=>false,getAppPath:()=>__dirname}}}},{{token:'e'.repeat(48)}});
+      bridge.installInitial({{owner:'codlet.core',generation:1,code:{},configuration:{{}}}}).then(()=>bridge.ready()).then(()=>bridge.endpoint()).then(async endpoint=>{{
+        const net=require('node:net'),fs=require('node:fs'),path=require('node:path');let lostOperation=null,dropQuery=false;
+        const proxy=net.createServer(socket=>{{let bytes=Buffer.alloc(0);function first(chunk){{bytes=Buffer.concat([bytes,chunk]);if(!bytes.includes(10))return;
+          socket.off('data',first);const command=JSON.parse(bytes.toString().split('\n')[0]);let suppress=false;
+          if(['replace','finishAdmission'].includes(command.op)){{fs.appendFileSync(path.join(__dirname,'commands.log'),command.op+'\n');
+            const marker=path.join(__dirname,command.op==='replace'?'lose-source-reply':'lose-release-reply');
+            if(fs.existsSync(marker)){{fs.unlinkSync(marker);lostOperation=command.operationId;dropQuery=true;suppress=true;}}}}
+          if(command.op==='status'&&command.operationId===lostOperation&&dropQuery){{dropQuery=false;suppress=true;}}
+          const upstream=net.connect({{host:endpoint.host,port:endpoint.port}},()=>upstream.write(bytes));socket.pipe(upstream);
+          if(suppress){{upstream.resume();upstream.once('end',()=>socket.destroy());}}else upstream.pipe(socket);
+          upstream.on('error',()=>socket.destroy());socket.on('error',()=>upstream.destroy());socket.once('close',()=>upstream.destroy());
+        }}socket.on('data',first);}});await new Promise(resolve=>proxy.listen(0,'127.0.0.1',resolve));
+        process.stdout.write(JSON.stringify({{...endpoint,port:proxy.address().port}})+'\n');
+      }});"#,serde_json::to_string(code).unwrap())).unwrap();
+    let (peer, stdio) = OwnedPluginProcess::spawn(
+        runtime.executable_path(),
+        &[peer_path.to_string_lossy().into_owned()],
+        directory.path(),
+        None,
+    )
+    .unwrap();
+    let mut response = Vec::new();
+    let mut buffer = [0; 4096];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while response.last() != Some(&b'\n') {
+        let size = stdio.stdout.read_some(&mut buffer, Some(deadline)).unwrap();
+        assert!(size > 0);
+        response.extend_from_slice(&buffer[..size]);
+    }
+    let endpoint: Endpoint = serde_json::from_slice(&response).unwrap();
+    let registry = directory.path().join("registry.json");
+    let services = crate::core_services::SharedCoreServices::new(&registry).unwrap();
+    let target = ClientSourceRuntime::new(
+        endpoint,
+        runtime,
+        registry,
+        serde_json::json!({"source":{"operations":["http.intercept"],"protocols":["http"]}}),
+        None,
+        services.prepare_traffic().unwrap(),
+        deadline,
+    )
+    .unwrap();
+    let restart = RuntimeRestartContext {
+        profile: RuntimePayloadProfile::Portable,
+        command: RuntimeRestartCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![],
+            working_directory: install.clone(),
+            environment: BTreeMap::new(),
+            timeout_seconds: 15,
+        },
+        wait_for: vec![],
+        launcher_files: vec![],
+        config_pin: None,
+    };
+    let service =
+        RuntimeUpdateService::start(install.clone(), state_root.clone(), Some(restart)).unwrap();
+    service.attach_online_target(target.clone());
+    {
+        let mut state = service.shared.lock().unwrap();
+        state.staged = Some(staged.clone());
+        state.status.phase = RuntimeUpdatePhase::Downloaded;
+    }
+    service.request_install().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while service.status().phase == RuntimeUpdatePhase::InstallRequested
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let status = service.status();
+    assert_eq!(
+        status.phase,
+        RuntimeUpdatePhase::UpToDate,
+        "{:?}",
+        status.error
+    );
+    assert!(
+        service.take_install_request().is_none(),
+        "online install must never arm a quit/restart helper"
+    );
+    let activation = status.activation.unwrap();
+    assert_eq!(activation.mode, "online");
+    assert!(!activation.persistence_pending);
+    assert_eq!(activation.components, vec!["native-client-source"]);
+    assert_eq!(
+        online::installed_source(&install).unwrap().as_deref(),
+        Some(code)
+    );
+    assert_eq!(
+        std::fs::read(install.join("codlet.exe")).unwrap(),
+        files["codlet.exe"]
+    );
+    assert!(!install.join(".codlet-runtime-update.lock.json").exists());
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(state_root.join("runtime-update-online-receipt.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(receipt["phase"], "onlineApplied");
+    assert_eq!(receipt["nativeSessionPreserved"], true);
+    assert_eq!(receipt["takeover"]["retirement"], "confirmed");
+    if include_modules {
+        let mut full = staged.clone();
+        full.manifest.version = "1.0.3".into();
+        full.candidate.version = "1.0.3".into();
+        let full_source = format!("{code}\n// verified full Core release");
+        std::fs::write(
+            full.directory.join(package::ONLINE_CLIENT_SOURCE),
+            &full_source,
+        )
+        .unwrap();
+        *full
+            .manifest
+            .files
+            .iter_mut()
+            .find(|file| file.path == package::ONLINE_CLIENT_SOURCE)
+            .unwrap() = package::file_record(
+            &full.directory.join(package::ONLINE_CLIENT_SOURCE),
+            package::ONLINE_CLIENT_SOURCE,
+        )
+        .unwrap();
+        for (id, relative) in modules::module_paths() {
+            let original =
+                std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(relative))
+                    .unwrap();
+            let candidate = format!("{original}\n// verified full Core release");
+            let file = full.directory.join(relative);
+            std::fs::write(&file, candidate).unwrap();
+            full.manifest
+                .files
+                .push(package::file_record(&file, relative).unwrap());
+            full.manifest
+                .online
+                .as_mut()
+                .unwrap()
+                .modules
+                .push(package::OnlineModule {
+                    id: id.into(),
+                    path: relative.into(),
+                });
+        }
+        let bytes = serde_json::to_vec(&full.manifest).unwrap();
+        full.manifest_sha256 = sha(&bytes);
+        std::fs::write(full.directory.join(package::MANIFEST), bytes).unwrap();
+        {
+            let mut state = service.shared.lock().unwrap();
+            state.staged = Some(full);
+            state.status.phase = RuntimeUpdatePhase::Downloaded;
+        }
+        service.request_install().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let request = loop {
+            if let Some(request) = service.take_online_modules_request() {
+                break request;
+            }
+            assert!(Instant::now() < deadline, "{:?}", service.status().error);
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(request.modules.len(), modules::MODULE_LIMIT);
+        assert!(service.take_online_modules_request().is_none());
+        assert!(!service.complete_online_modules(
+            "stale",
+            OnlineCoreModulesCompletion::Applied {
+                receipt: serde_json::json!({})
+            }
+        ));
+        let admission = target.begin_core_admission(&request.id).unwrap();
+        assert_eq!(admission["outcome"], "held");
+        assert!(admission["admissionToken"].is_null());
+        assert!(admission.pointer("/onlineUpdate/admission/token").is_none());
+        assert!(
+            admission
+                .pointer("/onlineUpdate/admission/admissionToken")
+                .is_none()
+        );
+        assert_eq!(
+            target.begin_core_admission(&request.id).unwrap()["outcome"],
+            "held"
+        );
+        assert_eq!(
+            target
+                .begin_core_admission("another-coordinator")
+                .err()
+                .unwrap()
+                .code,
+            "core_admission_owner_busy"
+        );
+        let guard = activate_online_modules(&request).unwrap();
+        assert_eq!(
+            activate_online_modules(&request).err().unwrap().code,
+            "core_modules_owner_busy"
+        );
+        for (id, source) in &request.modules {
+            assert_eq!(core_module_source(id, "unselected"), *source);
+            assert!(core_module_source_trusted(id, source, "unselected"));
+        }
+        assert_eq!(
+            target
+                .poll_core_admission_release(&request.id)
+                .unwrap_err()
+                .code,
+            "core_admission_release_not_started"
+        );
+        std::fs::write(directory.path().join("lose-source-reply"), b"once").unwrap();
+        assert_eq!(
+            target
+                .replace_core_code(&request.client_source, &request.version)
+                .unwrap_err()
+                .code,
+            "client_bridge_uncertain"
+        );
+        assert_eq!(
+            target
+                .replace_core_code(&request.client_source, &request.version)
+                .unwrap_err()
+                .code,
+            "client_bridge_uncertain"
+        );
+        let source_receipt = target.poll_core_code_receipt().unwrap().unwrap();
+        assert_eq!(source_receipt["outcome"], "applied");
+        assert_eq!(
+            target.poll_core_code_receipt().unwrap_err().code,
+            "core_receipt_missing"
+        );
+        assert_eq!(source_receipt["onlineUpdate"]["writes"]["accepting"], false);
+        std::fs::write(directory.path().join("lose-release-reply"), b"once").unwrap();
+        assert_eq!(
+            target
+                .finish_core_admission(
+                    &request.id,
+                    crate::client_bridge::CoreAdmissionOutcome::Applied,
+                )
+                .unwrap_err()
+                .code,
+            "client_bridge_uncertain"
+        );
+        let resumed = target
+            .poll_core_admission_release(&request.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed["outcome"], "admission_resumed");
+        assert_eq!(resumed["onlineUpdate"]["writes"]["accepting"], true);
+        let commands = std::fs::read_to_string(directory.path().join("commands.log")).unwrap();
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|command| *command == "replace")
+                .count(),
+            2,
+            "source command must not replay after a lost receipt"
+        );
+        assert_eq!(
+            commands
+                .lines()
+                .filter(|command| *command == "finishAdmission")
+                .count(),
+            1,
+            "release command must not replay after a lost receipt"
+        );
+        assert!(service.complete_online_modules(&request.id,OnlineCoreModulesCompletion::Applied{receipt:serde_json::json!({"source":source_receipt,"moduleAbi":1,"modules":request.modules.keys().collect::<Vec<_>>()})}));
+        guard.commit();
+        assert!(!service.complete_online_modules(
+            &request.id,
+            OnlineCoreModulesCompletion::Rejected {
+                error: "late callback".into()
+            }
+        ));
+        while service.status().phase == RuntimeUpdatePhase::InstallRequested
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let status = service.status();
+        assert_eq!(
+            status.phase,
+            RuntimeUpdatePhase::UpToDate,
+            "{:?}",
+            status.error
+        );
+        let activated = status.activation.unwrap();
+        assert_eq!(activated.components.len(), modules::MODULE_LIMIT + 1);
+        assert!(!activated.persistence_pending);
+        assert_eq!(
+            activated.retained_components,
+            vec![
+                "core-executable",
+                "rust-traffic",
+                "client-bridge",
+                "module-observer",
+                "renderer-ingress-forwarder"
+            ]
+        );
+        let pinned = modules::installed_modules(&install).unwrap();
+        assert_eq!(pinned, request.modules);
+        assert_eq!(
+            online::installed_source(&install).unwrap().as_deref(),
+            Some(request.client_source.as_str())
+        );
+        assert!(service.take_install_request().is_none());
+        // Expiry never discards this exact operation's receipt or permits replay.
+        let mut late = request.clone();
+        late.id.push_str("-late");
+        let late_id = late.id.clone();
+        let shared = service.shared.clone();
+        let waiting = std::thread::spawn(move || {
+            modules::foreground_wait(&shared, late, Duration::from_millis(20))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let state = service.shared.lock().unwrap();
+            if state.install_blocked
+                && state
+                    .status
+                    .activation
+                    .as_ref()
+                    .is_some_and(|activation| activation.mode == "unknown")
+            {
+                break;
+            }
+            drop(state);
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pending = service.take_online_modules_request().unwrap();
+        assert_eq!(pending.id, late_id);
+        assert!(service.take_online_modules_request().is_none());
+        assert!(service.complete_online_modules(
+            &late_id,
+            OnlineCoreModulesCompletion::RolledBack {
+                error: "late definite rollback".into()
+            }
+        ));
+        assert!(matches!(
+            waiting.join().unwrap(),
+            OnlineCoreModulesCompletion::RolledBack { .. }
+        ));
+        assert!(!service.complete_online_modules(
+            &late_id,
+            OnlineCoreModulesCompletion::Applied {
+                receipt: serde_json::json!({})
+            }
+        ));
+        assert!(!service.shared.lock().unwrap().install_blocked);
+        assert_eq!(service.status().activation.as_ref().unwrap().mode, "online");
+        assert_eq!(
+            service.status().activation.as_ref().unwrap().version,
+            request.version
+        );
+        // Restore the original source-only staged bytes for the rejection check.
+        std::fs::write(staged.directory.join(package::ONLINE_CLIENT_SOURCE), code).unwrap();
+        std::fs::write(
+            staged.directory.join(package::MANIFEST),
+            serde_json::to_vec(&staged.manifest).unwrap(),
+        )
+        .unwrap();
+        for (_, relative) in modules::module_paths() {
+            std::fs::remove_file(staged.directory.join(relative)).unwrap();
+        }
+    }
+    let rejected = target
+        .replace_core_code("module.exports={handoffVersion:2};", "1.0.4")
+        .unwrap();
+    assert_eq!(
+        rejected["outcome"], "rejected",
+        "definitive non-applied receipts must retain their exact outcome"
+    );
+    // A release with matching resident identities can still fail its source
+    // preflight. Keep both the live old owner and the durable source unchanged.
+    let mut broken = staged.clone();
+    let broken_path = broken.directory.join(package::ONLINE_CLIENT_SOURCE);
+    std::fs::write(&broken_path, "module.exports={handoffVersion:2};").unwrap();
+    let changed = package::file_record(&broken_path, package::ONLINE_CLIENT_SOURCE).unwrap();
+    *broken
+        .manifest
+        .files
+        .iter_mut()
+        .find(|file| file.path == package::ONLINE_CLIENT_SOURCE)
+        .unwrap() = changed;
+    broken.manifest.version = "1.0.2".into();
+    broken.candidate.version = "1.0.2".into();
+    let bytes = serde_json::to_vec(&broken.manifest).unwrap();
+    broken.manifest_sha256 = sha(&bytes);
+    std::fs::write(broken.directory.join(package::MANIFEST), bytes).unwrap();
+    {
+        let mut state = service.shared.lock().unwrap();
+        state.staged = Some(broken);
+        state.status.phase = RuntimeUpdatePhase::Downloaded;
+    }
+    service.request_install().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while service.status().phase == RuntimeUpdatePhase::InstallRequested
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(service.status().phase, RuntimeUpdatePhase::Failed);
+    assert!(service.take_install_request().is_none());
+    assert_eq!(
+        online::installed_source(&install).unwrap().as_deref(),
+        Some(
+            if include_modules {
+                format!("{code}\n// verified full Core release")
+            } else {
+                code.into()
+            }
+            .as_str()
+        )
+    );
+    // A changed resident executable is deferred, without asking its owner to
+    // quit or starting a helper while the session remains open.
+    let mut deferred = staged;
+    std::fs::write(deferred.directory.join(package::ONLINE_CLIENT_SOURCE), code).unwrap();
+    std::fs::write(
+        deferred.directory.join("codlet.exe"),
+        pe("incompatible-resident"),
+    )
+    .unwrap();
+    for record in &mut deferred.manifest.files {
+        *record =
+            package::file_record(&deferred.directory.join(&record.path), &record.path).unwrap();
+    }
+    deferred.manifest.version = "2.0.0".into();
+    deferred.candidate.version = "2.0.0".into();
+    let bytes = serde_json::to_vec(&deferred.manifest).unwrap();
+    deferred.manifest_sha256 = sha(&bytes);
+    std::fs::write(deferred.directory.join(package::MANIFEST), bytes).unwrap();
+    {
+        let mut state = service.shared.lock().unwrap();
+        state.staged = Some(deferred);
+        state.status.phase = RuntimeUpdatePhase::Downloaded;
+    }
+    service.request_install().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while service.status().phase == RuntimeUpdatePhase::InstallRequested
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        service.status().phase,
+        RuntimeUpdatePhase::Deferred,
+        "{:?}",
+        service.status().error
+    );
+    assert_eq!(
+        service.status().activation.as_ref().unwrap().mode,
+        "nextStart"
+    );
+    assert!(service.take_install_request().is_none());
+    assert_eq!(
+        std::fs::read(install.join("codlet.exe")).unwrap(),
+        files["codlet.exe"]
+    );
+    let intent: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(state_root.join("runtime-update-next-start.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(intent["version"], "2.0.0");
+    service.request_install().unwrap();
+    assert_eq!(service.status().phase, RuntimeUpdatePhase::Deferred);
+    drop(service);
+    drop(target);
+    peer.terminate().unwrap();
+    let _ = peer.wait(Duration::from_secs(2));
 }
 #[cfg(windows)]
 fn managed_payload(

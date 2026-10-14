@@ -15,6 +15,8 @@
         };
         const api = Object.freeze({abi: 1, world: options.world,
             activate: forward('activate'), deactivate: forward('deactivate'), status: forward('status'),
+            __snapshot: forward('__snapshot'), __resume: forward('__resume'),
+            __coreAdmissionPause: forward('__coreAdmissionPause'), __coreAdmissionResume: forward('__coreAdmissionResume'),
             __rpcInvoke: forward('__rpcInvoke'), __rpcCancel: forward('__rpcCancel'),
             __rpcReceive: forward('__rpcReceive'), __rpcClose: forward('__rpcClose')});
         Object.defineProperty(globalThis, '__codletRendererV1', {
@@ -28,7 +30,7 @@
         };
     };
     try {
-        const result = helpers.bootstrap(options, helpers.ui, helpers.i18n, helpers.services, helpers.dispose, helpers.page, publish);
+        const result = helpers.bootstrap(options, helpers.ui, helpers.i18n, helpers.services, helpers.dispose, helpers.page, publish, helpers.codex);
         if (result.reused || !result.ok) helpers.dispose();
         return result;
     } finally { helpers = null; }

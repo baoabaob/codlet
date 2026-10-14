@@ -13,6 +13,7 @@ const { performance } = require('node:perf_hooks');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const entry = process.argv[1];
 const snapshot = process.argv[2];
+const hostMode = process.argv[3] === 'sdk' ? 'sdk' : 'node';
 const MAX_FRAME = 1024 * 1024;
 const MAX_PENDING = 16;
 const MAX_TIMEOUT = 15000;
@@ -31,6 +32,7 @@ const subscriptions = new Map();
 const endpoints = new Map();
 const invocations = new Map();
 const invocationContext = new AsyncLocalStorage();
+const lifecycleContext = new AsyncLocalStorage();
 let provides = [];
 let requires = [];
 const scopeHandles = new WeakMap();
@@ -47,6 +49,13 @@ let cleanupDeadline = 0;
 let partial = Buffer.alloc(0);
 let outboundFrames = 0;
 let exiting = false;
+let stateTransition = false;
+let restoringState = false;
+let sdkPaused = false;
+let coreAdmission = null;
+const pausedNotifications = [];
+let drainingNotifications = false;
+const MAX_STATE_BYTES = 256 * 1024;
 
 // Keep plugin logging outside the protocol. Writing directly to stdout is an
 // unsupported protocol violation, not a mechanism for plugin communication.
@@ -63,6 +72,7 @@ function fatal(reason) {
 function ordinaryCallbackFailed(failure) {
   // Shutdown rejects ordinary Core waiters. A retired event/end callback may
   // consequently reject too; it must not abort the separate deactivate phase.
+  if (coreAdmission !== null && failure?.code === 'core_updating') return;
   if (state === 'starting' || state === 'active') fatal(failure);
 }
 
@@ -96,6 +106,8 @@ function request(method, params, timeoutMs = MAX_TIMEOUT, prepareResult, cleanup
     if (timeoutMs < 1) return Promise.reject(error('cleanup_timeout', 'the total Core cleanup budget expired'));
   }
   const invocation = cleanup ? undefined : invocationContext.getStore();
+  const trafficContinuation = method === 'traffic.closeChannel' || method === 'rpc.request' && params?.capability?.name === 'codlet.core.services' && params.capability.api === 1 && params.capability.scope === 'runtime' && ['traffic.unregister','traffic.closeSource','traffic.sourceStatus','traffic.status'].includes(params.method);
+  if (!cleanup && (sdkPaused || coreAdmission !== null && !trafficContinuation) && !invocation && !lifecycleContext.getStore()?.open) return Promise.reject(error('core_updating', 'this Host has paused new SDK requests for a Core update'));
   if (invocation) {
     if (invocation.closed) return Promise.reject(error('invocation_cancelled', 'the parent capability invocation has retired'));
     timeoutMs = Math.min(timeoutMs, Math.floor(invocation.deadline - performance.now()));
@@ -141,6 +153,9 @@ function retire() {
 }
 
 const trafficRuntime = createEmbeddedTrafficRuntime({
+  beforeRequest(_method, _params, continuation) {
+    if (!continuation && (sdkPaused || coreAdmission !== null) && !invocationContext.getStore() && !lifecycleContext.getStore()?.open) throw error('core_updating', 'Core holds new Host traffic requests until admission resumes');
+  },
   detach: callback => invocationContext.run(undefined, callback),
   rootSignal: abort.signal,
   makeError: error,
@@ -202,6 +217,7 @@ function shutdown(message) {
 }
 
 function context(params) {
+  restoringState = params.initialState != null;
   if (!Array.isArray(params.provides ?? [])) throw error('protocol_error', 'Core host provides must be an array');
   provides = (params.provides ?? []).map(capability => {
     if (capabilityKey(capability) === null) throw error('protocol_error', 'invalid Core host capability declaration');
@@ -236,7 +252,8 @@ function context(params) {
       });
     },
   });
-  return Object.freeze({
+  const result = {
+    get restoringState() { return restoringState; },
     plugin: Object.freeze({ id: identity.pluginId, generation: identity.generation, version: params.pluginVersion }),
     root: process.cwd(), signal: abort.signal, cdp,
     core: Object.freeze({ request(method, params, timeoutMs = MAX_TIMEOUT) {
@@ -253,7 +270,9 @@ function context(params) {
       detach: callback => invocationContext.run(undefined, callback),
       request: (method, params, options) => rpcRequest({ name: 'codlet.core.services', api: 1, scope: 'runtime' }, method, params, options),
     }),
-  });
+  };
+  result.codex = createEmbeddedCodexHost(result);
+  return Object.freeze(result);
 }
 
 function capabilityKey(capability) {
@@ -329,15 +348,19 @@ function closeInvocation(invocation, reason) {
 function invokeCapability(message) {
   const input = message.params;
   if (state !== 'active') return reply(message.id, null, error('host_stopping', 'this provider generation is not active'));
-  if (!object(input) || Object.keys(input).some(key => !['capability','method','params','caller','remainingMs','scope','depth'].includes(key))
+  if (!object(input) || Object.keys(input).some(key => !['capability','method','params','caller','remainingMs','scope','depth','cleanup','admitted'].includes(key))
     || capabilityKey(input.capability) === null || typeof input.method !== 'string'
     || !Number.isInteger(input.remainingMs) || input.remainingMs < 1 || input.remainingMs > MAX_TIMEOUT
     || !object(input.caller) || Object.keys(input.caller).some(key => !['pluginId','generation','targetId','documentEpoch'].includes(key))
     || typeof input.caller.pluginId !== 'string' || !positive(input.caller.generation)
     || typeof input.caller.targetId !== 'string' || !(positive(input.caller.documentEpoch) || (input.caller.targetId === '' && input.caller.documentEpoch === 0 && input.capability.scope === 'runtime'))
-    || (input.depth !== undefined && (!Number.isInteger(input.depth) || input.depth < 1 || input.depth > 8))) {
+    || (input.depth !== undefined && (!Number.isInteger(input.depth) || input.depth < 1 || input.depth > 8))
+    || (input.cleanup !== undefined && typeof input.cleanup !== 'boolean')
+    || (input.admitted !== undefined && typeof input.admitted !== 'boolean')) {
     throw error('protocol_error', 'invalid Core capability invocation');
   }
+  if (sdkPaused && input.cleanup !== true) return reply(message.id, null, error('core_updating', 'this Host has paused new capability invocations for a Core update'));
+  if (coreAdmission !== null && input.cleanup !== true && input.admitted !== true) return reply(message.id, null, error('core_updating', 'Core holds new capability admission until the transaction settles'));
   const endpoint = endpoints.get(`${capabilityKey(input.capability)}\u0000${input.method}`);
   if (!endpoint) return reply(message.id, null, error('method_not_found', 'the declared Host capability has no registered method'));
   if (invocations.size >= MAX_INVOCATIONS) return reply(message.id, null, error('request_limit', 'this Host has four active capability invocations'));
@@ -369,8 +392,95 @@ function invokeCapability(message) {
   })).then(result => finish(result), failure => finish(null, failure)).catch(fatal);
 }
 
+function stateSnapshot(value) {
+  if (!object(value) || Object.keys(value).some(key => !['schema', 'value'].includes(key))
+    || !Number.isInteger(value.schema) || value.schema < 1 || value.schema > 0xffffffff || !own(value, 'value')) {
+    throw error('invalid_snapshot', 'plugin state must be {schema:positive uint32,value:JSON}');
+  }
+  const ancestors = new Set();
+  let nodes = 0;
+  function validate(item, depth = 0) {
+    if (++nodes > MAX_STATE_BYTES || depth > 64) throw error('invalid_snapshot', 'plugin state exceeds its structural bound');
+    if (item === null || typeof item === 'string' || typeof item === 'boolean') return;
+    if (typeof item === 'number' && Number.isFinite(item)) return;
+    if (typeof item !== 'object' || ancestors.has(item)
+      || (!Array.isArray(item) && ![null, Object.prototype].includes(Object.getPrototypeOf(item)))) {
+      throw error('invalid_snapshot', 'plugin state must contain only finite, acyclic JSON; closures/DOM/Promises/processes are not state');
+    }
+    if (Array.isArray(item) && (item.length > MAX_STATE_BYTES || Object.keys(item).length !== item.length
+      || Object.keys(item).some(key => !/^(0|[1-9]\d*)$/.test(key) || Number(key) >= item.length))) throw error('invalid_snapshot', 'plugin state arrays must be dense JSON arrays without extra properties');
+    ancestors.add(item);
+    for (const key of Reflect.ownKeys(item)) {
+      if (Array.isArray(item) && key === 'length') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (typeof key !== 'string' || !descriptor.enumerable || !own(descriptor, 'value')) throw error('invalid_snapshot', 'plugin state cannot contain symbols, accessors or hidden properties');
+      validate(descriptor.value, depth + 1);
+    }
+    ancestors.delete(item);
+  }
+  validate(value);
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized) > MAX_STATE_BYTES) throw error('snapshot_too_large', 'plugin state exceeds 256 KiB');
+  return JSON.parse(serialized);
+}
+
+function snapshotState(message) {
+  if (state !== 'active' || stateTransition || sdkPaused) return reply(message.id, null, error('state_transition_busy', 'snapshot requires an active Host without another state transition'));
+  if (coreAdmission !== null && Object.values(trafficRuntime.activity()).some(count => count > 0)) return reply(message.id, null, error('core_admission_traffic_busy', 'Live plugin-owned traffic cannot transfer; retain this Host and activate Core on the next start'));
+  sdkPaused = true;
+  const operation = {}; stateTransition = operation;
+  const finish = (snapshot, failure) => {
+    if (stateTransition !== operation) return;
+    stateTransition = false; clearTimeout(operation.timer);
+    if (state === 'active') reply(message.id, snapshot, failure);
+  };
+  operation.finish = finish;
+  operation.timer = setTimeout(() => finish(null, error('snapshot_timeout', 'plugin state snapshot exceeded its 1400 ms budget; old owner retained')), 1400);
+  const settle = () => {
+    if (stateTransition !== operation || state !== 'active') return;
+    if (invocations.size || pending.size || [...subscriptions.values()].some(subscription => subscription.inFlight)) { setTimeout(settle, 5); return; }
+    // Legacy entries without hooks remain reloadable; null explicitly means no
+    // plugin state is declared. Hooks must return a valid envelope, never null.
+    if (typeof loaded.saveState !== 'function') { finish(null); return; }
+    if (typeof loaded.restoreState !== 'function') { finish(null, error('state_restore_unsupported', 'saveState requires a paired restoreState hook before the old Host may retire')); return; }
+    Promise.resolve().then(() => loaded.saveState(pluginContext)).then(stateSnapshot).then(
+      snapshot => finish(snapshot), failure => finish(null, failure),
+    ).catch(fatal);
+  };
+  settle();
+}
+
+function resumeState(message) {
+  if (state !== 'active') return reply(message.id, null, error('host_stopping', 'Host is not active'));
+  stateTransition?.finish?.(null, error('snapshot_cancelled', 'Core resumed the old owner before snapshot completion'));
+  sdkPaused = false;
+  reply(message.id, { resumed: true });
+  drainNotifications();
+}
+
+function coreAdmissionState(message, resume) {
+  const operation = message.params?.operationId;
+  if (state !== 'active' || !object(message.params) || Object.keys(message.params).some(key => !['operationId','rehold'].includes(key)) || (message.params.rehold !== undefined && typeof message.params.rehold !== 'boolean') || typeof operation !== 'string' || !/^[A-Za-z0-9_.-]{1,96}$/.test(operation))
+    return reply(message.id, null, error('core_admission_invalid', 'Core admission requires an active Host and an exact transaction identity'));
+  if (coreAdmission !== null && coreAdmission !== operation) return reply(message.id, null, error('core_admission_stale', 'Another Core operation holds this Host'));
+  if (!resume && message.params.rehold !== true && Object.values(trafficRuntime.activity()).some(count => count > 0)) return reply(message.id, null, error('core_admission_traffic_busy', 'Live plugin-owned traffic requires next-start activation; its current Host is retained'));
+  coreAdmission = resume ? null : operation;
+  reply(message.id, {operationId:operation,held:!resume,resumed:resume});
+  if (resume) drainNotifications();
+}
+
+function drainNotifications() {
+  if (sdkPaused || state !== 'active' || !pausedNotifications.length) { drainingNotifications = false; return; }
+  drainingNotifications = true;
+  const message = pausedNotifications[0], subscription = subscriptions.get(message.params?.subscriptionId);
+  if (message.method === 'cdp.event' && subscription?.inFlight >= 4) { setTimeout(drainNotifications, 5); return; }
+  pausedNotifications.shift(); handle(message, true);
+  queueMicrotask(drainNotifications);
+}
+
 function loadPlugin() {
   const source = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(snapshot));
+  if (hostMode === 'sdk') return createEmbeddedSdkHost({ source, filename: entry });
   let filename = entry;
   try { filename = createRequire(entry).resolve(entry); }
   catch (failure) { if (failure.code !== 'MODULE_NOT_FOUND') throw failure; }
@@ -392,7 +502,7 @@ function loadPlugin() {
   return api;
 }
 
-function handle(message) {
+function handle(message, replayNotification = false) {
   if (!object(message) || message.v !== 1 || !['request', 'response', 'notification'].includes(message.type)) throw error('protocol_error', 'invalid Core JSONL envelope');
   const keys = message.type === 'request' ? ['v','type','pluginId','generation','id','method','params']
     : message.type === 'notification' ? ['v','type','pluginId','generation','method','params']
@@ -422,6 +532,17 @@ function handle(message) {
       if (invocation) closeInvocation(invocation, error(message.params.code, message.params.message));
       return;
     }
+    if (!replayNotification && (sdkPaused || drainingNotifications) && ['cdp.event', 'cdp.subscriptionEnded'].includes(message.method)) {
+      if (pausedNotifications.length >= 64) {
+        // Resume before overflowing: failed preflight cannot silently drop the
+        // old owner's stream. The snapshot receipt fails and is never applied.
+        stateTransition?.finish?.(null, error('snapshot_pause_overflow', 'Host event pause queue filled; old owner resumed'));
+        sdkPaused = false;
+        drainNotifications();
+        if (pausedNotifications.length >= 64) throw error('event_handler_limit', 'Host event callbacks cannot drain their bounded paused stream');
+        pausedNotifications.push(message); return;
+      } else { pausedNotifications.push(message); return; }
+    }
     const id = message.params?.subscriptionId;
     const subscription = subscriptions.get(id);
     if (!subscription) return;
@@ -443,17 +564,28 @@ function handle(message) {
   lastCoreId = message.id;
   if (message.method === 'initialize' && state === 'waiting') {
     if (!object(message.params) || message.params.protocolVersion !== 1) throw error('protocol_error', 'unsupported Core initialization');
+    if (message.params.coreAdmission != null && (typeof message.params.coreAdmission !== 'string' || !/^[A-Za-z0-9_.-]{1,96}$/.test(message.params.coreAdmission))) throw error('protocol_error', 'invalid initial Core admission identity');
+    coreAdmission = message.params.coreAdmission ?? null;
+    const lifecycle = {open:true};
     state = 'starting';
-    activation = Promise.resolve().then(() => {
+    activation = lifecycleContext.run(lifecycle, () => Promise.resolve().then(() => {
       if (state !== 'starting') return;
       loaded = loadPlugin();
       pluginContext = context(message.params);
       return loaded.activate(pluginContext);
-    });
+    }).then(async () => {
+      if (message.params.initialState != null) {
+        if (typeof loaded.restoreState !== 'function') throw error('state_restore_unsupported', 'plugin must export restoreState for compatible online transfer');
+        await loaded.restoreState(stateSnapshot(message.params.initialState), pluginContext);
+      }
+      restoringState = false;
+    }));
     activation.then(() => {
       if (state !== 'starting') return;
+      lifecycle.open = false;
       state = 'active'; reply(message.id, { ready: true });
     }, failure => {
+      lifecycle.open = false;
       if (state !== 'starting') return;
       state = 'failed'; retire(); reply(message.id, null, failure);
     }).catch(fatal);
@@ -461,6 +593,12 @@ function handle(message) {
     shutdown(message);
   } else if (message.method === 'capability.invoke') {
     invokeCapability(message);
+  } else if (message.method === 'host.snapshot' || message.method === 'state.snapshot') {
+    snapshotState(message);
+  } else if (message.method === 'host.resume') {
+    resumeState(message);
+  } else if (message.method === 'host.corePause' || message.method === 'host.coreResume') {
+    coreAdmissionState(message, message.method === 'host.coreResume');
   } else reply(message.id, null, error('method_not_found', 'unsupported lifecycle request'));
 }
 

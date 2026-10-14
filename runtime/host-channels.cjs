@@ -149,6 +149,6 @@ function createHostedChannels({ coreRequest, rootSignal, getPeer, reportState = 
   function closeAll() { if (retired) return; retired = true; event({ event: 'closed' }); }
   return { openChannel: (options, handlers) => detach(() => openChannel(options,handlers)),
     matches: (method, params) => method === 'invoke' ? String(params?.payload?.kind).startsWith('channel.') : exchanges.has(params?.lease),
-    handle, event, closeAll };
+    handle, event, closeAll, activity: () => ({channels:channels.size,exchanges:exchanges.size}) };
 }
 module.exports = { createHostedChannels };

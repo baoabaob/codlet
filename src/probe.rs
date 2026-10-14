@@ -1059,6 +1059,7 @@ fn start_codlet_runtime_with_connector_filtered(
         &connected.process,
         &connected.package.version.to_string(),
         &sessions,
+        renderer.client_source(),
     );
     official_update.seed_sessions(&sessions);
     Ok(CodletRuntime {
@@ -1445,6 +1446,9 @@ impl CodletRuntime {
         };
         self.control.stop();
         self.stop_hosts()?;
+        if exit_code == 0 {
+            self.runtime_update.install_deferred_after_client_exit();
+        }
         self.status.terminate(format!("child_exited: {exit_code}"));
         self.client.shutdown()?;
         let update_exit = self.official_update.finish();

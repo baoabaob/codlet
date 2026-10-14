@@ -273,6 +273,16 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
     establish_named_target_session(&mut reader, output, "main")?;
     establish_named_target_session(&mut reader, output, "second")?;
     let mut contexts: BTreeMap<(String, String), u64> = BTreeMap::new();
+    // This peer validates protocol/lifetime metadata, not Native SDK behavior.
+    // Production Core providers use the main world as well as isolated author
+    // worlds, so expose the same typed default-context identity for both targets.
+    for (session, context) in [("session-main", 1_u64), ("session-second", 2)] {
+        contexts.insert((session.into(), "main".into()), context);
+        write_json_frame(
+            output,
+            &json!({"method":"Runtime.executionContextCreated","sessionId":session,"params":{"context":{"id":context,"origin":"app://-","name":"","auxData":{"isDefault":true,"frameId":format!("frame-{session}")}}}}),
+        )?;
+    }
     let mut bindings: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut used_bindings = BTreeSet::new();
     let mut scripts: BTreeMap<String, (String, String)> = BTreeMap::new();
@@ -318,7 +328,10 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                     name,
                     (
                         session.clone(),
-                        params["executionContextName"].as_str().unwrap().to_owned(),
+                        params["executionContextName"]
+                            .as_str()
+                            .unwrap_or("main")
+                            .to_owned(),
                     ),
                 );
             }
@@ -329,7 +342,7 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                     identifier.clone(),
                     (
                         session.clone(),
-                        params["worldName"].as_str().unwrap().to_owned(),
+                        params["worldName"].as_str().unwrap_or("main").to_owned(),
                     ),
                 );
                 result = json!({"identifier":identifier});
@@ -363,10 +376,16 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                         FakeChildError::InvalidRequest("evaluation in an unknown context".into())
                     })?;
                 let mut value = json!({"ok":true});
-                if let Some(rest) = expression.split("return await runtime.activate(").nth(1) {
-                    let metadata: Value =
-                        serde_json::from_str(rest.split(", module.exports)").next().unwrap())
-                            .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
+                if let Some((_, rest)) = expression.rsplit_once("return await runtime.activate(") {
+                    // Decode one JSON argument. ABI 1 now has an optional third
+                    // state argument after module.exports; it is not metadata.
+                    let metadata = serde_json::Deserializer::from_str(rest)
+                        .into_iter::<Value>()
+                        .next()
+                        .ok_or_else(|| {
+                            FakeChildError::InvalidRequest("activation metadata is missing".into())
+                        })?
+                        .map_err(|error| FakeChildError::InvalidRequest(error.to_string()))?;
                     let binding = metadata["binding"].as_str().unwrap();
                     if bindings.get(binding) != Some(&(session.clone(), world.clone())) {
                         return Err(FakeChildError::InvalidRequest(
@@ -378,7 +397,7 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                         metadata["id"].as_str().unwrap(),
                         metadata["generation"]
                     );
-                    if world != expected_world {
+                    if world != "main" && world != expected_world {
                         return Err(FakeChildError::InvalidRequest(
                             "generation was reused across worlds".into(),
                         ));
@@ -449,6 +468,12 @@ fn scenario_renderer_control(input: &mut File, output: &mut File) -> Result<(), 
                         std::fs::write(path, source)?;
                         settings = json!({});
                     }
+                } else if expression.contains(".__snapshot(") {
+                    // This synthetic peer owns no plugin hook execution. The
+                    // actual-JS VM suite verifies declared JSON state transfers.
+                    value = json!({"ok":true,"snapshot":null});
+                } else if expression.contains(".__resume(") {
+                    value = json!({"ok":true});
                 } else if expression.starts_with(
                     "globalThis.__codletRendererV1 ? globalThis.__codletRendererV1.deactivate(",
                 ) {

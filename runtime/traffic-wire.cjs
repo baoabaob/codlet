@@ -4,7 +4,7 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 const MAX_FRAME = 64 * 1024, CHUNK = 32 * 1024, MAX_BODY = 64 * 1024 * 1024;
 const failure = code => Object.assign(new Error(code), { code });
 
-async function connectTrafficPeer(endpoint, { signal, handle, event = () => {}, detach = fn => fn() } = {}) {
+async function connectTrafficPeer(endpoint, { signal, handle, event = () => {}, detach = fn => fn(), beforeRequest = () => {} } = {}) {
   if (endpoint?.host !== '127.0.0.1' || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== 'string' || endpoint.token.length > 128) throw failure('invalid_data_endpoint');
   if (signal?.aborted) throw failure('host_stopping');
   const socket = net.createConnection({ host: endpoint.host, port: endpoint.port }); socket.setNoDelay(true);
@@ -72,6 +72,7 @@ async function connectTrafficPeer(endpoint, { signal, handle, event = () => {}, 
   }));
   await connected;
   function request(method, params = {}, { timeoutMs = 30000, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
+    try { beforeRequest(method, params); } catch (error) { return Promise.reject(error); }
     if (closed || requestSignal?.aborted) return Promise.reject(failure('peer_closed'));
     if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure('resource_limit'));
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) return Promise.reject(failure('invalid_timeout'));

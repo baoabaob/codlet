@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use codlet::plugins::PluginRegistry;
+use codlet::plugins::{GUI_PLUGIN_ID, LocalPluginRegistration, PluginRegistry, bundled_plugins};
 use tempfile::tempdir;
 
 fn run(local_app_data: &Path, arguments: &[&str]) -> Output {
@@ -18,17 +18,69 @@ fn run(local_app_data: &Path, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
+fn gui_fixture(local_app_data: &Path) -> (String, &'static str) {
+    if let Some(gui) = bundled_plugins()
+        .unwrap()
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == GUI_PLUGIN_ID)
+    {
+        return (gui.manifest.version, "bundled");
+    }
+    // Ordinary production GUI installation is explicit. Keep every CLI write
+    // scoped to this temporary package and registry, including failure tests.
+    let root = local_app_data.join("gui");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("codlet.json"), serde_json::json!({"schema":1,"id":GUI_PLUGIN_ID,"version":env!("CARGO_PKG_VERSION"),"renderer":{"entry":"renderer.js","world":"isolated"}}).to_string()).unwrap();
+    fs::write(
+        root.join("renderer.js"),
+        "module.exports={activate(){},deactivate(){}};",
+    )
+    .unwrap();
+    let path = local_app_data.join("Codlet/config.json");
+    let mut registry = PluginRegistry::load(path).unwrap();
+    registry
+        .register_local(
+            GUI_PLUGIN_ID,
+            LocalPluginRegistration {
+                path: fs::canonicalize(root).unwrap(),
+                grants: vec![],
+                broker_policy: Default::default(),
+            },
+        )
+        .unwrap();
+    registry.save().unwrap();
+    (env!("CARGO_PKG_VERSION").into(), "local")
+}
+
 #[test]
-fn plugin_cli_lists_and_persists_bundled_plugin_state_without_launching_codex() {
+fn plugin_cli_lists_and_persists_gui_state_without_launching_codex() {
     let local_app_data = tempdir().unwrap();
     let registry = local_app_data.path().join("Codlet").join("config.json");
+    let (version, source) = gui_fixture(local_app_data.path());
+    let before_list = fs::read(&registry).ok();
 
     let listed = run(local_app_data.path(), &["plugin", "list"]);
     assert!(listed.status.success());
     let stdout = String::from_utf8(listed.stdout).unwrap();
-    assert!(stdout.contains("plugin: id=codex.ui.adapter;"));
-    assert!(stdout.contains("plugin: id=codlet-gui; version=0.1.0; source=bundled; enabled=true"));
-    assert!(!registry.exists());
+    assert!(
+        stdout.contains(if source == "bundled" {
+            "plugin: id=codex.ui.adapter;"
+        } else {
+            "core-capability-provider: id=codex.ui.adapter;"
+        }),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "plugin: id=codlet-gui; version={version}; source={source}; enabled=true"
+        )),
+        "{stdout}"
+    );
+    assert_eq!(
+        fs::read(&registry).ok(),
+        before_list,
+        "listing cannot create or mutate registry state"
+    );
 
     let disabled = run(local_app_data.path(), &["plugin", "disable", "codlet-gui"]);
     assert!(disabled.status.success());
@@ -48,11 +100,9 @@ fn plugin_cli_lists_and_persists_bundled_plugin_state_without_launching_codex() 
 
     let listed = run(local_app_data.path(), &["plugin", "list"]);
     assert!(listed.status.success());
-    assert!(
-        String::from_utf8(listed.stdout)
-            .unwrap()
-            .contains("plugin: id=codlet-gui; version=0.1.0; source=bundled; enabled=false")
-    );
+    assert!(String::from_utf8(listed.stdout).unwrap().contains(&format!(
+        "plugin: id=codlet-gui; version={version}; source={source}; enabled=false"
+    )));
 
     let enabled = run(local_app_data.path(), &["plugin", "enable", "codlet-gui"]);
     assert!(enabled.status.success());
@@ -104,6 +154,8 @@ fn plugin_cli_preserves_valid_unknown_preferences() {
     )
     .unwrap();
 
+    gui_fixture(local_app_data.path());
+
     for action in ["disable", "enable"] {
         let output = run(local_app_data.path(), &["plugin", action, "codlet-gui"]);
         assert!(output.status.success());
@@ -144,6 +196,7 @@ fn plugin_cli_rejects_corrupt_documents_without_changing_them() {
 fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement() {
     let local_app_data = tempdir().unwrap();
     let path = local_app_data.path().join("Codlet").join("config.json");
+    let (_, source) = gui_fixture(local_app_data.path());
     assert!(
         run(local_app_data.path(), &["plugin", "enable", "codlet-gui"])
             .status
@@ -166,7 +219,9 @@ fn plugin_cli_reports_busy_and_replace_failure_without_a_success_acknowledgement
 
     let listed = run(local_app_data.path(), &["plugin", "list"]);
     assert!(listed.status.success());
-    assert!(String::from_utf8_lossy(&listed.stdout).contains("source=bundled; enabled=true"));
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains(&format!("source={source}; enabled=true"))
+    );
     drop(lock);
 
     let blocker = OpenOptions::new()
@@ -231,6 +286,7 @@ fn management_json_has_one_versioned_result_for_success_and_early_failures() {
         assert_eq!(reply["error"]["code"], expected_code);
         assert!(!local_app_data.path().join("Codlet").exists());
     }
+    gui_fixture(local_app_data.path());
     let output = run(
         local_app_data.path(),
         &["plugin", "disable", "codlet-gui", "--json"],

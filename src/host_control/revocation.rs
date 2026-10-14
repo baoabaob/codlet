@@ -264,7 +264,9 @@ impl HostControl {
                 .entries()
                 .iter()
                 .find(|entry| entry.id == *id);
-            if entry.is_some_and(|entry| matches!(entry.source, PluginSource::Bundled)) {
+            if entry.is_some_and(|entry| {
+                matches!(entry.source, PluginSource::Core | PluginSource::Bundled)
+            }) {
                 continue;
             }
             let registration = registry.local_plugins().get(id);
@@ -282,7 +284,7 @@ impl HostControl {
                             registration.path != *path || registration.grants != *grants
                         })
                     }
-                    PluginSource::Bundled => false,
+                    PluginSource::Core | PluginSource::Bundled => false,
                 })
             };
             if changed || self.managed_authorizations.get(id) != registry.managed_plugins().get(id)

@@ -164,6 +164,7 @@ function unlock(held, remove) {
   finally { if (held.fd !== null) fs.closeSync(held.fd); }
 }
 function validate(plan, planPath, expectedSha) {
+  if(plan.activateOnNextStart!==undefined&&(typeof plan.activateOnNextStart!=='boolean'||plan.activateOnNextStart&&plan.officialUpdate))throw fail('plan_invalid','Invalid next-start activation intent.');
   if (process.platform !== 'darwin' || process.arch !== 'arm64' || plan.schema !== 1 || plan.kind !== 'codlet-runtime-install-plan' || plan.platform !== 'darwin-arm64' || plan.profile !== 'macApp' || plan.officialUpdate !== false || plan.configPin !== null || !/^runtime-install-[A-Za-z0-9_-]+$/.test(plan.id) || !sha(expectedSha) || !sha(plan.manifestSha256)) throw fail('plan_invalid', 'Unsupported Mac app update plan.');
   const job = path.dirname(absolute(planPath));
   if (!same(job, path.join(absolute(plan.stateRoot), plan.id)) || path.basename(planPath) !== 'install-plan.json' || !same(plan.backupRoot, path.join(job, 'backup')) || !same(plan.handoffAckPath, path.join(job, 'handoff-ack.json')) || !same(plan.installReceiptPath, path.join(job, 'install-receipt.json')) || !same(plan.summaryReceiptPath, path.join(plan.stateRoot, 'runtime-update-install-receipt.json')) || !same(path.dirname(plan.stagedRoot), plan.stateRoot) || !path.basename(plan.stagedRoot).startsWith('runtime-payload-')) throw fail('plan_path_invalid', 'Update paths are outside their owned roots.');
@@ -261,6 +262,7 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}, opti
     fs.renameSync(path.join(plan.stagedRoot, 'Codlet.app'), path.join(plan.installRoot, 'Codlet.app'));
     receipt.movedNew.push('Codlet.app'); persist();
     await verifyApp(plan.installRoot, plan.newFiles, plan.newRuntime);
+    if(plan.activateOnNextStart){receipt.phase='installedDeferred';persist();return receipt;}
     receipt.phase = 'restarting'; persist();
     const result = await (options.restartApp ?? restart)(plan, plan.newFiles, plan.version);
     restartUnknown = result === 0 || result === 42;
@@ -295,18 +297,19 @@ export async function runInstall(planPath, expectedSha, onReady = () => {}, opti
         await verifyApp(plan.backupRoot, plan.currentFiles, plan.currentRuntime);
         fs.renameSync(path.join(plan.backupRoot, 'Codlet.app'), path.join(plan.installRoot, 'Codlet.app'));
         receipt.movedOld = []; persist();
-        const result = await (options.restartApp ?? restart)(plan, plan.currentFiles, plan.currentVersion);
-        receipt.phase = result === 0 ? 'rolledBack' : result === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';
+        if(plan.activateOnNextStart)receipt.phase='rolledBack';
+        else {const result = await (options.restartApp ?? restart)(plan, plan.currentFiles, plan.currentVersion);
+          receipt.phase = result === 0 ? 'rolledBack' : result === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';}
       } catch (rollbackError) { receipt.phase = 'rollbackBlocked'; receipt.error = { code: rollbackError.code ?? 'rollback_blocked', message: String(rollbackError.message ?? rollbackError).slice(0, 4096) }; }
     } else if (ownersRetired) {
-      try { const result = await (options.restartApp ?? restart)(plan, plan.currentFiles, plan.currentVersion); receipt.phase = result === 0 ? 'oldRuntimeRestarted' : result === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed'; }
+      try { if(plan.activateOnNextStart)receipt.phase='failed';else {const result = await (options.restartApp ?? restart)(plan, plan.currentFiles, plan.currentVersion); receipt.phase = result === 0 ? 'oldRuntimeRestarted' : result === 42 ? 'rollbackBlocked' : 'rollbackRestartFailed';} }
       catch (restartError) { receipt.phase = 'rollbackBlocked'; receipt.error = { code: 'old_restart_blocked', message: String(restartError.message ?? restartError).slice(0, 4096) }; }
     } else receipt.phase = 'failed';
     try { persist(); } catch {}
     throw Object.assign(error, { receipt });
   } finally {
     if (held) {
-      receipt.lockRetained = !unlock(held, ['installed', 'rolledBack', 'oldRuntimeRestarted', 'failed'].includes(receipt.phase));
+      receipt.lockRetained = !unlock(held, ['installed','installedDeferred', 'rolledBack', 'oldRuntimeRestarted', 'failed'].includes(receipt.phase));
       try { persist(); } catch {}
     }
   }
@@ -317,7 +320,7 @@ if (process.argv[1] && same(process.argv[1], self)) {
   if (args.length !== 4 || args[0] !== '--plan' || args[2] !== '--sha256') process.exitCode = 1;
   else {
     let ready = false;
-    try { const receipt = await runInstall(args[1], args[3], message => { ready = true; process.stdout.write(JSON.stringify(message) + '\n'); }); if (receipt.phase !== 'installed') process.exitCode = 1; }
+    try { const receipt = await runInstall(args[1], args[3], message => { ready = true; process.stdout.write(JSON.stringify(message) + '\n'); }); if (!['installed','installedDeferred'].includes(receipt.phase)) process.exitCode = 1; }
     catch (error) { if (!ready) process.stdout.write(JSON.stringify({ schema: 1, event: 'runtime-update-helper-failed', error: { code: error.code ?? 'runtime_update_failed', message: String(error.message ?? error).slice(0,4096) } }) + '\n'); process.exitCode = 1; }
   }
 }

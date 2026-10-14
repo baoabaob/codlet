@@ -20,6 +20,44 @@ const SOURCE: &str = "dev.fixture.source";
 const DEPENDENT: &str = "dev.fixture.dependent";
 const WAIT: Duration = Duration::from_secs(15);
 
+#[test]
+fn core_module_preflight_checks_factory_syntax_without_evaluating_candidate_code() {
+    let fixture = Fixture::new(false);
+    let root = fixture.directory.path();
+    let expression = root.join("renderer-bootstrap.js");
+    let commonjs = root.join("host-bootstrap.cjs");
+    let marker = root.join("preflight-executed.marker");
+    let effect = format!(
+        "require('node:fs').writeFileSync({},'executed')",
+        serde_json::to_string(&marker.to_string_lossy()).unwrap()
+    );
+    std::fs::write(
+        &expression,
+        format!("(()=>{{{effect};return()=>{{}};}})()\n// no final newline"),
+    )
+    .unwrap();
+    std::fs::write(&commonjs, format!("{effect};module.exports={{}};")).unwrap();
+    fixture
+        .source
+        .check_core_module_syntax(&[expression.clone(), commonjs])
+        .unwrap();
+    assert!(
+        !marker.exists(),
+        "preflight must only compile candidate bytes"
+    );
+    // Valid standalone JS, invalid where a renderer factory value is required.
+    std::fs::write(&expression, "const factory=()=>{};module.exports=factory;").unwrap();
+    assert_eq!(
+        fixture
+            .source
+            .check_core_module_syntax(&[expression])
+            .unwrap_err()
+            .code,
+        "core_module_syntax_invalid"
+    );
+    assert!(!marker.exists());
+}
+
 fn source_host(revision: &str, fail: bool) -> String {
     let code = format!(
         r#"module.exports={{installElectronTraffic(){{

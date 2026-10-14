@@ -22,11 +22,13 @@ The schema rejects unknown fields. `schema`, `id`, `version` and at least one en
 
 Optional `name` contains 1–256 UTF-8 bytes of readable text; `description` contains 1–2048. Optional `i18n` accepts `zh` and `en` objects containing translated `name`/`description` under the same bounds. IDs, permissions, capability names and tags are never localized. Tags are at most eight case-insensitively unique labels, each 1–32 Unicode letters/numbers, hyphens or underscores, without the display `#`; they grant no capabilities or compatibility assertions.
 
-`renderer.world` is `isolated` or `main`. Main-world execution requires declared and granted `ui.mainWorld`. A Host entry such as `"host":{"entry":"dist/host.cjs"}` requires `host.process`. Entry paths are package-relative safe paths to built JavaScript. No arbitrary `host.command`, runtime executable, flags or protocol can be selected by the manifest. Core's managed Node disables native addons and automatic type stripping; pure-JavaScript dependencies may be included in the package.
+`renderer.world` is `isolated` or `main`. Main-world execution requires declared and granted `ui.mainWorld`. A standard Host declares `"host":{"entry":"dist/host.cjs","mode":"sdk"}` and uses approved Core services without ambient Node globals/imports or a raw Host grant. `mode:"node"` requires `host.raw`; an omitted mode preserves the historical `host.process` Node contract. Entry paths are package-relative safe paths to built JavaScript. No arbitrary `host.command`, runtime executable, flags or protocol can be selected by the manifest. Core's managed Node disables native addons and automatic type stripping; prebuilt dependencies may be bundled within the selected execution contract.
 
 ## Entry ownership and dependencies
 
 Both entrypoints export `activate(context)` and `deactivate(...)`; activation may be asynchronous. Host deactivation receives the bounded cleanup context described in [Host](host.md). Renderer deactivation can report `{reloadRequired: true, reason}` when a page patch cannot be safely undone. Public types are [Host](../../types/host.d.ts) and [Renderer](../../types/renderer.d.ts).
+
+For stateful updates export `saveState(context)` and `restoreState(snapshot, context)`. A snapshot is bounded plain JSON with an explicit schema; restoration follows activation and precedes readiness. `context.restoringState` lets activation avoid replaying side effects. Even a stateless plugin should return an explicit versioned empty state to declare whole-Core transfer support. Missing hooks do not block ordinary legacy reload, but defer a whole-Core update to the next start. Native drafts and DOM handles are never serialized by consumers; Core's workspace API supplies an owned return-location transfer token.
 
 | Package | Capability declarations |
 | --- | --- |
@@ -53,10 +55,10 @@ The ZIP root contains `codlet.json`, declared built entries, resources, document
 Optional `codlet-package.json` is bounded to 64 KiB and has this separate schema:
 
 ```json
-{"schema":1,"runtimeApi":1,"platforms":["windows-x86_64"],"author":"Example author","adapters":{"example":{"testedBuilds":[]}}}
+{"schema":1,"runtimeApi":1,"sdk":{"api":1,"capabilities":[{"name":"codex.ui.workspace","api":1,"scope":"target"}]},"author":"Example author","verification":[{"kind":"automated","status":"passed","evidence":"VALIDATION.md"},{"kind":"native","platform":"macos-aarch64","status":"notRun"}]}
 ```
 
-`runtimeApi`, `platforms`, `author` and `adapters` are optional; unknown top-level fields are rejected. Runtime API must match when declared. A nonempty platform list must include the current target or a broader matching declaration such as `windows` or `any`; omission means unknown. Core can preview an incompatible package to explain the declaration, then rejects registration/activation. The same bounded metadata reader applies to GitHub, local-import and installer-owned packages; changing metadata after preview changes the local content digest. Author text is bounded to 512 bytes. Adapter JSON is an author declaration, not Core verification of private client internals. Put license text in license files rather than inventing a manifest/metadata field.
+`runtimeApi`, `sdk`, `verification`, `platforms`, `author` and legacy `adapters` are optional; unknown top-level fields are rejected. API 1 plus SDK API 1 declares compatibility with Core's semantic interface without requiring an OS list. Explicit platform exclusions and unsupported Runtime/SDK APIs still block activation. Capability requirements remain checked against the running graph, and method availability remains a runtime fact. Verification records are separate author evidence: kind `automated` or `native`, status `passed`, `failed` or `notRun`, with optional platform, clientVersion and evidence reference. They never turn an API declaration into Core certification. The same bounded metadata reader applies to GitHub, local-import and installer-owned packages; changing metadata after preview changes the local content digest. Author text is bounded to 512 bytes; legacy adapter JSON remains author data. Put license text in license files rather than inventing a metadata field.
 
 Core and its official plugins use Apache-2.0. Independent third-party plugins choose their own applicable licenses; using the runtime does not impose an Apache-only marketplace policy. Keep third-party dependency notices. Platform declarations, dependency compatibility and actual device acceptance remain separate evidence.
 

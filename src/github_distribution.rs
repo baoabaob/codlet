@@ -113,12 +113,38 @@ pub struct PackageMetadata {
     pub author: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapters: Option<serde_json::Value>,
+    /// Standard plugins declare the semantic SDK instead of enumerating OSes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk: Option<SdkDeclaration>,
+    /// Author-supplied evidence, never promoted to importer certification.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<VerificationDeclaration>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SdkDeclaration {
+    pub api: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<crate::capabilities::CapabilityDescriptor>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VerificationDeclaration {
+    pub kind: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceCompatibility {
     pub platform: String,
     pub runtime_api: u32,
+    pub sdk_api: u32,
     pub status: &'static str,
     pub basis: &'static str,
 }
@@ -130,9 +156,17 @@ pub fn device_compatibility(metadata: Option<&PackageMetadata>) -> DeviceCompati
             .any(|s| s == "any" || s == std::env::consts::OS || s == &platform)
     });
     let runtime_support = metadata.and_then(|m| m.runtime_api).map(|api| api == 1);
-    let status = if platform_support == Some(false) || runtime_support == Some(false) {
+    let sdk_support = metadata
+        .and_then(|m| m.sdk.as_ref())
+        .map(|sdk| sdk.api == 1);
+    let status = if platform_support == Some(false)
+        || runtime_support == Some(false)
+        || sdk_support == Some(false)
+    {
         "incompatible"
-    } else if platform_support == Some(true) && runtime_support == Some(true) {
+    } else if runtime_support == Some(true)
+        && (sdk_support == Some(true) || platform_support == Some(true))
+    {
         "compatible"
     } else {
         "unknown"
@@ -140,8 +174,11 @@ pub fn device_compatibility(metadata: Option<&PackageMetadata>) -> DeviceCompati
     DeviceCompatibility {
         platform,
         runtime_api: 1,
+        sdk_api: 1,
         status,
-        basis: if metadata.is_some_and(|m| m.platforms.is_some() || m.runtime_api.is_some()) {
+        basis: if sdk_support.is_some() {
+            "sdk-declaration"
+        } else if metadata.is_some_and(|m| m.platforms.is_some() || m.runtime_api.is_some()) {
             "author-declaration"
         } else {
             "unknown"
@@ -154,7 +191,7 @@ pub fn require_device_compatibility(metadata: Option<&PackageMetadata>) -> Resul
         Err(error(
             "github_platform_incompatible",
             format!(
-                "Package does not declare support for {} or runtime API 1.",
+                "Package declarations exclude {} or require an unsupported runtime/SDK API (this Core provides API 1).",
                 device.platform
             ),
         ))
@@ -1330,6 +1367,27 @@ fn validate_metadata(metadata: &PackageMetadata) -> Result<()> {
         return Err(error(
             "github_metadata_invalid",
             "Invalid package metadata schema, author or platforms.",
+        ));
+    }
+    if metadata
+        .sdk
+        .as_ref()
+        .is_some_and(|sdk| sdk.api == 0 || sdk.capabilities.len() > 128)
+        || metadata.verification.len() > 64
+        || metadata.verification.iter().any(|record| {
+            !matches!(record.kind.as_str(), "automated" | "native")
+                || !matches!(record.status.as_str(), "passed" | "failed" | "notRun")
+                || [&record.platform, &record.client_version, &record.evidence]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| {
+                        text.is_empty() || text.len() > 2048 || text.chars().any(char::is_control)
+                    })
+        })
+    {
+        return Err(error(
+            "github_metadata_invalid",
+            "Invalid SDK or author verification declaration.",
         ));
     }
     Ok(())

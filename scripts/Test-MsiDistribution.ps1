@@ -19,7 +19,8 @@ if($StructureOnly){
   try{
     $featureRows=@(Rows 'SELECT `Feature`,`Level` FROM `Feature`' 2)
     $featureNames=@($featureRows|ForEach-Object{$_[0]})
-    foreach($name in @('Core','UiAdapter','DesktopAdapter','GUI','StartMenu','DesktopShortcut','CliPath')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
+    foreach($name in @('Core','GUI','StartMenu','DesktopShortcut','CliPath')){if($name -notin $featureNames){throw "Missing MSI option: $name"}}
+    if(@($featureNames|Where-Object{$_ -in @('UiAdapter','DesktopAdapter')}).Count){throw 'MSI exposes obsolete adapter download choices'}
     $allUsers=@(Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ALLUSERS'" 1)[0][0]
     $perUser=@(Rows "SELECT ``Value`` FROM ``Property`` WHERE ``Property``='MSIINSTALLPERUSER'" 1)[0][0]
     if($allUsers -ne '2' -or $perUser -ne '1'){throw 'Expected dual-purpose MSI with a per-user default'}
@@ -37,7 +38,7 @@ if($StructureOnly){
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)node\.exe$'}).Count){throw 'Managed MSI contains a bundled Node executable'}
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)(codlet\.json|renderer\.js|host\.cjs)$'}).Count){throw 'Core MSI contains plugin code'}
     $choices=@(Rows 'SELECT `Name` FROM `Registry` WHERE `Key` = ''Software\Codlet\Preview\Installer\Plugins''' 1|ForEach-Object{$_[0]})
-    if(($choices|Sort-Object)-join ',' -ne 'codex.desktop.adapter,codex.ui.adapter,codlet-gui'){throw 'MSI must persist the three plugin download choices'}
+    if(($choices|Sort-Object)-join ',' -ne 'codlet-gui'){throw 'MSI must persist only the GUI consumer download choice'}
     $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
     if($shortcuts.Count -ne 2 -or @($shortcuts|Where-Object{$_[1] -ne '[INSTALLFOLDER]Codlet-Launcher.exe' -or $_[2] -like '*--configure*'}).Count){throw 'Only the Start menu and desktop launch shortcuts are allowed'}
     $sequences=@(Rows 'SELECT `Action`,`Sequence` FROM `InstallExecuteSequence`' 2)
@@ -91,22 +92,23 @@ try{
   Assert (-not [IO.File]::Exists((Join-Path $install 'portable.mode'))) 'MSI selected the portable data scope'
   & (Join-Path $install 'Initialize-Codlet.ps1') -NoLaunch -DataDirectory $data
   Assert (@((Inventory).plugins).Count -eq 0) 'Core-only MSI unexpectedly registered plugins'
+  Assert (@((Inventory).coreProviders).Count -eq 2) 'Core MSI omitted its internal Codex providers'
   $checks.Add('Core-only MSI runs with no optional plugins')
   Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI') -Name 'add-gui'
   Assert (-not [IO.Directory]::Exists((Join-Path $install 'optional-plugins'))) 'MSI includes offline plugin code'
   $choices=Get-ItemProperty -LiteralPath 'HKCU:/Software/Codlet/Preview/Installer/Plugins'
-  Assert ($choices.'codex.ui.adapter' -eq 1 -and $choices.'codlet-gui' -eq 1) 'GUI selection missed the UI Adapter download choice'
+  Assert ($choices.'codlet-gui' -eq 1) 'GUI consumer download choice was not persisted'
   & (Join-Path $install 'Initialize-Codlet.ps1') -NoLaunch -DataDirectory $data
-  Assert (@((Inventory).plugins).Count -eq 2) 'MSI first-launch package registration is wrong'
-  $checks.Add('GUI-only MSI downloads GUI and UI Adapter through GitHub')
+  Assert (@((Inventory).plugins).Count -eq 1) 'MSI first-launch downloaded an obsolete adapter'
+  $checks.Add('GUI-only MSI downloads one GUI consumer through GitHub and uses Core-owned SDK providers')
   & (Join-Path $install 'codlet.exe') plugin disable codlet-gui --json | Out-Null
   Assert ($LASTEXITCODE -eq 0) 'Could not set a user preference'
-  Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI,DesktopAdapter') -Name 'add-desktop'
+  Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI') -Name 'maintain-gui'
   & (Join-Path $install 'Initialize-Codlet.ps1') -NoLaunch -DataDirectory $data
   $inventory=Inventory
-  Assert (@($inventory.plugins).Count -eq 3) 'Added MSI feature was not registered'
+  Assert (@($inventory.plugins).Count -eq 1) 'MSI maintenance changed the GUI-only consumer inventory'
   Assert (@($inventory.plugins|Where-Object{$_.id -eq 'codlet-gui' -and -not $_.enabled}).Count -eq 1) 'MSI modification changed user enablement'
-  $checks.Add('MSI maintenance adds Desktop Adapter without changing existing plugin settings')
+  $checks.Add('MSI maintenance preserves the one consumer and its existing plugin settings')
   $config=[IO.File]::ReadAllText((Join-Path $data 'config.json'))
   [IO.File]::WriteAllText((Join-Path $data 'user-note.txt'),'retain user data')
   Run-Msi -Arguments @('/x',$product) -Name 'uninstall'

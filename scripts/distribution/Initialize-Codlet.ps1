@@ -54,14 +54,11 @@ function Select-Plugins($Available){
   $form=[Windows.Forms.Form]::new();$form.Text='Codlet · 选择官方插件';$form.ClientSize=[Drawing.Size]::new(570,320);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.MaximizeBox=$false;$form.MinimizeBox=$false
   $form.Font=[Drawing.Font]::new('Microsoft YaHei UI',10)
   if([IO.File]::Exists((Join-Path $root 'codlet.ico'))){$form.Icon=[Drawing.Icon]::new((Join-Path $root 'codlet.ico'))}
-  $label=[Windows.Forms.Label]::new();$label.Text="从 GitHub 下载所选插件的最新发布版。GUI 包含 UI Adapter。`n已有插件保留配置；启动时同步官方插件更新。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
+  $label=[Windows.Forms.Label]::new();$label.Text="从 GitHub 下载所选插件的最新发布版。`n界面与桌面 SDK 已包含在 Core 中；已有插件保留配置。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
   $boxes=@{};$y=91
   foreach($package in $Available){
-    $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codex.ui.adapter'{'UI Adapter — 接入侧栏与插件页面'};'codex.desktop.adapter'{'Desktop Adapter — 提供客户端与对话接口'};'codlet-gui'{'Codlet GUI — 图形化管理插件（包含 UI Adapter）'}}
+    $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codlet-gui'{'Codlet GUI — 图形化管理插件'}}
     $box.SetBounds(24,$y,520,32);$box.Checked=$true;$boxes[$package.id]=$box;$form.Controls.Add($box);$y+=38
-  }
-  if($boxes.ContainsKey('codlet-gui') -and $boxes.ContainsKey('codex.ui.adapter')){
-    $gui=$boxes['codlet-gui'];$ui=$boxes['codex.ui.adapter'];$sync={if($gui.Checked){$ui.Checked=$true;$ui.Enabled=$false}else{$ui.Enabled=$true}}.GetNewClosure();$gui.Add_CheckedChanged($sync);&$sync
   }
   $notice=[Windows.Forms.Label]::new();$notice.Text='需要网络；超出所选功能的新增权限将单独确认';$notice.SetBounds(22,223,525,32);$form.Controls.Add($notice)
   $ok=[Windows.Forms.Button]::new();$ok.Text='确认';$ok.SetBounds(354,273,90,30);$ok.DialogResult=[Windows.Forms.DialogResult]::OK;$form.Controls.Add($ok);$form.AcceptButton=$ok
@@ -98,7 +95,7 @@ try{
     $catalogPath=Join-Path $root 'official-plugins.json';Plain $catalogPath
     $catalog=[IO.File]::ReadAllText($catalogPath)|ConvertFrom-Json
     if($catalog.schema -ne 1 -or $catalog.kind -ne 'codlet-plugin-download-options'){throw 'Invalid plugin download options'}
-    $allowed=@('codex.ui.adapter','codex.desktop.adapter','codlet-gui')
+    $allowed=@('codlet-gui')
     $available=@($catalog.plugins)
     if(@($available|ForEach-Object{$_.id}|Sort-Object -Unique).Count -ne $available.Count){throw 'Duplicate download option'}
     foreach($package in $available){if($package.id -notin $allowed -or $package.repositoryUrl -notmatch '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $package.repositoryId -le 0 -or $package.ownerId -le 0 -or @($package.dependencies|Where-Object{$_ -notin $allowed}).Count){throw 'Invalid plugin download option'}}
@@ -116,7 +113,9 @@ try{
       }
       $selected=@($available|Where-Object{$choices -and $choices.PSObject.Properties[$_.id] -and $choices.($_.id) -eq 1}|ForEach-Object{$_.id})
     }else{$selected=@($available|Where-Object{$state.decided.ContainsKey($_.id) -and (Decision-Result $_.id) -eq 'pending'}|ForEach-Object{$_.id})}
-    if('codlet-gui' -in $selected -and 'codex.ui.adapter' -notin $selected){$selected+='codex.ui.adapter'}
+    # Old setup selections may still name the adapters. Core now supplies those
+    # capabilities; retain old decisions on disk but never download duplicates.
+    $selected=@($selected|Where-Object{$_ -notin @('codex.ui.adapter','codex.desktop.adapter')})
     foreach($id in $selected){if($id -notin @($available.id)){throw "Selected plugin is unavailable: $id"}}
     $listing=Invoke-Cli -Arguments @('plugin','list','--json')
     # Persist the entire selection before the first network operation. Otherwise

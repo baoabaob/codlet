@@ -12,6 +12,161 @@ pub(super) enum Prepared {
 }
 
 impl HostControl {
+    /// The updater's authenticated in-process mailbox is the only entrance.
+    /// Public plugin operations cannot select or replace Core implementation code.
+    pub(super) fn begin_online_core_update(
+        &mut self,
+        renderer: &mut RendererRuntime,
+        hosts: &HostRuntime,
+    ) {
+        if self.is_pending() {
+            return;
+        }
+        let Some(service) = renderer.core_update_service() else {
+            return;
+        };
+        let Some(request) = service.take_online_modules_request() else {
+            return;
+        };
+        let id = request.id.clone();
+        let prepared = (|| -> Result<PendingControl, PluginControlError> {
+            let deadline = CoreUpdateDeadline::from_unix_ms(request.deadline_unix_ms);
+            deadline.ensure_forward_budget()?;
+            if renderer.client_source().is_none() || !renderer.package_has_live_target() {
+                return Err(PluginControlError::new(
+                    "core_update_not_ready",
+                    "A live owned Native source and renderer are required for Core module takeover",
+                ));
+            }
+            let registry = PluginRegistry::load(&self.registry_path).map_err(registry_error)?;
+            let previous = renderer.logical_plugins();
+            if previous.is_empty() {
+                return Err(PluginControlError::new(
+                    "core_update_not_ready",
+                    "The current Core has no active module generations",
+                ));
+            }
+            let guard =
+                crate::runtime_update::activate_online_modules(&request).map_err(|error| {
+                    PluginControlError::new("core_modules_preflight", error.to_string())
+                })?;
+            let providers = crate::codex::internal_plugins().map_err(|error| {
+                PluginControlError::new("core_modules_preflight", error.to_string())
+            })?;
+            let mut generations = self.generations.clone();
+            for plugin in &previous {
+                generations
+                    .entry(plugin.manifest.id.clone())
+                    .and_modify(|generation| *generation = (*generation).max(plugin.generation))
+                    .or_insert(plugin.generation);
+            }
+            let mut entries = Vec::new();
+            let mut next = Vec::new();
+            for old in &previous {
+                let entry = renderer
+                    .catalog_snapshot()
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.id == old.manifest.id)
+                    .ok_or_else(|| {
+                        PluginControlError::new(
+                            "core_modules_preflight",
+                            "A live module has no catalog ownership",
+                        )
+                    })?;
+                let mut candidate = if matches!(entry.source, PluginSource::Core) {
+                    providers
+                        .iter()
+                        .find(|plugin| plugin.manifest.id == old.manifest.id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            PluginControlError::new(
+                                "core_modules_preflight",
+                                "Core provider contract is missing",
+                            )
+                        })?
+                } else {
+                    old.clone()
+                };
+                candidate.generation =
+                    next_host_generation(&mut generations, &candidate.manifest.id)?;
+                entries.push(PluginCatalogEntry {
+                    id: entry.id.clone(),
+                    source: entry.source.clone(),
+                    plugin: Ok(candidate.clone()),
+                });
+                next.push(candidate);
+            }
+            let next = plugin_lifecycle::order(next).map_err(lifecycle_error)?;
+            HostRuntime::validate_plugins(
+                &next
+                    .iter()
+                    .filter(|plugin| plugin.manifest.host.is_some())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(host_error)?;
+            renderer.begin_package_management(generations.clone(), &next)?;
+            self.generations = generations;
+            let affected = previous
+                .iter()
+                .map(|plugin| plugin.manifest.id.clone())
+                .collect();
+            let job = ControlJob {
+                operation_id: id.clone(),
+                request: crate::plugin_control::PluginControlRequest {
+                    action: PluginControlAction::Reload,
+                    plugin_id: crate::codex::UI_PROVIDER_ID.into(),
+                    permission: None,
+                    cascade: false,
+                    local_import: None,
+                    remove_source: None,
+                },
+            };
+            let mut pending = PendingControl::new(
+                job,
+                registry,
+                ActivationPlan {
+                    affected,
+                    previous,
+                    next,
+                    entries,
+                },
+            );
+            pending.core_update = Some(CoreUpdateTransaction {
+                service: service.clone(),
+                request: request.clone(),
+                guard: Some(guard),
+                receipt: None,
+                uncertain: false,
+                next_start: None,
+                deadline,
+                source: renderer.client_source().expect("checked live source"),
+                ingress_targets: Vec::new(),
+                source_admission_started: false,
+                renderer_admission_started: false,
+                host_admission_started: false,
+                admission_receipt: None,
+                release_started: false,
+                retain_candidate: false,
+            });
+            pending.core_transaction = true;
+            pending.start_core_admission(renderer, hosts);
+            Ok(pending)
+        })();
+        match prepared {
+            Ok(pending) => self.pending = Some(Box::new(pending)),
+            Err(error) => {
+                service.complete_online_modules(
+                    &id,
+                    crate::runtime_update::OnlineCoreModulesCompletion::Rejected {
+                        error: error.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
     pub(super) fn prepare_package(
         &mut self,
         job: ControlJob,
@@ -192,17 +347,22 @@ impl HostControl {
         let replacements = plan.replacements();
         renderer.begin_package_management(generations.clone(), &replacements)?;
         self.generations = generations;
-        let failures = renderer.retire_package_renderers(&plan.affected, "deactivate");
         let mut pending = PendingControl::new(job, registry, plan);
-        pending.failures = failures;
-        pending.phase = Phase::StopPrevious;
-        pending.batch = HostBatch::stop(hosts, &pending.plan.affected, "deactivate");
+        pending.start_snapshots(hosts);
         Ok(Prepared::Pending(Box::new(pending)))
     }
 }
 
 #[derive(Clone, Copy)]
 enum Phase {
+    QuiesceCoreHosts,
+    QuiesceCoreSource,
+    Snapshot,
+    ResumePrevious,
+    FinalizeCoreSource,
+    ReleaseCoreAdmission,
+    ResumeCoreHosts,
+    ReholdCoreHosts,
     Disable,
     StopPrevious,
     StartCandidates,
@@ -237,6 +397,60 @@ pub(super) struct PendingControl {
     managed_installation: Option<crate::managed_storage::Installation>,
     source_operation:
         Option<std::sync::mpsc::Receiver<Result<serde_json::Value, crate::plugin_host::HostError>>>,
+    snapshot_operations: Vec<(String, crate::host_runtime::HostStateOperation)>,
+    snapshots: BTreeMap<String, serde_json::Value>,
+    core_update: Option<CoreUpdateTransaction>,
+    core_transaction: bool,
+    state_missing: BTreeSet<String>,
+    core_report: Option<PluginControlReport>,
+    core_host_operation: Option<crate::host_runtime::HostCoreAdmissionOperation>,
+    receipt_poll_after: std::time::Instant,
+}
+
+struct CoreUpdateTransaction {
+    service: crate::runtime_update::RuntimeUpdateService,
+    request: crate::runtime_update::OnlineCoreModulesRequest,
+    guard: Option<crate::runtime_update::CoreModulesGuard>,
+    receipt: Option<serde_json::Value>,
+    uncertain: bool,
+    next_start: Option<String>,
+    deadline: CoreUpdateDeadline,
+    source: crate::client_bridge::ClientSourceRuntime,
+    ingress_targets: Vec<crate::renderer::CoreIngressTarget>,
+    source_admission_started: bool,
+    renderer_admission_started: bool,
+    host_admission_started: bool,
+    admission_receipt: Option<serde_json::Value>,
+    release_started: bool,
+    retain_candidate: bool,
+}
+
+/// Stop beginning forward work while there is still time to restore the old
+/// generations. Once an operation was admitted, its original receipt is drained
+/// even after this budget; a timeout must never authorize a duplicate write.
+struct CoreUpdateDeadline(std::time::Instant);
+impl CoreUpdateDeadline {
+    const ROLLBACK_RESERVE: std::time::Duration = std::time::Duration::from_secs(60);
+    fn from_unix_ms(deadline: u64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        Self(
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(deadline.saturating_sub(now).min(180_000)),
+        )
+    }
+    fn ensure_forward_budget(&self) -> Result<(), PluginControlError> {
+        if self.0.saturating_duration_since(std::time::Instant::now()) <= Self::ROLLBACK_RESERVE {
+            return Err(PluginControlError::new(
+                "core_update_deadline",
+                "Core takeover stopped admitting forward work to preserve its restoration budget",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl PendingControl {
@@ -260,7 +474,139 @@ impl PendingControl {
             managed_restored: false,
             managed_installation: None,
             source_operation: None,
+            snapshot_operations: Vec::new(),
+            snapshots: BTreeMap::new(),
+            core_update: None,
+            core_transaction: false,
+            state_missing: BTreeSet::new(),
+            core_report: None,
+            core_host_operation: None,
+            receipt_poll_after: std::time::Instant::now(),
         }
+    }
+
+    pub(super) fn is_core_update(&self) -> bool {
+        self.core_transaction
+    }
+
+    fn ensure_core_forward_budget(&self) -> Result<(), PluginControlError> {
+        self.core_update
+            .as_ref()
+            .map_or(Ok(()), |core| core.deadline.ensure_forward_budget())
+    }
+
+    fn ensure_core_forward(&self, renderer: &RendererRuntime) -> Result<(), PluginControlError> {
+        self.ensure_core_forward_budget()?;
+        self.ensure_core_ownership(renderer)
+    }
+
+    fn ensure_core_ownership(&self, renderer: &RendererRuntime) -> Result<(), PluginControlError> {
+        if let Some(core) = &self.core_update {
+            if renderer
+                .client_source()
+                .is_none_or(|source| !source.same_owner(&core.source))
+            {
+                return Err(PluginControlError::new(
+                    "core_update_source_changed",
+                    "The Native source owner changed during the Core transaction",
+                ));
+            }
+            renderer
+                .validate_core_ingress_targets(&core.ingress_targets)
+                .map_err(|message| {
+                    PluginControlError::new("core_update_target_changed", message)
+                })?;
+        }
+        Ok(())
+    }
+
+    fn start_core_admission(&mut self, renderer: &mut RendererRuntime, hosts: &HostRuntime) {
+        let id = self
+            .core_update
+            .as_ref()
+            .expect("Core transaction")
+            .request
+            .id
+            .clone();
+        let (targets, failures) = renderer.pause_core_ingress(&id);
+        self.core_update
+            .as_mut()
+            .expect("Core transaction")
+            .ingress_targets = targets;
+        if !failures.is_empty() {
+            self.core_update.as_mut().expect("Core transaction").next_start = Some("The current Native renderer cannot hold submissions through a Core provider transfer".into());
+            self.failures.extend(failures);
+            self.resume_previous(renderer, hosts);
+            return;
+        }
+        match hosts.begin_core_admission(&id) {
+            Ok(operation) => {
+                self.core_update
+                    .as_mut()
+                    .expect("Core transaction")
+                    .host_admission_started = true;
+                self.core_host_operation = Some(operation);
+                self.phase = Phase::QuiesceCoreHosts;
+            }
+            Err(error) => {
+                self.failure("core_host_admission", error.to_string());
+                self.resume_previous(renderer, hosts);
+            }
+        }
+    }
+
+    fn start_core_source_admission(&mut self) {
+        let core = self.core_update.as_mut().expect("Core transaction");
+        let id = core.request.id.clone();
+        core.source_admission_started = true;
+        let source = core.source.clone();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.source_operation = Some(receiver);
+        self.phase = Phase::QuiesceCoreSource;
+        std::thread::spawn(move || {
+            let _ = sender.send(source.begin_core_admission(&id));
+        });
+    }
+
+    fn start_snapshots(&mut self, hosts: &HostRuntime) {
+        self.phase = Phase::Snapshot;
+        for observation in hosts.observations().into_iter().filter(|observation| {
+            self.plan.affected.contains(&observation.plugin.manifest.id)
+                && observation.state == ExecutionState::Active
+        }) {
+            let id = observation.plugin.manifest.id;
+            match hosts.begin_snapshot(&id, observation.plugin.generation) {
+                Ok(operation) => self.snapshot_operations.push((id, operation)),
+                Err(error) => self.failures.push(PluginTargetFailure {
+                    target_id: String::new(),
+                    plugin_id: id,
+                    stage: "snapshot".into(),
+                    error: error.to_string(),
+                }),
+            }
+        }
+    }
+
+    fn resume_previous(&mut self, renderer: &mut RendererRuntime, hosts: &HostRuntime) {
+        self.failures
+            .extend(renderer.resume_package_state(&self.plan.affected));
+        self.snapshot_operations.clear();
+        for observation in hosts.observations().into_iter().filter(|observation| {
+            self.plan.affected.contains(&observation.plugin.manifest.id)
+                && observation.state == ExecutionState::Active
+        }) {
+            let id = observation.plugin.manifest.id;
+            match hosts.begin_resume(&id, observation.plugin.generation) {
+                Ok(operation) => self.snapshot_operations.push((id, operation)),
+                Err(error) => self.failures.push(PluginTargetFailure {
+                    target_id: String::new(),
+                    plugin_id: id,
+                    stage: "resume".into(),
+                    error: error.to_string(),
+                }),
+            }
+        }
+        self.phase = Phase::ResumePrevious;
     }
 
     pub(super) fn set_managed_previous(&mut self, registry: PluginRegistry) {
@@ -298,6 +644,470 @@ impl PendingControl {
         renderer.set_external_observations(hosts.observations());
         for _ in 0..12 {
             match self.phase {
+                Phase::QuiesceCoreHosts => {
+                    let result = self
+                        .core_host_operation
+                        .as_mut()
+                        .expect("Host admission receipt")
+                        .try_result()?;
+                    self.core_host_operation = None;
+                    match result {
+                        Ok(_) => {
+                            let core = self.core_update.as_mut().expect("Core transaction");
+                            core.renderer_admission_started = true;
+                            let failures = renderer.begin_core_admission(&core.request.id);
+                            if failures.is_empty() {
+                                self.start_core_source_admission();
+                            } else {
+                                self.failures.extend(failures);
+                                self.resume_previous(renderer, hosts);
+                            }
+                        }
+                        Err(error) => {
+                            if error.code == "core_admission_traffic_busy" {
+                                self.core_update.as_mut().expect("Core transaction").next_start = Some("An active plugin owns live traffic resources which cannot be transferred; its running connections were retained".into());
+                            }
+                            self.failure("core_host_admission", error.to_string());
+                            self.resume_previous(renderer, hosts);
+                        }
+                    }
+                }
+                Phase::QuiesceCoreSource => {
+                    let result = match self
+                        .source_operation
+                        .as_ref()
+                        .expect("Native admission receipt")
+                        .try_recv()
+                    {
+                        Ok(result) => result,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(_) => Err(HostError::new(
+                            "client_bridge_uncertain",
+                            "Native admission worker exited without its original receipt",
+                        )),
+                    };
+                    self.source_operation = None;
+                    match result {
+                        Ok(receipt)
+                            if receipt.get("outcome").and_then(serde_json::Value::as_str)
+                                == Some("held") =>
+                        {
+                            self.core_update
+                                .as_mut()
+                                .expect("Core transaction")
+                                .admission_receipt = Some(receipt);
+                            if let Err(error) = self.ensure_core_forward(renderer) {
+                                self.failure("core_admission", error.to_string());
+                                self.resume_previous(renderer, hosts);
+                            } else {
+                                self.start_snapshots(hosts);
+                            }
+                        }
+                        Ok(_) => {
+                            self.failure(
+                                "core_admission",
+                                "Native admission did not confirm that accepted writes settled"
+                                    .into(),
+                            );
+                            self.resume_previous(renderer, hosts);
+                        }
+                        Err(error) => {
+                            if matches!(
+                                error.code,
+                                "core_admission_unavailable" | "core_admission_id_invalid"
+                            ) {
+                                let core = self.core_update.as_mut().expect("Core transaction");
+                                core.source_admission_started = false;
+                                core.next_start = Some("The resident Native bridge does not provide the required Core admission contract".into());
+                            }
+                            self.failure("core_admission", error.to_string());
+                            self.resume_previous(renderer, hosts);
+                        }
+                    }
+                }
+                Phase::ResumePrevious => {
+                    let mut index = 0;
+                    while index < self.snapshot_operations.len() {
+                        let Some(result) = self.snapshot_operations[index].1.try_result() else {
+                            index += 1;
+                            continue;
+                        };
+                        let (id, _) = self.snapshot_operations.remove(index);
+                        if let Err(error) = result {
+                            self.failures.push(PluginTargetFailure {
+                                target_id: String::new(),
+                                plugin_id: id,
+                                stage: "resume".into(),
+                                error: error.to_string(),
+                            });
+                        }
+                    }
+                    if !self.snapshot_operations.is_empty() {
+                        return None;
+                    }
+                    let outcome = if self
+                        .failures
+                        .iter()
+                        .any(|failure| failure.stage == "resume")
+                    {
+                        PluginControlOutcome::Degraded
+                    } else {
+                        PluginControlOutcome::RolledBack
+                    };
+                    let message = if outcome == PluginControlOutcome::Degraded {
+                        "State preflight failed; previous plugin generations were retained but admission restoration could not be confirmed."
+                    } else {
+                        "State preflight failed; previous plugin generations were retained and their admission was resumed."
+                    };
+                    return self.finish(renderer, generations, outcome, Some(message.into()));
+                }
+                Phase::FinalizeCoreSource => {
+                    if self.source_operation.is_none() {
+                        if std::time::Instant::now() < self.receipt_poll_after {
+                            return None;
+                        }
+                        let source = self
+                            .core_update
+                            .as_ref()
+                            .expect("Core transaction")
+                            .source
+                            .clone();
+                        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                        self.source_operation = Some(receiver);
+                        std::thread::spawn(move || {
+                            let result = source.poll_core_code_receipt().and_then(|receipt| {
+                                receipt.ok_or_else(|| {
+                                    HostError::new(
+                                        "client_bridge_uncertain",
+                                        "The original Core source receipt is still pending",
+                                    )
+                                })
+                            });
+                            let _ = sender.send(result);
+                        });
+                    }
+                    let result = match self
+                        .source_operation
+                        .as_ref()
+                        .expect("Core source handoff receipt")
+                        .try_recv()
+                    {
+                        Ok(result) => result,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(_) => Err(HostError::new(
+                            "client_bridge_uncertain",
+                            "Core source worker exited without a receipt",
+                        )),
+                    };
+                    self.source_operation = None;
+                    match result {
+                        Ok(receipt) if receipt["outcome"] == "applied" => {
+                            self.core_update.as_mut().expect("Core transaction").receipt =
+                                Some(receipt);
+                            renderer.commit_package_entries(std::mem::take(&mut self.plan.entries));
+                            if let Err(error) = self.ensure_core_ownership(renderer) {
+                                self.core_update
+                                    .as_mut()
+                                    .expect("Core transaction")
+                                    .uncertain = true;
+                                self.failure("core_source_target_changed", error.to_string());
+                                return self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Native source takeover completed while the document set changed. Admission remains held until ownership can be reconciled; do not replay the update.".into()));
+                            }
+                            return self.finish(
+                                renderer,
+                                generations,
+                                PluginControlOutcome::Applied,
+                                None,
+                            );
+                        }
+                        Ok(receipt)
+                            if matches!(
+                                receipt["outcome"].as_str(),
+                                Some("rejected" | "rolled_back")
+                            ) =>
+                        {
+                            self.failure(
+                                "core_source",
+                                format!(
+                                    "The original Native source operation completed with {}",
+                                    receipt["outcome"]
+                                ),
+                            );
+                            self.cleanup_candidates(renderer, hosts);
+                        }
+                        Ok(_) => {
+                            self.core_update
+                                .as_mut()
+                                .expect("Core transaction")
+                                .uncertain = true;
+                            renderer.commit_package_entries(std::mem::take(&mut self.plan.entries));
+                            return self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Native source restoration was not confirmed. Active connections and admission gates were retained; do not replay the update.".into()));
+                        }
+                        Err(error) if error.code == "client_bridge_uncertain" => {
+                            // The updater reports its own bounded timeout, but retains
+                            // this original receipt channel. Keep reconciling after that
+                            // timeout so a late successful owner can release admission.
+                            self.receipt_poll_after =
+                                std::time::Instant::now() + std::time::Duration::from_millis(500);
+                            return None;
+                        }
+                        Err(error) => {
+                            self.failure("core_source", error.to_string());
+                            self.cleanup_candidates(renderer, hosts);
+                        }
+                    }
+                }
+                Phase::ReleaseCoreAdmission => {
+                    if self.core_report.as_ref().expect("Core completion").outcome
+                        == PluginControlOutcome::Applied
+                        && self.source_operation.is_none()
+                        && !self
+                            .core_update
+                            .as_ref()
+                            .expect("Core transaction")
+                            .release_started
+                        && let Err(error) = self.ensure_core_ownership(renderer)
+                    {
+                        return Some(self.core_release_failed(
+                            renderer,
+                            generations,
+                            "core_owner_changed",
+                            error.to_string(),
+                        ));
+                    }
+                    let core = self.core_update.as_mut().expect("Core transaction");
+                    if core.source_admission_started {
+                        if self.source_operation.is_none() {
+                            if std::time::Instant::now() < self.receipt_poll_after {
+                                return None;
+                            }
+                            let source = core.source.clone();
+                            let id = core.request.id.clone();
+                            let query_only = core.release_started;
+                            let applied =
+                                self.core_report.as_ref().expect("Core completion").outcome
+                                    == PluginControlOutcome::Applied;
+                            core.release_started = true;
+                            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                            self.source_operation = Some(receiver);
+                            std::thread::spawn(move || {
+                                let result = if query_only {
+                                    source.poll_core_admission_release(&id).and_then(|receipt| receipt.ok_or_else(|| HostError::new("client_bridge_uncertain", "The original Native admission release is still pending")))
+                                } else {
+                                    source.finish_core_admission(
+                                        &id,
+                                        if applied {
+                                            crate::client_bridge::CoreAdmissionOutcome::Applied
+                                        } else {
+                                            crate::client_bridge::CoreAdmissionOutcome::RolledBack
+                                        },
+                                    )
+                                };
+                                let _ = sender.send(result);
+                            });
+                        }
+                        let result = match self
+                            .source_operation
+                            .as_ref()
+                            .expect("Native admission release")
+                            .try_recv()
+                        {
+                            Ok(result) => result,
+                            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                            Err(_) => Err(HostError::new(
+                                "client_bridge_uncertain",
+                                "Native admission worker exited without a receipt",
+                            )),
+                        };
+                        self.source_operation = None;
+                        match result {
+                            Ok(_) => {}
+                            Err(error)
+                                if matches!(
+                                    error.code,
+                                    "client_bridge_uncertain"
+                                        | "core_admission_release_not_started"
+                                ) =>
+                            {
+                                if error.code == "core_admission_release_not_started" {
+                                    core.release_started = false;
+                                }
+                                self.receipt_poll_after = std::time::Instant::now()
+                                    + std::time::Duration::from_millis(500);
+                                return None;
+                            }
+                            Err(error) => {
+                                core.uncertain = true;
+                                let mut report = self.core_report.take().expect("Core completion");
+                                report.target_failures.push(PluginTargetFailure {
+                                    target_id: String::new(),
+                                    plugin_id: crate::codex::DESKTOP_PROVIDER_ID.into(),
+                                    stage: "core_admission_resume".into(),
+                                    error: error.to_string(),
+                                });
+                                report.outcome = PluginControlOutcome::Degraded;
+                                report.message = Some("Core ownership settled but Native admission could not be confirmed; query the original operation without replay.".into());
+                                return Some(self.complete_report(renderer, generations, report));
+                            }
+                        }
+                    }
+                    if core.host_admission_started {
+                        match hosts.resume_core_admission(&core.request.id) {
+                            Ok(operation) => self.core_host_operation = Some(operation),
+                            Err(error) => {
+                                return Some(self.core_release_failed(
+                                    renderer,
+                                    generations,
+                                    "core_host_resume",
+                                    error.to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    self.phase = Phase::ResumeCoreHosts;
+                }
+                Phase::ResumeCoreHosts | Phase::ReholdCoreHosts => {
+                    if let Some(operation) = &mut self.core_host_operation {
+                        let result = operation.try_result()?;
+                        self.core_host_operation = None;
+                        if let Err(error) = result {
+                            return Some(self.core_release_failed(
+                                renderer,
+                                generations,
+                                "core_host_resume",
+                                error.to_string(),
+                            ));
+                        }
+                    }
+                    if matches!(self.phase, Phase::ReholdCoreHosts) {
+                        let report = self.core_report.take().expect("Core completion");
+                        return Some(self.complete_report(renderer, generations, report));
+                    }
+                    let applied = self.core_report.as_ref().expect("Core completion").outcome
+                        == PluginControlOutcome::Applied;
+                    let mut failures = if applied {
+                        self.ensure_core_ownership(renderer)
+                            .err()
+                            .map(|error| PluginTargetFailure {
+                                target_id: String::new(),
+                                plugin_id: self.job.request.plugin_id.clone(),
+                                stage: "core_owner_changed".into(),
+                                error: error.to_string(),
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    let core = self.core_update.as_mut().expect("Core transaction");
+                    if failures.is_empty() && core.renderer_admission_started {
+                        failures.extend(renderer.resume_core_admission(&core.request.id));
+                    }
+                    if failures.is_empty() {
+                        failures.extend(renderer.resume_core_ingress(
+                            &core.request.id,
+                            &core.ingress_targets,
+                            applied,
+                        ));
+                    }
+                    if failures.is_empty() {
+                        let report = self.core_report.take().expect("Core completion");
+                        return Some(self.complete_report(renderer, generations, report));
+                    }
+                    // Re-hold SDK writers if one document could not resume. Source
+                    // ownership has settled, but the release is not globally confirmed.
+                    if core.renderer_admission_started {
+                        failures.extend(renderer.begin_core_admission(&core.request.id));
+                    }
+                    core.uncertain = true;
+                    let report = self.core_report.as_mut().expect("Core completion");
+                    report.target_failures.extend(failures);
+                    report.outcome = PluginControlOutcome::Degraded;
+                    report.message = Some("Core ownership settled but admission could not be confirmed in every document; SDK admission remains held.".into());
+                    if core.host_admission_started {
+                        match hosts.begin_core_admission(&core.request.id) {
+                            Ok(operation) => self.core_host_operation = Some(operation),
+                            Err(error) => {
+                                return Some(self.core_release_failed(
+                                    renderer,
+                                    generations,
+                                    "core_host_rehold",
+                                    error.to_string(),
+                                ));
+                            }
+                        }
+                    }
+                    self.phase = Phase::ReholdCoreHosts;
+                }
+                Phase::Snapshot => {
+                    let mut index = 0;
+                    while index < self.snapshot_operations.len() {
+                        let Some(result) = self.snapshot_operations[index].1.try_result() else {
+                            index += 1;
+                            continue;
+                        };
+                        let (id, _) = self.snapshot_operations.remove(index);
+                        match result {
+                            Ok(value) if !value.is_null() => {
+                                self.snapshots.insert(id, value);
+                            }
+                            Ok(_) => {
+                                if !renderer.catalog_snapshot().is_core(&id) {
+                                    self.state_missing.insert(id);
+                                }
+                            }
+                            Err(error) => self.failures.push(PluginTargetFailure {
+                                target_id: String::new(),
+                                plugin_id: id,
+                                stage: "snapshot".into(),
+                                error: error.to_string(),
+                            }),
+                        }
+                    }
+                    if !self.snapshot_operations.is_empty() {
+                        return None;
+                    }
+                    if !self.failures.is_empty() {
+                        self.resume_previous(renderer, hosts);
+                        continue;
+                    }
+                    if let Err(error) = self.ensure_core_forward(renderer) {
+                        self.failure("core_update_deadline", error.to_string());
+                        self.resume_previous(renderer, hosts);
+                        continue;
+                    }
+                    if let Err(error) = renderer.capture_package_state(&self.plan.affected) {
+                        self.failure("snapshot", error.to_string());
+                        self.resume_previous(renderer, hosts);
+                        continue;
+                    }
+                    self.state_missing
+                        .extend(renderer.package_state_missing().iter().cloned());
+                    if let Some(core) = &mut self.core_update
+                        && !self.state_missing.is_empty()
+                    {
+                        core.next_start = Some(format!(
+                            "Active plugins have not declared explicit state transfer: {}",
+                            self.state_missing
+                                .iter()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                        self.resume_previous(renderer, hosts);
+                        continue;
+                    }
+                    if let Err(error) = self.ensure_core_forward(renderer) {
+                        self.failure("core_update_deadline", error.to_string());
+                        self.resume_previous(renderer, hosts);
+                        continue;
+                    }
+                    self.failures.extend(
+                        renderer.retire_package_renderers(&self.plan.affected, "deactivate"),
+                    );
+                    self.phase = Phase::StopPrevious;
+                    self.batch = HostBatch::stop(hosts, &self.plan.affected, "deactivate");
+                }
                 Phase::Disable
                 | Phase::StopPrevious
                 | Phase::StopCandidates
@@ -310,12 +1120,12 @@ impl PendingControl {
                         Phase::Disable => {
                             if confirmed && self.failures.is_empty() && let Err(error)=self.publish_managed_installation() { self.failure("managed_install",error.to_string()); }
                             if confirmed && self.failures.is_empty() && self.begin_native(renderer,&[],false) {self.phase=Phase::NativeDisable;continue;}
-                            return Some(self.finish(renderer, generations, if self.failures.is_empty() { if self.unchanged { PluginControlOutcome::Unchanged } else { PluginControlOutcome::Applied } } else { PluginControlOutcome::Degraded }, None));
+                            return self.finish(renderer, generations, if self.failures.is_empty() { if self.unchanged { PluginControlOutcome::Unchanged } else { PluginControlOutcome::Applied } } else { PluginControlOutcome::Degraded }, None);
                         }
                         Phase::StopPrevious => {
-                            if !confirmed { return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Previous native retirement could not be confirmed; replacement code was not started.".into()))); }
+                            if !confirmed { return self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Previous native retirement could not be confirmed; replacement code was not started.".into())); }
                             if !self.failures.is_empty() { if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); } continue; }
-                            if let Err(error) = self.verify_candidate() {
+                            if let Err(error) = self.verify_candidate(renderer) {
                                 self.failure("activate_validate", error.to_string());
                                 if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
                                 continue;
@@ -332,13 +1142,13 @@ impl PendingControl {
                             }
                             let replacements=self.plan.replacements();
                             if self.begin_native(renderer,&replacements,false){self.phase=Phase::NativeCandidates;}
-                            else{self.phase = Phase::StartCandidates;self.batch = HostBatch::start(&replacements, "activate");}
+                            else{self.phase = Phase::StartCandidates;self.batch = HostBatch::start_with_state(&replacements, "activate", &self.snapshots);}
                         }
                         Phase::StopCandidates => {
-                            if !confirmed || !self.cleanup_confirmed { return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Candidate native cleanup could not be confirmed; prior code was not restarted.".into()))); }
+                            if !confirmed || !self.cleanup_confirmed { return self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Candidate native cleanup could not be confirmed; prior code was not restarted.".into())); }
                             if let Some(report) = self.start_rollback(renderer, hosts, generations) { return Some(report); }
                         }
-                        Phase::StopRollback => return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("The requested change and restoration failed; affected packages remain stopped.".into()))),
+                        Phase::StopRollback => return self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("The requested change and restoration failed; affected packages remain stopped.".into())),
                         _ => unreachable!(),
                     }
                 }
@@ -372,27 +1182,34 @@ impl PendingControl {
                             }
                             continue;
                         }
-                        return Some(
-                            self.finish(
-                                renderer,
-                                generations,
-                                PluginControlOutcome::Degraded,
-                                Some(
-                                    "Client entry cleanup or restoration could not be confirmed."
-                                        .into(),
-                                ),
+                        return self.finish(
+                            renderer,
+                            generations,
+                            PluginControlOutcome::Degraded,
+                            Some(
+                                "Client entry cleanup or restoration could not be confirmed."
+                                    .into(),
                             ),
                         );
                     }
                     match self.phase{
-                        Phase::NativeNoRollback=>return Some(self.finish(renderer,generations,PluginControlOutcome::Degraded,Some("The requested activation failed; its native entry was retired and no previous package was running.".into()))),
-                        Phase::NativeDisable=>return Some(self.finish(renderer,generations,PluginControlOutcome::Applied,None)),
-                        Phase::NativeRollback=>{self.phase=Phase::StartRollback;self.batch=HostBatch::start(&self.rollback,"rollback_activate");},
-                        _=>{self.phase=Phase::StartCandidates;self.batch=HostBatch::start(&self.plan.replacements(),"activate");}
+                        Phase::NativeNoRollback=>return self.finish(renderer,generations,PluginControlOutcome::Degraded,Some("The requested activation failed; its native entry was retired and no previous package was running.".into())),
+                        Phase::NativeDisable=>return self.finish(renderer,generations,PluginControlOutcome::Applied,None),
+                        Phase::NativeRollback=>{self.phase=Phase::StartRollback;self.batch=HostBatch::start_with_state(&self.rollback,"rollback_activate",&self.snapshots);},
+                        _=>{self.phase=Phase::StartCandidates;self.batch=HostBatch::start_with_state(&self.plan.replacements(),"activate",&self.snapshots);}
                     }
                 }
                 Phase::StartCandidates | Phase::StartRollback => {
                     let restoring = matches!(self.phase, Phase::StartRollback);
+                    if !restoring && let Err(error) = self.ensure_core_forward(renderer) {
+                        self.batch.queued.clear();
+                        let (failures, confirmed) = self.batch.poll(hosts)?;
+                        self.failures.extend(failures);
+                        self.cleanup_confirmed &= confirmed;
+                        self.failure("core_update_deadline", error.to_string());
+                        self.cleanup_candidates(renderer, hosts);
+                        continue;
+                    }
                     if let Some((failures, confirmed)) = self.batch.poll(hosts) {
                         self.cleanup_confirmed &= confirmed;
                         if !failures.is_empty() {
@@ -452,7 +1269,7 @@ impl PendingControl {
                         let validation = if restoring {
                             self.verify_rollback(renderer)
                         } else {
-                            self.verify_candidate()
+                            self.verify_candidate(renderer)
                         };
                         if let Err(error) = validation {
                             self.failure(
@@ -504,7 +1321,7 @@ impl PendingControl {
                     let committed = if restoring {
                         self.verify_rollback(renderer)
                     } else {
-                        self.verify_candidate().and_then(|()| {
+                        self.verify_candidate(renderer).and_then(|()| {
                             if self.job.request.activation_requested() {
                                 self.registry = plugin_lifecycle::persist_preference_with_guards(
                                     &self.registry,
@@ -534,27 +1351,36 @@ impl PendingControl {
                         continue;
                     }
                     if restoring {
-                        return Some(self.finish(renderer, generations, if self.cleanup_confirmed && !self.failures.iter().any(|failure| matches!(failure.stage.as_str(), "deactivate" | "rollback_cleanup")) { PluginControlOutcome::RolledBack } else { PluginControlOutcome::Degraded }, Some("The requested change failed; previous immutable entry snapshots were restored together with fresh generations under current trust.".into())));
+                        return self.finish(renderer, generations, if self.cleanup_confirmed && !self.failures.iter().any(|failure| matches!(failure.stage.as_str(), "deactivate" | "rollback_cleanup")) { PluginControlOutcome::RolledBack } else { PluginControlOutcome::Degraded }, Some("The requested change failed; previous immutable entry snapshots were restored together with fresh generations under current trust.".into()));
+                    }
+                    if let Some(core) = &self.core_update {
+                        let source = core.source.clone();
+                        let code = core.request.client_source.clone();
+                        let version = core.request.version.clone();
+                        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                        self.source_operation = Some(receiver);
+                        std::thread::spawn(move || {
+                            let _ = sender.send(source.replace_core_code(&code, &version));
+                        });
+                        self.phase = Phase::FinalizeCoreSource;
+                        continue;
                     }
                     renderer.commit_package_entries(std::mem::take(&mut self.plan.entries));
                     renderer.resume_startup_plugins(&self.plan.affected);
-                    return Some(self.finish(
-                        renderer,
-                        generations,
-                        PluginControlOutcome::Applied,
-                        None,
-                    ));
+                    return self.finish(renderer, generations, PluginControlOutcome::Applied, None);
                 }
             }
         }
         None
     }
 
-    fn verify_candidate(&mut self) -> Result<(), PluginControlError> {
+    fn verify_candidate(&mut self, renderer: &RendererRuntime) -> Result<(), PluginControlError> {
+        self.ensure_core_forward(renderer)?;
         self.registry = plugin_lifecycle::verify_registrations(&self.registry, &self.plan.affected)
             .map_err(lifecycle_error)?;
         for id in &self.plan.affected {
-            if !self.registry.is_enabled(id)
+            if !crate::codex::is_internal_id(id)
+                && !self.registry.is_enabled(id)
                 && !(id == &self.job.request.plugin_id && self.job.request.activation_requested())
             {
                 return Err(PluginControlError::new(
@@ -581,25 +1407,26 @@ impl PendingControl {
         hosts: &HostRuntime,
         generations: &mut BTreeMap<String, u64>,
     ) -> Option<PluginControlReport> {
+        if let Some(core) = &mut self.core_update {
+            core.guard.take();
+        }
         if let Err(error) = self.restore_managed_registration() {
             self.failure("rollback_registration", error.to_string());
-            return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded,
-                Some("The requested change failed and concurrent state prevented registration restoration; affected packages remain stopped.".into())));
+            return self.finish(renderer, generations, PluginControlOutcome::Degraded,
+                Some("The requested change failed and concurrent state prevented registration restoration; affected packages remain stopped.".into()));
         }
         if self.plan.previous.is_empty() {
             if self.begin_native(renderer, &[], true) {
                 self.phase = Phase::NativeNoRollback;
                 return None;
             }
-            return Some(
-                self.finish(
-                    renderer,
-                    generations,
-                    PluginControlOutcome::Degraded,
-                    Some(
-                        "The requested change failed; no previous package snapshots were running."
-                            .into(),
-                    ),
+            return self.finish(
+                renderer,
+                generations,
+                PluginControlOutcome::Degraded,
+                Some(
+                    "The requested change failed; no previous package snapshots were running."
+                        .into(),
                 ),
             );
         }
@@ -633,20 +1460,24 @@ impl PendingControl {
                 self.renderers_started = false;
                 if let Err(error) = renderer.register_rpc_plugins(&self.rollback) {
                     self.failure("rollback_validate", error.to_string());
-                    return Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Core rejected the restoration registrations; affected packages remain stopped.".into())));
+                    return self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Core rejected the restoration registrations; affected packages remain stopped.".into()));
                 }
                 let restored = self.rollback.clone();
                 if self.begin_native(renderer, &restored, true) {
                     self.phase = Phase::NativeRollback;
                 } else {
-                    self.batch = HostBatch::start(&self.rollback, "rollback_activate");
+                    self.batch = HostBatch::start_with_state(
+                        &self.rollback,
+                        "rollback_activate",
+                        &self.snapshots,
+                    );
                 }
                 let _ = hosts;
                 None
             }
             Err(error) => {
                 self.failure("rollback_validate", error.to_string());
-                Some(self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Previous snapshots are no longer enabled and trusted at their original registrations; affected packages remain stopped.".into())))
+                self.finish(renderer, generations, PluginControlOutcome::Degraded, Some("Previous snapshots are no longer enabled and trusted at their original registrations; affected packages remain stopped.".into()))
             }
         }
     }
@@ -656,6 +1487,29 @@ impl PendingControl {
             .extend(renderer.retire_package_renderers(&self.plan.affected, "rollback_cleanup"));
         self.phase = Phase::StopCandidates;
         self.batch = HostBatch::stop(hosts, &self.plan.affected, "rollback_cleanup");
+    }
+
+    fn core_release_failed(
+        &mut self,
+        renderer: &mut RendererRuntime,
+        generations: &BTreeMap<String, u64>,
+        stage: &str,
+        error: String,
+    ) -> PluginControlReport {
+        self.core_update
+            .as_mut()
+            .expect("Core transaction")
+            .uncertain = true;
+        let mut report = self.core_report.take().expect("Core completion");
+        report.target_failures.push(PluginTargetFailure {
+            target_id: String::new(),
+            plugin_id: self.job.request.plugin_id.clone(),
+            stage: stage.into(),
+            error,
+        });
+        report.outcome = PluginControlOutcome::Degraded;
+        report.message = Some("Core ownership settled but admission restoration could not be confirmed. Original operation ownership is retained; do not replay the update.".into());
+        self.complete_report(renderer, generations, report)
     }
     fn cleanup_rollback(&mut self, renderer: &mut RendererRuntime, hosts: &HostRuntime) {
         self.failures
@@ -677,6 +1531,9 @@ impl PendingControl {
         plugins: &[LoadedPlugin],
         restoring: bool,
     ) -> bool {
+        if self.core_transaction {
+            return false;
+        }
         let relevant = self
             .plan
             .entries
@@ -768,7 +1625,7 @@ impl PendingControl {
         generations: &BTreeMap<String, u64>,
         mut outcome: PluginControlOutcome,
         message: Option<String>,
-    ) -> PluginControlReport {
+    ) -> Option<PluginControlReport> {
         if matches!(
             outcome,
             PluginControlOutcome::Applied | PluginControlOutcome::Unchanged
@@ -821,7 +1678,101 @@ impl PendingControl {
             target_failures: std::mem::take(&mut self.failures),
             message,
         };
+        if let Some(core) = &mut self.core_update {
+            core.retain_candidate =
+                core.uncertain || report.outcome == PluginControlOutcome::Applied;
+            if report.outcome == PluginControlOutcome::RolledBack {
+                core.guard.take();
+            }
+            // Keep the package transaction, module ownership and original receipt
+            // alive until release is confirmed. A transport timeout is not a new
+            // operation and does not allow queued submissions to be replayed.
+            if !core.uncertain
+                && matches!(
+                    report.outcome,
+                    PluginControlOutcome::Applied | PluginControlOutcome::RolledBack
+                )
+            {
+                self.core_report = Some(report);
+                self.receipt_poll_after = std::time::Instant::now();
+                self.phase = Phase::ReleaseCoreAdmission;
+                return None;
+            }
+        }
+        Some(self.complete_report(renderer, generations, report))
+    }
+
+    fn complete_report(
+        &mut self,
+        renderer: &mut RendererRuntime,
+        generations: &BTreeMap<String, u64>,
+        mut report: PluginControlReport,
+    ) -> PluginControlReport {
+        if self.core_update.as_ref().is_some_and(|core| {
+            core.uncertain
+                || !matches!(
+                    report.outcome,
+                    PluginControlOutcome::Applied | PluginControlOutcome::RolledBack
+                )
+        }) {
+            renderer.retain_core_management();
+        }
         renderer.finish_package_management(self.registry.clone(), generations.clone());
+        if let Some(mut core) = self.core_update.take() {
+            use crate::runtime_update::OnlineCoreModulesCompletion;
+            let completion = if core.uncertain {
+                if let Some(guard) = core.guard.take()
+                    && core.retain_candidate
+                {
+                    guard.commit();
+                }
+                OnlineCoreModulesCompletion::Unknown {
+                    error: report
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "Core takeover outcome is unknown".into()),
+                }
+            } else if report.outcome == PluginControlOutcome::Applied {
+                if let Some(guard) = core.guard.take() {
+                    guard.commit();
+                }
+                OnlineCoreModulesCompletion::Applied {
+                    receipt: serde_json::json!({"plugins":report.generations,"source":core.receipt,"admission":core.admission_receipt,"moduleAbi":core.request.module_abi}),
+                }
+            } else if report.outcome == PluginControlOutcome::RolledBack
+                && core.next_start.is_some()
+            {
+                OnlineCoreModulesCompletion::NextStart {
+                    reason: core.next_start.take().expect("checked next-start reason"),
+                }
+            } else if report.outcome == PluginControlOutcome::RolledBack {
+                OnlineCoreModulesCompletion::RolledBack {
+                    error: report
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "Core module takeover rolled back".into()),
+                }
+            } else {
+                OnlineCoreModulesCompletion::Unknown {
+                    error: report
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "Core module restoration was not confirmed".into()),
+                }
+            };
+            if !core
+                .service
+                .complete_online_modules(&core.request.id, completion)
+            {
+                crate::runtime_log::error(
+                    "core_completion_unacknowledged",
+                    "The original Core updater receipt channel was unavailable after ownership settled",
+                );
+                report.target_failures.push(PluginTargetFailure { target_id: String::new(), plugin_id: self.job.request.plugin_id.clone(), stage: "core_completion_unacknowledged".into(), error: "The original updater receipt could not be delivered; active code was not replayed or rolled back".into() });
+                report.outcome = PluginControlOutcome::Degraded;
+                report.message = Some("Core ownership settled, but the updater could not acknowledge activation persistence. Inspect the original operation before taking further action.".into());
+            }
+        }
         report
     }
 }
@@ -840,6 +1791,11 @@ fn validate_package_trust(
     registry: &PluginRegistry,
     require_enabled: bool,
 ) -> Result<(), PluginControlError> {
+    if renderer.catalog_snapshot().is_core(&plugin.manifest.id)
+        && crate::codex::is_internal_plugin(plugin)
+    {
+        return Ok(());
+    }
     if require_enabled && !registry.is_enabled(&plugin.manifest.id) {
         return Err(PluginControlError::new(
             "plugin_disabled",
@@ -870,6 +1826,7 @@ struct HostBatch {
     failures: Vec<PluginTargetFailure>,
     stage: &'static str,
     confirmed: bool,
+    snapshots: BTreeMap<String, serde_json::Value>,
 }
 
 impl HostBatch {
@@ -880,9 +1837,18 @@ impl HostBatch {
             failures: Vec::new(),
             stage: "activate",
             confirmed: true,
+            snapshots: BTreeMap::new(),
         }
     }
+    #[cfg(test)]
     fn start(plugins: &[LoadedPlugin], stage: &'static str) -> Self {
+        Self::start_with_state(plugins, stage, &BTreeMap::new())
+    }
+    fn start_with_state(
+        plugins: &[LoadedPlugin],
+        stage: &'static str,
+        snapshots: &BTreeMap<String, serde_json::Value>,
+    ) -> Self {
         Self {
             queued: plugins
                 .iter()
@@ -894,6 +1860,7 @@ impl HostBatch {
                 })
                 .collect(),
             stage,
+            snapshots: snapshots.clone(),
             ..Self::empty()
         }
     }
@@ -922,7 +1889,11 @@ impl HostBatch {
             let id = work.plugin.manifest.id.clone();
             let generation = work.plugin.generation;
             let result = if work.start {
-                hosts.begin_start(work.plugin.clone())
+                if let Some(snapshot) = self.snapshots.get(&id) {
+                    hosts.begin_start_restored(work.plugin.clone(), snapshot.clone())
+                } else {
+                    hosts.begin_start(work.plugin.clone())
+                }
             } else {
                 hosts.begin_stop(&id, generation)
             };
@@ -983,6 +1954,26 @@ impl HostBatch {
 #[cfg(test)]
 mod native_launch_tests {
     use super::*;
+
+    #[test]
+    fn expired_core_takeover_reserves_restoration_instead_of_admitting_more_work() {
+        assert!(
+            CoreUpdateDeadline::from_unix_ms(0)
+                .ensure_forward_budget()
+                .is_err()
+        );
+        let now = std::time::Instant::now();
+        assert!(
+            CoreUpdateDeadline(now + std::time::Duration::from_secs(59))
+                .ensure_forward_budget()
+                .is_err()
+        );
+        assert!(
+            CoreUpdateDeadline(now + std::time::Duration::from_secs(120))
+                .ensure_forward_budget()
+                .is_ok()
+        );
+    }
 
     #[test]
     fn native_launch_only_hot_updates_do_not_queue_a_host_process() {

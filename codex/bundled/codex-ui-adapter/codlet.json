@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "codex.ui.adapter",
+  "name": "Codex UI Adapter",
+  "tags": ["UI", "Adapter"],
+  "description": "Connect plugin pages, composers and workspaces to Codex.",
+  "i18n": {
+    "zh": { "name": "Codex 界面适配器", "description": "将插件页面、输入框操作与工作区接入 Codex 界面。" },
+    "en": { "name": "Codex UI Adapter", "description": "Connect plugin pages, composers and workspaces to Codex." }
+  },
+  "version": "0.1.12",
+  "renderer": {
+    "entry": "dist/renderer.js",
+    "world": "main"
+  },
+  "permissions": ["ui.dom", "ui.mainWorld"],
+  "provides": [
+    { "name": "codex.ui.navigation.page", "api": 1, "scope": "target" },
+    { "name": "codex.ui.composer.action", "api": 1, "scope": "target" },
+    { "name": "codex.ui.workspace", "api": 1, "scope": "target" }
+  ]
+}

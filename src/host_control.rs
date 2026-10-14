@@ -263,6 +263,42 @@ impl HostControl {
         hosts: &HostRuntime,
         broker: &ControlBroker,
     ) -> Option<ControlJob> {
+        if let Err(error) = renderer.ensure_core_management_available() {
+            let watch = self
+                .watch_receipt
+                .take_if(|receipt| receipt.operation_id == job.operation_id)
+                .map(|receipt| receipt.selection);
+            self.complete(
+                broker,
+                &job.operation_id,
+                &job.request.plugin_id,
+                Err(error),
+                watch,
+                false,
+            );
+            return None;
+        }
+        if renderer.catalog_snapshot().is_core(&job.request.plugin_id) {
+            let result = (|| {
+                job.request.validate()?;
+                if self.is_pending() {
+                    return Err(PluginControlError::new(
+                        "runtime_busy",
+                        "Another lifecycle transaction is in progress.",
+                    ));
+                }
+                let mut registry =
+                    PluginRegistry::load(&self.registry_path).map_err(registry_error)?;
+                let report = crate::plugin_cli::edit_legacy_adapter_registration(
+                    &mut registry,
+                    &job.request,
+                )?;
+                renderer.finish_package_management(registry, self.generations.clone());
+                Ok(report)
+            })();
+            broker.complete(&job.operation_id, result);
+            return None;
+        }
         if matches!(
             job.request.action,
             PluginControlAction::Revoke | PluginControlAction::Remove
@@ -435,10 +471,16 @@ impl HostControl {
         if self.poll_revocation(renderer, hosts, broker) {
             return;
         }
+        if self.pending.is_none() {
+            self.begin_online_core_update(renderer, hosts);
+        }
         let Some(mut pending) = self.pending.take() else {
             return;
         };
         if let Some(report) = pending.poll(renderer, hosts, &mut self.generations) {
+            if pending.is_core_update() {
+                return;
+            }
             if let Ok(registry) = PluginRegistry::load(&self.registry_path) {
                 let id = &pending.job.request.plugin_id;
                 if matches!(

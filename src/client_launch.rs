@@ -46,16 +46,22 @@ pub(crate) fn select(plugins: &[LoadedPlugin]) -> Result<&LoadedPlugin, HostErro
     if providers.next().is_some() {
         return Err(error("client_launch_adapter_conflict"));
     }
+    if crate::codex::is_internal_plugin(provider) {
+        return Ok(provider);
+    }
+    let raw_host = match provider.manifest.host_mode() {
+        Some(crate::plugins::HostMode::Sdk) => return Err(error("client_launch_adapter_denied")),
+        Some(crate::plugins::HostMode::Node) => Permission::HostRaw,
+        None => Permission::HostProcess,
+    };
     if provider.host.is_none()
-        || ![Permission::HostProcess, Permission::CdpRaw]
-            .iter()
-            .all(|permission| {
-                provider.manifest.permissions.contains(permission)
-                    && provider
-                        .authorization
-                        .as_ref()
-                        .is_some_and(|record| record.grants.contains(permission))
-            })
+        || ![raw_host, Permission::CdpRaw].iter().all(|permission| {
+            provider.manifest.permissions.contains(permission)
+                && provider
+                    .authorization
+                    .as_ref()
+                    .is_some_and(|record| record.grants.contains(permission))
+        })
     {
         return Err(error("client_launch_adapter_denied"));
     }
@@ -126,6 +132,9 @@ pub(crate) fn source_snapshot(
     directory: &Path,
 ) -> Result<Value, HostError> {
     validate_source_authority(provider, registry)?;
+    if crate::codex::is_internal_plugin(provider) {
+        return Ok(serde_json::json!({"code": crate::codex::current_client_source()?}));
+    }
     let invocation = runtime.prepare_client_launch(
         provider
             .host
@@ -162,6 +171,9 @@ pub(crate) fn validate_source_authority(
     registry: &Path,
 ) -> Result<(), HostError> {
     select(std::slice::from_ref(provider))?;
+    if crate::codex::is_internal_plugin(provider) {
+        return Ok(());
+    }
     let current = PluginRegistry::load(registry)
         .map_err(|_| error("client_launch_authorization_unavailable"))?;
     if provider

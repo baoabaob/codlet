@@ -325,6 +325,13 @@ fn edit_registration(
 ) -> Result<(), PluginCliError> {
     let mut registry = PluginRegistry::load(path)?;
     let plugin_id = &request.plugin_id;
+    if crate::catalog::PluginCatalog::load(&registry)?.is_core(plugin_id) {
+        let report = edit_legacy_adapter_registration(&mut registry, request)?;
+        output.registration = Some(
+            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":false,"affected_plugin_ids":report.affected_plugin_ids,"applies":"immediate","directory":"preserved","coreProviderActive":true,"message":report.message}),
+        );
+        return Ok(());
+    }
     if matches!(
         request.action,
         PluginControlAction::Import | PluginControlAction::Update | PluginControlAction::Rollback
@@ -449,6 +456,50 @@ fn edit_registration(
     registry.save()?;
     output.offline = Some((plugin_id.clone(), enabled));
     Ok(())
+}
+
+/// Removing a superseded registration never retires the Core provider or its
+/// consumers. This is the only public plugin mutation for an internal identity.
+pub(crate) fn edit_legacy_adapter_registration(
+    registry: &mut PluginRegistry,
+    request: &PluginControlRequest,
+) -> Result<crate::plugin_control::PluginControlReport, PluginControlError> {
+    if request.action != PluginControlAction::Remove {
+        return Err(PluginControlError::new(
+            "core_owned_capability",
+            "This capability is supplied and updated by Codlet Core. It cannot be installed, enabled, disabled, reloaded or granted permissions as a separate plugin.",
+        ));
+    }
+    if !registry.local_plugins().contains_key(&request.plugin_id) {
+        return Err(PluginControlError::new(
+            "legacy_adapter_not_registered",
+            "Core supplies this capability; there is no previous Adapter registration to remove.",
+        ));
+    }
+    // Removing source files remains a separate explicit request with the normal
+    // exact-directory proof; ordinary migration does not remove any files.
+    let removal = request
+        .remove_source
+        .as_ref()
+        .map(|selection| crate::source_removal::prepare(registry, &request.plugin_id, selection))
+        .transpose()?;
+    registry
+        .remove_local(&request.plugin_id)
+        .and_then(|()| registry.save())
+        .map_err(|error| PluginControlError::new("registry_error", error.to_string()))?;
+    if let Some(removal) = removal {
+        let result = crate::source_removal::apply(removal);
+        if result.failed() {
+            return Err(PluginControlError::new(result.code, result.message));
+        }
+    }
+    Ok(crate::plugin_control::PluginControlReport {
+        action: request.action, plugin_id: request.plugin_id.clone(),
+        outcome: crate::plugin_control::PluginControlOutcome::Applied,
+        desired_enabled: false, affected_plugin_ids: vec![request.plugin_id.clone()],
+        generations: Vec::new(), target_failures: Vec::new(),
+        message: Some("Previous Adapter registration removed. Core capabilities, consumer enablement, plugin storage and managed history are preserved.".into()),
+    })
 }
 
 struct OfflineLease {

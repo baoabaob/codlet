@@ -4,16 +4,16 @@ import {pathToFileURL} from 'node:url';
 // Reserve builds 0..999 for that historical channel. Stable patch versions use
 // 1000 + patch and retain the same UpgradeCode/component identities.
 export function windowsVersion(version) {
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-preview\.(0|[1-9]\d*))?$/.exec(version);
-  if (!match) throw new Error('Expected a stable version or historical preview version');
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(preview|rc)\.(0|[1-9]\d*))?$/.exec(version);
+  if (!match) throw new Error('Expected a stable version, historical preview, or release candidate');
   const [major, minor, patch] = match.slice(1, 4).map(Number);
-  const preview = match[4] === undefined ? null : Number(match[4]);
-  const build = preview ?? 1000 + patch;
+  const preview = match[5] === undefined ? null : Number(match[5]);
+  const build = preview === null ? 1000 + patch : match[4] === 'rc' ? 500 + preview : preview;
   if (major > 255 || minor > 255 || patch > 64535 || build > 65535 ||
-      (preview !== null && (patch !== 0 || preview >= 1000))) {
+      (preview !== null && (patch !== 0 || preview >= (match[4] === 'preview' && major === 0 ? 1000 : 500)))) {
     throw new Error('Version exceeds the supported Windows Installer range');
   }
-  return {msiVersion: `${major}.${minor}.${build}`, fileVersion: `${major}.${minor}.${patch}.${preview ?? 0}`};
+  return {msiVersion: `${major}.${minor}.${build}`, fileVersion: `${major}.${minor}.${patch}.${preview === null ? (major >= 1 ? 1000 : 0) : build}`};
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

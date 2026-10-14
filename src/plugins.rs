@@ -78,6 +78,10 @@ pub struct HostManifest {
     /// Built JavaScript relative to the same directory package as renderer.entry.
     /// Codlet owns the JS executable, bootstrap and transport; plugins choose none.
     pub entry: String,
+    /// Omitted on v0 packages: preserves their explicitly granted legacy Node
+    /// authority. New packages choose SDK compute or opt into full Node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<HostMode>,
     /// A combined package's native half owns these declarations. Host-only
     /// packages retain the existing top-level provides field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -85,6 +89,17 @@ pub struct HostManifest {
     /// Host requirements are distinct from a combined package's renderer half.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<CapabilityDescriptor>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HostMode {
+    /// Bundled JavaScript with only the JSON SDK bridge and compute globals.
+    /// This reduces ambient authority for trusted plugins; it is not a hostile
+    /// code sandbox (Node's vm implementation is not a security boundary).
+    Sdk,
+    /// Full Node environment. Requires the new explicit host.raw grant.
+    Node,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,12 +113,16 @@ pub enum RendererWorld {
 pub enum Permission {
     #[serde(rename = "ui.dom")]
     UiDom,
+    #[serde(rename = "ui.nativeDom")]
+    UiNativeDom,
     #[serde(rename = "ui.mainWorld")]
     UiMainWorld,
     #[serde(rename = "cdp.raw")]
     CdpRaw,
     #[serde(rename = "host.process")]
     HostProcess,
+    #[serde(rename = "host.raw")]
+    HostRaw,
     #[serde(rename = "host.fs")]
     HostFs,
     #[serde(rename = "host.network")]
@@ -154,9 +173,11 @@ impl Permission {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::UiDom => "ui.dom",
+            Self::UiNativeDom => "ui.nativeDom",
             Self::UiMainWorld => "ui.mainWorld",
             Self::CdpRaw => "cdp.raw",
             Self::HostProcess => "host.process",
+            Self::HostRaw => "host.raw",
             Self::HostFs => "host.fs",
             Self::HostNetwork => "host.network",
             Self::HostSystem => "host.system",
@@ -205,6 +226,36 @@ impl Permission {
                 | Self::CoreDiagnostics
         )
     }
+
+    /// Exceptional direct access has an author-owned compatibility contract.
+    /// The enforcement label describes the actual boundary, not a sandbox.
+    pub fn exceptional_boundary(self) -> Option<ExceptionalBoundary> {
+        let (boundary, enforcement, legacy) = match self {
+            Self::HostRaw => ("rawHost", "admission", false),
+            Self::HostProcess => ("rawHost", "admission", true),
+            Self::HostProcessSpawn => ("executable", "broker", false),
+            Self::UiNativeDom => ("nativeDom", "declaration", false),
+            Self::UiMainWorld => ("mainWorld", "admission", false),
+            Self::CdpRaw => ("rawCdp", "broker", false),
+            _ => return None,
+        };
+        Some(ExceptionalBoundary {
+            category: "unadapted",
+            boundary,
+            enforcement,
+            legacy,
+            description: "该权限允许插件直接使用未经 Codlet 统一适配的系统或客户端能力。相关功能的跨平台及客户端版本兼容由插件作者维护。",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct ExceptionalBoundary {
+    pub category: &'static str,
+    pub boundary: &'static str,
+    pub enforcement: &'static str,
+    pub legacy: bool,
+    pub description: &'static str,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -323,6 +374,8 @@ pub enum ManifestError {
     HostEntry(String),
     #[error("permission host.process is required when a host entry is declared")]
     HostProcessPermissionRequired,
+    #[error("permission host.raw is required when host.mode is node")]
+    HostRawPermissionRequired,
     #[error(
         "host-only plugins declare provides at the top level; host.provides belongs to combined entries"
     )]
@@ -368,6 +421,17 @@ pub enum PluginRegistryError {
 }
 
 impl PluginManifest {
+    pub fn host_mode(&self) -> Option<HostMode> {
+        self.host.as_ref().and_then(|host| host.mode)
+    }
+
+    pub fn host_execution_authorized(&self) -> bool {
+        match self.host_mode() {
+            Some(HostMode::Sdk) => true,
+            Some(HostMode::Node) => self.permissions.contains(&Permission::HostRaw),
+            None => self.permissions.contains(&Permission::HostProcess),
+        }
+    }
     pub fn display_name(&self) -> &str {
         self.name.as_deref().map(str::trim).unwrap_or(&self.id)
     }
@@ -500,8 +564,11 @@ impl PluginManifest {
             if !valid_javascript_entry(&host.entry) {
                 return Err(ManifestError::HostEntry(host.entry.clone()));
             }
-            if !self.permissions.contains(&Permission::HostProcess) {
-                return Err(ManifestError::HostProcessPermissionRequired);
+            if !self.host_execution_authorized() {
+                return Err(match host.mode {
+                    Some(HostMode::Node) => ManifestError::HostRawPermissionRequired,
+                    _ => ManifestError::HostProcessPermissionRequired,
+                });
             }
             if self.renderer.is_none() && !host.provides.is_empty() {
                 return Err(ManifestError::AmbiguousHostProvides);

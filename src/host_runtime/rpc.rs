@@ -179,6 +179,7 @@ impl HostOwner {
                         deadline,
                     )?;
                     route.lineage.cancellations.push(Arc::clone(&cancelled));
+                    route.lineage.lifecycle |= self.observation.state == ExecutionState::Starting;
                     Kind::Call {
                         route: Box::new(route),
                         method: input.method,

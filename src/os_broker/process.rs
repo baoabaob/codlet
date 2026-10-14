@@ -35,14 +35,10 @@ pub(super) fn run(params: Value, guard: &RequestGuard) -> Result<Value> {
         ));
     }
     let policy = &guard.authorization.0.registration.broker_policy;
-    let executable_guard = if policy.client_permissions {
-        super::filesystem::pin_client_path(&request.executable)
-    } else {
-        super::filesystem::pin_exact_grant(
-            &request.executable,
-            &guard.authorization.0.registration.broker_policy.executables,
-        )
-    }?;
+    // Broad file/network service consent is not executable consent. A selected
+    // executable may itself be a shell; that is the visible exceptional grant.
+    let executable_guard =
+        super::filesystem::pin_exact_grant(&request.executable, &policy.executables)?;
     let executable = &executable_guard.path;
     let cwd = &guard.authorization.0.registration.path;
     let cwd_guard = super::filesystem::pin_exact_grant(cwd, std::slice::from_ref(cwd))?;

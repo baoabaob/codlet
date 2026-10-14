@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const root = path.dirname(fileURLToPath(import.meta.url));
-const allowed = ['codex.ui.adapter', 'codex.desktop.adapter', 'codlet-gui'];
+const allowed = ['codlet-gui'];
 function plain(file) {
   for (let current = path.resolve(file); ; current = path.dirname(current)) {
     try { if (fs.lstatSync(current).isSymbolicLink()) throw Error(`Linked setup path: ${current}`); }
@@ -41,7 +41,7 @@ export function initialize(selected, {
       !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(p.repositoryUrl) ||
       !Number.isSafeInteger(p.repositoryId) || p.repositoryId <= 0 || !Number.isSafeInteger(p.ownerId) || p.ownerId <= 0 ||
       !Array.isArray(p.permissions) || !Array.isArray(p.dependencies) || p.dependencies.some(id => !allowed.includes(id)))) throw Error('Invalid plugin download option');
-  if (selected.includes('codlet-gui')) selected = [...new Set([...selected, 'codex.ui.adapter'])];
+  selected = selected.filter(id => !['codex.ui.adapter', 'codex.desktop.adapter'].includes(id));
   if (selected.some(id => !packages.some(p => p.id === id))) throw Error('Selected plugin is unavailable');
   const statePath = path.join(home, 'macos-setup.json');
   const state = fs.existsSync(statePath) ? read(statePath) : { schema: 1, decided: {} };

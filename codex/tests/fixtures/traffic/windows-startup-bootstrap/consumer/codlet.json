@@ -1,0 +1,15 @@
+{
+  "schema":1,"id":"codlet.compat.fixture","name":"Compatibility fixture","version":"0.0.1",
+  "permissions":["ui.mainWorld","ui.dom","host.process","host.network","traffic.intercept","traffic.sensitiveHeaders"],
+  "renderer":{"entry":"renderer.js","world":"main"},
+  "host":{"entry":"host.cjs","provides":[{"name":"codlet.compat.fixture","api":1,"scope":"runtime"}],"requires":[{"name":"codlet.core.services","api":1,"scope":"runtime"}]},
+  "requires":[
+    {"name":"codlet.compat.fixture","api":1,"scope":"runtime"},
+    {"name":"codex.desktop.compatibility","api":1,"scope":"target"},
+    {"name":"codex.backend.read","api":1,"scope":"target"},
+    {"name":"codex.backend.write","api":1,"scope":"target"},
+    {"name":"codex.backend.events","api":1,"scope":"target"},
+    {"name":"codex.ui.navigation.page","api":1,"scope":"target"},
+    {"name":"codex.ui.composer.action","api":1,"scope":"target"}
+  ]
+}

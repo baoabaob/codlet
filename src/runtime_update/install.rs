@@ -11,6 +11,26 @@ use super::{
 };
 
 const HELPER: &[u8] = include_bytes!("../../scripts/runtime-update-helper.mjs");
+pub(super) fn prepare_deferred_install_plan(
+    install_root: &Path,
+    state_root: &Path,
+    staged: &package::StagedRuntime,
+    restart: &RuntimeRestartContext,
+) -> Result<RuntimeInstallRequest> {
+    let mut request =
+        prepare_install_plan_with_official(install_root, state_root, staged, restart, false)?;
+    let mut plan: serde_json::Value =
+        serde_json::from_slice(&package::read_file(&request.plan_path, 2 * 1024 * 1024)?)
+            .map_err(|failure| error("core_update_deferred_invalid", failure.to_string()))?;
+    plan["activateOnNextStart"] = serde_json::json!(true);
+    package::atomic_json(&request.plan_path, &plan)?;
+    request.plan_sha256 = format!(
+        "{:x}",
+        Sha256::digest(package::read_file(&request.plan_path, 2 * 1024 * 1024)?)
+    );
+    request.activate_on_next_start = true;
+    Ok(request)
+}
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
@@ -466,6 +486,7 @@ pub(super) fn prepare_install_plan_with_official(
     );
     let _ = temporary.keep();
     Ok(RuntimeInstallRequest {
+        activate_on_next_start: false,
         id,
         version: staged.candidate.version.clone(),
         plan_path,

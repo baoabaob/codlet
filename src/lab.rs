@@ -20,7 +20,9 @@ use crate::windows::packages::{
     CODEX_EXECUTABLE_RELATIVE_PATH, CODEX_PACKAGE_FAMILY, InstalledPackage,
     find_unique_current_user_package, resolve_package_executable,
 };
-use crate::windows::process::{ChildProcess, launch_packaged_cdp_in_directory};
+use crate::windows::process::ChildProcess;
+#[cfg(not(feature = "desktop-acceptance"))]
+use crate::windows::process::launch_packaged_cdp_in_directory;
 
 mod input;
 mod management;
@@ -50,6 +52,9 @@ const AUDITED_PACKAGE_VERSIONS: &[&str] = &[
     // Static Dev/WS/IPC evidence: docs/native-isolation-26.1007.2314.0.json.
     // Still requires fresh data paths and an owned literal-loopback backend.
     "26.1007.2314.0",
+    // Exact static Dev/WS/IPC review: docs/native-isolation-26.1007.9446.0.json.
+    // All four IPC client sites remain gated by a dedicated WS override.
+    "26.1007.9446.0",
 ];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
@@ -329,18 +334,50 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
     // This deliberately bypasses production process-conflict checks only in this
     // explicit lab binary. Resume inspected only the previous process identity;
     // no existing Desktop is attached or controlled.
-    let child_arguments = startup_trace_arguments(&root.path, options.startup_trace);
-    let startup_stderr = crate::client_stderr::ClientStderr::capture_startup()
-        .map_err(|error| LabError::Runtime(error.to_string()))?;
-    let (child, pipes) = launch_packaged_cdp_in_directory(
+    runtime.prepare_client_bridge()?;
+    let mut child_arguments = startup_trace_arguments(&root.path, options.startup_trace);
+    if let Some(traffic) = runtime.traffic() {
+        child_arguments.extend_from_slice(traffic.arguments());
+    }
+    let startup_stderr = if runtime.traffic().is_none() {
+        Some(
+            crate::client_stderr::ClientStderr::capture_startup()
+                .map_err(|error| LabError::Runtime(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let stderr = runtime
+        .traffic()
+        .map(|traffic| traffic.stderr())
+        .or(startup_stderr.as_ref())
+        .expect("owned startup stderr");
+    // Plaintext transport declares an empty environment patch. Preserve the
+    // lab's scoped homes and its coordinator-owned backend URL exactly.
+    #[cfg(feature = "desktop-acceptance")]
+    let launch = crate::windows::process::launch_packaged_cdp_in_directory_with_bootstrap(
         &executable,
         &child_arguments,
         &environment,
         &root.path.join("project"),
         &package,
-        &startup_stderr,
-    )
-    .map_err(|error| {
+        stderr,
+        &mut |child| {
+            runtime.traffic().map_or(Ok(()), |traffic| {
+                traffic.before_client_resume(child, &executable)
+            })
+        },
+    );
+    #[cfg(not(feature = "desktop-acceptance"))]
+    let launch = launch_packaged_cdp_in_directory(
+        &executable,
+        &child_arguments,
+        &environment,
+        &root.path.join("project"),
+        &package,
+        stderr,
+    );
+    let (child, pipes) = launch.map_err(|error| {
         reporter.emit(
             "child_create_failed",
             json!({"error": error.to_string(), "child_created": false, "no_retry": true}),
@@ -375,6 +412,9 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
             None
         }
     };
+    if client.is_some() {
+        runtime.complete_client_bridge(child.process_id(), &executable)?;
+    }
     let startup = StartupCheck::new(
         root.path.join("home/AppData/Local/Codex/Logs"),
         child.process_id(),
@@ -388,7 +428,7 @@ pub fn run_cli(arguments: impl Iterator<Item = OsString>) -> Result<(), LabError
         input,
         startup,
         options.startup_trace,
-        &startup_stderr,
+        startup_stderr,
         &mut reporter,
     )
 }
@@ -537,7 +577,7 @@ fn hold_lab_child(
     mut input: ControlInput,
     mut startup: StartupCheck,
     startup_trace: bool,
-    startup_stderr: &crate::client_stderr::ClientStderr,
+    startup_stderr: Option<crate::client_stderr::ClientStderr>,
     reporter: &mut Reporter,
 ) -> Result<(), LabError> {
     runtime.configure_runtime_updates(&child, reporter);
@@ -595,6 +635,9 @@ fn hold_lab_child(
             );
             if !runtime.stop(reporter) {
                 failure.get_or_insert_with(|| "plugin runtime cleanup failed".into());
+            }
+            if exit_code == 0 && failure.is_none() {
+                runtime.install_deferred_after_client_exit(reporter);
             }
             if let Some(client) = &client {
                 match client.shutdown() {
@@ -735,7 +778,12 @@ fn hold_lab_child(
             match startup.poll() {
                 Ok(true) => {
                     startup_verified = true;
-                    startup_stderr.finish_startup();
+                    runtime
+                        .traffic()
+                        .map(|traffic| traffic.stderr())
+                        .or(startup_stderr.as_ref())
+                        .expect("owned stderr")
+                        .finish_startup();
                     reporter.emit("startup_verified", json!({"evidence": startup.evidence, "elapsed_ms": startup.elapsed_ms(), "gui_mount_verified": false}));
                     if let Some(client) = &client
                         && let Err(error) = runtime.activate(client.clone(), &sessions, reporter)
@@ -753,7 +801,12 @@ fn hold_lab_child(
                 }
                 Ok(false) => {}
                 Err(reason) => {
-                    startup_stderr.report_startup_failure();
+                    runtime
+                        .traffic()
+                        .map(|traffic| traffic.stderr())
+                        .or(startup_stderr.as_ref())
+                        .expect("owned stderr")
+                        .report_startup_failure();
                     failure = Some(format!("startup verification failed: {reason}"));
                     reporter.emit("startup_failed", json!({"reason": reason, "elapsed_ms": startup.elapsed_ms(), "renderer_plugins_loaded": false}));
                     request_own_child_quit(&mut quit, &sessions, "startup_failed", reporter);
@@ -1240,7 +1293,7 @@ fn restricted_features(package_version: &str) -> Value {
         "ambientSuggestionsFeatureDiscovery": false, "artifactSession": false,
         "recordAndReplay": false
     });
-    if package_version == "26.1007.2314.0" {
+    if matches!(package_version, "26.1007.2314.0" | "26.1007.9446.0") {
         // Removed from this build's strict partial feature schema. Keeping
         // unknown keys aborts Native bootstrap before a renderer exists.
         let object = features.as_object_mut().unwrap();

@@ -42,6 +42,13 @@ impl RendererRuntime {
         source_policy: SourcePolicy,
     ) -> Result<PluginControlReport, PluginControlError> {
         request.validate()?;
+        self.ensure_core_management_available()?;
+        if self.catalog.is_core(&request.plugin_id) {
+            return Err(PluginControlError::new(
+                "core_owned_capability",
+                "Core supplies and updates this capability. Remove an old registration through the foreground package coordinator.",
+            ));
+        }
         if self.management_active || self.drive_depth != 0 || self.drive_deadline.is_some() {
             return Err(PluginControlError::new(
                 "runtime_busy",
@@ -53,6 +60,8 @@ impl RendererRuntime {
         self.drive_deadline = self.management_phase_deadline();
         self.publish_status();
         let result = self.manage_plugin_inner(&request, source_policy);
+        self.reload_snapshots.clear();
+        self.reload_state_missing.clear();
         self.world_reservations.clear();
         self.drive_deadline = None;
         self.management_active = false;
@@ -199,6 +208,7 @@ impl RendererRuntime {
                 plugin_lifecycle::verify_registrations(&registry, &plan.affected)
                     .map_err(control_error)?;
                 self.reserve_world_capacity(&plan.replacements())?;
+                self.capture_package_state(&plan.affected)?;
                 self.generations = generations;
                 self.plugin_registry = registry.clone();
                 Ok(self.execute_activation(request, plan, registry))
@@ -427,6 +437,151 @@ impl RendererRuntime {
         failures
     }
 
+    /// Snapshot every live old generation before any cleanup. A failure leaves
+    /// all old providers running and rejects replacement rather than losing state.
+    pub(crate) fn capture_package_state(
+        &mut self,
+        affected: &BTreeSet<String>,
+    ) -> Result<(), PluginControlError> {
+        let mut work = Vec::new();
+        for (target, session) in &self.sessions {
+            if !session.session.is_live() || session.recovery_pending {
+                continue;
+            }
+            for plugin in &session.plugins {
+                if affected.contains(&plugin.id)
+                    && plugin.activation_confirmed
+                    && let Some(context) = plugin.context_id
+                {
+                    work.push((
+                        target.clone(),
+                        session.document_epoch,
+                        plugin.id.clone(),
+                        plugin.generation,
+                        context,
+                    ));
+                }
+            }
+        }
+        // Drain consumers before pausing their providers. An accepted consumer
+        // invocation can still need its provider to finish a nested request.
+        let order: BTreeMap<_, _> = self
+            .plugins
+            .iter()
+            .enumerate()
+            .map(|(index, plugin)| (plugin.manifest.id.clone(), index))
+            .collect();
+        work.sort_by(|a, b| order.get(&b.2).cmp(&order.get(&a.2)).then(a.0.cmp(&b.0)));
+        let mut snapshots = BTreeMap::new();
+        let mut missing = BTreeSet::new();
+        let mut bytes = 0usize;
+        for (target, epoch, id, generation, context) in work {
+            let state = match self
+                .evaluate_with_binding_pump(&target, &snapshot_expression(&id, generation), context)
+                .and_then(parse_snapshot_result)
+            {
+                Ok(state) => state,
+                Err(message) => {
+                    let resume = self.resume_package_state(affected);
+                    return Err(snapshot_error_with_resume(
+                        "plugin_snapshot_failed",
+                        format!("Cannot save {id} in {target}: {message}"),
+                        &resume,
+                    ));
+                }
+            };
+            if self
+                .sessions
+                .get(&target)
+                .is_none_or(|session| session.document_epoch != epoch || session.recovery_pending)
+            {
+                let resume = self.resume_package_state(affected);
+                return Err(snapshot_error_with_resume(
+                    "plugin_snapshot_stale",
+                    "The document changed while saving plugin state; no replacement was started",
+                    &resume,
+                ));
+            }
+            if let Some(state) = state {
+                let encoded = match serde_json::to_vec(&state) {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        let resume = self.resume_package_state(affected);
+                        return Err(snapshot_error_with_resume(
+                            "plugin_snapshot_invalid",
+                            error.to_string(),
+                            &resume,
+                        ));
+                    }
+                };
+                bytes = bytes.saturating_add(encoded.len());
+                if bytes > 16 * 1024 * 1024 {
+                    let resume = self.resume_package_state(affected);
+                    return Err(snapshot_error_with_resume(
+                        "plugin_snapshot_budget",
+                        "The replacement transaction exceeds its 16 MiB explicit state budget",
+                        &resume,
+                    ));
+                }
+                snapshots.insert((target, epoch, id), state);
+            } else if !self.catalog.is_core(&id) {
+                missing.insert(id);
+            }
+        }
+        self.reload_snapshots = snapshots;
+        self.reload_state_missing = missing;
+        Ok(())
+    }
+
+    pub(crate) fn package_state_missing(&self) -> &BTreeSet<String> {
+        &self.reload_state_missing
+    }
+
+    pub(crate) fn resume_package_state(
+        &mut self,
+        affected: &BTreeSet<String>,
+    ) -> Vec<PluginTargetFailure> {
+        let work: Vec<_> = self
+            .sessions
+            .iter()
+            .flat_map(|(target, session)| {
+                session.plugins.iter().filter_map(|plugin| {
+                    (session.session.is_live()
+                        && affected.contains(&plugin.id)
+                        && plugin.activation_confirmed)
+                        .then(|| {
+                            plugin.context_id.map(|context| {
+                                (
+                                    target.clone(),
+                                    plugin.id.clone(),
+                                    plugin.generation,
+                                    context,
+                                )
+                            })
+                        })
+                        .flatten()
+                })
+            })
+            .collect();
+        let mut failures = Vec::new();
+        for (target, id, generation, context) in work {
+            if let Err(error) = self
+                .evaluate_with_binding_pump(&target, &resume_expression(&id, generation), context)
+                .and_then(parse_lifecycle_result)
+            {
+                failures.push(PluginTargetFailure {
+                    target_id: target,
+                    plugin_id: id,
+                    stage: "resume".into(),
+                    error,
+                });
+            }
+        }
+        self.reload_snapshots.clear();
+        self.reload_state_missing.clear();
+        failures
+    }
+
     pub(super) fn remove_managed_providers(&mut self, affected: &BTreeSet<String>) {
         for id in affected {
             if let Some(generation) = self.capabilities.provider_generation(id) {
@@ -535,6 +690,42 @@ impl RendererRuntime {
     }
 }
 
+fn snapshot_error_with_resume(
+    code: &str,
+    message: impl Into<String>,
+    failures: &[PluginTargetFailure],
+) -> PluginControlError {
+    let message = message.into();
+    if failures.is_empty() {
+        return PluginControlError::new(
+            code,
+            format!("{message}; previous generations retained and admission resumed"),
+        );
+    }
+    // Keep concrete failures actionable without growing a bounded control reply
+    // with every realm or an arbitrary remote exception stack.
+    let details = failures
+        .iter()
+        .take(4)
+        .map(|failure| {
+            format!(
+                "{} in {}: {}",
+                failure.plugin_id,
+                failure.target_id,
+                failure.error.chars().take(1024).collect::<String>(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    PluginControlError::new(
+        code,
+        format!(
+            "{message}; previous generations retained; admission resume unconfirmed in {} renderer realm(s): {details}",
+            failures.len()
+        ),
+    )
+}
+
 fn control_error(error: LifecycleError) -> PluginControlError {
     PluginControlError::new(error.code(), error.to_string())
 }
@@ -567,6 +758,86 @@ mod tests {
     use crate::plugin_watch::PluginWatcher;
     use crate::plugins::{LocalPluginRegistration, Permission};
     use tempfile::tempdir;
+
+    #[test]
+    fn unresolved_core_update_blocks_new_lifecycle_without_blocking_readonly_catalog() {
+        let directory = tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        let mut runtime = RendererRuntime::new(Vec::new(), registry.clone()).unwrap();
+        runtime.core_admission_operation = Some("core-held".into());
+        let request = PluginControlRequest {
+            action: PluginControlAction::Reload,
+            plugin_id: "dev.consumer".into(),
+            permission: None,
+            cascade: false,
+            local_import: None,
+            remove_source: None,
+        };
+        assert_eq!(
+            runtime.manage_plugin(request.clone()).unwrap_err().code,
+            "core_update_unsettled"
+        );
+        assert_eq!(
+            runtime
+                .manage_watched_plugin(request.clone())
+                .unwrap_err()
+                .code,
+            "core_update_unsettled"
+        );
+        assert_eq!(
+            runtime
+                .begin_package_management(BTreeMap::new(), &[])
+                .unwrap_err()
+                .code,
+            "core_update_unsettled"
+        );
+        runtime.retain_core_management();
+        runtime.core_admission_operation = None;
+        runtime.finish_package_management(registry, BTreeMap::new());
+        assert!(runtime.management_active);
+        assert_eq!(
+            runtime.manage_plugin(request).unwrap_err().code,
+            "core_update_unsettled"
+        );
+        assert!(runtime.catalog_snapshot().entries().is_empty());
+    }
+
+    #[test]
+    fn snapshot_rejections_keep_primary_code_and_concrete_resume_failures_bounded() {
+        let failure = PluginTargetFailure {
+            target_id: "window-a".into(),
+            plugin_id: "dev.state".into(),
+            stage: "resume".into(),
+            error: format!("resume refused: {}", "x".repeat(8192)),
+        };
+        for code in [
+            "plugin_snapshot_failed",
+            "plugin_snapshot_stale",
+            "plugin_snapshot_budget",
+            "plugin_snapshot_invalid",
+        ] {
+            let error = snapshot_error_with_resume(
+                code,
+                "snapshot rejected",
+                std::slice::from_ref(&failure),
+            );
+            assert_eq!(error.code, code);
+            assert!(error.message.contains("admission resume unconfirmed"));
+            assert!(
+                error
+                    .message
+                    .contains("dev.state in window-a: resume refused")
+            );
+            assert!(
+                error.message.len() < 1500,
+                "unbounded remote stack entered a control receipt"
+            );
+        }
+        let recovered =
+            snapshot_error_with_resume("plugin_snapshot_stale", "document changed", &[]);
+        assert!(recovered.message.contains("admission resumed"));
+        assert!(!recovered.message.contains("unconfirmed"));
+    }
 
     #[test]
     fn renderer_retains_host_catalog_but_refuses_host_execution_and_hot_management() {

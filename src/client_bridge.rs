@@ -65,6 +65,7 @@ impl Bootstrap {
         directory: &Path,
         traffic: Value,
         selection: Option<Value>,
+        owned_fixture_routes: bool,
     ) -> Result<Self, HostError> {
         let invocation = runtime.prepare_client_bridge(directory)?;
         let (process, stdio) = OwnedPluginProcess::spawn(
@@ -78,7 +79,7 @@ impl Bootstrap {
             process,
             stdio,
             _invocation: invocation,
-            context: json!({"traffic":traffic,"selection":selection}),
+            context: json!({"traffic":traffic,"selection":selection,"ownedFixtureRoutes":owned_fixture_routes}),
         };
         bootstrap.call(
             "prepare",
@@ -199,6 +200,22 @@ struct SourceOwner {
 struct State {
     epoch: u64,
     provider: Option<LoadedPlugin>,
+    admission: Option<CoreAdmission>,
+    core_pending: Option<(String, u64)>,
+    #[cfg(feature = "desktop-acceptance")]
+    fixture_route: Option<(String, String)>,
+}
+struct CoreAdmission {
+    id: String,
+    begin_operation: String,
+    epoch: u64,
+    token: Option<String>,
+    release: Option<CoreAdmissionOutcome>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoreAdmissionOutcome {
+    Applied,
+    RolledBack,
 }
 
 fn acquire_lease(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, HostError> {
@@ -270,6 +287,392 @@ fn acquire_lease(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, Ho
 }
 
 impl ClientSourceRuntime {
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    #[cfg(feature = "desktop-acceptance")]
+    pub(crate) fn install_owned_fixture_route(
+        &self,
+        id: &str,
+        upstream: &str,
+    ) -> Result<Value, HostError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        let operation = format!("fixture-route.{id}");
+        let command = if let Some((previous, base)) = &state.fixture_route {
+            if previous != &operation || base != upstream {
+                return Err(error("core_fixture_route_already_used"));
+            }
+            None
+        } else {
+            state.fixture_route = Some((operation.clone(), upstream.into()));
+            Some(
+                json!({"op":"ownedFixtureRoute","operationId":operation,"expectedEpoch":state.epoch,"upstreamBaseUrl":upstream}),
+            )
+        };
+        let receipt = self
+            .operation_receipt(&operation, command)
+            .map_err(|_| error("client_bridge_uncertain"))?;
+        if receipt["outcome"] != "fixture_route_registered" {
+            return Err(error("core_fixture_route_rejected"));
+        }
+        Ok(receipt)
+    }
+    fn operation_receipt(
+        &self,
+        operation: &str,
+        command: Option<Value>,
+    ) -> Result<Value, HostError> {
+        let mut result = match command {
+            Some(command) => match self.request(command) {
+                Ok(result) => result,
+                Err(failure) if failure.code == "client_bridge_uncertain" => {
+                    self.request(json!({"op":"status","operationId":operation}))?
+                }
+                Err(failure) => return Err(failure),
+            },
+            None => self.request(json!({"op":"status","operationId":operation}))?,
+        };
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while result["pending"] == true && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+            result = self.request(json!({"op":"status","operationId":operation}))?;
+        }
+        if result["pending"] == true || result["unknown"] == true {
+            return Err(error("client_bridge_uncertain"));
+        }
+        Ok(result)
+    }
+    /// Hold the retained Native transport before renderer/Host snapshots. On
+    /// uncertainty the ID remains reserved; callers query it instead of replay.
+    pub(crate) fn begin_core_admission(&self, operation_id: &str) -> Result<Value, HostError> {
+        if operation_id.is_empty()
+            || operation_id.len() > 96
+            || !operation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+        {
+            return Err(error("core_admission_id_invalid"));
+        }
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        let command = if let Some(held) = &state.admission {
+            if held.id != operation_id {
+                return Err(error("core_admission_owner_busy"));
+            }
+            None
+        } else {
+            let observed = self.request(json!({"op":"status"}))?;
+            if observed["epoch"].as_u64() != Some(state.epoch)
+                || observed["onlineUpdate"]["admissionVersion"] != 1
+            {
+                return Err(error("core_admission_unavailable"));
+            }
+            let operation = format!("admission.{operation_id}");
+            state.admission = Some(CoreAdmission {
+                id: operation_id.into(),
+                begin_operation: operation.clone(),
+                epoch: state.epoch,
+                token: None,
+                release: None,
+            });
+            Some(json!({"op":"beginAdmission","operationId":operation,"expectedEpoch":state.epoch}))
+        };
+        let operation = state
+            .admission
+            .as_ref()
+            .expect("held admission")
+            .begin_operation
+            .clone();
+        let mut result = self.operation_receipt(&operation, command)?;
+        self.remember_admission(&mut state, &result)?;
+        if result["outcome"] != "held" {
+            return Err(error("core_admission_writes_unsettled"));
+        }
+        if let Some(receipt) = result.as_object_mut() {
+            receipt.remove("admissionToken");
+        }
+        if let Some(held) = result
+            .pointer_mut("/onlineUpdate/admission")
+            .and_then(Value::as_object_mut)
+        {
+            held.remove("token");
+            held.remove("admissionToken");
+        }
+        Ok(result)
+    }
+    fn remember_admission(&self, state: &mut State, result: &Value) -> Result<(), HostError> {
+        let held = state
+            .admission
+            .as_mut()
+            .ok_or_else(|| error("core_admission_owner_changed"))?;
+        let observed = self.request(json!({"op":"status"}))?;
+        if observed["onlineUpdate"]["admission"]["operationId"] != held.begin_operation {
+            state.admission = None;
+            return Err(error("core_admission_owner_changed"));
+        }
+        let token = result["admissionToken"]
+            .as_str()
+            .filter(|token| {
+                token.len() == 36
+                    && token
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+            })
+            .ok_or_else(|| error("client_bridge_uncertain"))?;
+        if result["epoch"].as_u64() != Some(held.epoch)
+            || !["held", "blocked"].contains(&result["outcome"].as_str().unwrap_or_default())
+        {
+            return Err(error("client_bridge_uncertain"));
+        }
+        held.token = Some(token.into());
+        Ok(())
+    }
+    /// Resume only after the coordinator confirms all selected renderer/Host
+    /// owners. Unknown outcomes keep this exact lease and queued Native writes.
+    pub(crate) fn finish_core_admission(
+        &self,
+        operation_id: &str,
+        outcome: CoreAdmissionOutcome,
+    ) -> Result<Value, HostError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        let held = state
+            .admission
+            .as_ref()
+            .filter(|held| held.id == operation_id)
+            .ok_or_else(|| error("core_admission_owner_changed"))?;
+        if held.token.is_none() {
+            let operation = held.begin_operation.clone();
+            let receipt = self.operation_receipt(&operation, None)?;
+            self.remember_admission(&mut state, &receipt)?;
+        }
+        if let Some((operation, before)) = state.core_pending.clone() {
+            let result = self.operation_receipt(&operation, None)?;
+            self.settle_core_receipt(&mut state, before, result)?;
+        }
+        let current_epoch = state.epoch;
+        let held = state.admission.as_mut().expect("checked admission");
+        let operation = format!("release.{}", held.id);
+        let command = if let Some(previous) = held.release {
+            if previous != outcome {
+                return Err(error("core_admission_disposition_changed"));
+            }
+            None
+        } else {
+            held.release = Some(outcome);
+            Some(
+                json!({"op":"finishAdmission","operationId":operation,"expectedEpoch":current_epoch,"admissionId":held.begin_operation,"admissionToken":held.token,"disposition":match outcome{CoreAdmissionOutcome::Applied=>"applied",CoreAdmissionOutcome::RolledBack=>"rolled_back"}}),
+            )
+        };
+        let result = self
+            .operation_receipt(&operation, command)
+            .map_err(|_| error("client_bridge_uncertain"))?;
+        if result["outcome"] != "admission_resumed" || result["epoch"].as_u64() != Some(state.epoch)
+        {
+            return Err(error("core_admission_release_unconfirmed"));
+        }
+        state.admission = None;
+        Ok(result)
+    }
+    /// Query the original admission release once. This never issues a release.
+    /// If finish is still waiting for begin/source, the coordinator may advance
+    /// finish with the same ID and disposition to issue its first release.
+    pub(crate) fn poll_core_admission_release(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<Value>, HostError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        let held = state
+            .admission
+            .as_ref()
+            .filter(|held| held.id == operation_id)
+            .ok_or_else(|| error("core_admission_owner_changed"))?;
+        if held.release.is_none() {
+            return Err(error("core_admission_release_not_started"));
+        }
+        let Some(result) = self.query_original_receipt(&format!("release.{}", held.id)) else {
+            return Ok(None);
+        };
+        if result["outcome"] != "admission_resumed" || result["epoch"].as_u64() != Some(state.epoch)
+        {
+            return Err(error("client_bridge_uncertain"));
+        }
+        state.admission = None;
+        Ok(Some(result))
+    }
+    fn query_original_receipt(&self, operation: &str) -> Option<Value> {
+        let result = self
+            .request(json!({"op":"status","operationId":operation}))
+            .ok()?;
+        (result["pending"] != true && result["unknown"] != true).then_some(result)
+    }
+    /// Query the saved source replacement once, without evaluating or sending
+    /// candidate code again. The retained lease survives pending/late replies.
+    pub(crate) fn poll_core_code_receipt(&self) -> Result<Option<Value>, HostError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        let (operation, before) = state
+            .core_pending
+            .clone()
+            .ok_or_else(|| error("core_receipt_missing"))?;
+        let Some(result) = self.query_original_receipt(&operation) else {
+            return Ok(None);
+        };
+        self.settle_core_receipt(&mut state, before, result)
+            .map(Some)
+    }
+    fn settle_core_receipt(
+        &self,
+        state: &mut State,
+        before: u64,
+        result: Value,
+    ) -> Result<Value, HostError> {
+        let expected = match result["outcome"].as_str() {
+            Some("rejected") => Some(before),
+            Some("applied" | "rolled_back" | "degraded") => before.checked_add(1),
+            _ => None,
+        };
+        if expected.is_none() || result["epoch"].as_u64() != expected {
+            return Err(error("client_bridge_uncertain"));
+        }
+        if result["outcome"] == "applied" {
+            let activation = crate::client_launch::validate_client_source_activation(
+                &result["activation"],
+                &self.0.configuration["source"],
+            )
+            .map_err(|_| error("client_bridge_uncertain"))?;
+            self.0
+                .traffic
+                .set_source_activation(activation.activated, activation.unsupported);
+        }
+        state.epoch = expected.expect("checked epoch");
+        state.core_pending = None;
+        Ok(result)
+    }
+    pub(crate) fn confirm_core_code(&self, code: &str) -> Result<Value, HostError> {
+        use sha2::{Digest, Sha256};
+        let observed = self.request(json!({"op":"status"}))?;
+        if observed["sourceSha256"] != format!("{:x}", Sha256::digest(code.as_bytes())) {
+            return Err(error("core_source_takeover_unconfirmed"));
+        }
+        Ok(observed)
+    }
+    pub(crate) fn preflight_core_source(&self, code: &str) -> Result<(), HostError> {
+        let state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        let result =
+            self.request(json!({"op":"preflightCore","expectedEpoch":state.epoch,"code":code}))?;
+        if result["outcome"] != "preflight_passed" || result["epoch"].as_u64() != Some(state.epoch)
+        {
+            return Err(error("core_update_preflight_failed"));
+        }
+        Ok(())
+    }
+    pub(crate) fn check_core_module_syntax(&self, paths: &[PathBuf]) -> Result<(), HostError> {
+        use std::ffi::OsString;
+        // Compile only: expression modules are inserted as factory values by
+        // the renderer bootstrap; CommonJS modules use the Node wrapper.
+        // A standalone statement can parse yet fail at the factory boundary.
+        const CHECK: &str = "const fs=require('node:fs'),vm=require('node:vm'),Module=require('node:module');const file=process.argv[1],source=fs.readFileSync(file,'utf8');new vm.Script(file.endsWith('.js')?'(\\n'+source+'\\n)':Module.wrap(source),{filename:file});";
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(key, _)| {
+                let name = key.to_string_lossy().to_ascii_uppercase();
+                !name.starts_with("NODE_")
+                    && !name.starts_with("OPENSSL_")
+                    && !name.starts_with("DYLD_")
+                    && name != "ELECTRON_RUN_AS_NODE"
+            })
+            .collect();
+        for path in paths {
+            let (process, _stdio) = OwnedPluginProcess::spawn(
+                self.0.runtime.executable_path(),
+                &[
+                    "--no-addons".into(),
+                    "--no-global-search-paths".into(),
+                    "-e".into(),
+                    CHECK.into(),
+                    "--".into(),
+                    path.to_string_lossy().into_owned(),
+                ],
+                self.0.directory.path(),
+                Some(&environment),
+            )
+            .map_err(|_| error("core_module_preflight_unavailable"))?;
+            match process.wait(Duration::from_secs(5)) {
+                Ok(Some(0)) => {}
+                _ => {
+                    let _ = process.terminate();
+                    let _ = process.wait(Duration::from_secs(2));
+                    return Err(error("core_module_syntax_invalid"));
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Apply a verified Core-owned JS component without closing the Native
+    /// transport lease or its Rust traffic owner. The old owner remains live on
+    /// preflight failure; uncertain mutations are resolved by receipt lookup.
+    pub(crate) fn replace_core_code(&self, code: &str, version: &str) -> Result<Value, HostError> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        if state.core_pending.is_some() {
+            return Err(error("client_bridge_uncertain"));
+        }
+        let observed = self.request(json!({"op":"status"}))?;
+        if observed["epoch"].as_u64() != Some(state.epoch) {
+            return Err(error("client_bridge_stale_epoch"));
+        }
+        static CORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let operation = format!(
+            "core-update-{}-{}",
+            std::process::id(),
+            CORE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        let owner = observed["owner"].as_str().unwrap_or("codlet.core");
+        let generation = observed["generation"].as_u64().unwrap_or(1);
+        let mut command = json!({"op":"replace","operationId":operation,"expectedEpoch":state.epoch,
+            "previousOwner":observed["owner"],"owner":owner,"generation":generation,"code":code,
+            "configuration":self.0.configuration,"compatibleUpdate":true,"coreVersion":version});
+        if let Some(held) = &state.admission {
+            let token = held
+                .token
+                .as_ref()
+                .ok_or_else(|| error("client_bridge_uncertain"))?;
+            command["admissionId"] = json!(held.begin_operation);
+            command["admissionToken"] = json!(token);
+        }
+        state.core_pending = Some((operation.clone(), state.epoch));
+        let result = self
+            .operation_receipt(&operation, Some(command))
+            .map_err(|_| error("client_bridge_uncertain"))?;
+        let before = state.epoch;
+        let result = self.settle_core_receipt(&mut state, before, result)?;
+        Ok(result)
+    }
+
     pub(crate) fn new(
         endpoint: Endpoint,
         runtime: JsRuntime,
@@ -291,7 +694,14 @@ impl ClientSourceRuntime {
             registry,
             directory,
             configuration,
-            state: Mutex::new(State { epoch: 0, provider }),
+            state: Mutex::new(State {
+                epoch: 0,
+                provider,
+                admission: None,
+                core_pending: None,
+                #[cfg(feature = "desktop-acceptance")]
+                fixture_route: None,
+            }),
             traffic,
             _lease: lease,
         })))

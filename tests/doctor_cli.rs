@@ -56,6 +56,13 @@ fn doctor_json_is_one_versioned_report_and_does_not_create_registry() {
     assert_eq!(report["dependencyGraph"]["status"], "ok");
     let plugins = report["plugins"]["data"].as_array().unwrap();
     assert_eq!(plugins.len(), 2);
+    #[cfg(not(feature = "test-fixtures"))]
+    {
+        assert!(plugins.iter().all(|plugin| plugin["source"] == "core"));
+        for id in ["codex.ui.adapter", "codex.desktop.adapter"] {
+            assert!(plugins.iter().any(|plugin| plugin["id"] == id));
+        }
+    }
     assert!(
         plugins
             .iter()
@@ -106,6 +113,7 @@ fn doctor_json_preserves_corrupt_registry_and_returns_nonzero_with_a_repair() {
 }
 
 #[test]
+#[cfg(feature = "test-fixtures")]
 fn doctor_json_reports_disabled_provider_dependency_failure_without_writing() {
     let directory = tempdir().unwrap();
     let config_dir = directory.path().join("Codlet");
@@ -127,8 +135,69 @@ fn doctor_json_reports_disabled_provider_dependency_failure_without_writing() {
 }
 
 #[test]
+#[cfg(not(feature = "test-fixtures"))]
+fn doctor_json_reports_fixed_core_owners_despite_legacy_disable_preferences_without_writing() {
+    let directory = tempdir().unwrap();
+    let config_dir = directory.path().join("Codlet");
+    std::fs::create_dir(&config_dir).unwrap();
+    let path = config_dir.join("config.json");
+    let bytes = serde_json::to_vec(&json!({"schema":1,"plugins":{
+        "codex.ui.adapter":{"enabled":false},
+        "codex.desktop.adapter":{"enabled":false}
+    }}))
+    .unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let output = run(directory.path(), &["doctor", "--json"]);
+    let report = json_output(&output);
+    assert!(output.status.success(), "{report}");
+    assert_eq!(report["dependencyGraph"]["status"], "ok");
+    let plugins = report["plugins"]["data"].as_array().unwrap();
+    assert_eq!(plugins.len(), 2);
+    for id in ["codex.ui.adapter", "codex.desktop.adapter"] {
+        let plugin = plugins.iter().find(|plugin| plugin["id"] == id).unwrap();
+        assert_eq!(plugin["source"], "core");
+        // Doctor preserves the declared preference as a static fact. Core
+        // ownership still keeps both providers in the resolved execution graph.
+        assert_eq!(plugin["desiredEnabled"], false);
+        assert!(
+            report["dependencyGraph"]["data"]["activationOrder"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(id))
+        );
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(config_dir.read_dir().unwrap().count(), 1);
+}
+
+#[test]
 fn doctor_human_output_distinguishes_declarations_and_unavailable_runtime() {
     let directory = tempdir().unwrap();
+    let consumer = directory.path().join("dev.doctor.consumer");
+    std::fs::create_dir(&consumer).unwrap();
+    std::fs::write(
+        consumer.join("codlet.json"),
+        json!({"schema":1,"id":"dev.doctor.consumer","version":"1",
+            "renderer":{"entry":"renderer.cjs","world":"isolated"},
+            "permissions":[],
+            "requires":[{"name":"codex.ui.navigation.page","api":1,"scope":"target"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        consumer.join("renderer.cjs"),
+        "module.exports={activate(){}};",
+    )
+    .unwrap();
+    let config_dir = directory.path().join("Codlet");
+    std::fs::create_dir(&config_dir).unwrap();
+    let path = config_dir.join("config.json");
+    let bytes = serde_json::to_vec(&json!({"schema":2,"localPlugins":{
+        "dev.doctor.consumer":{"path":consumer.canonicalize().unwrap(),"grants":[]}
+    }}))
+    .unwrap();
+    std::fs::write(&path, &bytes).unwrap();
     let output = run(directory.path(), &["doctor"]);
     let stdout = String::from_utf8(output.stdout).unwrap();
     for expected in [
@@ -144,8 +213,10 @@ fn doctor_human_output_distinguishes_declarations_and_unavailable_runtime() {
     ] {
         assert!(stdout.contains(expected), "missing {expected}: {stdout}");
     }
+    assert!(stdout.contains("dev.doctor.consumer"), "{stdout}");
     assert!(!stdout.contains("runtime: not_probed"));
-    assert!(!directory.path().join("Codlet").exists());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(config_dir.read_dir().unwrap().count(), 1);
 }
 
 #[test]

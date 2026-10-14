@@ -33,6 +33,10 @@ mod services;
 pub(crate) use rpc_state::{RendererCall, RendererEndpoint, RpcLineage, RpcRoute};
 pub use services::HostCoreServices;
 mod snapshot;
+mod state;
+pub use state::{HostStateOperation, MAX_HOST_STATE_BYTES};
+mod core_admission;
+pub(crate) use core_admission::HostCoreAdmissionOperation;
 pub use snapshot::{
     HostCleanupPhase, HostCleanupSnapshot, HostPluginSnapshot, HostProcessExitSnapshot,
     HostRuntimeSnapshot,
@@ -92,10 +96,7 @@ impl HostRuntime {
         for plugin in plugins {
             if plugin.manifest.host.is_none()
                 || plugin.host.is_none()
-                || !plugin
-                    .manifest
-                    .permissions
-                    .contains(&Permission::HostProcess)
+                || !plugin.manifest.host_execution_authorized()
                 || plugin
                     .manifest
                     .host_provides()
@@ -112,7 +113,7 @@ impl HostRuntime {
                 return Err(HostError::new(
                     "host_entry_required",
                     format!(
-                        "{} must have a distinct loaded Host entry, host.process, and only Runtime or Target host capabilities",
+                        "{} must have a distinct loaded Host entry, its mode's explicit authorization, and only Runtime or Target host capabilities",
                         plugin.manifest.id
                     ),
                 ));
@@ -304,6 +305,8 @@ struct HostOwner {
     cleanup_error: Option<String>,
     start_operation: Option<lifecycle::Completion>,
     stop_operation: Option<lifecycle::Completion>,
+    state_operation: Option<state::Pending>,
+    state_paused: bool,
 }
 
 impl HostOwner {
@@ -348,6 +351,8 @@ impl HostOwner {
             cleanup_error: None,
             start_operation: None,
             stop_operation: None,
+            state_operation: None,
+            state_paused: false,
         }
     }
 
@@ -361,12 +366,21 @@ impl HostOwner {
         runtime: &JsRuntime,
         services: services::CoreServices,
     ) -> Self {
+        Self::start_with_state(plugin, runtime, services, None)
+    }
+
+    fn start_with_state(
+        plugin: LoadedPlugin,
+        runtime: &JsRuntime,
+        services: services::CoreServices,
+        initial_state: Option<Value>,
+    ) -> Self {
         let mut owner = Self::new(plugin);
         let result = (|| {
             owner.authorize_services(services)?;
             let plugin = &owner.observation.plugin;
             let host = plugin.host.as_ref().expect("validated host entry");
-            let invocation = runtime.prepare(host)?;
+            let invocation = runtime.prepare_mode(host, plugin.manifest.host_mode())?;
             let supervisor = HostSupervisor::spawn_with_environment(
                 HostIdentity {
                     plugin_id: plugin.manifest.id.clone(),
@@ -389,6 +403,8 @@ impl HostOwner {
                     "provides":plugin.manifest.runtime_host_provides(),
                     "requires":plugin.manifest.host_requires(),
                     "methods":["cdp.request","cdp.subscribe","cdp.unsubscribe"],
+                    "initialState":initial_state,
+                    "coreAdmission":owner.services.core_admission.lock().unwrap_or_else(|p| p.into_inner()).operation.clone(),
                 }),
                 INITIALIZE_TIMEOUT,
             )?;
@@ -469,8 +485,22 @@ impl HostOwner {
                 HostEvent::RequestTimedOut { id } if id == self.initialize_id => self.fail(
                     HostError::new("initialize_timeout", "Host initialization request expired"),
                 ),
-                HostEvent::Response { id, result } => self.finish_capability_response(id, result),
-                HostEvent::RequestTimedOut { id } => self.finish_capability_timeout(id),
+                HostEvent::Response { id, result } => {
+                    if !self
+                        .state_operation
+                        .as_ref()
+                        .is_some_and(|pending| pending.id == id)
+                    {
+                        self.finish_capability_response(id, result);
+                    } else {
+                        self.finish_state_response(id, result);
+                    }
+                }
+                HostEvent::RequestTimedOut { id } => {
+                    if !self.finish_state_timeout(id) {
+                        self.finish_capability_timeout(id);
+                    }
+                }
                 HostEvent::Notification { method, params } if method == "request.cancel" => {
                     if let Some(id) = params.get("id").and_then(Value::as_u64) {
                         self.cancel_managed_request(id);
@@ -549,6 +579,21 @@ impl HostOwner {
     ) -> Option<Result<Value, HostRpcError>> {
         if method == "capability.request" {
             return self.dispatch_capability_child(client, id, params);
+        }
+        if self.state_paused
+            || (self.observation.state == ExecutionState::Active
+                && self
+                    .services
+                    .core_admission
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .holding
+                && !traffic_continuation(method, &params))
+        {
+            return Some(Err(HostRpcError::new(
+                "core_updating",
+                "this Host has paused new SDK requests for a Core update",
+            )));
         }
         self.dispatch_raw(client, id, method, params, None)
     }
@@ -775,6 +820,7 @@ impl HostOwner {
         if self.observation.state == ExecutionState::Stopping {
             return;
         }
+        self.retire_state_operation();
         self.defer_scope_cleanup = self.cleanup_raw_is_current();
         if self.services_active {
             self.services.rpc.retire_host_scopes(
@@ -929,6 +975,27 @@ impl HostOwner {
             }
         }
     }
+}
+
+fn traffic_continuation(method: &str, params: &Value) -> bool {
+    method == "traffic.closeChannel"
+        || (method == "rpc.request"
+            && params.pointer("/capability/name").and_then(Value::as_str)
+                == Some("codlet.core.services")
+            && params.pointer("/capability/api").and_then(Value::as_u64) == Some(1)
+            && params.pointer("/capability/scope").and_then(Value::as_str) == Some("runtime")
+            && params
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| {
+                    matches!(
+                        method,
+                        "traffic.unregister"
+                            | "traffic.closeSource"
+                            | "traffic.sourceStatus"
+                            | "traffic.status"
+                    )
+                }))
 }
 
 impl Drop for HostOwner {

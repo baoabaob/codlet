@@ -13,12 +13,24 @@ use tempfile::NamedTempFile;
 use windows_sys::Win32::Security::Cryptography::*;
 
 use crate::plugin_host::HostError;
-use crate::plugins::LoadedHost;
+use crate::plugins::{HostMode, LoadedHost};
 
 const BOOTSTRAP: &str = concat!(
     "const createEmbeddedServicesRuntime = (() => { const module = { exports: {} };\n",
     include_str!("../runtime/core-services.cjs"),
     "\nreturn module.exports.createCoreServicesRuntime; })();\n",
+    "const parseEmbeddedSdkHostSource = (() => { const module = { exports: {} };\n",
+    "/*\n",
+    include_str!("../runtime/sdk-source-parser.LICENSE"),
+    "\n*/\n",
+    include_str!("../runtime/sdk-source-parser.cjs"),
+    "\nreturn module.exports.parse; })();\n",
+    "const createEmbeddedSdkHost = (() => { const module = { exports: {} };\n",
+    include_str!("../runtime/sdk-host.cjs"),
+    "\nreturn module.exports.createSdkHost; })();\n",
+    "const createEmbeddedCodexHost = (() => { const module = { exports: {} };\n",
+    include_str!("../runtime/codex-host-bundle.cjs"),
+    "\nreturn module.exports.createCodexHost; })();\n",
     include_str!("../runtime/host-traffic-bundle.cjs"),
     "\n",
     include_str!("../runtime/host.cjs")
@@ -252,7 +264,16 @@ impl JsRuntime {
         })))
     }
 
+    #[allow(dead_code)] // Legacy client launch / executor fixtures use this entry.
     pub(crate) fn prepare(&self, host: &LoadedHost) -> Result<JsInvocation, HostError> {
+        self.prepare_mode(host, None)
+    }
+
+    pub(crate) fn prepare_mode(
+        &self,
+        host: &LoadedHost,
+        mode: Option<HostMode>,
+    ) -> Result<JsInvocation, HostError> {
         if !host.entry.starts_with(&host.root)
             || host.entry.to_str().is_none()
             || !host.root.is_dir()
@@ -274,15 +295,19 @@ impl JsRuntime {
             .suffix(".cjs")
             .tempfile()
             .map_err(io_error)?;
+        // Resolve one verified Core module snapshot for this generation. An
+        // already-running process keeps its private bytes until retirement.
+        let bootstrap_source =
+            crate::runtime_update::core_module_source("host-bootstrap", BOOTSTRAP);
         bootstrap
-            .write_all(BOOTSTRAP.as_bytes())
+            .write_all(bootstrap_source.as_bytes())
             .map_err(io_error)?;
         bootstrap.flush().map_err(io_error)?;
         // No user flags or loader hooks. TS is compiled before distribution;
         // native Node addons are disabled in this process by the runtime itself.
         // The short loader removes its own path so host.cjs still observes the
         // plugin entry at argv[1] and immutable source snapshot at argv[2].
-        let arguments = vec![
+        let mut arguments = vec![
             "--no-addons".into(),
             "--no-experimental-strip-types".into(),
             "--no-global-search-paths".into(),
@@ -295,10 +320,18 @@ impl JsRuntime {
             host.entry.to_string_lossy().into_owned(),
             source.path().to_string_lossy().into_owned(),
         ];
+        if mode == Some(HostMode::Sdk) {
+            arguments.push("sdk".into());
+        }
         let environment = std::env::vars_os()
             .filter(|(key, _)| {
                 let name = key.to_string_lossy().to_ascii_uppercase();
-                !name.starts_with("NODE_")
+                (mode != Some(HostMode::Sdk)
+                    || matches!(
+                        name.as_str(),
+                        "SYSTEMROOT" | "WINDIR" | "TEMP" | "TMP" | "TMPDIR" | "LANG" | "LC_CTYPE"
+                    ))
+                    && !name.starts_with("NODE_")
                     && !name.starts_with("OPENSSL_")
                     && !name.starts_with("DYLD_")
                     && name != "ELECTRON_RUN_AS_NODE"

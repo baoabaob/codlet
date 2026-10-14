@@ -89,10 +89,11 @@ pub fn run(arguments: &[OsString]) -> Result<(), CommandError> {
         {
             let registry = PluginRegistry::load_default()?;
             let catalog = PluginCatalog::load(&registry)?;
-            let plugins:Vec<_>=catalog.entries().iter().map(|entry|json!({"id":entry.id,"enabled":registry.is_enabled(&entry.id),"manifest":entry.plugin.as_ref().ok().map(|p|&p.manifest),"validationError":entry.plugin.as_ref().err().map(ToString::to_string),"source":if registry.managed_plugins().contains_key(&entry.id){"github"}else if matches!(entry.source,PluginSource::Bundled){"bundled"}else{"local"},"path":registry.local_plugins().get(&entry.id).map(|r|&r.path)})).collect();
+            let plugins:Vec<_>=catalog.entries().iter().filter(|entry| !catalog.is_core(&entry.id)).map(|entry|json!({"id":entry.id,"enabled":registry.is_enabled(&entry.id),"manifest":entry.plugin.as_ref().ok().map(|p|&p.manifest),"validationError":entry.plugin.as_ref().err().map(ToString::to_string),"source":if registry.managed_plugins().contains_key(&entry.id){"github"}else if matches!(entry.source,PluginSource::Bundled){"bundled"}else{"local"},"path":registry.local_plugins().get(&entry.id).map(|r|&r.path)})).collect();
+            let core:Vec<_>=catalog.entries().iter().filter(|entry| catalog.is_core(&entry.id)).map(|entry| json!({"id":entry.id,"owner":"core","version":env!("CARGO_PKG_VERSION"),"capabilities":entry.plugin.as_ref().ok().map(|plugin| plugin.manifest.all_provides().collect::<Vec<_>>())})).collect();
             println!(
                 "{}",
-                json!({"schema":1,"registry":registry.path(),"plugins":plugins})
+                json!({"schema":1,"registry":registry.path(),"plugins":plugins,"coreProviders":core,"legacyAdapterRegistrations":catalog.legacy_adapter_registrations(&registry)})
             );
             Ok(())
         }
@@ -234,6 +235,14 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
     let catalog = PluginCatalog::load(registry)?;
     for entry in catalog.entries() {
         let source = match entry.source {
+            PluginSource::Core => {
+                println!(
+                    "core-capability-provider: id={}; version={}",
+                    entry.id,
+                    env!("CARGO_PKG_VERSION")
+                );
+                continue;
+            }
             PluginSource::Bundled => "bundled",
             PluginSource::Local { .. }
                 if registry
@@ -266,6 +275,12 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
                 entry.id
             );
         }
+    }
+    for legacy in catalog.legacy_adapter_registrations(registry) {
+        println!(
+            "legacy-adapter: id={}; status=supersededByCore; files=preserved",
+            legacy["id"].as_str().unwrap_or_default()
+        );
     }
     Ok(())
 }

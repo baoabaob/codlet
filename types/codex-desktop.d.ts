@@ -1,5 +1,7 @@
-/** Optional Desktop semantic API v1. These types belong to the adapter, not Core. */
+/** Core-owned Codex Desktop capability API v1, including legacy RPC contracts. */
 import type { RendererContext, RpcOptions } from './renderer';
+import type { PermissionSnapshot, PermissionUpdate, PermissionReceipt, PermissionChangedEvent } from './codex-permissions';
+import type { LoadedThreadQuery, LoadedThreadPage, LoadedThreadSummary } from './codex-workspace';
 
 export interface DesktopCompatibility {
   api: 1;
@@ -15,6 +17,10 @@ export interface DesktopCompatibility {
   historyMutation: false;
   hooks: number;
   pendingSubmits: number;
+  /** Interface availability is independent of implementation coverage, author
+   * support declarations and verified platform/client evidence. Null is unprobed. */
+  capabilities?: Readonly<Record<string, Readonly<{ implemented: true; available: boolean | null }>>>;
+  approvalResponses?: Readonly<Record<'command'|'fileChange'|'permissions'|'userInput', boolean>>;
   /** Independently probed; failure does not disable existing backend or submit APIs. */
   navigation: { available: boolean; unavailable: { code: string; message: string | null } | null };
   /** Present after initialization; changes only local task start/resume configuration. */
@@ -71,6 +77,8 @@ export interface ApprovalRequest {
   questions?: { id: string; header: string | null; question: string; secret: boolean; options: { label: string; description: string | null }[] }[];
 }
 export interface ReadMethods {
+  'permissions.get': { params: { threadId: string; hostId?: 'local' }; result: PermissionSnapshot };
+  'threads.loaded': { params: LoadedThreadQuery; result: LoadedThreadPage };
   'selection.get': { params: Record<string, never>; result: DesktopSelection };
   'threads.list': { params: Page & { archived?: boolean }; result: { threads: Thread[]; cursor: string | null } };
   /** Metadata read; use paginated turns/items methods for history. */
@@ -86,6 +94,7 @@ export interface ReadMethods {
 }
 export type ApprovalReply = { token: string; decision: 'approve' | 'decline' } | { token: string; answers: Record<string, string[]> };
 export interface WriteMethods {
+  'permissions.update': { params: PermissionUpdate; result: PermissionReceipt };
   /** One-use, generation-bound ticket for registerThreadConfiguration. */
   getApi: { params: Record<string, never>; result: CallbackAccess };
   'configurations.list': { params: Record<string, never>; result: { configurations: ThreadConfigurationInfo[] } };
@@ -106,6 +115,8 @@ export interface WriteMethods {
   'approvals.respond': { params: ApprovalReply; result: { token: string; status: 'submitted' } };
 }
 export type DesktopEvent = ({ type: 'adapter.ready'; connection: 'existing-desktop-local' }
+  | { type: 'thread.summary.changed'; threadId: string; thread: LoadedThreadSummary | null }
+  | PermissionChangedEvent
   | { type: 'adapter.drift'; code: string; message: string | null }
   | ({ type: 'selection.changed' } & DesktopSelection)
   | { type: 'selection.unavailable'; code: string; message: string | null }
@@ -193,6 +204,7 @@ export interface DesktopCallbackApi {
   registerPreSubmit(owner: RendererContext, ticket: string, options: InterceptorOptions, handler: SubmissionInterceptor): InterceptorHandle;
   registerThreadConfiguration(owner: RendererContext, ticket: string, options: ThreadConfigurationOptions, handler: ThreadConfigurationHandler): ThreadConfigurationHandle;
   onEvent(owner: RendererContext, ticket: string, handler: (event: Readonly<DesktopEvent>) => void): () => void;
+  registerPermissions(owner: RendererContext, ticket: string): () => void;
 }
 /** Convenience typing for an author's own Core RPC wrapper. No private transport. */
 export interface DesktopRead {

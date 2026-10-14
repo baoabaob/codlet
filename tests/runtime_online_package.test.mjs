@@ -1,0 +1,46 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {onlineCoreMetadata} from '../scripts/prepare-online-core.mjs';
+const root=path.resolve(import.meta.dirname,'..');
+const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+function run(args){return new Promise((resolve,reject)=>{
+  const child=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-File',path.join(root,'scripts/Build-RuntimeUpdate.ps1'),...args],{windowsHide:true});
+  let output='';child.stdout.on('data',bytes=>output+=bytes);child.stderr.on('data',bytes=>output+=bytes);child.once('error',reject);child.once('exit',code=>resolve({code,output}));
+});}
+test('online runtime package binds one fixed Core source to exact bootstrap digests and rejects arbitrary JS paths',{skip:process.platform!=='win32'},async t=>{
+  const directory=await mkdtemp(path.join(tmpdir(),'codlet-online-package-'));
+  t.after(async()=>{assert.equal(path.dirname(path.resolve(directory)),path.resolve(tmpdir()));await rm(directory,{recursive:true});});
+  const input=path.join(directory,'input');await mkdir(path.join(input,'runtime/core-modules'),{recursive:true});
+  const executable=Buffer.alloc(128);executable.write('MZ');executable.writeUInt32LE(64,60);executable.write('PE\0\0',64,'binary');executable.writeUInt16LE(0x8664,68);
+  await writeFile(path.join(input,'codlet.exe'),executable);
+  await writeFile(path.join(input,'runtime/node-runtime.json'),JSON.stringify({schema:1,version:'24.18.1',mode:'managed',platforms:{'win-x64':{executableSha256:'a'.repeat(64),licenseSha256:'b'.repeat(64)}}}));
+  const source='module.exports={handoffVersion:1,validateClientSource(){}};';
+  await writeFile(path.join(input,'runtime/core-modules/client-source.cjs'),source);
+  const metadata=await onlineCoreMetadata(root),pin=path.join(directory,'metadata.json');await writeFile(pin,JSON.stringify(metadata));
+  const output=path.join(directory,'release');
+  const options=['-InputDirectory',input,'-PayloadProfile','portable','-Version','1.0.1','-OutputDirectory',output,'-OnlineCoreMetadata',pin];
+  const built=await run(options);assert.equal(built.code,0,built.output);
+  const manifest=JSON.parse(await readFile(path.join(output,'runtime-update-manifest.json'),'utf8'));
+  assert.deepEqual(manifest.online,metadata);
+  assert.deepEqual(manifest.files.find(file=>file.path===metadata.clientSourcePath),{path:metadata.clientSourcePath,bytes:Buffer.byteLength(source),sha256:sha(source)});
+  assert.equal(manifest.files.find(file=>file.path==='codlet.exe').sha256,sha(executable));
+  await writeFile(pin,JSON.stringify({...metadata,clientSourcePath:'runtime/untrusted-other.cjs'}));
+  const refused=await run(options.map(value=>value===output?path.join(directory,'refused'):value));
+  assert.notEqual(refused.code,0);assert.match(refused.output,/Unsupported online Core compatibility metadata/);
+  const full=await onlineCoreMetadata(root,{includeModules:true});assert.equal(full.modules.length,11);
+  for(const module of full.modules)await writeFile(path.join(input,module.path),await readFile(path.join(root,module.path)));
+  await writeFile(pin,JSON.stringify(full));
+  const completeOutput=path.join(directory,'complete');const complete=await run(options.map(value=>value===output?completeOutput:value));
+  assert.equal(complete.code,0,complete.output);
+  const completeManifest=JSON.parse(await readFile(path.join(completeOutput,'runtime-update-manifest.json'),'utf8'));
+  assert.deepEqual(completeManifest.online,full);
+  for(const module of full.modules){const bytes=await readFile(path.join(input,module.path));assert.deepEqual(completeManifest.files.find(file=>file.path===module.path),{path:module.path,bytes:bytes.length,sha256:sha(bytes)});}
+  await writeFile(pin,JSON.stringify({...full,modules:[{id:'renderer-ui',path:'runtime/core-modules/renderer-helpers.js'}]}));
+  const wrongIdentity=await run(options.map(value=>value===output?path.join(directory,'wrong-identity'):value));
+  assert.notEqual(wrongIdentity.code,0);assert.match(wrongIdentity.output,/Unsupported online Core module/);
+});

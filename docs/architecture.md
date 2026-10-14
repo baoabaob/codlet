@@ -2,27 +2,26 @@
 
 Codlet starts and owns an explicitly selected desktop session and loads trusted
 JS/TS extension packages. It does not redistribute or patch the official app
-package. Core, CLI, generic SDK, runtime skill and delivery tools live here;
-official feature plugins live in [codlet-plugins](https://github.com/baoabaob/codlet-plugins).
+package. Core, CLI, Codex SDK, runtime skill and delivery tools live here;
+the optional GUI lives in [codlet-plugins](https://github.com/baoabaob/codlet-plugins).
 
 ## Responsibilities
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
-| Core | Session transport, target/session identity, registry, permissions, capability graph, operation receipts and bounded resources | Codex DOM selectors, private React objects, conversation semantics |
+| Core | Session transport, Codex compatibility modules, semantic SDK, registry, permissions, capability graph, operation receipts and bounded resources | Business layouts or arbitrary plugin state |
 | Host | A pinned, supervised Node process per ordinary plugin generation; background/OS work | Automatic rollback of arbitrary OS/network/page side effects |
 | Renderer | Plugin code in an isolated or explicitly permitted main world, SDK and target-scoped lifecycle | A separate OS process or a universal security sandbox |
-| Official adapters | Reviewed client-build mappings, navigation, native objects and backend semantics | Exclusive access to Core primitives |
+| Internal Codex modules | Reviewed client-build mappings, navigation, native objects and backend semantics behind `context.codex` | Separate user installation or consumer inheritance of internal grants |
 | GUI | An optional consumer of public management APIs | A privileged built-in management path unavailable to other plugins |
 
 The generic HTTP/SSE/WebSocket engine lives in Rust Core. It owns bounded native
 streams, forwarding, trust/proxy handling and ordinary plugin authority. JavaScript
 Hosts keep only plugin callbacks and stream bindings. There is no permanent Node
-traffic process or legacy forwarding fallback; client-specific integration stays
-in an ordinary authorized launch Adapter. See the [traffic contract](spec/traffic.md).
+traffic process or legacy forwarding fallback; client-specific integration lives
+in Core's replaceable source module. See the [traffic contract](spec/traffic.md).
 
-The Core-provided `/codlet` skill is the deliberate small exception to the
-client-agnostic boundary: it owns a reviewed skill-registration bridge and its
+The Core-provided `/codlet` skill owns a reviewed skill-registration bridge and its
 generated resources. It is present without the GUI, never submits a model task
 by itself, and does not modify permanent personal/project skill directories.
 
@@ -46,7 +45,7 @@ On Windows Core reads Electron's public versioned fuse schema and, when needed,
 plans a one-byte temporary inspector edit in the exact owned image. Native still
 verifies the whole file, mapped non-executable data and restoration. This public
 platform bootstrap has no application source hashes or private application
-symbols. Plugins retain their reviewed source/backend profiles and hook logic.
+symbols. Internal Codex modules retain their reviewed source/backend profiles and hook logic.
 The temporary native debugger worker retires before activation; no additional
 distributed helper executable or permanent Node service is introduced.
 
@@ -56,24 +55,35 @@ does not attach itself to a newer instance. Timeouts and cancellation do not
 prove that an external side effect never occurred. Query the original receipt
 after an uncertain submit rather than submitting again.
 
-Host replacements use existing OS process ownership. Renderer replacement first
-cleans affected renderers, then retires old Host owners, then starts candidate
+Host replacements use existing OS process ownership. Replacement first pauses admission,
+drains accepted calls and captures explicit JSON state, then cleans affected renderers,
+retires old Host owners and starts candidate
 client source and Hosts before their dependent renderers. Failed replacement may restore immutable
 old source snapshots at fresh generations under current trust. That temporary
 transaction recovery is distinct from keeping historical installed packages.
 
+Compatible Core updates reload the declared JavaScript modules and ordinary plugins,
+restore state, then hand off Native source hooks while retaining the existing Native,
+backend connections and forwarding streams. Missing state hooks defer a whole-Core
+update. Rust, Node, bridge/bootstrap or ABI changes take effect after natural exit and
+the next start. The resident component versions remain visible; see
+[online update ownership and evidence](core-online-update.md).
+
 ## Capability and trust boundary
 
-First-party adapters and third-party plugins use the same public primitives.
-Explicit `ui.mainWorld`, `cdp.raw` and Host permissions remain available to trusted
-plugins. A pure renderer can use approved Core services without acquiring Node
-or raw CDP privileges. Prefer an adapter when it provides the required semantic
-operation; authors can implement their own compatibility layer when it does not.
+Ordinary plugins use `context.codex` and Core services. The internal providers preserve
+historical capability names while their IDs are Core-owned. Existing adapter registrations,
+grants and data remain saved but do not load a duplicate provider. A pure renderer and
+an SDK Host can use approved Core services without raw Node or CDP privileges.
+`ui.nativeDom`, `ui.mainWorld`, `cdp.raw`, `host.raw` and scoped process execution identify
+specific unadapted boundaries; see [permissions](spec/permissions.md).
 
 Isolation separates JavaScript globals in isolated worlds, but all such worlds
 share the page DOM. Main-world code shares the page's JavaScript state. Host
-Node executes as the current user. Permissions are a managed routing boundary,
-not proof that arbitrary plugin code is harmless.
+in `mode: "sdk"` receives a JSON service membrane without ambient Node imports or process
+globals; raw Node executes as the current user. DOM declarations are review boundaries,
+while SDK dispatch, main-world admission and raw Host admission are enforced. This is
+a trusted-plugin system, not proof that arbitrary plugin code is harmless.
 
 ## Renderer lifetime decision
 
@@ -97,6 +107,7 @@ page injection capabilities are not removed to make a memory measurement pass.
 ## Source layout
 
 - `src/`: Rust Core, CLI, platform integration and lifecycle.
+- `codex/`: internal UI/Desktop sources, reviewed client profiles and contract tests.
 - `src/renderer/bootstrap.rs`: CDP context/binding/script operations with explicit
   inputs; it does not own or mutate the runtime coordinator's state.
 - `src/renderer/observation.rs`: bounded status and inspection sampled together;

@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "sources": [
+    {"repository":"baoabaob/codlet-ui-adapter","repositoryId":1379358711,"ownerId":76909162,"pluginIds":["codex.ui.adapter"]},
+    {"repository":"baoabaob/codlet-desktop-adapter","repositoryId":1379359205,"ownerId":76909162,"pluginIds":["codex.desktop.adapter"]},
+    {"repository":"baoabaob/codlet-gui","repositoryId":1379359689,"ownerId":76909162,"pluginIds":["codlet-gui"]}
+  ]
+}

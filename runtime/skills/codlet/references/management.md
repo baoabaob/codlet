@@ -31,7 +31,7 @@ python3 "<cliScript>" plugin list --json
 
 已安装清单可能包含不翻译的 `tags`，可用于本地筛选；缺失表示未分类。`github discover '#adapter'` 过滤远端仓库 topic，和本地 manifest 标签是两类数据。
 
-`plugin permissions` 用于本地/托管注册。当前官方 GUI 和 Adapter 也是普通注册，应正常查询其权限；名字或 ID 不构成特殊信任。仅旧版本清单中实际标为 `bundled` 的条目没有本地注册项，此时通过 manifest 查看声明，不把 UnknownPlugin 误报成未安装。
+`plugin permissions` 用于本地/托管注册。GUI 是普通可选插件；名字或官方标记不构成特殊信任。Core v1 的 `codex.ui.adapter`、`codex.desktop.adapter` 是 Core-owned 能力别名，不需要普通安装或用户授权其实现权限。清单中的 `legacyAdapterRegistrations` / `supersededByCore` 表示旧注册、文件、偏好和数据仍保留，但不执行第二份。查询旧注册权限不等于查询 Core 自身权限；没有旧注册时的 UnknownPlugin 也不表示 SDK provider 缺失。对实际标为 `core` 或旧版 `bundled` 的条目核对清单/manifest。
 
 `enabled` 是启用偏好，不是运行健康证据。需要健康状态时：普通 Core 在 `cliCommands` 包含对应命令时可用 `status --json`、`doctor --json`；测试客户端根据该实例的运行报告/日志检查，拿不到证据就明确只查了注册信息。
 
@@ -52,15 +52,17 @@ plugin github install <preview.path> --trust [--grant <permission> ...] [--enabl
 
 预览会下载/验证，尚不激活。检查 preview 中的 manifest、source、deviceCompatibility、依赖和现有注册；`unknown` 表示发布者未完整声明，`incompatible` 不能安装。公开仓库不需要用户交出 token。用户已要求从该来源安装，并且权限已在请求范围内时可继续；额外读取文件、联网或后台程序等权限须解释并取得范围授权。`--grant` 逐项列出，不能用全权限通配。
 
-当前 GUI 以权限分类展示并一次勾选授权，不要求填写路径、网站或程序白名单。CLI 的同等授权使用 `--client-permissions`，仍需按插件实际声明逐项传入 `--grant`。这表示使用桌面进程的系统用户权限，不继承单个对话的沙箱／审批设置，也不会提升为管理员。
+当前 GUI 对标准 SDK 文件、网络和桌面类别一次勾选授权；CLI 同等授权使用 `--client-permissions`，仍按实际声明逐项传入 `--grant`。它不选择可执行文件、不授权任意 cwd/env、不授予 raw Host，也不继承单个对话的沙箱／审批设置或提升为管理员。进程/Shell 例外必须明确选择 `--executable <absolute-file>`，另有需要时指定 `--cwd-root` / `--env-key`；GUI 保留已有选择，新选择通过 CLI 完成。
 
-旧版限域记录和 `--read-root`、`--network-origin`、`--executable` 等参数仍可读取和使用，不能与 `--client-permissions` 混用。更新时保留已有授权；只有用户同意重新授权时才将旧限域策略切换成客户端权限。
+旧版限域记录和相应参数仍可读取和使用。`--client-permissions` 可与明确的 executable/cwd/env 选择组合，不能与旧式标准文件/网络/快捷键列表混用。更新时保留已有授权和进程选择；只有用户已同意重新授权时才改变策略，不把旧限域记录静默扩成广泛客户端访问。
 
-依赖不会自动下载。说明缺少的 provider，查找可用适配层，按用户已确认选择安装/启用。相同 ID 已注册在别处时先展示旧路径，不用移除再添加掩盖冲突。
+直接系统/Native 类别需要说明实际边界：Core 强制检查选定进程、raw CDP broker 和 main-world/full Node 准入；`ui.nativeDom` 是作者声明/源码审核，isolated renderer 共享 Native DOM，不能说它阻止未声明 DOM 操作。新后台计算优先 `host.mode:"sdk"`，无 ambient Node loader/process/Buffer；这仍是受信代码 API 边界，不是恶意代码安全沙箱。显式 `node` 需要 `host.raw`；旧省略 mode 的 `host.process` 是保留兼容路径，不自动改写授权。SDK 消费者不会继承 Core 实现的原始权限。
+
+外部依赖不会自动下载。先以 `context.codex` SDK 契约和当前能力探针判断是否由 Core 供应；不要为普通 v1 消费者安装旧 UI/Desktop Adapter。确实是外部 provider 才按用户选择安装/启用。相同外部 ID 已注册在别处时先展示旧路径，不用移除再添加掩盖冲突。
 
 ## 更新
 
-只将 `source: github` 的插件纳入 Release 更新；从 `plugin permissions` 的真实来源读取仓库，不能猜。列出 Release 后准备同 ID 候选：
+只将实际 GitHub 来源或已验证的 installer update channel 纳入 Release 更新；从 `plugin permissions` 的真实来源读取仓库，不能猜。旧 Core Adapter 注册不再参与常规启动更新或接管为外部分发。列出 Release 后准备同 ID 候选：
 
 ```text
 plugin github preview <url> --release <release-id> --asset <asset-id> --update <id> --json
@@ -92,11 +94,13 @@ plugin revoke <id> <permission> --json
 
 卸载/停用前用当前 manifest 的 provides/requires（包括 host.requires、target/runtime scope）检查依赖，列出传递链上受影响插件的显示名和 ID。以 Core 的当前依赖校验结果为准，不使用文本名字猜绑定。有额外级联影响且用户未授权时先说明这些插件，确认后用 `--cascade`；Core 发现遗漏的影响时重新核对，不能绕过它。
 
-默认 remove 取消目标插件的登记并停止它，保留源文件和独立数据；`--cascade` 同时停用依赖链上的插件，保留这些依赖者的登记和文件，不等于把整条链都卸载。`--delete-source` 只有用户明确要求删除目标源码/安装包时使用；不会因此删除其他插件的数据。当前官方 GUI 和 Adapter 可以通过 CLI 移除；GUI 不能在自身页面移除自己及其依赖。停用 GUI 或其适配层会关闭管理页，CLI 仍可恢复。旧版本真正的内置条目只能停用，须依照实际清单处理。
+默认 remove 取消普通目标插件登记并停止它，保留源文件和独立数据；`--cascade` 同时停用外部依赖链，保留依赖者登记和文件，不等于卸载整条链。`--delete-source` 只有用户明确要求删除目标源码/安装包时使用，不因此删除其它插件数据。GUI 可通过 CLI 移除或停用，此时管理页关闭，CLI/技能仍可恢复。Core-owned providers 不能作为普通插件停用或撤权；可以只移除保留的旧 Adapter 注册，默认保留旧文件/数据，Core SDK 消费者继续运行。不要把这种登记清理当作停用 Core，也不级联关闭 GUI。旧版本以实际 `bundled` 清单规则处理。
 
 ## 回执与故障排查
 
 变更可能返回异步回执。区分 applied/unchanged、rolledBack、failed 和仍运行。响应丢失或超时时只执行 `plugin operation <operation-id> --json` 查询原操作，不重复提交。完成后复查版本、启用状态和相关运行证据。
+
+普通插件重载的可选 `saveState`/`restoreState` 只传明确 JSON；无 hooks 的旧插件仍可重载，但不承诺状态迁移。整套 Core JS 更新会先暂停新调用、排空已接收操作、捕获状态再交接；失败先恢复旧准入，恢复未确认须报告。缺少活跃消费者状态支持或二进制不兼容时显示“下次启动生效”，表示本地暂存，不是已在当前会话安装。只检查原回执，不重放安装；不要主动退出/重启 Native。生效组件、保留组件和已编译 Core 版本分别看待。
 
 - GitHub 网络错误：查看具体错误与当前系统代理继承；有界重试或重新检查，不循环安装。私有仓库/限流/无 ZIP/平台不匹配要给出实际原因
 - 已启用却无效果：区分注册验证失败、依赖未启动、执行错误、客户端适配版本漂移；读取插件和对应实例日志，再做局部重载验证

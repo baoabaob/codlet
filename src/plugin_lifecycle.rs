@@ -125,7 +125,9 @@ pub(crate) fn disable_closure(
     let mut candidates: BTreeMap<_, _> = catalog
         .entries()
         .iter()
-        .filter(|entry| entry.id == plugin_id || registry.is_enabled(&entry.id))
+        .filter(|entry| {
+            entry.id == plugin_id || catalog.is_core(&entry.id) || registry.is_enabled(&entry.id)
+        })
         .filter_map(|entry| entry.plugin.as_ref().ok())
         .map(|plugin| (plugin.manifest.id.clone(), plugin.clone()))
         .collect();

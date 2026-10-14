@@ -14,6 +14,7 @@ mod client_compatibility;
 mod client_launch;
 #[cfg(any(windows, target_os = "macos"))]
 mod client_stderr;
+pub mod codex;
 #[cfg(any(windows, target_os = "macos"))]
 mod control_validation;
 #[cfg(any(windows, target_os = "macos"))]

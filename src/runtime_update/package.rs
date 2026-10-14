@@ -12,6 +12,7 @@ use super::{
 };
 
 pub(super) const MANIFEST: &str = "runtime-update-manifest.json";
+pub(super) const ONLINE_CLIENT_SOURCE: &str = "runtime/core-modules/client-source.cjs";
 const MANIFEST_LIMIT: u64 = if cfg!(target_os = "macos") {
     2 * 1024 * 1024
 } else {
@@ -57,6 +58,55 @@ pub(super) struct RuntimePackageManifest {
     pub profile: RuntimePayloadProfile,
     pub runtime: NodeRuntime,
     pub files: Vec<RuntimeFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<OnlineRuntime>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OnlineRuntime {
+    pub schema: u32,
+    pub bridge_protocol: u32,
+    pub bridge_sha256: String,
+    pub bootstrap_sha256: String,
+    pub client_source_path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<OnlineModule>,
+    #[serde(
+        default = "online_module_abi",
+        skip_serializing_if = "is_online_module_abi"
+    )]
+    pub module_abi: u32,
+}
+fn online_module_abi() -> u32 {
+    1
+}
+fn is_online_module_abi(value: &u32) -> bool {
+    *value == 1
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OnlineModule {
+    pub id: String,
+    pub path: String,
+}
+impl OnlineRuntime {
+    pub(super) fn current() -> Self {
+        Self {
+            schema: 1,
+            bridge_protocol: 1,
+            bridge_sha256: format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("../../runtime/client-bridge-bundle.cjs"))
+            ),
+            bootstrap_sha256: format!(
+                "{:x}",
+                Sha256::digest(include_bytes!("../../runtime/client-bridge-bootstrap.cjs"))
+            ),
+            client_source_path: ONLINE_CLIENT_SOURCE.into(),
+            modules: vec![],
+            module_abi: 1,
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub(super) struct StagedRuntime {
@@ -311,7 +361,9 @@ fn file_record_with_links(
     let mut file = File::open(path).map_err(io_error)?;
     let mut digest = Sha256::new();
     let mut count = 0u64;
-    let mut buffer = [0u8; 1024 * 1024];
+    // Windows executable entry threads reserve only 1 MiB. Payload verification
+    // also runs during startup, so keep the streaming buffer off that stack.
+    let mut buffer = vec![0u8; 1024 * 1024];
     loop {
         let n = file.read(&mut buffer).map_err(io_error)?;
         if n == 0 {
@@ -540,11 +592,29 @@ pub(super) fn inspect_installation(
 ) -> Result<RuntimePackageManifest> {
     canonical_directory(root)?;
     let runtime = pin_at(root)?;
-    let paths = if profile == RuntimePayloadProfile::MacApp {
+    let mut paths = if profile == RuntimePayloadProfile::MacApp {
         mac_app_paths(root)?
     } else {
         expected_paths(profile, &runtime, include_other)?
     };
+    let online = (profile != RuntimePayloadProfile::MacApp
+        && root.join(ONLINE_CLIENT_SOURCE).exists())
+    .then(OnlineRuntime::current);
+    if online.is_some() {
+        paths.insert(ONLINE_CLIENT_SOURCE.into());
+    }
+    let mut online = online;
+    if let Some(contract) = &mut online {
+        for (id, relative) in super::modules::module_paths() {
+            if root.join(relative).exists() {
+                paths.insert(relative.into());
+                contract.modules.push(OnlineModule {
+                    id: id.into(),
+                    path: relative.into(),
+                });
+            }
+        }
+    }
     let files = paths
         .into_iter()
         .map(|relative| file_record(&root.join(&relative), &relative))
@@ -557,6 +627,7 @@ pub(super) fn inspect_installation(
         profile,
         runtime,
         files,
+        online,
     };
     verify_payload(root, &manifest, false)?;
     Ok(manifest)
@@ -623,6 +694,24 @@ fn verify_payload(
         ));
     }
     validate_node_identity(&manifest.runtime)?;
+    if let Some(online) = &manifest.online
+        && (online.schema != 1
+            || online.bridge_protocol != 1
+            || !valid_sha(&online.bridge_sha256)
+            || !valid_sha(&online.bootstrap_sha256)
+            || online.client_source_path != ONLINE_CLIENT_SOURCE
+            || manifest.profile == RuntimePayloadProfile::MacApp
+            || online.module_abi == 0
+            || online.modules.len() > super::modules::MODULE_LIMIT
+            || online.modules.iter().any(|module| {
+                super::modules::module_path(&module.id) != Some(module.path.as_str())
+            }))
+    {
+        return Err(error(
+            "runtime_update_manifest_invalid",
+            "Unsupported online Core component contract.",
+        ));
+    }
     if manifest.profile == RuntimePayloadProfile::IsolatedClient
         && manifest.runtime.mode == NodeRuntimeMode::Managed
     {
@@ -767,11 +856,22 @@ fn verify_payload(
     } else {
         "codlet.exe"
     };
-    let expected = expected_paths(
+    let mut expected = expected_paths(
         manifest.profile,
         &manifest.runtime,
         manifest.files.iter().any(|f| f.path == other),
     )?;
+    if let Some(online) = &manifest.online {
+        expected.insert(ONLINE_CLIENT_SOURCE.into());
+        for module in &online.modules {
+            if !expected.insert(module.path.clone()) {
+                return Err(error(
+                    "runtime_update_manifest_invalid",
+                    "Duplicate online Core module path.",
+                ));
+            }
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut total = 0u64;
     for file in &manifest.files {

@@ -15,7 +15,8 @@ if(manifestFile!==path.join(directory,'preflight.json')||path.resolve(manifest.p
 if(fs.existsSync(manifest.planned.profileRoot))throw Error('Profile already exists; preparation never resumes or overwrites it');
 const version=manifest.installedPackage?.Version;
 if(!auditedVersions(fs.readFileSync(path.join(repo,'src/lab.rs'),'utf8')).includes(version))throw Error('Current version has no static IPC review');
-const lab=path.join(repo,'target/debug/codlet-lab.exe');
+const lab=manifest.inputs?.labBinary??path.join(repo,'target/debug/codlet-lab.exe');
+const relative=path.relative(repo,path.resolve(lab));if(relative.startsWith('..')||path.isAbsolute(relative))throw Error('Planned lab executable is outside this workspace');
 const sha=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 if(sha(lab)!==manifest.hashes.labBinary)throw Error('Lab changed after preflight; generate a new run plan');
 const reserve=net.createServer();await new Promise((resolve,reject)=>{reserve.once('error',reject);reserve.listen(0,'127.0.0.1',resolve);});

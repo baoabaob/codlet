@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "runtimeApi": 1,
+  "platforms": ["windows-x86_64"],
+  "author": "Codlet"
+}

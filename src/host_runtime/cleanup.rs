@@ -161,7 +161,10 @@ impl HostOwner {
         }
         // Reuse the same permission and payload checks as the active generation.
         // The CDP method itself remains unrestricted by official adapters.
-        self.dispatch(client, id, &input.method, input.params)
+        // This envelope has already passed the separate finite cleanup checks.
+        // A prior snapshot pause must not reject the authenticated deactivate
+        // restoration while ordinary active-generation requests stay paused.
+        self.dispatch_raw(client, id, &input.method, input.params, None)
     }
 
     fn cleanup_failed(&mut self, phase: HostCleanupPhase, error: String) {

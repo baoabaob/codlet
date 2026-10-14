@@ -1,0 +1,8 @@
+{
+  "schema":1,"id":"compatibility.acceptance","name":"Codlet functional test","version":"0.0.3","tags":["Tool"],
+  "i18n":{"zh":{"name":"Codlet 功能测试","description":"测试界面、桌面适配、RPC、存储、任务、文件、网络和清理"}},
+  "renderer":{"entry":"renderer.js","world":"main"},
+  "host":{"entry":"host.cjs","provides":[{"name":"compatibility.acceptance.host","api":1,"scope":"runtime"}],"requires":[{"name":"codlet.core.services","api":1,"scope":"runtime"},{"name":"codlet.runtime.manage","api":1,"scope":"runtime"}]},
+  "permissions":["ui.dom","ui.mainWorld","host.process","host.system","host.fs","host.fs.write","host.fs.watch","host.process.spawn","host.network","core.storage","core.credentials","core.credentials.use","core.events","core.tasks","core.network","core.diagnostics","traffic.intercept","traffic.sensitiveHeaders","runtime.manage"],
+  "requires":[{"name":"compatibility.acceptance.host","api":1,"scope":"runtime"},{"name":"codlet.core.services","api":1,"scope":"runtime"},{"name":"codex.desktop.compatibility","api":1,"scope":"target"},{"name":"codex.backend.read","api":1,"scope":"target"},{"name":"codex.backend.write","api":1,"scope":"target"},{"name":"codex.backend.events","api":1,"scope":"target"},{"name":"codex.ui.preSubmit","api":1,"scope":"target"},{"name":"codex.ui.navigation.page","api":1,"scope":"target"},{"name":"codex.ui.composer.action","api":1,"scope":"target"}]
+}

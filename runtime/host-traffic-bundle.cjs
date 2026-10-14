@@ -16,7 +16,8 @@ var require_traffic_wire = __commonJS({
     var MAX_BODY = 64 * 1024 * 1024;
     var failure = (code) => Object.assign(new Error(code), { code });
     async function connectTrafficPeer(endpoint, { signal, handle, event = () => {
-    }, detach = (fn) => fn() } = {}) {
+    }, detach = (fn) => fn(), beforeRequest = () => {
+    } } = {}) {
       if (endpoint?.host !== "127.0.0.1" || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== "string" || endpoint.token.length > 128) throw failure("invalid_data_endpoint");
       if (signal?.aborted) throw failure("host_stopping");
       const socket = net.createConnection({ host: endpoint.host, port: endpoint.port });
@@ -128,6 +129,11 @@ var require_traffic_wire = __commonJS({
       }));
       await connected;
       function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
+        try {
+          beforeRequest(method, params);
+        } catch (error) {
+          return Promise.reject(error);
+        }
         if (closed || requestSignal?.aborted) return Promise.reject(failure("peer_closed"));
         if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure("resource_limit"));
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure("invalid_timeout"));
@@ -525,7 +531,7 @@ var require_host_interceptors = __commonJS({
     "use strict";
     var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();
     var fail = (code) => Object.assign(new Error(code), { code });
-    function createHostedInterceptors2({ coreRequest, rootSignal, detach = (fn) => fn(), extension }) {
+    function createHostedInterceptors2({ coreRequest, rootSignal, detach = (fn) => fn(), extension, beforeRequest }) {
       const registrations = /* @__PURE__ */ new Map(), leases = /* @__PURE__ */ new Map(), sources = /* @__PURE__ */ new Set();
       let peer, connecting, retired = false, connectionEpoch = 0;
       const check = () => {
@@ -618,9 +624,18 @@ var require_host_interceptors = __commonJS({
           const epoch = ++connectionEpoch;
           connecting = detach(async () => {
             const endpoint = await coreRequest("services.traffic.connectPeer", {}, rootSignal);
-            const connected = await connectTrafficPeer(endpoint, { signal: rootSignal, handle, event: (message) => {
-              if (connectionEpoch === epoch) event(message);
-            }, detach });
+            const connected = await connectTrafficPeer(endpoint, {
+              signal: rootSignal,
+              handle,
+              event: (message) => {
+                if (connectionEpoch === epoch) event(message);
+              },
+              detach,
+              beforeRequest(method, params) {
+                const continuation = method === "relay" && (leases.has(params?.lease) || extension?.matches(method, params)) && ["stream.read", "stream.cancel"].includes(params?.operation) || ["channel.forward", "channel.cancel"].includes(method) && extension?.matches(method, params) || method === "synchronized" && registrations.has(params?.registration) || method === "setEnabled" && params?.enabled === false && registrations.has(params?.registration);
+                beforeRequest?.(method, params, continuation);
+              }
+            });
             if (retired || connectionEpoch !== epoch) {
               connected.close();
               throw fail("host_stopping");
@@ -755,7 +770,8 @@ var require_host_interceptors = __commonJS({
         openSource: (options) => detach(() => openSource(options)),
         inspect: () => coreRequest("services.traffic.status", {}, rootSignal),
         closeAll,
-        getPeer
+        getPeer,
+        activity: () => ({ registrations: registrations.size, sources: sources.size, leases: leases.size, pending: peer?.status().pending ?? 0, incoming: peer?.status().incoming ?? 0, connecting: connecting && !peer ? 1 : 0 })
       });
     }
     module2.exports = { createHostedInterceptors: createHostedInterceptors2 };
@@ -1046,7 +1062,8 @@ var require_host_channels = __commonJS({
         matches: (method, params) => method === "invoke" ? String(params?.payload?.kind).startsWith("channel.") : exchanges.has(params?.lease),
         handle,
         event,
-        closeAll
+        closeAll,
+        activity: () => ({ channels: channels.size, exchanges: exchanges.size })
       };
     }
     module2.exports = { createHostedChannels: createHostedChannels2 };
@@ -1056,22 +1073,27 @@ var require_host_channels = __commonJS({
 // ../runtime/host-traffic.cjs
 var { createHostedInterceptors } = require_host_interceptors();
 var { createHostedChannels } = require_host_channels();
-function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState, detach = (fn) => fn() }) {
+function createTrafficRuntime({ coreRequest, rootSignal, makeError, reportState, detach = (fn) => fn(), beforeRequest = () => {
+} }) {
   if (typeof coreRequest !== "function" || typeof makeError !== "function") throw new TypeError("traffic runtime dependencies are required");
   let interceptors;
   const channels = createHostedChannels({ coreRequest, rootSignal, reportState, detach, getPeer: () => interceptors.getPeer() });
-  interceptors = createHostedInterceptors({ coreRequest, rootSignal, detach, extension: channels });
+  interceptors = createHostedInterceptors({ coreRequest, rootSignal, detach, extension: channels, beforeRequest });
   const closeAll = () => {
     channels.closeAll();
     interceptors.closeAll();
   };
   rootSignal.addEventListener("abort", closeAll, { once: true });
-  return Object.freeze({ api: Object.freeze({
-    openChannel: channels.openChannel,
-    openHttpChannel: (options, handler) => channels.openChannel(options, { http: handler }),
-    openSource: interceptors.openSource,
-    registerInterceptor: interceptors.registerInterceptor,
-    inspect: interceptors.inspect
-  }), closeAll });
+  return Object.freeze({
+    api: Object.freeze({
+      openChannel: channels.openChannel,
+      openHttpChannel: (options, handler) => channels.openChannel(options, { http: handler }),
+      openSource: interceptors.openSource,
+      registerInterceptor: interceptors.registerInterceptor,
+      inspect: interceptors.inspect
+    }),
+    closeAll,
+    activity: () => ({ ...channels.activity(), ...interceptors.activity() })
+  });
 }
 module.exports = { createTrafficRuntime };

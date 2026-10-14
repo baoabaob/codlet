@@ -37,6 +37,8 @@ pub(super) struct LabRuntime {
     update_cancelled: bool,
     status: StatusPublisher,
     js_runtime: Option<JsRuntime>,
+    plugin_services: crate::core_services::SharedCoreServices,
+    pub(super) traffic: Option<crate::traffic_owner::TrafficOwner>,
     stdin_receipts: BTreeSet<String>,
     last_authorization_error: Option<String>,
     stopped: Option<bool>,
@@ -58,11 +60,15 @@ impl LabRuntime {
         renderer.enable_runtime_skill();
         let mut host_control = HostControl::new(registry_path);
         host_control.seed_watch_sources(&renderer, &host_plugins);
-        let js_runtime = if host_plugins.is_empty() {
+        let js_runtime = if host_plugins.is_empty() && !cfg!(feature = "desktop-acceptance") {
             None
         } else {
             Some(JsRuntime::discover().map_err(preflight)?)
         };
+        let plugin_services =
+            crate::core_services::SharedCoreServices::new(renderer.registry_path())
+                .map_err(preflight)?;
+        let traffic = None;
         let status = StatusPublisher::new();
         renderer.set_status_publisher(status.clone());
         let server = ControlServer::bind_isolated(lease, status.clone()).map_err(preflight)?;
@@ -85,6 +91,8 @@ impl LabRuntime {
             update_cancelled: false,
             status,
             js_runtime,
+            plugin_services,
+            traffic,
             stdin_receipts: BTreeSet::new(),
             last_authorization_error: None,
             stopped: None,
@@ -93,6 +101,27 @@ impl LabRuntime {
     }
     pub fn registry_path(&self) -> &Path {
         self.renderer.registry_path()
+    }
+    pub(super) fn prepare_client_bridge(&mut self) -> Result<(), LabError> {
+        #[cfg(feature = "desktop-acceptance")]
+        {
+            if self.traffic.is_some() {
+                return Err(preflight("owned bridge already prepared"));
+            }
+            let plugins = self.renderer.logical_plugins();
+            let provider = crate::client_launch::select(&plugins).map_err(preflight)?;
+            let mut owner = crate::traffic_owner::TrafficOwner::start(&self.plugin_services)
+                .map_err(preflight)?;
+            owner
+                .prepare_owned_fixture_bridge(
+                    self.js_runtime.as_ref().expect("owned bridge runtime"),
+                    self.registry_path(),
+                    Some(provider),
+                )
+                .map_err(preflight)?;
+            self.traffic = Some(owner);
+        }
+        Ok(())
     }
     pub fn registry_scope(&self) -> &str {
         self.server.scope().id()
@@ -126,6 +155,16 @@ impl LabRuntime {
             self.manage_service.preferences_for_start(),
         ) {
             Ok(service) => {
+                if let Some(source) = self.renderer.client_source() {
+                    service.attach_online_target(source);
+                }
+                #[cfg(feature = "desktop-acceptance")]
+                if self.renderer.client_source().is_some() {
+                    match child.creation_time_filetime().map_err(|failure|failure.to_string()).and_then(|created|service.attach_owned_fixture(lab_root,crate::runtime_update::RuntimeProcessIdentity{pid:child.process_id(),creation_time:created.to_string()}).map_err(|failure|failure.to_string())){
+                        Ok(template)=>reporter.emit("online_core_fixture_ready",json!({"descriptor":lab_root.join("codlet/online-update-fixture.json"),"template":template,"public_rpc":false,"restart_fallback":false})),
+                        Err(failure)=>reporter.emit("online_core_fixture_unavailable",json!({"error":failure})),
+                    }
+                }
                 self.manage_service.set_runtime_update(service.clone());
                 self.runtime_update = Some(service);
             }
@@ -133,6 +172,21 @@ impl LabRuntime {
                 "runtime_update_unavailable",
                 json!({"error":error.to_string()}),
             ),
+        }
+    }
+    pub(super) fn install_deferred_after_client_exit(&self, reporter: &mut Reporter) {
+        if let Some(service) = &self.runtime_update {
+            match crate::runtime_update_owner::RuntimeUpdateHandoff::arm_deferred_on_exit(service) {
+                Ok(Some(request)) => reporter.emit(
+                    "runtime_update_deferred_armed",
+                    serde_json::json!({"id":request.id,"native_restart_requested":false}),
+                ),
+                Ok(None) => {}
+                Err(failure) => reporter.emit(
+                    "runtime_update_deferred_retained",
+                    serde_json::json!({"error":failure}),
+                ),
+            }
         }
     }
 
@@ -161,8 +215,7 @@ impl LabRuntime {
     ) -> Result<(), LabError> {
         let os_broker =
             OsBroker::for_registry(self.registry_path().to_owned()).map_err(runtime_error)?;
-        let plugin_services = crate::core_services::SharedCoreServices::new(self.registry_path())
-            .map_err(runtime_error)?;
+        let plugin_services = self.plugin_services.clone();
         self.renderer
             .set_core_services(plugin_services.clone())
             .map_err(runtime_error)?;

@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "packageVersion": "26.1007.9446.0",
+  "frontendVersion": "26.1007.71326",
+  "buildNumber": "20398",
+  "kind": "exact-source-review-with-extracted-method-probes",
+  "roles": {
+    "bootstrap-iULMfRBf.js": {
+      "hash": "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869",
+      "kind": "bootstrap",
+      "symbol": "tr",
+      "methods": [
+        "assertAllowed",
+        "fetch",
+        "request"
+      ]
+    },
+    "main-Bgi5Xaw-.js": {
+      "hash": "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54",
+      "kind": "main",
+      "symbol": "ple",
+      "methods": [
+        "performDesktopFetch",
+        "performProgressRequest"
+      ]
+    },
+    "application-network-startup-YSC7OAs0.js": {
+      "hash": "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e",
+      "kind": "stdio",
+      "symbol": "Gs",
+      "methods": [
+        "send"
+      ]
+    },
+    "src-DCNiwad_.js": {
+      "hash": "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25",
+      "kind": "connection",
+      "symbol": "mB",
+      "methods": [
+        "routeIncomingMessage",
+        "getPendingRequestCount",
+        "restart"
+      ]
+    }
+  },
+  "checks": {
+    "bootstrapLiveClass": true,
+    "mainLiveClass": true,
+    "stdioLiveClass": true,
+    "connectionLiveClass": true,
+    "finalFetchAuthenticationBeforeNetwork": true,
+    "finalFetchPolicyAndProgress": true,
+    "accountUpdateBeforeNativeNotification": true,
+    "extractedNetworkMethodsPreservePolicyAndIdentity": true,
+    "extractedStdioMethodPreservesReadyCheckAndSingleJsonlWrite": true
+  },
+  "limitations": [
+    "Only reviewed source hashes and extracted local-fake methods are verified here.",
+    "Actual Native source attachment, traffic transformation and running stream handoff require independent owned process evidence.",
+    "No macOS acceptance is established."
+  ]
+}

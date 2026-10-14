@@ -650,7 +650,7 @@ fn process_rejects_ungranted_environment_before_start() {
 
 #[cfg(windows)]
 #[test]
-fn client_permissions_spawn_without_program_cwd_or_environment_lists() {
+fn client_permissions_do_not_select_program_cwd_or_environment_scopes() {
     let temp = tempfile::tempdir().unwrap();
     let mut owner = process_owner(&temp);
     let executable = owner.executables[0].clone();
@@ -659,11 +659,41 @@ fn client_permissions_spawn_without_program_cwd_or_environment_lists() {
     let cwd = temp.path().join("work");
     std::fs::create_dir(&cwd).unwrap();
     let core = CoreResources::default();
+    assert_eq!(
+        code(
+            &core,
+            &owner,
+            "processes.spawn",
+            json!({"executable":executable,"args":[],"operationKey":"missing-program"})
+        ),
+        "policy_denied"
+    );
+    owner.executables.push(executable.clone());
+    assert_eq!(
+        code(
+            &core,
+            &owner,
+            "processes.spawn",
+            json!({"executable":executable,"cwd":cwd,"args":[],"operationKey":"missing-cwd"})
+        ),
+        "policy_denied"
+    );
+    owner.cwd_roots.push(cwd.canonicalize().unwrap());
+    assert_eq!(
+        code(
+            &core,
+            &owner,
+            "processes.spawn",
+            json!({"executable":executable,"cwd":cwd,"env":{"CODLET_TEST_VALUE":"hello"},"args":[],"operationKey":"missing-env"})
+        ),
+        "policy_denied"
+    );
+    owner.env_keys.push("CODLET_TEST_VALUE".into());
     let created = call(
         &core,
         &owner,
         "processes.spawn",
-        json!({"executable":executable,"cwd":cwd,"env":{"CODLET_TEST_VALUE":"hello"},"args":["--eval","process.stdout.write(process.env.CODLET_TEST_VALUE)"],"operationKey":"client-access"}),
+        json!({"executable":executable,"cwd":cwd,"env":{"CODLET_TEST_VALUE":"hello"},"args":["--eval","process.stdout.write(process.env.CODLET_TEST_VALUE);if(process.env.PATH)throw Error('ambient environment inherited')"],"operationKey":"explicit-process-scopes"}),
     );
     let id = &created["process"];
     assert_eq!(read_until(&core, &owner, id, "stdout", 5), b"hello");

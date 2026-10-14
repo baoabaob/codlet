@@ -1,4 +1,4 @@
-((loadUI, createI18n = null, createServices = null, createPage = null, bootstrap = null) => {
+((loadUI, createI18n = null, createServices = null, createPage = null, bootstrap = null, createCodex = null) => {
     const channels = new Set();
     const NativeChannel = globalThis.MessageChannel;
     let disposed = false;
@@ -18,6 +18,7 @@
         i18n: createI18n,
         services: createServices,
         page: createPage,
+        codex: createCodex,
         bootstrap,
         dispose() {
             if (disposed) return;

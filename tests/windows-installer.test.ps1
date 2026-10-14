@@ -57,7 +57,7 @@ function Initialize([string]$Data,[string]$Plugin,[string]$Approve){
 }
 $data=New-Data 'fresh GUI 用户';$result=Initialize $data 'codlet-gui';Assert ($result.code -eq 0) $result.text
 $installed=@([IO.File]::ReadAllLines((Join-Path $data 'installed.jsonl'))|ForEach-Object{ConvertFrom-Json $_})
-Assert ($installed.Count -eq 2) 'GUI dependency not downloaded'
+Assert ($installed.Count -eq 1) 'GUI setup downloaded an obsolete adapter or missed GUI'
 Assert (-not [IO.Directory]::Exists((Join-Path $app 'optional-plugins'))) 'Fixture accidentally included plugin code'
 $state=[IO.File]::ReadAllText((Join-Path $data 'plugin-setup.json'))|ConvertFrom-Json
 Assert ($state.decided.'codlet-gui'.version -eq '7.8.9' -and $state.decided.'codlet-gui'.source -eq 'github') 'Latest GitHub version not recorded'
@@ -70,15 +70,20 @@ $before=[IO.File]::ReadAllText((Join-Path $data 'existing.json'));$result=Initia
 Assert ([IO.File]::ReadAllText((Join-Path $data 'existing.json')) -eq $before) 'Author source or preference changed'
 Assert (@([IO.File]::ReadAllLines((Join-Path $data 'calls.jsonl'))).Count -eq 1) 'Existing source triggered a download'
 foreach($reason in @('bad-owner','bad-digest','extra-permission')){
- $data=New-Data $reason;[IO.File]::WriteAllText((Join-Path $data $reason),'fixture');$result=Initialize $data 'codex.ui.adapter'
+ $data=New-Data $reason;[IO.File]::WriteAllText((Join-Path $data $reason),'fixture');$result=Initialize $data 'codlet-gui'
  Assert ($result.code -ne 0) ('Accepted '+$reason);Assert (-not [IO.File]::Exists((Join-Path $data 'installed.jsonl'))) ('Installed before validating '+$reason)
- if($reason -eq 'extra-permission'){$result=Initialize $data 'codex.ui.adapter' 'core.events';Assert ($result.code -eq 0) $result.text}
+ if($reason -eq 'extra-permission'){$result=Initialize $data 'codlet-gui' 'core.events';Assert ($result.code -eq 0) $result.text}
 }
-$data=New-Data 'network retry';$flag=Join-Path $data 'network-failure';[IO.File]::WriteAllText($flag,'fixture');$result=Initialize $data 'codex.ui.adapter';Assert ($result.code -ne 0) 'Network failure ignored'
-$state=[IO.File]::ReadAllText((Join-Path $data 'plugin-setup.json'))|ConvertFrom-Json;Assert ($state.decided.'codex.ui.adapter'.result -eq 'pending') 'Failure marked complete'
+$data=New-Data 'network retry';$flag=Join-Path $data 'network-failure';[IO.File]::WriteAllText($flag,'fixture');$result=Initialize $data 'codlet-gui';Assert ($result.code -ne 0) 'Network failure ignored'
+$state=[IO.File]::ReadAllText((Join-Path $data 'plugin-setup.json'))|ConvertFrom-Json;Assert ($state.decided.'codlet-gui'.result -eq 'pending') 'Failure marked complete'
 Remove-Item -LiteralPath $flag;$result=Initialize $data;Assert ($result.code -eq 0) $result.text;Assert ([IO.File]::Exists((Join-Path $data 'installed.jsonl'))) 'Pending download could not resume'
-$data=New-Data 'uncertain mutation';[IO.File]::WriteAllText((Join-Path $data 'result-lost'),'fixture');$result=Initialize $data 'codex.ui.adapter';Assert ($result.code -ne 0) 'Uncertain result hidden'
-$result=Initialize $data 'codex.ui.adapter';Assert ($result.code -eq 0) $result.text
+$data=New-Data 'uncertain mutation';[IO.File]::WriteAllText((Join-Path $data 'result-lost'),'fixture');$result=Initialize $data 'codlet-gui';Assert ($result.code -ne 0) 'Uncertain result hidden'
+$result=Initialize $data 'codlet-gui';Assert ($result.code -eq 0) $result.text
 Assert (@([IO.File]::ReadAllLines((Join-Path $data 'installed.jsonl'))).Count -eq 1) 'Uncertain install was replayed'
 $data=New-Data 'Core only';$result=Initialize $data 'none';Assert ($result.code -eq 0) $result.text;Assert (-not [IO.File]::Exists((Join-Path $data 'installed.jsonl'))) 'Core only installed plugins'
-Write-Output 'Windows online installer fixtures passed: latest download, dependency, identity/digest, permissions, retry, preserved sources/preferences, no automatic revival or mutation replay.'
+$data=New-Data 'obsolete choices';Write-Json (Join-Path $data 'plugin-setup.json') @{schema=1;decided=@{'codex.ui.adapter'=@{selected=$true;result='pending'};'codex.desktop.adapter'=@{selected=$false;result='existing'}}}
+$result=Initialize $data 'codex.desktop.adapter';Assert ($result.code -eq 0) $result.text
+Assert (-not [IO.File]::Exists((Join-Path $data 'installed.jsonl'))) 'An obsolete adapter selection downloaded another provider'
+$state=[IO.File]::ReadAllText((Join-Path $data 'plugin-setup.json'))|ConvertFrom-Json
+Assert ($state.decided.'codex.ui.adapter'.result -eq 'pending' -and $state.decided.'codex.desktop.adapter'.result -eq 'existing') 'Setup discarded legacy decisions'
+Write-Output 'Windows installer fixtures passed: GUI-only download, ignored legacy adapter choices, identity/digest, permissions, retry, preserved sources/preferences, no automatic revival or mutation replay.'
