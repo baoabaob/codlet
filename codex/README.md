@@ -6,18 +6,32 @@ installation is required. Historical capability API 1 names and provider IDs are
 compatibility aliases. Core catalog ownership prevents legacy installed adapters
 from competing with these implementations while preserving their user records.
 
-`PROVENANCE.json` records the source commit and SHA-256 of imported files from
-`baoabaob/codlet-plugins`. The complete upstream Apache-2.0 license, compatibility
-profiles, modular sources, tests and acceptance probes are preserved. Core-owned
-changes may subsequently differ from the recorded import hashes. Build-generated
-bundles include third-party notices. The prior external source remains untouched.
+`PROVENANCE.json` is the unchanged historical import inventory from
+`baoabaob/codlet-plugins`, based on commit
+`da7c0ea3f151532522b654341db7f8ef0ac5e1f8` and the preserved local snapshot.
+Its hashes describe the import, not today's maintained tree. The import and
+removed files remain recoverable from Core Git history (including implementation
+commit `9a40546`). Unused upstream GUI/release tests, standalone package metadata
+and duplicate public declarations have been removed; current public declarations
+live in [`../types`](../types/codex.d.ts). The Apache-2.0 license, notices,
+implementation, compatibility profiles and workspace probes remain here.
+Build-generated bundles include third-party notices.
 
-Run `node frontend/build-codex.mjs` from Core, or the standard frontend build, to
-regenerate all embedded sources using Core's existing build dependencies. Run
-`node codex/test.mjs` for the preserved adapter/launch unit suite. Probe fixtures
-describe evidence and are never run against a user's daily Native instance.
+Install dependencies only with `npm ci --prefix frontend` from Core. Run
+`node frontend/build-codex.mjs`, or the standard frontend build, to regenerate
+embedded sources. `codex/frontend/package.json` only preserves the ESM boundary
+and delegates build/test commands; it has no separate lockfile or installation.
+Run `node codex/test.mjs` for all maintained implementation unit tests. Native
+tests remain opt-in and must never target a user's daily instance.
 
-`context.codex` is defined in `types/codex.d.ts`. Its standard facade uses Core
+[`scripts/README.md`](scripts/README.md) describes Core-owned Native research
+drivers. [`tests/fixtures/workspace-acceptance`](tests/fixtures/workspace-acceptance)
+retains the original owned probes, including probes that were untracked in the
+preserved pre-import workspace. The full functional consumer is maintained once
+in `codlet-plugins/tests/fixtures/runtime-compatibility/consumer`; this tree keeps
+only its historical explicit Native driver and read-only sampler.
+
+`context.codex` is defined in [`../types/codex.d.ts`](../types/codex.d.ts). Its standard facade uses Core
 capability admission and generation-scoped cleanup; callback and DOM handles
 stay local. Capability probing reports each supported feature independently.
 Profile declarations and verified client/platform evidence remain separate from

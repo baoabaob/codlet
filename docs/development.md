@@ -35,7 +35,9 @@ cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
 node --test --test-concurrency=2 tests/*.test.mjs
 ```
 
-Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins and the isolated native traffic harness only for tests and is rejected when debug assertions are disabled. Windows fixture builds use separate status/control/launch IPC names, and CLI fixtures clear inherited `CODLET_HOME` before selecting temporary data. The harness uses temporary registries and in-memory credentials. Core's `codex/tests` validates the imported UI/Desktop contracts; run `node --test codex/tests/*.test.mjs` in addition to Core tests. The plugin source repository validates GUI and the full runtime-compatibility consumer against Core's SDK. Its old adapter sources are retained regression history and are excluded from new distributions.
+Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins and the isolated native traffic harness only for tests and is rejected when debug assertions are disabled. Windows fixture builds use separate status/control/launch IPC names, and CLI fixtures clear inherited `CODLET_HOME` before selecting temporary data. The harness uses temporary registries and in-memory credentials.
+
+Run `node codex/test.mjs` for all maintained UI/Desktop implementation tests. The [Native diagnostic tools](../codex/scripts/README.md) and their opt-in workflows also live in Core. The plugin source repository separately validates the GUI and complete functional consumer against an explicit snapshot of Core's SDK; it no longer contains a duplicate Adapter implementation or Native toolchain.
 
 Installer-specific checks are described in [distribution](distribution.md). Keep tests that exercise real invariants, failure paths, and public contracts. Avoid making tests depend on incidental documentation filenames or dated experiment output.
 
@@ -51,16 +53,16 @@ For actual acceptance, use a normal release build, record the official package/f
 
 ## Repository layout and generated files
 
-See [architecture](architecture.md) for source ownership. `frontend/build.mjs` regenerates the embedded SDK bundles and UI attribution. Do not edit generated bundles by hand. Versioned compatibility profiles and repeatable tests belong in Git; local account data, logs, heap snapshots, downloaded runtimes, and experiment reports belong outside tracked source.
+See [repository ownership](repository-layout.md) for the three source repositories and generated distribution targets. `frontend/build.mjs` regenerates the embedded SDK bundles, Codex modules and UI attribution. Core's root frontend lockfile owns these builds; `codex/frontend/package.json` only delegates commands and preserves ESM. Do not edit generated bundles by hand. Versioned compatibility profiles and repeatable tests belong in Git; local account data, logs, heap snapshots, downloaded runtimes, and temporary reports belong outside tracked source.
 
 After changing Rust dependencies, run `python scripts/collect-rust-licenses.py`. It collects actual locked crate notices and Rust standard-library attribution for the distributed platforms; `--check` detects stale output on the same build toolchain. Standard-library/build-host dependencies can differ across toolchains, so native packaging regenerates the notices in its own build environment. The resulting `THIRD_PARTY_RUST_LICENSES.txt` ships with both installers.
 
-Current contracts live in `docs/spec/`; older decisions and experiments are available in Git history. Keep ongoing limitations in [known-issues](known-issues.md), rather than copying historical progress reports into each release.
+Current contracts live in `docs/spec/`, versioned delivery evidence in `docs/releases/`, and dated investigations in [docs/history](history/README.md). Original source paths and hashes are retained in the archive inventory and Git. Keep ongoing limitations in [known-issues](known-issues.md).
 
 Keep the primary checkout on the current `main` branch after integrating work.
 Temporary worktrees are for concurrent changes, not permanent alternate project
 directories; preserve useful uncommitted source in Git before removing them with
-`git worktree remove`. Core and `codlet-plugins` remain separate repositories and
+`git worktree remove`. Core, `codlet-plugins` and the split workbench remain separate repositories and
 can be moved together as sibling directories. Move the primary checkout, including
 its `.git` directory, rather than copying a linked worktree's `.git` pointer.
 

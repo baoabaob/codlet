@@ -2,7 +2,7 @@
 
 This document is the stable contract for transparent traffic and the Host traffic API. It describes ownership and wire limits; client-specific endpoint names stay in Core's internal Codex source module.
 
-The process ingress uses generic plaintext sources. The Adapter's [request-chain verification](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/request-chain.md) established separate Desktop JS and model-provider plaintext paths on a reviewed Windows build. Each source must be activated and report its own supported paths; this contract alone does not prove installed Desktop coverage.
+The process ingress uses generic plaintext sources. The Adapter's [request-chain verification](https://github.com/baoabaob/codlet/blob/main/docs/history/adapters/spec/request-chain.md) established separate Desktop JS and model-provider plaintext paths on a reviewed Windows build. Each source must be activated and report its own supported paths; this contract alone does not prove installed Desktop coverage.
 
 ## Ownership
 

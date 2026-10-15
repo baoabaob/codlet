@@ -19,7 +19,7 @@ Prepare an absolute-path JSON configuration:
 {
   "root": "C:/work/codlet/.codlet-artifacts/new-desktop-test",
   "clientApp": "C:/work/reviewed-msix/unpacked/app",
-  "pluginsRoot": "C:/work/codlet-plugins",
+  "guiPlugin": "C:/work/codlet-plugins/bundled/codlet",
   "testBinary": "C:/work/codlet/target/debug/codlet-desktop-acceptance.exe",
   "packageVersion": "26.924.2738.0"
 }
@@ -27,8 +27,12 @@ Prepare an absolute-path JSON configuration:
 
 `root` must not exist. The signed client and bundled official CLI must come from
 the reviewed package matching `packageVersion`; the coordinator verifies their
-OpenAI Authenticode signatures. `pluginsRoot` explicitly selects trusted official
-plugin source. Their declared permissions are granted only in this new registry.
+OpenAI Authenticode signatures. `guiPlugin` explicitly selects the trusted built
+GUI directory. The old `pluginsRoot` setting remains a GUI-only fallback at
+`bundled/codlet`. Core supplies its internal UI/Desktop providers; the harness
+does not register separately installed Adapter bundles. Selected ordinary plugins
+receive their declared permissions only in this new registry. The example client
+version is historical; select and review the actual package being tested.
 
 Run `node scripts/desktop-acceptance.mjs <absolute-config.json>` from an ordinary
 unpackaged shell. The harness rejects a creator that already has package identity:
@@ -88,7 +92,7 @@ The optional `rawLaunch: true` diagnostic control deliberately skips this repair
 It reproduces the old launch path and is expected to fail if the selected program
 does not acquire package identity. It is not a production launcher setting.
 
-Additional opt-in controls support adapter acceptance without changing production:
+Additional opt-in controls support Core integration acceptance without changing production:
 
 - `localApiKeyFixture: true` writes a synthetic file-only API key and runs a
   bounded loopback HTTP/SSE fixture. Desktop test requests and model replies use

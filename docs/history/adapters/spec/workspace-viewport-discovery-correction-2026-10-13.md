@@ -1,0 +1,9 @@
+# Native content-pane discovery boundary correction
+
+The `a50d29b` consumer sample `consumer-c0a987a9-61d3-4ce2-ae5c-9bb05036c8da` failed its first independent-sidebar enable attempt with `workspace_host_pending: A unique Native viewport layout is required`. Native thread bodies and input remained valid; the consumer retained this failure separately. Read-only prefix checks returned zero owned viewport keys before and after this failed discovery. This is a failed C acceptance, not a general New-entry failure.
+
+The Native layout source places the main-content viewport and the content-pane component beside each other **inside** `main[data-app-shell-main-surface]`. Discovery previously stopped at that whole main node, preventing it from reaching the valid pane even when the pane was merely closed.
+
+The corrected boundary traverses the Native main shell and prunes its actual body branches: main-content layout, main focus area, thread scroll container, composer, consumer-owned nodes, and the right resource aside. The content-pane component is identified by its semantic source and motion/boolean properties before its children are visited. The 512-node boundary and unique-candidate requirement remain. No transcript or resource/browser contents are scanned and no Native flags/defaults are written by discovery.
+
+A regression uses the actual main-to-row-to-body/pane sibling shape, including a closed pane. Accessing either the conversation body or viewer subtree throws in the fixture, proving these branches stay outside the scan. A duplicate matching pane still rejects. The driver's existing state, notification, per-context restoration and cleanup tests remain applicable. Actual independent-sidebar activation and persistence/content restoration require a new frozen consumer sample; this source correction alone is not Native acceptance.

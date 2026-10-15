@@ -101,7 +101,7 @@ Desktop HTTP hooks and the owned local AppServer provider route report separate
 `activatedSources` and `unsupportedSources`. Browser WebSockets, remote/cloud
 model sockets, Realtime/WebRTC, attachments, live OAuth refresh and arbitrary
 provider protocols do not have complete acceptance. See [traffic](spec/traffic.md)
-and the [adapter request-chain contract](https://github.com/baoabaob/codlet-plugins/blob/main/docs/spec/request-chain.md).
+and the [adapter request-chain contract](https://github.com/baoabaob/codlet/blob/main/docs/history/adapters/spec/request-chain.md).
 
 ## Platforms and distribution
 

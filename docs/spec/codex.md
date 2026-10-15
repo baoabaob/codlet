@@ -9,6 +9,7 @@ the registry, but cannot compete with the internal providers.
 
 [types/codex.d.ts](../../types/codex.d.ts) is the renderer contract.
 [types/codex-traffic.d.ts](../../types/codex-traffic.d.ts) is the Host contract.
+The [Workspace guide](workspace.md) and [workspace declarations](../../types/codex-workspace.d.ts) describe local Native handles in detail.
 Existing `context.ui`, `context.services`, API 1 capability descriptors, RPC
 methods and one-use local API tickets remain supported.
 

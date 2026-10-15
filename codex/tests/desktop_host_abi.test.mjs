@@ -7,17 +7,16 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-// Cross-repository integration: use the actual Core bootstrap, not a duplicated
-// export validator. Ordinary plugin-only runs can omit the optional Core checkout.
+// Exercise Core's generated production bootstrap, including all SDK factories.
 test('Desktop source entry initializes and shuts down through the standard Core Host ABI', { skip: !process.env.CODLET_CORE_ROOT, timeout: 5000 }, async t => {
   const core = process.env.CODLET_CORE_ROOT;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codlet-host-abi-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const entry = fileURLToPath(new URL('../host/desktop-launch.cjs', import.meta.url));
   const snapshot = path.join(directory, 'snapshot.cjs'), bootstrap = path.join(directory, 'bootstrap.cjs');
-  const [services, traffic, codex, host] = await Promise.all(['core-services.cjs', 'host-traffic-bundle.cjs', 'codex-host-bundle.cjs', 'host.cjs'].map(name => fs.readFile(path.join(core, 'runtime', name), 'utf8')));
+  const host = await fs.readFile(path.join(core, 'runtime/core-modules/host-bootstrap.cjs'), 'utf8');
   await fs.copyFile(entry, snapshot);
-  await fs.writeFile(bootstrap, `process.argv.splice(1, 1);\nconst createEmbeddedServicesRuntime = (() => { const module = { exports: {} };\n${services}\nreturn module.exports.createCoreServicesRuntime; })();\nconst createEmbeddedCodexHost = (() => { const module = { exports: {} };\n${codex}\nreturn module.exports.createCodexHost; })();\n${traffic}\n${host}`);
+  await fs.writeFile(bootstrap, `process.argv.splice(1, 1);\n${host}`);
   const child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', bootstrap, entry, snapshot], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   t.after(() => child.kill());
   const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));

@@ -125,4 +125,6 @@ page injection capabilities are not removed to make a memory measurement pass.
 Generated bundles remain tracked because a normal Rust build embeds them. Local
 profiles, binary packages, heaps, account data and temporary experiments are
 ignored and never form a clean build prerequisite. Git keeps earlier designs;
-current documentation is organized by contract rather than development date.
+current documentation is organized by contract. Dated research is indexed in
+[history](history/README.md), release evidence in [releases](releases/README.md),
+and repository responsibilities in [repository-layout](repository-layout.md).

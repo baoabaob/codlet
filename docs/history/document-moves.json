@@ -1,0 +1,768 @@
+{
+  "schema": 1,
+  "date": "2026-10-15",
+  "repositories": {
+    "core": "https://github.com/baoabaob/codlet",
+    "plugins": "https://github.com/baoabaob/codlet-plugins",
+    "split": "local independent repository; no remote"
+  },
+  "hashes": "sourceSha256 records the pre-move working file bytes; sourceGitBlobSha256 records the original Git blob before checkout line-ending conversion; archivedSha256 records the reorganized file bytes.",
+  "transformations": [
+    "Markdown link destinations rebased; historical claims and results preserved.",
+    "0.2.0 readiness and 0.3.0 validation omit duplicated v1 introduction; original complete source remains at recorded commit.",
+    "Raw JSON and moved JavaScript example are byte-preserved.",
+    "Current Workspace contract is separately derived and updated in docs/spec/workspace.md."
+  ],
+  "documents": [
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/known-issues.md",
+      "sourceSha256": "f1976e9a47970491f7a796dfd2d3588d9243c2b389acbe90c14ffa1ea1ecfd38",
+      "sourceGitBlobSha256": "f1976e9a47970491f7a796dfd2d3588d9243c2b389acbe90c14ffa1ea1ecfd38",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/known-issues.md",
+      "archivedSha256": "f1976e9a47970491f7a796dfd2d3588d9243c2b389acbe90c14ffa1ea1ecfd38"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/release-readiness.md",
+      "sourceSha256": "bf9749dab7c592cf709c51d8caffd293178353f209f414f6629d5d4b8a18da31",
+      "sourceGitBlobSha256": "bf9749dab7c592cf709c51d8caffd293178353f209f414f6629d5d4b8a18da31",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/releases/0.2.0-readiness.md",
+      "archivedSha256": "e6c7f775a74bfd89e3228a7babc4cc5f563cd3b00afe4bfed9408f7dcd7c181a"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "VALIDATION.md",
+      "sourceSha256": "d398afdb15e8f01849ae30d5f4a2ab0e285cb1a6d3ee6382d9cbc8fe97829ba3",
+      "sourceGitBlobSha256": "d398afdb15e8f01849ae30d5f4a2ab0e285cb1a6d3ee6382d9cbc8fe97829ba3",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/validation-0.3.0.md",
+      "archivedSha256": "3c48912ce7c935ab971da4b278bd9399ee14579b6eef539b48513aa24fa2484b"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-cost-review-2026-10-11.md",
+      "sourceSha256": "b64e9cdf23cfc30bda4d1fcce17b656e7ad5a7f5ed825a60cc67132d76ccd838",
+      "sourceGitBlobSha256": "b64e9cdf23cfc30bda4d1fcce17b656e7ad5a7f5ed825a60cc67132d76ccd838",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-cost-review-2026-10-11.md",
+      "archivedSha256": "1be4c84d5414c86a946107e5f9bb5b06935beefd3dc76cb33220583eda85c2c8"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-foreground-followup-2026-10-13.md",
+      "sourceSha256": "54393674302e80759a9c15b6b47cd45e01c4f234e4ee9e70222712374b8f58a8",
+      "sourceGitBlobSha256": "54393674302e80759a9c15b6b47cd45e01c4f234e4ee9e70222712374b8f58a8",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-foreground-followup-2026-10-13.md",
+      "archivedSha256": "09b1a638ae18bc10ccdf806ec2848af5397b4fdc4917bf1d3d6a36d2723a6720"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-foreground-measurement-2026-10-13.md",
+      "sourceSha256": "a2f1b3abbe91bae92c9b0b58889e32ec6ae9ef260196bf4218765b7c912b6950",
+      "sourceGitBlobSha256": "a2f1b3abbe91bae92c9b0b58889e32ec6ae9ef260196bf4218765b7c912b6950",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-foreground-measurement-2026-10-13.md",
+      "archivedSha256": "1f6339a24561eadd139dd008efa99e4e4dc3ba2569eb53c4b4c4ccc3119b398a"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-native-background-2026-10-11.md",
+      "sourceSha256": "3dd8dadb53bfd63b5e3a5b26f11f741ff85c065f31e64780b7835c1400db0652",
+      "sourceGitBlobSha256": "3dd8dadb53bfd63b5e3a5b26f11f741ff85c065f31e64780b7835c1400db0652",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-native-background-2026-10-11.md",
+      "archivedSha256": "3dd8dadb53bfd63b5e3a5b26f11f741ff85c065f31e64780b7835c1400db0652"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-native-progress-2026-10-11.md",
+      "sourceSha256": "9f6358f3d7ba958fbf0e745939c4786bacd2351bd10e4d0988b7e7585462eb4a",
+      "sourceGitBlobSha256": "9f6358f3d7ba958fbf0e745939c4786bacd2351bd10e4d0988b7e7585462eb4a",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-native-progress-2026-10-11.md",
+      "archivedSha256": "9f6358f3d7ba958fbf0e745939c4786bacd2351bd10e4d0988b7e7585462eb4a"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-process-ownership-audit-2026-10-12.json",
+      "sourceSha256": "c2f14b7bba8fd0b8e339a4f55b6075d543ffc6c64ab04181b3210d4d35fa33b2",
+      "sourceGitBlobSha256": "c2f14b7bba8fd0b8e339a4f55b6075d543ffc6c64ab04181b3210d4d35fa33b2",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-process-ownership-audit-2026-10-12.json",
+      "archivedSha256": "c2f14b7bba8fd0b8e339a4f55b6075d543ffc6c64ab04181b3210d4d35fa33b2"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-process-ownership-audit-2026-10-12.md",
+      "sourceSha256": "f598c2dacfef5e053d04208f1705b55fd8d7276c4e792cca96aa3680a07de951",
+      "sourceGitBlobSha256": "f598c2dacfef5e053d04208f1705b55fd8d7276c4e792cca96aa3680a07de951",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-process-ownership-audit-2026-10-12.md",
+      "archivedSha256": "8d3bc6d949f5011b87fb4cb847232d4d19b872e7f9459c90b491ea3a9f6ecb53"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-ui-container-review-2026-10-13.md",
+      "sourceSha256": "4996f958b571d49ba6f2916678dee78dc7c3f35460562fd58b3ae368e630c31b",
+      "sourceGitBlobSha256": "4996f958b571d49ba6f2916678dee78dc7c3f35460562fd58b3ae368e630c31b",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-ui-container-review-2026-10-13.md",
+      "archivedSha256": "24d360aa20826bb0469010f94cdbe38ccfa65274da30bdc2d132fd59d809f187"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-ui-native-background-2026-10-11.json",
+      "sourceSha256": "7a47e41eaa701922aa99e7ad0e2cc9391771081659c02f19385c55d3d001f218",
+      "sourceGitBlobSha256": "7a47e41eaa701922aa99e7ad0e2cc9391771081659c02f19385c55d3d001f218",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-ui-native-background-2026-10-11.json",
+      "archivedSha256": "7a47e41eaa701922aa99e7ad0e2cc9391771081659c02f19385c55d3d001f218"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/core-ui-offline-2026-10-11.json",
+      "sourceSha256": "0074cd92dd40ae2abfa57a238ebf872c5927ac491048c22a0fa405926f55ee46",
+      "sourceGitBlobSha256": "0074cd92dd40ae2abfa57a238ebf872c5927ac491048c22a0fa405926f55ee46",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/core-ui-offline-2026-10-11.json",
+      "archivedSha256": "0074cd92dd40ae2abfa57a238ebf872c5927ac491048c22a0fa405926f55ee46"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/isolated-state-publication-fix-2026-10-12.md",
+      "sourceSha256": "6606f627d79cee8b4d70733b448fd41f1f04d8cab519af5624621cf93cf6fb9f",
+      "sourceGitBlobSha256": "6606f627d79cee8b4d70733b448fd41f1f04d8cab519af5624621cf93cf6fb9f",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/isolated-state-publication-fix-2026-10-12.md",
+      "archivedSha256": "0b3c05df77c1af3d8a0b2e48e4ad845a717648aed3313f5abfcfc51f48bfc277"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/native-refresh-2026-10-11.md",
+      "sourceSha256": "f134a328ff3bd5a771e64a55fb984d5aab26bea105edd0cabdaf6c7e75522ce8",
+      "sourceGitBlobSha256": "f134a328ff3bd5a771e64a55fb984d5aab26bea105edd0cabdaf6c7e75522ce8",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/native-refresh-2026-10-11.md",
+      "archivedSha256": "f134a328ff3bd5a771e64a55fb984d5aab26bea105edd0cabdaf6c7e75522ce8"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/native-window-drag-review-2026-10-12.md",
+      "sourceSha256": "723702fe7992835de612fd5821f5558862ebd40b2d90c7656b722aefe37cb5f0",
+      "sourceGitBlobSha256": "723702fe7992835de612fd5821f5558862ebd40b2d90c7656b722aefe37cb5f0",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/core/native-window-drag-review-2026-10-12.md",
+      "archivedSha256": "005adcf756284494a1fbd39f155de4ffdf2045ace885c8b074c9b743c70a61d6"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/unified-core-v1-contract.md",
+      "sourceSha256": "d8c6250d181a7a9309e4262485d7b8723013d6cbb30b590d245987d7a1701561",
+      "sourceGitBlobSha256": "d8c6250d181a7a9309e4262485d7b8723013d6cbb30b590d245987d7a1701561",
+      "destinationRepository": "core",
+      "destinationPath": "docs/releases/1.0.0-rc.1/implementation.md",
+      "archivedSha256": "6b91032db76b1b006368a7b86d92489c5f241855a7b28364c3c21e8ca3f0ef0e"
+    },
+    {
+      "sourceRepository": "core",
+      "sourceCommit": "1ac2b4eea60169d8374478236ec3d7b69693a279",
+      "sourcePath": "docs/validation-unified-core-v1.md",
+      "sourceSha256": "33e1252f8ac83883827870fdcbaba05d9953f22fc257ac723f49fab62a7ea7c4",
+      "sourceGitBlobSha256": "33e1252f8ac83883827870fdcbaba05d9953f22fc257ac723f49fab62a7ea7c4",
+      "destinationRepository": "core",
+      "destinationPath": "docs/releases/1.0.0-rc.1/validation.md",
+      "archivedSha256": "33e1252f8ac83883827870fdcbaba05d9953f22fc257ac723f49fab62a7ea7c4"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/adapters.md",
+      "sourceSha256": "85ab9ebe7a5e74b904d0b96efcd17b75750825dd443cb707073bd3f3c29d8dbd",
+      "sourceGitBlobSha256": "85ab9ebe7a5e74b904d0b96efcd17b75750825dd443cb707073bd3f3c29d8dbd",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/adapters.md",
+      "archivedSha256": "e436e61675731d5654af0d7e83a550e7616c4b7962489a2f066bff117ed7a3fd"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/composer-action-review.md",
+      "sourceSha256": "1f9c0794b98fd290106752a6c303aeba381178b69de9df9c7601a75e9296c148",
+      "sourceGitBlobSha256": "1f9c0794b98fd290106752a6c303aeba381178b69de9df9c7601a75e9296c148",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/composer-action-review.md",
+      "archivedSha256": "1f9c0794b98fd290106752a6c303aeba381178b69de9df9c7601a75e9296c148"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/process-ownership-audit-2026-10-12.md",
+      "sourceSha256": "b2f4a55ae412c237cb5f1969c143829ede535e92d94b04f03ec10b1df2f681b2",
+      "sourceGitBlobSha256": "b2f4a55ae412c237cb5f1969c143829ede535e92d94b04f03ec10b1df2f681b2",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/process-ownership-audit-2026-10-12.md",
+      "archivedSha256": "b2f4a55ae412c237cb5f1969c143829ede535e92d94b04f03ec10b1df2f681b2"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/request-chain.md",
+      "sourceSha256": "869bbd92e2261301422af66c60b414f02c137963089f3fbdfba9bcc3e79377a1",
+      "sourceGitBlobSha256": "869bbd92e2261301422af66c60b414f02c137963089f3fbdfba9bcc3e79377a1",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/request-chain.md",
+      "archivedSha256": "869bbd92e2261301422af66c60b414f02c137963089f3fbdfba9bcc3e79377a1"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/traffic.md",
+      "sourceSha256": "6510aae9a27e2cafb85516b6f8eaa613079a9b24f72d19e8265f4e865b9ebf02",
+      "sourceGitBlobSha256": "6510aae9a27e2cafb85516b6f8eaa613079a9b24f72d19e8265f4e865b9ebf02",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/traffic.md",
+      "archivedSha256": "6cb22d7f367550838b2f23c4947b4edc30c0e9b00b5a69d8d8ac8fd182f86be9"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/windows-startup-bootstrap.md",
+      "sourceSha256": "9aa361872e10bb2494c468903f1f0ce1c443575e57a23698e32d38f42ec6dbc3",
+      "sourceGitBlobSha256": "9aa361872e10bb2494c468903f1f0ce1c443575e57a23698e32d38f42ec6dbc3",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/windows-startup-bootstrap.md",
+      "archivedSha256": "7d096d1eaf4a3ca6c282fcc2f5302d80abd92bd7cfac130c2e39ba639086958d"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-composer-contract.md",
+      "sourceSha256": "8c01d87be789e1fdcca263b198982998923128b9f485aa962e4042cc82d500f3",
+      "sourceGitBlobSha256": "8c01d87be789e1fdcca263b198982998923128b9f485aa962e4042cc82d500f3",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-composer-contract.md",
+      "archivedSha256": "8c01d87be789e1fdcca263b198982998923128b9f485aa962e4042cc82d500f3"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-context-candidate-2026-10-13.md",
+      "sourceSha256": "f325baab93dc8fc72829cdf9eca6a3c6b5c9bb4950b619aac8c3694415003c7c",
+      "sourceGitBlobSha256": "f325baab93dc8fc72829cdf9eca6a3c6b5c9bb4950b619aac8c3694415003c7c",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-context-candidate-2026-10-13.md",
+      "archivedSha256": "f325baab93dc8fc72829cdf9eca6a3c6b5c9bb4950b619aac8c3694415003c7c"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-context-contract-2026-10-13.md",
+      "sourceSha256": "3f85ed1a1471335b1d4fe151c74b251b3daebb9d887f6d13d0af086fd4106ad0",
+      "sourceGitBlobSha256": "3f85ed1a1471335b1d4fe151c74b251b3daebb9d887f6d13d0af086fd4106ad0",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-context-contract-2026-10-13.md",
+      "archivedSha256": "3f85ed1a1471335b1d4fe151c74b251b3daebb9d887f6d13d0af086fd4106ad0"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-count-and-list-semantics-2026-10-14.md",
+      "sourceSha256": "df642d1d3eb263e4adb49ca71cd2ff422e568e8d1ffb2a058d1f1311c220fa62",
+      "sourceGitBlobSha256": "df642d1d3eb263e4adb49ca71cd2ff422e568e8d1ffb2a058d1f1311c220fa62",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-count-and-list-semantics-2026-10-14.md",
+      "archivedSha256": "df642d1d3eb263e4adb49ca71cd2ff422e568e8d1ffb2a058d1f1311c220fa62"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-floating-regions-2026-10-13.md",
+      "sourceSha256": "1502f9b7ce272d53d705c4fe35b9a9f95bf9c674ae089aa8fef9524eb33c82a8",
+      "sourceGitBlobSha256": "1502f9b7ce272d53d705c4fe35b9a9f95bf9c674ae089aa8fef9524eb33c82a8",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-floating-regions-2026-10-13.md",
+      "archivedSha256": "90acf3e0ecf06e37622498fc78201e820e617a09f8b21706d336374c2cce5435"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-history-acceptance-2026-10-13.md",
+      "sourceSha256": "52ae7aa4ced0b411fbaaca178460a8a9ea20128022e3c9cf7742d29db91e7c5a",
+      "sourceGitBlobSha256": "52ae7aa4ced0b411fbaaca178460a8a9ea20128022e3c9cf7742d29db91e7c5a",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-history-acceptance-2026-10-13.md",
+      "archivedSha256": "52ae7aa4ced0b411fbaaca178460a8a9ea20128022e3c9cf7742d29db91e7c5a"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-independent-viewport-2026-10-13.md",
+      "sourceSha256": "ca1d395ff7851e34b60879145ab59e099dfbdfe82aba8fe6e84420535a6456ae",
+      "sourceGitBlobSha256": "ca1d395ff7851e34b60879145ab59e099dfbdfe82aba8fe6e84420535a6456ae",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-independent-viewport-2026-10-13.md",
+      "archivedSha256": "ca1d395ff7851e34b60879145ab59e099dfbdfe82aba8fe6e84420535a6456ae"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-interface-2026-10-11.md",
+      "sourceSha256": "94e351998eac05b84936d8fb0bdfcb1e3921a1e65a7b7e2540a08c79ecf5bf0b",
+      "sourceGitBlobSha256": "94e351998eac05b84936d8fb0bdfcb1e3921a1e65a7b7e2540a08c79ecf5bf0b",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-interface-2026-10-11.md",
+      "archivedSha256": "94e351998eac05b84936d8fb0bdfcb1e3921a1e65a7b7e2540a08c79ecf5bf0b"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-location-draft-identity-2026-10-13.md",
+      "sourceSha256": "471a02e4a6cca59b54ca7e18eadc8c69a7f751e4a9d5018cc396b91f63e556f5",
+      "sourceGitBlobSha256": "471a02e4a6cca59b54ca7e18eadc8c69a7f751e4a9d5018cc396b91f63e556f5",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-location-draft-identity-2026-10-13.md",
+      "archivedSha256": "471a02e4a6cca59b54ca7e18eadc8c69a7f751e4a9d5018cc396b91f63e556f5"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-native-context-verification-2026-10-13.md",
+      "sourceSha256": "3c66dc0c1fed578d1d67bfed9f11648458b9ea89c1ea8d0780d416adfc80154d",
+      "sourceGitBlobSha256": "3c66dc0c1fed578d1d67bfed9f11648458b9ea89c1ea8d0780d416adfc80154d",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-native-context-verification-2026-10-13.md",
+      "archivedSha256": "3c66dc0c1fed578d1d67bfed9f11648458b9ea89c1ea8d0780d416adfc80154d"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-native-driver-2026-10-11.md",
+      "sourceSha256": "439896a165c118c03ce7c8a588094afe0677eaf80e25f17aece0a4b03ddb3ab4",
+      "sourceGitBlobSha256": "439896a165c118c03ce7c8a588094afe0677eaf80e25f17aece0a4b03ddb3ab4",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-native-driver-2026-10-11.md",
+      "archivedSha256": "439896a165c118c03ce7c8a588094afe0677eaf80e25f17aece0a4b03ddb3ab4"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-native-environment-2026-10-11.md",
+      "sourceSha256": "326f22c222fd4ca08dfad99a04f551102786a54d3efbd89b1720c29e42580b00",
+      "sourceGitBlobSha256": "326f22c222fd4ca08dfad99a04f551102786a54d3efbd89b1720c29e42580b00",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-native-environment-2026-10-11.md",
+      "archivedSha256": "326f22c222fd4ca08dfad99a04f551102786a54d3efbd89b1720c29e42580b00"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-native-navigation-action-2026-10-12.md",
+      "sourceSha256": "cbf1293cda5653b2326b9c0d6b3ca6c3bb52e695f7d6216a1cc8528310b0bd35",
+      "sourceGitBlobSha256": "cbf1293cda5653b2326b9c0d6b3ca6c3bb52e695f7d6216a1cc8528310b0bd35",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-native-navigation-action-2026-10-12.md",
+      "archivedSha256": "cbf1293cda5653b2326b9c0d6b3ca6c3bb52e695f7d6216a1cc8528310b0bd35"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-navigation-input-2026-10-11.md",
+      "sourceSha256": "dc92cabeb083721f8f68ac365c1897ebd8d2fb85ec6d72b1d97e515429c55f59",
+      "sourceGitBlobSha256": "dc92cabeb083721f8f68ac365c1897ebd8d2fb85ec6d72b1d97e515429c55f59",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-navigation-input-2026-10-11.md",
+      "archivedSha256": "dc92cabeb083721f8f68ac365c1897ebd8d2fb85ec6d72b1d97e515429c55f59"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-navigation-investigation-2026-10-11.md",
+      "sourceSha256": "0f0dc32c8dd5db5d562c308b8e51e9842fbb9a9887bcb25747f8075049f851f4",
+      "sourceGitBlobSha256": "0f0dc32c8dd5db5d562c308b8e51e9842fbb9a9887bcb25747f8075049f851f4",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-navigation-investigation-2026-10-11.md",
+      "archivedSha256": "0f0dc32c8dd5db5d562c308b8e51e9842fbb9a9887bcb25747f8075049f851f4"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-navigation-phase-points-2026-10-13.md",
+      "sourceSha256": "421144988eda8086cf46731c8d4563cc6e7513e77c983ed5452f4d2b5f83a39e",
+      "sourceGitBlobSha256": "421144988eda8086cf46731c8d4563cc6e7513e77c983ed5452f4d2b5f83a39e",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-navigation-phase-points-2026-10-13.md",
+      "archivedSha256": "421144988eda8086cf46731c8d4563cc6e7513e77c983ed5452f4d2b5f83a39e"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-navigation-waits-2026-10-13.md",
+      "sourceSha256": "a513383d264483c1e5c2ff6b1ce3be8cfe8b32c40649749e66478d190230fba6",
+      "sourceGitBlobSha256": "a513383d264483c1e5c2ff6b1ce3be8cfe8b32c40649749e66478d190230fba6",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-navigation-waits-2026-10-13.md",
+      "archivedSha256": "a513383d264483c1e5c2ff6b1ce3be8cfe8b32c40649749e66478d190230fba6"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-new-heading-correction-2026-10-13.md",
+      "sourceSha256": "97c3b2e1c6fd89c4d5d19344e9ffd4ed1d91fccd834ba0f244175dd6d897834b",
+      "sourceGitBlobSha256": "97c3b2e1c6fd89c4d5d19344e9ffd4ed1d91fccd834ba0f244175dd6d897834b",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-new-heading-correction-2026-10-13.md",
+      "archivedSha256": "97c3b2e1c6fd89c4d5d19344e9ffd4ed1d91fccd834ba0f244175dd6d897834b"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-permission-contract-2026-10-13.md",
+      "sourceSha256": "0da8757bb7193a6432430b29651b5705ccaca2e757fc09bf95bd898fd70ea5d5",
+      "sourceGitBlobSha256": "0da8757bb7193a6432430b29651b5705ccaca2e757fc09bf95bd898fd70ea5d5",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-permission-contract-2026-10-13.md",
+      "archivedSha256": "0da8757bb7193a6432430b29651b5705ccaca2e757fc09bf95bd898fd70ea5d5"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-permission-implementation-2026-10-14.md",
+      "sourceSha256": "da749fe8936f4dcf9ee6e67c88f9aa875f5901fe6ca88c60592ab40e749748a0",
+      "sourceGitBlobSha256": "da749fe8936f4dcf9ee6e67c88f9aa875f5901fe6ca88c60592ab40e749748a0",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-permission-implementation-2026-10-14.md",
+      "archivedSha256": "da749fe8936f4dcf9ee6e67c88f9aa875f5901fe6ca88c60592ab40e749748a0"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-permission-investigation-2026-10-13.md",
+      "sourceSha256": "4ee989d345c9466bd129947da7773ee3e81a1262fd30764c5d7467b6bab58fe2",
+      "sourceGitBlobSha256": "4ee989d345c9466bd129947da7773ee3e81a1262fd30764c5d7467b6bab58fe2",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-permission-investigation-2026-10-13.md",
+      "archivedSha256": "4ee989d345c9466bd129947da7773ee3e81a1262fd30764c5d7467b6bab58fe2"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-permission-native-acceptance-2026-10-14.md",
+      "sourceSha256": "12d6df52c564521947b65179ba68d8f02051f464bdcd580192dcfacd7e1a1e4d",
+      "sourceGitBlobSha256": "12d6df52c564521947b65179ba68d8f02051f464bdcd580192dcfacd7e1a1e4d",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-permission-native-acceptance-2026-10-14.md",
+      "archivedSha256": "12d6df52c564521947b65179ba68d8f02051f464bdcd580192dcfacd7e1a1e4d"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-provider-order-2026-10-13.md",
+      "sourceSha256": "901a3aaec2a436cdb01a62f86bd4c990ec6ac30e50e351f83b640346b9898565",
+      "sourceGitBlobSha256": "901a3aaec2a436cdb01a62f86bd4c990ec6ac30e50e351f83b640346b9898565",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-provider-order-2026-10-13.md",
+      "archivedSha256": "901a3aaec2a436cdb01a62f86bd4c990ec6ac30e50e351f83b640346b9898565"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-review.md",
+      "sourceSha256": "2b97671014516d333f5ef373ec3a99fb94a6fdc6e3bc1b6001dd9195686bf557",
+      "sourceGitBlobSha256": "2b97671014516d333f5ef373ec3a99fb94a6fdc6e3bc1b6001dd9195686bf557",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-review.md",
+      "archivedSha256": "2b97671014516d333f5ef373ec3a99fb94a6fdc6e3bc1b6001dd9195686bf557"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-seamless.md",
+      "sourceSha256": "850ad7070773834b91b84754da2844d85711a5d1861cfead33870e37d48a2028",
+      "sourceGitBlobSha256": "850ad7070773834b91b84754da2844d85711a5d1861cfead33870e37d48a2028",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-seamless.md",
+      "archivedSha256": "d9a53b135f4db18ec485c1f7462fdb7448d21fa7ca503946fd42ff25e72f217d"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-surface-consistency-2026-10-12.md",
+      "sourceSha256": "be3d093d6e18e9db5ad81328c26f0730e5f60f879d1813365e029f9ae88acdf4",
+      "sourceGitBlobSha256": "be3d093d6e18e9db5ad81328c26f0730e5f60f879d1813365e029f9ae88acdf4",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-surface-consistency-2026-10-12.md",
+      "archivedSha256": "be3d093d6e18e9db5ad81328c26f0730e5f60f879d1813365e029f9ae88acdf4"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-viewport-discovery-correction-2026-10-13.md",
+      "sourceSha256": "ec7e8ea2aa59e549b75497f776532511763b2c9de737f529f1c0026b2246bcff",
+      "sourceGitBlobSha256": "ec7e8ea2aa59e549b75497f776532511763b2c9de737f529f1c0026b2246bcff",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-viewport-discovery-correction-2026-10-13.md",
+      "archivedSha256": "ec7e8ea2aa59e549b75497f776532511763b2c9de737f529f1c0026b2246bcff"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-viewport-transition-correction-2026-10-13.md",
+      "sourceSha256": "a1362d7106149afcb365a1b6c8a40a91d34f6e8a0f24d1cb1ef68ab08b5ffec4",
+      "sourceGitBlobSha256": "a1362d7106149afcb365a1b6c8a40a91d34f6e8a0f24d1cb1ef68ab08b5ffec4",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-viewport-transition-correction-2026-10-13.md",
+      "archivedSha256": "a1362d7106149afcb365a1b6c8a40a91d34f6e8a0f24d1cb1ef68ab08b5ffec4"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/spec/workspace-working-contract-2026-10-14.md",
+      "sourceSha256": "a45f7b131ad6c858978dcace4c4466133e97025ca37caa1daca7cee15cb62646",
+      "sourceGitBlobSha256": "a45f7b131ad6c858978dcace4c4466133e97025ca37caa1daca7cee15cb62646",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/spec/workspace-working-contract-2026-10-14.md",
+      "archivedSha256": "a45f7b131ad6c858978dcace4c4466133e97025ca37caa1daca7cee15cb62646"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/workspace-api.md",
+      "sourceSha256": "c037b4984ba2e2ab1c2a20efa9fc3fd3073a92c050bfbf037dd7580d1f7edfd9",
+      "sourceGitBlobSha256": "c037b4984ba2e2ab1c2a20efa9fc3fd3073a92c050bfbf037dd7580d1f7edfd9",
+      "destinationRepository": "core",
+      "destinationPath": "docs/history/adapters/workspace-api.md",
+      "archivedSha256": "c037b4984ba2e2ab1c2a20efa9fc3fd3073a92c050bfbf037dd7580d1f7edfd9"
+    },
+    {
+      "sourceRepository": "plugins",
+      "sourceCommit": "dcdf5166ba10acb54086f95ac28fefed556b560e",
+      "sourcePath": "docs/examples/sample-workspace-navigation.mjs",
+      "sourceSha256": "b584f3c872ae79e437f0fac5bcafc1505628ffcb31dde2f5cd184ddf8b561667",
+      "sourceGitBlobSha256": "b584f3c872ae79e437f0fac5bcafc1505628ffcb31dde2f5cd184ddf8b561667",
+      "destinationRepository": "core",
+      "destinationPath": "docs/examples/sample-workspace-navigation.mjs",
+      "archivedSha256": "b584f3c872ae79e437f0fac5bcafc1505628ffcb31dde2f5cd184ddf8b561667"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-features-2026-10-13.md",
+      "sourceSha256": "8c6ecaf4248087efeb4762407a5afd696d84bcbf9435c9a9a1cb77cfe6e8db63",
+      "sourceGitBlobSha256": "8c6ecaf4248087efeb4762407a5afd696d84bcbf9435c9a9a1cb77cfe6e8db63",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-features-2026-10-13.md",
+      "archivedSha256": "8c6ecaf4248087efeb4762407a5afd696d84bcbf9435c9a9a1cb77cfe6e8db63"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-final-acceptance-2026-10-13.json",
+      "sourceSha256": "e4b8832bb2f2aa6fdaba33cbb6f8b5b576744246affbab417d6d3b87e74165c6",
+      "sourceGitBlobSha256": "e4b8832bb2f2aa6fdaba33cbb6f8b5b576744246affbab417d6d3b87e74165c6",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-final-acceptance-2026-10-13.json",
+      "archivedSha256": "e4b8832bb2f2aa6fdaba33cbb6f8b5b576744246affbab417d6d3b87e74165c6"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-final-acceptance-2026-10-13.md",
+      "sourceSha256": "10f27985ea3e6398af85834387c527b545f71b6cdce1ff222c6144d881b700dd",
+      "sourceGitBlobSha256": "10f27985ea3e6398af85834387c527b545f71b6cdce1ff222c6144d881b700dd",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-final-acceptance-2026-10-13.md",
+      "archivedSha256": "e7621fa5ac7f6ecba32005ae1f57999e9c8da70df7dc3915c15843f426f8c030"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-foreground-2026-10-12.json",
+      "sourceSha256": "b7ecbfdf1ecead458ba678f909f01e54a91544dffc9d867bb52a928732ef8066",
+      "sourceGitBlobSha256": "b7ecbfdf1ecead458ba678f909f01e54a91544dffc9d867bb52a928732ef8066",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-foreground-2026-10-12.json",
+      "archivedSha256": "b7ecbfdf1ecead458ba678f909f01e54a91544dffc9d867bb52a928732ef8066"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-foreground-2026-10-12.md",
+      "sourceSha256": "b73022d5ea476d98de1b07b9de0f5cdfb1d7b90ebd255c0832a1e27f9102d9da",
+      "sourceGitBlobSha256": "b73022d5ea476d98de1b07b9de0f5cdfb1d7b90ebd255c0832a1e27f9102d9da",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-foreground-2026-10-12.md",
+      "archivedSha256": "f4e25ad6ba5eb757518c4bd390291748be529699a3084194d8e43122dad2bb5f"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-memory-2026-10-13.md",
+      "sourceSha256": "8cbad30bbb50d3a080577f784127c3bf8148d1fb466e6b2da0cc48a652c7c5f5",
+      "sourceGitBlobSha256": "8cbad30bbb50d3a080577f784127c3bf8148d1fb466e6b2da0cc48a652c7c5f5",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-memory-2026-10-13.md",
+      "archivedSha256": "8cbad30bbb50d3a080577f784127c3bf8148d1fb466e6b2da0cc48a652c7c5f5"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-native-2026-10-12.json",
+      "sourceSha256": "c7e7323fe600cbbd87e816c2b2d5813a25496bffb9b0aaafee3897bd4b1ef487",
+      "sourceGitBlobSha256": "c7e7323fe600cbbd87e816c2b2d5813a25496bffb9b0aaafee3897bd4b1ef487",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-native-2026-10-12.json",
+      "archivedSha256": "c7e7323fe600cbbd87e816c2b2d5813a25496bffb9b0aaafee3897bd4b1ef487"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-native-2026-10-12.md",
+      "sourceSha256": "ae6311595bbd2489e0721a4ccd263ba4d4959695961ea6eb55b7711a1bf367fc",
+      "sourceGitBlobSha256": "ae6311595bbd2489e0721a4ccd263ba4d4959695961ea6eb55b7711a1bf367fc",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-native-2026-10-12.md",
+      "archivedSha256": "ae6311595bbd2489e0721a4ccd263ba4d4959695961ea6eb55b7711a1bf367fc"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-navigation-comparison-2026-10-11.json",
+      "sourceSha256": "d626d90bfa959d763af7d4b7ba18fdd02b548acd0dc308224e99b9828d7ac81d",
+      "sourceGitBlobSha256": "d626d90bfa959d763af7d4b7ba18fdd02b548acd0dc308224e99b9828d7ac81d",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-navigation-comparison-2026-10-11.json",
+      "archivedSha256": "d626d90bfa959d763af7d4b7ba18fdd02b548acd0dc308224e99b9828d7ac81d"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-offline-2026-10-11.json",
+      "sourceSha256": "5d4946aecec8640a6f3dd0e9ccfe6c7f045d7ae08848681219cf8e569995f39d",
+      "sourceGitBlobSha256": "5d4946aecec8640a6f3dd0e9ccfe6c7f045d7ae08848681219cf8e569995f39d",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-offline-2026-10-11.json",
+      "archivedSha256": "5d4946aecec8640a6f3dd0e9ccfe6c7f045d7ae08848681219cf8e569995f39d"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-review-navigation-2026-10-14.json",
+      "sourceSha256": "d1999b21bd31570c74f49fa8c0ae570bee3df92319c057312b932dab1a5c9360",
+      "sourceGitBlobSha256": "d1999b21bd31570c74f49fa8c0ae570bee3df92319c057312b932dab1a5c9360",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-review-navigation-2026-10-14.json",
+      "archivedSha256": "d1999b21bd31570c74f49fa8c0ae570bee3df92319c057312b932dab1a5c9360"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-shared-comparison-2026-10-11.json",
+      "sourceSha256": "fb4478cc9c0eac7b3eded109a1753ca8dc6e9d7dfe407fc960d295bd91323ac4",
+      "sourceGitBlobSha256": "fb4478cc9c0eac7b3eded109a1753ca8dc6e9d7dfe407fc960d295bd91323ac4",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-shared-comparison-2026-10-11.json",
+      "archivedSha256": "fb4478cc9c0eac7b3eded109a1753ca8dc6e9d7dfe407fc960d295bd91323ac4"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-surface-2026-10-13.json",
+      "sourceSha256": "348ea7ec43296bc4566380f7e87c2cdfbfac8a4926cb8f4676505c12645c0b2c",
+      "sourceGitBlobSha256": "348ea7ec43296bc4566380f7e87c2cdfbfac8a4926cb8f4676505c12645c0b2c",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-surface-2026-10-13.json",
+      "archivedSha256": "348ea7ec43296bc4566380f7e87c2cdfbfac8a4926cb8f4676505c12645c0b2c"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-surface-2026-10-13.md",
+      "sourceSha256": "98e720543e39ebb0d3e8f3d254dc02791889425c62748c1697cc3ebe01c4fc7d",
+      "sourceGitBlobSha256": "98e720543e39ebb0d3e8f3d254dc02791889425c62748c1697cc3ebe01c4fc7d",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-surface-2026-10-13.md",
+      "archivedSha256": "0526fda572b36e69165e05c25b20856f64d0804a2800e3e61467c2a6f5efe457"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/consumer-unlimited-navigation-2026-10-14.json",
+      "sourceSha256": "56b55adf2208454c831abd7d13fea148b0e430b4a59c16fc7f9a1c97b0152fcc",
+      "sourceGitBlobSha256": "56b55adf2208454c831abd7d13fea148b0e430b4a59c16fc7f9a1c97b0152fcc",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/consumer-unlimited-navigation-2026-10-14.json",
+      "archivedSha256": "56b55adf2208454c831abd7d13fea148b0e430b4a59c16fc7f9a1c97b0152fcc"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/design-decision-2026-10-11.md",
+      "sourceSha256": "f1e9bd768f0ae198fb385989a6af6168cb3bd74404c5736ce306845f9aa87827",
+      "sourceGitBlobSha256": "f1e9bd768f0ae198fb385989a6af6168cb3bd74404c5736ce306845f9aa87827",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/design-decision-2026-10-11.md",
+      "archivedSha256": "f1e9bd768f0ae198fb385989a6af6168cb3bd74404c5736ce306845f9aa87827"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/input-architecture-review-2026-10-11.md",
+      "sourceSha256": "9bec1a98916c651b5c0248315c4a453794e39b049b18c6bed0f6bbfa318d2eb6",
+      "sourceGitBlobSha256": "9bec1a98916c651b5c0248315c4a453794e39b049b18c6bed0f6bbfa318d2eb6",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/input-architecture-review-2026-10-11.md",
+      "archivedSha256": "9bec1a98916c651b5c0248315c4a453794e39b049b18c6bed0f6bbfa318d2eb6"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/unified-core-native-2026-10-15.md",
+      "sourceSha256": "c9e25ebd0fd5b50e7b40ebbcb1af62a930422fa1833afac41007ca2b371c013b",
+      "sourceGitBlobSha256": "c9e25ebd0fd5b50e7b40ebbcb1af62a930422fa1833afac41007ca2b371c013b",
+      "destinationRepository": "split",
+      "destinationPath": "docs/verification/1.0.0-rc.1-native.md",
+      "archivedSha256": "c9e25ebd0fd5b50e7b40ebbcb1af62a930422fa1833afac41007ca2b371c013b"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/validation-0.1.0.md",
+      "sourceSha256": "8652cd1efe6afb6eb2d1358abec501a14febdbac3d1515356ab8a927f0264a07",
+      "sourceGitBlobSha256": "8652cd1efe6afb6eb2d1358abec501a14febdbac3d1515356ab8a927f0264a07",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/validation-0.1.0.md",
+      "archivedSha256": "8652cd1efe6afb6eb2d1358abec501a14febdbac3d1515356ab8a927f0264a07"
+    },
+    {
+      "sourceRepository": "split",
+      "sourceCommit": "e08f66e92c8c2d1d3dba9ca9aa762bd7706a864b",
+      "sourcePath": "docs/validation-0.2.0.md",
+      "sourceSha256": "5e2909f928d28aa89f22ec0ba8d71dee18a619bf5444951041de6490fecbb5af",
+      "sourceGitBlobSha256": "5e2909f928d28aa89f22ec0ba8d71dee18a619bf5444951041de6490fecbb5af",
+      "destinationRepository": "split",
+      "destinationPath": "docs/history/validation-0.2.0.md",
+      "archivedSha256": "5e2909f928d28aa89f22ec0ba8d71dee18a619bf5444951041de6490fecbb5af"
+    }
+  ]
+}

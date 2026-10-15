@@ -5,6 +5,7 @@ import http from 'node:http';
 import {createRequire} from 'node:module';
 import {spawn,execFileSync} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
+import {acceptanceGuiPath,prepareAcceptancePlugins} from './desktop-acceptance-plugins.mjs';
 // Run from an unpackaged creator; Core establishes the required package context.
 // No package is installed or updated. Use reviewed binaries and a fresh directory.
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
@@ -13,9 +14,10 @@ const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 if(process.platform==='win32'&&config.disposableWindowsHost!==true) {
   throw Error('Native Windows acceptance requires a disposable VM/host (disposableWindowsHost:true). Separate profiles do not isolate Windows sandbox accounts or firewall rules.');
 }
-for(const key of ['root','clientApp','pluginsRoot','testBinary']) {
+for(const key of ['root','clientApp','testBinary']) {
   if(typeof config[key]!=='string'||!path.isAbsolute(config[key])) throw Error(key+' must be absolute');
 }
+acceptanceGuiPath(config);
 if(!/^\d+\.\d+\.\d+\.\d+$/.test(config.packageVersion)) throw Error('packageVersion must have four numeric components');
 const root=path.resolve(config.root);
 const allowed=/^(SYSTEMROOT|WINDIR|SYSTEMDRIVE|COMSPEC|PATH|PATHEXT|OS|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|PROCESSOR_IDENTIFIER|PROCESSOR_LEVEL|PROCESSOR_REVISION|NUMBER_OF_PROCESSORS|USERNAME|USERDOMAIN|USERDNSDOMAIN|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432)$/i;
@@ -35,7 +37,7 @@ if(config.manual===true) {
   if(config.probeScript!=null)throw Error('Manual acceptance must not drive the UI');
   env.CODLET_ACCEPTANCE_MANUAL='1';
 }
-if(config.startupHelper!=null)throw Error('The lab startup helper was retired; use the production launch Adapter');
+if(config.startupHelper!=null)throw Error('The lab startup helper was retired; use Core\'s embedded launch provider');
 if(config.fixtureState!=null){
   if(typeof config.fixtureState!=='object'||Array.isArray(config.fixtureState)||Buffer.byteLength(JSON.stringify(config.fixtureState))>65536)throw Error('fixtureState must be a bounded synthetic state object');
   fs.writeFileSync(path.join(env.CODEX_HOME,'.codex-global-state.json'),JSON.stringify(config.fixtureState));
@@ -121,24 +123,8 @@ if(config.localApiKeyFixture===true) {
   fs.writeFileSync(path.join(env.CODEX_HOME,'auth.json'),JSON.stringify({OPENAI_API_KEY:'codlet-offline-acceptance'}));
 }
 fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),fixtureConfig+'cli_auth_credentials_store="file"\nsandbox_mode="read-only"\napproval_policy="never"\nmodel="gpt-5.4"\n[features]\nplugins=false\nremote_models=false\nremote_plugin=false\ncode_mode_host=false\nresponses_websockets='+String(config.fixtureWebSocket===true)+'\nresponses_websockets_v2='+String(config.fixtureWebSocket===true)+'\n[analytics]\nenabled=false\n[mcp_servers.codex_app]\nenabled=false\ncommand=""\n');
-const registry={schema:2,plugins:{},localPlugins:{}};
-for(const plugin of ['codex-desktop-adapter','codex-ui-adapter','codlet']) {
-  const dir=path.join(config.pluginsRoot,'bundled',plugin);
-  const manifest=JSON.parse(fs.readFileSync(path.join(dir,'codlet.json'),'utf8'));
-  registry.localPlugins[manifest.id]={path:dir,grants:manifest.permissions};
-}
-for(const source of config.extraPlugins??[]) {
-  if(typeof source!=='string'||!path.isAbsolute(source))throw Error('extraPlugins requires absolute trusted fixture directories');
-  const manifest=JSON.parse(fs.readFileSync(path.join(source,'codlet.json'),'utf8'));
-  if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(manifest.id)||registry.localPlugins[manifest.id])throw Error('invalid or duplicate fixture plugin id');
-  const dir=path.join(root,'fixture-plugins',manifest.id);
-  fs.cpSync(source,dir,{recursive:true,errorOnExist:true,force:false});
-  fs.writeFileSync(path.join(dir,'fixture.json'),JSON.stringify({baseUrl:env.OPENAI_BASE_URL??null,autorun:config.functionalTestAuto===true}));
-  const policy=config.extraPluginPolicies?.[manifest.id];
-  if(policy&&(typeof policy!=='object'||Array.isArray(policy)||Object.keys(policy).some(key=>key!=='clientPermissions')||policy.clientPermissions!==true))throw Error('extraPluginPolicies accepts only explicit clientPermissions:true for a trusted isolated fixture');
-  registry.localPlugins[manifest.id]={path:dir,grants:manifest.permissions,
-    ...(policy?{brokerPolicy:policy}:env.OPENAI_BASE_URL&&manifest.permissions.includes('host.network')?{brokerPolicy:{networkOrigins:[new URL(env.OPENAI_BASE_URL).origin]}}:{})};
-}
+// UI/Desktop/launch providers are intrinsic Core modules, never registrations.
+const registry=prepareAcceptancePlugins(config,{root,baseUrl:env.OPENAI_BASE_URL});
 fs.writeFileSync(path.join(env.CODLET_HOME,'config.json'),JSON.stringify(registry,null,2));
 if(config.lifecyclePlugin!=null&&(typeof config.lifecyclePlugin!=='string'||!registry.localPlugins[config.lifecyclePlugin]||!(config.extraPlugins??[]).some(source=>JSON.parse(fs.readFileSync(path.join(source,'codlet.json'),'utf8')).id===config.lifecyclePlugin)))throw Error('lifecyclePlugin must name a trusted copied fixture');
 let backend,endpoint,port;

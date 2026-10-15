@@ -68,6 +68,7 @@ jobs:
       - run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
       - run: npm run typecheck --prefix frontend
       - run: node --test --test-concurrency=2 tests/*.test.mjs
+      - run: node codex/test.mjs
 
   windows-acceptance:
     name: Windows launch scripts

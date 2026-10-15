@@ -1,10 +1,10 @@
 # Core 独立 Native 测试准备
 
-2026-10-11。用户已授权独立测试客户端。当前版本隔离审核和匹配 lab 已完成，用户已完成独立 profile 的认证和 Windows 初始化。登录后的重复刷新故障及修复见 [故障记录](native-refresh-2026-10-11.md)。所有运行必须使用自己的 profile 和合成数据。
+2026-10-11。用户已授权独立测试客户端。当前版本隔离审核和匹配 lab 已完成，用户已完成独立 profile 的认证和 Windows 初始化。登录后的重复刷新故障及修复见 [故障记录](history/core/native-refresh-2026-10-11.md)。所有运行必须使用自己的 profile 和合成数据。
 
 当前 profile：`core-e674f238-bc43-483c-bdb1-8b90802cbe3e`。窗口为 **ChatGPT (Dev)**；PID 59936 是已停止的历史故障实例。后续重开保留这个 profile 的登录与设置，运行 `verify-core-native-run.mjs` 核对实际 PID/Target，不能复用历史编号。登录及 sandbox 已验证通过，无需重复登录。
 
-最新状态：用户选择后台测量后已完成 [后台矩阵](core-native-background-2026-10-11.md)，release 测试实例已正常关闭且临时插件注册移除。重开时使用现有 client/Start-TestClient.cmd；匹配 release lab SHA 为 `748db69aebd09ba61de97b1487aeb6c9a52dc0b398e51fdc2bf04657f9c563c3`。Native 窗口可能不与逻辑 document 的 visibility 一致，真实显示帧须另行建立呈现证据。
+最新状态：用户选择后台测量后已完成 [后台矩阵](history/core/core-native-background-2026-10-11.md)，release 测试实例已正常关闭且临时插件注册移除。重开时使用现有 client/Start-TestClient.cmd；匹配 release lab SHA 为 `748db69aebd09ba61de97b1487aeb6c9a52dc0b398e51fdc2bf04657f9c563c3`。Native 窗口可能不与逻辑 document 的 visibility 一致，真实显示帧须另行建立呈现证据。
 
 运行目录为 `X:/codlet/.codlet-artifacts/core-native/core-e674f238-bc43-483c-bdb1-8b90802cbe3e/`。`client/Stop-TestClient.cmd` 可请求此实例正常退出；重开使用 `client/Start-TestClient.cmd -Onboarding`，已就绪后可使用普通启动。不要并发启动第二份，coordinator 会拒绝活的 pending/ready owner。
 

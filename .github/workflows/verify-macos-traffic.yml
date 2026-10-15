@@ -1,14 +1,10 @@
-name: Verify macOS traffic
+name: Verify Core macOS traffic (opt-in)
 
 on:
   workflow_dispatch:
     inputs:
       core_commit:
         description: Full Core commit SHA
-        required: true
-        type: string
-      plugins_commit:
-        description: Full official-plugin commit SHA containing the reviewed product Host
         required: true
         type: string
 
@@ -33,23 +29,14 @@ jobs:
           path: core
           ref: ${{ inputs.core_commit }}
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: baoabaob/codlet-plugins
-          path: plugins
-          ref: ${{ inputs.plugins_commit }}
-          persist-credentials: false
-      - name: Verify native architecture and source revisions
+      - name: Verify native architecture and Core source revision
         env:
           CORE_COMMIT: ${{ inputs.core_commit }}
-          PLUGINS_COMMIT: ${{ inputs.plugins_commit }}
         run: |
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
           [[ "$CORE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$PLUGINS_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git -C core rev-parse HEAD)" = "$CORE_COMMIT"
-          test "$(git -C plugins rev-parse HEAD)" = "$PLUGINS_COMMIT"
       - name: Read the production Mac runtime version
         id: runtime
         run: |
@@ -65,16 +52,11 @@ jobs:
         with:
           node-version: ${{ steps.runtime.outputs.node_version }}
           cache: npm
-          cache-dependency-path: |
-            core/frontend/package-lock.json
-            plugins/frontend/package-lock.json
-      - name: Build matching SDK and production Host
+          cache-dependency-path: core/frontend/package-lock.json
+      - name: Build Core SDK and embedded production Host
         run: |
           npm ci --prefix core/frontend
           node core/frontend/build.mjs
-          npm ci --prefix plugins/frontend
-          node plugins/scripts/prepare-core-sdk.mjs "$CODLET_CORE_ROOT"
-          node plugins/frontend/build.mjs
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
@@ -98,17 +80,17 @@ jobs:
       - name: Verify native model-provider behavior
         id: backend
         continue-on-error: true
-        working-directory: plugins
+        working-directory: core
         run: |
-          node scripts/verify-plaintext-backend.mjs --run-owned yes \
+          node codex/scripts/verify-plaintext-backend.mjs --run-owned yes \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --expected-sha256 "$CODEX_BACKEND_SHA256"
       - name: Verify Desktop and model HTTP paths
         id: http
         continue-on-error: true
-        working-directory: plugins
+        working-directory: core
         run: |
-          node scripts/verify-official-main-owned.mjs --run-owned yes \
+          node codex/scripts/verify-official-main-owned.mjs --run-owned yes \
             --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol http \
@@ -117,9 +99,9 @@ jobs:
       - name: Verify Desktop and model WebSocket paths
         id: ws
         continue-on-error: true
-        working-directory: plugins
+        working-directory: core
         run: |
-          node scripts/verify-official-main-owned.mjs --run-owned yes \
+          node codex/scripts/verify-official-main-owned.mjs --run-owned yes \
             --executable "$RUNNER_TEMP/ChatGPT.app/Contents/MacOS/ChatGPT" \
             --backend "$RUNNER_TEMP/ChatGPT.app/Contents/Resources/codex" \
             --backend-sha256 "$CODEX_BACKEND_SHA256" --core "$CODLET_CORE_ROOT" --protocol ws \
@@ -131,8 +113,8 @@ jobs:
         with:
           name: macos-traffic-product
           path: |
-            plugins/.artifacts/request-chain/macos-backend-plaintext.json
-            plugins/.artifacts/request-chain/macos-product/owned-acceptance/*.json
+            core/.codlet-artifacts/native-tools/request-chain/macos-backend-plaintext.json
+            core/.codlet-artifacts/native-tools/request-chain/macos-product/owned-acceptance/*.json
           if-no-files-found: warn
           retention-days: 7
       - name: Require every native check to pass

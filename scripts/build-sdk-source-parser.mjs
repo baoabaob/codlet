@@ -5,7 +5,7 @@ import {readFile,copyFile} from 'node:fs/promises';
 import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const frontend=resolve(process.argv[2]??resolve(root,'../codlet-plugins/frontend'));
+const frontend=resolve(process.argv[2]??resolve(root,'frontend'));
 const require=createRequire(resolve(frontend,'package.json'));
 const acornPath=require.resolve('acorn/package.json');
 const metadata=JSON.parse(await readFile(acornPath,'utf8'));

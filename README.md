@@ -4,7 +4,7 @@ Codlet is an extension runtime for Codex Desktop. It launches a managed desktop 
 
 Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. Core includes the Codex UI and Desktop compatibility modules and exposes them through `context.codex`. The management GUI remains an optional plugin maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). Separate Adapter installation is no longer required.
 
-The **1.0.0-rc.1** major update is a local release candidate and has not been published. The [candidate validation record](docs/validation-unified-core-v1.md) identifies source commits, packages, checks, and remaining acceptance limits. The [implementation contract](docs/unified-core-v1-contract.md) describes the SDK, permission and migration boundaries; [online updates](docs/core-online-update.md) distinguishes active modules from resident components that require the next launch. Windows x64 is the primary test platform; macOS Apple Silicon has a native build and installer path. [Platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) define the actual support boundaries. Linux is outside the current scope.
+The **1.0.0-rc.1** major update is a local release candidate and has not been published. The [candidate validation record](docs/releases/1.0.0-rc.1/validation.md) identifies source commits, packages, checks, and remaining acceptance limits. The [implementation contract](docs/releases/1.0.0-rc.1/implementation.md) describes the SDK, permission and migration boundaries; [online updates](docs/core-online-update.md) distinguishes active modules from resident components that require the next launch. Windows x64 is the primary test platform; macOS Apple Silicon has a native build and installer path. [Platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md) define the actual support boundaries. Linux is outside the current scope.
 
 ## Use Codlet
 
@@ -45,7 +45,7 @@ cargo build --locked --bin codlet
 
 Normal launches prepare the verified Node runtime automatically. Isolated lab and Host fixtures still stage their pinned runtime explicitly. Follow the [development guide](docs/development.md) for Windows/macOS commands, targeted tests, and the independent test client. Release builds reject the synthetic `test-fixtures` catalog.
 
-The [documentation index](docs/README.md) covers architecture, maintained contracts, diagnostics, and delivery. [CONTRIBUTING.md](CONTRIBUTING.md) explains contribution and validation expectations; [SECURITY.md](SECURITY.md) explains the trust boundary and reporting route.
+The [documentation index](docs/README.md) covers maintained contracts, diagnostics, release evidence and historical research. The [repository map](docs/repository-layout.md) explains Core, GUI, split-workbench and retired Adapter ownership. [CONTRIBUTING.md](CONTRIBUTING.md) explains contribution and validation expectations; [SECURITY.md](SECURITY.md) explains the trust boundary and reporting route.
 
 ## License
 

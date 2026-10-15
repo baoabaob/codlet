@@ -7,7 +7,6 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 
 const core = path.resolve(process.argv[2] ?? '');
-const plugins = process.argv[3] ? path.resolve(process.argv[3]) : null;
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Apple Silicon runner required');
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codlet-reviewed-cua-node-'));
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(NODE_|OPENSSL_|DYLD_|ELECTRON_RUN_AS_NODE$)/iu.test(key)));
@@ -53,12 +52,7 @@ try {
     'require(process.argv.splice(1,1)[0])', '--', probe, 'host-marker'];
   assert.equal(execFileSync(process.execPath, flags, { cwd: temporary, env: clean, timeout: 10000, encoding: 'utf8' }), 'Host modules and exact flags passed');
 
-  const entry = plugins ? path.join(plugins, 'bundled/codex-desktop-adapter/host.cjs') : path.join(temporary, 'launch-fixture.cjs');
-  const fixtureCode = 'module.exports = {fixture: true};';
-  if (!plugins) fs.writeFileSync(entry, `exports.clientSource = ({signal}) => {
-    if (!(signal instanceof AbortSignal) || signal.aborted) throw Error('source signal missing');
-    return {code: ${JSON.stringify(fixtureCode)}};
-  };`);
+  const entry = path.join(core, 'codex/bundled/codex-desktop-adapter/host.cjs');
   const snapshot = path.join(temporary, 'desktop-snapshot.cjs');
   fs.copyFileSync(entry, snapshot);
   const bootstrap = path.join(core, 'runtime/client-launch.cjs');
@@ -82,7 +76,6 @@ try {
   assert.equal(reply.ok, true);
   assert.equal(typeof reply.result.code, 'string');
   assert.ok(reply.result.code.length > 0);
-  if (!plugins) assert.deepEqual(reply.result, {code: fixtureCode});
   console.log('Reviewed Mac CUA Node modules and Core clientSource ABI passed.');
 } finally {
   assert.equal(path.dirname(path.resolve(temporary)), path.resolve(os.tmpdir()));

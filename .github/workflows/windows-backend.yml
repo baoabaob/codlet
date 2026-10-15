@@ -1,0 +1,53 @@
+name: Windows Core backend acceptance (opt-in)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CODLET_TEST_DISPOSABLE_WINDOWS_HOST: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: node frontend/build.mjs
+      - name: Verify the published binary and the installed client's executable image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Get-Content codex/tests/fixtures/traffic/windows-backend-candidate.json -Raw | ConvertFrom-Json
+          New-Item -ItemType Directory -Path fixture-artifacts | Out-Null
+          $binary = Join-Path $env:RUNNER_TEMP 'codex.exe'
+          Invoke-WebRequest -Uri $candidate.releaseUrl -OutFile $binary
+          if ((Get-Item $binary).Length -ne $candidate.releaseBytes -or (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant() -ne $candidate.releaseSha256) { throw 'Published backend hash or size differs' }
+          $signature = Get-AuthenticodeSignature $binary
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'OpenAI OpCo') { throw 'Official backend signature is not valid' }
+          $image = node codex/scripts/inspect-pe-image.mjs $binary | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $image.peImageSha256 -ne $candidate.peImageSha256) { throw 'Published and installed executable images differ' }
+          $image | ConvertTo-Json | Set-Content fixture-artifacts/backend-image.json -Encoding utf8
+          & $binary --version
+      - name: Exercise HTTP, SSE, WebSocket, cancellation and task reconfiguration
+        shell: pwsh
+        run: |
+          $candidate = Get-Content codex/tests/fixtures/traffic/windows-backend-candidate.json -Raw | ConvertFrom-Json
+          node codex/scripts/verify-plaintext-backend.mjs --run-owned yes --backend (Join-Path $env:RUNNER_TEMP 'codex.exe') --expected-sha256 $candidate.releaseSha256
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-backend-acceptance
+          path: |
+            fixture-artifacts/*.json
+            .codlet-artifacts/native-tools/request-chain/backend-plaintext.json
+          if-no-files-found: warn
+          retention-days: 14

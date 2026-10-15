@@ -1,0 +1,17 @@
+# Independent Native right viewport candidate
+
+The driver leases the existing Native right viewport. It leaves the Native resource/chat/browser content in place, provides an owner-specific width configuration/storage key, and journals the open/full-width state of each visited Thread/Route context. It creates no backend, renderer, composer or persistent transcript root.
+
+Native width registration is discovered through the semantic RightPanelOutlet in one temporary owned Thread/Route scope. That temporary root is unmounted immediately. For each distinct existing route context, a temporary Native scope-hook root captures a separate facade for the existing nodes, then is unmounted. Its private chain is pinned, and one pin per route is cached weakly; a mutable hook facade from the user's editor is never retained as the restoration target. No raw facade, signal or context is returned to the consumer.
+
+The Native open action/state exports and persisted-width writer are decoded from bounded semantic source declarations/imports, independent of minified names. Writes use only `codlet.workspace.viewport.<UUID>` keys; Native's original per-thread width keys are never used by the owned configuration. Native close and width motion notifications push snapshots. Width notifications do not rescan Native fibers or add a polling timer. A Native viewer changing its pane configuration keeps that latest configuration for release, while the owner width is reapplied. Full-width behavior is constrained to the leased viewport's open/width model.
+
+`bind(null)` masks/disables the existing right-panel contents while retaining the leased geometry and open/width state. Binding a confirmed local thread restores the Native contents. No resource content is copied, rebuilt or replaced. Each old context is restored when leaving it; final `close` restores remaining leases and deletes the owned atom key. Explicit exit to another thread therefore preserves that thread's own original configuration.
+
+Capability publication follows actual driver allocation/readiness and notification setup. A host/layout/scope mismatch rejects readiness; it is not a permanent stub and no CSS-only fallback claims this capability. Cleanup attempts listener removal, every leased state restoration and owned-key deletion independently, aggregating failures. A lost Native state binding reports an eviction/cleanup failure rather than binding a new default under the old context. Deferred Native layout failures deactivate the handle and report cleanup.
+
+## Verification boundary
+
+Offline tests exercise namespace isolation, two distinct Native contexts and their independent release, retained resource DOM, null selection, Native close/resize callbacks, an externally changed viewer configuration, late readiness cancellation, evicted state and cleanup failure, temporary root disposal, and pinned context ownership across a Native hook rebind. The original 26.1007 cached source decodes to the inspected open/width writer contracts without executing it.
+
+This is a Native candidate. A consumer-owned instance must still verify actual right-pane open/close/resize, width persistence isolation, original resource/browser content, return to each thread's settings and final owner-key removal. Native's atom writer accepts deletion synchronously into its frontend cache; this offline result does not establish a durable backend flush. It is not Native performance, memory or complete persistence acceptance.

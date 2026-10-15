@@ -1,8 +1,8 @@
-// Test-driver bootstrap only. The packaged plugin uses public Core/adapter APIs.
+// Historical opt-in Native test driver; the maintained consumer lives in codlet-plugins.
 import fs from 'node:fs';
 import {createRequire} from 'node:module';
 const output=process.argv[2];if(!output)throw Error('Supply probe output path');
-const require=createRequire(new URL('../../../frontend/package.json',import.meta.url));
+const require=createRequire(new URL('../../../../frontend/package.json',import.meta.url));
 const bundled=await require('esbuild').build({stdin:{contents:`import {localConnection} from '../../../frontend/src/host-discovery.js';
 globalThis[Symbol.for('codlet.functional.probe')]=localConnection;`,resolveDir:import.meta.dirname},bundle:true,write:false,format:'iife',platform:'browser'});
 const probe=`(async()=>{
