@@ -118,7 +118,7 @@ impl TrafficOwner {
     ) -> Result<(), HostError> {
         self.prepare_bridge_inner(runtime, registry, provider, false)
     }
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     pub(crate) fn prepare_owned_fixture_bridge(
         &mut self,
         runtime: &JsRuntime,

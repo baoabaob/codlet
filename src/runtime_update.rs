@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 mod install;
 mod modules;
 mod online;
-#[cfg(feature = "desktop-acceptance")]
+// Owned online-update probes are attached by the Windows Native lab only.
+#[cfg(all(windows, feature = "desktop-acceptance"))]
 mod owned_fixture;
 pub(crate) use modules::{
     CoreModulesGuard, OnlineCoreModulesCompletion, OnlineCoreModulesRequest,
@@ -204,9 +205,9 @@ enum Command {
         reply: mpsc::SyncSender<Result<Option<RuntimeInstallRequest>>>,
     },
     Reschedule,
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     FixturePoll,
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     FixtureInstall,
 }
 struct State {
@@ -224,7 +225,7 @@ struct State {
     online_target: Option<crate::client_bridge::ClientSourceRuntime>,
     online_modules: Option<PendingOnlineModules>,
     deferred: bool,
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     owned_fixture: Option<owned_fixture::Authority>,
 }
 struct PendingOnlineModules {
@@ -312,7 +313,7 @@ impl RuntimeUpdateService {
             online_target: None,
             online_modules: None,
             deferred: false,
-            #[cfg(feature = "desktop-acceptance")]
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
             owned_fixture: None,
         }));
         let (sender, receiver) = mpsc::channel();
@@ -372,14 +373,14 @@ impl RuntimeUpdateService {
                 }
                 loop {
                     let watching = worker_shared.lock().unwrap().install_receipt.is_some();
-                    #[cfg(feature = "desktop-acceptance")]
+                    #[cfg(all(windows, feature = "desktop-acceptance"))]
                     let fixture_waiting = worker_shared
                         .lock()
                         .unwrap()
                         .owned_fixture
                         .as_ref()
                         .is_some_and(|authority| !authority.consumed);
-                    #[cfg(not(feature = "desktop-acceptance"))]
+                    #[cfg(not(all(windows, feature = "desktop-acceptance")))]
                     let fixture_waiting = false;
                     let timeout = if watching || fixture_waiting {
                         Some(Duration::from_secs(1))
@@ -390,7 +391,7 @@ impl RuntimeUpdateService {
                         Some(wait) => match receiver.recv_timeout(wait) {
                             Ok(command) => command,
                             Err(mpsc::RecvTimeoutError::Timeout) => {
-                                #[cfg(feature = "desktop-acceptance")]
+                                #[cfg(all(windows, feature = "desktop-acceptance"))]
                                 if fixture_waiting {
                                     match owned_fixture::poll(
                                         &worker_shared,
@@ -424,7 +425,7 @@ impl RuntimeUpdateService {
                             Err(_) => break,
                         },
                     };
-                    #[cfg(feature = "desktop-acceptance")]
+                    #[cfg(all(windows, feature = "desktop-acceptance"))]
                     if matches!(command, Command::FixturePoll) {
                         continue;
                     }
@@ -550,7 +551,7 @@ impl RuntimeUpdateService {
         state.status.install_available = true;
         state.status.unavailable_reason = None;
     }
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     pub(crate) fn attach_owned_fixture(
         &self,
         lab_root: &Path,
@@ -709,7 +710,7 @@ impl RuntimeUpdateService {
             ));
         }
         match command {
-            #[cfg(feature = "desktop-acceptance")]
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
             Command::FixturePoll | Command::FixtureInstall => {
                 unreachable!("internal fixture command")
             }
@@ -860,7 +861,7 @@ fn fail_state(shared: &Arc<Mutex<State>>, e: RuntimeUpdateError) {
     state.busy = false;
 }
 
-#[cfg(feature = "desktop-acceptance")]
+#[cfg(all(windows, feature = "desktop-acceptance"))]
 fn install_fixture(
     runtime: &tokio::runtime::Runtime,
     client: &source::UpdateClient,
@@ -893,11 +894,11 @@ async fn run_command(
     restart: Option<&RuntimeRestartContext>,
     shared: &Arc<Mutex<State>>,
 ) -> Result<()> {
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     let online_only = matches!(command, Command::FixtureInstall);
-    #[cfg(not(feature = "desktop-acceptance"))]
+    #[cfg(not(all(windows, feature = "desktop-acceptance")))]
     let online_only = false;
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     let command = if online_only {
         Command::Install {
             official: false,
@@ -907,7 +908,7 @@ async fn run_command(
         command
     };
     match command {
-        #[cfg(feature = "desktop-acceptance")]
+        #[cfg(all(windows, feature = "desktop-acceptance"))]
         Command::FixturePoll | Command::FixtureInstall => unreachable!("private fixture polling"),
         Command::Reschedule => unreachable!("rescheduling does not fetch or install"),
         Command::Check | Command::AutomaticCheck => {

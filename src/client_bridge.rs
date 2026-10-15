@@ -202,7 +202,7 @@ struct State {
     provider: Option<LoadedPlugin>,
     admission: Option<CoreAdmission>,
     core_pending: Option<(String, u64)>,
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     fixture_route: Option<(String, String)>,
 }
 struct CoreAdmission {
@@ -290,7 +290,7 @@ impl ClientSourceRuntime {
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
-    #[cfg(feature = "desktop-acceptance")]
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
     pub(crate) fn install_owned_fixture_route(
         &self,
         id: &str,
@@ -699,7 +699,7 @@ impl ClientSourceRuntime {
                 provider,
                 admission: None,
                 core_pending: None,
-                #[cfg(feature = "desktop-acceptance")]
+                #[cfg(all(windows, feature = "desktop-acceptance"))]
                 fixture_route: None,
             }),
             traffic,
