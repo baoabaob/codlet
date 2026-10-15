@@ -21,6 +21,8 @@ use windows_sys::Win32::System::Threading::{
 
 const MUTEX_PREFIX: &str = if cfg!(feature = "test-fixtures") {
     r"Global\Codlet.TestFixtures.CodexLaunch."
+} else if cfg!(feature = "ipc-test-isolation") {
+    r"Global\Codlet.CoreTests.CodexLaunch."
 } else {
     r"Global\Codlet.CodexLaunch."
 };

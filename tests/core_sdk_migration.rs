@@ -81,7 +81,12 @@ fn removing_a_legacy_registration_keeps_core_and_consumer_preferences() {
     };
     let denied = run(&["plugin", "disable", "codex.ui.adapter", "--json"]);
     assert!(!denied.status.success());
-    assert!(String::from_utf8_lossy(&denied.stdout).contains("core_owned_capability"));
+    assert!(
+        String::from_utf8_lossy(&denied.stdout).contains("core_owned_capability"),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&denied.stdout),
+        String::from_utf8_lossy(&denied.stderr)
+    );
     let removed = run(&["plugin", "remove", "codex.ui.adapter", "--json"]);
     assert!(
         removed.status.success(),

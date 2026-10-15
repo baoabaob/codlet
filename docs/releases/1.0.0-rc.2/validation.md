@@ -27,6 +27,9 @@ describes discovery and operation ownership.
   separately selected official AppServer fixtures.
 - Startup recovery tests: **6 passed**, including preservation of Core Desktop
   consumers and ordinary traffic consumers.
+- Real Core catalog migration CLI: **2 passed** with `ipc-test-isolation`.
+  This test feature uses independent Windows endpoints and is rejected by release
+  builds; it keeps the production catalog and migration behavior.
 - Public SDK TypeScript check passed.
 - The real inspector test captures and hooks a class in the already compiled
   entry module after resuming the same process. The IPC suite preserves the live

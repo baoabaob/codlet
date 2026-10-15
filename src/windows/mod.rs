@@ -16,10 +16,12 @@ pub mod process;
 pub(crate) mod restart_bridge;
 pub mod status_pipe;
 
-// Synthetic catalogs must never discover or control the user's running Core.
-// Release builds reject test-fixtures, so product endpoint names stay unchanged.
+// Test catalogs and real-catalog CLI checks use separate endpoints. Release
+// builds reject both test features, so product endpoint names stay unchanged.
 pub(crate) const IPC_NAMESPACE: &str = if cfg!(feature = "test-fixtures") {
     "Codlet.TestFixtures"
+} else if cfg!(feature = "ipc-test-isolation") {
+    "Codlet.CoreTests"
 } else {
     "Codlet"
 };

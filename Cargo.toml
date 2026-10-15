@@ -12,7 +12,9 @@ strip = "symbols"
 [features]
 # Synthetic renderer fixtures for the protocol/lifecycle integration suite only.
 # Release builds reject this feature; normal Core has no built-in plugins.
-test-fixtures = []
+test-fixtures = ["ipc-test-isolation"]
+# Exercise the real Core catalog with test-only Windows IPC endpoints.
+ipc-test-isolation = []
 desktop-acceptance = []
 
 [build-dependencies]

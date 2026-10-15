@@ -31,11 +31,16 @@ Run checks appropriate to the changed behavior. The wider regression suite is:
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features -- --test-threads=2
+cargo test --locked --no-default-features --features ipc-test-isolation --test core_sdk_migration -- --test-threads=2
 cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
 node --test --test-concurrency=2 tests/*.test.mjs
 ```
 
 Stage Node in both the executable directory and `debug/deps` for Host test binaries. Use the pinned Windows Node version; a different V8 build can change lifecycle/GC behavior. `test-fixtures` enables synthetic plugins and the isolated native traffic harness only for tests and is rejected when debug assertions are disabled. Windows fixture builds use separate status/control/launch IPC names, and CLI fixtures clear inherited `CODLET_HOME` before selecting temporary data. The harness uses temporary registries and in-memory credentials.
+
+`ipc-test-isolation` retains the production Core catalog while selecting separate
+Windows status/control/launch endpoints. Use it for real-catalog CLI checks when
+a daily Core is running. Release builds reject this feature.
 
 Run `node codex/test.mjs` for all maintained UI/Desktop implementation tests. The [Native diagnostic tools](../codex/scripts/README.md) and their opt-in workflows also live in Core. The plugin source repository separately validates the GUI and complete functional consumer against an explicit snapshot of Core's SDK; it no longer contains a duplicate Adapter implementation or Native toolchain.
 

@@ -25,6 +25,8 @@ use crate::runtime_status::{
 
 const PIPE_PREFIX: &str = if cfg!(feature = "test-fixtures") {
     r"\\.\pipe\Codlet.TestFixtures.RuntimeStatus."
+} else if cfg!(feature = "ipc-test-isolation") {
+    r"\\.\pipe\Codlet.CoreTests.RuntimeStatus."
 } else {
     r"\\.\pipe\Codlet.RuntimeStatus."
 };
