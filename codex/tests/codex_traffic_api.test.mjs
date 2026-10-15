@@ -12,6 +12,7 @@ function fixture() {
 }
 test('public Adapter SDK retains consuming Host authority and filters protocol metadata', async () => {
   const f = fixture(), api = createCodexTraffic(f.context, compatibility), calls = [];
+  f.setNative({listening:true,attached:true,available:true,activatedSources:[{id:'owned-backend-provider',coverage:['owned-local-app-server-model-provider']}]});
   const handle = await api.registerInterceptor({ id: 'model', kinds: ['model.responses'] }, {
     request(value, context) { calls.push(context.codex); assert.equal(Object.isFrozen(context), true); return { block: true }; },
     response(value, context) { calls.push(context.codex); return { body: 'changed' }; },
@@ -28,16 +29,19 @@ test('public Adapter SDK retains consuming Host authority and filters protocol m
   assert.equal(calls.length, 3); assert.equal(calls[0].threadId,'01234567-89ab-cdef-0123-456789abcdef');
   assert.equal(calls[1].threadId,calls[0].threadId); assert.equal(calls[2].threadId,null);
 });
-test('available requires Native attachment and a verified profile; unknown builds cannot register', async () => {
+test('live source capabilities admit unknown builds and recorded hashes cannot grant availability', async () => {
   const f = fixture(), api = createCodexTraffic(f.context, compatibility);
   assert.equal((await api.probe()).available, false);
+  await assert.rejects(api.registerInterceptor({id:'missing'}, {request(){}}), {code:'native_process_ingress_not_attached'});
   f.setNative({ listening: true, attached: true, available: true, active: 0, registered: 1, activatedSources:[{id:'desktop-main-http',coverage:['desktop-main-wEe-fetch']}] });
   assert.equal((await api.probe()).available,false);
   f.setNative({ listening: true, attached: true, available: true, active: 0, registered: 1, activatedSources:[{id:'owned-backend-provider',coverage:['owned-local-app-server-model-provider']}] });
   const status = await api.probe(); assert.equal(status.available, true); assert.equal(status.desktop, false); assert.equal(status.attachments, false); assert.equal(status.officialOAuth, false);
   const unknown = createCodexTraffic(f.context, { platform: 'darwin', binarySha256: 'unknown' });
-  assert.equal((await unknown.probe()).available, false);
-  await assert.rejects(unknown.registerInterceptor({ id: 'x' }, { request() {} }), { code: 'backend_build_unverified' });
+  assert.equal((await unknown.probe()).available, true);
+  assert.equal((await unknown.probe()).fixtureVerified, false);
+  assert.equal(await unknown.registerInterceptor({ id: 'x' }, { request() {} }), f.handle);
+  assert.equal(await createCodexTraffic(f.context).registerInterceptor({ id: 'no-fingerprint' }, { request() {} }), f.handle);
   await api.registerInterceptor({ id: 'x', origins: ['https://provider.example'] }, { request() {} });
   await assert.rejects(api.registerInterceptor({ id: 'x', origins: ['http://attacker.invalid'] }, { request() {} }), { code: 'invalid_argument' });
   f.lifetime.abort(); await assert.rejects(api.registerInterceptor({ id: 'x' }, { request() {} }), { code: 'host_stopping' });

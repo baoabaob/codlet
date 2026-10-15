@@ -302,7 +302,7 @@ var require_codex_traffic = __commonJS({
     "use strict";
     var zlib = require("node:zlib");
     var failure = (code) => Object.assign(new Error(code), { code });
-    var VERIFIED_BACKENDS = Object.freeze({
+    var RECORDED_BACKENDS = Object.freeze({
       win32: Object.freeze([
         // Disposable Windows acceptance covers both signed distributions of the
         // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.
@@ -324,7 +324,7 @@ var require_codex_traffic = __commonJS({
       ])
     });
     function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {
-      const backend = VERIFIED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
+      const backend = RECORDED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
       const fixtureVerified = !!backend;
       return Object.freeze({
         available: false,
@@ -335,7 +335,7 @@ var require_codex_traffic = __commonJS({
         desktop: false,
         attachments: false,
         fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],
-        reason: fixtureVerified ? "native_process_ingress_not_attached" : "backend_build_unverified"
+        reason: "native_process_ingress_not_attached"
       });
     }
     function threadIdFromHeaders(headers) {
@@ -393,16 +393,16 @@ var require_codex_traffic = __commonJS({
           native = await context.traffic.inspect();
         } catch (error) {
           if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");
-          return Object.freeze({ ...verified, listening: false, attached: false, reason: verified.fixtureVerified ? error.code : verified.reason });
+          return Object.freeze({ ...verified, listening: false, attached: false, reason: error.code });
         }
         const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;
         return Object.freeze({
           ...verified,
-          available: verified.fixtureVerified && attached,
+          available: attached,
           listening: native.listening === true,
           attached,
           restartRequired: !attached,
-          reason: !verified.fixtureVerified ? verified.reason : attached ? null : "native_process_ingress_not_attached",
+          reason: attached ? null : "native_process_ingress_not_attached",
           coverage: "registered-backend-origins",
           registered: native.registered,
           active: native.active
@@ -410,7 +410,6 @@ var require_codex_traffic = __commonJS({
       }
       async function registerInterceptor(options, handlers) {
         if (context.signal.aborted) throw failure("host_stopping");
-        if (!verified.fixtureVerified) throw failure("backend_build_unverified");
         if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");
         const kinds = options.kinds ?? ["model.responses", "model.list"];
         if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");
@@ -424,6 +423,9 @@ var require_codex_traffic = __commonJS({
             return true;
           }
         })) throw failure("invalid_argument");
+        const readiness = await probe();
+        if (!readiness.available) throw failure(readiness.reason);
+        if (context.signal.aborted) throw failure("host_stopping");
         const wrapped = {};
         const metadata = (value) => {
           const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins });
@@ -481,7 +483,4602 @@ async function attachClientLaunch({ inspectorUrl, expectedPid, executable, traff
     expectedPid,
     executable,
     signal,
-    mainSource: '"use strict";\nvar __getOwnPropNames = Object.getOwnPropertyNames;\nvar __commonJS = (cb, mod) => function __require() {\n  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n\n// ../host/vendor/plaintext-source-client.cjs\nvar require_plaintext_source_client = __commonJS({\n  "../host/vendor/plaintext-source-client.cjs"(exports2, module2) {\n    "use strict";\n    var __getOwnPropNames2 = Object.getOwnPropertyNames;\n    var __commonJS2 = (cb, mod) => function __require() {\n      return mod || (0, cb[__getOwnPropNames2(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n    };\n    var require_traffic_wire = __commonJS2({\n      "../runtime/traffic-wire.cjs"(exports22, module22) {\n        "use strict";\n        var net = require("node:net");\n        var { randomBytes: randomBytes2, timingSafeEqual } = require("node:crypto");\n        var MAX_FRAME = 64 * 1024;\n        var CHUNK = 32 * 1024;\n        var MAX_BODY = 64 * 1024 * 1024;\n        var failure2 = (code) => Object.assign(new Error(code), { code });\n        async function connectTrafficPeer2(endpoint, { signal, handle, event = () => {\n        }, detach = (fn) => fn() } = {}) {\n          if (endpoint?.host !== "127.0.0.1" || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== "string" || endpoint.token.length > 128) throw failure2("invalid_data_endpoint");\n          if (signal?.aborted) throw failure2("host_stopping");\n          const socket = net.createConnection({ host: endpoint.host, port: endpoint.port });\n          socket.setNoDelay(true);\n          const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();\n          let sequence = 0, closed = false, buffer = Buffer.alloc(0), ready, failReady;\n          const connected = new Promise((resolve, reject) => {\n            ready = resolve;\n            failReady = reject;\n          });\n          const handshake = setTimeout(() => close(failure2("traffic_connect_timeout")), 5e3);\n          function close(reason = failure2("peer_closed")) {\n            if (closed) return;\n            closed = true;\n            clearTimeout(handshake);\n            signal?.removeEventListener("abort", aborted);\n            socket.destroy();\n            failReady(reason);\n            for (const item of pending.values()) {\n              clearTimeout(item.timer);\n              item.signal?.removeEventListener("abort", item.abort);\n              item.reject(reason);\n            }\n            pending.clear();\n            inbound.clear();\n            buffer = Buffer.alloc(0);\n            try {\n              event({ event: "closed" });\n            } catch {\n            }\n          }\n          const aborted = () => close(failure2("host_stopping"));\n          signal?.addEventListener("abort", aborted, { once: true });\n          function send(value) {\n            if (closed) throw failure2("peer_closed");\n            const encoded = Buffer.from(JSON.stringify(value));\n            if (encoded.length > MAX_FRAME) throw failure2("frame_too_large");\n            if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");\n            const packet = Buffer.allocUnsafe(encoded.length + 4);\n            packet.writeUInt32BE(encoded.length);\n            encoded.copy(packet, 4);\n            socket.write(packet);\n          }\n          socket.once("connect", () => {\n            try {\n              send({ token: endpoint.token });\n            } catch (error) {\n              close(error);\n            }\n          });\n          socket.on("error", () => close(failure2("peer_closed")));\n          socket.on("close", () => close());\n          socket.on("data", (chunk) => detach(() => {\n            try {\n              let offset = 0;\n              while (offset < chunk.length) {\n                const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;\n                if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");\n                const take = Math.min(required - buffer.length, chunk.length - offset);\n                buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);\n                offset += take;\n                if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");\n                if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;\n                const size = buffer.readUInt32BE(0);\n                if (!size || size > MAX_FRAME) throw failure2("invalid_frame");\n                const message = JSON.parse(buffer.subarray(4).toString("utf8"));\n                buffer = Buffer.alloc(0);\n                if (message.event) {\n                  if (message.event === "connected") {\n                    clearTimeout(handshake);\n                    ready();\n                  } else event(message);\n                  continue;\n                }\n                if (typeof message.method === "string") {\n                  if (inbound.size >= 256 || typeof handle !== "function" || inbound.has(message.id)) throw failure2("traffic_backpressure");\n                  inbound.add(message.id);\n                  let operation;\n                  try {\n                    operation = handle(message.method, message.params);\n                  } catch (error) {\n                    operation = Promise.reject(error);\n                  }\n                  Promise.resolve(operation).then((result) => {\n                    if (!closed && inbound.has(message.id)) send({ id: message.id, result: result ?? null });\n                  }, (error) => {\n                    if (!closed && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });\n                  }).catch(() => close(failure2("invalid_frame"))).finally(() => inbound.delete(message.id));\n                  continue;\n                }\n                const item = pending.get(message.id);\n                if (!item) continue;\n                pending.delete(message.id);\n                clearTimeout(item.timer);\n                item.signal?.removeEventListener("abort", item.abort);\n                if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));\n                else {\n                  try {\n                    item.prepareResult?.(message.result);\n                    item.resolve(message.result);\n                  } catch {\n                    item.reject(failure2("invalid_frame"));\n                  }\n                }\n              }\n            } catch {\n              close(failure2("invalid_frame"));\n            }\n          }));\n          await connected;\n          function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {\n            if (closed || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));\n            if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure2("resource_limit"));\n            if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));\n            return new Promise((resolve, reject) => {\n              const id = ++sequence;\n              const abort = () => {\n                const item = pending.get(id);\n                if (!item) return;\n                pending.delete(id);\n                clearTimeout(item.timer);\n                requestSignal?.removeEventListener("abort", abort);\n                if (cancelOpen && method === "open" && !closed) {\n                  try {\n                    send({ id: ++sequence, method: "cancelOpen", params: { request: id } });\n                  } catch {\n                    close(failure2("peer_closed"));\n                  }\n                }\n                reject(failure2("request_cancelled"));\n              };\n              const timer = setTimeout(abort, timeoutMs);\n              pending.set(id, { resolve, reject, timer, signal: requestSignal, abort, prepareResult });\n              requestSignal?.addEventListener("abort", abort, { once: true });\n              try {\n                send({ id, method, params });\n              } catch (error) {\n                abort();\n                close(error);\n              }\n            });\n          }\n          return Object.freeze({ request, close, status: () => ({ open: !closed, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });\n        }\n        function createTrafficStreams2(peer, lease, signal) {\n          const sources = /* @__PURE__ */ new Map();\n          let disposed = false;\n          const check = () => {\n            if (disposed || signal.aborted) throw failure2("stream_retired");\n          };\n          function exportBody(body) {\n            check();\n            if (body == null) return null;\n            if (typeof body === "string" || body instanceof Uint8Array) {\n              if (Buffer.byteLength(body) > MAX_BODY) throw failure2("body_too_large");\n              const bytes = Buffer.from(body);\n              if (bytes.length <= 1024) return { inline: bytes.toString("base64") };\n              body = [bytes];\n            }\n            if (!body?.[Symbol.iterator] && !body?.[Symbol.asyncIterator]) throw failure2("invalid_body");\n            if (sources.size >= 8) throw failure2("resource_limit");\n            const stream = randomBytes2(16).toString("hex");\n            sources.set(stream, { body, iterator: null, chunk: null, offset: 0, total: 0, reading: false, cancelled: false, cancelRead: null });\n            return { stream };\n          }\n          function importBody(reference, maximum = MAX_BODY) {\n            if (reference == null) return null;\n            if (typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1) throw failure2("invalid_body");\n            let used = false, finished = false, cancelled = false, cancelPromise = Promise.resolve();\n            const controller = new AbortController();\n            const rootAborted = () => controller.abort(failure2("stream_retired"));\n            signal.addEventListener("abort", rootAborted, { once: true });\n            const finish = () => {\n              finished = true;\n              signal.removeEventListener("abort", rootAborted);\n            };\n            const cancel = () => {\n              if (finished || cancelled) return false;\n              used = true;\n              cancelled = true;\n              finish();\n              controller.abort(failure2("request_cancelled"));\n              if (reference.stream) cancelPromise = peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).then(() => {\n              }, () => {\n              });\n              return true;\n            };\n            const cancelAndWait = () => {\n              cancel();\n              return cancelPromise;\n            };\n            return Object.freeze({ cancel, cancelAndWait, [Symbol.asyncIterator]() {\n              if (used) throw failure2("body_already_consumed");\n              used = true;\n              let total = 0, ended = false, reading = false;\n              return {\n                async next() {\n                  check();\n                  if (cancelled) throw failure2("request_cancelled");\n                  if (ended) return { done: true };\n                  if (reading) throw failure2("body_read_pending");\n                  reading = true;\n                  try {\n                    let bytes;\n                    if (reference.inline !== void 0) {\n                      if (typeof reference.inline !== "string" || reference.inline.length > 1368) throw failure2("invalid_body");\n                      bytes = Buffer.from(reference.inline, "base64");\n                      ended = true;\n                      finish();\n                    } else {\n                      if (typeof reference.stream !== "string" || !/^[a-f0-9]{32}$/u.test(reference.stream)) throw failure2("invalid_body");\n                      const value = await peer.request("relay", { lease, operation: "stream.read", payload: { stream: reference.stream } }, { signal: controller.signal, timeoutMs: 3e5 });\n                      check();\n                      if (value.done === true) {\n                        ended = true;\n                        finish();\n                        return { done: true };\n                      }\n                      if (typeof value.bytes !== "string" || !value.bytes.length || value.bytes.length > Math.ceil(CHUNK / 3) * 4) throw failure2("invalid_body");\n                      bytes = Buffer.from(value.bytes, "base64");\n                      if (bytes.length > CHUNK || bytes.toString("base64") !== value.bytes) throw failure2("invalid_body");\n                    }\n                    const encoded = reference.inline !== void 0 ? reference.inline : void 0;\n                    if (encoded !== void 0 && bytes.toString("base64") !== encoded) throw failure2("invalid_body");\n                    total += bytes.length;\n                    if (total > maximum) throw failure2("body_too_large");\n                    return { done: false, value: bytes };\n                  } catch (error) {\n                    finish();\n                    throw error;\n                  } finally {\n                    reading = false;\n                  }\n                },\n                async return() {\n                  ended = true;\n                  finish();\n                  controller.abort();\n                  if (reference.stream && !signal.aborted) await peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).catch(() => {\n                  });\n                  return { done: true };\n                }\n              };\n            } });\n          }\n          async function handle(operation, payload) {\n            check();\n            const source = sources.get(payload?.stream);\n            if (!source) throw failure2("stream_retired");\n            if (operation === "stream.cancel") {\n              sources.delete(payload.stream);\n              source.cancelled = true;\n              source.cancelRead?.();\n              if (source.body.cancelAndWait) await source.body.cancelAndWait().catch(() => {\n              });\n              else if (source.body.cancel) Promise.resolve(source.body.cancel()).catch(() => {\n              });\n              if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {\n              });\n              return { cancelled: true };\n            }\n            if (operation !== "stream.read" || source.reading) throw failure2("body_read_pending");\n            source.reading = true;\n            try {\n              source.iterator ??= source.body[Symbol.asyncIterator]?.() ?? source.body[Symbol.iterator]();\n              for (let empty = 0; !source.chunk || source.offset >= source.chunk.length; empty++) {\n                if (empty >= 128) throw failure2("invalid_body");\n                const value = await new Promise((resolve, reject) => {\n                  source.cancelRead = () => reject(failure2("stream_retired"));\n                  Promise.resolve().then(() => source.iterator.next()).then(resolve, reject);\n                });\n                source.cancelRead = null;\n                check();\n                if (source.cancelled) throw failure2("stream_retired");\n                if (value.done) {\n                  sources.delete(payload.stream);\n                  return { done: true };\n                }\n                if (typeof value.value !== "string" && !(value.value instanceof Uint8Array)) throw failure2("invalid_body");\n                source.total += Buffer.byteLength(value.value);\n                if (source.total > MAX_BODY) throw failure2("body_too_large");\n                source.chunk = Buffer.from(value.value);\n                source.offset = 0;\n              }\n              const chunk = source.chunk.subarray(source.offset, source.offset + CHUNK);\n              source.offset += chunk.length;\n              return { done: false, bytes: chunk.toString("base64") };\n            } finally {\n              source.reading = false;\n              source.cancelRead = null;\n            }\n          }\n          async function importFrame(frame) {\n            if (typeof frame?.binary !== "boolean") throw failure2("invalid_frame");\n            const body = importBody(frame.body, 8 * 1024 * 1024);\n            if (!body) throw failure2("invalid_frame");\n            const chunks = [];\n            for await (const chunk of body) chunks.push(Buffer.from(chunk));\n            const bytes = Buffer.concat(chunks);\n            return Object.freeze({ binary: frame.binary, data: frame.binary ? bytes : bytes.toString("utf8") });\n          }\n          function exportFrame(frame) {\n            if (frame == null) return null;\n            if (typeof frame === "string") frame = { binary: false, data: frame };\n            if (frame instanceof Uint8Array) frame = { binary: true, data: frame };\n            if (typeof frame?.binary !== "boolean" || (frame.binary ? !(frame.data instanceof Uint8Array) : typeof frame.data !== "string") || Buffer.byteLength(frame.data) > 8 * 1024 * 1024) throw failure2("invalid_frame");\n            return { binary: frame.binary, body: exportBody(frame.data) };\n          }\n          function dispose() {\n            if (disposed) return;\n            disposed = true;\n            signal.removeEventListener("abort", dispose);\n            for (const source of sources.values()) {\n              source.cancelled = true;\n              source.cancelRead?.();\n              try {\n                source.body.cancel?.();\n                if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {\n                });\n              } catch {\n              }\n            }\n            sources.clear();\n          }\n          signal.addEventListener("abort", dispose, { once: true });\n          return Object.freeze({ exportBody, importBody, exportFrame, importFrame, handle, dispose, status: () => ({ streams: sources.size, retired: disposed }) });\n        }\n        async function listenTrafficPeer({ signal, handle, onConnect = () => {\n        }, onClose = () => {\n        } }) {\n          if (signal?.aborted) throw failure2("host_stopping");\n          const token = randomBytes2(32).toString("base64url");\n          let active = null, closed = false;\n          const sockets = /* @__PURE__ */ new Set();\n          const server = net.createServer((socket) => {\n            if (closed || active || sockets.size >= 4) {\n              socket.destroy();\n              return;\n            }\n            sockets.add(socket);\n            socket.once("close", () => sockets.delete(socket));\n            socket.setNoDelay(true);\n            let buffer = Buffer.alloc(0), authenticated = false, retired = false, sequence = 0;\n            const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();\n            const handshake = setTimeout(() => retire(), 5e3);\n            function retire() {\n              if (retired) return;\n              retired = true;\n              clearTimeout(handshake);\n              socket.destroy();\n              for (const item of pending.values()) {\n                clearTimeout(item.timer);\n                item.signal?.removeEventListener("abort", item.abort);\n                item.reject(failure2("peer_closed"));\n              }\n              pending.clear();\n              inbound.clear();\n              buffer = Buffer.alloc(0);\n              if (active === peer) {\n                active = null;\n                onClose(peer);\n              }\n            }\n            function send(value) {\n              if (retired) throw failure2("peer_closed");\n              const encoded = Buffer.from(JSON.stringify(value));\n              if (!encoded.length || encoded.length > MAX_FRAME) throw failure2("frame_too_large");\n              if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");\n              const packet = Buffer.allocUnsafe(encoded.length + 4);\n              packet.writeUInt32BE(encoded.length);\n              encoded.copy(packet, 4);\n              socket.write(packet);\n            }\n            function request(method, params = {}, { signal: requestSignal, timeoutMs = 3e4 } = {}) {\n              if (retired || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));\n              if (pending.size >= 64) return Promise.reject(failure2("resource_limit"));\n              if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));\n              return new Promise((resolve, reject) => {\n                const id = ++sequence;\n                const abort = () => {\n                  if (!pending.has(id)) return;\n                  pending.delete(id);\n                  clearTimeout(timer);\n                  requestSignal?.removeEventListener("abort", abort);\n                  reject(failure2("request_cancelled"));\n                };\n                const timer = setTimeout(abort, timeoutMs);\n                pending.set(id, { resolve, reject, timer, signal: requestSignal, abort });\n                requestSignal?.addEventListener("abort", abort, { once: true });\n                try {\n                  send({ id, method, params });\n                } catch (error) {\n                  abort();\n                  retire();\n                }\n              });\n            }\n            const peer = Object.freeze({ request, close: retire, status: () => ({ open: !retired, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });\n            socket.on("error", retire);\n            socket.on("close", retire);\n            socket.on("data", (chunk) => {\n              try {\n                let offset = 0;\n                while (offset < chunk.length) {\n                  const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;\n                  if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");\n                  const take = Math.min(required - buffer.length, chunk.length - offset);\n                  buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);\n                  offset += take;\n                  if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");\n                  if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;\n                  const message = JSON.parse(buffer.subarray(4).toString("utf8"));\n                  buffer = Buffer.alloc(0);\n                  if (!authenticated) {\n                    const offered = typeof message?.token === "string" ? Buffer.from(message.token) : Buffer.alloc(0);\n                    const expected = Buffer.from(token);\n                    if (active || offered.length !== expected.length || !timingSafeEqual(offered, expected) || Object.keys(message).length !== 1) throw failure2("permission_denied");\n                    authenticated = true;\n                    clearTimeout(handshake);\n                    active = peer;\n                    send({ event: "connected" });\n                    onConnect(peer);\n                    continue;\n                  }\n                  if (typeof message.method === "string") {\n                    if (inbound.size >= 256 || inbound.has(message.id)) throw failure2("traffic_backpressure");\n                    inbound.add(message.id);\n                    let operation;\n                    try {\n                      operation = handle(peer, message.method, message.params);\n                    } catch (error) {\n                      operation = Promise.reject(error);\n                    }\n                    Promise.resolve(operation).then((result) => {\n                      if (!retired && inbound.has(message.id)) send({ id: message.id, result: result ?? null });\n                    }, (error) => {\n                      if (!retired && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });\n                    }).catch(retire).finally(() => inbound.delete(message.id));\n                    continue;\n                  }\n                  const item = pending.get(message.id);\n                  if (!item) continue;\n                  pending.delete(message.id);\n                  clearTimeout(item.timer);\n                  item.signal?.removeEventListener("abort", item.abort);\n                  if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));\n                  else item.resolve(message.result);\n                }\n              } catch {\n                retire();\n              }\n            });\n          });\n          const stopped = () => close();\n          signal?.addEventListener("abort", stopped, { once: true });\n          try {\n            await new Promise((resolve, reject) => {\n              const cleanup = () => {\n                server.off("error", failed);\n                signal?.removeEventListener("abort", aborted);\n              };\n              const failed = () => {\n                cleanup();\n                reject(failure2("channel_listen_failed"));\n              };\n              const aborted = () => {\n                cleanup();\n                reject(failure2("host_stopping"));\n              };\n              server.once("error", failed);\n              signal?.addEventListener("abort", aborted, { once: true });\n              server.listen(0, "127.0.0.1", () => {\n                cleanup();\n                if (closed) {\n                  close();\n                  reject(failure2("host_stopping"));\n                } else resolve();\n              });\n            });\n          } catch (error) {\n            close();\n            throw error;\n          }\n          const address = server.address();\n          function close() {\n            if (!closed) {\n              closed = true;\n              signal?.removeEventListener("abort", stopped);\n            }\n            for (const socket of sockets) socket.destroy();\n            if (server.listening) server.close();\n          }\n          if (closed || signal?.aborted) {\n            close();\n            throw failure2("host_stopping");\n          }\n          return Object.freeze({ endpoint: Object.freeze({ host: "127.0.0.1", port: address.port, token }), close, status: () => ({ open: !closed, connected: !!active, peer: active?.status() ?? null }) });\n        }\n        module22.exports = { connectTrafficPeer: connectTrafficPeer2, listenTrafficPeer, createTrafficStreams: createTrafficStreams2 };\n      }\n    });\n    var { randomBytes } = require("node:crypto");\n    var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();\n    var failure = (code) => Object.assign(new Error(code), { code });\n    var TOKEN = /^[A-Za-z0-9_-]{43}$/u;\n    function connectPlaintextSource2(source, { signal } = {}) {\n      if (source?.version !== 1 || source.kind !== "plaintext" || !Array.isArray(source.protocols) || !Array.isArray(source.operations) || typeof source.routeBaseUrl !== "string") throw failure("invalid_source");\n      const routeBase = new URL(source.routeBaseUrl);\n      if (routeBase.protocol !== "http:" || routeBase.hostname !== "127.0.0.1" || !routeBase.port || routeBase.username || routeBase.password || routeBase.search || routeBase.hash || routeBase.pathname === "/") throw failure("invalid_source");\n      const controller = new AbortController(), exchanges = /* @__PURE__ */ new Map(), routes = /* @__PURE__ */ new Set(), routeRecords = /* @__PURE__ */ new Map();\n      let closed = false, peer;\n      const stop = () => close();\n      signal?.addEventListener("abort", stop, { once: true });\n      if (signal?.aborted) throw failure("host_stopping");\n      function retire(record, notify = false) {\n        if (!record || !exchanges.has(record.id)) return;\n        exchanges.delete(record.id);\n        record.signal?.removeEventListener("abort", record.abort);\n        record.controller.abort(failure("stream_retired"));\n        record.streams.dispose();\n        if (notify && !closed) peer.request("http.cancel", { exchange: record.id }, { timeoutMs: 2e3 }).catch(() => {\n        });\n      }\n      async function handle(method, params) {\n        if (method === "relay") {\n          const streamOwner = exchanges.get(params?.lease) ?? routeRecords.get(params?.lease);\n          if (!streamOwner) throw failure("stream_retired");\n          return streamOwner.streams.handle(params.operation, params.payload);\n        }\n        const record = exchanges.get(params?.exchange);\n        if (!record) throw failure("stream_retired");\n        if (method === "http.cancel") {\n          retire(record);\n          return { cancelled: true };\n        }\n        if (method !== "http.forward" || record.forwarding) throw failure("invalid_method");\n        record.forwarding = true;\n        try {\n          const input = { ...params.request, body: record.streams.importBody(params.request.body) };\n          const response = await record.forward(input, { signal: record.controller.signal });\n          if (record.controller.signal.aborted) throw failure("stream_retired");\n          if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw failure("invalid_response");\n          return { ...response, headers: response.headers ?? [], body: record.streams.exportBody(response.body) };\n        } finally {\n          record.forwarding = false;\n        }\n      }\n      function close() {\n        if (closed) return;\n        closed = true;\n        signal?.removeEventListener("abort", stop);\n        for (const record of [...exchanges.values()]) retire(record);\n        for (const record of routes) {\n          record.controller.abort();\n          record.streams?.dispose();\n        }\n        routeRecords.clear();\n        routes.clear();\n        controller.abort();\n        peer?.close();\n      }\n      const ready = connectTrafficPeer(source.endpoint, {\n        signal: controller.signal,\n        handle,\n        event(event) {\n          if (event.event === "closed") close();\n        }\n      }).then(\n        (value) => {\n          peer = value;\n          return true;\n        },\n        (error) => {\n          close();\n          throw error;\n        }\n      );\n      function certificateReference(record, value) {\n        if (value === void 0) return void 0;\n        if (typeof value !== "string" || Buffer.byteLength(value) > 128 * 1024) throw failure("invalid_ca_bundle");\n        return record.streams.exportBody(value);\n      }\n      function closeRouteRecord(record) {\n        routeRecords.delete(record.token);\n        record.controller.abort();\n        record.streams?.dispose();\n      }\n      function reserveRoute({ upstreamBaseUrl, additionalCaPem } = {}) {\n        if (closed) throw failure("peer_closed");\n        if (routes.size >= 32) throw failure("resource_limit");\n        const token = randomBytes(32).toString("base64url");\n        if (!TOKEN.test(token)) throw failure("invalid_source");\n        const baseUrl = `${source.routeBaseUrl}/${token}`;\n        const record = { token, closed: false, registered: false, controller: new AbortController(), streams: null };\n        routes.add(record);\n        const reservationReady = ready.then(() => {\n          if (record.closed) throw failure("route_closed");\n          record.streams = createTrafficStreams(peer, token, record.controller.signal);\n          routeRecords.set(token, record);\n          return peer.request("route.register", {\n            token,\n            upstreamBaseUrl,\n            additionalCaPem: certificateReference(record, additionalCaPem)\n          }, { timeoutMs: 5e3 });\n        }).then((result) => {\n          if (result?.baseUrl !== baseUrl) throw failure("invalid_source");\n          record.registered = true;\n          if (record.closed) return peer.request("route.close", { token }, { timeoutMs: 2e3 }).then(() => {\n            record.registered = false;\n            throw failure("route_closed");\n          });\n          return record;\n        }).catch((error) => {\n          routes.delete(record);\n          closeRouteRecord(record);\n          throw error;\n        });\n        record.pending = reservationReady;\n        return Object.freeze({ baseUrl, ready: reservationReady, update({ upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: additionalCaPem2 } = {}) {\n          if (record.closed || closed) return Promise.reject(failure("route_closed"));\n          const update = record.pending.then(async () => {\n            const reference = certificateReference(record, additionalCaPem2);\n            try {\n              return await peer.request("route.update", { token, upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: reference }, { timeoutMs: 5e3 });\n            } catch (error) {\n              if (reference?.stream) await record.streams.handle("stream.cancel", { stream: reference.stream }).catch(() => {\n              });\n              throw error;\n            }\n          });\n          record.pending = update.catch(() => {\n          });\n          return update;\n        }, async close() {\n          if (record.closed) return;\n          record.closed = true;\n          routes.delete(record);\n          try {\n            await record.pending;\n            if (record.registered && !closed) await peer.request("route.close", { token }, { timeoutMs: 2e3 });\n          } catch {\n          } finally {\n            closeRouteRecord(record);\n          }\n        } });\n      }\n      async function registerRoute(options) {\n        const reservation = reserveRoute(options);\n        await reservation.ready;\n        return reservation;\n      }\n      async function interceptHttp(input, { forward, signal: requestSignal } = {}) {\n        if (closed || typeof forward !== "function") throw failure("invalid_source");\n        await ready;\n        const id = randomBytes(32).toString("base64url"), requestController = new AbortController();\n        const abort = () => retire(record, true);\n        const record = {\n          id,\n          forward,\n          controller: requestController,\n          signal: requestSignal,\n          abort,\n          forwarding: false,\n          streams: createTrafficStreams(peer, id, requestController.signal)\n        };\n        exchanges.set(id, record);\n        requestSignal?.addEventListener("abort", abort, { once: true });\n        if (requestSignal?.aborted) {\n          abort();\n          throw failure("request_cancelled");\n        }\n        let result;\n        try {\n          result = await peer.request(\n            "http.intercept",\n            {\n              exchange: id,\n              request: { url: input.url, method: input.method ?? "GET", headers: input.headers ?? [], body: record.streams.exportBody(input.body) }\n            },\n            { signal: requestController.signal, timeoutMs: 3e5 }\n          );\n          if (requestController.signal.aborted) throw failure("request_cancelled");\n          const body = record.streams.importBody(result.body);\n          if (!body) {\n            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {\n            });\n            retire(record);\n            return { ...result, body: null };\n          }\n          let consumed = false;\n          const finish = async () => {\n            if (consumed) return;\n            consumed = true;\n            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {\n            });\n            retire(record);\n          };\n          const wrapped = Object.freeze({\n            async cancel() {\n              await finish();\n            },\n            [Symbol.asyncIterator]() {\n              const iterator = body[Symbol.asyncIterator]();\n              return {\n                async next() {\n                  try {\n                    const item = await iterator.next();\n                    if (item.done) await finish();\n                    return item;\n                  } catch (error) {\n                    await finish();\n                    throw error;\n                  }\n                },\n                async return() {\n                  try {\n                    return await iterator.return?.() ?? { done: true };\n                  } finally {\n                    await finish();\n                  }\n                }\n              };\n            }\n          });\n          return { ...result, body: wrapped };\n        } catch (error) {\n          retire(record, true);\n          throw error;\n        }\n      }\n      return Object.freeze({\n        ready,\n        reserveRoute,\n        registerRoute,\n        interceptHttp,\n        close,\n        status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size })\n      });\n    }\n    module2.exports = { connectPlaintextSource: connectPlaintextSource2 };\n  }\n});\n\n// ../host/electron-plaintext.cjs\nvar require_electron_plaintext = __commonJS({\n  "../host/electron-plaintext.cjs"(exports2, module2) {\n    "use strict";\n    var Module = require("node:module");\n    var path = require("node:path");\n    var { createHash } = require("node:crypto");\n    var { EventEmitter } = require("node:events");\n    var { Readable } = require("node:stream");\n    var { AsyncLocalStorage } = require("node:async_hooks");\n    var PROFILES = Object.freeze({\n      "bootstrap-D2PJMYEh.js": { hash: "0d62d7be4491d5ef84d93ea9b753c270096de217f2e49064e5f8f701af53e9ed", kind: "bootstrap", symbol: "He" },\n      "main-DAwJoFgo.js": { hash: "18beea7d7e46866168528ff5dab5108ffe6d39fc13433367ce8dee7b187044f8", kind: "main", symbol: "kEe" },\n      "application-network-startup-CY4ZWOz-.js": { hash: "7936a5b6373be818c7cce78cad7c18e4e156c8400d3b16f5b440d2626a1cc661", kind: "stdio", symbol: "$s" },\n      "src-BSSLXJxP.js": { hash: "50c7cf9c144594cfa6f33298e977f0b144976cc70c579f59fdc7242615c4af98", kind: "connection", symbol: "Yh" },\n      "bootstrap-CiIGnI3y.js": { hash: "119bb54ee12ed5d2b0d3b98dd068a4322232a4aa342323eb9cb5dfa6575ca158", kind: "bootstrap", symbol: "Nt" },\n      "main-BR_2NHW6.js": { hash: "1f2b91cf92fc023fb2fa41e1c1d03698fa6e37354ecd07dd0cebd21337607b08", kind: "main", symbol: "ZTe" },\n      "bootstrap-DK4EfNwt.js": { hash: "dbdbdd3ef5dde93dd196a59846edf244dc653341213e0fd45eebb133b5df10ba", kind: "bootstrap", symbol: "Pt" },\n      "main-LM8MUIFp.js": { hash: "c71bf3ffecef5fd390b4cd16d120d39dce30d30bffe3c563c8c74c1b691da018", kind: "main", symbol: "wEe" },\n      "src-C3YaUE83.js": { hash: "14c8c23e8b8dfa874d3fb5a50d54fb28eccf55fb83232c3ab29cb7c0ef0a0472", kind: "src", symbol: "mQ", managerExport: "un" },\n      "bootstrap-DwqRMhlU.js": { hash: "79ad86bda1f6171d43bab09b1b4a5d379afefc07a13d6f4f58470a823f6f575f", kind: "bootstrap", symbol: "Nt" },\n      "main-Bx5zswAj.js": { hash: "610ea8b045f207360ac50fcccfe43ca896c6298fa75562f323f1a45ed2364a1b", kind: "main", symbol: "ZTe" },\n      "src-mOb8On4V.js": { hash: "0639e87d51c132a7440bfa06624fb8e99031a3bb331ae11577278ce4a515cbb4", kind: "src", symbol: "Pq", managerExport: "un" },\n      "bootstrap-C4dRql4x.js": { hash: "0757af0981f4552ca79ed1a364eafa6a73e71a92e65ea4fce747c7b6c715ed4a", kind: "bootstrap", symbol: "Nt" },\n      "main-C-Mhak1n.js": { hash: "457c79be69620d4489e94c14ac665f81731d869635606dcf175b7b4cc2e8b467", kind: "main", symbol: "ZTe" },\n      "src-DldfpmrL.js": { hash: "88ec69722b5d87a7081edf2e2d6a2e21c3f25300cee587363d74b8b87969a412", kind: "src", symbol: "WQ", managerExport: "un" },\n      "bootstrap-CYu4H4X5.js": { hash: "9b9d3c9e8312dba970daf31fd3950b3f2bd760a89e1d7bf480c4efefb3d2b102", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },\n      "main-Dn18kdv3.js": { hash: "447e4900075d8cb41f5c55f1728c20147ea23ab761bb4377348eea8c8f3d4a48", kind: "main", symbol: "Dce" },\n      "application-network-startup-DN7Ktmlk.js": { hash: "3c2ebf430f24e55975f81e95b33e0f71470d04886f229b935939a7e32c587cf0", kind: "stdio", symbol: "Hs" },\n      "bootstrap-CZlEGA2m.js": { hash: "343072f02e604fe06f7864a72b1cbcc6004a8a318c66982995a188ee97430a3b", kind: "bootstrap", symbol: "vY", connectionSymbol: "DN" },\n      "main-C_jM0dPl.js": { hash: "d940b7ba89557a640cf23967c60555fa2a2344d6899807478c69ffc304314302", kind: "main", symbol: "kce" },\n      "application-network-startup-ouXbhtc5.js": { hash: "e92e5333cc38b06c6e94242d5bb680321f044bc9355013739d059a2d3e2f5b8d", kind: "stdio", symbol: "Hs" },\n      // Windows 26.930.7945.0 / frontend 26.930.61225: reviewed native methods\n      // retain the ApplicationNetwork, final fetch, stdio and notification contracts.\n      "bootstrap-C8gUBg5L.js": { hash: "1f726d0e3103d81501551546d3b6e70f1fc10646f9326e00fe68605f144c5f4f", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },\n      "main-gtVueRkt.js": { hash: "a4b72dcd241e8ee360aa960442cc585aa822685a42efd056c760937d9f8b623e", kind: "main", symbol: "kce" },\n      "application-network-startup-BEAX-hka.js": { hash: "634382c7af55d0ff57eb028aa4dd904130215c44fb559ea90a4f4035a5419f6e", kind: "stdio", symbol: "Hs" },\n      // Windows 26.1002.7124.0 / frontend 26.1002.52244 / build 13536:\n      // reviewed live bindings retain policy checks, final fetch, stdio and account notifications.\n      "bootstrap-Dz9A8y86.js": { hash: "a70497f5ffa764fe74f4de7ac05a5f73aff8d1e2f44de4476d1d9a684af43ddd", kind: "bootstrap", symbol: "jY", connectionSymbol: "hN" },\n      "main-p91kJShj.js": { hash: "aafd6a750458cb39b6202f9be00231482122d32ac14017b79d544c4ab741e889", kind: "main", symbol: "Hb" },\n      "application-network-startup-Bt0a8E1L.js": { hash: "aa5478e31c8a623632dfedffcecfbe40d5033d38a8504649716657681a0840b4", kind: "stdio", symbol: "Hs" },\n      // Windows package 26.1007.9446.0 / frontend 26.1007.71326 / build 20398.\n      // Exact source review and local extracted-method probes are recorded in\n      // docs/native-source-26.1007.9446.0.json; Native acceptance is separate.\n      "bootstrap-iULMfRBf.js": { hash: "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869", kind: "bootstrap", symbol: "tr" },\n      "main-Bgi5Xaw-.js": { hash: "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54", kind: "main", symbol: "ple" },\n      "application-network-startup-YSC7OAs0.js": { hash: "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e", kind: "stdio", symbol: "Gs" },\n      "src-DCNiwad_.js": { hash: "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25", kind: "connection", symbol: "mB" }\n    });\n    var HASHES = Object.freeze(Object.fromEntries(Object.entries(PROFILES).map(([name, profile]) => [name, profile.hash])));\n    var fail2 = (code) => Object.assign(new Error(code), { code });\n    var closeRoute = (route) => {\n      try {\n        Promise.resolve(route.close()).catch(() => {\n        });\n      } catch {\n      }\n    };\n    function headers(value) {\n      if (Array.isArray(value)) return value.flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));\n      if (value && !(value instanceof Headers) && typeof value === "object") return Object.entries(value).flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));\n      const source = new Headers(value ?? {}), result = [...source.entries()].filter(([name]) => name.toLowerCase() !== "set-cookie");\n      for (const cookie of source.getSetCookie?.() ?? []) result.push(["set-cookie", cookie]);\n      return result;\n    }\n    var sameOrigin = (left, right) => new URL(left).origin === new URL(right).origin;\n    var withoutCredentials = (values) => headers(values).filter(([name]) => !["authorization", "cookie", "proxy-authorization"].includes(name.toLowerCase()));\n    function headerObject(values) {\n      const result = /* @__PURE__ */ Object.create(null);\n      for (const [name, value] of values) {\n        const key = Object.keys(result).find((existing) => existing.toLowerCase() === name.toLowerCase()) ?? name;\n        result[key] = result[key] === void 0 ? value : Array.isArray(result[key]) ? [...result[key], value] : [result[key], value];\n      }\n      return result;\n    }\n    var requestBody = (value) => value == null ? void 0 : typeof value === "string" ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : value;\n    var asUrl = (value) => typeof value === "string" ? value : value instanceof URL ? value.href : value?.url;\n    async function bytes(body, signal) {\n      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;\n      const chunks = [];\n      let size = 0;\n      for await (const chunk of body) {\n        signal?.throwIfAborted();\n        size += chunk.length;\n        if (size > 64 * 1024 * 1024) throw fail2("desktop_body_too_large");\n        chunks.push(Buffer.from(chunk));\n      }\n      return Buffer.concat(chunks);\n    }\n    function stream(body) {\n      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;\n      const iterator = body[Symbol.asyncIterator]();\n      return new ReadableStream({\n        async pull(controller) {\n          try {\n            const item = await iterator.next();\n            item.done ? controller.close() : controller.enqueue(item.value);\n          } catch (error) {\n            controller.error(error);\n          }\n        },\n        cancel() {\n          body.cancel?.();\n          iterator.return?.();\n        }\n      });\n    }\n    var bodyless = (status, method) => [204, 205, 304].includes(status) || method?.toUpperCase() === "HEAD";\n    async function response(result, method) {\n      const options = { status: result.status, headers: result.headers };\n      if (bodyless(result.status, method)) {\n        await result.body?.cancel?.();\n        return new Response(null, options);\n      }\n      return new Response(stream(result.body), options);\n    }\n    function providerUrl(value) {\n      if (typeof value !== "string") throw fail2("backend_provider_unsupported");\n      const url = new URL(value);\n      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");\n      return url.href;\n    }\n    function routedThreadMessage(message, reserve, isProviderSupported = () => true) {\n      let payload;\n      try {\n        payload = JSON.parse(message);\n      } catch {\n        return message;\n      }\n      if (!["thread/start", "thread/resume"].includes(payload?.method)) return message;\n      const inputConfig = payload.params?.config;\n      const selected = payload.params?.modelProvider ?? inputConfig?.model_provider;\n      const inline = typeof selected === "string" ? inputConfig?.[`model_providers.${selected}`] ?? inputConfig?.model_providers?.[selected] : null;\n      if (typeof selected === "string" && !isProviderSupported(selected) && typeof inline?.base_url !== "string") throw fail2("backend_provider_unsupported");\n      if (!inputConfig || typeof inputConfig !== "object" || Array.isArray(inputConfig)) return message;\n      const config = { ...inputConfig };\n      let changed = false;\n      for (const [key, value] of Object.entries(config)) {\n        if (key === "model_providers" && value && typeof value === "object" && !Array.isArray(value)) {\n          const mapped = { ...value };\n          for (const [name, provider] of Object.entries(mapped)) if (provider && typeof provider === "object" && typeof provider.base_url === "string") {\n            if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail2("backend_provider_unsupported");\n            mapped[name] = { ...provider, base_url: reserve(providerUrl(provider.base_url)) };\n            changed = true;\n          }\n          config[key] = mapped;\n        } else if (/^model_providers\\..*\\.base_url$/u.test(key) && !/^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) throw fail2("backend_provider_unsupported");\n        else if (/^model_providers\\..+$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string" && !/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key)) throw fail2("backend_provider_unsupported");\n        if (key === "openai_base_url" || /^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) {\n          config[key] = reserve(providerUrl(value));\n          changed = true;\n        } else if (/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string") {\n          config[key] = { ...value, base_url: reserve(providerUrl(value.base_url)) };\n          changed = true;\n        }\n      }\n      return changed ? JSON.stringify({ ...payload, params: { ...payload.params, config } }) : message;\n    }\n    function installDesktopPlaintext2({ app }, {\n      source,\n      deadlineUnixMs,\n      ownsBackendProcess = () => false,\n      isProviderSupported = () => true,\n      providerTrustForProcess = () => void 0,\n      pendingAccountUpdate = () => null,\n      updateAccountMode = () => {\n      },\n      moduleRegistry,\n      state,\n      onlineUpdates\n    }, { expectedHashes = HASHES } = {}) {\n      if (!moduleRegistry && app.isReady() || !source?.interceptHttp) throw fail2("desktop_bootstrap_too_late");\n      const scope = state?.scope ?? new AsyncLocalStorage();\n      if (state && !state.scope) state.scope = scope;\n      const symbol = Symbol("codlet.private.plaintext");\n      const originalCompile = Module.prototype._compile;\n      const deferredModules = /* @__PURE__ */ new Set();\n      let bootstrapVerified = false, mainVerified = false, srcVerified = false, fetchInstalled = false, requestInstalled = false, stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;\n      const bindingErrors = /* @__PURE__ */ Object.create(null);\n      const restores = [];\n      const taskRoutes = state?.taskRoutes ?? /* @__PURE__ */ new Set(), routesByProcess = state?.routesByProcess ?? /* @__PURE__ */ new WeakMap(), sendQueues = state?.sendQueues ?? /* @__PURE__ */ new WeakMap();\n      const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();\n      function reserve(url, proc) {\n        let routes = routesByProcess.get(proc);\n        if (!routes) {\n          routes = /* @__PURE__ */ new Map();\n          routesByProcess.set(proc, routes);\n          proc.once("exit", () => {\n            for (const route2 of routes.values()) {\n              closeRoute(route2);\n              taskRoutes.delete(route2);\n            }\n            routes.clear();\n          });\n        }\n        if (routes.has(url)) return routes.get(url);\n        if (taskRoutes.size >= 64) throw fail2("backend_route_limit");\n        const additionalCaPem = providerTrustForProcess(proc);\n        const route = source.reserveRoute({ upstreamBaseUrl: url, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });\n        route.ready.catch(() => {\n          routes.delete(url);\n          taskRoutes.delete(route);\n          closeRoute(route);\n        });\n        routes.set(url, route);\n        taskRoutes.add(route);\n        return route;\n      }\n      function failOutbound(connection, message) {\n        let id;\n        try {\n          id = JSON.parse(message).id;\n        } catch {\n        }\n        if (typeof id === "string" || typeof id === "number") queueMicrotask(() => connection.onmessage?.({\n          type: "message",\n          data: JSON.stringify({ id, error: { code: -32e3, message: "Provider route unavailable" } })\n        }));\n        else connection.onerror?.(fail2("backend_route_unavailable"));\n      }\n      function hookStdio(Stdio) {\n        if (stdioInstalled || typeof Stdio !== "function" || typeof Stdio.prototype.send !== "function") {\n          if (!stdioInstalled) taskReason = "hook_unavailable";\n          return;\n        }\n        const original = Stdio.prototype.send;\n        Stdio.prototype.send = function(message) {\n          if (closed || !ownsBackendProcess(this.proc) || typeof message !== "string") return original.call(this, message);\n          if (onlineUpdates && !onlineUpdates.accepting()) {\n            onlineUpdates.whenAccepting().then(() => Stdio.prototype.send.call(this, message)).catch(() => failOutbound(this, message));\n            return;\n          }\n          const waits = [];\n          let routed;\n          try {\n            routed = routedThreadMessage(\n              message,\n              (url) => {\n                const route = reserve(url, this.proc);\n                waits.push(route.ready);\n                return route.baseUrl;\n              },\n              (provider) => isProviderSupported(this.proc, provider)\n            );\n          } catch {\n            failOutbound(this, message);\n            return;\n          }\n          const account = pendingAccountUpdate(this.proc);\n          const previous = sendQueues.get(this);\n          const dispatch = () => tracked("backend.send", () => original.call(this, routed));\n          if (!waits.length && !account && !previous) {\n            if (!onlineUpdates) return original.call(this, routed);\n            dispatch().catch(() => failOutbound(this, message));\n            return;\n          }\n          const operation = tracked("backend.send", async () => {\n            await (previous ?? Promise.resolve());\n            await Promise.all([...waits, ...account ? [account] : []]);\n            if (!closed && ownsBackendProcess(this.proc)) return original.call(this, routed);\n            throw Object.assign(fail2("core_write_owner_closed"), { outcome: "not_applied" });\n          }).catch(() => failOutbound(this, message));\n          sendQueues.set(this, operation);\n          operation.finally(() => {\n            if (sendQueues.get(this) === operation) sendQueues.delete(this);\n          }).catch(() => {\n          });\n        };\n        stdioInstalled = true;\n        restores.push(() => {\n          Stdio.prototype.send = original;\n        });\n      }\n      function hookConnection(Connection) {\n        if (connectionInstalled || typeof Connection !== "function" || typeof Connection.prototype.routeIncomingMessage !== "function") {\n          if (!connectionInstalled) taskReason = "hook_unavailable";\n          return;\n        }\n        const original = Connection.prototype.routeIncomingMessage;\n        Connection.prototype.routeIncomingMessage = function(message, ...rest) {\n          if (!closed && message?.method === "account/updated" && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);\n          return original.call(this, message, ...rest);\n        };\n        connectionInstalled = true;\n        restores.push(() => {\n          Connection.prototype.routeIncomingMessage = original;\n        });\n      }\n      function hookNetwork(Network) {\n        if (typeof Network !== "function" || typeof Network.prototype.fetch !== "function" || typeof Network.prototype.request !== "function") {\n          desktopReason = "hook_unavailable";\n          return;\n        }\n        const originalFetch = Network.prototype.fetch, originalRequest = Network.prototype.request;\n        function nativeForward(network, request, options, signal, onRequest) {\n          return new Promise((resolve, reject) => {\n            let settled = false, finalUrl = request.url, redirects = 0, live;\n            const finish = (error, value) => {\n              if (settled) return;\n              settled = true;\n              if (error) reject(error);\n              else resolve(value);\n            };\n            const abort = () => {\n              finish(fail2("desktop_request_aborted"));\n              live?.abort();\n            };\n            try {\n              signal?.throwIfAborted();\n              live = originalRequest.call(network, {\n                ...options,\n                url: request.url,\n                method: request.method,\n                headers: headerObject(headers(request.headers))\n              });\n              onRequest?.(live);\n              signal?.addEventListener("abort", abort, { once: true });\n              live.on("redirect", (_status, _method, destination) => {\n                try {\n                  if (options.redirect === "error") throw fail2("desktop_redirect_disallowed");\n                  if (options.redirect === "manual") throw fail2("desktop_manual_redirect_unavailable");\n                  if (++redirects > 20 || !["http:", "https:"].includes(new URL(destination).protocol)) throw fail2("desktop_redirect_disallowed");\n                  network.assertAllowed(destination);\n                  finalUrl = destination;\n                  live.followRedirect();\n                } catch (error) {\n                  finish(error);\n                  live.abort();\n                }\n              });\n              live.once("error", (error) => {\n                signal?.removeEventListener("abort", abort);\n                finish(error);\n              });\n              live.once("response", (incoming) => {\n                incoming.once("end", () => signal?.removeEventListener("abort", abort));\n                incoming.once("close", () => signal?.removeEventListener("abort", abort));\n                finish(null, { status: incoming.statusCode, headers: headers(incoming.headers), body: incoming, finalUrl });\n              });\n              live.end(request.body == null || typeof request.body === "string" ? request.body : Buffer.from(request.body));\n            } catch (error) {\n              signal?.removeEventListener("abort", abort);\n              finish(error);\n              live?.abort();\n            }\n          });\n        }\n        Network.prototype.fetch = async function(input, init = {}) {\n          if (closed || !scope.getStore()) return originalFetch.call(this, input, init);\n          if (onlineUpdates && !onlineUpdates.accepting()) {\n            await onlineUpdates.whenAccepting(init.signal);\n            return Network.prototype.fetch.call(this, input, init);\n          }\n          const url = asUrl(input);\n          this.assertAllowed(url);\n          const signal = init.signal;\n          const current = { url, method: init.method ?? "GET", headers: headers(init.headers), body: requestBody(init.body) };\n          const result = await tracked("desktop.fetch", () => source.interceptHttp(current, { signal, forward: async (next, control) => {\n            const body = await bytes(next.body, control.signal);\n            const omit = next.credentialMode === "omit" || !sameOrigin(url, next.url);\n            return nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, {\n              redirect: init.redirect ?? "follow",\n              credentials: omit ? "omit" : init.credentials,\n              cache: init.cache,\n              referrerPolicy: init.referrerPolicy,\n              priority: init.priority,\n              ...init.credentials === "same-origin" && !omit ? { origin: new URL(url).origin } : {}\n            }, control.signal);\n          } }));\n          return response(result, current.method);\n        };\n        Network.prototype.request = function(options) {\n          if (closed || !scope.getStore()) return originalRequest.call(this, options);\n          this.assertAllowed(options.url);\n          const network = this;\n          const proxy = new EventEmitter();\n          const controller = new AbortController();\n          let liveRequest, upload = { started: false, current: 0, total: 0 }, ended = false;\n          proxy.getUploadProgress = () => liveRequest?.getUploadProgress?.() ?? upload;\n          proxy.abort = () => {\n            controller.abort();\n            liveRequest?.abort?.();\n          };\n          proxy.end = function(body) {\n            if (ended) throw fail2("desktop_request_already_ended");\n            ended = true;\n            const send = async () => {\n              if (onlineUpdates && !onlineUpdates.accepting()) {\n                await onlineUpdates.whenAccepting(controller.signal);\n                if (closed) {\n                  const next = network.request(options);\n                  next.once("error", (error) => proxy.emit("error", error));\n                  next.once("response", (output2) => proxy.emit("response", output2));\n                  controller.signal.addEventListener("abort", () => next.abort(), { once: true });\n                  liveRequest = next;\n                  next.end(body);\n                  return;\n                }\n              }\n              const current = { url: options.url, method: options.method ?? "GET", headers: headers(options.headers), body: requestBody(body) };\n              const result = await tracked("desktop.request", () => source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {\n                const forwardBody = await bytes(next.body, control.signal);\n                const omit = next.credentialMode === "omit" || !sameOrigin(options.url, next.url);\n                return nativeForward(\n                  network,\n                  { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers },\n                  {\n                    ...options,\n                    redirect: options.redirect ?? "follow",\n                    credentials: omit ? "omit" : options.credentials,\n                    useSessionCookies: !omit && options.useSessionCookies === true\n                  },\n                  control.signal,\n                  (request) => {\n                    liveRequest = request;\n                    upload = request.getUploadProgress?.() ?? upload;\n                  }\n                );\n              } }));\n              if (bodyless(result.status, current.method)) await result.body?.cancel?.();\n              const output = Readable.from(bodyless(result.status, current.method) ? [] : result.body ?? []);\n              output.statusCode = result.status;\n              output.statusMessage = "";\n              output.headers = headerObject(result.headers);\n              proxy.emit("response", output);\n            };\n            send().catch((error) => proxy.emit("error", error));\n          };\n          requestInstalled = true;\n          return proxy;\n        };\n        fetchInstalled = true;\n        requestInstalled = true;\n        restores.push(() => {\n          Network.prototype.fetch = originalFetch;\n          Network.prototype.request = originalRequest;\n        });\n      }\n      function hookFetchWrapper(FetchWrapper) {\n        if (typeof FetchWrapper !== "function" || typeof FetchWrapper.prototype.performDesktopFetch !== "function") {\n          desktopReason = "hook_unavailable";\n          return;\n        }\n        const original = FetchWrapper.prototype.performDesktopFetch;\n        FetchWrapper.prototype.performDesktopFetch = function(...args) {\n          return scope.run(true, () => original.apply(this, args));\n        };\n        restores.push(() => {\n          FetchWrapper.prototype.performDesktopFetch = original;\n        });\n      }\n      function applyRecord(record) {\n        const { name, hash: observedSha256, exported } = record;\n        if (!Object.hasOwn(expectedHashes, name)) {\n          if (moduleRegistry && /^(bootstrap-|main-|application-network-startup-)/.test(name)) {\n            if (name.startsWith("application-network-startup-")) taskReason = "unsupported_build";\n            else desktopReason = "unsupported_build";\n            mismatch = { name, observedSha256 };\n          }\n          return;\n        }\n        const profile = PROFILES[name] ?? {\n          kind: name.startsWith("bootstrap-") ? "bootstrap" : name.startsWith("main-") ? "main" : "src",\n          symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ"\n        };\n        if (observedSha256 !== expectedHashes[name]) {\n          if (["src", "stdio", "connection"].includes(profile.kind)) taskReason = "unsupported_build";\n          else desktopReason = "unsupported_build";\n          mismatch = { name, observedSha256 };\n          return;\n        }\n        const expression = profile.connectionSymbol ? `({primary:${profile.symbol},connection:${profile.connectionSymbol}})` : profile.symbol;\n        const read = () => record.evaluate(expression);\n        const apply = () => {\n          const captured = read();\n          let pending = false;\n          if (profile.kind === "bootstrap") {\n            const primary = profile.connectionSymbol ? captured.primary : captured;\n            if (!bootstrapVerified) {\n              if (primary == null) pending = true;\n              else {\n                bootstrapVerified = true;\n                hookNetwork(primary);\n              }\n            }\n            if (profile.connectionSymbol && !connectionVerified) {\n              if (captured.connection == null) pending = true;\n              else {\n                connectionVerified = true;\n                hookConnection(captured.connection);\n              }\n            }\n          } else if (profile.kind === "main") {\n            if (!mainVerified) {\n              if (captured == null) pending = true;\n              else {\n                mainVerified = true;\n                hookFetchWrapper(captured);\n              }\n            }\n          } else if (profile.kind === "stdio") {\n            if (!stdioVerified) {\n              if (captured == null) pending = true;\n              else {\n                stdioVerified = true;\n                hookStdio(captured);\n              }\n            }\n          } else if (profile.kind === "connection") {\n            if (!connectionVerified) {\n              if (captured == null) pending = true;\n              else {\n                connectionVerified = true;\n                hookConnection(captured);\n              }\n            }\n          } else {\n            stdioVerified = true;\n            connectionVerified = true;\n            hookStdio(captured);\n            hookConnection(exported[profile.managerExport ?? "un"]);\n          }\n          srcVerified = stdioVerified && connectionVerified;\n          return !pending;\n        };\n        const attempt = () => {\n          try {\n            const result = apply();\n            delete bindingErrors[profile.kind];\n            return result;\n          } catch (error) {\n            bindingErrors[profile.kind] = ["ReferenceError", "TypeError"].includes(error?.name) ? error.name : "binding_error";\n            if (error?.name === "ReferenceError") return false;\n            if (["bootstrap", "main"].includes(profile.kind)) desktopReason = "hook_unavailable";\n            else taskReason = "hook_unavailable";\n            return true;\n          }\n        };\n        if (!attempt()) deferredModules.add(attempt);\n      }\n      Module.prototype._compile = function(code, filename) {\n        const name = path.basename(filename);\n        if (!Object.hasOwn(expectedHashes, name)) return originalCompile.call(this, code, filename);\n        const profile = PROFILES[name] ?? { symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ" };\n        const expression = profile.connectionSymbol ? `({primary:${profile.symbol},connection:${profile.connectionSymbol}})` : profile.symbol;\n        const hash = createHash("sha256").update(code).digest("hex");\n        if (hash !== expectedHashes[name]) {\n          applyRecord({ name, hash });\n          return originalCompile.call(this, code, filename);\n        }\n        const result = originalCompile.call(this, `${code}\n;Object.defineProperty(module.exports,Symbol.for(${JSON.stringify(String(symbol))}),{value:()=>${expression},configurable:true});`, filename);\n        const read = this.exports[Symbol.for(String(symbol))], exported = this.exports;\n        delete this.exports[Symbol.for(String(symbol))];\n        applyRecord({ name, hash, exported, evaluate: () => read() });\n        return result;\n      };\n      restores.push(() => {\n        if (Module.prototype._compile === wrappedCompile) Module.prototype._compile = originalCompile;\n      });\n      const wrappedCompile = Module.prototype._compile;\n      if (moduleRegistry) {\n        Module.prototype._compile = originalCompile;\n        const unsubscribe = moduleRegistry.subscribe(applyRecord);\n        restores.push(unsubscribe);\n      }\n      const desktopDone = () => desktopReason || bootstrapVerified && mainVerified && fetchInstalled && requestInstalled;\n      const needsTaskSources = Object.keys(expectedHashes).some((name) => ["src", "stdio", "connection"].includes(PROFILES[name]?.kind) || name.startsWith("src-"));\n      const taskDone = () => taskReason || !needsTaskSources || srcVerified && stdioInstalled && connectionInstalled;\n      return Object.freeze({\n        async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {\n          while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {\n            for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);\n            await new Promise((resolve) => setTimeout(resolve, 20));\n          }\n          if (!closed) {\n            for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);\n          }\n          return this.inspect();\n        },\n        inspect: () => ({\n          installed: !closed,\n          available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,\n          taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,\n          modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },\n          mismatch,\n          bindingErrors: { ...bindingErrors },\n          deferredBindings: deferredModules.size,\n          reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "hook_unavailable"),\n          taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "hook_unavailable")\n        }),\n        suspend() {\n          if (closed) return;\n          closed = true;\n          deferredModules.clear();\n          for (const restore of restores.splice(0).reverse()) restore();\n        },\n        close() {\n          this.suspend();\n          if (!state) {\n            for (const route of taskRoutes) closeRoute(route);\n            taskRoutes.clear();\n            scope.disable();\n          }\n        }\n      });\n    }\n    module2.exports = { installDesktopPlaintext: installDesktopPlaintext2, routedThreadMessage, reviewedSourceProfiles: PROFILES };\n  }\n});\n\n// ../host/codex-traffic.cjs\nvar require_codex_traffic = __commonJS({\n  "../host/codex-traffic.cjs"(exports2, module2) {\n    "use strict";\n    var zlib = require("node:zlib");\n    var failure = (code) => Object.assign(new Error(code), { code });\n    var VERIFIED_BACKENDS = Object.freeze({\n      win32: Object.freeze([\n        // Disposable Windows acceptance covers both signed distributions of the\n        // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.\n        Object.freeze({ sha256: "3553cd6e7df5a093d8cb8301cd8088a57e0971aba71ddbe0e67f7f44a15cdf68", version: "0.162.0-alpha.2", evidence: "same-pe-image-as-controlled-0.162.0-alpha.2-http-sse-ws-routing-fixture" }),\n        Object.freeze({ sha256: "d83cc3582592e307df008411f02f61a93fb93580b53dc173608a63202d97bbe4", version: "0.162.0-alpha.2", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),\n        // The installed and published 0.160.1 files differ only in Authenticode\n        // data/checksum. Their complete remaining PE image matches the CI fixture.\n        Object.freeze({ sha256: "3b8f6e33caa75f232558a3cf76ff9b87bb5ef6dbcf4996372f24e55c78b1b916", version: "0.160.1", evidence: "same-pe-image-as-controlled-0.160.1-http-sse-ws-routing-fixture" }),\n        Object.freeze({ sha256: "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d", version: "0.160.1", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),\n        Object.freeze({ sha256: "37762753b554982eef1c109303d1be652b6397f1479e844794353a85650199c6", version: "0.160.0", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),\n        Object.freeze({ sha256: "1722907aa64401bcc9b34467ef5c2af43f6aef9a5045ef04d11d19dfae4589fb", version: "0.159.0-alpha.12.1", evidence: "controlled-functional-http-sse-ws-local-fixture" }),\n        Object.freeze({ sha256: "8f0554ede25bbc5450921897c468b2e84635aa513c5017457997af0954581f49", version: "0.158.0-alpha.2.1", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),\n        Object.freeze({ sha256: "a19f8f6c3c9dd5b71b6b1e3eb1ec55d75aafb2fdfb686d9e1f7a5f47db07d0d2", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),\n        Object.freeze({ sha256: "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226", version: "0.155.0-alpha.9.2", evidence: "controlled-custom-provider-two-thread-http-ws" }),\n        Object.freeze({ sha256: "97d4d67419d0ac2f71342f9a5e850f9468aa622618de8ea823223edb9a91926a", version: "0.155.0-alpha.16", evidence: "controlled-custom-provider-two-thread-http-ws" })\n      ]),\n      darwin: Object.freeze([\n        Object.freeze({ sha256: "c67698d0990aae05211d9c43ab343ad9517e406824dea77eca103a2806232b3a", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws" })\n      ])\n    });\n    function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {\n      const backend = VERIFIED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);\n      const fixtureVerified = !!backend;\n      return Object.freeze({\n        available: false,\n        fixtureVerified,\n        restartRequired: true,\n        officialOAuth: false,\n        existingLoadedThreads: false,\n        desktop: false,\n        attachments: false,\n        fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],\n        reason: fixtureVerified ? "native_process_ingress_not_attached" : "backend_build_unverified"\n      });\n    }\n    function threadIdFromHeaders(headers) {\n      if (!Array.isArray(headers)) return null;\n      const values = headers.filter((item) => Array.isArray(item) && typeof item[0] === "string" && item[0].toLowerCase() === "x-client-request-id").map((item) => item[1]);\n      return values.length === 1 && typeof values[0] === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(values[0]) ? values[0] : null;\n    }\n    function classifyCodexTraffic({ url, method, headers, verified = false, allowedOrigins = ["https://chatgpt.com", "https://api.openai.com"] }) {\n      let target;\n      try {\n        target = new URL(url);\n      } catch {\n        return Object.freeze({ kind: "unknown", threadId: null, model: null });\n      }\n      const protocol = target.protocol === "wss:" ? "https:" : target.protocol === "ws:" ? "http:" : target.protocol;\n      const normalizedOrigin = `${protocol}//${target.host}`;\n      const trusted = allowedOrigins.includes(normalizedOrigin) && !target.username && !target.password;\n      let kind = "unknown";\n      if (trusted && /\\/responses$/u.test(target.pathname) && ["POST", "GET"].includes(method)) kind = "model.responses";\n      if (trusted && target.hostname === "chatgpt.com" && target.pathname === "/backend-api/codex/models" && method === "GET") kind = "model.list";\n      return Object.freeze({ kind, threadId: verified && kind === "model.responses" ? threadIdFromHeaders(headers) : null, model: null });\n    }\n    async function readCodexJsonBody(request, maximum = 8 * 1024 * 1024) {\n      if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 8 * 1024 * 1024) throw failure("invalid_body_limit");\n      const chunks = [];\n      let bytes = 0;\n      for await (const chunk of request.body) {\n        bytes += chunk.length;\n        if (bytes > maximum) throw failure("codex_body_too_large");\n        chunks.push(Buffer.from(chunk));\n      }\n      const encodings = request.headers.filter(([name]) => name.toLowerCase() === "content-encoding").map(([, value]) => value.toLowerCase().trim());\n      if (encodings.length > 1) throw failure("codex_encoding_unsupported");\n      const encoding = encodings[0] ?? "identity";\n      const decoder = { gzip: zlib.gunzipSync, br: zlib.brotliDecompressSync, deflate: zlib.inflateSync, zstd: zlib.zstdDecompressSync }[encoding];\n      if (encoding !== "identity" && !decoder) throw failure("codex_encoding_unsupported");\n      try {\n        const raw = Buffer.concat(chunks);\n        return JSON.parse(decoder ? decoder(raw, { maxOutputLength: maximum }) : raw);\n      } catch {\n        throw failure("codex_body_invalid");\n      }\n    }\n    function rewrittenCodexJsonBody(request, value) {\n      const body = JSON.stringify(value);\n      if (Buffer.byteLength(body) > 8 * 1024 * 1024) throw failure("codex_body_too_large");\n      return { body, headers: request.headers.filter(([name]) => !["content-encoding", "content-length", "content-md5", "content-digest", "digest"].includes(name.toLowerCase())) };\n    }\n    function createCodexTraffic(context, compatibility = {}) {\n      if (!context?.traffic?.registerInterceptor || !context.traffic.inspect || !context.signal) throw failure("core_traffic_unavailable");\n      const verified = probeCodexTraffic(compatibility);\n      async function probe() {\n        let native;\n        try {\n          native = await context.traffic.inspect();\n        } catch (error) {\n          if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");\n          return Object.freeze({ ...verified, listening: false, attached: false, reason: verified.fixtureVerified ? error.code : verified.reason });\n        }\n        const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;\n        return Object.freeze({\n          ...verified,\n          available: verified.fixtureVerified && attached,\n          listening: native.listening === true,\n          attached,\n          restartRequired: !attached,\n          reason: !verified.fixtureVerified ? verified.reason : attached ? null : "native_process_ingress_not_attached",\n          coverage: "registered-backend-origins",\n          registered: native.registered,\n          active: native.active\n        });\n      }\n      async function registerInterceptor(options, handlers) {\n        if (context.signal.aborted) throw failure("host_stopping");\n        if (!verified.fixtureVerified) throw failure("backend_build_unverified");\n        if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");\n        const kinds = options.kinds ?? ["model.responses", "model.list"];\n        if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");\n        if (!handlers || typeof handlers !== "object" || !Object.keys(handlers).length || Object.entries(handlers).some(([key, value]) => !["request", "response", "webSocket"].includes(key) || typeof value !== "function")) throw failure("invalid_handler");\n        const origins = options.origins ?? ["https://chatgpt.com", "https://api.openai.com"];\n        if (!Array.isArray(origins) || !origins.length || origins.length > 16 || origins.some((origin) => {\n          try {\n            const url = new URL(origin);\n            return url.origin !== origin || !["https:", "http:"].includes(url.protocol) || url.username || url.password || url.protocol === "http:" && !["127.0.0.1", "localhost"].includes(url.hostname);\n          } catch {\n            return true;\n          }\n        })) throw failure("invalid_argument");\n        const wrapped = {};\n        const metadata = (value) => {\n          const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins });\n          return kinds.includes(info.kind) ? info : null;\n        };\n        const requestThreads = /* @__PURE__ */ new Map();\n        wrapped.request = (value, call) => {\n          const codex = metadata(value);\n          if (handlers.response && codex?.threadId && typeof value.id === "string") {\n            requestThreads.set(value.id, { threadId: codex.threadId, at: Date.now() });\n            if (requestThreads.size > 1024) requestThreads.delete(requestThreads.keys().next().value);\n          }\n          return codex && handlers.request ? handlers.request(value, Object.freeze({ ...call, codex })) : void 0;\n        };\n        if (handlers.response) wrapped.response = (value, call) => {\n          const codex = metadata(call.request), known = requestThreads.get(call.request?.id);\n          if (typeof call.request?.id === "string") requestThreads.delete(call.request.id);\n          const threadId = known && Date.now() - known.at <= 10 * 60 * 1e3 ? known.threadId : null;\n          return codex ? handlers.response(value, Object.freeze({ ...call, codex: Object.freeze({ ...codex, threadId }) })) : void 0;\n        };\n        if (handlers.webSocket) wrapped.webSocket = (value, call) => {\n          const codex = metadata({ ...value, method: "GET" });\n          return codex ? handlers.webSocket(value, Object.freeze({ ...call, codex })) : void 0;\n        };\n        const { kinds: ignored, ...registration } = options;\n        return context.traffic.registerInterceptor({ ...registration, origins }, wrapped);\n      }\n      return Object.freeze({ probe, registerInterceptor, classify: classifyCodexTraffic, readJsonBody: readCodexJsonBody, rewriteJsonBody: rewrittenCodexJsonBody });\n    }\n    module2.exports = { createCodexTraffic, probeCodexTraffic, classifyCodexTraffic, threadIdFromHeaders, readCodexJsonBody, rewrittenCodexJsonBody };\n  }\n});\n\n// ../host/backend-launch.cjs\nvar require_backend_launch = __commonJS({\n  "../host/backend-launch.cjs"(exports2, module2) {\n    "use strict";\n    var fs = require("node:fs");\n    var path = require("node:path");\n    var { createHash } = require("node:crypto");\n    var { probeCodexTraffic } = require_codex_traffic();\n    var fail2 = (code) => Object.assign(new Error(code), { code });\n    var toml = (value) => JSON.stringify(value);\n    function verifyBackend(executable, platform = process.platform) {\n      if (typeof executable !== "string" || !path.isAbsolute(executable) || !/^codex(?:\\.exe)?$/iu.test(path.basename(executable))) throw fail2("invalid_backend_launch");\n      const fd = fs.openSync(executable, "r");\n      let binarySha256;\n      try {\n        const before = fs.fstatSync(fd);\n        if (!before.isFile() || before.size > 512 * 1024 * 1024) throw fail2("backend_build_unverified");\n        const hash = createHash("sha256"), bytes = Buffer.alloc(64 * 1024);\n        for (; ; ) {\n          const count = fs.readSync(fd, bytes);\n          if (!count) break;\n          hash.update(bytes.subarray(0, count));\n        }\n        const after = fs.fstatSync(fd);\n        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw fail2("backend_build_unverified");\n        binarySha256 = hash.digest("hex");\n      } finally {\n        fs.closeSync(fd);\n      }\n      if (!probeCodexTraffic({ platform, binarySha256 }).fixtureVerified) throw fail2("backend_build_unverified");\n      return Object.freeze({ platform, binarySha256 });\n    }\n    function prepareBackendLaunch({ executable, arguments: args, originalEnvironment, providerRoutes, platform = process.platform }) {\n      if (!Array.isArray(args) || args.some((value) => typeof value !== "string") || !args.includes("app-server") || !originalEnvironment || typeof originalEnvironment !== "object" || !providerRoutes || typeof providerRoutes !== "object") throw fail2("invalid_backend_launch");\n      const compatibility = verifyBackend(executable, platform), overrides = [];\n      for (const [setting, baseUrl] of Object.entries(providerRoutes)) {\n        if (setting !== "openai_base_url" && setting !== "chatgpt_base_url" && !/^model_providers\\.[A-Za-z0-9_-]+\\.base_url$/u.test(setting)) throw fail2("invalid_backend_route");\n        const url = new URL(baseUrl);\n        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.search || url.hash) throw fail2("invalid_backend_route");\n        overrides.push("-c", `${setting}=${toml(baseUrl)}`);\n      }\n      if (!overrides.length) throw fail2("backend_route_unavailable");\n      return Object.freeze({\n        executable,\n        arguments: Object.freeze([...args, ...overrides]),\n        environment: originalEnvironment,\n        compatibility,\n        status: Object.freeze({ available: true, backendProviderPrepared: true, coverage: ["owned-local-app-server-model-provider"] })\n      });\n    }\n    module2.exports = { prepareBackendLaunch, verifyBackend, toml };\n  }\n});\n\n// ../host/backend-config-probe.cjs\nvar require_backend_config_probe = __commonJS({\n  "../host/backend-config-probe.cjs"(exports2, module2) {\n    "use strict";\n    function runConfigProbe() {\n      const fs = require("node:fs"), { spawn } = require("node:child_process"), { createInterface } = require("node:readline");\n      let child, lines, emitted = false;\n      const finish = async (value) => {\n        if (emitted) return;\n        emitted = true;\n        clearTimeout(deadline);\n        lines?.close();\n        if (child && child.exitCode === null && child.signalCode === null) {\n          const exited = new Promise((resolve) => child.once("exit", resolve));\n          child.stdin?.end();\n          child.kill();\n          let stopTimer;\n          await Promise.race([exited, new Promise((resolve) => {\n            stopTimer = setTimeout(resolve, 650);\n          })]);\n          clearTimeout(stopTimer);\n          if (child.exitCode === null && child.signalCode === null) value = { error: "backend_config_unavailable" };\n        }\n        process.stdout.write(JSON.stringify(value), () => {\n          if (!child || child.exitCode !== null || child.signalCode !== null) process.exit(0);\n        });\n      };\n      const deadline = setTimeout(() => finish({ error: "backend_config_timeout" }), 3500);\n      try {\n        const bytes = fs.readFileSync(0);\n        if (bytes.length > 256 * 1024) throw new Error();\n        const plan = JSON.parse(bytes);\n        child = spawn(plan.executable, [...plan.configArguments, "-c", "analytics.enabled=false", "-c", "features.code_mode_host=false", "-c", "features.remote_plugin=false", "app-server", "--stdio"], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });\n        child.stderr.on("data", () => {\n        });\n        child.on("error", () => finish({ error: "backend_config_unavailable" }));\n        child.stdin.on("error", () => finish({ error: "backend_config_unavailable" }));\n        child.once("exit", () => {\n          if (!emitted) finish({ error: "backend_config_unavailable" });\n        });\n        let buffer = "", count = 0;\n        child.stdout.on("data", (chunk) => {\n          count += chunk.length;\n          if (count > 2 * 1024 * 1024) {\n            finish({ error: "backend_config_too_large" });\n            return;\n          }\n          buffer += chunk.toString();\n          let index;\n          while ((index = buffer.indexOf("\\n")) >= 0) {\n            const line = buffer.slice(0, index);\n            buffer = buffer.slice(index + 1);\n            let message;\n            try {\n              message = JSON.parse(line);\n            } catch {\n              continue;\n            }\n            if (message.id === 1) {\n              if (message.error) {\n                finish({ error: "backend_config_unavailable" });\n                return;\n              }\n              child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\\n");\n              child.stdin.write(JSON.stringify({ id: 2, method: "config/read", params: { cwd: plan.cwd, includeLayers: false } }) + "\\n");\n            } else if (message.id === 2) {\n              if (message.error || !message.result?.config) {\n                finish({ error: "backend_config_unavailable" });\n                return;\n              }\n              const config = message.result.config;\n              const providers = {};\n              for (const [name, provider] of Object.entries(config.model_providers ?? {}))\n                if (typeof provider?.base_url === "string" && provider.wire_api === "responses") providers[name] = provider.base_url;\n              plan.config = {\n                modelProvider: config.model_provider ?? "openai",\n                providerBaseUrls: providers,\n                openaiBaseUrl: config.openai_base_url ?? null\n              };\n              child.stdin.write(JSON.stringify({ id: 3, method: "account/read", params: { refreshToken: false } }) + "\\n");\n            } else if (message.id === 3) {\n              if (message.error || !message.result) {\n                finish({ error: "backend_config_unavailable" });\n                return;\n              }\n              const kind = message.result.account?.type;\n              finish({ ...plan.config, accountType: kind == null ? null : kind === "chatgpt" || kind === "apiKey" ? kind : "unknown" });\n            }\n          }\n        });\n        child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "codlet-launch-policy", version: "1" }, capabilities: { experimentalApi: true } } }) + "\\n");\n      } catch {\n        finish({ error: "backend_config_unavailable" });\n      }\n    }\n    module2.exports = { runConfigProbe };\n  }\n});\n\n// ../host/backend-spawn.cjs\nvar require_backend_spawn = __commonJS({\n  "../host/backend-spawn.cjs"(exports2, module2) {\n    "use strict";\n    var fs = require("node:fs");\n    var path = require("node:path");\n    var childProcess = require("node:child_process");\n    var { prepareBackendLaunch, verifyBackend } = require_backend_launch();\n    var { runConfigProbe } = require_backend_config_probe();\n    var fail2 = (code) => Object.assign(new Error(code), { code });\n    var closeRoute = (route) => {\n      try {\n        Promise.resolve(route.close()).catch(() => {\n        });\n      } catch {\n      }\n    };\n    var DEFAULT_OPENAI = "https://api.openai.com/v1";\n    var DEFAULT_CHATGPT = "https://chatgpt.com/backend-api/codex";\n    function configArguments(args) {\n      const result = [];\n      for (let index = 0; index < args.length; index++) {\n        if (["-c", "--config", "--enable", "--disable", "-p", "--profile"].includes(args[index])) result.push(args[index], args[++index]);\n        else if (/^--(?:config|enable|disable|profile)=/u.test(args[index])) result.push(args[index]);\n      }\n      return result;\n    }\n    function lastStringOverride(args, setting) {\n      let found;\n      for (let index = 0; index < args.length; index++) {\n        const current = args[index];\n        const entry = current === "-c" || current === "--config" ? args[++index] : current.startsWith("--config=") ? current.slice("--config=".length) : null;\n        if (typeof entry !== "string") continue;\n        const at = entry.indexOf("=");\n        if (at < 0 || entry.slice(0, at).trim() !== setting) continue;\n        const raw = entry.slice(at + 1).trim();\n        let value;\n        try {\n          value = JSON.parse(raw);\n        } catch {\n          value = raw;\n        }\n        if (typeof value === "string") found = value;\n      }\n      return found;\n    }\n    function environmentFromPairs(pairs) {\n      const result = {};\n      for (const pair of pairs ?? []) {\n        const at = pair.indexOf("=", pair.startsWith("=") ? 1 : 0);\n        if (at > 0) result[pair.slice(0, at)] = pair.slice(at + 1);\n      }\n      return result;\n    }\n    function providerTrust(environment, cwd) {\n      const get = (name) => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1];\n      const configured = get("CODEX_CA_CERTIFICATE") ?? get("SSL_CERT_FILE");\n      if (configured === void 0) return void 0;\n      if (typeof configured !== "string" || !configured) throw fail2("backend_provider_trust_unsupported");\n      const target = path.resolve(cwd, configured);\n      let info;\n      try {\n        info = fs.statSync(target);\n      } catch {\n        throw fail2("backend_provider_trust_unsupported");\n      }\n      if (!info.isFile() || info.size < 1 || info.size > 128 * 1024) throw fail2("backend_provider_trust_unsupported");\n      let pem;\n      try {\n        pem = fs.readFileSync(target, "utf8");\n      } catch {\n        throw fail2("backend_provider_trust_unsupported");\n      }\n      if (!/^(?:\\s*-----BEGIN CERTIFICATE-----\\s+[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE-----\\s*)+$/u.test(pem)) throw fail2("backend_provider_trust_unsupported");\n      return pem;\n    }\n    function effectiveProviders(policy) {\n      if (!policy || typeof policy !== "object") throw fail2("backend_config_unavailable");\n      const routes = /* @__PURE__ */ new Map();\n      if (policy.openaiBaseUrl == null && ![null, "chatgpt", "apiKey"].includes(policy.accountType)) throw fail2("backend_auth_mode_unsupported");\n      const builtIn = policy.openaiBaseUrl ?? (policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI);\n      if (typeof builtIn !== "string") throw fail2("backend_config_unavailable");\n      routes.set("openai_base_url", builtIn);\n      const configured = policy.providerBaseUrls ?? {};\n      if (!configured || typeof configured !== "object" || Object.keys(configured).length > 16) throw fail2("backend_provider_unsupported");\n      if ((policy.modelProvider ?? "openai") !== "openai" && !Object.hasOwn(configured, policy.modelProvider)) throw fail2("backend_provider_unsupported");\n      for (const [name, url] of Object.entries(configured)) {\n        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== "string") throw fail2("backend_provider_unsupported");\n        routes.set(`model_providers.${name}.base_url`, url);\n      }\n      return routes;\n    }\n    function installBackendSpawn2(configuration, dependencies = {}) {\n      const prototype = dependencies.prototype ?? childProcess.ChildProcess.prototype;\n      const originalSpawn = prototype.spawn;\n      const prepare = dependencies.prepare ?? prepareBackendLaunch;\n      const verify = dependencies.verify ?? verifyBackend;\n      const probe = dependencies.probe ?? ((plan) => {\n        const result = childProcess.spawnSync(configuration.runtimeExecutable, ["--no-addons", "--no-global-search-paths", "--eval", `(${runConfigProbe.toString()})()`], {\n          input: JSON.stringify(plan),\n          env: plan.environment,\n          cwd: plan.cwd,\n          windowsHide: true,\n          encoding: "utf8",\n          maxBuffer: 256 * 1024,\n          timeout: 4500\n        });\n        if (result.error || result.status !== 0) throw fail2("backend_config_unavailable");\n        let value;\n        try {\n          value = JSON.parse(result.stdout);\n        } catch {\n          throw fail2("backend_config_unavailable");\n        }\n        if (value.error) throw fail2(value.error);\n        return value;\n      });\n      if (!configuration?.source?.reserveRoute || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail2("invalid_launch_configuration");\n      let closed = false, prepared = 0, declined = 0, reason = null;\n      const state = dependencies.state ?? { owned: /* @__PURE__ */ new WeakSet(), trust: /* @__PURE__ */ new WeakMap(), accounts: /* @__PURE__ */ new WeakMap(), providers: /* @__PURE__ */ new WeakMap(), records: /* @__PURE__ */ new Set(), pending: /* @__PURE__ */ new Set(), prepared: 0 };\n      const shared = !!dependencies.state;\n      const active = /* @__PURE__ */ new Set(), pending = state.pending, owned = state.owned, trustByProcess = state.trust, accountByProcess = state.accounts, providersByProcess = state.providers;\n      prepared = state.prepared;\n      function wrapped(options) {\n        const args = options?.args, file = options?.file;\n        if (closed || !Array.isArray(args) || !args.includes("app-server") || typeof file !== "string" || !path.isAbsolute(file) || !/^codex(?:\\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);\n        let reservations = [], dispatched = false;\n        try {\n          verify(file, process.platform);\n          const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);\n          const cwd = options.cwd ?? process.cwd();\n          const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd });\n          const directOpenaiBaseUrl = lastStringOverride(actualArgs, "openai_base_url");\n          if (directOpenaiBaseUrl !== void 0) policy.openaiBaseUrl = directOpenaiBaseUrl;\n          const additionalCaPem = providerTrust(environment, cwd);\n          const providerRoutes = {};\n          for (const [setting, upstreamBaseUrl] of effectiveProviders(policy)) {\n            const url = new URL(upstreamBaseUrl);\n            if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");\n            const reservation = configuration.source.reserveRoute({ upstreamBaseUrl, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });\n            reservations.push(reservation);\n            providerRoutes[setting] = reservation.baseUrl;\n          }\n          const launch = prepare({ executable: file, arguments: actualArgs, originalEnvironment: environment, providerRoutes, platform: process.platform });\n          const next = { ...options, args: [args[0], ...launch.arguments] };\n          dispatched = true;\n          const result = originalSpawn.call(this, next);\n          owned.add(this);\n          trustByProcess.set(this, additionalCaPem);\n          providersByProcess.set(this, /* @__PURE__ */ new Set(["openai", ...Object.keys(policy.providerBaseUrls ?? {})]));\n          accountByProcess.set(this, {\n            route: reservations[0],\n            explicit: policy.openaiBaseUrl != null,\n            current: effectiveProviders(policy).get("openai_base_url"),\n            pending: null\n          });\n          prepared++;\n          state.prepared = prepared;\n          const ready = Promise.all(reservations.map((item) => item.ready));\n          ready.catch(() => {\n            reason = "route_unavailable";\n          });\n          pending.add(ready);\n          ready.finally(() => pending.delete(ready)).catch(() => {\n          });\n          const record = { child: this, reservations };\n          state.records.add(record);\n          if (shared && dependencies.trackBackend) dependencies.trackBackend(record, { methodKey: "method", method: "account/updated", paramsKey: "params", modeKey: "authMode", targets: { chatgpt: DEFAULT_CHATGPT, apiKey: DEFAULT_OPENAI } });\n          else {\n            const release = () => {\n              for (const item of reservations) closeRoute(item);\n              active.delete(release);\n              state.records.delete(record);\n            };\n            active.add(release);\n            this.once("exit", release);\n            this.once("error", release);\n          }\n          return result;\n        } catch (error) {\n          for (const item of reservations) closeRoute(item);\n          declined++;\n          reason = ["backend_build_unverified", "backend_config_unavailable", "backend_provider_unsupported", "backend_auth_mode_unsupported", "backend_provider_trust_unsupported", "backend_route_unavailable"].includes(error.code) ? error.code : "route_unavailable";\n          if (dispatched) throw error;\n          return originalSpawn.call(this, options);\n        }\n      }\n      prototype.spawn = wrapped;\n      return Object.freeze({\n        async ready({ deadlineUnixMs = configuration.deadlineUnixMs } = {}) {\n          while (!prepared && !declined && !closed && Date.now() < deadlineUnixMs - 500) await new Promise((resolve) => setTimeout(resolve, 20));\n          if (prepared && pending.size > 0) {\n            const limit = deadlineUnixMs - 500 - Date.now();\n            if (limit <= 0) throw fail2("backend_route_timeout");\n            let timer;\n            try {\n              await Promise.race([Promise.all([...pending]), new Promise((_, reject) => {\n                timer = setTimeout(() => reject(fail2("backend_route_timeout")), limit);\n              })]);\n            } finally {\n              clearTimeout(timer);\n            }\n          }\n          return this.inspect();\n        },\n        close() {\n          if (closed) return;\n          closed = true;\n          if (prototype.spawn === wrapped) prototype.spawn = originalSpawn;\n          if (!shared) for (const release of active) release();\n        },\n        ownsProcess: (child) => !closed && !!child && owned.has(child),\n        providerTrustForProcess: (child) => owned.has(child) ? trustByProcess.get(child) : void 0,\n        isProviderSupported: (child, provider) => owned.has(child) && providersByProcess.get(child)?.has(provider) === true,\n        pendingAccountUpdate: (child) => accountByProcess.get(child)?.pending ?? null,\n        updateAccountMode(child, mode) {\n          const state2 = accountByProcess.get(child);\n          if (!state2 || state2.explicit || mode == null) return;\n          if (mode !== "chatgpt" && mode !== "apiKey") {\n            reason = "backend_auth_mode_unsupported";\n            closeRoute(state2.route);\n            return;\n          }\n          const upstreamBaseUrl = mode === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI;\n          if (state2.current === upstreamBaseUrl) return;\n          const update = (state2.pending ?? Promise.resolve()).then(() => state2.route.update({ upstreamBaseUrl })).then(() => {\n            state2.current = upstreamBaseUrl;\n          }, (error) => {\n            reason = "route_unavailable";\n            closeRoute(state2.route);\n            throw error;\n          });\n          update.catch(() => {\n          });\n          state2.pending = update;\n          update.finally(() => {\n            if (state2.pending === update) state2.pending = null;\n          }).catch(() => {\n          });\n        },\n        inspect: () => ({\n          installed: !closed,\n          backendRootsPrepared: prepared,\n          backendRootsDeclined: declined,\n          available: state.records.size > 0 && !reason,\n          reason: reason ?? (state.records.size ? null : "child_unavailable")\n        })\n      });\n    }\n    module2.exports = { installBackendSpawn: installBackendSpawn2, effectiveProviders, configArguments, lastStringOverride, environmentFromPairs, providerTrust };\n  }\n});\n\n// ../host/source-diagnostics.cjs\nvar require_source_diagnostics = __commonJS({\n  "../host/source-diagnostics.cjs"(exports2, module2) {\n    "use strict";\n    var fs = require("node:fs");\n    var path = require("node:path");\n    var os = require("node:os");\n    var code = (value) => typeof value === "string" && /^[a-z_]{1,80}$/i.test(value) ? value : null;\n    var integer = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;\n    function sourceDiagnostic(value) {\n      const desktop = value.desktop ?? {}, backend = value.backend ?? {};\n      return {\n        schema: 1,\n        pid: integer(value.pid),\n        startedUnixMs: integer(value.startedUnixMs),\n        finishedUnixMs: integer(value.finishedUnixMs),\n        phase: ["startup", "recovery"].includes(value.phase) ? value.phase : null,\n        appReady: value.appReady === true,\n        installed: value.installed === true,\n        sourceConnected: value.sourceConnected === true,\n        error: code(value.error),\n        recoveryReason: code(value.recoveryReason),\n        desktop: {\n          available: desktop.available === true,\n          reason: code(desktop.reason),\n          taskConfigurationAvailable: desktop.taskConfigurationAvailable === true,\n          taskConfigurationReason: code(desktop.taskConfigurationReason),\n          modules: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, desktop.modules?.[kind] === true])),\n          bindingErrors: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, code(desktop.bindingErrors?.[kind])])),\n          deferredBindings: Number.isSafeInteger(desktop.deferredBindings) ? desktop.deferredBindings : null,\n          mismatch: typeof desktop.mismatch?.name === "string" && /^[A-Za-z0-9_.-]{1,100}$/.test(desktop.mismatch.name) && /^[a-f0-9]{64}$/.test(desktop.mismatch.observedSha256) ? { name: desktop.mismatch.name, observedSha256: desktop.mismatch.observedSha256 } : null\n        },\n        backend: {\n          available: backend.available === true,\n          reason: code(backend.reason),\n          prepared: Number.isSafeInteger(backend.backendRootsPrepared) ? backend.backendRootsPrepared : null,\n          declined: Number.isSafeInteger(backend.backendRootsDeclined) ? backend.backendRootsDeclined : null\n        }\n      };\n    }\n    function recordSourceDiagnostic2(value) {\n      const report = sourceDiagnostic(value);\n      try {\n        fs.writeFileSync(path.join(os.tmpdir(), `codlet-client-source-${process.pid}-${report.startedUnixMs}.json`), JSON.stringify(report) + "\\n", { flag: "wx", mode: 384 });\n      } catch {\n      }\n    }\n    module2.exports = { recordSourceDiagnostic: recordSourceDiagnostic2, sourceDiagnostic };\n  }\n});\n\n// ../host/electron-main.cjs\nvar { connectPlaintextSource } = require_plaintext_source_client();\nvar { installDesktopPlaintext } = require_electron_plaintext();\nvar { installBackendSpawn } = require_backend_spawn();\nvar { recordSourceDiagnostic } = require_source_diagnostics();\nvar fail = (code) => Object.assign(new Error(code), { code });\nfunction localBackends(context, ownsProcess, dependencies = {}) {\n  const profiles = dependencies.profiles ?? require_electron_plaintext().reviewedSourceProfiles;\n  const verify = dependencies.verify ?? require_backend_launch().verifyBackend;\n  const connections = /* @__PURE__ */ new Set();\n  for (const record of context.modules.list()) {\n    const profile = profiles[record.name];\n    const connectionSymbol = profile?.connectionSymbol ?? (profile?.kind === "connection" ? profile.symbol : null);\n    if (!connectionSymbol || profile.hash !== record.hash) continue;\n    for (const connection of context.modules.instances(record.evaluate(connectionSymbol))) {\n      const child = connection.connection?.proc;\n      if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== "string" || !/^codex(?:\\.exe)?$/i.test(require("node:path").basename(child.spawnfile))) continue;\n      verify(child.spawnfile, process.platform);\n      if (connection.getPendingRequestCount() !== 0 || connection.turnCwds?.pendingByStartId?.size || connection.turnCwds?.startedByTurnId?.size) throw fail("client_source_backend_busy");\n      connections.add(connection);\n    }\n  }\n  return connections;\n}\nasync function recoverLocalBackends(context, ownsProcess, dependencies) {\n  for (const connection of localBackends(context, ownsProcess, dependencies)) {\n    await connection.restart({ intent: "restart", killCodexProcess: false });\n  }\n}\nfunction validateClientSource(electron, context) {\n  if (!electron.app.isReady()) return;\n  if (!context?.modules) throw fail("client_bridge_required");\n  const profiles = require_electron_plaintext().reviewedSourceProfiles;\n  const kinds = /* @__PURE__ */ new Set();\n  for (const record of context.modules.list()) {\n    const profile = profiles[record.name];\n    if (profile && profile.hash === record.hash) kinds.add(profile.kind);\n  }\n  if (!kinds.has("bootstrap") || !kinds.has("main") || !kinds.has("stdio") && !kinds.has("src")) throw fail("desktop_build_unverified");\n}\nfunction installElectronTraffic(electron, configuration, context, dependencies = {}) {\n  if (!configuration?.source || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail("invalid_launch_configuration");\n  const shared = context?.resources.get("plaintextSource");\n  const source = shared ?? connectPlaintextSource(configuration.source);\n  const installedBeforeReady = !electron.app.isReady();\n  const installBackend = dependencies.installBackend ?? installBackendSpawn;\n  const installDesktop = dependencies.installDesktop ?? installDesktopPlaintext;\n  const recover = dependencies.recover ?? recoverLocalBackends;\n  let recoveryReason = null;\n  let readinessDeadlineUnixMs = null;\n  let readinessStartedUnixMs = null;\n  const diagnose = (installed, error) => {\n    try {\n      const desktopState = desktop?.inspect(), backendState = backend?.inspect();\n      (dependencies.diagnose ?? recordSourceDiagnostic)({\n        pid: process.pid,\n        startedUnixMs: readinessStartedUnixMs,\n        finishedUnixMs: Date.now(),\n        phase: installedBeforeReady ? "startup" : "recovery",\n        appReady: electron.app.isReady(),\n        installed,\n        sourceConnected,\n        error: error?.code ?? error?.name,\n        recoveryReason,\n        desktop: desktopState,\n        backend: backendState\n      });\n    } catch {\n    }\n  };\n  let sourceConnected = false, sourceReason = null;\n  source.ready.then(() => {\n    sourceConnected = true;\n  }, (error) => {\n    sourceReason = typeof error?.code === "string" ? error.code : "source_unavailable";\n  });\n  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null;\n  function attachHooks() {\n    backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs }, { state: context?.resources.get("backendState"), trackBackend: context?.trackBackend });\n    desktop = installDesktop(electron, {\n      source,\n      deadlineUnixMs: configuration.deadlineUnixMs,\n      ownsBackendProcess: backend.ownsProcess,\n      isProviderSupported: backend.isProviderSupported,\n      providerTrustForProcess: backend.providerTrustForProcess,\n      pendingAccountUpdate: backend.pendingAccountUpdate,\n      updateAccountMode: backend.updateAccountMode,\n      moduleRegistry: context?.modules,\n      state: context?.resources.get("desktopState"),\n      onlineUpdates: context?.onlineUpdates\n    });\n  }\n  try {\n    attachHooks();\n  } catch (error) {\n    desktop?.close();\n    backend?.close();\n    if (!shared) source.close();\n    throw error;\n  }\n  const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason } });\n  return Object.freeze({\n    handoffVersion: 1,\n    snapshot() {\n      const state = context?.resources.get("backendState");\n      if (!state || !context.resources.get("desktopState")) throw fail("core_update_next_start_required");\n      return { schema: 1, recoveryReason, backends: [...state.records].map((record) => ({\n        pid: record.child.pid ?? null,\n        routes: record.reservations.map((route) => route.baseUrl)\n      })), taskRoutes: context.resources.get("desktopState").taskRoutes.size };\n    },\n    suspend() {\n      if (closed || suspended || !shared || typeof desktop.suspend !== "function") return false;\n      desktop.suspend();\n      backend.close();\n      suspended = true;\n      return true;\n    },\n    restore(snapshot) {\n      if (!validateSnapshot(snapshot)) throw fail("core_update_snapshot_incompatible");\n      const records = [...context.resources.get("backendState").records];\n      if (snapshot.backends.some((previous) => !records.some((record) => record.child.pid === previous.pid && JSON.stringify(record.reservations.map((route) => route.baseUrl)) === JSON.stringify(previous.routes)))) throw fail("core_update_backend_changed");\n      recoveryReason = snapshot.recoveryReason;\n      restored = true;\n    },\n    async resume(snapshot) {\n      if (closed || !suspended) return false;\n      recoveryReason = snapshot.recoveryReason;\n      restored = true;\n      readinessDeadlineUnixMs = Date.now() + 8e3;\n      attachHooks();\n      suspended = false;\n      lastActivation = await this.ready();\n      return lastActivation.installed === true;\n    },\n    confirmTakeover() {\n      return !closed && !suspended && lastActivation?.installed === true;\n    },\n    async ready() {\n      readinessStartedUnixMs ??= Date.now();\n      try {\n        readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5e3 : configuration.deadlineUnixMs;\n        await source.ready;\n        if (context?.modules && !installedBeforeReady && !restored) {\n          try {\n            await recover(context, backend.ownsProcess);\n          } catch (error) {\n            if (!["client_source_backend_busy", "backend_build_unverified"].includes(error?.code)) throw error;\n            recoveryReason = error.code;\n          }\n        }\n        const readyOptions = { deadlineUnixMs: readinessDeadlineUnixMs };\n        const backendReady = recoveryReason ? backend.inspect() : backend.ready(readyOptions).catch((error) => {\n          if (error?.code !== "backend_route_timeout") throw error;\n          recoveryReason = error.code;\n          return { ...backend.inspect(), available: false, reason: "route_unavailable" };\n        });\n        const [desktopState, backendState] = await Promise.all([desktop.ready(readyOptions), backendReady]);\n        const activatedSources = [], unsupportedSources = [];\n        if (desktopState.available) activatedSources.push({\n          id: "desktop-main-http",\n          operations: ["http.intercept"],\n          protocols: ["http", "sse"],\n          coverage: ["desktop-main-fetch", "desktop-main-upload-progress"]\n        });\n        else unsupportedSources.push({ id: "desktop-main-http", reason: ["unsupported_build", "timeout"].includes(desktopState.reason) ? desktopState.reason : "hook_unavailable" });\n        if (backendState.available && desktopState.taskConfigurationAvailable) activatedSources.push({\n          id: "owned-backend-provider",\n          operations: ["route.register", "route.update", "route.close", "http.intercept"],\n          protocols: ["http", "sse", "webSocket"],\n          coverage: ["owned-local-app-server-model-provider"]\n        });\n        else unsupportedSources.push({ id: "owned-backend-provider", reason: !desktopState.taskConfigurationAvailable ? desktopState.taskConfigurationReason === "unsupported_build" ? "unsupported_build" : "hook_unavailable" : backendState.reason === "child_unavailable" ? "child_unavailable" : "route_unavailable" });\n        const installed = activatedSources.length > 0;\n        diagnose(installed, null);\n        return lastActivation = { installed, activatedSources, unsupportedSources };\n      } catch (error) {\n        diagnose(false, error);\n        throw error;\n      }\n    },\n    inspect: status,\n    async close() {\n      if (closed) return;\n      closed = true;\n      desktop.close();\n      backend.close();\n      if (!shared) source.close();\n    }\n  });\n}\nfunction validateSnapshot(value) {\n  return !!value && value.schema === 1 && (value.recoveryReason === null || typeof value.recoveryReason === "string") && Array.isArray(value.backends) && value.backends.length <= 64 && Number.isSafeInteger(value.taskRoutes) && value.taskRoutes >= 0 && value.backends.every((record) => Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.routes) && record.routes.every((route) => typeof route === "string" && route.length < 2048));\n}\nmodule.exports = { handoffVersion: 1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };\n',
+    mainSource: `"use strict";
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+
+// ../host/vendor/plaintext-source-client.cjs
+var require_plaintext_source_client = __commonJS({
+  "../host/vendor/plaintext-source-client.cjs"(exports2, module2) {
+    "use strict";
+    var __getOwnPropNames2 = Object.getOwnPropertyNames;
+    var __commonJS2 = (cb, mod) => function __require() {
+      return mod || (0, cb[__getOwnPropNames2(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+    };
+    var require_traffic_wire = __commonJS2({
+      "../runtime/traffic-wire.cjs"(exports22, module22) {
+        "use strict";
+        var net = require("node:net");
+        var { randomBytes: randomBytes2, timingSafeEqual } = require("node:crypto");
+        var MAX_FRAME = 64 * 1024;
+        var CHUNK = 32 * 1024;
+        var MAX_BODY = 64 * 1024 * 1024;
+        var failure2 = (code) => Object.assign(new Error(code), { code });
+        async function connectTrafficPeer2(endpoint, { signal, handle, event = () => {
+        }, detach = (fn) => fn() } = {}) {
+          if (endpoint?.host !== "127.0.0.1" || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== "string" || endpoint.token.length > 128) throw failure2("invalid_data_endpoint");
+          if (signal?.aborted) throw failure2("host_stopping");
+          const socket = net.createConnection({ host: endpoint.host, port: endpoint.port });
+          socket.setNoDelay(true);
+          const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();
+          let sequence = 0, closed = false, buffer = Buffer.alloc(0), ready, failReady;
+          const connected = new Promise((resolve, reject) => {
+            ready = resolve;
+            failReady = reject;
+          });
+          const handshake = setTimeout(() => close(failure2("traffic_connect_timeout")), 5e3);
+          function close(reason = failure2("peer_closed")) {
+            if (closed) return;
+            closed = true;
+            clearTimeout(handshake);
+            signal?.removeEventListener("abort", aborted);
+            socket.destroy();
+            failReady(reason);
+            for (const item of pending.values()) {
+              clearTimeout(item.timer);
+              item.signal?.removeEventListener("abort", item.abort);
+              item.reject(reason);
+            }
+            pending.clear();
+            inbound.clear();
+            buffer = Buffer.alloc(0);
+            try {
+              event({ event: "closed" });
+            } catch {
+            }
+          }
+          const aborted = () => close(failure2("host_stopping"));
+          signal?.addEventListener("abort", aborted, { once: true });
+          function send(value) {
+            if (closed) throw failure2("peer_closed");
+            const encoded = Buffer.from(JSON.stringify(value));
+            if (encoded.length > MAX_FRAME) throw failure2("frame_too_large");
+            if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");
+            const packet = Buffer.allocUnsafe(encoded.length + 4);
+            packet.writeUInt32BE(encoded.length);
+            encoded.copy(packet, 4);
+            socket.write(packet);
+          }
+          socket.once("connect", () => {
+            try {
+              send({ token: endpoint.token });
+            } catch (error) {
+              close(error);
+            }
+          });
+          socket.on("error", () => close(failure2("peer_closed")));
+          socket.on("close", () => close());
+          socket.on("data", (chunk) => detach(() => {
+            try {
+              let offset = 0;
+              while (offset < chunk.length) {
+                const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;
+                if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");
+                const take = Math.min(required - buffer.length, chunk.length - offset);
+                buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);
+                offset += take;
+                if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");
+                if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;
+                const size = buffer.readUInt32BE(0);
+                if (!size || size > MAX_FRAME) throw failure2("invalid_frame");
+                const message = JSON.parse(buffer.subarray(4).toString("utf8"));
+                buffer = Buffer.alloc(0);
+                if (message.event) {
+                  if (message.event === "connected") {
+                    clearTimeout(handshake);
+                    ready();
+                  } else event(message);
+                  continue;
+                }
+                if (typeof message.method === "string") {
+                  if (inbound.size >= 256 || typeof handle !== "function" || inbound.has(message.id)) throw failure2("traffic_backpressure");
+                  inbound.add(message.id);
+                  let operation;
+                  try {
+                    operation = handle(message.method, message.params);
+                  } catch (error) {
+                    operation = Promise.reject(error);
+                  }
+                  Promise.resolve(operation).then((result) => {
+                    if (!closed && inbound.has(message.id)) send({ id: message.id, result: result ?? null });
+                  }, (error) => {
+                    if (!closed && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });
+                  }).catch(() => close(failure2("invalid_frame"))).finally(() => inbound.delete(message.id));
+                  continue;
+                }
+                const item = pending.get(message.id);
+                if (!item) continue;
+                pending.delete(message.id);
+                clearTimeout(item.timer);
+                item.signal?.removeEventListener("abort", item.abort);
+                if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));
+                else {
+                  try {
+                    item.prepareResult?.(message.result);
+                    item.resolve(message.result);
+                  } catch {
+                    item.reject(failure2("invalid_frame"));
+                  }
+                }
+              }
+            } catch {
+              close(failure2("invalid_frame"));
+            }
+          }));
+          await connected;
+          function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
+            if (closed || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));
+            if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure2("resource_limit"));
+            if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));
+            return new Promise((resolve, reject) => {
+              const id = ++sequence;
+              const abort = () => {
+                const item = pending.get(id);
+                if (!item) return;
+                pending.delete(id);
+                clearTimeout(item.timer);
+                requestSignal?.removeEventListener("abort", abort);
+                if (cancelOpen && method === "open" && !closed) {
+                  try {
+                    send({ id: ++sequence, method: "cancelOpen", params: { request: id } });
+                  } catch {
+                    close(failure2("peer_closed"));
+                  }
+                }
+                reject(failure2("request_cancelled"));
+              };
+              const timer = setTimeout(abort, timeoutMs);
+              pending.set(id, { resolve, reject, timer, signal: requestSignal, abort, prepareResult });
+              requestSignal?.addEventListener("abort", abort, { once: true });
+              try {
+                send({ id, method, params });
+              } catch (error) {
+                abort();
+                close(error);
+              }
+            });
+          }
+          return Object.freeze({ request, close, status: () => ({ open: !closed, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });
+        }
+        function createTrafficStreams2(peer, lease, signal) {
+          const sources = /* @__PURE__ */ new Map();
+          let disposed = false;
+          const check = () => {
+            if (disposed || signal.aborted) throw failure2("stream_retired");
+          };
+          function exportBody(body) {
+            check();
+            if (body == null) return null;
+            if (typeof body === "string" || body instanceof Uint8Array) {
+              if (Buffer.byteLength(body) > MAX_BODY) throw failure2("body_too_large");
+              const bytes = Buffer.from(body);
+              if (bytes.length <= 1024) return { inline: bytes.toString("base64") };
+              body = [bytes];
+            }
+            if (!body?.[Symbol.iterator] && !body?.[Symbol.asyncIterator]) throw failure2("invalid_body");
+            if (sources.size >= 8) throw failure2("resource_limit");
+            const stream = randomBytes2(16).toString("hex");
+            sources.set(stream, { body, iterator: null, chunk: null, offset: 0, total: 0, reading: false, cancelled: false, cancelRead: null });
+            return { stream };
+          }
+          function importBody(reference, maximum = MAX_BODY) {
+            if (reference == null) return null;
+            if (typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1) throw failure2("invalid_body");
+            let used = false, finished = false, cancelled = false, cancelPromise = Promise.resolve();
+            const controller = new AbortController();
+            const rootAborted = () => controller.abort(failure2("stream_retired"));
+            signal.addEventListener("abort", rootAborted, { once: true });
+            const finish = () => {
+              finished = true;
+              signal.removeEventListener("abort", rootAborted);
+            };
+            const cancel = () => {
+              if (finished || cancelled) return false;
+              used = true;
+              cancelled = true;
+              finish();
+              controller.abort(failure2("request_cancelled"));
+              if (reference.stream) cancelPromise = peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).then(() => {
+              }, () => {
+              });
+              return true;
+            };
+            const cancelAndWait = () => {
+              cancel();
+              return cancelPromise;
+            };
+            return Object.freeze({ cancel, cancelAndWait, [Symbol.asyncIterator]() {
+              if (used) throw failure2("body_already_consumed");
+              used = true;
+              let total = 0, ended = false, reading = false;
+              return {
+                async next() {
+                  check();
+                  if (cancelled) throw failure2("request_cancelled");
+                  if (ended) return { done: true };
+                  if (reading) throw failure2("body_read_pending");
+                  reading = true;
+                  try {
+                    let bytes;
+                    if (reference.inline !== void 0) {
+                      if (typeof reference.inline !== "string" || reference.inline.length > 1368) throw failure2("invalid_body");
+                      bytes = Buffer.from(reference.inline, "base64");
+                      ended = true;
+                      finish();
+                    } else {
+                      if (typeof reference.stream !== "string" || !/^[a-f0-9]{32}$/u.test(reference.stream)) throw failure2("invalid_body");
+                      const value = await peer.request("relay", { lease, operation: "stream.read", payload: { stream: reference.stream } }, { signal: controller.signal, timeoutMs: 3e5 });
+                      check();
+                      if (value.done === true) {
+                        ended = true;
+                        finish();
+                        return { done: true };
+                      }
+                      if (typeof value.bytes !== "string" || !value.bytes.length || value.bytes.length > Math.ceil(CHUNK / 3) * 4) throw failure2("invalid_body");
+                      bytes = Buffer.from(value.bytes, "base64");
+                      if (bytes.length > CHUNK || bytes.toString("base64") !== value.bytes) throw failure2("invalid_body");
+                    }
+                    const encoded = reference.inline !== void 0 ? reference.inline : void 0;
+                    if (encoded !== void 0 && bytes.toString("base64") !== encoded) throw failure2("invalid_body");
+                    total += bytes.length;
+                    if (total > maximum) throw failure2("body_too_large");
+                    return { done: false, value: bytes };
+                  } catch (error) {
+                    finish();
+                    throw error;
+                  } finally {
+                    reading = false;
+                  }
+                },
+                async return() {
+                  ended = true;
+                  finish();
+                  controller.abort();
+                  if (reference.stream && !signal.aborted) await peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).catch(() => {
+                  });
+                  return { done: true };
+                }
+              };
+            } });
+          }
+          async function handle(operation, payload) {
+            check();
+            const source = sources.get(payload?.stream);
+            if (!source) throw failure2("stream_retired");
+            if (operation === "stream.cancel") {
+              sources.delete(payload.stream);
+              source.cancelled = true;
+              source.cancelRead?.();
+              if (source.body.cancelAndWait) await source.body.cancelAndWait().catch(() => {
+              });
+              else if (source.body.cancel) Promise.resolve(source.body.cancel()).catch(() => {
+              });
+              if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {
+              });
+              return { cancelled: true };
+            }
+            if (operation !== "stream.read" || source.reading) throw failure2("body_read_pending");
+            source.reading = true;
+            try {
+              source.iterator ??= source.body[Symbol.asyncIterator]?.() ?? source.body[Symbol.iterator]();
+              for (let empty = 0; !source.chunk || source.offset >= source.chunk.length; empty++) {
+                if (empty >= 128) throw failure2("invalid_body");
+                const value = await new Promise((resolve, reject) => {
+                  source.cancelRead = () => reject(failure2("stream_retired"));
+                  Promise.resolve().then(() => source.iterator.next()).then(resolve, reject);
+                });
+                source.cancelRead = null;
+                check();
+                if (source.cancelled) throw failure2("stream_retired");
+                if (value.done) {
+                  sources.delete(payload.stream);
+                  return { done: true };
+                }
+                if (typeof value.value !== "string" && !(value.value instanceof Uint8Array)) throw failure2("invalid_body");
+                source.total += Buffer.byteLength(value.value);
+                if (source.total > MAX_BODY) throw failure2("body_too_large");
+                source.chunk = Buffer.from(value.value);
+                source.offset = 0;
+              }
+              const chunk = source.chunk.subarray(source.offset, source.offset + CHUNK);
+              source.offset += chunk.length;
+              return { done: false, bytes: chunk.toString("base64") };
+            } finally {
+              source.reading = false;
+              source.cancelRead = null;
+            }
+          }
+          async function importFrame(frame) {
+            if (typeof frame?.binary !== "boolean") throw failure2("invalid_frame");
+            const body = importBody(frame.body, 8 * 1024 * 1024);
+            if (!body) throw failure2("invalid_frame");
+            const chunks = [];
+            for await (const chunk of body) chunks.push(Buffer.from(chunk));
+            const bytes = Buffer.concat(chunks);
+            return Object.freeze({ binary: frame.binary, data: frame.binary ? bytes : bytes.toString("utf8") });
+          }
+          function exportFrame(frame) {
+            if (frame == null) return null;
+            if (typeof frame === "string") frame = { binary: false, data: frame };
+            if (frame instanceof Uint8Array) frame = { binary: true, data: frame };
+            if (typeof frame?.binary !== "boolean" || (frame.binary ? !(frame.data instanceof Uint8Array) : typeof frame.data !== "string") || Buffer.byteLength(frame.data) > 8 * 1024 * 1024) throw failure2("invalid_frame");
+            return { binary: frame.binary, body: exportBody(frame.data) };
+          }
+          function dispose() {
+            if (disposed) return;
+            disposed = true;
+            signal.removeEventListener("abort", dispose);
+            for (const source of sources.values()) {
+              source.cancelled = true;
+              source.cancelRead?.();
+              try {
+                source.body.cancel?.();
+                if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {
+                });
+              } catch {
+              }
+            }
+            sources.clear();
+          }
+          signal.addEventListener("abort", dispose, { once: true });
+          return Object.freeze({ exportBody, importBody, exportFrame, importFrame, handle, dispose, status: () => ({ streams: sources.size, retired: disposed }) });
+        }
+        async function listenTrafficPeer({ signal, handle, onConnect = () => {
+        }, onClose = () => {
+        } }) {
+          if (signal?.aborted) throw failure2("host_stopping");
+          const token = randomBytes2(32).toString("base64url");
+          let active = null, closed = false;
+          const sockets = /* @__PURE__ */ new Set();
+          const server = net.createServer((socket) => {
+            if (closed || active || sockets.size >= 4) {
+              socket.destroy();
+              return;
+            }
+            sockets.add(socket);
+            socket.once("close", () => sockets.delete(socket));
+            socket.setNoDelay(true);
+            let buffer = Buffer.alloc(0), authenticated = false, retired = false, sequence = 0;
+            const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();
+            const handshake = setTimeout(() => retire(), 5e3);
+            function retire() {
+              if (retired) return;
+              retired = true;
+              clearTimeout(handshake);
+              socket.destroy();
+              for (const item of pending.values()) {
+                clearTimeout(item.timer);
+                item.signal?.removeEventListener("abort", item.abort);
+                item.reject(failure2("peer_closed"));
+              }
+              pending.clear();
+              inbound.clear();
+              buffer = Buffer.alloc(0);
+              if (active === peer) {
+                active = null;
+                onClose(peer);
+              }
+            }
+            function send(value) {
+              if (retired) throw failure2("peer_closed");
+              const encoded = Buffer.from(JSON.stringify(value));
+              if (!encoded.length || encoded.length > MAX_FRAME) throw failure2("frame_too_large");
+              if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");
+              const packet = Buffer.allocUnsafe(encoded.length + 4);
+              packet.writeUInt32BE(encoded.length);
+              encoded.copy(packet, 4);
+              socket.write(packet);
+            }
+            function request(method, params = {}, { signal: requestSignal, timeoutMs = 3e4 } = {}) {
+              if (retired || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));
+              if (pending.size >= 64) return Promise.reject(failure2("resource_limit"));
+              if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));
+              return new Promise((resolve, reject) => {
+                const id = ++sequence;
+                const abort = () => {
+                  if (!pending.has(id)) return;
+                  pending.delete(id);
+                  clearTimeout(timer);
+                  requestSignal?.removeEventListener("abort", abort);
+                  reject(failure2("request_cancelled"));
+                };
+                const timer = setTimeout(abort, timeoutMs);
+                pending.set(id, { resolve, reject, timer, signal: requestSignal, abort });
+                requestSignal?.addEventListener("abort", abort, { once: true });
+                try {
+                  send({ id, method, params });
+                } catch (error) {
+                  abort();
+                  retire();
+                }
+              });
+            }
+            const peer = Object.freeze({ request, close: retire, status: () => ({ open: !retired, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });
+            socket.on("error", retire);
+            socket.on("close", retire);
+            socket.on("data", (chunk) => {
+              try {
+                let offset = 0;
+                while (offset < chunk.length) {
+                  const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;
+                  if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");
+                  const take = Math.min(required - buffer.length, chunk.length - offset);
+                  buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);
+                  offset += take;
+                  if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");
+                  if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;
+                  const message = JSON.parse(buffer.subarray(4).toString("utf8"));
+                  buffer = Buffer.alloc(0);
+                  if (!authenticated) {
+                    const offered = typeof message?.token === "string" ? Buffer.from(message.token) : Buffer.alloc(0);
+                    const expected = Buffer.from(token);
+                    if (active || offered.length !== expected.length || !timingSafeEqual(offered, expected) || Object.keys(message).length !== 1) throw failure2("permission_denied");
+                    authenticated = true;
+                    clearTimeout(handshake);
+                    active = peer;
+                    send({ event: "connected" });
+                    onConnect(peer);
+                    continue;
+                  }
+                  if (typeof message.method === "string") {
+                    if (inbound.size >= 256 || inbound.has(message.id)) throw failure2("traffic_backpressure");
+                    inbound.add(message.id);
+                    let operation;
+                    try {
+                      operation = handle(peer, message.method, message.params);
+                    } catch (error) {
+                      operation = Promise.reject(error);
+                    }
+                    Promise.resolve(operation).then((result) => {
+                      if (!retired && inbound.has(message.id)) send({ id: message.id, result: result ?? null });
+                    }, (error) => {
+                      if (!retired && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });
+                    }).catch(retire).finally(() => inbound.delete(message.id));
+                    continue;
+                  }
+                  const item = pending.get(message.id);
+                  if (!item) continue;
+                  pending.delete(message.id);
+                  clearTimeout(item.timer);
+                  item.signal?.removeEventListener("abort", item.abort);
+                  if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));
+                  else item.resolve(message.result);
+                }
+              } catch {
+                retire();
+              }
+            });
+          });
+          const stopped = () => close();
+          signal?.addEventListener("abort", stopped, { once: true });
+          try {
+            await new Promise((resolve, reject) => {
+              const cleanup = () => {
+                server.off("error", failed);
+                signal?.removeEventListener("abort", aborted);
+              };
+              const failed = () => {
+                cleanup();
+                reject(failure2("channel_listen_failed"));
+              };
+              const aborted = () => {
+                cleanup();
+                reject(failure2("host_stopping"));
+              };
+              server.once("error", failed);
+              signal?.addEventListener("abort", aborted, { once: true });
+              server.listen(0, "127.0.0.1", () => {
+                cleanup();
+                if (closed) {
+                  close();
+                  reject(failure2("host_stopping"));
+                } else resolve();
+              });
+            });
+          } catch (error) {
+            close();
+            throw error;
+          }
+          const address = server.address();
+          function close() {
+            if (!closed) {
+              closed = true;
+              signal?.removeEventListener("abort", stopped);
+            }
+            for (const socket of sockets) socket.destroy();
+            if (server.listening) server.close();
+          }
+          if (closed || signal?.aborted) {
+            close();
+            throw failure2("host_stopping");
+          }
+          return Object.freeze({ endpoint: Object.freeze({ host: "127.0.0.1", port: address.port, token }), close, status: () => ({ open: !closed, connected: !!active, peer: active?.status() ?? null }) });
+        }
+        module22.exports = { connectTrafficPeer: connectTrafficPeer2, listenTrafficPeer, createTrafficStreams: createTrafficStreams2 };
+      }
+    });
+    var { randomBytes } = require("node:crypto");
+    var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();
+    var failure = (code) => Object.assign(new Error(code), { code });
+    var TOKEN = /^[A-Za-z0-9_-]{43}$/u;
+    function connectPlaintextSource2(source, { signal } = {}) {
+      if (source?.version !== 1 || source.kind !== "plaintext" || !Array.isArray(source.protocols) || !Array.isArray(source.operations) || typeof source.routeBaseUrl !== "string") throw failure("invalid_source");
+      const routeBase = new URL(source.routeBaseUrl);
+      if (routeBase.protocol !== "http:" || routeBase.hostname !== "127.0.0.1" || !routeBase.port || routeBase.username || routeBase.password || routeBase.search || routeBase.hash || routeBase.pathname === "/") throw failure("invalid_source");
+      const controller = new AbortController(), exchanges = /* @__PURE__ */ new Map(), routes = /* @__PURE__ */ new Set(), routeRecords = /* @__PURE__ */ new Map();
+      let closed = false, peer;
+      const stop = () => close();
+      signal?.addEventListener("abort", stop, { once: true });
+      if (signal?.aborted) throw failure("host_stopping");
+      function retire(record, notify = false) {
+        if (!record || !exchanges.has(record.id)) return;
+        exchanges.delete(record.id);
+        record.signal?.removeEventListener("abort", record.abort);
+        record.controller.abort(failure("stream_retired"));
+        record.streams.dispose();
+        if (notify && !closed) peer.request("http.cancel", { exchange: record.id }, { timeoutMs: 2e3 }).catch(() => {
+        });
+      }
+      async function handle(method, params) {
+        if (method === "relay") {
+          const streamOwner = exchanges.get(params?.lease) ?? routeRecords.get(params?.lease);
+          if (!streamOwner) throw failure("stream_retired");
+          return streamOwner.streams.handle(params.operation, params.payload);
+        }
+        const record = exchanges.get(params?.exchange);
+        if (!record) throw failure("stream_retired");
+        if (method === "http.cancel") {
+          retire(record);
+          return { cancelled: true };
+        }
+        if (method !== "http.forward" || record.forwarding) throw failure("invalid_method");
+        record.forwarding = true;
+        try {
+          const input = { ...params.request, body: record.streams.importBody(params.request.body) };
+          const response = await record.forward(input, { signal: record.controller.signal });
+          if (record.controller.signal.aborted) throw failure("stream_retired");
+          if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw failure("invalid_response");
+          return { ...response, headers: response.headers ?? [], body: record.streams.exportBody(response.body) };
+        } finally {
+          record.forwarding = false;
+        }
+      }
+      function close() {
+        if (closed) return;
+        closed = true;
+        signal?.removeEventListener("abort", stop);
+        for (const record of [...exchanges.values()]) retire(record);
+        for (const record of routes) {
+          record.controller.abort();
+          record.streams?.dispose();
+        }
+        routeRecords.clear();
+        routes.clear();
+        controller.abort();
+        peer?.close();
+      }
+      const ready = connectTrafficPeer(source.endpoint, {
+        signal: controller.signal,
+        handle,
+        event(event) {
+          if (event.event === "closed") close();
+        }
+      }).then(
+        (value) => {
+          peer = value;
+          return true;
+        },
+        (error) => {
+          close();
+          throw error;
+        }
+      );
+      function certificateReference(record, value) {
+        if (value === void 0) return void 0;
+        if (typeof value !== "string" || Buffer.byteLength(value) > 128 * 1024) throw failure("invalid_ca_bundle");
+        return record.streams.exportBody(value);
+      }
+      function closeRouteRecord(record) {
+        routeRecords.delete(record.token);
+        record.controller.abort();
+        record.streams?.dispose();
+      }
+      function reserveRoute({ upstreamBaseUrl, additionalCaPem } = {}) {
+        if (closed) throw failure("peer_closed");
+        if (routes.size >= 32) throw failure("resource_limit");
+        const token = randomBytes(32).toString("base64url");
+        if (!TOKEN.test(token)) throw failure("invalid_source");
+        const baseUrl = \`\${source.routeBaseUrl}/\${token}\`;
+        const record = { token, closed: false, registered: false, controller: new AbortController(), streams: null };
+        routes.add(record);
+        const reservationReady = ready.then(() => {
+          if (record.closed) throw failure("route_closed");
+          record.streams = createTrafficStreams(peer, token, record.controller.signal);
+          routeRecords.set(token, record);
+          return peer.request("route.register", {
+            token,
+            upstreamBaseUrl,
+            additionalCaPem: certificateReference(record, additionalCaPem)
+          }, { timeoutMs: 5e3 });
+        }).then((result) => {
+          if (result?.baseUrl !== baseUrl) throw failure("invalid_source");
+          record.registered = true;
+          if (record.closed) return peer.request("route.close", { token }, { timeoutMs: 2e3 }).then(() => {
+            record.registered = false;
+            throw failure("route_closed");
+          });
+          return record;
+        }).catch((error) => {
+          routes.delete(record);
+          closeRouteRecord(record);
+          throw error;
+        });
+        record.pending = reservationReady;
+        return Object.freeze({ baseUrl, ready: reservationReady, update({ upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: additionalCaPem2 } = {}) {
+          if (record.closed || closed) return Promise.reject(failure("route_closed"));
+          const update = record.pending.then(async () => {
+            const reference = certificateReference(record, additionalCaPem2);
+            try {
+              return await peer.request("route.update", { token, upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: reference }, { timeoutMs: 5e3 });
+            } catch (error) {
+              if (reference?.stream) await record.streams.handle("stream.cancel", { stream: reference.stream }).catch(() => {
+              });
+              throw error;
+            }
+          });
+          record.pending = update.catch(() => {
+          });
+          return update;
+        }, async close() {
+          if (record.closed) return;
+          record.closed = true;
+          routes.delete(record);
+          try {
+            await record.pending;
+            if (record.registered && !closed) await peer.request("route.close", { token }, { timeoutMs: 2e3 });
+          } catch {
+          } finally {
+            closeRouteRecord(record);
+          }
+        } });
+      }
+      async function registerRoute(options) {
+        const reservation = reserveRoute(options);
+        await reservation.ready;
+        return reservation;
+      }
+      async function interceptHttp(input, { forward, signal: requestSignal } = {}) {
+        if (closed || typeof forward !== "function") throw failure("invalid_source");
+        await ready;
+        const id = randomBytes(32).toString("base64url"), requestController = new AbortController();
+        const abort = () => retire(record, true);
+        const record = {
+          id,
+          forward,
+          controller: requestController,
+          signal: requestSignal,
+          abort,
+          forwarding: false,
+          streams: createTrafficStreams(peer, id, requestController.signal)
+        };
+        exchanges.set(id, record);
+        requestSignal?.addEventListener("abort", abort, { once: true });
+        if (requestSignal?.aborted) {
+          abort();
+          throw failure("request_cancelled");
+        }
+        let result;
+        try {
+          result = await peer.request(
+            "http.intercept",
+            {
+              exchange: id,
+              request: { url: input.url, method: input.method ?? "GET", headers: input.headers ?? [], body: record.streams.exportBody(input.body) }
+            },
+            { signal: requestController.signal, timeoutMs: 3e5 }
+          );
+          if (requestController.signal.aborted) throw failure("request_cancelled");
+          const body = record.streams.importBody(result.body);
+          if (!body) {
+            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {
+            });
+            retire(record);
+            return { ...result, body: null };
+          }
+          let consumed = false;
+          const finish = async () => {
+            if (consumed) return;
+            consumed = true;
+            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {
+            });
+            retire(record);
+          };
+          const wrapped = Object.freeze({
+            async cancel() {
+              await finish();
+            },
+            [Symbol.asyncIterator]() {
+              const iterator = body[Symbol.asyncIterator]();
+              return {
+                async next() {
+                  try {
+                    const item = await iterator.next();
+                    if (item.done) await finish();
+                    return item;
+                  } catch (error) {
+                    await finish();
+                    throw error;
+                  }
+                },
+                async return() {
+                  try {
+                    return await iterator.return?.() ?? { done: true };
+                  } finally {
+                    await finish();
+                  }
+                }
+              };
+            }
+          });
+          return { ...result, body: wrapped };
+        } catch (error) {
+          retire(record, true);
+          throw error;
+        }
+      }
+      return Object.freeze({
+        ready,
+        reserveRoute,
+        registerRoute,
+        interceptHttp,
+        close,
+        status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size })
+      });
+    }
+    module2.exports = { connectPlaintextSource: connectPlaintextSource2 };
+  }
+});
+
+// ../../runtime/sdk-source-parser.cjs
+var require_sdk_source_parser = __commonJS({
+  "../../runtime/sdk-source-parser.cjs"(exports2, module2) {
+    var si = (g, L) => () => (L || g((L = { exports: {} }).exports, L), L.exports);
+    var vt = si((me, mt) => {
+      (function(g, L) {
+        typeof me == "object" && typeof mt < "u" ? L(me) : typeof define == "function" && define.amd ? define(["exports"], L) : (g = typeof globalThis < "u" ? globalThis : g || self, L(g.acorn = {}));
+      })(me, (function(g) {
+        "use strict";
+        var L = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 80, 3, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 343, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 330, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 726, 6, 110, 6, 6, 9, 4759, 9, 787719, 239], Ne = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 71, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 2, 60, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 328, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 129, 74, 6, 0, 67, 12, 65, 1, 2, 0, 29, 6135, 9, 1237, 42, 9, 8936, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 496, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4153, 7, 221, 3, 5761, 15, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 4191], gt = "\\u200C\\u200D\\xB7\\u0300-\\u036F\\u0387\\u0483-\\u0487\\u0591-\\u05BD\\u05BF\\u05C1\\u05C2\\u05C4\\u05C5\\u05C7\\u0610-\\u061A\\u064B-\\u0669\\u0670\\u06D6-\\u06DC\\u06DF-\\u06E4\\u06E7\\u06E8\\u06EA-\\u06ED\\u06F0-\\u06F9\\u0711\\u0730-\\u074A\\u07A6-\\u07B0\\u07C0-\\u07C9\\u07EB-\\u07F3\\u07FD\\u0816-\\u0819\\u081B-\\u0823\\u0825-\\u0827\\u0829-\\u082D\\u0859-\\u085B\\u0897-\\u089F\\u08CA-\\u08E1\\u08E3-\\u0903\\u093A-\\u093C\\u093E-\\u094F\\u0951-\\u0957\\u0962\\u0963\\u0966-\\u096F\\u0981-\\u0983\\u09BC\\u09BE-\\u09C4\\u09C7\\u09C8\\u09CB-\\u09CD\\u09D7\\u09E2\\u09E3\\u09E6-\\u09EF\\u09FE\\u0A01-\\u0A03\\u0A3C\\u0A3E-\\u0A42\\u0A47\\u0A48\\u0A4B-\\u0A4D\\u0A51\\u0A66-\\u0A71\\u0A75\\u0A81-\\u0A83\\u0ABC\\u0ABE-\\u0AC5\\u0AC7-\\u0AC9\\u0ACB-\\u0ACD\\u0AE2\\u0AE3\\u0AE6-\\u0AEF\\u0AFA-\\u0AFF\\u0B01-\\u0B03\\u0B3C\\u0B3E-\\u0B44\\u0B47\\u0B48\\u0B4B-\\u0B4D\\u0B55-\\u0B57\\u0B62\\u0B63\\u0B66-\\u0B6F\\u0B82\\u0BBE-\\u0BC2\\u0BC6-\\u0BC8\\u0BCA-\\u0BCD\\u0BD7\\u0BE6-\\u0BEF\\u0C00-\\u0C04\\u0C3C\\u0C3E-\\u0C44\\u0C46-\\u0C48\\u0C4A-\\u0C4D\\u0C55\\u0C56\\u0C62\\u0C63\\u0C66-\\u0C6F\\u0C81-\\u0C83\\u0CBC\\u0CBE-\\u0CC4\\u0CC6-\\u0CC8\\u0CCA-\\u0CCD\\u0CD5\\u0CD6\\u0CE2\\u0CE3\\u0CE6-\\u0CEF\\u0CF3\\u0D00-\\u0D03\\u0D3B\\u0D3C\\u0D3E-\\u0D44\\u0D46-\\u0D48\\u0D4A-\\u0D4D\\u0D57\\u0D62\\u0D63\\u0D66-\\u0D6F\\u0D81-\\u0D83\\u0DCA\\u0DCF-\\u0DD4\\u0DD6\\u0DD8-\\u0DDF\\u0DE6-\\u0DEF\\u0DF2\\u0DF3\\u0E31\\u0E34-\\u0E3A\\u0E47-\\u0E4E\\u0E50-\\u0E59\\u0EB1\\u0EB4-\\u0EBC\\u0EC8-\\u0ECE\\u0ED0-\\u0ED9\\u0F18\\u0F19\\u0F20-\\u0F29\\u0F35\\u0F37\\u0F39\\u0F3E\\u0F3F\\u0F71-\\u0F84\\u0F86\\u0F87\\u0F8D-\\u0F97\\u0F99-\\u0FBC\\u0FC6\\u102B-\\u103E\\u1040-\\u1049\\u1056-\\u1059\\u105E-\\u1060\\u1062-\\u1064\\u1067-\\u106D\\u1071-\\u1074\\u1082-\\u108D\\u108F-\\u109D\\u135D-\\u135F\\u1369-\\u1371\\u1712-\\u1715\\u1732-\\u1734\\u1752\\u1753\\u1772\\u1773\\u17B4-\\u17D3\\u17DD\\u17E0-\\u17E9\\u180B-\\u180D\\u180F-\\u1819\\u18A9\\u1920-\\u192B\\u1930-\\u193B\\u1946-\\u194F\\u19D0-\\u19DA\\u1A17-\\u1A1B\\u1A55-\\u1A5E\\u1A60-\\u1A7C\\u1A7F-\\u1A89\\u1A90-\\u1A99\\u1AB0-\\u1ABD\\u1ABF-\\u1ACE\\u1B00-\\u1B04\\u1B34-\\u1B44\\u1B50-\\u1B59\\u1B6B-\\u1B73\\u1B80-\\u1B82\\u1BA1-\\u1BAD\\u1BB0-\\u1BB9\\u1BE6-\\u1BF3\\u1C24-\\u1C37\\u1C40-\\u1C49\\u1C50-\\u1C59\\u1CD0-\\u1CD2\\u1CD4-\\u1CE8\\u1CED\\u1CF4\\u1CF7-\\u1CF9\\u1DC0-\\u1DFF\\u200C\\u200D\\u203F\\u2040\\u2054\\u20D0-\\u20DC\\u20E1\\u20E5-\\u20F0\\u2CEF-\\u2CF1\\u2D7F\\u2DE0-\\u2DFF\\u302A-\\u302F\\u3099\\u309A\\u30FB\\uA620-\\uA629\\uA66F\\uA674-\\uA67D\\uA69E\\uA69F\\uA6F0\\uA6F1\\uA802\\uA806\\uA80B\\uA823-\\uA827\\uA82C\\uA880\\uA881\\uA8B4-\\uA8C5\\uA8D0-\\uA8D9\\uA8E0-\\uA8F1\\uA8FF-\\uA909\\uA926-\\uA92D\\uA947-\\uA953\\uA980-\\uA983\\uA9B3-\\uA9C0\\uA9D0-\\uA9D9\\uA9E5\\uA9F0-\\uA9F9\\uAA29-\\uAA36\\uAA43\\uAA4C\\uAA4D\\uAA50-\\uAA59\\uAA7B-\\uAA7D\\uAAB0\\uAAB2-\\uAAB4\\uAAB7\\uAAB8\\uAABE\\uAABF\\uAAC1\\uAAEB-\\uAAEF\\uAAF5\\uAAF6\\uABE3-\\uABEA\\uABEC\\uABED\\uABF0-\\uABF9\\uFB1E\\uFE00-\\uFE0F\\uFE20-\\uFE2F\\uFE33\\uFE34\\uFE4D-\\uFE4F\\uFF10-\\uFF19\\uFF3F\\uFF65", Ve = "\\xAA\\xB5\\xBA\\xC0-\\xD6\\xD8-\\xF6\\xF8-\\u02C1\\u02C6-\\u02D1\\u02E0-\\u02E4\\u02EC\\u02EE\\u0370-\\u0374\\u0376\\u0377\\u037A-\\u037D\\u037F\\u0386\\u0388-\\u038A\\u038C\\u038E-\\u03A1\\u03A3-\\u03F5\\u03F7-\\u0481\\u048A-\\u052F\\u0531-\\u0556\\u0559\\u0560-\\u0588\\u05D0-\\u05EA\\u05EF-\\u05F2\\u0620-\\u064A\\u066E\\u066F\\u0671-\\u06D3\\u06D5\\u06E5\\u06E6\\u06EE\\u06EF\\u06FA-\\u06FC\\u06FF\\u0710\\u0712-\\u072F\\u074D-\\u07A5\\u07B1\\u07CA-\\u07EA\\u07F4\\u07F5\\u07FA\\u0800-\\u0815\\u081A\\u0824\\u0828\\u0840-\\u0858\\u0860-\\u086A\\u0870-\\u0887\\u0889-\\u088E\\u08A0-\\u08C9\\u0904-\\u0939\\u093D\\u0950\\u0958-\\u0961\\u0971-\\u0980\\u0985-\\u098C\\u098F\\u0990\\u0993-\\u09A8\\u09AA-\\u09B0\\u09B2\\u09B6-\\u09B9\\u09BD\\u09CE\\u09DC\\u09DD\\u09DF-\\u09E1\\u09F0\\u09F1\\u09FC\\u0A05-\\u0A0A\\u0A0F\\u0A10\\u0A13-\\u0A28\\u0A2A-\\u0A30\\u0A32\\u0A33\\u0A35\\u0A36\\u0A38\\u0A39\\u0A59-\\u0A5C\\u0A5E\\u0A72-\\u0A74\\u0A85-\\u0A8D\\u0A8F-\\u0A91\\u0A93-\\u0AA8\\u0AAA-\\u0AB0\\u0AB2\\u0AB3\\u0AB5-\\u0AB9\\u0ABD\\u0AD0\\u0AE0\\u0AE1\\u0AF9\\u0B05-\\u0B0C\\u0B0F\\u0B10\\u0B13-\\u0B28\\u0B2A-\\u0B30\\u0B32\\u0B33\\u0B35-\\u0B39\\u0B3D\\u0B5C\\u0B5D\\u0B5F-\\u0B61\\u0B71\\u0B83\\u0B85-\\u0B8A\\u0B8E-\\u0B90\\u0B92-\\u0B95\\u0B99\\u0B9A\\u0B9C\\u0B9E\\u0B9F\\u0BA3\\u0BA4\\u0BA8-\\u0BAA\\u0BAE-\\u0BB9\\u0BD0\\u0C05-\\u0C0C\\u0C0E-\\u0C10\\u0C12-\\u0C28\\u0C2A-\\u0C39\\u0C3D\\u0C58-\\u0C5A\\u0C5D\\u0C60\\u0C61\\u0C80\\u0C85-\\u0C8C\\u0C8E-\\u0C90\\u0C92-\\u0CA8\\u0CAA-\\u0CB3\\u0CB5-\\u0CB9\\u0CBD\\u0CDD\\u0CDE\\u0CE0\\u0CE1\\u0CF1\\u0CF2\\u0D04-\\u0D0C\\u0D0E-\\u0D10\\u0D12-\\u0D3A\\u0D3D\\u0D4E\\u0D54-\\u0D56\\u0D5F-\\u0D61\\u0D7A-\\u0D7F\\u0D85-\\u0D96\\u0D9A-\\u0DB1\\u0DB3-\\u0DBB\\u0DBD\\u0DC0-\\u0DC6\\u0E01-\\u0E30\\u0E32\\u0E33\\u0E40-\\u0E46\\u0E81\\u0E82\\u0E84\\u0E86-\\u0E8A\\u0E8C-\\u0EA3\\u0EA5\\u0EA7-\\u0EB0\\u0EB2\\u0EB3\\u0EBD\\u0EC0-\\u0EC4\\u0EC6\\u0EDC-\\u0EDF\\u0F00\\u0F40-\\u0F47\\u0F49-\\u0F6C\\u0F88-\\u0F8C\\u1000-\\u102A\\u103F\\u1050-\\u1055\\u105A-\\u105D\\u1061\\u1065\\u1066\\u106E-\\u1070\\u1075-\\u1081\\u108E\\u10A0-\\u10C5\\u10C7\\u10CD\\u10D0-\\u10FA\\u10FC-\\u1248\\u124A-\\u124D\\u1250-\\u1256\\u1258\\u125A-\\u125D\\u1260-\\u1288\\u128A-\\u128D\\u1290-\\u12B0\\u12B2-\\u12B5\\u12B8-\\u12BE\\u12C0\\u12C2-\\u12C5\\u12C8-\\u12D6\\u12D8-\\u1310\\u1312-\\u1315\\u1318-\\u135A\\u1380-\\u138F\\u13A0-\\u13F5\\u13F8-\\u13FD\\u1401-\\u166C\\u166F-\\u167F\\u1681-\\u169A\\u16A0-\\u16EA\\u16EE-\\u16F8\\u1700-\\u1711\\u171F-\\u1731\\u1740-\\u1751\\u1760-\\u176C\\u176E-\\u1770\\u1780-\\u17B3\\u17D7\\u17DC\\u1820-\\u1878\\u1880-\\u18A8\\u18AA\\u18B0-\\u18F5\\u1900-\\u191E\\u1950-\\u196D\\u1970-\\u1974\\u1980-\\u19AB\\u19B0-\\u19C9\\u1A00-\\u1A16\\u1A20-\\u1A54\\u1AA7\\u1B05-\\u1B33\\u1B45-\\u1B4C\\u1B83-\\u1BA0\\u1BAE\\u1BAF\\u1BBA-\\u1BE5\\u1C00-\\u1C23\\u1C4D-\\u1C4F\\u1C5A-\\u1C7D\\u1C80-\\u1C8A\\u1C90-\\u1CBA\\u1CBD-\\u1CBF\\u1CE9-\\u1CEC\\u1CEE-\\u1CF3\\u1CF5\\u1CF6\\u1CFA\\u1D00-\\u1DBF\\u1E00-\\u1F15\\u1F18-\\u1F1D\\u1F20-\\u1F45\\u1F48-\\u1F4D\\u1F50-\\u1F57\\u1F59\\u1F5B\\u1F5D\\u1F5F-\\u1F7D\\u1F80-\\u1FB4\\u1FB6-\\u1FBC\\u1FBE\\u1FC2-\\u1FC4\\u1FC6-\\u1FCC\\u1FD0-\\u1FD3\\u1FD6-\\u1FDB\\u1FE0-\\u1FEC\\u1FF2-\\u1FF4\\u1FF6-\\u1FFC\\u2071\\u207F\\u2090-\\u209C\\u2102\\u2107\\u210A-\\u2113\\u2115\\u2118-\\u211D\\u2124\\u2126\\u2128\\u212A-\\u2139\\u213C-\\u213F\\u2145-\\u2149\\u214E\\u2160-\\u2188\\u2C00-\\u2CE4\\u2CEB-\\u2CEE\\u2CF2\\u2CF3\\u2D00-\\u2D25\\u2D27\\u2D2D\\u2D30-\\u2D67\\u2D6F\\u2D80-\\u2D96\\u2DA0-\\u2DA6\\u2DA8-\\u2DAE\\u2DB0-\\u2DB6\\u2DB8-\\u2DBE\\u2DC0-\\u2DC6\\u2DC8-\\u2DCE\\u2DD0-\\u2DD6\\u2DD8-\\u2DDE\\u3005-\\u3007\\u3021-\\u3029\\u3031-\\u3035\\u3038-\\u303C\\u3041-\\u3096\\u309B-\\u309F\\u30A1-\\u30FA\\u30FC-\\u30FF\\u3105-\\u312F\\u3131-\\u318E\\u31A0-\\u31BF\\u31F0-\\u31FF\\u3400-\\u4DBF\\u4E00-\\uA48C\\uA4D0-\\uA4FD\\uA500-\\uA60C\\uA610-\\uA61F\\uA62A\\uA62B\\uA640-\\uA66E\\uA67F-\\uA69D\\uA6A0-\\uA6EF\\uA717-\\uA71F\\uA722-\\uA788\\uA78B-\\uA7CD\\uA7D0\\uA7D1\\uA7D3\\uA7D5-\\uA7DC\\uA7F2-\\uA801\\uA803-\\uA805\\uA807-\\uA80A\\uA80C-\\uA822\\uA840-\\uA873\\uA882-\\uA8B3\\uA8F2-\\uA8F7\\uA8FB\\uA8FD\\uA8FE\\uA90A-\\uA925\\uA930-\\uA946\\uA960-\\uA97C\\uA984-\\uA9B2\\uA9CF\\uA9E0-\\uA9E4\\uA9E6-\\uA9EF\\uA9FA-\\uA9FE\\uAA00-\\uAA28\\uAA40-\\uAA42\\uAA44-\\uAA4B\\uAA60-\\uAA76\\uAA7A\\uAA7E-\\uAAAF\\uAAB1\\uAAB5\\uAAB6\\uAAB9-\\uAABD\\uAAC0\\uAAC2\\uAADB-\\uAADD\\uAAE0-\\uAAEA\\uAAF2-\\uAAF4\\uAB01-\\uAB06\\uAB09-\\uAB0E\\uAB11-\\uAB16\\uAB20-\\uAB26\\uAB28-\\uAB2E\\uAB30-\\uAB5A\\uAB5C-\\uAB69\\uAB70-\\uABE2\\uAC00-\\uD7A3\\uD7B0-\\uD7C6\\uD7CB-\\uD7FB\\uF900-\\uFA6D\\uFA70-\\uFAD9\\uFB00-\\uFB06\\uFB13-\\uFB17\\uFB1D\\uFB1F-\\uFB28\\uFB2A-\\uFB36\\uFB38-\\uFB3C\\uFB3E\\uFB40\\uFB41\\uFB43\\uFB44\\uFB46-\\uFBB1\\uFBD3-\\uFD3D\\uFD50-\\uFD8F\\uFD92-\\uFDC7\\uFDF0-\\uFDFB\\uFE70-\\uFE74\\uFE76-\\uFEFC\\uFF21-\\uFF3A\\uFF41-\\uFF5A\\uFF66-\\uFFBE\\uFFC2-\\uFFC7\\uFFCA-\\uFFCF\\uFFD2-\\uFFD7\\uFFDA-\\uFFDC", ve = { 3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile", 5: "class enum extends super const export import", 6: "enum", strict: "implements interface let package private protected public static yield", strictBind: "eval arguments" }, ge = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this", bt = { 5: ge, "5module": ge + " export import", 6: ge + " const class extends export import super" }, yt = /^in(stanceof)?$/, _t = new RegExp("[" + Ve + "]"), Ct = new RegExp("[" + Ve + gt + "]");
+        function be(e, t) {
+          for (var i = 65536, s = 0; s < t.length; s += 2) {
+            if (i += t[s], i > e) return false;
+            if (i += t[s + 1], i >= e) return true;
+          }
+          return false;
+        }
+        function T(e, t) {
+          return e < 65 ? e === 36 : e < 91 ? true : e < 97 ? e === 95 : e < 123 ? true : e <= 65535 ? e >= 170 && _t.test(String.fromCharCode(e)) : t === false ? false : be(e, Ne);
+        }
+        function B(e, t) {
+          return e < 48 ? e === 36 : e < 58 ? true : e < 65 ? false : e < 91 ? true : e < 97 ? e === 95 : e < 123 ? true : e <= 65535 ? e >= 170 && Ct.test(String.fromCharCode(e)) : t === false ? false : be(e, Ne) || be(e, L);
+        }
+        var v = function(t, i) {
+          i === void 0 && (i = {}), this.label = t, this.keyword = i.keyword, this.beforeExpr = !!i.beforeExpr, this.startsExpr = !!i.startsExpr, this.isLoop = !!i.isLoop, this.isAssign = !!i.isAssign, this.prefix = !!i.prefix, this.postfix = !!i.postfix, this.binop = i.binop || null, this.updateContext = null;
+        };
+        function I(e, t) {
+          return new v(e, { beforeExpr: true, binop: t });
+        }
+        var E = { beforeExpr: true }, A = { startsExpr: true }, ae = {};
+        function m(e, t) {
+          return t === void 0 && (t = {}), t.keyword = e, ae[e] = new v(e, t);
+        }
+        var a = { num: new v("num", A), regexp: new v("regexp", A), string: new v("string", A), name: new v("name", A), privateId: new v("privateId", A), eof: new v("eof"), bracketL: new v("[", { beforeExpr: true, startsExpr: true }), bracketR: new v("]"), braceL: new v("{", { beforeExpr: true, startsExpr: true }), braceR: new v("}"), parenL: new v("(", { beforeExpr: true, startsExpr: true }), parenR: new v(")"), comma: new v(",", E), semi: new v(";", E), colon: new v(":", E), dot: new v("."), question: new v("?", E), questionDot: new v("?."), arrow: new v("=>", E), template: new v("template"), invalidTemplate: new v("invalidTemplate"), ellipsis: new v("...", E), backQuote: new v("\`", A), dollarBraceL: new v("\${", { beforeExpr: true, startsExpr: true }), eq: new v("=", { beforeExpr: true, isAssign: true }), assign: new v("_=", { beforeExpr: true, isAssign: true }), incDec: new v("++/--", { prefix: true, postfix: true, startsExpr: true }), prefix: new v("!/~", { beforeExpr: true, prefix: true, startsExpr: true }), logicalOR: I("||", 1), logicalAND: I("&&", 2), bitwiseOR: I("|", 3), bitwiseXOR: I("^", 4), bitwiseAND: I("&", 5), equality: I("==/!=/===/!==", 6), relational: I("</>/<=/>=", 7), bitShift: I("<</>>/>>>", 8), plusMin: new v("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }), modulo: I("%", 10), star: I("*", 10), slash: I("/", 10), starstar: new v("**", { beforeExpr: true }), coalesce: I("??", 1), _break: m("break"), _case: m("case", E), _catch: m("catch"), _continue: m("continue"), _debugger: m("debugger"), _default: m("default", E), _do: m("do", { isLoop: true, beforeExpr: true }), _else: m("else", E), _finally: m("finally"), _for: m("for", { isLoop: true }), _function: m("function", A), _if: m("if"), _return: m("return", E), _switch: m("switch"), _throw: m("throw", E), _try: m("try"), _var: m("var"), _const: m("const"), _while: m("while", { isLoop: true }), _with: m("with"), _new: m("new", { beforeExpr: true, startsExpr: true }), _this: m("this", A), _super: m("super", A), _class: m("class", A), _extends: m("extends", E), _export: m("export"), _import: m("import", A), _null: m("null", A), _true: m("true", A), _false: m("false", A), _in: m("in", { beforeExpr: true, binop: 7 }), _instanceof: m("instanceof", { beforeExpr: true, binop: 7 }), _typeof: m("typeof", { beforeExpr: true, prefix: true, startsExpr: true }), _void: m("void", { beforeExpr: true, prefix: true, startsExpr: true }), _delete: m("delete", { beforeExpr: true, prefix: true, startsExpr: true }) }, k = /\\r\\n?|\\n|\\u2028|\\u2029/, Te = new RegExp(k.source, "g");
+        function j(e) {
+          return e === 10 || e === 13 || e === 8232 || e === 8233;
+        }
+        function Le(e, t, i) {
+          i === void 0 && (i = e.length);
+          for (var s = t; s < i; s++) {
+            var r = e.charCodeAt(s);
+            if (j(r)) return s < i - 1 && r === 13 && e.charCodeAt(s + 1) === 10 ? s + 2 : s + 1;
+          }
+          return -1;
+        }
+        var ye = /[\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000\\ufeff]/, C = /(?:\\s|\\/\\/.*|\\/\\*[^]*?\\*\\/)*/g, Re = Object.prototype, St = Re.hasOwnProperty, kt = Re.toString, H = Object.hasOwn || (function(e, t) {
+          return St.call(e, t);
+        }), Oe = Array.isArray || (function(e) {
+          return kt.call(e) === "[object Array]";
+        }), Be = /* @__PURE__ */ Object.create(null);
+        function U(e) {
+          return Be[e] || (Be[e] = new RegExp("^(?:" + e.replace(/ /g, "|") + ")$"));
+        }
+        function D(e) {
+          return e <= 65535 ? String.fromCharCode(e) : (e -= 65536, String.fromCharCode((e >> 10) + 55296, (e & 1023) + 56320));
+        }
+        var wt = /(?:[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?:[^\\uD800-\\uDBFF]|^)[\\uDC00-\\uDFFF])/, W = function(t, i) {
+          this.line = t, this.column = i;
+        };
+        W.prototype.offset = function(t) {
+          return new W(this.line, this.column + t);
+        };
+        var Z = function(t, i, s) {
+          this.start = i, this.end = s, t.sourceFile !== null && (this.source = t.sourceFile);
+        };
+        function _e(e, t) {
+          for (var i = 1, s = 0; ; ) {
+            var r = Le(e, s, t);
+            if (r < 0) return new W(i, t - s);
+            ++i, s = r;
+          }
+        }
+        var re = { ecmaVersion: null, sourceType: "script", onInsertedSemicolon: null, onTrailingComma: null, allowReserved: null, allowReturnOutsideFunction: false, allowImportExportEverywhere: false, allowAwaitOutsideFunction: null, allowSuperOutsideMethod: null, allowHashBang: false, checkPrivateFields: true, locations: false, onToken: null, onComment: null, ranges: false, program: null, sourceFile: null, directSourceFile: null, preserveParens: false }, De = false;
+        function At(e) {
+          var t = {};
+          for (var i in re) t[i] = e && H(e, i) ? e[i] : re[i];
+          if (t.ecmaVersion === "latest" ? t.ecmaVersion = 1e8 : t.ecmaVersion == null ? (!De && typeof console == "object" && console.warn && (De = true, console.warn(\`Since Acorn 8.0.0, options.ecmaVersion is required.
+Defaulting to 2020, but this will stop working in the future.\`)), t.ecmaVersion = 11) : t.ecmaVersion >= 2015 && (t.ecmaVersion -= 2009), t.allowReserved == null && (t.allowReserved = t.ecmaVersion < 5), (!e || e.allowHashBang == null) && (t.allowHashBang = t.ecmaVersion >= 14), Oe(t.onToken)) {
+            var s = t.onToken;
+            t.onToken = function(r) {
+              return s.push(r);
+            };
+          }
+          return Oe(t.onComment) && (t.onComment = It(t, t.onComment)), t;
+        }
+        function It(e, t) {
+          return function(i, s, r, n, u, o) {
+            var h = { type: i ? "Block" : "Line", value: s, start: r, end: n };
+            e.locations && (h.loc = new Z(this, u, o)), e.ranges && (h.range = [r, n]), t.push(h);
+          };
+        }
+        var J = 1, z = 2, Ce = 4, Fe = 8, Se = 16, Me = 32, ne = 64, Ue = 128, G = 256, $ = 512, ue = J | z | G;
+        function ke(e, t) {
+          return z | (e ? Ce : 0) | (t ? Fe : 0);
+        }
+        var oe = 0, we = 1, F = 2, qe = 3, je = 4, Ge = 5, _ = function(t, i, s) {
+          this.options = t = At(t), this.sourceFile = t.sourceFile, this.keywords = U(bt[t.ecmaVersion >= 6 ? 6 : t.sourceType === "module" ? "5module" : 5]);
+          var r = "";
+          t.allowReserved !== true && (r = ve[t.ecmaVersion >= 6 ? 6 : t.ecmaVersion === 5 ? 5 : 3], t.sourceType === "module" && (r += " await")), this.reservedWords = U(r);
+          var n = (r ? r + " " : "") + ve.strict;
+          this.reservedWordsStrict = U(n), this.reservedWordsStrictBind = U(n + " " + ve.strictBind), this.input = String(i), this.containsEsc = false, s ? (this.pos = s, this.lineStart = this.input.lastIndexOf(\`
+\`, s - 1) + 1, this.curLine = this.input.slice(0, this.lineStart).split(k).length) : (this.pos = this.lineStart = 0, this.curLine = 1), this.type = a.eof, this.value = null, this.start = this.end = this.pos, this.startLoc = this.endLoc = this.curPosition(), this.lastTokEndLoc = this.lastTokStartLoc = null, this.lastTokStart = this.lastTokEnd = this.pos, this.context = this.initialContext(), this.exprAllowed = true, this.inModule = t.sourceType === "module", this.strict = this.inModule || this.strictDirective(this.pos), this.potentialArrowAt = -1, this.potentialArrowInForAwait = false, this.yieldPos = this.awaitPos = this.awaitIdentPos = 0, this.labels = [], this.undefinedExports = /* @__PURE__ */ Object.create(null), this.pos === 0 && t.allowHashBang && this.input.slice(0, 2) === "#!" && this.skipLineComment(2), this.scopeStack = [], this.enterScope(J), this.regexpState = null, this.privateNameStack = [];
+        }, R = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, inClassStaticBlock: { configurable: true } };
+        _.prototype.parse = function() {
+          var t = this.options.program || this.startNode();
+          return this.nextToken(), this.parseTopLevel(t);
+        }, R.inFunction.get = function() {
+          return (this.currentVarScope().flags & z) > 0;
+        }, R.inGenerator.get = function() {
+          return (this.currentVarScope().flags & Fe) > 0;
+        }, R.inAsync.get = function() {
+          return (this.currentVarScope().flags & Ce) > 0;
+        }, R.canAwait.get = function() {
+          for (var e = this.scopeStack.length - 1; e >= 0; e--) {
+            var t = this.scopeStack[e], i = t.flags;
+            if (i & (G | $)) return false;
+            if (i & z) return (i & Ce) > 0;
+          }
+          return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+        }, R.allowSuper.get = function() {
+          var e = this.currentThisScope(), t = e.flags;
+          return (t & ne) > 0 || this.options.allowSuperOutsideMethod;
+        }, R.allowDirectSuper.get = function() {
+          return (this.currentThisScope().flags & Ue) > 0;
+        }, R.treatFunctionsAsVar.get = function() {
+          return this.treatFunctionsAsVarInScope(this.currentScope());
+        }, R.allowNewDotTarget.get = function() {
+          for (var e = this.scopeStack.length - 1; e >= 0; e--) {
+            var t = this.scopeStack[e], i = t.flags;
+            if (i & (G | $) || i & z && !(i & Se)) return true;
+          }
+          return false;
+        }, R.inClassStaticBlock.get = function() {
+          return (this.currentVarScope().flags & G) > 0;
+        }, _.extend = function() {
+          for (var t = [], i = arguments.length; i--; ) t[i] = arguments[i];
+          for (var s = this, r = 0; r < t.length; r++) s = t[r](s);
+          return s;
+        }, _.parse = function(t, i) {
+          return new this(i, t).parse();
+        }, _.parseExpressionAt = function(t, i, s) {
+          var r = new this(s, t, i);
+          return r.nextToken(), r.parseExpression();
+        }, _.tokenizer = function(t, i) {
+          return new this(i, t);
+        }, Object.defineProperties(_.prototype, R);
+        var w = _.prototype, Et = /^(?:'((?:\\\\[^]|[^'\\\\])*?)'|"((?:\\\\[^]|[^"\\\\])*?)")/;
+        w.strictDirective = function(e) {
+          if (this.options.ecmaVersion < 5) return false;
+          for (; ; ) {
+            C.lastIndex = e, e += C.exec(this.input)[0].length;
+            var t = Et.exec(this.input.slice(e));
+            if (!t) return false;
+            if ((t[1] || t[2]) === "use strict") {
+              C.lastIndex = e + t[0].length;
+              var i = C.exec(this.input), s = i.index + i[0].length, r = this.input.charAt(s);
+              return r === ";" || r === "}" || k.test(i[0]) && !(/[(\`.[+\\-/*%<>=,?^&]/.test(r) || r === "!" && this.input.charAt(s + 1) === "=");
+            }
+            e += t[0].length, C.lastIndex = e, e += C.exec(this.input)[0].length, this.input[e] === ";" && e++;
+          }
+        }, w.eat = function(e) {
+          return this.type === e ? (this.next(), true) : false;
+        }, w.isContextual = function(e) {
+          return this.type === a.name && this.value === e && !this.containsEsc;
+        }, w.eatContextual = function(e) {
+          return this.isContextual(e) ? (this.next(), true) : false;
+        }, w.expectContextual = function(e) {
+          this.eatContextual(e) || this.unexpected();
+        }, w.canInsertSemicolon = function() {
+          return this.type === a.eof || this.type === a.braceR || k.test(this.input.slice(this.lastTokEnd, this.start));
+        }, w.insertSemicolon = function() {
+          if (this.canInsertSemicolon()) return this.options.onInsertedSemicolon && this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc), true;
+        }, w.semicolon = function() {
+          !this.eat(a.semi) && !this.insertSemicolon() && this.unexpected();
+        }, w.afterTrailingComma = function(e, t) {
+          if (this.type === e) return this.options.onTrailingComma && this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc), t || this.next(), true;
+        }, w.expect = function(e) {
+          this.eat(e) || this.unexpected();
+        }, w.unexpected = function(e) {
+          this.raise(e ?? this.start, "Unexpected token");
+        };
+        var he = function() {
+          this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+        };
+        w.checkPatternErrors = function(e, t) {
+          if (e) {
+            e.trailingComma > -1 && this.raiseRecoverable(e.trailingComma, "Comma is not permitted after the rest element");
+            var i = t ? e.parenthesizedAssign : e.parenthesizedBind;
+            i > -1 && this.raiseRecoverable(i, t ? "Assigning to rvalue" : "Parenthesized pattern");
+          }
+        }, w.checkExpressionErrors = function(e, t) {
+          if (!e) return false;
+          var i = e.shorthandAssign, s = e.doubleProto;
+          if (!t) return i >= 0 || s >= 0;
+          i >= 0 && this.raise(i, "Shorthand property assignments are valid only in destructuring patterns"), s >= 0 && this.raiseRecoverable(s, "Redefinition of __proto__ property");
+        }, w.checkYieldAwaitInDefaultParams = function() {
+          this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos) && this.raise(this.yieldPos, "Yield expression cannot be a default value"), this.awaitPos && this.raise(this.awaitPos, "Await expression cannot be a default value");
+        }, w.isSimpleAssignTarget = function(e) {
+          return e.type === "ParenthesizedExpression" ? this.isSimpleAssignTarget(e.expression) : e.type === "Identifier" || e.type === "MemberExpression";
+        };
+        var p = _.prototype;
+        p.parseTopLevel = function(e) {
+          var t = /* @__PURE__ */ Object.create(null);
+          for (e.body || (e.body = []); this.type !== a.eof; ) {
+            var i = this.parseStatement(null, true, t);
+            e.body.push(i);
+          }
+          if (this.inModule) for (var s = 0, r = Object.keys(this.undefinedExports); s < r.length; s += 1) {
+            var n = r[s];
+            this.raiseRecoverable(this.undefinedExports[n].start, "Export '" + n + "' is not defined");
+          }
+          return this.adaptDirectivePrologue(e.body), this.next(), e.sourceType = this.options.sourceType, this.finishNode(e, "Program");
+        };
+        var Ae = { kind: "loop" }, Pt = { kind: "switch" };
+        p.isLet = function(e) {
+          if (this.options.ecmaVersion < 6 || !this.isContextual("let")) return false;
+          C.lastIndex = this.pos;
+          var t = C.exec(this.input), i = this.pos + t[0].length, s = this.input.charCodeAt(i);
+          if (s === 91 || s === 92) return true;
+          if (e) return false;
+          if (s === 123 || s > 55295 && s < 56320) return true;
+          if (T(s, true)) {
+            for (var r = i + 1; B(s = this.input.charCodeAt(r), true); ) ++r;
+            if (s === 92 || s > 55295 && s < 56320) return true;
+            var n = this.input.slice(i, r);
+            if (!yt.test(n)) return true;
+          }
+          return false;
+        }, p.isAsyncFunction = function() {
+          if (this.options.ecmaVersion < 8 || !this.isContextual("async")) return false;
+          C.lastIndex = this.pos;
+          var e = C.exec(this.input), t = this.pos + e[0].length, i;
+          return !k.test(this.input.slice(this.pos, t)) && this.input.slice(t, t + 8) === "function" && (t + 8 === this.input.length || !(B(i = this.input.charCodeAt(t + 8)) || i > 55295 && i < 56320));
+        }, p.isUsingKeyword = function(e, t) {
+          if (this.options.ecmaVersion < 17 || !this.isContextual(e ? "await" : "using")) return false;
+          C.lastIndex = this.pos;
+          var i = C.exec(this.input), s = this.pos + i[0].length;
+          if (k.test(this.input.slice(this.pos, s))) return false;
+          if (e) {
+            var r = s + 5, n;
+            if (this.input.slice(s, r) !== "using" || r === this.input.length || B(n = this.input.charCodeAt(r)) || n > 55295 && n < 56320) return false;
+            C.lastIndex = r;
+            var u = C.exec(this.input);
+            if (u && k.test(this.input.slice(r, r + u[0].length))) return false;
+          }
+          if (t) {
+            var o = s + 2, h;
+            if (this.input.slice(s, o) === "of" && (o === this.input.length || !B(h = this.input.charCodeAt(o)) && !(h > 55295 && h < 56320))) return false;
+          }
+          var l = this.input.charCodeAt(s);
+          return T(l, true) || l === 92;
+        }, p.isAwaitUsing = function(e) {
+          return this.isUsingKeyword(true, e);
+        }, p.isUsing = function(e) {
+          return this.isUsingKeyword(false, e);
+        }, p.parseStatement = function(e, t, i) {
+          var s = this.type, r = this.startNode(), n;
+          switch (this.isLet(e) && (s = a._var, n = "let"), s) {
+            case a._break:
+            case a._continue:
+              return this.parseBreakContinueStatement(r, s.keyword);
+            case a._debugger:
+              return this.parseDebuggerStatement(r);
+            case a._do:
+              return this.parseDoStatement(r);
+            case a._for:
+              return this.parseForStatement(r);
+            case a._function:
+              return e && (this.strict || e !== "if" && e !== "label") && this.options.ecmaVersion >= 6 && this.unexpected(), this.parseFunctionStatement(r, false, !e);
+            case a._class:
+              return e && this.unexpected(), this.parseClass(r, true);
+            case a._if:
+              return this.parseIfStatement(r);
+            case a._return:
+              return this.parseReturnStatement(r);
+            case a._switch:
+              return this.parseSwitchStatement(r);
+            case a._throw:
+              return this.parseThrowStatement(r);
+            case a._try:
+              return this.parseTryStatement(r);
+            case a._const:
+            case a._var:
+              return n = n || this.value, e && n !== "var" && this.unexpected(), this.parseVarStatement(r, n);
+            case a._while:
+              return this.parseWhileStatement(r);
+            case a._with:
+              return this.parseWithStatement(r);
+            case a.braceL:
+              return this.parseBlock(true, r);
+            case a.semi:
+              return this.parseEmptyStatement(r);
+            case a._export:
+            case a._import:
+              if (this.options.ecmaVersion > 10 && s === a._import) {
+                C.lastIndex = this.pos;
+                var u = C.exec(this.input), o = this.pos + u[0].length, h = this.input.charCodeAt(o);
+                if (h === 40 || h === 46) return this.parseExpressionStatement(r, this.parseExpression());
+              }
+              return this.options.allowImportExportEverywhere || (t || this.raise(this.start, "'import' and 'export' may only appear at the top level"), this.inModule || this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'")), s === a._import ? this.parseImport(r) : this.parseExport(r, i);
+            default:
+              if (this.isAsyncFunction()) return e && this.unexpected(), this.next(), this.parseFunctionStatement(r, true, !e);
+              var l = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+              if (l) return t && this.options.sourceType === "script" && this.raise(this.start, "Using declaration cannot appear in the top level when source type is \`script\`"), l === "await using" && (this.canAwait || this.raise(this.start, "Await using cannot appear outside of async function"), this.next()), this.next(), this.parseVar(r, false, l), this.semicolon(), this.finishNode(r, "VariableDeclaration");
+              var d = this.value, y = this.parseExpression();
+              return s === a.name && y.type === "Identifier" && this.eat(a.colon) ? this.parseLabeledStatement(r, d, y, e) : this.parseExpressionStatement(r, y);
+          }
+        }, p.parseBreakContinueStatement = function(e, t) {
+          var i = t === "break";
+          this.next(), this.eat(a.semi) || this.insertSemicolon() ? e.label = null : this.type !== a.name ? this.unexpected() : (e.label = this.parseIdent(), this.semicolon());
+          for (var s = 0; s < this.labels.length; ++s) {
+            var r = this.labels[s];
+            if ((e.label == null || r.name === e.label.name) && (r.kind != null && (i || r.kind === "loop") || e.label && i)) break;
+          }
+          return s === this.labels.length && this.raise(e.start, "Unsyntactic " + t), this.finishNode(e, i ? "BreakStatement" : "ContinueStatement");
+        }, p.parseDebuggerStatement = function(e) {
+          return this.next(), this.semicolon(), this.finishNode(e, "DebuggerStatement");
+        }, p.parseDoStatement = function(e) {
+          return this.next(), this.labels.push(Ae), e.body = this.parseStatement("do"), this.labels.pop(), this.expect(a._while), e.test = this.parseParenExpression(), this.options.ecmaVersion >= 6 ? this.eat(a.semi) : this.semicolon(), this.finishNode(e, "DoWhileStatement");
+        }, p.parseForStatement = function(e) {
+          this.next();
+          var t = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+          if (this.labels.push(Ae), this.enterScope(0), this.expect(a.parenL), this.type === a.semi) return t > -1 && this.unexpected(t), this.parseFor(e, null);
+          var i = this.isLet();
+          if (this.type === a._var || this.type === a._const || i) {
+            var s = this.startNode(), r = i ? "let" : this.value;
+            return this.next(), this.parseVar(s, true, r), this.finishNode(s, "VariableDeclaration"), this.parseForAfterInit(e, s, t);
+          }
+          var n = this.isContextual("let"), u = false, o = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+          if (o) {
+            var h = this.startNode();
+            return this.next(), o === "await using" && this.next(), this.parseVar(h, true, o), this.finishNode(h, "VariableDeclaration"), this.parseForAfterInit(e, h, t);
+          }
+          var l = this.containsEsc, d = new he(), y = this.start, S = t > -1 ? this.parseExprSubscripts(d, "await") : this.parseExpression(true, d);
+          return this.type === a._in || (u = this.options.ecmaVersion >= 6 && this.isContextual("of")) ? (t > -1 ? (this.type === a._in && this.unexpected(t), e.await = true) : u && this.options.ecmaVersion >= 8 && (S.start === y && !l && S.type === "Identifier" && S.name === "async" ? this.unexpected() : this.options.ecmaVersion >= 9 && (e.await = false)), n && u && this.raise(S.start, "The left-hand side of a for-of loop may not start with 'let'."), this.toAssignable(S, false, d), this.checkLValPattern(S), this.parseForIn(e, S)) : (this.checkExpressionErrors(d, true), t > -1 && this.unexpected(t), this.parseFor(e, S));
+        }, p.parseForAfterInit = function(e, t, i) {
+          return (this.type === a._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && t.declarations.length === 1 ? (this.options.ecmaVersion >= 9 && (this.type === a._in ? i > -1 && this.unexpected(i) : e.await = i > -1), this.parseForIn(e, t)) : (i > -1 && this.unexpected(i), this.parseFor(e, t));
+        }, p.parseFunctionStatement = function(e, t, i) {
+          return this.next(), this.parseFunction(e, ee | (i ? 0 : Ie), false, t);
+        }, p.parseIfStatement = function(e) {
+          return this.next(), e.test = this.parseParenExpression(), e.consequent = this.parseStatement("if"), e.alternate = this.eat(a._else) ? this.parseStatement("if") : null, this.finishNode(e, "IfStatement");
+        }, p.parseReturnStatement = function(e) {
+          return !this.inFunction && !this.options.allowReturnOutsideFunction && this.raise(this.start, "'return' outside of function"), this.next(), this.eat(a.semi) || this.insertSemicolon() ? e.argument = null : (e.argument = this.parseExpression(), this.semicolon()), this.finishNode(e, "ReturnStatement");
+        }, p.parseSwitchStatement = function(e) {
+          this.next(), e.discriminant = this.parseParenExpression(), e.cases = [], this.expect(a.braceL), this.labels.push(Pt), this.enterScope(0);
+          for (var t, i = false; this.type !== a.braceR; ) if (this.type === a._case || this.type === a._default) {
+            var s = this.type === a._case;
+            t && this.finishNode(t, "SwitchCase"), e.cases.push(t = this.startNode()), t.consequent = [], this.next(), s ? t.test = this.parseExpression() : (i && this.raiseRecoverable(this.lastTokStart, "Multiple default clauses"), i = true, t.test = null), this.expect(a.colon);
+          } else t || this.unexpected(), t.consequent.push(this.parseStatement(null));
+          return this.exitScope(), t && this.finishNode(t, "SwitchCase"), this.next(), this.labels.pop(), this.finishNode(e, "SwitchStatement");
+        }, p.parseThrowStatement = function(e) {
+          return this.next(), k.test(this.input.slice(this.lastTokEnd, this.start)) && this.raise(this.lastTokEnd, "Illegal newline after throw"), e.argument = this.parseExpression(), this.semicolon(), this.finishNode(e, "ThrowStatement");
+        };
+        var Nt = [];
+        p.parseCatchClauseParam = function() {
+          var e = this.parseBindingAtom(), t = e.type === "Identifier";
+          return this.enterScope(t ? Me : 0), this.checkLValPattern(e, t ? je : F), this.expect(a.parenR), e;
+        }, p.parseTryStatement = function(e) {
+          if (this.next(), e.block = this.parseBlock(), e.handler = null, this.type === a._catch) {
+            var t = this.startNode();
+            this.next(), this.eat(a.parenL) ? t.param = this.parseCatchClauseParam() : (this.options.ecmaVersion < 10 && this.unexpected(), t.param = null, this.enterScope(0)), t.body = this.parseBlock(false), this.exitScope(), e.handler = this.finishNode(t, "CatchClause");
+          }
+          return e.finalizer = this.eat(a._finally) ? this.parseBlock() : null, !e.handler && !e.finalizer && this.raise(e.start, "Missing catch or finally clause"), this.finishNode(e, "TryStatement");
+        }, p.parseVarStatement = function(e, t, i) {
+          return this.next(), this.parseVar(e, false, t, i), this.semicolon(), this.finishNode(e, "VariableDeclaration");
+        }, p.parseWhileStatement = function(e) {
+          return this.next(), e.test = this.parseParenExpression(), this.labels.push(Ae), e.body = this.parseStatement("while"), this.labels.pop(), this.finishNode(e, "WhileStatement");
+        }, p.parseWithStatement = function(e) {
+          return this.strict && this.raise(this.start, "'with' in strict mode"), this.next(), e.object = this.parseParenExpression(), e.body = this.parseStatement("with"), this.finishNode(e, "WithStatement");
+        }, p.parseEmptyStatement = function(e) {
+          return this.next(), this.finishNode(e, "EmptyStatement");
+        }, p.parseLabeledStatement = function(e, t, i, s) {
+          for (var r = 0, n = this.labels; r < n.length; r += 1) {
+            var u = n[r];
+            u.name === t && this.raise(i.start, "Label '" + t + "' is already declared");
+          }
+          for (var o = this.type.isLoop ? "loop" : this.type === a._switch ? "switch" : null, h = this.labels.length - 1; h >= 0; h--) {
+            var l = this.labels[h];
+            if (l.statementStart === e.start) l.statementStart = this.start, l.kind = o;
+            else break;
+          }
+          return this.labels.push({ name: t, kind: o, statementStart: this.start }), e.body = this.parseStatement(s ? s.indexOf("label") === -1 ? s + "label" : s : "label"), this.labels.pop(), e.label = i, this.finishNode(e, "LabeledStatement");
+        }, p.parseExpressionStatement = function(e, t) {
+          return e.expression = t, this.semicolon(), this.finishNode(e, "ExpressionStatement");
+        }, p.parseBlock = function(e, t, i) {
+          for (e === void 0 && (e = true), t === void 0 && (t = this.startNode()), t.body = [], this.expect(a.braceL), e && this.enterScope(0); this.type !== a.braceR; ) {
+            var s = this.parseStatement(null);
+            t.body.push(s);
+          }
+          return i && (this.strict = false), this.next(), e && this.exitScope(), this.finishNode(t, "BlockStatement");
+        }, p.parseFor = function(e, t) {
+          return e.init = t, this.expect(a.semi), e.test = this.type === a.semi ? null : this.parseExpression(), this.expect(a.semi), e.update = this.type === a.parenR ? null : this.parseExpression(), this.expect(a.parenR), e.body = this.parseStatement("for"), this.exitScope(), this.labels.pop(), this.finishNode(e, "ForStatement");
+        }, p.parseForIn = function(e, t) {
+          var i = this.type === a._in;
+          return this.next(), t.type === "VariableDeclaration" && t.declarations[0].init != null && (!i || this.options.ecmaVersion < 8 || this.strict || t.kind !== "var" || t.declarations[0].id.type !== "Identifier") && this.raise(t.start, (i ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"), e.left = t, e.right = i ? this.parseExpression() : this.parseMaybeAssign(), this.expect(a.parenR), e.body = this.parseStatement("for"), this.exitScope(), this.labels.pop(), this.finishNode(e, i ? "ForInStatement" : "ForOfStatement");
+        }, p.parseVar = function(e, t, i, s) {
+          for (e.declarations = [], e.kind = i; ; ) {
+            var r = this.startNode();
+            if (this.parseVarId(r, i), this.eat(a.eq) ? r.init = this.parseMaybeAssign(t) : !s && i === "const" && !(this.type === a._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) ? this.unexpected() : !s && (i === "using" || i === "await using") && this.options.ecmaVersion >= 17 && this.type !== a._in && !this.isContextual("of") ? this.raise(this.lastTokEnd, "Missing initializer in " + i + " declaration") : !s && r.id.type !== "Identifier" && !(t && (this.type === a._in || this.isContextual("of"))) ? this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value") : r.init = null, e.declarations.push(this.finishNode(r, "VariableDeclarator")), !this.eat(a.comma)) break;
+          }
+          return e;
+        }, p.parseVarId = function(e, t) {
+          e.id = t === "using" || t === "await using" ? this.parseIdent() : this.parseBindingAtom(), this.checkLValPattern(e.id, t === "var" ? we : F, false);
+        };
+        var ee = 1, Ie = 2, He = 4;
+        p.parseFunction = function(e, t, i, s, r) {
+          this.initFunction(e), (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !s) && (this.type === a.star && t & Ie && this.unexpected(), e.generator = this.eat(a.star)), this.options.ecmaVersion >= 8 && (e.async = !!s), t & ee && (e.id = t & He && this.type !== a.name ? null : this.parseIdent(), e.id && !(t & Ie) && this.checkLValSimple(e.id, this.strict || e.generator || e.async ? this.treatFunctionsAsVar ? we : F : qe));
+          var n = this.yieldPos, u = this.awaitPos, o = this.awaitIdentPos;
+          return this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, this.enterScope(ke(e.async, e.generator)), t & ee || (e.id = this.type === a.name ? this.parseIdent() : null), this.parseFunctionParams(e), this.parseFunctionBody(e, i, false, r), this.yieldPos = n, this.awaitPos = u, this.awaitIdentPos = o, this.finishNode(e, t & ee ? "FunctionDeclaration" : "FunctionExpression");
+        }, p.parseFunctionParams = function(e) {
+          this.expect(a.parenL), e.params = this.parseBindingList(a.parenR, false, this.options.ecmaVersion >= 8), this.checkYieldAwaitInDefaultParams();
+        }, p.parseClass = function(e, t) {
+          this.next();
+          var i = this.strict;
+          this.strict = true, this.parseClassId(e, t), this.parseClassSuper(e);
+          var s = this.enterClassBody(), r = this.startNode(), n = false;
+          for (r.body = [], this.expect(a.braceL); this.type !== a.braceR; ) {
+            var u = this.parseClassElement(e.superClass !== null);
+            u && (r.body.push(u), u.type === "MethodDefinition" && u.kind === "constructor" ? (n && this.raiseRecoverable(u.start, "Duplicate constructor in the same class"), n = true) : u.key && u.key.type === "PrivateIdentifier" && Vt(s, u) && this.raiseRecoverable(u.key.start, "Identifier '#" + u.key.name + "' has already been declared"));
+          }
+          return this.strict = i, this.next(), e.body = this.finishNode(r, "ClassBody"), this.exitClassBody(), this.finishNode(e, t ? "ClassDeclaration" : "ClassExpression");
+        }, p.parseClassElement = function(e) {
+          if (this.eat(a.semi)) return null;
+          var t = this.options.ecmaVersion, i = this.startNode(), s = "", r = false, n = false, u = "method", o = false;
+          if (this.eatContextual("static")) {
+            if (t >= 13 && this.eat(a.braceL)) return this.parseClassStaticBlock(i), i;
+            this.isClassElementNameStart() || this.type === a.star ? o = true : s = "static";
+          }
+          if (i.static = o, !s && t >= 8 && this.eatContextual("async") && ((this.isClassElementNameStart() || this.type === a.star) && !this.canInsertSemicolon() ? n = true : s = "async"), !s && (t >= 9 || !n) && this.eat(a.star) && (r = true), !s && !n && !r) {
+            var h = this.value;
+            (this.eatContextual("get") || this.eatContextual("set")) && (this.isClassElementNameStart() ? u = h : s = h);
+          }
+          if (s ? (i.computed = false, i.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc), i.key.name = s, this.finishNode(i.key, "Identifier")) : this.parseClassElementName(i), t < 13 || this.type === a.parenL || u !== "method" || r || n) {
+            var l = !i.static && ce(i, "constructor"), d = l && e;
+            l && u !== "method" && this.raise(i.key.start, "Constructor can't have get/set modifier"), i.kind = l ? "constructor" : u, this.parseClassMethod(i, r, n, d);
+          } else this.parseClassField(i);
+          return i;
+        }, p.isClassElementNameStart = function() {
+          return this.type === a.name || this.type === a.privateId || this.type === a.num || this.type === a.string || this.type === a.bracketL || this.type.keyword;
+        }, p.parseClassElementName = function(e) {
+          this.type === a.privateId ? (this.value === "constructor" && this.raise(this.start, "Classes can't have an element named '#constructor'"), e.computed = false, e.key = this.parsePrivateIdent()) : this.parsePropertyName(e);
+        }, p.parseClassMethod = function(e, t, i, s) {
+          var r = e.key;
+          e.kind === "constructor" ? (t && this.raise(r.start, "Constructor can't be a generator"), i && this.raise(r.start, "Constructor can't be an async method")) : e.static && ce(e, "prototype") && this.raise(r.start, "Classes may not have a static property named prototype");
+          var n = e.value = this.parseMethod(t, i, s);
+          return e.kind === "get" && n.params.length !== 0 && this.raiseRecoverable(n.start, "getter should have no params"), e.kind === "set" && n.params.length !== 1 && this.raiseRecoverable(n.start, "setter should have exactly one param"), e.kind === "set" && n.params[0].type === "RestElement" && this.raiseRecoverable(n.params[0].start, "Setter cannot use rest params"), this.finishNode(e, "MethodDefinition");
+        }, p.parseClassField = function(e) {
+          return ce(e, "constructor") ? this.raise(e.key.start, "Classes can't have a field named 'constructor'") : e.static && ce(e, "prototype") && this.raise(e.key.start, "Classes can't have a static field named 'prototype'"), this.eat(a.eq) ? (this.enterScope($ | ne), e.value = this.parseMaybeAssign(), this.exitScope()) : e.value = null, this.semicolon(), this.finishNode(e, "PropertyDefinition");
+        }, p.parseClassStaticBlock = function(e) {
+          e.body = [];
+          var t = this.labels;
+          for (this.labels = [], this.enterScope(G | ne); this.type !== a.braceR; ) {
+            var i = this.parseStatement(null);
+            e.body.push(i);
+          }
+          return this.next(), this.exitScope(), this.labels = t, this.finishNode(e, "StaticBlock");
+        }, p.parseClassId = function(e, t) {
+          this.type === a.name ? (e.id = this.parseIdent(), t && this.checkLValSimple(e.id, F, false)) : (t === true && this.unexpected(), e.id = null);
+        }, p.parseClassSuper = function(e) {
+          e.superClass = this.eat(a._extends) ? this.parseExprSubscripts(null, false) : null;
+        }, p.enterClassBody = function() {
+          var e = { declared: /* @__PURE__ */ Object.create(null), used: [] };
+          return this.privateNameStack.push(e), e.declared;
+        }, p.exitClassBody = function() {
+          var e = this.privateNameStack.pop(), t = e.declared, i = e.used;
+          if (this.options.checkPrivateFields) for (var s = this.privateNameStack.length, r = s === 0 ? null : this.privateNameStack[s - 1], n = 0; n < i.length; ++n) {
+            var u = i[n];
+            H(t, u.name) || (r ? r.used.push(u) : this.raiseRecoverable(u.start, "Private field '#" + u.name + "' must be declared in an enclosing class"));
+          }
+        };
+        function Vt(e, t) {
+          var i = t.key.name, s = e[i], r = "true";
+          return t.type === "MethodDefinition" && (t.kind === "get" || t.kind === "set") && (r = (t.static ? "s" : "i") + t.kind), s === "iget" && r === "iset" || s === "iset" && r === "iget" || s === "sget" && r === "sset" || s === "sset" && r === "sget" ? (e[i] = "true", false) : s ? true : (e[i] = r, false);
+        }
+        function ce(e, t) {
+          var i = e.computed, s = e.key;
+          return !i && (s.type === "Identifier" && s.name === t || s.type === "Literal" && s.value === t);
+        }
+        p.parseExportAllDeclaration = function(e, t) {
+          return this.options.ecmaVersion >= 11 && (this.eatContextual("as") ? (e.exported = this.parseModuleExportName(), this.checkExport(t, e.exported, this.lastTokStart)) : e.exported = null), this.expectContextual("from"), this.type !== a.string && this.unexpected(), e.source = this.parseExprAtom(), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause()), this.semicolon(), this.finishNode(e, "ExportAllDeclaration");
+        }, p.parseExport = function(e, t) {
+          if (this.next(), this.eat(a.star)) return this.parseExportAllDeclaration(e, t);
+          if (this.eat(a._default)) return this.checkExport(t, "default", this.lastTokStart), e.declaration = this.parseExportDefaultDeclaration(), this.finishNode(e, "ExportDefaultDeclaration");
+          if (this.shouldParseExportStatement()) e.declaration = this.parseExportDeclaration(e), e.declaration.type === "VariableDeclaration" ? this.checkVariableExport(t, e.declaration.declarations) : this.checkExport(t, e.declaration.id, e.declaration.id.start), e.specifiers = [], e.source = null, this.options.ecmaVersion >= 16 && (e.attributes = []);
+          else {
+            if (e.declaration = null, e.specifiers = this.parseExportSpecifiers(t), this.eatContextual("from")) this.type !== a.string && this.unexpected(), e.source = this.parseExprAtom(), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause());
+            else {
+              for (var i = 0, s = e.specifiers; i < s.length; i += 1) {
+                var r = s[i];
+                this.checkUnreserved(r.local), this.checkLocalExport(r.local), r.local.type === "Literal" && this.raise(r.local.start, "A string literal cannot be used as an exported binding without \`from\`.");
+              }
+              e.source = null, this.options.ecmaVersion >= 16 && (e.attributes = []);
+            }
+            this.semicolon();
+          }
+          return this.finishNode(e, "ExportNamedDeclaration");
+        }, p.parseExportDeclaration = function(e) {
+          return this.parseStatement(null);
+        }, p.parseExportDefaultDeclaration = function() {
+          var e;
+          if (this.type === a._function || (e = this.isAsyncFunction())) {
+            var t = this.startNode();
+            return this.next(), e && this.next(), this.parseFunction(t, ee | He, false, e);
+          } else if (this.type === a._class) {
+            var i = this.startNode();
+            return this.parseClass(i, "nullableID");
+          } else {
+            var s = this.parseMaybeAssign();
+            return this.semicolon(), s;
+          }
+        }, p.checkExport = function(e, t, i) {
+          e && (typeof t != "string" && (t = t.type === "Identifier" ? t.name : t.value), H(e, t) && this.raiseRecoverable(i, "Duplicate export '" + t + "'"), e[t] = true);
+        }, p.checkPatternExport = function(e, t) {
+          var i = t.type;
+          if (i === "Identifier") this.checkExport(e, t, t.start);
+          else if (i === "ObjectPattern") for (var s = 0, r = t.properties; s < r.length; s += 1) {
+            var n = r[s];
+            this.checkPatternExport(e, n);
+          }
+          else if (i === "ArrayPattern") for (var u = 0, o = t.elements; u < o.length; u += 1) {
+            var h = o[u];
+            h && this.checkPatternExport(e, h);
+          }
+          else i === "Property" ? this.checkPatternExport(e, t.value) : i === "AssignmentPattern" ? this.checkPatternExport(e, t.left) : i === "RestElement" && this.checkPatternExport(e, t.argument);
+        }, p.checkVariableExport = function(e, t) {
+          if (e) for (var i = 0, s = t; i < s.length; i += 1) {
+            var r = s[i];
+            this.checkPatternExport(e, r.id);
+          }
+        }, p.shouldParseExportStatement = function() {
+          return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+        }, p.parseExportSpecifier = function(e) {
+          var t = this.startNode();
+          return t.local = this.parseModuleExportName(), t.exported = this.eatContextual("as") ? this.parseModuleExportName() : t.local, this.checkExport(e, t.exported, t.exported.start), this.finishNode(t, "ExportSpecifier");
+        }, p.parseExportSpecifiers = function(e) {
+          var t = [], i = true;
+          for (this.expect(a.braceL); !this.eat(a.braceR); ) {
+            if (i) i = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            t.push(this.parseExportSpecifier(e));
+          }
+          return t;
+        }, p.parseImport = function(e) {
+          return this.next(), this.type === a.string ? (e.specifiers = Nt, e.source = this.parseExprAtom()) : (e.specifiers = this.parseImportSpecifiers(), this.expectContextual("from"), e.source = this.type === a.string ? this.parseExprAtom() : this.unexpected()), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause()), this.semicolon(), this.finishNode(e, "ImportDeclaration");
+        }, p.parseImportSpecifier = function() {
+          var e = this.startNode();
+          return e.imported = this.parseModuleExportName(), this.eatContextual("as") ? e.local = this.parseIdent() : (this.checkUnreserved(e.imported), e.local = e.imported), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportSpecifier");
+        }, p.parseImportDefaultSpecifier = function() {
+          var e = this.startNode();
+          return e.local = this.parseIdent(), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportDefaultSpecifier");
+        }, p.parseImportNamespaceSpecifier = function() {
+          var e = this.startNode();
+          return this.next(), this.expectContextual("as"), e.local = this.parseIdent(), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportNamespaceSpecifier");
+        }, p.parseImportSpecifiers = function() {
+          var e = [], t = true;
+          if (this.type === a.name && (e.push(this.parseImportDefaultSpecifier()), !this.eat(a.comma))) return e;
+          if (this.type === a.star) return e.push(this.parseImportNamespaceSpecifier()), e;
+          for (this.expect(a.braceL); !this.eat(a.braceR); ) {
+            if (t) t = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            e.push(this.parseImportSpecifier());
+          }
+          return e;
+        }, p.parseWithClause = function() {
+          var e = [];
+          if (!this.eat(a._with)) return e;
+          this.expect(a.braceL);
+          for (var t = {}, i = true; !this.eat(a.braceR); ) {
+            if (i) i = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            var s = this.parseImportAttribute(), r = s.key.type === "Identifier" ? s.key.name : s.key.value;
+            H(t, r) && this.raiseRecoverable(s.key.start, "Duplicate attribute key '" + r + "'"), t[r] = true, e.push(s);
+          }
+          return e;
+        }, p.parseImportAttribute = function() {
+          var e = this.startNode();
+          return e.key = this.type === a.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never"), this.expect(a.colon), this.type !== a.string && this.unexpected(), e.value = this.parseExprAtom(), this.finishNode(e, "ImportAttribute");
+        }, p.parseModuleExportName = function() {
+          if (this.options.ecmaVersion >= 13 && this.type === a.string) {
+            var e = this.parseLiteral(this.value);
+            return wt.test(e.value) && this.raise(e.start, "An export name cannot include a lone surrogate."), e;
+          }
+          return this.parseIdent(true);
+        }, p.adaptDirectivePrologue = function(e) {
+          for (var t = 0; t < e.length && this.isDirectiveCandidate(e[t]); ++t) e[t].directive = e[t].expression.raw.slice(1, -1);
+        }, p.isDirectiveCandidate = function(e) {
+          return this.options.ecmaVersion >= 5 && e.type === "ExpressionStatement" && e.expression.type === "Literal" && typeof e.expression.value == "string" && (this.input[e.start] === '"' || this.input[e.start] === "'");
+        };
+        var P = _.prototype;
+        P.toAssignable = function(e, t, i) {
+          if (this.options.ecmaVersion >= 6 && e) switch (e.type) {
+            case "Identifier":
+              this.inAsync && e.name === "await" && this.raise(e.start, "Cannot use 'await' as identifier inside an async function");
+              break;
+            case "ObjectPattern":
+            case "ArrayPattern":
+            case "AssignmentPattern":
+            case "RestElement":
+              break;
+            case "ObjectExpression":
+              e.type = "ObjectPattern", i && this.checkPatternErrors(i, true);
+              for (var s = 0, r = e.properties; s < r.length; s += 1) {
+                var n = r[s];
+                this.toAssignable(n, t), n.type === "RestElement" && (n.argument.type === "ArrayPattern" || n.argument.type === "ObjectPattern") && this.raise(n.argument.start, "Unexpected token");
+              }
+              break;
+            case "Property":
+              e.kind !== "init" && this.raise(e.key.start, "Object pattern can't contain getter or setter"), this.toAssignable(e.value, t);
+              break;
+            case "ArrayExpression":
+              e.type = "ArrayPattern", i && this.checkPatternErrors(i, true), this.toAssignableList(e.elements, t);
+              break;
+            case "SpreadElement":
+              e.type = "RestElement", this.toAssignable(e.argument, t), e.argument.type === "AssignmentPattern" && this.raise(e.argument.start, "Rest elements cannot have a default value");
+              break;
+            case "AssignmentExpression":
+              e.operator !== "=" && this.raise(e.left.end, "Only '=' operator can be used for specifying default value."), e.type = "AssignmentPattern", delete e.operator, this.toAssignable(e.left, t);
+              break;
+            case "ParenthesizedExpression":
+              this.toAssignable(e.expression, t, i);
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(e.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              if (!t) break;
+            default:
+              this.raise(e.start, "Assigning to rvalue");
+          }
+          else i && this.checkPatternErrors(i, true);
+          return e;
+        }, P.toAssignableList = function(e, t) {
+          for (var i = e.length, s = 0; s < i; s++) {
+            var r = e[s];
+            r && this.toAssignable(r, t);
+          }
+          if (i) {
+            var n = e[i - 1];
+            this.options.ecmaVersion === 6 && t && n && n.type === "RestElement" && n.argument.type !== "Identifier" && this.unexpected(n.argument.start);
+          }
+          return e;
+        }, P.parseSpread = function(e) {
+          var t = this.startNode();
+          return this.next(), t.argument = this.parseMaybeAssign(false, e), this.finishNode(t, "SpreadElement");
+        }, P.parseRestBinding = function() {
+          var e = this.startNode();
+          return this.next(), this.options.ecmaVersion === 6 && this.type !== a.name && this.unexpected(), e.argument = this.parseBindingAtom(), this.finishNode(e, "RestElement");
+        }, P.parseBindingAtom = function() {
+          if (this.options.ecmaVersion >= 6) switch (this.type) {
+            case a.bracketL:
+              var e = this.startNode();
+              return this.next(), e.elements = this.parseBindingList(a.bracketR, true, true), this.finishNode(e, "ArrayPattern");
+            case a.braceL:
+              return this.parseObj(true);
+          }
+          return this.parseIdent();
+        }, P.parseBindingList = function(e, t, i, s) {
+          for (var r = [], n = true; !this.eat(e); ) if (n ? n = false : this.expect(a.comma), t && this.type === a.comma) r.push(null);
+          else {
+            if (i && this.afterTrailingComma(e)) break;
+            if (this.type === a.ellipsis) {
+              var u = this.parseRestBinding();
+              this.parseBindingListItem(u), r.push(u), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element"), this.expect(e);
+              break;
+            } else r.push(this.parseAssignableListItem(s));
+          }
+          return r;
+        }, P.parseAssignableListItem = function(e) {
+          var t = this.parseMaybeDefault(this.start, this.startLoc);
+          return this.parseBindingListItem(t), t;
+        }, P.parseBindingListItem = function(e) {
+          return e;
+        }, P.parseMaybeDefault = function(e, t, i) {
+          if (i = i || this.parseBindingAtom(), this.options.ecmaVersion < 6 || !this.eat(a.eq)) return i;
+          var s = this.startNodeAt(e, t);
+          return s.left = i, s.right = this.parseMaybeAssign(), this.finishNode(s, "AssignmentPattern");
+        }, P.checkLValSimple = function(e, t, i) {
+          t === void 0 && (t = oe);
+          var s = t !== oe;
+          switch (e.type) {
+            case "Identifier":
+              this.strict && this.reservedWordsStrictBind.test(e.name) && this.raiseRecoverable(e.start, (s ? "Binding " : "Assigning to ") + e.name + " in strict mode"), s && (t === F && e.name === "let" && this.raiseRecoverable(e.start, "let is disallowed as a lexically bound name"), i && (H(i, e.name) && this.raiseRecoverable(e.start, "Argument name clash"), i[e.name] = true), t !== Ge && this.declareName(e.name, t, e.start));
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(e.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              s && this.raiseRecoverable(e.start, "Binding member expression");
+              break;
+            case "ParenthesizedExpression":
+              return s && this.raiseRecoverable(e.start, "Binding parenthesized expression"), this.checkLValSimple(e.expression, t, i);
+            default:
+              this.raise(e.start, (s ? "Binding" : "Assigning to") + " rvalue");
+          }
+        }, P.checkLValPattern = function(e, t, i) {
+          switch (t === void 0 && (t = oe), e.type) {
+            case "ObjectPattern":
+              for (var s = 0, r = e.properties; s < r.length; s += 1) {
+                var n = r[s];
+                this.checkLValInnerPattern(n, t, i);
+              }
+              break;
+            case "ArrayPattern":
+              for (var u = 0, o = e.elements; u < o.length; u += 1) {
+                var h = o[u];
+                h && this.checkLValInnerPattern(h, t, i);
+              }
+              break;
+            default:
+              this.checkLValSimple(e, t, i);
+          }
+        }, P.checkLValInnerPattern = function(e, t, i) {
+          switch (t === void 0 && (t = oe), e.type) {
+            case "Property":
+              this.checkLValInnerPattern(e.value, t, i);
+              break;
+            case "AssignmentPattern":
+              this.checkLValPattern(e.left, t, i);
+              break;
+            case "RestElement":
+              this.checkLValPattern(e.argument, t, i);
+              break;
+            default:
+              this.checkLValPattern(e, t, i);
+          }
+        };
+        var N = function(t, i, s, r, n) {
+          this.token = t, this.isExpr = !!i, this.preserveSpace = !!s, this.override = r, this.generator = !!n;
+        }, b = { b_stat: new N("{", false), b_expr: new N("{", true), b_tmpl: new N("\${", false), p_stat: new N("(", false), p_expr: new N("(", true), q_tmpl: new N("\`", true, true, function(e) {
+          return e.tryReadTemplateToken();
+        }), f_stat: new N("function", false), f_expr: new N("function", true), f_expr_gen: new N("function", true, false, null, true), f_gen: new N("function", false, false, null, true) }, K = _.prototype;
+        K.initialContext = function() {
+          return [b.b_stat];
+        }, K.curContext = function() {
+          return this.context[this.context.length - 1];
+        }, K.braceIsBlock = function(e) {
+          var t = this.curContext();
+          return t === b.f_expr || t === b.f_stat ? true : e === a.colon && (t === b.b_stat || t === b.b_expr) ? !t.isExpr : e === a._return || e === a.name && this.exprAllowed ? k.test(this.input.slice(this.lastTokEnd, this.start)) : e === a._else || e === a.semi || e === a.eof || e === a.parenR || e === a.arrow ? true : e === a.braceL ? t === b.b_stat : e === a._var || e === a._const || e === a.name ? false : !this.exprAllowed;
+        }, K.inGeneratorContext = function() {
+          for (var e = this.context.length - 1; e >= 1; e--) {
+            var t = this.context[e];
+            if (t.token === "function") return t.generator;
+          }
+          return false;
+        }, K.updateContext = function(e) {
+          var t, i = this.type;
+          i.keyword && e === a.dot ? this.exprAllowed = false : (t = i.updateContext) ? t.call(this, e) : this.exprAllowed = i.beforeExpr;
+        }, K.overrideContext = function(e) {
+          this.curContext() !== e && (this.context[this.context.length - 1] = e);
+        }, a.parenR.updateContext = a.braceR.updateContext = function() {
+          if (this.context.length === 1) {
+            this.exprAllowed = true;
+            return;
+          }
+          var e = this.context.pop();
+          e === b.b_stat && this.curContext().token === "function" && (e = this.context.pop()), this.exprAllowed = !e.isExpr;
+        }, a.braceL.updateContext = function(e) {
+          this.context.push(this.braceIsBlock(e) ? b.b_stat : b.b_expr), this.exprAllowed = true;
+        }, a.dollarBraceL.updateContext = function() {
+          this.context.push(b.b_tmpl), this.exprAllowed = true;
+        }, a.parenL.updateContext = function(e) {
+          var t = e === a._if || e === a._for || e === a._with || e === a._while;
+          this.context.push(t ? b.p_stat : b.p_expr), this.exprAllowed = true;
+        }, a.incDec.updateContext = function() {
+        }, a._function.updateContext = a._class.updateContext = function(e) {
+          e.beforeExpr && e !== a._else && !(e === a.semi && this.curContext() !== b.p_stat) && !(e === a._return && k.test(this.input.slice(this.lastTokEnd, this.start))) && !((e === a.colon || e === a.braceL) && this.curContext() === b.b_stat) ? this.context.push(b.f_expr) : this.context.push(b.f_stat), this.exprAllowed = false;
+        }, a.colon.updateContext = function() {
+          this.curContext().token === "function" && this.context.pop(), this.exprAllowed = true;
+        }, a.backQuote.updateContext = function() {
+          this.curContext() === b.q_tmpl ? this.context.pop() : this.context.push(b.q_tmpl), this.exprAllowed = false;
+        }, a.star.updateContext = function(e) {
+          if (e === a._function) {
+            var t = this.context.length - 1;
+            this.context[t] === b.f_expr ? this.context[t] = b.f_expr_gen : this.context[t] = b.f_gen;
+          }
+          this.exprAllowed = true;
+        }, a.name.updateContext = function(e) {
+          var t = false;
+          this.options.ecmaVersion >= 6 && e !== a.dot && (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) && (t = true), this.exprAllowed = t;
+        };
+        var f = _.prototype;
+        f.checkPropClash = function(e, t, i) {
+          if (!(this.options.ecmaVersion >= 9 && e.type === "SpreadElement") && !(this.options.ecmaVersion >= 6 && (e.computed || e.method || e.shorthand))) {
+            var s = e.key, r;
+            switch (s.type) {
+              case "Identifier":
+                r = s.name;
+                break;
+              case "Literal":
+                r = String(s.value);
+                break;
+              default:
+                return;
+            }
+            var n = e.kind;
+            if (this.options.ecmaVersion >= 6) {
+              r === "__proto__" && n === "init" && (t.proto && (i ? i.doubleProto < 0 && (i.doubleProto = s.start) : this.raiseRecoverable(s.start, "Redefinition of __proto__ property")), t.proto = true);
+              return;
+            }
+            r = "$" + r;
+            var u = t[r];
+            if (u) {
+              var o;
+              n === "init" ? o = this.strict && u.init || u.get || u.set : o = u.init || u[n], o && this.raiseRecoverable(s.start, "Redefinition of property");
+            } else u = t[r] = { init: false, get: false, set: false };
+            u[n] = true;
+          }
+        }, f.parseExpression = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseMaybeAssign(e, t);
+          if (this.type === a.comma) {
+            var n = this.startNodeAt(i, s);
+            for (n.expressions = [r]; this.eat(a.comma); ) n.expressions.push(this.parseMaybeAssign(e, t));
+            return this.finishNode(n, "SequenceExpression");
+          }
+          return r;
+        }, f.parseMaybeAssign = function(e, t, i) {
+          if (this.isContextual("yield")) {
+            if (this.inGenerator) return this.parseYield(e);
+            this.exprAllowed = false;
+          }
+          var s = false, r = -1, n = -1, u = -1;
+          t ? (r = t.parenthesizedAssign, n = t.trailingComma, u = t.doubleProto, t.parenthesizedAssign = t.trailingComma = -1) : (t = new he(), s = true);
+          var o = this.start, h = this.startLoc;
+          (this.type === a.parenL || this.type === a.name) && (this.potentialArrowAt = this.start, this.potentialArrowInForAwait = e === "await");
+          var l = this.parseMaybeConditional(e, t);
+          if (i && (l = i.call(this, l, o, h)), this.type.isAssign) {
+            var d = this.startNodeAt(o, h);
+            return d.operator = this.value, this.type === a.eq && (l = this.toAssignable(l, false, t)), s || (t.parenthesizedAssign = t.trailingComma = t.doubleProto = -1), t.shorthandAssign >= l.start && (t.shorthandAssign = -1), this.type === a.eq ? this.checkLValPattern(l) : this.checkLValSimple(l), d.left = l, this.next(), d.right = this.parseMaybeAssign(e), u > -1 && (t.doubleProto = u), this.finishNode(d, "AssignmentExpression");
+          } else s && this.checkExpressionErrors(t, true);
+          return r > -1 && (t.parenthesizedAssign = r), n > -1 && (t.trailingComma = n), l;
+        }, f.parseMaybeConditional = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseExprOps(e, t);
+          if (this.checkExpressionErrors(t)) return r;
+          if (this.eat(a.question)) {
+            var n = this.startNodeAt(i, s);
+            return n.test = r, n.consequent = this.parseMaybeAssign(), this.expect(a.colon), n.alternate = this.parseMaybeAssign(e), this.finishNode(n, "ConditionalExpression");
+          }
+          return r;
+        }, f.parseExprOps = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseMaybeUnary(t, false, false, e);
+          return this.checkExpressionErrors(t) || r.start === i && r.type === "ArrowFunctionExpression" ? r : this.parseExprOp(r, i, s, -1, e);
+        }, f.parseExprOp = function(e, t, i, s, r) {
+          var n = this.type.binop;
+          if (n != null && (!r || this.type !== a._in) && n > s) {
+            var u = this.type === a.logicalOR || this.type === a.logicalAND, o = this.type === a.coalesce;
+            o && (n = a.logicalAND.binop);
+            var h = this.value;
+            this.next();
+            var l = this.start, d = this.startLoc, y = this.parseExprOp(this.parseMaybeUnary(null, false, false, r), l, d, n, r), S = this.buildBinary(t, i, e, y, h, u || o);
+            return (u && this.type === a.coalesce || o && (this.type === a.logicalOR || this.type === a.logicalAND)) && this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses"), this.parseExprOp(S, t, i, s, r);
+          }
+          return e;
+        }, f.buildBinary = function(e, t, i, s, r, n) {
+          s.type === "PrivateIdentifier" && this.raise(s.start, "Private identifier can only be left side of binary expression");
+          var u = this.startNodeAt(e, t);
+          return u.left = i, u.operator = r, u.right = s, this.finishNode(u, n ? "LogicalExpression" : "BinaryExpression");
+        }, f.parseMaybeUnary = function(e, t, i, s) {
+          var r = this.start, n = this.startLoc, u;
+          if (this.isContextual("await") && this.canAwait) u = this.parseAwait(s), t = true;
+          else if (this.type.prefix) {
+            var o = this.startNode(), h = this.type === a.incDec;
+            o.operator = this.value, o.prefix = true, this.next(), o.argument = this.parseMaybeUnary(null, true, h, s), this.checkExpressionErrors(e, true), h ? this.checkLValSimple(o.argument) : this.strict && o.operator === "delete" && We(o.argument) ? this.raiseRecoverable(o.start, "Deleting local variable in strict mode") : o.operator === "delete" && Ee(o.argument) ? this.raiseRecoverable(o.start, "Private fields can not be deleted") : t = true, u = this.finishNode(o, h ? "UpdateExpression" : "UnaryExpression");
+          } else if (!t && this.type === a.privateId) (s || this.privateNameStack.length === 0) && this.options.checkPrivateFields && this.unexpected(), u = this.parsePrivateIdent(), this.type !== a._in && this.unexpected();
+          else {
+            if (u = this.parseExprSubscripts(e, s), this.checkExpressionErrors(e)) return u;
+            for (; this.type.postfix && !this.canInsertSemicolon(); ) {
+              var l = this.startNodeAt(r, n);
+              l.operator = this.value, l.prefix = false, l.argument = u, this.checkLValSimple(u), this.next(), u = this.finishNode(l, "UpdateExpression");
+            }
+          }
+          if (!i && this.eat(a.starstar)) if (t) this.unexpected(this.lastTokStart);
+          else return this.buildBinary(r, n, u, this.parseMaybeUnary(null, false, false, s), "**", false);
+          else return u;
+        };
+        function We(e) {
+          return e.type === "Identifier" || e.type === "ParenthesizedExpression" && We(e.expression);
+        }
+        function Ee(e) {
+          return e.type === "MemberExpression" && e.property.type === "PrivateIdentifier" || e.type === "ChainExpression" && Ee(e.expression) || e.type === "ParenthesizedExpression" && Ee(e.expression);
+        }
+        f.parseExprSubscripts = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseExprAtom(e, t);
+          if (r.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") return r;
+          var n = this.parseSubscripts(r, i, s, false, t);
+          return e && n.type === "MemberExpression" && (e.parenthesizedAssign >= n.start && (e.parenthesizedAssign = -1), e.parenthesizedBind >= n.start && (e.parenthesizedBind = -1), e.trailingComma >= n.start && (e.trailingComma = -1)), n;
+        }, f.parseSubscripts = function(e, t, i, s, r) {
+          for (var n = this.options.ecmaVersion >= 8 && e.type === "Identifier" && e.name === "async" && this.lastTokEnd === e.end && !this.canInsertSemicolon() && e.end - e.start === 5 && this.potentialArrowAt === e.start, u = false; ; ) {
+            var o = this.parseSubscript(e, t, i, s, n, u, r);
+            if (o.optional && (u = true), o === e || o.type === "ArrowFunctionExpression") {
+              if (u) {
+                var h = this.startNodeAt(t, i);
+                h.expression = o, o = this.finishNode(h, "ChainExpression");
+              }
+              return o;
+            }
+            e = o;
+          }
+        }, f.shouldParseAsyncArrow = function() {
+          return !this.canInsertSemicolon() && this.eat(a.arrow);
+        }, f.parseSubscriptAsyncArrow = function(e, t, i, s) {
+          return this.parseArrowExpression(this.startNodeAt(e, t), i, true, s);
+        }, f.parseSubscript = function(e, t, i, s, r, n, u) {
+          var o = this.options.ecmaVersion >= 11, h = o && this.eat(a.questionDot);
+          s && h && this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+          var l = this.eat(a.bracketL);
+          if (l || h && this.type !== a.parenL && this.type !== a.backQuote || this.eat(a.dot)) {
+            var d = this.startNodeAt(t, i);
+            d.object = e, l ? (d.property = this.parseExpression(), this.expect(a.bracketR)) : this.type === a.privateId && e.type !== "Super" ? d.property = this.parsePrivateIdent() : d.property = this.parseIdent(this.options.allowReserved !== "never"), d.computed = !!l, o && (d.optional = h), e = this.finishNode(d, "MemberExpression");
+          } else if (!s && this.eat(a.parenL)) {
+            var y = new he(), S = this.yieldPos, se = this.awaitPos, Q = this.awaitIdentPos;
+            this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0;
+            var xe = this.parseExprList(a.parenR, this.options.ecmaVersion >= 8, false, y);
+            if (r && !h && this.shouldParseAsyncArrow()) return this.checkPatternErrors(y, false), this.checkYieldAwaitInDefaultParams(), this.awaitIdentPos > 0 && this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function"), this.yieldPos = S, this.awaitPos = se, this.awaitIdentPos = Q, this.parseSubscriptAsyncArrow(t, i, xe, u);
+            this.checkExpressionErrors(y, true), this.yieldPos = S || this.yieldPos, this.awaitPos = se || this.awaitPos, this.awaitIdentPos = Q || this.awaitIdentPos;
+            var Y = this.startNodeAt(t, i);
+            Y.callee = e, Y.arguments = xe, o && (Y.optional = h), e = this.finishNode(Y, "CallExpression");
+          } else if (this.type === a.backQuote) {
+            (h || n) && this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+            var X = this.startNodeAt(t, i);
+            X.tag = e, X.quasi = this.parseTemplate({ isTagged: true }), e = this.finishNode(X, "TaggedTemplateExpression");
+          }
+          return e;
+        }, f.parseExprAtom = function(e, t, i) {
+          this.type === a.slash && this.readRegexp();
+          var s, r = this.potentialArrowAt === this.start;
+          switch (this.type) {
+            case a._super:
+              return this.allowSuper || this.raise(this.start, "'super' keyword outside a method"), s = this.startNode(), this.next(), this.type === a.parenL && !this.allowDirectSuper && this.raise(s.start, "super() call outside constructor of a subclass"), this.type !== a.dot && this.type !== a.bracketL && this.type !== a.parenL && this.unexpected(), this.finishNode(s, "Super");
+            case a._this:
+              return s = this.startNode(), this.next(), this.finishNode(s, "ThisExpression");
+            case a.name:
+              var n = this.start, u = this.startLoc, o = this.containsEsc, h = this.parseIdent(false);
+              if (this.options.ecmaVersion >= 8 && !o && h.name === "async" && !this.canInsertSemicolon() && this.eat(a._function)) return this.overrideContext(b.f_expr), this.parseFunction(this.startNodeAt(n, u), 0, false, true, t);
+              if (r && !this.canInsertSemicolon()) {
+                if (this.eat(a.arrow)) return this.parseArrowExpression(this.startNodeAt(n, u), [h], false, t);
+                if (this.options.ecmaVersion >= 8 && h.name === "async" && this.type === a.name && !o && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) return h = this.parseIdent(false), (this.canInsertSemicolon() || !this.eat(a.arrow)) && this.unexpected(), this.parseArrowExpression(this.startNodeAt(n, u), [h], true, t);
+              }
+              return h;
+            case a.regexp:
+              var l = this.value;
+              return s = this.parseLiteral(l.value), s.regex = { pattern: l.pattern, flags: l.flags }, s;
+            case a.num:
+            case a.string:
+              return this.parseLiteral(this.value);
+            case a._null:
+            case a._true:
+            case a._false:
+              return s = this.startNode(), s.value = this.type === a._null ? null : this.type === a._true, s.raw = this.type.keyword, this.next(), this.finishNode(s, "Literal");
+            case a.parenL:
+              var d = this.start, y = this.parseParenAndDistinguishExpression(r, t);
+              return e && (e.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(y) && (e.parenthesizedAssign = d), e.parenthesizedBind < 0 && (e.parenthesizedBind = d)), y;
+            case a.bracketL:
+              return s = this.startNode(), this.next(), s.elements = this.parseExprList(a.bracketR, true, true, e), this.finishNode(s, "ArrayExpression");
+            case a.braceL:
+              return this.overrideContext(b.b_expr), this.parseObj(false, e);
+            case a._function:
+              return s = this.startNode(), this.next(), this.parseFunction(s, 0);
+            case a._class:
+              return this.parseClass(this.startNode(), false);
+            case a._new:
+              return this.parseNew();
+            case a.backQuote:
+              return this.parseTemplate();
+            case a._import:
+              return this.options.ecmaVersion >= 11 ? this.parseExprImport(i) : this.unexpected();
+            default:
+              return this.parseExprAtomDefault();
+          }
+        }, f.parseExprAtomDefault = function() {
+          this.unexpected();
+        }, f.parseExprImport = function(e) {
+          var t = this.startNode();
+          if (this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword import"), this.next(), this.type === a.parenL && !e) return this.parseDynamicImport(t);
+          if (this.type === a.dot) {
+            var i = this.startNodeAt(t.start, t.loc && t.loc.start);
+            return i.name = "import", t.meta = this.finishNode(i, "Identifier"), this.parseImportMeta(t);
+          } else this.unexpected();
+        }, f.parseDynamicImport = function(e) {
+          if (this.next(), e.source = this.parseMaybeAssign(), this.options.ecmaVersion >= 16) this.eat(a.parenR) ? e.options = null : (this.expect(a.comma), this.afterTrailingComma(a.parenR) ? e.options = null : (e.options = this.parseMaybeAssign(), this.eat(a.parenR) || (this.expect(a.comma), this.afterTrailingComma(a.parenR) || this.unexpected())));
+          else if (!this.eat(a.parenR)) {
+            var t = this.start;
+            this.eat(a.comma) && this.eat(a.parenR) ? this.raiseRecoverable(t, "Trailing comma is not allowed in import()") : this.unexpected(t);
+          }
+          return this.finishNode(e, "ImportExpression");
+        }, f.parseImportMeta = function(e) {
+          this.next();
+          var t = this.containsEsc;
+          return e.property = this.parseIdent(true), e.property.name !== "meta" && this.raiseRecoverable(e.property.start, "The only valid meta property for import is 'import.meta'"), t && this.raiseRecoverable(e.start, "'import.meta' must not contain escaped characters"), this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere && this.raiseRecoverable(e.start, "Cannot use 'import.meta' outside a module"), this.finishNode(e, "MetaProperty");
+        }, f.parseLiteral = function(e) {
+          var t = this.startNode();
+          return t.value = e, t.raw = this.input.slice(this.start, this.end), t.raw.charCodeAt(t.raw.length - 1) === 110 && (t.bigint = t.value != null ? t.value.toString() : t.raw.slice(0, -1).replace(/_/g, "")), this.next(), this.finishNode(t, "Literal");
+        }, f.parseParenExpression = function() {
+          this.expect(a.parenL);
+          var e = this.parseExpression();
+          return this.expect(a.parenR), e;
+        }, f.shouldParseArrow = function(e) {
+          return !this.canInsertSemicolon();
+        }, f.parseParenAndDistinguishExpression = function(e, t) {
+          var i = this.start, s = this.startLoc, r, n = this.options.ecmaVersion >= 8;
+          if (this.options.ecmaVersion >= 6) {
+            this.next();
+            var u = this.start, o = this.startLoc, h = [], l = true, d = false, y = new he(), S = this.yieldPos, se = this.awaitPos, Q;
+            for (this.yieldPos = 0, this.awaitPos = 0; this.type !== a.parenR; ) if (l ? l = false : this.expect(a.comma), n && this.afterTrailingComma(a.parenR, true)) {
+              d = true;
+              break;
+            } else if (this.type === a.ellipsis) {
+              Q = this.start, h.push(this.parseParenItem(this.parseRestBinding())), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+              break;
+            } else h.push(this.parseMaybeAssign(false, y, this.parseParenItem));
+            var xe = this.lastTokEnd, Y = this.lastTokEndLoc;
+            if (this.expect(a.parenR), e && this.shouldParseArrow(h) && this.eat(a.arrow)) return this.checkPatternErrors(y, false), this.checkYieldAwaitInDefaultParams(), this.yieldPos = S, this.awaitPos = se, this.parseParenArrowList(i, s, h, t);
+            (!h.length || d) && this.unexpected(this.lastTokStart), Q && this.unexpected(Q), this.checkExpressionErrors(y, true), this.yieldPos = S || this.yieldPos, this.awaitPos = se || this.awaitPos, h.length > 1 ? (r = this.startNodeAt(u, o), r.expressions = h, this.finishNodeAt(r, "SequenceExpression", xe, Y)) : r = h[0];
+          } else r = this.parseParenExpression();
+          if (this.options.preserveParens) {
+            var X = this.startNodeAt(i, s);
+            return X.expression = r, this.finishNode(X, "ParenthesizedExpression");
+          } else return r;
+        }, f.parseParenItem = function(e) {
+          return e;
+        }, f.parseParenArrowList = function(e, t, i, s) {
+          return this.parseArrowExpression(this.startNodeAt(e, t), i, false, s);
+        };
+        var Tt = [];
+        f.parseNew = function() {
+          this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+          var e = this.startNode();
+          if (this.next(), this.options.ecmaVersion >= 6 && this.type === a.dot) {
+            var t = this.startNodeAt(e.start, e.loc && e.loc.start);
+            t.name = "new", e.meta = this.finishNode(t, "Identifier"), this.next();
+            var i = this.containsEsc;
+            return e.property = this.parseIdent(true), e.property.name !== "target" && this.raiseRecoverable(e.property.start, "The only valid meta property for new is 'new.target'"), i && this.raiseRecoverable(e.start, "'new.target' must not contain escaped characters"), this.allowNewDotTarget || this.raiseRecoverable(e.start, "'new.target' can only be used in functions and class static block"), this.finishNode(e, "MetaProperty");
+          }
+          var s = this.start, r = this.startLoc;
+          return e.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), s, r, true, false), this.eat(a.parenL) ? e.arguments = this.parseExprList(a.parenR, this.options.ecmaVersion >= 8, false) : e.arguments = Tt, this.finishNode(e, "NewExpression");
+        }, f.parseTemplateElement = function(e) {
+          var t = e.isTagged, i = this.startNode();
+          return this.type === a.invalidTemplate ? (t || this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal"), i.value = { raw: this.value.replace(/\\r\\n?/g, \`
+\`), cooked: null }) : i.value = { raw: this.input.slice(this.start, this.end).replace(/\\r\\n?/g, \`
+\`), cooked: this.value }, this.next(), i.tail = this.type === a.backQuote, this.finishNode(i, "TemplateElement");
+        }, f.parseTemplate = function(e) {
+          e === void 0 && (e = {});
+          var t = e.isTagged;
+          t === void 0 && (t = false);
+          var i = this.startNode();
+          this.next(), i.expressions = [];
+          var s = this.parseTemplateElement({ isTagged: t });
+          for (i.quasis = [s]; !s.tail; ) this.type === a.eof && this.raise(this.pos, "Unterminated template literal"), this.expect(a.dollarBraceL), i.expressions.push(this.parseExpression()), this.expect(a.braceR), i.quasis.push(s = this.parseTemplateElement({ isTagged: t }));
+          return this.next(), this.finishNode(i, "TemplateLiteral");
+        }, f.isAsyncProp = function(e) {
+          return !e.computed && e.key.type === "Identifier" && e.key.name === "async" && (this.type === a.name || this.type === a.num || this.type === a.string || this.type === a.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === a.star) && !k.test(this.input.slice(this.lastTokEnd, this.start));
+        }, f.parseObj = function(e, t) {
+          var i = this.startNode(), s = true, r = {};
+          for (i.properties = [], this.next(); !this.eat(a.braceR); ) {
+            if (s) s = false;
+            else if (this.expect(a.comma), this.options.ecmaVersion >= 5 && this.afterTrailingComma(a.braceR)) break;
+            var n = this.parseProperty(e, t);
+            e || this.checkPropClash(n, r, t), i.properties.push(n);
+          }
+          return this.finishNode(i, e ? "ObjectPattern" : "ObjectExpression");
+        }, f.parseProperty = function(e, t) {
+          var i = this.startNode(), s, r, n, u;
+          if (this.options.ecmaVersion >= 9 && this.eat(a.ellipsis)) return e ? (i.argument = this.parseIdent(false), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element"), this.finishNode(i, "RestElement")) : (i.argument = this.parseMaybeAssign(false, t), this.type === a.comma && t && t.trailingComma < 0 && (t.trailingComma = this.start), this.finishNode(i, "SpreadElement"));
+          this.options.ecmaVersion >= 6 && (i.method = false, i.shorthand = false, (e || t) && (n = this.start, u = this.startLoc), e || (s = this.eat(a.star)));
+          var o = this.containsEsc;
+          return this.parsePropertyName(i), !e && !o && this.options.ecmaVersion >= 8 && !s && this.isAsyncProp(i) ? (r = true, s = this.options.ecmaVersion >= 9 && this.eat(a.star), this.parsePropertyName(i)) : r = false, this.parsePropertyValue(i, e, s, r, n, u, t, o), this.finishNode(i, "Property");
+        }, f.parseGetterSetter = function(e) {
+          var t = e.key.name;
+          this.parsePropertyName(e), e.value = this.parseMethod(false), e.kind = t;
+          var i = e.kind === "get" ? 0 : 1;
+          if (e.value.params.length !== i) {
+            var s = e.value.start;
+            e.kind === "get" ? this.raiseRecoverable(s, "getter should have no params") : this.raiseRecoverable(s, "setter should have exactly one param");
+          } else e.kind === "set" && e.value.params[0].type === "RestElement" && this.raiseRecoverable(e.value.params[0].start, "Setter cannot use rest params");
+        }, f.parsePropertyValue = function(e, t, i, s, r, n, u, o) {
+          (i || s) && this.type === a.colon && this.unexpected(), this.eat(a.colon) ? (e.value = t ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, u), e.kind = "init") : this.options.ecmaVersion >= 6 && this.type === a.parenL ? (t && this.unexpected(), e.method = true, e.value = this.parseMethod(i, s), e.kind = "init") : !t && !o && this.options.ecmaVersion >= 5 && !e.computed && e.key.type === "Identifier" && (e.key.name === "get" || e.key.name === "set") && this.type !== a.comma && this.type !== a.braceR && this.type !== a.eq ? ((i || s) && this.unexpected(), this.parseGetterSetter(e)) : this.options.ecmaVersion >= 6 && !e.computed && e.key.type === "Identifier" ? ((i || s) && this.unexpected(), this.checkUnreserved(e.key), e.key.name === "await" && !this.awaitIdentPos && (this.awaitIdentPos = r), t ? e.value = this.parseMaybeDefault(r, n, this.copyNode(e.key)) : this.type === a.eq && u ? (u.shorthandAssign < 0 && (u.shorthandAssign = this.start), e.value = this.parseMaybeDefault(r, n, this.copyNode(e.key))) : e.value = this.copyNode(e.key), e.kind = "init", e.shorthand = true) : this.unexpected();
+        }, f.parsePropertyName = function(e) {
+          if (this.options.ecmaVersion >= 6) {
+            if (this.eat(a.bracketL)) return e.computed = true, e.key = this.parseMaybeAssign(), this.expect(a.bracketR), e.key;
+            e.computed = false;
+          }
+          return e.key = this.type === a.num || this.type === a.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+        }, f.initFunction = function(e) {
+          e.id = null, this.options.ecmaVersion >= 6 && (e.generator = e.expression = false), this.options.ecmaVersion >= 8 && (e.async = false);
+        }, f.parseMethod = function(e, t, i) {
+          var s = this.startNode(), r = this.yieldPos, n = this.awaitPos, u = this.awaitIdentPos;
+          return this.initFunction(s), this.options.ecmaVersion >= 6 && (s.generator = e), this.options.ecmaVersion >= 8 && (s.async = !!t), this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, this.enterScope(ke(t, s.generator) | ne | (i ? Ue : 0)), this.expect(a.parenL), s.params = this.parseBindingList(a.parenR, false, this.options.ecmaVersion >= 8), this.checkYieldAwaitInDefaultParams(), this.parseFunctionBody(s, false, true, false), this.yieldPos = r, this.awaitPos = n, this.awaitIdentPos = u, this.finishNode(s, "FunctionExpression");
+        }, f.parseArrowExpression = function(e, t, i, s) {
+          var r = this.yieldPos, n = this.awaitPos, u = this.awaitIdentPos;
+          return this.enterScope(ke(i, false) | Se), this.initFunction(e), this.options.ecmaVersion >= 8 && (e.async = !!i), this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, e.params = this.toAssignableList(t, true), this.parseFunctionBody(e, true, false, s), this.yieldPos = r, this.awaitPos = n, this.awaitIdentPos = u, this.finishNode(e, "ArrowFunctionExpression");
+        }, f.parseFunctionBody = function(e, t, i, s) {
+          var r = t && this.type !== a.braceL, n = this.strict, u = false;
+          if (r) e.body = this.parseMaybeAssign(s), e.expression = true, this.checkParams(e, false);
+          else {
+            var o = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(e.params);
+            (!n || o) && (u = this.strictDirective(this.end), u && o && this.raiseRecoverable(e.start, "Illegal 'use strict' directive in function with non-simple parameter list"));
+            var h = this.labels;
+            this.labels = [], u && (this.strict = true), this.checkParams(e, !n && !u && !t && !i && this.isSimpleParamList(e.params)), this.strict && e.id && this.checkLValSimple(e.id, Ge), e.body = this.parseBlock(false, void 0, u && !n), e.expression = false, this.adaptDirectivePrologue(e.body.body), this.labels = h;
+          }
+          this.exitScope();
+        }, f.isSimpleParamList = function(e) {
+          for (var t = 0, i = e; t < i.length; t += 1) {
+            var s = i[t];
+            if (s.type !== "Identifier") return false;
+          }
+          return true;
+        }, f.checkParams = function(e, t) {
+          for (var i = /* @__PURE__ */ Object.create(null), s = 0, r = e.params; s < r.length; s += 1) {
+            var n = r[s];
+            this.checkLValInnerPattern(n, we, t ? null : i);
+          }
+        }, f.parseExprList = function(e, t, i, s) {
+          for (var r = [], n = true; !this.eat(e); ) {
+            if (n) n = false;
+            else if (this.expect(a.comma), t && this.afterTrailingComma(e)) break;
+            var u = void 0;
+            i && this.type === a.comma ? u = null : this.type === a.ellipsis ? (u = this.parseSpread(s), s && this.type === a.comma && s.trailingComma < 0 && (s.trailingComma = this.start)) : u = this.parseMaybeAssign(false, s), r.push(u);
+          }
+          return r;
+        }, f.checkUnreserved = function(e) {
+          var t = e.start, i = e.end, s = e.name;
+          if (this.inGenerator && s === "yield" && this.raiseRecoverable(t, "Cannot use 'yield' as identifier inside a generator"), this.inAsync && s === "await" && this.raiseRecoverable(t, "Cannot use 'await' as identifier inside an async function"), !(this.currentThisScope().flags & ue) && s === "arguments" && this.raiseRecoverable(t, "Cannot use 'arguments' in class field initializer"), this.inClassStaticBlock && (s === "arguments" || s === "await") && this.raise(t, "Cannot use " + s + " in class static initialization block"), this.keywords.test(s) && this.raise(t, "Unexpected keyword '" + s + "'"), !(this.options.ecmaVersion < 6 && this.input.slice(t, i).indexOf("\\\\") !== -1)) {
+            var r = this.strict ? this.reservedWordsStrict : this.reservedWords;
+            r.test(s) && (!this.inAsync && s === "await" && this.raiseRecoverable(t, "Cannot use keyword 'await' outside an async function"), this.raiseRecoverable(t, "The keyword '" + s + "' is reserved"));
+          }
+        }, f.parseIdent = function(e) {
+          var t = this.parseIdentNode();
+          return this.next(!!e), this.finishNode(t, "Identifier"), e || (this.checkUnreserved(t), t.name === "await" && !this.awaitIdentPos && (this.awaitIdentPos = t.start)), t;
+        }, f.parseIdentNode = function() {
+          var e = this.startNode();
+          return this.type === a.name ? e.name = this.value : this.type.keyword ? (e.name = this.type.keyword, (e.name === "class" || e.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46) && this.context.pop(), this.type = a.name) : this.unexpected(), e;
+        }, f.parsePrivateIdent = function() {
+          var e = this.startNode();
+          return this.type === a.privateId ? e.name = this.value : this.unexpected(), this.next(), this.finishNode(e, "PrivateIdentifier"), this.options.checkPrivateFields && (this.privateNameStack.length === 0 ? this.raise(e.start, "Private field '#" + e.name + "' must be declared in an enclosing class") : this.privateNameStack[this.privateNameStack.length - 1].used.push(e)), e;
+        }, f.parseYield = function(e) {
+          this.yieldPos || (this.yieldPos = this.start);
+          var t = this.startNode();
+          return this.next(), this.type === a.semi || this.canInsertSemicolon() || this.type !== a.star && !this.type.startsExpr ? (t.delegate = false, t.argument = null) : (t.delegate = this.eat(a.star), t.argument = this.parseMaybeAssign(e)), this.finishNode(t, "YieldExpression");
+        }, f.parseAwait = function(e) {
+          this.awaitPos || (this.awaitPos = this.start);
+          var t = this.startNode();
+          return this.next(), t.argument = this.parseMaybeUnary(null, true, false, e), this.finishNode(t, "AwaitExpression");
+        };
+        var pe = _.prototype;
+        pe.raise = function(e, t) {
+          var i = _e(this.input, e);
+          t += " (" + i.line + ":" + i.column + ")", this.sourceFile && (t += " in " + this.sourceFile);
+          var s = new SyntaxError(t);
+          throw s.pos = e, s.loc = i, s.raisedAt = this.pos, s;
+        }, pe.raiseRecoverable = pe.raise, pe.curPosition = function() {
+          if (this.options.locations) return new W(this.curLine, this.pos - this.lineStart);
+        };
+        var q = _.prototype, Lt = function(t) {
+          this.flags = t, this.var = [], this.lexical = [], this.functions = [];
+        };
+        q.enterScope = function(e) {
+          this.scopeStack.push(new Lt(e));
+        }, q.exitScope = function() {
+          this.scopeStack.pop();
+        }, q.treatFunctionsAsVarInScope = function(e) {
+          return e.flags & z || !this.inModule && e.flags & J;
+        }, q.declareName = function(e, t, i) {
+          var s = false;
+          if (t === F) {
+            var r = this.currentScope();
+            s = r.lexical.indexOf(e) > -1 || r.functions.indexOf(e) > -1 || r.var.indexOf(e) > -1, r.lexical.push(e), this.inModule && r.flags & J && delete this.undefinedExports[e];
+          } else if (t === je) {
+            var n = this.currentScope();
+            n.lexical.push(e);
+          } else if (t === qe) {
+            var u = this.currentScope();
+            this.treatFunctionsAsVar ? s = u.lexical.indexOf(e) > -1 : s = u.lexical.indexOf(e) > -1 || u.var.indexOf(e) > -1, u.functions.push(e);
+          } else for (var o = this.scopeStack.length - 1; o >= 0; --o) {
+            var h = this.scopeStack[o];
+            if (h.lexical.indexOf(e) > -1 && !(h.flags & Me && h.lexical[0] === e) || !this.treatFunctionsAsVarInScope(h) && h.functions.indexOf(e) > -1) {
+              s = true;
+              break;
+            }
+            if (h.var.push(e), this.inModule && h.flags & J && delete this.undefinedExports[e], h.flags & ue) break;
+          }
+          s && this.raiseRecoverable(i, "Identifier '" + e + "' has already been declared");
+        }, q.checkLocalExport = function(e) {
+          this.scopeStack[0].lexical.indexOf(e.name) === -1 && this.scopeStack[0].var.indexOf(e.name) === -1 && (this.undefinedExports[e.name] = e);
+        }, q.currentScope = function() {
+          return this.scopeStack[this.scopeStack.length - 1];
+        }, q.currentVarScope = function() {
+          for (var e = this.scopeStack.length - 1; ; e--) {
+            var t = this.scopeStack[e];
+            if (t.flags & (ue | $ | G)) return t;
+          }
+        }, q.currentThisScope = function() {
+          for (var e = this.scopeStack.length - 1; ; e--) {
+            var t = this.scopeStack[e];
+            if (t.flags & (ue | $ | G) && !(t.flags & Se)) return t;
+          }
+        };
+        var te = function(t, i, s) {
+          this.type = "", this.start = i, this.end = 0, t.options.locations && (this.loc = new Z(t, s)), t.options.directSourceFile && (this.sourceFile = t.options.directSourceFile), t.options.ranges && (this.range = [i, 0]);
+        }, ie = _.prototype;
+        ie.startNode = function() {
+          return new te(this, this.start, this.startLoc);
+        }, ie.startNodeAt = function(e, t) {
+          return new te(this, e, t);
+        };
+        function ze(e, t, i, s) {
+          return e.type = t, e.end = i, this.options.locations && (e.loc.end = s), this.options.ranges && (e.range[1] = i), e;
+        }
+        ie.finishNode = function(e, t) {
+          return ze.call(this, e, t, this.lastTokEnd, this.lastTokEndLoc);
+        }, ie.finishNodeAt = function(e, t, i, s) {
+          return ze.call(this, e, t, i, s);
+        }, ie.copyNode = function(e) {
+          var t = new te(this, e.start, this.startLoc);
+          for (var i in e) t[i] = e[i];
+          return t;
+        };
+        var Rt = "Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sunu Sunuwar Todhri Todr Tulu_Tigalari Tutg Unknown Zzzz", Ke = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS", Qe = Ke + " Extended_Pictographic", Ye = Qe, Xe = Ye + " EBase EComp EMod EPres ExtPict", Ze = Xe, Ot = Ze, Bt = { 9: Ke, 10: Qe, 11: Ye, 12: Xe, 13: Ze, 14: Ot }, Dt = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji", Ft = { 9: "", 10: "", 11: "", 12: "", 13: "", 14: Dt }, Je = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu", $e = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb", et = $e + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd", tt = et + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho", it = tt + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi", st = it + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith", Mt = st + " " + Rt, Ut = { 9: $e, 10: et, 11: tt, 12: it, 13: st, 14: Mt }, at = {};
+        function qt(e) {
+          var t = at[e] = { binary: U(Bt[e] + " " + Je), binaryOfStrings: U(Ft[e]), nonBinary: { General_Category: U(Je), Script: U(Ut[e]) } };
+          t.nonBinary.Script_Extensions = t.nonBinary.Script, t.nonBinary.gc = t.nonBinary.General_Category, t.nonBinary.sc = t.nonBinary.Script, t.nonBinary.scx = t.nonBinary.Script_Extensions;
+        }
+        for (var Pe = 0, rt = [9, 10, 11, 12, 13, 14]; Pe < rt.length; Pe += 1) {
+          var jt = rt[Pe];
+          qt(jt);
+        }
+        var c = _.prototype, le = function(t, i) {
+          this.parent = t, this.base = i || this;
+        };
+        le.prototype.separatedFrom = function(t) {
+          for (var i = this; i; i = i.parent) for (var s = t; s; s = s.parent) if (i.base === s.base && i !== s) return true;
+          return false;
+        }, le.prototype.sibling = function() {
+          return new le(this.parent, this.base);
+        };
+        var O = function(t) {
+          this.parser = t, this.validFlags = "gim" + (t.options.ecmaVersion >= 6 ? "uy" : "") + (t.options.ecmaVersion >= 9 ? "s" : "") + (t.options.ecmaVersion >= 13 ? "d" : "") + (t.options.ecmaVersion >= 15 ? "v" : ""), this.unicodeProperties = at[t.options.ecmaVersion >= 14 ? 14 : t.options.ecmaVersion], this.source = "", this.flags = "", this.start = 0, this.switchU = false, this.switchV = false, this.switchN = false, this.pos = 0, this.lastIntValue = 0, this.lastStringValue = "", this.lastAssertionIsQuantifiable = false, this.numCapturingParens = 0, this.maxBackReference = 0, this.groupNames = /* @__PURE__ */ Object.create(null), this.backReferenceNames = [], this.branchID = null;
+        };
+        O.prototype.reset = function(t, i, s) {
+          var r = s.indexOf("v") !== -1, n = s.indexOf("u") !== -1;
+          this.start = t | 0, this.source = i + "", this.flags = s, r && this.parser.options.ecmaVersion >= 15 ? (this.switchU = true, this.switchV = true, this.switchN = true) : (this.switchU = n && this.parser.options.ecmaVersion >= 6, this.switchV = false, this.switchN = n && this.parser.options.ecmaVersion >= 9);
+        }, O.prototype.raise = function(t) {
+          this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + t);
+        }, O.prototype.at = function(t, i) {
+          i === void 0 && (i = false);
+          var s = this.source, r = s.length;
+          if (t >= r) return -1;
+          var n = s.charCodeAt(t);
+          if (!(i || this.switchU) || n <= 55295 || n >= 57344 || t + 1 >= r) return n;
+          var u = s.charCodeAt(t + 1);
+          return u >= 56320 && u <= 57343 ? (n << 10) + u - 56613888 : n;
+        }, O.prototype.nextIndex = function(t, i) {
+          i === void 0 && (i = false);
+          var s = this.source, r = s.length;
+          if (t >= r) return r;
+          var n = s.charCodeAt(t), u;
+          return !(i || this.switchU) || n <= 55295 || n >= 57344 || t + 1 >= r || (u = s.charCodeAt(t + 1)) < 56320 || u > 57343 ? t + 1 : t + 2;
+        }, O.prototype.current = function(t) {
+          return t === void 0 && (t = false), this.at(this.pos, t);
+        }, O.prototype.lookahead = function(t) {
+          return t === void 0 && (t = false), this.at(this.nextIndex(this.pos, t), t);
+        }, O.prototype.advance = function(t) {
+          t === void 0 && (t = false), this.pos = this.nextIndex(this.pos, t);
+        }, O.prototype.eat = function(t, i) {
+          return i === void 0 && (i = false), this.current(i) === t ? (this.advance(i), true) : false;
+        }, O.prototype.eatChars = function(t, i) {
+          i === void 0 && (i = false);
+          for (var s = this.pos, r = 0, n = t; r < n.length; r += 1) {
+            var u = n[r], o = this.at(s, i);
+            if (o === -1 || o !== u) return false;
+            s = this.nextIndex(s, i);
+          }
+          return this.pos = s, true;
+        }, c.validateRegExpFlags = function(e) {
+          for (var t = e.validFlags, i = e.flags, s = false, r = false, n = 0; n < i.length; n++) {
+            var u = i.charAt(n);
+            t.indexOf(u) === -1 && this.raise(e.start, "Invalid regular expression flag"), i.indexOf(u, n + 1) > -1 && this.raise(e.start, "Duplicate regular expression flag"), u === "u" && (s = true), u === "v" && (r = true);
+          }
+          this.options.ecmaVersion >= 15 && s && r && this.raise(e.start, "Invalid regular expression flag");
+        };
+        function Gt(e) {
+          for (var t in e) return true;
+          return false;
+        }
+        c.validateRegExpPattern = function(e) {
+          this.regexp_pattern(e), !e.switchN && this.options.ecmaVersion >= 9 && Gt(e.groupNames) && (e.switchN = true, this.regexp_pattern(e));
+        }, c.regexp_pattern = function(e) {
+          e.pos = 0, e.lastIntValue = 0, e.lastStringValue = "", e.lastAssertionIsQuantifiable = false, e.numCapturingParens = 0, e.maxBackReference = 0, e.groupNames = /* @__PURE__ */ Object.create(null), e.backReferenceNames.length = 0, e.branchID = null, this.regexp_disjunction(e), e.pos !== e.source.length && (e.eat(41) && e.raise("Unmatched ')'"), (e.eat(93) || e.eat(125)) && e.raise("Lone quantifier brackets")), e.maxBackReference > e.numCapturingParens && e.raise("Invalid escape");
+          for (var t = 0, i = e.backReferenceNames; t < i.length; t += 1) {
+            var s = i[t];
+            e.groupNames[s] || e.raise("Invalid named capture referenced");
+          }
+        }, c.regexp_disjunction = function(e) {
+          var t = this.options.ecmaVersion >= 16;
+          for (t && (e.branchID = new le(e.branchID, null)), this.regexp_alternative(e); e.eat(124); ) t && (e.branchID = e.branchID.sibling()), this.regexp_alternative(e);
+          t && (e.branchID = e.branchID.parent), this.regexp_eatQuantifier(e, true) && e.raise("Nothing to repeat"), e.eat(123) && e.raise("Lone quantifier brackets");
+        }, c.regexp_alternative = function(e) {
+          for (; e.pos < e.source.length && this.regexp_eatTerm(e); ) ;
+        }, c.regexp_eatTerm = function(e) {
+          return this.regexp_eatAssertion(e) ? (e.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(e) && e.switchU && e.raise("Invalid quantifier"), true) : (e.switchU ? this.regexp_eatAtom(e) : this.regexp_eatExtendedAtom(e)) ? (this.regexp_eatQuantifier(e), true) : false;
+        }, c.regexp_eatAssertion = function(e) {
+          var t = e.pos;
+          if (e.lastAssertionIsQuantifiable = false, e.eat(94) || e.eat(36)) return true;
+          if (e.eat(92)) {
+            if (e.eat(66) || e.eat(98)) return true;
+            e.pos = t;
+          }
+          if (e.eat(40) && e.eat(63)) {
+            var i = false;
+            if (this.options.ecmaVersion >= 9 && (i = e.eat(60)), e.eat(61) || e.eat(33)) return this.regexp_disjunction(e), e.eat(41) || e.raise("Unterminated group"), e.lastAssertionIsQuantifiable = !i, true;
+          }
+          return e.pos = t, false;
+        }, c.regexp_eatQuantifier = function(e, t) {
+          return t === void 0 && (t = false), this.regexp_eatQuantifierPrefix(e, t) ? (e.eat(63), true) : false;
+        }, c.regexp_eatQuantifierPrefix = function(e, t) {
+          return e.eat(42) || e.eat(43) || e.eat(63) || this.regexp_eatBracedQuantifier(e, t);
+        }, c.regexp_eatBracedQuantifier = function(e, t) {
+          var i = e.pos;
+          if (e.eat(123)) {
+            var s = 0, r = -1;
+            if (this.regexp_eatDecimalDigits(e) && (s = e.lastIntValue, e.eat(44) && this.regexp_eatDecimalDigits(e) && (r = e.lastIntValue), e.eat(125))) return r !== -1 && r < s && !t && e.raise("numbers out of order in {} quantifier"), true;
+            e.switchU && !t && e.raise("Incomplete quantifier"), e.pos = i;
+          }
+          return false;
+        }, c.regexp_eatAtom = function(e) {
+          return this.regexp_eatPatternCharacters(e) || e.eat(46) || this.regexp_eatReverseSolidusAtomEscape(e) || this.regexp_eatCharacterClass(e) || this.regexp_eatUncapturingGroup(e) || this.regexp_eatCapturingGroup(e);
+        }, c.regexp_eatReverseSolidusAtomEscape = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) {
+            if (this.regexp_eatAtomEscape(e)) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatUncapturingGroup = function(e) {
+          var t = e.pos;
+          if (e.eat(40)) {
+            if (e.eat(63)) {
+              if (this.options.ecmaVersion >= 16) {
+                var i = this.regexp_eatModifiers(e), s = e.eat(45);
+                if (i || s) {
+                  for (var r = 0; r < i.length; r++) {
+                    var n = i.charAt(r);
+                    i.indexOf(n, r + 1) > -1 && e.raise("Duplicate regular expression modifiers");
+                  }
+                  if (s) {
+                    var u = this.regexp_eatModifiers(e);
+                    !i && !u && e.current() === 58 && e.raise("Invalid regular expression modifiers");
+                    for (var o = 0; o < u.length; o++) {
+                      var h = u.charAt(o);
+                      (u.indexOf(h, o + 1) > -1 || i.indexOf(h) > -1) && e.raise("Duplicate regular expression modifiers");
+                    }
+                  }
+                }
+              }
+              if (e.eat(58)) {
+                if (this.regexp_disjunction(e), e.eat(41)) return true;
+                e.raise("Unterminated group");
+              }
+            }
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatCapturingGroup = function(e) {
+          if (e.eat(40)) {
+            if (this.options.ecmaVersion >= 9 ? this.regexp_groupSpecifier(e) : e.current() === 63 && e.raise("Invalid group"), this.regexp_disjunction(e), e.eat(41)) return e.numCapturingParens += 1, true;
+            e.raise("Unterminated group");
+          }
+          return false;
+        }, c.regexp_eatModifiers = function(e) {
+          for (var t = "", i = 0; (i = e.current()) !== -1 && Ht(i); ) t += D(i), e.advance();
+          return t;
+        };
+        function Ht(e) {
+          return e === 105 || e === 109 || e === 115;
+        }
+        c.regexp_eatExtendedAtom = function(e) {
+          return e.eat(46) || this.regexp_eatReverseSolidusAtomEscape(e) || this.regexp_eatCharacterClass(e) || this.regexp_eatUncapturingGroup(e) || this.regexp_eatCapturingGroup(e) || this.regexp_eatInvalidBracedQuantifier(e) || this.regexp_eatExtendedPatternCharacter(e);
+        }, c.regexp_eatInvalidBracedQuantifier = function(e) {
+          return this.regexp_eatBracedQuantifier(e, true) && e.raise("Nothing to repeat"), false;
+        }, c.regexp_eatSyntaxCharacter = function(e) {
+          var t = e.current();
+          return nt(t) ? (e.lastIntValue = t, e.advance(), true) : false;
+        };
+        function nt(e) {
+          return e === 36 || e >= 40 && e <= 43 || e === 46 || e === 63 || e >= 91 && e <= 94 || e >= 123 && e <= 125;
+        }
+        c.regexp_eatPatternCharacters = function(e) {
+          for (var t = e.pos, i = 0; (i = e.current()) !== -1 && !nt(i); ) e.advance();
+          return e.pos !== t;
+        }, c.regexp_eatExtendedPatternCharacter = function(e) {
+          var t = e.current();
+          return t !== -1 && t !== 36 && !(t >= 40 && t <= 43) && t !== 46 && t !== 63 && t !== 91 && t !== 94 && t !== 124 ? (e.advance(), true) : false;
+        }, c.regexp_groupSpecifier = function(e) {
+          if (e.eat(63)) {
+            this.regexp_eatGroupName(e) || e.raise("Invalid group");
+            var t = this.options.ecmaVersion >= 16, i = e.groupNames[e.lastStringValue];
+            if (i) if (t) for (var s = 0, r = i; s < r.length; s += 1) {
+              var n = r[s];
+              n.separatedFrom(e.branchID) || e.raise("Duplicate capture group name");
+            }
+            else e.raise("Duplicate capture group name");
+            t ? (i || (e.groupNames[e.lastStringValue] = [])).push(e.branchID) : e.groupNames[e.lastStringValue] = true;
+          }
+        }, c.regexp_eatGroupName = function(e) {
+          if (e.lastStringValue = "", e.eat(60)) {
+            if (this.regexp_eatRegExpIdentifierName(e) && e.eat(62)) return true;
+            e.raise("Invalid capture group name");
+          }
+          return false;
+        }, c.regexp_eatRegExpIdentifierName = function(e) {
+          if (e.lastStringValue = "", this.regexp_eatRegExpIdentifierStart(e)) {
+            for (e.lastStringValue += D(e.lastIntValue); this.regexp_eatRegExpIdentifierPart(e); ) e.lastStringValue += D(e.lastIntValue);
+            return true;
+          }
+          return false;
+        }, c.regexp_eatRegExpIdentifierStart = function(e) {
+          var t = e.pos, i = this.options.ecmaVersion >= 11, s = e.current(i);
+          return e.advance(i), s === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(e, i) && (s = e.lastIntValue), Wt(s) ? (e.lastIntValue = s, true) : (e.pos = t, false);
+        };
+        function Wt(e) {
+          return T(e, true) || e === 36 || e === 95;
+        }
+        c.regexp_eatRegExpIdentifierPart = function(e) {
+          var t = e.pos, i = this.options.ecmaVersion >= 11, s = e.current(i);
+          return e.advance(i), s === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(e, i) && (s = e.lastIntValue), zt(s) ? (e.lastIntValue = s, true) : (e.pos = t, false);
+        };
+        function zt(e) {
+          return B(e, true) || e === 36 || e === 95 || e === 8204 || e === 8205;
+        }
+        c.regexp_eatAtomEscape = function(e) {
+          return this.regexp_eatBackReference(e) || this.regexp_eatCharacterClassEscape(e) || this.regexp_eatCharacterEscape(e) || e.switchN && this.regexp_eatKGroupName(e) ? true : (e.switchU && (e.current() === 99 && e.raise("Invalid unicode escape"), e.raise("Invalid escape")), false);
+        }, c.regexp_eatBackReference = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatDecimalEscape(e)) {
+            var i = e.lastIntValue;
+            if (e.switchU) return i > e.maxBackReference && (e.maxBackReference = i), true;
+            if (i <= e.numCapturingParens) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatKGroupName = function(e) {
+          if (e.eat(107)) {
+            if (this.regexp_eatGroupName(e)) return e.backReferenceNames.push(e.lastStringValue), true;
+            e.raise("Invalid named reference");
+          }
+          return false;
+        }, c.regexp_eatCharacterEscape = function(e) {
+          return this.regexp_eatControlEscape(e) || this.regexp_eatCControlLetter(e) || this.regexp_eatZero(e) || this.regexp_eatHexEscapeSequence(e) || this.regexp_eatRegExpUnicodeEscapeSequence(e, false) || !e.switchU && this.regexp_eatLegacyOctalEscapeSequence(e) || this.regexp_eatIdentityEscape(e);
+        }, c.regexp_eatCControlLetter = function(e) {
+          var t = e.pos;
+          if (e.eat(99)) {
+            if (this.regexp_eatControlLetter(e)) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatZero = function(e) {
+          return e.current() === 48 && !fe(e.lookahead()) ? (e.lastIntValue = 0, e.advance(), true) : false;
+        }, c.regexp_eatControlEscape = function(e) {
+          var t = e.current();
+          return t === 116 ? (e.lastIntValue = 9, e.advance(), true) : t === 110 ? (e.lastIntValue = 10, e.advance(), true) : t === 118 ? (e.lastIntValue = 11, e.advance(), true) : t === 102 ? (e.lastIntValue = 12, e.advance(), true) : t === 114 ? (e.lastIntValue = 13, e.advance(), true) : false;
+        }, c.regexp_eatControlLetter = function(e) {
+          var t = e.current();
+          return ut(t) ? (e.lastIntValue = t % 32, e.advance(), true) : false;
+        };
+        function ut(e) {
+          return e >= 65 && e <= 90 || e >= 97 && e <= 122;
+        }
+        c.regexp_eatRegExpUnicodeEscapeSequence = function(e, t) {
+          t === void 0 && (t = false);
+          var i = e.pos, s = t || e.switchU;
+          if (e.eat(117)) {
+            if (this.regexp_eatFixedHexDigits(e, 4)) {
+              var r = e.lastIntValue;
+              if (s && r >= 55296 && r <= 56319) {
+                var n = e.pos;
+                if (e.eat(92) && e.eat(117) && this.regexp_eatFixedHexDigits(e, 4)) {
+                  var u = e.lastIntValue;
+                  if (u >= 56320 && u <= 57343) return e.lastIntValue = (r - 55296) * 1024 + (u - 56320) + 65536, true;
+                }
+                e.pos = n, e.lastIntValue = r;
+              }
+              return true;
+            }
+            if (s && e.eat(123) && this.regexp_eatHexDigits(e) && e.eat(125) && Kt(e.lastIntValue)) return true;
+            s && e.raise("Invalid unicode escape"), e.pos = i;
+          }
+          return false;
+        };
+        function Kt(e) {
+          return e >= 0 && e <= 1114111;
+        }
+        c.regexp_eatIdentityEscape = function(e) {
+          if (e.switchU) return this.regexp_eatSyntaxCharacter(e) ? true : e.eat(47) ? (e.lastIntValue = 47, true) : false;
+          var t = e.current();
+          return t !== 99 && (!e.switchN || t !== 107) ? (e.lastIntValue = t, e.advance(), true) : false;
+        }, c.regexp_eatDecimalEscape = function(e) {
+          e.lastIntValue = 0;
+          var t = e.current();
+          if (t >= 49 && t <= 57) {
+            do
+              e.lastIntValue = 10 * e.lastIntValue + (t - 48), e.advance();
+            while ((t = e.current()) >= 48 && t <= 57);
+            return true;
+          }
+          return false;
+        };
+        var ot = 0, M = 1, V = 2;
+        c.regexp_eatCharacterClassEscape = function(e) {
+          var t = e.current();
+          if (Qt(t)) return e.lastIntValue = -1, e.advance(), M;
+          var i = false;
+          if (e.switchU && this.options.ecmaVersion >= 9 && ((i = t === 80) || t === 112)) {
+            e.lastIntValue = -1, e.advance();
+            var s;
+            if (e.eat(123) && (s = this.regexp_eatUnicodePropertyValueExpression(e)) && e.eat(125)) return i && s === V && e.raise("Invalid property name"), s;
+            e.raise("Invalid property name");
+          }
+          return ot;
+        };
+        function Qt(e) {
+          return e === 100 || e === 68 || e === 115 || e === 83 || e === 119 || e === 87;
+        }
+        c.regexp_eatUnicodePropertyValueExpression = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatUnicodePropertyName(e) && e.eat(61)) {
+            var i = e.lastStringValue;
+            if (this.regexp_eatUnicodePropertyValue(e)) {
+              var s = e.lastStringValue;
+              return this.regexp_validateUnicodePropertyNameAndValue(e, i, s), M;
+            }
+          }
+          if (e.pos = t, this.regexp_eatLoneUnicodePropertyNameOrValue(e)) {
+            var r = e.lastStringValue;
+            return this.regexp_validateUnicodePropertyNameOrValue(e, r);
+          }
+          return ot;
+        }, c.regexp_validateUnicodePropertyNameAndValue = function(e, t, i) {
+          H(e.unicodeProperties.nonBinary, t) || e.raise("Invalid property name"), e.unicodeProperties.nonBinary[t].test(i) || e.raise("Invalid property value");
+        }, c.regexp_validateUnicodePropertyNameOrValue = function(e, t) {
+          if (e.unicodeProperties.binary.test(t)) return M;
+          if (e.switchV && e.unicodeProperties.binaryOfStrings.test(t)) return V;
+          e.raise("Invalid property name");
+        }, c.regexp_eatUnicodePropertyName = function(e) {
+          var t = 0;
+          for (e.lastStringValue = ""; ht(t = e.current()); ) e.lastStringValue += D(t), e.advance();
+          return e.lastStringValue !== "";
+        };
+        function ht(e) {
+          return ut(e) || e === 95;
+        }
+        c.regexp_eatUnicodePropertyValue = function(e) {
+          var t = 0;
+          for (e.lastStringValue = ""; Yt(t = e.current()); ) e.lastStringValue += D(t), e.advance();
+          return e.lastStringValue !== "";
+        };
+        function Yt(e) {
+          return ht(e) || fe(e);
+        }
+        c.regexp_eatLoneUnicodePropertyNameOrValue = function(e) {
+          return this.regexp_eatUnicodePropertyValue(e);
+        }, c.regexp_eatCharacterClass = function(e) {
+          if (e.eat(91)) {
+            var t = e.eat(94), i = this.regexp_classContents(e);
+            return e.eat(93) || e.raise("Unterminated character class"), t && i === V && e.raise("Negated character class may contain strings"), true;
+          }
+          return false;
+        }, c.regexp_classContents = function(e) {
+          return e.current() === 93 ? M : e.switchV ? this.regexp_classSetExpression(e) : (this.regexp_nonEmptyClassRanges(e), M);
+        }, c.regexp_nonEmptyClassRanges = function(e) {
+          for (; this.regexp_eatClassAtom(e); ) {
+            var t = e.lastIntValue;
+            if (e.eat(45) && this.regexp_eatClassAtom(e)) {
+              var i = e.lastIntValue;
+              e.switchU && (t === -1 || i === -1) && e.raise("Invalid character class"), t !== -1 && i !== -1 && t > i && e.raise("Range out of order in character class");
+            }
+          }
+        }, c.regexp_eatClassAtom = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) {
+            if (this.regexp_eatClassEscape(e)) return true;
+            if (e.switchU) {
+              var i = e.current();
+              (i === 99 || lt(i)) && e.raise("Invalid class escape"), e.raise("Invalid escape");
+            }
+            e.pos = t;
+          }
+          var s = e.current();
+          return s !== 93 ? (e.lastIntValue = s, e.advance(), true) : false;
+        }, c.regexp_eatClassEscape = function(e) {
+          var t = e.pos;
+          if (e.eat(98)) return e.lastIntValue = 8, true;
+          if (e.switchU && e.eat(45)) return e.lastIntValue = 45, true;
+          if (!e.switchU && e.eat(99)) {
+            if (this.regexp_eatClassControlLetter(e)) return true;
+            e.pos = t;
+          }
+          return this.regexp_eatCharacterClassEscape(e) || this.regexp_eatCharacterEscape(e);
+        }, c.regexp_classSetExpression = function(e) {
+          var t = M, i;
+          if (!this.regexp_eatClassSetRange(e)) if (i = this.regexp_eatClassSetOperand(e)) {
+            i === V && (t = V);
+            for (var s = e.pos; e.eatChars([38, 38]); ) {
+              if (e.current() !== 38 && (i = this.regexp_eatClassSetOperand(e))) {
+                i !== V && (t = M);
+                continue;
+              }
+              e.raise("Invalid character in character class");
+            }
+            if (s !== e.pos) return t;
+            for (; e.eatChars([45, 45]); ) this.regexp_eatClassSetOperand(e) || e.raise("Invalid character in character class");
+            if (s !== e.pos) return t;
+          } else e.raise("Invalid character in character class");
+          for (; ; ) if (!this.regexp_eatClassSetRange(e)) {
+            if (i = this.regexp_eatClassSetOperand(e), !i) return t;
+            i === V && (t = V);
+          }
+        }, c.regexp_eatClassSetRange = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatClassSetCharacter(e)) {
+            var i = e.lastIntValue;
+            if (e.eat(45) && this.regexp_eatClassSetCharacter(e)) {
+              var s = e.lastIntValue;
+              return i !== -1 && s !== -1 && i > s && e.raise("Range out of order in character class"), true;
+            }
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatClassSetOperand = function(e) {
+          return this.regexp_eatClassSetCharacter(e) ? M : this.regexp_eatClassStringDisjunction(e) || this.regexp_eatNestedClass(e);
+        }, c.regexp_eatNestedClass = function(e) {
+          var t = e.pos;
+          if (e.eat(91)) {
+            var i = e.eat(94), s = this.regexp_classContents(e);
+            if (e.eat(93)) return i && s === V && e.raise("Negated character class may contain strings"), s;
+            e.pos = t;
+          }
+          if (e.eat(92)) {
+            var r = this.regexp_eatCharacterClassEscape(e);
+            if (r) return r;
+            e.pos = t;
+          }
+          return null;
+        }, c.regexp_eatClassStringDisjunction = function(e) {
+          var t = e.pos;
+          if (e.eatChars([92, 113])) {
+            if (e.eat(123)) {
+              var i = this.regexp_classStringDisjunctionContents(e);
+              if (e.eat(125)) return i;
+            } else e.raise("Invalid escape");
+            e.pos = t;
+          }
+          return null;
+        }, c.regexp_classStringDisjunctionContents = function(e) {
+          for (var t = this.regexp_classString(e); e.eat(124); ) this.regexp_classString(e) === V && (t = V);
+          return t;
+        }, c.regexp_classString = function(e) {
+          for (var t = 0; this.regexp_eatClassSetCharacter(e); ) t++;
+          return t === 1 ? M : V;
+        }, c.regexp_eatClassSetCharacter = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) return this.regexp_eatCharacterEscape(e) || this.regexp_eatClassSetReservedPunctuator(e) ? true : e.eat(98) ? (e.lastIntValue = 8, true) : (e.pos = t, false);
+          var i = e.current();
+          return i < 0 || i === e.lookahead() && Xt(i) || Zt(i) ? false : (e.advance(), e.lastIntValue = i, true);
+        };
+        function Xt(e) {
+          return e === 33 || e >= 35 && e <= 38 || e >= 42 && e <= 44 || e === 46 || e >= 58 && e <= 64 || e === 94 || e === 96 || e === 126;
+        }
+        function Zt(e) {
+          return e === 40 || e === 41 || e === 45 || e === 47 || e >= 91 && e <= 93 || e >= 123 && e <= 125;
+        }
+        c.regexp_eatClassSetReservedPunctuator = function(e) {
+          var t = e.current();
+          return Jt(t) ? (e.lastIntValue = t, e.advance(), true) : false;
+        };
+        function Jt(e) {
+          return e === 33 || e === 35 || e === 37 || e === 38 || e === 44 || e === 45 || e >= 58 && e <= 62 || e === 64 || e === 96 || e === 126;
+        }
+        c.regexp_eatClassControlLetter = function(e) {
+          var t = e.current();
+          return fe(t) || t === 95 ? (e.lastIntValue = t % 32, e.advance(), true) : false;
+        }, c.regexp_eatHexEscapeSequence = function(e) {
+          var t = e.pos;
+          if (e.eat(120)) {
+            if (this.regexp_eatFixedHexDigits(e, 2)) return true;
+            e.switchU && e.raise("Invalid escape"), e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatDecimalDigits = function(e) {
+          var t = e.pos, i = 0;
+          for (e.lastIntValue = 0; fe(i = e.current()); ) e.lastIntValue = 10 * e.lastIntValue + (i - 48), e.advance();
+          return e.pos !== t;
+        };
+        function fe(e) {
+          return e >= 48 && e <= 57;
+        }
+        c.regexp_eatHexDigits = function(e) {
+          var t = e.pos, i = 0;
+          for (e.lastIntValue = 0; ct(i = e.current()); ) e.lastIntValue = 16 * e.lastIntValue + pt(i), e.advance();
+          return e.pos !== t;
+        };
+        function ct(e) {
+          return e >= 48 && e <= 57 || e >= 65 && e <= 70 || e >= 97 && e <= 102;
+        }
+        function pt(e) {
+          return e >= 65 && e <= 70 ? 10 + (e - 65) : e >= 97 && e <= 102 ? 10 + (e - 97) : e - 48;
+        }
+        c.regexp_eatLegacyOctalEscapeSequence = function(e) {
+          if (this.regexp_eatOctalDigit(e)) {
+            var t = e.lastIntValue;
+            if (this.regexp_eatOctalDigit(e)) {
+              var i = e.lastIntValue;
+              t <= 3 && this.regexp_eatOctalDigit(e) ? e.lastIntValue = t * 64 + i * 8 + e.lastIntValue : e.lastIntValue = t * 8 + i;
+            } else e.lastIntValue = t;
+            return true;
+          }
+          return false;
+        }, c.regexp_eatOctalDigit = function(e) {
+          var t = e.current();
+          return lt(t) ? (e.lastIntValue = t - 48, e.advance(), true) : (e.lastIntValue = 0, false);
+        };
+        function lt(e) {
+          return e >= 48 && e <= 55;
+        }
+        c.regexp_eatFixedHexDigits = function(e, t) {
+          var i = e.pos;
+          e.lastIntValue = 0;
+          for (var s = 0; s < t; ++s) {
+            var r = e.current();
+            if (!ct(r)) return e.pos = i, false;
+            e.lastIntValue = 16 * e.lastIntValue + pt(r), e.advance();
+          }
+          return true;
+        };
+        var de = function(t) {
+          this.type = t.type, this.value = t.value, this.start = t.start, this.end = t.end, t.options.locations && (this.loc = new Z(t, t.startLoc, t.endLoc)), t.options.ranges && (this.range = [t.start, t.end]);
+        }, x = _.prototype;
+        x.next = function(e) {
+          !e && this.type.keyword && this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword), this.options.onToken && this.options.onToken(new de(this)), this.lastTokEnd = this.end, this.lastTokStart = this.start, this.lastTokEndLoc = this.endLoc, this.lastTokStartLoc = this.startLoc, this.nextToken();
+        }, x.getToken = function() {
+          return this.next(), new de(this);
+        }, typeof Symbol < "u" && (x[Symbol.iterator] = function() {
+          var e = this;
+          return { next: function() {
+            var t = e.getToken();
+            return { done: t.type === a.eof, value: t };
+          } };
+        }), x.nextToken = function() {
+          var e = this.curContext();
+          if ((!e || !e.preserveSpace) && this.skipSpace(), this.start = this.pos, this.options.locations && (this.startLoc = this.curPosition()), this.pos >= this.input.length) return this.finishToken(a.eof);
+          if (e.override) return e.override(this);
+          this.readToken(this.fullCharCodeAtPos());
+        }, x.readToken = function(e) {
+          return T(e, this.options.ecmaVersion >= 6) || e === 92 ? this.readWord() : this.getTokenFromCode(e);
+        }, x.fullCharCodeAtPos = function() {
+          var e = this.input.charCodeAt(this.pos);
+          if (e <= 55295 || e >= 56320) return e;
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t <= 56319 || t >= 57344 ? e : (e << 10) + t - 56613888;
+        }, x.skipBlockComment = function() {
+          var e = this.options.onComment && this.curPosition(), t = this.pos, i = this.input.indexOf("*/", this.pos += 2);
+          if (i === -1 && this.raise(this.pos - 2, "Unterminated comment"), this.pos = i + 2, this.options.locations) for (var s = void 0, r = t; (s = Le(this.input, r, this.pos)) > -1; ) ++this.curLine, r = this.lineStart = s;
+          this.options.onComment && this.options.onComment(true, this.input.slice(t + 2, i), t, this.pos, e, this.curPosition());
+        }, x.skipLineComment = function(e) {
+          for (var t = this.pos, i = this.options.onComment && this.curPosition(), s = this.input.charCodeAt(this.pos += e); this.pos < this.input.length && !j(s); ) s = this.input.charCodeAt(++this.pos);
+          this.options.onComment && this.options.onComment(false, this.input.slice(t + e, this.pos), t, this.pos, i, this.curPosition());
+        }, x.skipSpace = function() {
+          e: for (; this.pos < this.input.length; ) {
+            var e = this.input.charCodeAt(this.pos);
+            switch (e) {
+              case 32:
+              case 160:
+                ++this.pos;
+                break;
+              case 13:
+                this.input.charCodeAt(this.pos + 1) === 10 && ++this.pos;
+              case 10:
+              case 8232:
+              case 8233:
+                ++this.pos, this.options.locations && (++this.curLine, this.lineStart = this.pos);
+                break;
+              case 47:
+                switch (this.input.charCodeAt(this.pos + 1)) {
+                  case 42:
+                    this.skipBlockComment();
+                    break;
+                  case 47:
+                    this.skipLineComment(2);
+                    break;
+                  default:
+                    break e;
+                }
+                break;
+              default:
+                if (e > 8 && e < 14 || e >= 5760 && ye.test(String.fromCharCode(e))) ++this.pos;
+                else break e;
+            }
+          }
+        }, x.finishToken = function(e, t) {
+          this.end = this.pos, this.options.locations && (this.endLoc = this.curPosition());
+          var i = this.type;
+          this.type = e, this.value = t, this.updateContext(i);
+        }, x.readToken_dot = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          if (e >= 48 && e <= 57) return this.readNumber(true);
+          var t = this.input.charCodeAt(this.pos + 2);
+          return this.options.ecmaVersion >= 6 && e === 46 && t === 46 ? (this.pos += 3, this.finishToken(a.ellipsis)) : (++this.pos, this.finishToken(a.dot));
+        }, x.readToken_slash = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          return this.exprAllowed ? (++this.pos, this.readRegexp()) : e === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.slash, 1);
+        }, x.readToken_mult_modulo_exp = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1), i = 1, s = e === 42 ? a.star : a.modulo;
+          return this.options.ecmaVersion >= 7 && e === 42 && t === 42 && (++i, s = a.starstar, t = this.input.charCodeAt(this.pos + 2)), t === 61 ? this.finishOp(a.assign, i + 1) : this.finishOp(s, i);
+        }, x.readToken_pipe_amp = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          if (t === e) {
+            if (this.options.ecmaVersion >= 12) {
+              var i = this.input.charCodeAt(this.pos + 2);
+              if (i === 61) return this.finishOp(a.assign, 3);
+            }
+            return this.finishOp(e === 124 ? a.logicalOR : a.logicalAND, 2);
+          }
+          return t === 61 ? this.finishOp(a.assign, 2) : this.finishOp(e === 124 ? a.bitwiseOR : a.bitwiseAND, 1);
+        }, x.readToken_caret = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          return e === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.bitwiseXOR, 1);
+        }, x.readToken_plus_min = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t === e ? t === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || k.test(this.input.slice(this.lastTokEnd, this.pos))) ? (this.skipLineComment(3), this.skipSpace(), this.nextToken()) : this.finishOp(a.incDec, 2) : t === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.plusMin, 1);
+        }, x.readToken_lt_gt = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1), i = 1;
+          return t === e ? (i = e === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2, this.input.charCodeAt(this.pos + i) === 61 ? this.finishOp(a.assign, i + 1) : this.finishOp(a.bitShift, i)) : t === 33 && e === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45 ? (this.skipLineComment(4), this.skipSpace(), this.nextToken()) : (t === 61 && (i = 2), this.finishOp(a.relational, i));
+        }, x.readToken_eq_excl = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t === 61 ? this.finishOp(a.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2) : e === 61 && t === 62 && this.options.ecmaVersion >= 6 ? (this.pos += 2, this.finishToken(a.arrow)) : this.finishOp(e === 61 ? a.eq : a.prefix, 1);
+        }, x.readToken_question = function() {
+          var e = this.options.ecmaVersion;
+          if (e >= 11) {
+            var t = this.input.charCodeAt(this.pos + 1);
+            if (t === 46) {
+              var i = this.input.charCodeAt(this.pos + 2);
+              if (i < 48 || i > 57) return this.finishOp(a.questionDot, 2);
+            }
+            if (t === 63) {
+              if (e >= 12) {
+                var s = this.input.charCodeAt(this.pos + 2);
+                if (s === 61) return this.finishOp(a.assign, 3);
+              }
+              return this.finishOp(a.coalesce, 2);
+            }
+          }
+          return this.finishOp(a.question, 1);
+        }, x.readToken_numberSign = function() {
+          var e = this.options.ecmaVersion, t = 35;
+          if (e >= 13 && (++this.pos, t = this.fullCharCodeAtPos(), T(t, true) || t === 92)) return this.finishToken(a.privateId, this.readWord1());
+          this.raise(this.pos, "Unexpected character '" + D(t) + "'");
+        }, x.getTokenFromCode = function(e) {
+          switch (e) {
+            case 46:
+              return this.readToken_dot();
+            case 40:
+              return ++this.pos, this.finishToken(a.parenL);
+            case 41:
+              return ++this.pos, this.finishToken(a.parenR);
+            case 59:
+              return ++this.pos, this.finishToken(a.semi);
+            case 44:
+              return ++this.pos, this.finishToken(a.comma);
+            case 91:
+              return ++this.pos, this.finishToken(a.bracketL);
+            case 93:
+              return ++this.pos, this.finishToken(a.bracketR);
+            case 123:
+              return ++this.pos, this.finishToken(a.braceL);
+            case 125:
+              return ++this.pos, this.finishToken(a.braceR);
+            case 58:
+              return ++this.pos, this.finishToken(a.colon);
+            case 96:
+              if (this.options.ecmaVersion < 6) break;
+              return ++this.pos, this.finishToken(a.backQuote);
+            case 48:
+              var t = this.input.charCodeAt(this.pos + 1);
+              if (t === 120 || t === 88) return this.readRadixNumber(16);
+              if (this.options.ecmaVersion >= 6) {
+                if (t === 111 || t === 79) return this.readRadixNumber(8);
+                if (t === 98 || t === 66) return this.readRadixNumber(2);
+              }
+            case 49:
+            case 50:
+            case 51:
+            case 52:
+            case 53:
+            case 54:
+            case 55:
+            case 56:
+            case 57:
+              return this.readNumber(false);
+            case 34:
+            case 39:
+              return this.readString(e);
+            case 47:
+              return this.readToken_slash();
+            case 37:
+            case 42:
+              return this.readToken_mult_modulo_exp(e);
+            case 124:
+            case 38:
+              return this.readToken_pipe_amp(e);
+            case 94:
+              return this.readToken_caret();
+            case 43:
+            case 45:
+              return this.readToken_plus_min(e);
+            case 60:
+            case 62:
+              return this.readToken_lt_gt(e);
+            case 61:
+            case 33:
+              return this.readToken_eq_excl(e);
+            case 63:
+              return this.readToken_question();
+            case 126:
+              return this.finishOp(a.prefix, 1);
+            case 35:
+              return this.readToken_numberSign();
+          }
+          this.raise(this.pos, "Unexpected character '" + D(e) + "'");
+        }, x.finishOp = function(e, t) {
+          var i = this.input.slice(this.pos, this.pos + t);
+          return this.pos += t, this.finishToken(e, i);
+        }, x.readRegexp = function() {
+          for (var e, t, i = this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(i, "Unterminated regular expression");
+            var s = this.input.charAt(this.pos);
+            if (k.test(s) && this.raise(i, "Unterminated regular expression"), e) e = false;
+            else {
+              if (s === "[") t = true;
+              else if (s === "]" && t) t = false;
+              else if (s === "/" && !t) break;
+              e = s === "\\\\";
+            }
+            ++this.pos;
+          }
+          var r = this.input.slice(i, this.pos);
+          ++this.pos;
+          var n = this.pos, u = this.readWord1();
+          this.containsEsc && this.unexpected(n);
+          var o = this.regexpState || (this.regexpState = new O(this));
+          o.reset(i, r, u), this.validateRegExpFlags(o), this.validateRegExpPattern(o);
+          var h = null;
+          try {
+            h = new RegExp(r, u);
+          } catch {
+          }
+          return this.finishToken(a.regexp, { pattern: r, flags: u, value: h });
+        }, x.readInt = function(e, t, i) {
+          for (var s = this.options.ecmaVersion >= 12 && t === void 0, r = i && this.input.charCodeAt(this.pos) === 48, n = this.pos, u = 0, o = 0, h = 0, l = t ?? 1 / 0; h < l; ++h, ++this.pos) {
+            var d = this.input.charCodeAt(this.pos), y = void 0;
+            if (s && d === 95) {
+              r && this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals"), o === 95 && this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore"), h === 0 && this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits"), o = d;
+              continue;
+            }
+            if (d >= 97 ? y = d - 97 + 10 : d >= 65 ? y = d - 65 + 10 : d >= 48 && d <= 57 ? y = d - 48 : y = 1 / 0, y >= e) break;
+            o = d, u = u * e + y;
+          }
+          return s && o === 95 && this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits"), this.pos === n || t != null && this.pos - n !== t ? null : u;
+        };
+        function $t(e, t) {
+          return t ? parseInt(e, 8) : parseFloat(e.replace(/_/g, ""));
+        }
+        function ft(e) {
+          return typeof BigInt != "function" ? null : BigInt(e.replace(/_/g, ""));
+        }
+        x.readRadixNumber = function(e) {
+          var t = this.pos;
+          this.pos += 2;
+          var i = this.readInt(e);
+          return i == null && this.raise(this.start + 2, "Expected number in radix " + e), this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110 ? (i = ft(this.input.slice(t, this.pos)), ++this.pos) : T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number"), this.finishToken(a.num, i);
+        }, x.readNumber = function(e) {
+          var t = this.pos;
+          !e && this.readInt(10, void 0, true) === null && this.raise(t, "Invalid number");
+          var i = this.pos - t >= 2 && this.input.charCodeAt(t) === 48;
+          i && this.strict && this.raise(t, "Invalid number");
+          var s = this.input.charCodeAt(this.pos);
+          if (!i && !e && this.options.ecmaVersion >= 11 && s === 110) {
+            var r = ft(this.input.slice(t, this.pos));
+            return ++this.pos, T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number"), this.finishToken(a.num, r);
+          }
+          i && /[89]/.test(this.input.slice(t, this.pos)) && (i = false), s === 46 && !i && (++this.pos, this.readInt(10), s = this.input.charCodeAt(this.pos)), (s === 69 || s === 101) && !i && (s = this.input.charCodeAt(++this.pos), (s === 43 || s === 45) && ++this.pos, this.readInt(10) === null && this.raise(t, "Invalid number")), T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number");
+          var n = $t(this.input.slice(t, this.pos), i);
+          return this.finishToken(a.num, n);
+        }, x.readCodePoint = function() {
+          var e = this.input.charCodeAt(this.pos), t;
+          if (e === 123) {
+            this.options.ecmaVersion < 6 && this.unexpected();
+            var i = ++this.pos;
+            t = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos), ++this.pos, t > 1114111 && this.invalidStringToken(i, "Code point out of bounds");
+          } else t = this.readHexChar(4);
+          return t;
+        }, x.readString = function(e) {
+          for (var t = "", i = ++this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(this.start, "Unterminated string constant");
+            var s = this.input.charCodeAt(this.pos);
+            if (s === e) break;
+            s === 92 ? (t += this.input.slice(i, this.pos), t += this.readEscapedChar(false), i = this.pos) : s === 8232 || s === 8233 ? (this.options.ecmaVersion < 10 && this.raise(this.start, "Unterminated string constant"), ++this.pos, this.options.locations && (this.curLine++, this.lineStart = this.pos)) : (j(s) && this.raise(this.start, "Unterminated string constant"), ++this.pos);
+          }
+          return t += this.input.slice(i, this.pos++), this.finishToken(a.string, t);
+        };
+        var dt = {};
+        x.tryReadTemplateToken = function() {
+          this.inTemplateElement = true;
+          try {
+            this.readTmplToken();
+          } catch (e) {
+            if (e === dt) this.readInvalidTemplateToken();
+            else throw e;
+          }
+          this.inTemplateElement = false;
+        }, x.invalidStringToken = function(e, t) {
+          if (this.inTemplateElement && this.options.ecmaVersion >= 9) throw dt;
+          this.raise(e, t);
+        }, x.readTmplToken = function() {
+          for (var e = "", t = this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(this.start, "Unterminated template");
+            var i = this.input.charCodeAt(this.pos);
+            if (i === 96 || i === 36 && this.input.charCodeAt(this.pos + 1) === 123) return this.pos === this.start && (this.type === a.template || this.type === a.invalidTemplate) ? i === 36 ? (this.pos += 2, this.finishToken(a.dollarBraceL)) : (++this.pos, this.finishToken(a.backQuote)) : (e += this.input.slice(t, this.pos), this.finishToken(a.template, e));
+            if (i === 92) e += this.input.slice(t, this.pos), e += this.readEscapedChar(true), t = this.pos;
+            else if (j(i)) {
+              switch (e += this.input.slice(t, this.pos), ++this.pos, i) {
+                case 13:
+                  this.input.charCodeAt(this.pos) === 10 && ++this.pos;
+                case 10:
+                  e += \`
+\`;
+                  break;
+                default:
+                  e += String.fromCharCode(i);
+                  break;
+              }
+              this.options.locations && (++this.curLine, this.lineStart = this.pos), t = this.pos;
+            } else ++this.pos;
+          }
+        }, x.readInvalidTemplateToken = function() {
+          for (; this.pos < this.input.length; this.pos++) switch (this.input[this.pos]) {
+            case "\\\\":
+              ++this.pos;
+              break;
+            case "$":
+              if (this.input[this.pos + 1] !== "{") break;
+            case "\`":
+              return this.finishToken(a.invalidTemplate, this.input.slice(this.start, this.pos));
+            case "\\r":
+              this.input[this.pos + 1] === \`
+\` && ++this.pos;
+            case \`
+\`:
+            case "\\u2028":
+            case "\\u2029":
+              ++this.curLine, this.lineStart = this.pos + 1;
+              break;
+          }
+          this.raise(this.start, "Unterminated template");
+        }, x.readEscapedChar = function(e) {
+          var t = this.input.charCodeAt(++this.pos);
+          switch (++this.pos, t) {
+            case 110:
+              return \`
+\`;
+            case 114:
+              return "\\r";
+            case 120:
+              return String.fromCharCode(this.readHexChar(2));
+            case 117:
+              return D(this.readCodePoint());
+            case 116:
+              return "	";
+            case 98:
+              return "\\b";
+            case 118:
+              return "\\v";
+            case 102:
+              return "\\f";
+            case 13:
+              this.input.charCodeAt(this.pos) === 10 && ++this.pos;
+            case 10:
+              return this.options.locations && (this.lineStart = this.pos, ++this.curLine), "";
+            case 56:
+            case 57:
+              if (this.strict && this.invalidStringToken(this.pos - 1, "Invalid escape sequence"), e) {
+                var i = this.pos - 1;
+                this.invalidStringToken(i, "Invalid escape sequence in template string");
+              }
+            default:
+              if (t >= 48 && t <= 55) {
+                var s = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0], r = parseInt(s, 8);
+                return r > 255 && (s = s.slice(0, -1), r = parseInt(s, 8)), this.pos += s.length - 1, t = this.input.charCodeAt(this.pos), (s !== "0" || t === 56 || t === 57) && (this.strict || e) && this.invalidStringToken(this.pos - 1 - s.length, e ? "Octal literal in template string" : "Octal literal in strict mode"), String.fromCharCode(r);
+              }
+              return j(t) ? (this.options.locations && (this.lineStart = this.pos, ++this.curLine), "") : String.fromCharCode(t);
+          }
+        }, x.readHexChar = function(e) {
+          var t = this.pos, i = this.readInt(16, e);
+          return i === null && this.invalidStringToken(t, "Bad character escape sequence"), i;
+        }, x.readWord1 = function() {
+          this.containsEsc = false;
+          for (var e = "", t = true, i = this.pos, s = this.options.ecmaVersion >= 6; this.pos < this.input.length; ) {
+            var r = this.fullCharCodeAtPos();
+            if (B(r, s)) this.pos += r <= 65535 ? 1 : 2;
+            else if (r === 92) {
+              this.containsEsc = true, e += this.input.slice(i, this.pos);
+              var n = this.pos;
+              this.input.charCodeAt(++this.pos) !== 117 && this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\\\uXXXX"), ++this.pos;
+              var u = this.readCodePoint();
+              (t ? T : B)(u, s) || this.invalidStringToken(n, "Invalid Unicode escape"), e += D(u), i = this.pos;
+            } else break;
+            t = false;
+          }
+          return e + this.input.slice(i, this.pos);
+        }, x.readWord = function() {
+          var e = this.readWord1(), t = a.name;
+          return this.keywords.test(e) && (t = ae[e]), this.finishToken(t, e);
+        };
+        var xt = "8.15.0";
+        _.acorn = { Parser: _, version: xt, defaultOptions: re, Position: W, SourceLocation: Z, getLineInfo: _e, Node: te, TokenType: v, tokTypes: a, keywordTypes: ae, TokContext: N, tokContexts: b, isIdentifierChar: B, isIdentifierStart: T, Token: de, isNewLine: j, lineBreak: k, lineBreakG: Te, nonASCIIwhitespace: ye };
+        function ei(e, t) {
+          return _.parse(e, t);
+        }
+        function ti(e, t, i) {
+          return _.parseExpressionAt(e, t, i);
+        }
+        function ii(e, t) {
+          return _.tokenizer(e, t);
+        }
+        g.Node = te, g.Parser = _, g.Position = W, g.SourceLocation = Z, g.TokContext = N, g.Token = de, g.TokenType = v, g.defaultOptions = re, g.getLineInfo = _e, g.isIdentifierChar = B, g.isIdentifierStart = T, g.isNewLine = j, g.keywordTypes = ae, g.lineBreak = k, g.lineBreakG = Te, g.nonASCIIwhitespace = ye, g.parse = ei, g.parseExpressionAt = ti, g.tokContexts = b, g.tokTypes = a, g.tokenizer = ii, g.version = xt;
+      }));
+    });
+    module2.exports.parse = vt().parse;
+  }
+});
+
+// ../host/source-contracts.cjs
+var require_source_contracts = __commonJS({
+  "../host/source-contracts.cjs"(exports2, module2) {
+    "use strict";
+    var { parse } = require_sdk_source_parser();
+    var required = Object.freeze({
+      network: ["assertAllowed", "fetch", "request"],
+      fetch: ["performDesktopFetch", "performProgressRequest"],
+      stdio: ["send"],
+      connection: ["routeIncomingMessage", "getPendingRequestCount", "restart"]
+    });
+    var identifier = (value) => typeof value === "string" && /^[A-Za-z_$][\\w$]*$/u.test(value);
+    function method(Constructor, name) {
+      const value = Object.getOwnPropertyDescriptor(Constructor?.prototype ?? {}, name)?.value;
+      return typeof value === "function" ? value : null;
+    }
+    var parsedMethods = /* @__PURE__ */ new WeakMap();
+    function memberPath(node) {
+      if (node?.type === "ThisExpression") return ["this"];
+      if (node?.type === "Identifier") return [node.name];
+      if (node?.type !== "MemberExpression") return null;
+      const parent = memberPath(node.object), key = !node.computed && node.property.type === "Identifier" ? node.property.name : node.property.type === "Literal" && typeof node.property.value === "string" ? node.property.value : null;
+      return parent && key !== null ? [...parent, key] : null;
+    }
+    function inspectMethod(Constructor, name) {
+      const value = method(Constructor, name);
+      if (!value) return null;
+      if (parsedMethods.has(value)) return parsedMethods.get(value);
+      const source = Function.prototype.toString.call(value);
+      let result = null;
+      if (source.length <= 256 * 1024) try {
+        const tree = parse(\`({\${source}})\`, { ecmaVersion: "latest", sourceType: "script" });
+        const fn = tree.body[0]?.expression?.properties?.[0]?.value;
+        if (!fn?.body) throw Error("method_missing");
+        const calls = [], members = [], strings = [], variables = /* @__PURE__ */ new Map();
+        const walk = (node) => {
+          if (!node || typeof node !== "object") return;
+          if (node.type === "CallExpression") calls.push({ path: memberPath(node.callee)?.join("."), args: node.arguments, start: node.start });
+          if (node.type === "MemberExpression") members.push(memberPath(node)?.join("."));
+          if (node.type === "Literal" && typeof node.value === "string") strings.push(node.value);
+          if (node.type === "TemplateLiteral" && !node.expressions.length) strings.push(node.quasis[0].value.cooked);
+          if (node.type === "VariableDeclarator" && node.id.type === "Identifier") variables.set(node.id.name, node.init);
+          for (const [key, child] of Object.entries(node)) if (key !== "start" && key !== "end") {
+            if (Array.isArray(child)) child.forEach(walk);
+            else if (child && typeof child === "object") walk(child);
+          }
+        };
+        walk(fn.body);
+        result = { calls, members, strings, variables, params: fn.params };
+      } catch {
+      }
+      parsedMethods.set(value, result);
+      return result;
+    }
+    function delegatesNetwork(Constructor, name) {
+      const info = inspectMethod(Constructor, name);
+      if (!info) return false;
+      const guard = info.calls.find((call) => call.path === "this.assertAllowed");
+      const calls = info.calls.filter((call) => call.path?.endsWith(".net." + name));
+      if (!guard || calls.length !== 1 || guard.start >= calls[0].start || info.params[0]?.type !== "Identifier") return false;
+      const input = info.params[0].name, same = (node) => node?.type === "Identifier" && node.name === input;
+      let argument = calls[0].args[0];
+      if (!same(argument) && argument?.type === "Identifier") argument = info.variables.get(argument.name);
+      const normalizedUrl = argument?.type === "ConditionalExpression" && argument.test.type === "BinaryExpression" && argument.test.operator === "instanceof" && same(argument.test.left) && argument.test.right.type === "Identifier" && argument.test.right.name === "URL" && memberPath(argument.consequent)?.join(".") === input + ".href" && same(argument.alternate);
+      return (same(argument) || name === "fetch" && normalizedUrl) && (info.params.length < 2 || info.params[1]?.type === "Identifier" && calls[0].args[1]?.type === "Identifier" && calls[0].args[1].name === info.params[1].name);
+    }
+    function writesJsonl(Constructor) {
+      const info = inspectMethod(Constructor, "send");
+      if (!info) return false;
+      const writes = info.calls.filter((call) => call.path === "this.proc.stdin.write");
+      if (writes.length !== 1 || !info.members.includes("this.readyState") || !info.calls.some((call) => call.path === "this.ioStatsTracker.trackWritten")) return false;
+      let line = writes[0].args[0];
+      if (line?.type === "Identifier") line = info.variables.get(line.name);
+      const suffix = line?.right?.type === "Literal" ? line.right.value : line?.right?.type === "TemplateLiteral" && !line.right.expressions.length ? line.right.quasis[0].value.cooked : null;
+      const input = info.params[0]?.type === "Identifier" ? info.params[0].name : null;
+      return !!input && (line?.type === "BinaryExpression" && line.operator === "+" && line.left.type === "Identifier" && line.left.name === input && suffix === "\\n" || line?.type === "TemplateLiteral" && line.expressions.length === 1 && line.expressions[0].type === "Identifier" && line.expressions[0].name === input && line.quasis[0].value.cooked === "" && line.quasis[1].value.cooked === "\\n");
+    }
+    function supportsRole(Constructor, role, recorded = false) {
+      if (typeof Constructor !== "function" || !Constructor.prototype) return false;
+      const names = recorded ? { network: ["fetch", "request"], fetch: ["performDesktopFetch"], stdio: ["send"], connection: ["routeIncomingMessage"] }[role] : required[role];
+      if (!names?.every((name) => method(Constructor, name))) return false;
+      if (recorded) return true;
+      if (role === "network") return delegatesNetwork(Constructor, "fetch") && delegatesNetwork(Constructor, "request");
+      if (role === "fetch") {
+        const fetch = inspectMethod(Constructor, "performDesktopFetch"), progress = inspectMethod(Constructor, "performProgressRequest");
+        return ["this.options.applicationNetwork.fetch", "this.options.applicationNetwork.assertAllowed", "this.performProgressRequest"].every((path) => fetch?.calls.some((call) => call.path === path)) && progress?.calls.some((call) => call.path === "this.options.applicationNetwork.request") === true;
+      }
+      if (role === "stdio") return writesJsonl(Constructor);
+      if (role === "connection") {
+        const info = inspectMethod(Constructor, "routeIncomingMessage");
+        return !!info && info.strings.includes("account/updated") && info.members.some((path) => path?.endsWith(".params.authMode")) && info.calls.some((call) => call.path === "this.clearAuthTokenCache");
+      }
+      return false;
+    }
+    function sourceCandidates(record, profiles, expectedHashes) {
+      const candidates = [];
+      const add = (role, binding, recorded, read) => candidates.push({
+        role,
+        binding,
+        recorded,
+        read: read ?? (() => record.evaluate(binding)),
+        resolved: null
+      });
+      if (Object.hasOwn(expectedHashes, record.name) && record.hash === expectedHashes[record.name]) {
+        const profile = profiles[record.name] ?? {
+          kind: record.name.startsWith("bootstrap-") ? "bootstrap" : record.name.startsWith("main-") ? "main" : "src",
+          symbol: record.name.startsWith("bootstrap-") ? "Pt" : record.name.startsWith("main-") ? "wEe" : "mQ"
+        };
+        if (profile.kind === "bootstrap") {
+          add("network", profile.symbol, true);
+          if (profile.connectionSymbol) add("connection", profile.connectionSymbol, true);
+        } else if (profile.kind === "main") add("fetch", profile.symbol, true);
+        else if (profile.kind === "stdio") add("stdio", profile.symbol, true);
+        else if (profile.kind === "connection") add("connection", profile.symbol, true);
+        else {
+          add("stdio", profile.symbol, true);
+          add("connection", profile.managerExport ?? "un", true, () => Object.getOwnPropertyDescriptor(record.exported ?? {}, profile.managerExport ?? "un")?.value);
+        }
+        return candidates;
+      }
+      for (const description of (Array.isArray(record.classes) ? record.classes : []).slice(0, 1024)) {
+        if (!identifier(description.binding) || !Array.isArray(description.methods)) continue;
+        for (const [role, names] of Object.entries(required)) if (names.every((name) => description.methods.includes(name))) add(role, description.binding, false);
+      }
+      return candidates;
+    }
+    module2.exports = { sourceCandidates, supportsRole, required };
+  }
+});
+
+// ../host/electron-plaintext.cjs
+var require_electron_plaintext = __commonJS({
+  "../host/electron-plaintext.cjs"(exports2, module2) {
+    "use strict";
+    var Module = require("node:module");
+    var path = require("node:path");
+    var { createHash } = require("node:crypto");
+    var { EventEmitter } = require("node:events");
+    var { Readable } = require("node:stream");
+    var { AsyncLocalStorage } = require("node:async_hooks");
+    var { sourceCandidates, supportsRole } = require_source_contracts();
+    var PROFILES = Object.freeze({
+      "bootstrap-D2PJMYEh.js": { hash: "0d62d7be4491d5ef84d93ea9b753c270096de217f2e49064e5f8f701af53e9ed", kind: "bootstrap", symbol: "He" },
+      "main-DAwJoFgo.js": { hash: "18beea7d7e46866168528ff5dab5108ffe6d39fc13433367ce8dee7b187044f8", kind: "main", symbol: "kEe" },
+      "application-network-startup-CY4ZWOz-.js": { hash: "7936a5b6373be818c7cce78cad7c18e4e156c8400d3b16f5b440d2626a1cc661", kind: "stdio", symbol: "$s" },
+      "src-BSSLXJxP.js": { hash: "50c7cf9c144594cfa6f33298e977f0b144976cc70c579f59fdc7242615c4af98", kind: "connection", symbol: "Yh" },
+      "bootstrap-CiIGnI3y.js": { hash: "119bb54ee12ed5d2b0d3b98dd068a4322232a4aa342323eb9cb5dfa6575ca158", kind: "bootstrap", symbol: "Nt" },
+      "main-BR_2NHW6.js": { hash: "1f2b91cf92fc023fb2fa41e1c1d03698fa6e37354ecd07dd0cebd21337607b08", kind: "main", symbol: "ZTe" },
+      "bootstrap-DK4EfNwt.js": { hash: "dbdbdd3ef5dde93dd196a59846edf244dc653341213e0fd45eebb133b5df10ba", kind: "bootstrap", symbol: "Pt" },
+      "main-LM8MUIFp.js": { hash: "c71bf3ffecef5fd390b4cd16d120d39dce30d30bffe3c563c8c74c1b691da018", kind: "main", symbol: "wEe" },
+      "src-C3YaUE83.js": { hash: "14c8c23e8b8dfa874d3fb5a50d54fb28eccf55fb83232c3ab29cb7c0ef0a0472", kind: "src", symbol: "mQ", managerExport: "un" },
+      "bootstrap-DwqRMhlU.js": { hash: "79ad86bda1f6171d43bab09b1b4a5d379afefc07a13d6f4f58470a823f6f575f", kind: "bootstrap", symbol: "Nt" },
+      "main-Bx5zswAj.js": { hash: "610ea8b045f207360ac50fcccfe43ca896c6298fa75562f323f1a45ed2364a1b", kind: "main", symbol: "ZTe" },
+      "src-mOb8On4V.js": { hash: "0639e87d51c132a7440bfa06624fb8e99031a3bb331ae11577278ce4a515cbb4", kind: "src", symbol: "Pq", managerExport: "un" },
+      "bootstrap-C4dRql4x.js": { hash: "0757af0981f4552ca79ed1a364eafa6a73e71a92e65ea4fce747c7b6c715ed4a", kind: "bootstrap", symbol: "Nt" },
+      "main-C-Mhak1n.js": { hash: "457c79be69620d4489e94c14ac665f81731d869635606dcf175b7b4cc2e8b467", kind: "main", symbol: "ZTe" },
+      "src-DldfpmrL.js": { hash: "88ec69722b5d87a7081edf2e2d6a2e21c3f25300cee587363d74b8b87969a412", kind: "src", symbol: "WQ", managerExport: "un" },
+      "bootstrap-CYu4H4X5.js": { hash: "9b9d3c9e8312dba970daf31fd3950b3f2bd760a89e1d7bf480c4efefb3d2b102", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },
+      "main-Dn18kdv3.js": { hash: "447e4900075d8cb41f5c55f1728c20147ea23ab761bb4377348eea8c8f3d4a48", kind: "main", symbol: "Dce" },
+      "application-network-startup-DN7Ktmlk.js": { hash: "3c2ebf430f24e55975f81e95b33e0f71470d04886f229b935939a7e32c587cf0", kind: "stdio", symbol: "Hs" },
+      "bootstrap-CZlEGA2m.js": { hash: "343072f02e604fe06f7864a72b1cbcc6004a8a318c66982995a188ee97430a3b", kind: "bootstrap", symbol: "vY", connectionSymbol: "DN" },
+      "main-C_jM0dPl.js": { hash: "d940b7ba89557a640cf23967c60555fa2a2344d6899807478c69ffc304314302", kind: "main", symbol: "kce" },
+      "application-network-startup-ouXbhtc5.js": { hash: "e92e5333cc38b06c6e94242d5bb680321f044bc9355013739d059a2d3e2f5b8d", kind: "stdio", symbol: "Hs" },
+      // Windows 26.930.7945.0 / frontend 26.930.61225: reviewed native methods
+      // retain the ApplicationNetwork, final fetch, stdio and notification contracts.
+      "bootstrap-C8gUBg5L.js": { hash: "1f726d0e3103d81501551546d3b6e70f1fc10646f9326e00fe68605f144c5f4f", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },
+      "main-gtVueRkt.js": { hash: "a4b72dcd241e8ee360aa960442cc585aa822685a42efd056c760937d9f8b623e", kind: "main", symbol: "kce" },
+      "application-network-startup-BEAX-hka.js": { hash: "634382c7af55d0ff57eb028aa4dd904130215c44fb559ea90a4f4035a5419f6e", kind: "stdio", symbol: "Hs" },
+      // Windows 26.1002.7124.0 / frontend 26.1002.52244 / build 13536:
+      // reviewed live bindings retain policy checks, final fetch, stdio and account notifications.
+      "bootstrap-Dz9A8y86.js": { hash: "a70497f5ffa764fe74f4de7ac05a5f73aff8d1e2f44de4476d1d9a684af43ddd", kind: "bootstrap", symbol: "jY", connectionSymbol: "hN" },
+      "main-p91kJShj.js": { hash: "aafd6a750458cb39b6202f9be00231482122d32ac14017b79d544c4ab741e889", kind: "main", symbol: "Hb" },
+      "application-network-startup-Bt0a8E1L.js": { hash: "aa5478e31c8a623632dfedffcecfbe40d5033d38a8504649716657681a0840b4", kind: "stdio", symbol: "Hs" },
+      // Windows package 26.1007.9446.0 / frontend 26.1007.71326 / build 20398.
+      // Exact source review and local extracted-method probes are recorded in
+      // docs/native-source-26.1007.9446.0.json; Native acceptance is separate.
+      "bootstrap-iULMfRBf.js": { hash: "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869", kind: "bootstrap", symbol: "tr" },
+      "main-Bgi5Xaw-.js": { hash: "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54", kind: "main", symbol: "ple" },
+      "application-network-startup-YSC7OAs0.js": { hash: "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e", kind: "stdio", symbol: "Gs" },
+      "src-DCNiwad_.js": { hash: "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25", kind: "connection", symbol: "mB" }
+    });
+    var HASHES = Object.freeze(Object.fromEntries(Object.entries(PROFILES).map(([name, profile]) => [name, profile.hash])));
+    var fail2 = (code) => Object.assign(new Error(code), { code });
+    var closeRoute = (route) => {
+      try {
+        Promise.resolve(route.close()).catch(() => {
+        });
+      } catch {
+      }
+    };
+    function headers(value) {
+      if (Array.isArray(value)) return value.flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));
+      if (value && !(value instanceof Headers) && typeof value === "object") return Object.entries(value).flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));
+      const source = new Headers(value ?? {}), result = [...source.entries()].filter(([name]) => name.toLowerCase() !== "set-cookie");
+      for (const cookie of source.getSetCookie?.() ?? []) result.push(["set-cookie", cookie]);
+      return result;
+    }
+    var sameOrigin = (left, right) => new URL(left).origin === new URL(right).origin;
+    var withoutCredentials = (values) => headers(values).filter(([name]) => !["authorization", "cookie", "proxy-authorization"].includes(name.toLowerCase()));
+    function headerObject(values) {
+      const result = /* @__PURE__ */ Object.create(null);
+      for (const [name, value] of values) {
+        const key = Object.keys(result).find((existing) => existing.toLowerCase() === name.toLowerCase()) ?? name;
+        result[key] = result[key] === void 0 ? value : Array.isArray(result[key]) ? [...result[key], value] : [result[key], value];
+      }
+      return result;
+    }
+    var requestBody = (value) => value == null ? void 0 : typeof value === "string" ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : value;
+    var asUrl = (value) => typeof value === "string" ? value : value instanceof URL ? value.href : value?.url;
+    async function bytes(body, signal) {
+      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of body) {
+        signal?.throwIfAborted();
+        size += chunk.length;
+        if (size > 64 * 1024 * 1024) throw fail2("desktop_body_too_large");
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    function stream(body) {
+      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;
+      const iterator = body[Symbol.asyncIterator]();
+      return new ReadableStream({
+        async pull(controller) {
+          try {
+            const item = await iterator.next();
+            item.done ? controller.close() : controller.enqueue(item.value);
+          } catch (error) {
+            controller.error(error);
+          }
+        },
+        cancel() {
+          body.cancel?.();
+          iterator.return?.();
+        }
+      });
+    }
+    var bodyless = (status, method) => [204, 205, 304].includes(status) || method?.toUpperCase() === "HEAD";
+    async function response(result, method) {
+      const options = { status: result.status, headers: result.headers };
+      if (bodyless(result.status, method)) {
+        await result.body?.cancel?.();
+        return new Response(null, options);
+      }
+      return new Response(stream(result.body), options);
+    }
+    function providerUrl(value) {
+      if (typeof value !== "string") throw fail2("backend_provider_unsupported");
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");
+      return url.href;
+    }
+    function routedThreadMessage(message, reserve, isProviderSupported = () => true) {
+      let payload;
+      try {
+        payload = JSON.parse(message);
+      } catch {
+        return message;
+      }
+      if (!["thread/start", "thread/resume"].includes(payload?.method)) return message;
+      const inputConfig = payload.params?.config;
+      const selected = payload.params?.modelProvider ?? inputConfig?.model_provider;
+      const inline = typeof selected === "string" ? inputConfig?.[\`model_providers.\${selected}\`] ?? inputConfig?.model_providers?.[selected] : null;
+      if (typeof selected === "string" && !isProviderSupported(selected) && typeof inline?.base_url !== "string") throw fail2("backend_provider_unsupported");
+      if (!inputConfig || typeof inputConfig !== "object" || Array.isArray(inputConfig)) return message;
+      const config = { ...inputConfig };
+      let changed = false;
+      for (const [key, value] of Object.entries(config)) {
+        if (key === "model_providers" && value && typeof value === "object" && !Array.isArray(value)) {
+          const mapped = { ...value };
+          for (const [name, provider] of Object.entries(mapped)) if (provider && typeof provider === "object" && typeof provider.base_url === "string") {
+            if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail2("backend_provider_unsupported");
+            mapped[name] = { ...provider, base_url: reserve(providerUrl(provider.base_url)) };
+            changed = true;
+          }
+          config[key] = mapped;
+        } else if (/^model_providers\\..*\\.base_url$/u.test(key) && !/^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) throw fail2("backend_provider_unsupported");
+        else if (/^model_providers\\..+$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string" && !/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key)) throw fail2("backend_provider_unsupported");
+        if (key === "openai_base_url" || /^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) {
+          config[key] = reserve(providerUrl(value));
+          changed = true;
+        } else if (/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string") {
+          config[key] = { ...value, base_url: reserve(providerUrl(value.base_url)) };
+          changed = true;
+        }
+      }
+      return changed ? JSON.stringify({ ...payload, params: { ...payload.params, config } }) : message;
+    }
+    function installDesktopPlaintext2({ app }, {
+      source,
+      deadlineUnixMs,
+      ownsBackendProcess = () => false,
+      isProviderSupported = () => true,
+      providerTrustForProcess = () => void 0,
+      pendingAccountUpdate = () => null,
+      updateAccountMode = () => {
+      },
+      moduleRegistry,
+      state,
+      onlineUpdates
+    }, { expectedHashes = HASHES } = {}) {
+      if (!moduleRegistry && app.isReady() || !source?.interceptHttp) throw fail2("desktop_bootstrap_too_late");
+      const scope = state?.scope ?? new AsyncLocalStorage();
+      if (state && !state.scope) state.scope = scope;
+      const symbol = Symbol("codlet.private.plaintext");
+      const originalCompile = Module.prototype._compile;
+      let bootstrapVerified = false, mainVerified = false, srcVerified = false, fetchInstalled = false, requestInstalled = false, stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;
+      const bindingErrors = /* @__PURE__ */ Object.create(null);
+      const restores = [];
+      const observed = /* @__PURE__ */ new Map(), roleBindings = /* @__PURE__ */ new Map(), roleReasons = /* @__PURE__ */ new Map(), driftedRoles = /* @__PURE__ */ new Set();
+      const wrappedMethods = { network: ["fetch", "request"], fetch: ["performDesktopFetch"], stdio: ["send"], connection: ["routeIncomingMessage"] };
+      const taskRoutes = state?.taskRoutes ?? /* @__PURE__ */ new Set(), routesByProcess = state?.routesByProcess ?? /* @__PURE__ */ new WeakMap(), sendQueues = state?.sendQueues ?? /* @__PURE__ */ new WeakMap();
+      const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();
+      function reserve(url, proc) {
+        let routes = routesByProcess.get(proc);
+        if (!routes) {
+          routes = /* @__PURE__ */ new Map();
+          routesByProcess.set(proc, routes);
+          proc.once("exit", () => {
+            for (const route2 of routes.values()) {
+              closeRoute(route2);
+              taskRoutes.delete(route2);
+            }
+            routes.clear();
+          });
+        }
+        if (routes.has(url)) return routes.get(url);
+        if (taskRoutes.size >= 64) throw fail2("backend_route_limit");
+        const additionalCaPem = providerTrustForProcess(proc);
+        const route = source.reserveRoute({ upstreamBaseUrl: url, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });
+        route.ready.catch(() => {
+          routes.delete(url);
+          taskRoutes.delete(route);
+          closeRoute(route);
+        });
+        routes.set(url, route);
+        taskRoutes.add(route);
+        return route;
+      }
+      function failOutbound(connection, message) {
+        let id;
+        try {
+          id = JSON.parse(message).id;
+        } catch {
+        }
+        if (typeof id === "string" || typeof id === "number") queueMicrotask(() => connection.onmessage?.({
+          type: "message",
+          data: JSON.stringify({ id, error: { code: -32e3, message: "Provider route unavailable" } })
+        }));
+        else connection.onerror?.(fail2("backend_route_unavailable"));
+      }
+      function hookStdio(Stdio) {
+        if (stdioInstalled || typeof Stdio !== "function" || typeof Stdio.prototype.send !== "function") {
+          if (!stdioInstalled) taskReason = "hook_unavailable";
+          return;
+        }
+        const original = Stdio.prototype.send;
+        Stdio.prototype.send = function(message) {
+          if (closed || !roleLive("stdio", Stdio) || !ownsBackendProcess(this.proc) || typeof message !== "string") return original.call(this, message);
+          if (onlineUpdates && !onlineUpdates.accepting()) {
+            onlineUpdates.whenAccepting().then(() => Stdio.prototype.send.call(this, message)).catch(() => failOutbound(this, message));
+            return;
+          }
+          const waits = [];
+          let routed;
+          try {
+            routed = routedThreadMessage(
+              message,
+              (url) => {
+                const route = reserve(url, this.proc);
+                waits.push(route.ready);
+                return route.baseUrl;
+              },
+              (provider) => isProviderSupported(this.proc, provider)
+            );
+          } catch {
+            failOutbound(this, message);
+            return;
+          }
+          const account = pendingAccountUpdate(this.proc);
+          const previous = sendQueues.get(this);
+          const dispatch = () => tracked("backend.send", () => original.call(this, routed));
+          if (!waits.length && !account && !previous) {
+            if (!onlineUpdates) return original.call(this, routed);
+            dispatch().catch(() => failOutbound(this, message));
+            return;
+          }
+          const operation = tracked("backend.send", async () => {
+            await (previous ?? Promise.resolve());
+            await Promise.all([...waits, ...account ? [account] : []]);
+            if (!closed && ownsBackendProcess(this.proc)) return original.call(this, routed);
+            throw Object.assign(fail2("core_write_owner_closed"), { outcome: "not_applied" });
+          }).catch(() => failOutbound(this, message));
+          sendQueues.set(this, operation);
+          operation.finally(() => {
+            if (sendQueues.get(this) === operation) sendQueues.delete(this);
+          }).catch(() => {
+          });
+        };
+        stdioInstalled = true;
+        const wrapped = Stdio.prototype.send;
+        restores.push(() => {
+          if (Stdio.prototype.send === wrapped) Stdio.prototype.send = original;
+        });
+      }
+      function hookConnection(Connection) {
+        if (connectionInstalled || typeof Connection !== "function" || typeof Connection.prototype.routeIncomingMessage !== "function") {
+          if (!connectionInstalled) taskReason = "hook_unavailable";
+          return;
+        }
+        const original = Connection.prototype.routeIncomingMessage;
+        Connection.prototype.routeIncomingMessage = function(message, ...rest) {
+          if (!closed && roleLive("connection", Connection) && message?.method === "account/updated" && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
+          return original.call(this, message, ...rest);
+        };
+        connectionInstalled = true;
+        const wrapped = Connection.prototype.routeIncomingMessage;
+        restores.push(() => {
+          if (Connection.prototype.routeIncomingMessage === wrapped) Connection.prototype.routeIncomingMessage = original;
+        });
+      }
+      function hookNetwork(Network) {
+        if (typeof Network !== "function" || typeof Network.prototype.fetch !== "function" || typeof Network.prototype.request !== "function") {
+          desktopReason = "hook_unavailable";
+          return;
+        }
+        const originalFetch = Network.prototype.fetch, originalRequest = Network.prototype.request;
+        function nativeForward(network, request, options, signal, onRequest) {
+          return new Promise((resolve, reject) => {
+            let settled = false, finalUrl = request.url, redirects = 0, live;
+            const finish = (error, value) => {
+              if (settled) return;
+              settled = true;
+              if (error) reject(error);
+              else resolve(value);
+            };
+            const abort = () => {
+              finish(fail2("desktop_request_aborted"));
+              live?.abort();
+            };
+            try {
+              signal?.throwIfAborted();
+              live = originalRequest.call(network, {
+                ...options,
+                url: request.url,
+                method: request.method,
+                headers: headerObject(headers(request.headers))
+              });
+              onRequest?.(live);
+              signal?.addEventListener("abort", abort, { once: true });
+              live.on("redirect", (_status, _method, destination) => {
+                try {
+                  if (options.redirect === "error") throw fail2("desktop_redirect_disallowed");
+                  if (options.redirect === "manual") throw fail2("desktop_manual_redirect_unavailable");
+                  if (++redirects > 20 || !["http:", "https:"].includes(new URL(destination).protocol)) throw fail2("desktop_redirect_disallowed");
+                  network.assertAllowed(destination);
+                  finalUrl = destination;
+                  live.followRedirect();
+                } catch (error) {
+                  finish(error);
+                  live.abort();
+                }
+              });
+              live.once("error", (error) => {
+                signal?.removeEventListener("abort", abort);
+                finish(error);
+              });
+              live.once("response", (incoming) => {
+                incoming.once("end", () => signal?.removeEventListener("abort", abort));
+                incoming.once("close", () => signal?.removeEventListener("abort", abort));
+                finish(null, { status: incoming.statusCode, headers: headers(incoming.headers), body: incoming, finalUrl });
+              });
+              live.end(request.body == null || typeof request.body === "string" ? request.body : Buffer.from(request.body));
+            } catch (error) {
+              signal?.removeEventListener("abort", abort);
+              finish(error);
+              live?.abort();
+            }
+          });
+        }
+        Network.prototype.fetch = async function(input, init = {}) {
+          if (closed || !roleLive("network", Network) || !scope.getStore()) return originalFetch.call(this, input, init);
+          if (onlineUpdates && !onlineUpdates.accepting()) {
+            await onlineUpdates.whenAccepting(init.signal);
+            return Network.prototype.fetch.call(this, input, init);
+          }
+          const url = asUrl(input);
+          this.assertAllowed(url);
+          const signal = init.signal;
+          const current = { url, method: init.method ?? "GET", headers: headers(init.headers), body: requestBody(init.body) };
+          const result = await tracked("desktop.fetch", () => source.interceptHttp(current, { signal, forward: async (next, control) => {
+            const body = await bytes(next.body, control.signal);
+            const omit = next.credentialMode === "omit" || !sameOrigin(url, next.url);
+            return nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, {
+              redirect: init.redirect ?? "follow",
+              credentials: omit ? "omit" : init.credentials,
+              cache: init.cache,
+              referrerPolicy: init.referrerPolicy,
+              priority: init.priority,
+              ...init.credentials === "same-origin" && !omit ? { origin: new URL(url).origin } : {}
+            }, control.signal);
+          } }));
+          return response(result, current.method);
+        };
+        Network.prototype.request = function(options) {
+          if (closed || !roleLive("network", Network) || !scope.getStore()) return originalRequest.call(this, options);
+          this.assertAllowed(options.url);
+          const network = this;
+          const proxy = new EventEmitter();
+          const controller = new AbortController();
+          let liveRequest, upload = { started: false, current: 0, total: 0 }, ended = false;
+          proxy.getUploadProgress = () => liveRequest?.getUploadProgress?.() ?? upload;
+          proxy.abort = () => {
+            controller.abort();
+            liveRequest?.abort?.();
+          };
+          proxy.end = function(body) {
+            if (ended) throw fail2("desktop_request_already_ended");
+            ended = true;
+            const send = async () => {
+              if (onlineUpdates && !onlineUpdates.accepting()) {
+                await onlineUpdates.whenAccepting(controller.signal);
+                if (closed) {
+                  const next = network.request(options);
+                  next.once("error", (error) => proxy.emit("error", error));
+                  next.once("response", (output2) => proxy.emit("response", output2));
+                  controller.signal.addEventListener("abort", () => next.abort(), { once: true });
+                  liveRequest = next;
+                  next.end(body);
+                  return;
+                }
+              }
+              const current = { url: options.url, method: options.method ?? "GET", headers: headers(options.headers), body: requestBody(body) };
+              const result = await tracked("desktop.request", () => source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {
+                const forwardBody = await bytes(next.body, control.signal);
+                const omit = next.credentialMode === "omit" || !sameOrigin(options.url, next.url);
+                return nativeForward(
+                  network,
+                  { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers },
+                  {
+                    ...options,
+                    redirect: options.redirect ?? "follow",
+                    credentials: omit ? "omit" : options.credentials,
+                    useSessionCookies: !omit && options.useSessionCookies === true
+                  },
+                  control.signal,
+                  (request) => {
+                    liveRequest = request;
+                    upload = request.getUploadProgress?.() ?? upload;
+                  }
+                );
+              } }));
+              if (bodyless(result.status, current.method)) await result.body?.cancel?.();
+              const output = Readable.from(bodyless(result.status, current.method) ? [] : result.body ?? []);
+              output.statusCode = result.status;
+              output.statusMessage = "";
+              output.headers = headerObject(result.headers);
+              proxy.emit("response", output);
+            };
+            send().catch((error) => proxy.emit("error", error));
+          };
+          requestInstalled = true;
+          return proxy;
+        };
+        fetchInstalled = true;
+        requestInstalled = true;
+        const wrappedFetch = Network.prototype.fetch, wrappedRequest = Network.prototype.request;
+        restores.push(() => {
+          if (Network.prototype.fetch === wrappedFetch) Network.prototype.fetch = originalFetch;
+          if (Network.prototype.request === wrappedRequest) Network.prototype.request = originalRequest;
+        });
+      }
+      function hookFetchWrapper(FetchWrapper) {
+        if (typeof FetchWrapper !== "function" || typeof FetchWrapper.prototype.performDesktopFetch !== "function") {
+          desktopReason = "hook_unavailable";
+          return;
+        }
+        const original = FetchWrapper.prototype.performDesktopFetch;
+        FetchWrapper.prototype.performDesktopFetch = function(...args) {
+          return closed || !roleLive("fetch", FetchWrapper) ? original.apply(this, args) : scope.run(true, () => original.apply(this, args));
+        };
+        const wrapped = FetchWrapper.prototype.performDesktopFetch;
+        restores.push(() => {
+          if (FetchWrapper.prototype.performDesktopFetch === wrapped) FetchWrapper.prototype.performDesktopFetch = original;
+        });
+      }
+      function resetRole(role) {
+        const binding = roleBindings.get(role);
+        if (binding) for (const restore of binding.restores.reverse()) {
+          restore();
+          const index = restores.indexOf(restore);
+          if (index !== -1) restores.splice(index, 1);
+        }
+        roleBindings.delete(role);
+        if (role === "network") {
+          bootstrapVerified = false;
+          fetchInstalled = false;
+          requestInstalled = false;
+        }
+        if (role === "fetch") mainVerified = false;
+        if (role === "stdio") {
+          stdioVerified = false;
+          stdioInstalled = false;
+        }
+        if (role === "connection") {
+          connectionVerified = false;
+          connectionInstalled = false;
+        }
+      }
+      function roleLive(role, Constructor) {
+        const binding = roleBindings.get(role);
+        if (!binding || binding.Constructor !== Constructor) return false;
+        if (Object.entries(binding.installed).every(([name, method]) => Object.getOwnPropertyDescriptor(Constructor.prototype, name)?.value === method)) return true;
+        resetRole(role);
+        driftedRoles.add(role);
+        roleReasons.set(role, "binding_changed");
+        if (["network", "fetch"].includes(role)) desktopReason = "binding_changed";
+        else taskReason = "binding_changed";
+        srcVerified = stdioVerified && connectionVerified;
+        return false;
+      }
+      function refreshBindings() {
+        for (const role of ["network", "fetch", "stdio", "connection"]) {
+          const diagnosticRole = role === "network" ? "bootstrap" : role === "fetch" ? "main" : role;
+          const active = roleBindings.get(role);
+          if (active && Object.entries(active.installed).some(([name, method]) => Object.getOwnPropertyDescriptor(active.Constructor.prototype, name)?.value !== method)) {
+            resetRole(role);
+            driftedRoles.add(role);
+          }
+          if (driftedRoles.has(role)) {
+            roleReasons.set(role, "binding_changed");
+            continue;
+          }
+          const candidates = [...observed.values()].flat().filter((candidate) => candidate.role === role);
+          const collect = (selected2) => {
+            const found2 = /* @__PURE__ */ new Set();
+            let pending2 = false;
+            for (const candidate of selected2) try {
+              const Constructor2 = candidate.read();
+              if (Constructor2 == null) {
+                pending2 = true;
+                continue;
+              }
+              if (candidate.resolved === Constructor2 || supportsRole(Constructor2, role, candidate.recorded)) {
+                candidate.resolved = Constructor2;
+                found2.add(Constructor2);
+              }
+              delete bindingErrors[diagnosticRole];
+            } catch (error) {
+              bindingErrors[diagnosticRole] = ["ReferenceError", "TypeError"].includes(error?.name) ? error.name : "binding_error";
+              if (error?.name === "ReferenceError") pending2 = true;
+            }
+            return { found: found2, pending: pending2 };
+          };
+          let selected = collect(candidates.filter((candidate) => candidate.recorded));
+          if (!selected.found.size && !selected.pending) selected = collect(candidates.filter((candidate) => !candidate.recorded));
+          const { found, pending } = selected;
+          if (found.size !== 1 || pending) {
+            resetRole(role);
+            roleReasons.set(role, found.size > 1 ? "ambiguous_contract" : pending ? "initializing" : "contract_unavailable");
+            continue;
+          }
+          const Constructor = [...found][0];
+          if (roleBindings.get(role)?.Constructor === Constructor) {
+            roleReasons.delete(role);
+            continue;
+          }
+          resetRole(role);
+          const at = restores.length;
+          try {
+            if (role === "network") {
+              hookNetwork(Constructor);
+              bootstrapVerified = fetchInstalled && requestInstalled;
+            }
+            if (role === "fetch") {
+              hookFetchWrapper(Constructor);
+              mainVerified = true;
+            }
+            if (role === "stdio") {
+              hookStdio(Constructor);
+              stdioVerified = stdioInstalled;
+            }
+            if (role === "connection") {
+              hookConnection(Constructor);
+              connectionVerified = connectionInstalled;
+            }
+            roleBindings.set(role, { Constructor, restores: restores.slice(at), installed: Object.fromEntries(wrappedMethods[role].map((name) => [name, Object.getOwnPropertyDescriptor(Constructor.prototype, name)?.value])) });
+            roleReasons.delete(role);
+          } catch (error) {
+            for (const restore of restores.splice(at).reverse()) restore();
+            roleReasons.set(role, "contract_unavailable");
+          }
+        }
+        srcVerified = stdioVerified && connectionVerified;
+        const terminal = (roles) => roles.map((role) => roleReasons.get(role)).find((reason) => ["ambiguous_contract", "binding_changed"].includes(reason)) ?? null;
+        desktopReason = bootstrapVerified && mainVerified ? null : terminal(["network", "fetch"]);
+        taskReason = srcVerified ? null : terminal(["stdio", "connection"]);
+      }
+      function applyRecord(record) {
+        const { name, hash: observedSha256 } = record;
+        if (Object.hasOwn(expectedHashes, name) && observedSha256 !== expectedHashes[name]) mismatch = { name, observedSha256 };
+        const key = record.filename ?? name, candidates = sourceCandidates(record, PROFILES, expectedHashes);
+        if (!candidates.length && !observed.has(key)) return;
+        if (candidates.length) observed.set(key, candidates);
+        else observed.delete(key);
+        refreshBindings();
+      }
+      Module.prototype._compile = function(code, filename) {
+        const name = path.basename(filename);
+        if (!Object.hasOwn(expectedHashes, name)) return originalCompile.call(this, code, filename);
+        const profile = PROFILES[name] ?? { symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ" };
+        const expression = profile.connectionSymbol ? \`({primary:\${profile.symbol},connection:\${profile.connectionSymbol}})\` : profile.symbol;
+        const hash = createHash("sha256").update(code).digest("hex");
+        if (hash !== expectedHashes[name]) {
+          applyRecord({ name, hash });
+          return originalCompile.call(this, code, filename);
+        }
+        const result = originalCompile.call(this, \`\${code}
+;Object.defineProperty(module.exports,Symbol.for(\${JSON.stringify(String(symbol))}),{value:()=>\${expression},configurable:true});\`, filename);
+        const read = this.exports[Symbol.for(String(symbol))], exported = this.exports;
+        delete this.exports[Symbol.for(String(symbol))];
+        applyRecord({ name, hash, exported, evaluate: (binding) => {
+          const value = read();
+          return profile.connectionSymbol ? binding === profile.connectionSymbol ? value.connection : value.primary : value;
+        } });
+        return result;
+      };
+      restores.push(() => {
+        if (Module.prototype._compile === wrappedCompile) Module.prototype._compile = originalCompile;
+      });
+      const wrappedCompile = Module.prototype._compile;
+      if (moduleRegistry) {
+        Module.prototype._compile = originalCompile;
+        const unsubscribe = moduleRegistry.subscribe(applyRecord);
+        restores.push(unsubscribe);
+      }
+      const desktopDone = () => desktopReason || bootstrapVerified && mainVerified && fetchInstalled && requestInstalled;
+      const needsTaskSources = Object.keys(expectedHashes).some((name) => ["src", "stdio", "connection"].includes(PROFILES[name]?.kind) || name.startsWith("src-"));
+      const taskDone = () => taskReason || !needsTaskSources || srcVerified && stdioInstalled && connectionInstalled;
+      return Object.freeze({
+        async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {
+          while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {
+            refreshBindings();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          if (!closed) refreshBindings();
+          return this.inspect();
+        },
+        inspect: () => {
+          for (const [role, binding] of [...roleBindings]) roleLive(role, binding.Constructor);
+          return {
+            installed: !closed,
+            available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
+            taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,
+            modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },
+            mismatch,
+            bindingErrors: { ...bindingErrors },
+            deferredBindings: [...roleReasons.values()].filter((reason) => reason === "initializing").length,
+            reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "contract_unavailable"),
+            taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "contract_unavailable")
+          };
+        },
+        connectionConstructors: () => roleBindings.has("connection") ? [roleBindings.get("connection").Constructor] : [],
+        suspend() {
+          if (closed) return;
+          closed = true;
+          observed.clear();
+          roleBindings.clear();
+          for (const restore of restores.splice(0).reverse()) restore();
+        },
+        close() {
+          this.suspend();
+          if (!state) {
+            for (const route of taskRoutes) closeRoute(route);
+            taskRoutes.clear();
+            scope.disable();
+          }
+        }
+      });
+    }
+    module2.exports = { installDesktopPlaintext: installDesktopPlaintext2, routedThreadMessage, reviewedSourceProfiles: PROFILES };
+  }
+});
+
+// ../host/codex-traffic.cjs
+var require_codex_traffic = __commonJS({
+  "../host/codex-traffic.cjs"(exports2, module2) {
+    "use strict";
+    var zlib = require("node:zlib");
+    var failure = (code) => Object.assign(new Error(code), { code });
+    var RECORDED_BACKENDS = Object.freeze({
+      win32: Object.freeze([
+        // Disposable Windows acceptance covers both signed distributions of the
+        // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.
+        Object.freeze({ sha256: "3553cd6e7df5a093d8cb8301cd8088a57e0971aba71ddbe0e67f7f44a15cdf68", version: "0.162.0-alpha.2", evidence: "same-pe-image-as-controlled-0.162.0-alpha.2-http-sse-ws-routing-fixture" }),
+        Object.freeze({ sha256: "d83cc3582592e307df008411f02f61a93fb93580b53dc173608a63202d97bbe4", version: "0.162.0-alpha.2", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),
+        // The installed and published 0.160.1 files differ only in Authenticode
+        // data/checksum. Their complete remaining PE image matches the CI fixture.
+        Object.freeze({ sha256: "3b8f6e33caa75f232558a3cf76ff9b87bb5ef6dbcf4996372f24e55c78b1b916", version: "0.160.1", evidence: "same-pe-image-as-controlled-0.160.1-http-sse-ws-routing-fixture" }),
+        Object.freeze({ sha256: "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d", version: "0.160.1", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),
+        Object.freeze({ sha256: "37762753b554982eef1c109303d1be652b6397f1479e844794353a85650199c6", version: "0.160.0", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),
+        Object.freeze({ sha256: "1722907aa64401bcc9b34467ef5c2af43f6aef9a5045ef04d11d19dfae4589fb", version: "0.159.0-alpha.12.1", evidence: "controlled-functional-http-sse-ws-local-fixture" }),
+        Object.freeze({ sha256: "8f0554ede25bbc5450921897c468b2e84635aa513c5017457997af0954581f49", version: "0.158.0-alpha.2.1", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),
+        Object.freeze({ sha256: "a19f8f6c3c9dd5b71b6b1e3eb1ec55d75aafb2fdfb686d9e1f7a5f47db07d0d2", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),
+        Object.freeze({ sha256: "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226", version: "0.155.0-alpha.9.2", evidence: "controlled-custom-provider-two-thread-http-ws" }),
+        Object.freeze({ sha256: "97d4d67419d0ac2f71342f9a5e850f9468aa622618de8ea823223edb9a91926a", version: "0.155.0-alpha.16", evidence: "controlled-custom-provider-two-thread-http-ws" })
+      ]),
+      darwin: Object.freeze([
+        Object.freeze({ sha256: "c67698d0990aae05211d9c43ab343ad9517e406824dea77eca103a2806232b3a", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws" })
+      ])
+    });
+    function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {
+      const backend = RECORDED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
+      const fixtureVerified = !!backend;
+      return Object.freeze({
+        available: false,
+        fixtureVerified,
+        restartRequired: true,
+        officialOAuth: false,
+        existingLoadedThreads: false,
+        desktop: false,
+        attachments: false,
+        fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],
+        reason: "native_process_ingress_not_attached"
+      });
+    }
+    function threadIdFromHeaders(headers) {
+      if (!Array.isArray(headers)) return null;
+      const values = headers.filter((item) => Array.isArray(item) && typeof item[0] === "string" && item[0].toLowerCase() === "x-client-request-id").map((item) => item[1]);
+      return values.length === 1 && typeof values[0] === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(values[0]) ? values[0] : null;
+    }
+    function classifyCodexTraffic({ url, method, headers, verified = false, allowedOrigins = ["https://chatgpt.com", "https://api.openai.com"] }) {
+      let target;
+      try {
+        target = new URL(url);
+      } catch {
+        return Object.freeze({ kind: "unknown", threadId: null, model: null });
+      }
+      const protocol = target.protocol === "wss:" ? "https:" : target.protocol === "ws:" ? "http:" : target.protocol;
+      const normalizedOrigin = \`\${protocol}//\${target.host}\`;
+      const trusted = allowedOrigins.includes(normalizedOrigin) && !target.username && !target.password;
+      let kind = "unknown";
+      if (trusted && /\\/responses$/u.test(target.pathname) && ["POST", "GET"].includes(method)) kind = "model.responses";
+      if (trusted && target.hostname === "chatgpt.com" && target.pathname === "/backend-api/codex/models" && method === "GET") kind = "model.list";
+      return Object.freeze({ kind, threadId: verified && kind === "model.responses" ? threadIdFromHeaders(headers) : null, model: null });
+    }
+    async function readCodexJsonBody(request, maximum = 8 * 1024 * 1024) {
+      if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 8 * 1024 * 1024) throw failure("invalid_body_limit");
+      const chunks = [];
+      let bytes = 0;
+      for await (const chunk of request.body) {
+        bytes += chunk.length;
+        if (bytes > maximum) throw failure("codex_body_too_large");
+        chunks.push(Buffer.from(chunk));
+      }
+      const encodings = request.headers.filter(([name]) => name.toLowerCase() === "content-encoding").map(([, value]) => value.toLowerCase().trim());
+      if (encodings.length > 1) throw failure("codex_encoding_unsupported");
+      const encoding = encodings[0] ?? "identity";
+      const decoder = { gzip: zlib.gunzipSync, br: zlib.brotliDecompressSync, deflate: zlib.inflateSync, zstd: zlib.zstdDecompressSync }[encoding];
+      if (encoding !== "identity" && !decoder) throw failure("codex_encoding_unsupported");
+      try {
+        const raw = Buffer.concat(chunks);
+        return JSON.parse(decoder ? decoder(raw, { maxOutputLength: maximum }) : raw);
+      } catch {
+        throw failure("codex_body_invalid");
+      }
+    }
+    function rewrittenCodexJsonBody(request, value) {
+      const body = JSON.stringify(value);
+      if (Buffer.byteLength(body) > 8 * 1024 * 1024) throw failure("codex_body_too_large");
+      return { body, headers: request.headers.filter(([name]) => !["content-encoding", "content-length", "content-md5", "content-digest", "digest"].includes(name.toLowerCase())) };
+    }
+    function createCodexTraffic(context, compatibility = {}) {
+      if (!context?.traffic?.registerInterceptor || !context.traffic.inspect || !context.signal) throw failure("core_traffic_unavailable");
+      const verified = probeCodexTraffic(compatibility);
+      async function probe() {
+        let native;
+        try {
+          native = await context.traffic.inspect();
+        } catch (error) {
+          if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");
+          return Object.freeze({ ...verified, listening: false, attached: false, reason: error.code });
+        }
+        const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;
+        return Object.freeze({
+          ...verified,
+          available: attached,
+          listening: native.listening === true,
+          attached,
+          restartRequired: !attached,
+          reason: attached ? null : "native_process_ingress_not_attached",
+          coverage: "registered-backend-origins",
+          registered: native.registered,
+          active: native.active
+        });
+      }
+      async function registerInterceptor(options, handlers) {
+        if (context.signal.aborted) throw failure("host_stopping");
+        if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");
+        const kinds = options.kinds ?? ["model.responses", "model.list"];
+        if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");
+        if (!handlers || typeof handlers !== "object" || !Object.keys(handlers).length || Object.entries(handlers).some(([key, value]) => !["request", "response", "webSocket"].includes(key) || typeof value !== "function")) throw failure("invalid_handler");
+        const origins = options.origins ?? ["https://chatgpt.com", "https://api.openai.com"];
+        if (!Array.isArray(origins) || !origins.length || origins.length > 16 || origins.some((origin) => {
+          try {
+            const url = new URL(origin);
+            return url.origin !== origin || !["https:", "http:"].includes(url.protocol) || url.username || url.password || url.protocol === "http:" && !["127.0.0.1", "localhost"].includes(url.hostname);
+          } catch {
+            return true;
+          }
+        })) throw failure("invalid_argument");
+        const readiness = await probe();
+        if (!readiness.available) throw failure(readiness.reason);
+        if (context.signal.aborted) throw failure("host_stopping");
+        const wrapped = {};
+        const metadata = (value) => {
+          const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins });
+          return kinds.includes(info.kind) ? info : null;
+        };
+        const requestThreads = /* @__PURE__ */ new Map();
+        wrapped.request = (value, call) => {
+          const codex = metadata(value);
+          if (handlers.response && codex?.threadId && typeof value.id === "string") {
+            requestThreads.set(value.id, { threadId: codex.threadId, at: Date.now() });
+            if (requestThreads.size > 1024) requestThreads.delete(requestThreads.keys().next().value);
+          }
+          return codex && handlers.request ? handlers.request(value, Object.freeze({ ...call, codex })) : void 0;
+        };
+        if (handlers.response) wrapped.response = (value, call) => {
+          const codex = metadata(call.request), known = requestThreads.get(call.request?.id);
+          if (typeof call.request?.id === "string") requestThreads.delete(call.request.id);
+          const threadId = known && Date.now() - known.at <= 10 * 60 * 1e3 ? known.threadId : null;
+          return codex ? handlers.response(value, Object.freeze({ ...call, codex: Object.freeze({ ...codex, threadId }) })) : void 0;
+        };
+        if (handlers.webSocket) wrapped.webSocket = (value, call) => {
+          const codex = metadata({ ...value, method: "GET" });
+          return codex ? handlers.webSocket(value, Object.freeze({ ...call, codex })) : void 0;
+        };
+        const { kinds: ignored, ...registration } = options;
+        return context.traffic.registerInterceptor({ ...registration, origins }, wrapped);
+      }
+      return Object.freeze({ probe, registerInterceptor, classify: classifyCodexTraffic, readJsonBody: readCodexJsonBody, rewriteJsonBody: rewrittenCodexJsonBody });
+    }
+    module2.exports = { createCodexTraffic, probeCodexTraffic, classifyCodexTraffic, threadIdFromHeaders, readCodexJsonBody, rewrittenCodexJsonBody };
+  }
+});
+
+// ../host/backend-launch.cjs
+var require_backend_launch = __commonJS({
+  "../host/backend-launch.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var { createHash } = require("node:crypto");
+    var { probeCodexTraffic } = require_codex_traffic();
+    var fail2 = (code) => Object.assign(new Error(code), { code });
+    var toml = (value) => JSON.stringify(value);
+    function verifyBackend(executable, platform = process.platform) {
+      if (typeof executable !== "string" || !path.isAbsolute(executable) || !/^codex(?:\\.exe)?$/iu.test(path.basename(executable))) throw fail2("invalid_backend_launch");
+      const fd = fs.openSync(executable, "r");
+      let binarySha256;
+      try {
+        const before = fs.fstatSync(fd);
+        if (!before.isFile() || before.size < 1 || before.size > 512 * 1024 * 1024) throw fail2("backend_identity_unavailable");
+        const hash = createHash("sha256"), bytes = Buffer.alloc(64 * 1024);
+        for (; ; ) {
+          const count = fs.readSync(fd, bytes);
+          if (!count) break;
+          hash.update(bytes.subarray(0, count));
+        }
+        const after = fs.fstatSync(fd);
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw fail2("backend_identity_changed");
+        binarySha256 = hash.digest("hex");
+      } finally {
+        fs.closeSync(fd);
+      }
+      const recorded = probeCodexTraffic({ platform, binarySha256 }).fixtureVerified;
+      return Object.freeze({ platform, binarySha256, recorded });
+    }
+    function supportsBackendContract(contract, settings) {
+      return contract?.api === 1 && contract.initialize === true && contract.configRead === true && contract.accountRead === true && ["runtime", "recorded"].includes(contract.routing) && Array.isArray(contract.providerOverrides) && contract.providerOverrides.length > 0 && contract.providerOverrides.length <= 17 && new Set(contract.providerOverrides).size === contract.providerOverrides.length && contract.providerOverrides.every((value) => typeof value === "string" && (value === "openai_base_url" || /^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(value))) && settings.every((setting) => contract.providerOverrides.includes(setting));
+    }
+    function prepareBackendLaunch({ executable, arguments: args, originalEnvironment, providerRoutes, platform = process.platform, compatibility }) {
+      if (!Array.isArray(args) || args.some((value) => typeof value !== "string") || !args.includes("app-server") || !originalEnvironment || typeof originalEnvironment !== "object" || !providerRoutes || typeof providerRoutes !== "object") throw fail2("invalid_backend_launch");
+      const identity = verifyBackend(executable, platform), overrides = [];
+      if (compatibility?.binarySha256 !== identity.binarySha256) throw fail2("backend_identity_changed");
+      if (!supportsBackendContract(compatibility.contract, Object.keys(providerRoutes)) || compatibility.contract.routing === "recorded" && !identity.recorded) throw fail2("backend_contract_unavailable");
+      for (const [setting, baseUrl] of Object.entries(providerRoutes)) {
+        if (setting !== "openai_base_url" && setting !== "chatgpt_base_url" && !/^model_providers\\.[A-Za-z0-9_-]+\\.base_url$/u.test(setting)) throw fail2("invalid_backend_route");
+        const url = new URL(baseUrl);
+        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.search || url.hash) throw fail2("invalid_backend_route");
+        overrides.push("-c", \`\${setting}=\${toml(baseUrl)}\`);
+      }
+      if (!overrides.length) throw fail2("backend_route_unavailable");
+      return Object.freeze({
+        executable,
+        arguments: Object.freeze([...args, ...overrides]),
+        environment: originalEnvironment,
+        compatibility,
+        status: Object.freeze({ available: true, backendProviderPrepared: true, coverage: ["owned-local-app-server-model-provider"] })
+      });
+    }
+    module2.exports = { prepareBackendLaunch, verifyBackend, supportsBackendContract, toml };
+  }
+});
+
+// ../host/backend-config-probe.cjs
+var require_backend_config_probe = __commonJS({
+  "../host/backend-config-probe.cjs"(exports2, module2) {
+    "use strict";
+    function runConfigProbe() {
+      const fs = require("node:fs"), { spawn } = require("node:child_process"), { randomBytes } = require("node:crypto");
+      const fail2 = (code) => Object.assign(new Error(code), { code });
+      const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+      const until = Date.now() + 3500;
+      let liveChild;
+      async function stop(child) {
+        if (!child || child.exitCode !== null || child.signalCode !== null) return;
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.stdin?.end();
+        let timer;
+        await Promise.race([exited, new Promise((resolve) => {
+          timer = setTimeout(resolve, 150);
+        })]);
+        clearTimeout(timer);
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill();
+        await Promise.race([exited, new Promise((resolve) => {
+          timer = setTimeout(resolve, 650);
+        })]);
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) throw fail2("backend_probe_cleanup_failed");
+      }
+      async function read(plan, overrides, includeAccount) {
+        if (Date.now() >= until) throw fail2("backend_config_timeout");
+        const child = spawn(plan.executable, [
+          ...plan.configArguments,
+          ...overrides,
+          "-c",
+          "analytics.enabled=false",
+          "-c",
+          "features.code_mode_host=false",
+          "-c",
+          "features.remote_plugin=false",
+          "app-server",
+          "--stdio"
+        ], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        liveChild = child;
+        try {
+          return await new Promise((resolve, reject) => {
+            let settled = false, buffer = "", count = 0, expected = 1, config;
+            const timer = setTimeout(() => finish(fail2("backend_config_timeout")), Math.max(1, until - Date.now()));
+            function finish(error, result) {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              error ? reject(error) : resolve(result);
+            }
+            const send = (message) => child.stdin.write(JSON.stringify(message) + "\\n");
+            child.stderr.on("data", () => {
+            });
+            child.on("error", () => finish(fail2("backend_config_unavailable")));
+            child.stdin.on("error", () => finish(fail2("backend_config_unavailable")));
+            child.once("exit", () => finish(fail2("backend_config_unavailable")));
+            child.stdout.on("data", (chunk) => {
+              if (settled) return;
+              count += chunk.length;
+              if (count > 2 * 1024 * 1024) {
+                finish(fail2("backend_config_too_large"));
+                return;
+              }
+              buffer += chunk.toString();
+              let at;
+              while (!settled && (at = buffer.indexOf("\\n")) >= 0) {
+                const line = buffer.slice(0, at);
+                buffer = buffer.slice(at + 1);
+                let message;
+                try {
+                  message = JSON.parse(line);
+                } catch {
+                  continue;
+                }
+                if (!object(message) || message.id !== expected) continue;
+                if (message.error || !object(message.result)) {
+                  finish(fail2("backend_contract_unavailable"));
+                  return;
+                }
+                if (expected === 1) {
+                  if (typeof message.result.userAgent !== "string" || !message.result.userAgent || message.result.userAgent.length > 4096) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  expected = 2;
+                  send({ method: "initialized", params: {} });
+                  send({ id: 2, method: "config/read", params: { cwd: plan.cwd, includeLayers: false } });
+                } else if (expected === 2) {
+                  config = message.result.config;
+                  if (!object(config)) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  if (!includeAccount) {
+                    finish(null, { config });
+                    return;
+                  }
+                  expected = 3;
+                  send({ id: 3, method: "account/read", params: { refreshToken: false } });
+                } else {
+                  const account = message.result.account;
+                  if (account !== null && (!object(account) || typeof account.type !== "string")) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  finish(null, { config, accountType: account?.type ?? null });
+                }
+              }
+            });
+            send({ id: 1, method: "initialize", params: { clientInfo: { name: "codlet-launch-policy", version: "1" }, capabilities: { experimentalApi: true } } });
+          });
+        } finally {
+          await stop(child);
+          liveChild = null;
+        }
+      }
+      (async () => {
+        const bytes = fs.readFileSync(0);
+        if (bytes.length > 256 * 1024) throw fail2("backend_config_unavailable");
+        const plan = JSON.parse(bytes);
+        if (!object(plan) || typeof plan.executable !== "string" || typeof plan.cwd !== "string" || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256 || plan.configArguments.some((value) => typeof value !== "string")) throw fail2("backend_config_unavailable");
+        const { config, accountType } = await read(plan, [], true);
+        if (config.model_providers != null && !object(config.model_providers) || config.model_provider != null && typeof config.model_provider !== "string" || config.openai_base_url != null && typeof config.openai_base_url !== "string") throw fail2("backend_contract_unavailable");
+        const providers = {};
+        for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
+          if (typeof provider?.base_url !== "string" || provider.wire_api !== "responses") continue;
+          if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail2("backend_provider_unsupported");
+          providers[name] = provider.base_url;
+        }
+        const settings = ["openai_base_url", ...Object.keys(providers).map((name) => \`model_providers.\${name}.base_url\`)];
+        if (plan.recordedRouting !== true) {
+          const marker = \`http://127.0.0.1:9/codlet-capability-\${randomBytes(12).toString("hex")}/\`;
+          const overrides = settings.flatMap((setting) => ["-c", \`\${setting}=\${JSON.stringify(marker)}\`]);
+          const observed = (await read(plan, overrides, false)).config;
+          if (observed.openai_base_url !== marker || Object.keys(providers).some((name) => observed.model_providers?.[name]?.base_url !== marker || observed.model_providers[name].wire_api !== "responses")) throw fail2("backend_routing_contract_unavailable");
+        }
+        return {
+          modelProvider: config.model_provider ?? "openai",
+          providerBaseUrls: providers,
+          openaiBaseUrl: config.openai_base_url ?? null,
+          accountType: accountType == null || ["chatgpt", "apiKey"].includes(accountType) ? accountType : "unknown",
+          contract: { api: 1, initialize: true, configRead: true, accountRead: true, routing: plan.recordedRouting === true ? "recorded" : "runtime", providerOverrides: settings }
+        };
+      })().catch(async (error) => {
+        try {
+          await stop(liveChild);
+        } catch {
+          return { error: "backend_probe_cleanup_failed" };
+        }
+        return { error: /^backend_[a-z_]+$/u.test(error?.code) ? error.code : "backend_config_unavailable" };
+      }).then((value) => {
+        process.stdout.write(JSON.stringify(value), () => {
+          if (!liveChild || liveChild.exitCode !== null || liveChild.signalCode !== null) process.exit(0);
+        });
+      });
+    }
+    module2.exports = { runConfigProbe };
+  }
+});
+
+// ../host/backend-spawn.cjs
+var require_backend_spawn = __commonJS({
+  "../host/backend-spawn.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var childProcess = require("node:child_process");
+    var { prepareBackendLaunch, verifyBackend, supportsBackendContract } = require_backend_launch();
+    var { runConfigProbe } = require_backend_config_probe();
+    var fail2 = (code) => Object.assign(new Error(code), { code });
+    var closeRoute = (route) => {
+      try {
+        Promise.resolve(route.close()).catch(() => {
+        });
+      } catch {
+      }
+    };
+    var DEFAULT_OPENAI = "https://api.openai.com/v1";
+    var DEFAULT_CHATGPT = "https://chatgpt.com/backend-api/codex";
+    function configArguments(args) {
+      const result = [];
+      for (let index = 0; index < args.length; index++) {
+        if (["-c", "--config", "--enable", "--disable", "-p", "--profile"].includes(args[index])) result.push(args[index], args[++index]);
+        else if (/^--(?:config|enable|disable|profile)=/u.test(args[index])) result.push(args[index]);
+      }
+      return result;
+    }
+    function lastStringOverride(args, setting) {
+      let found;
+      for (let index = 0; index < args.length; index++) {
+        const current = args[index];
+        const entry = current === "-c" || current === "--config" ? args[++index] : current.startsWith("--config=") ? current.slice("--config=".length) : null;
+        if (typeof entry !== "string") continue;
+        const at = entry.indexOf("=");
+        if (at < 0 || entry.slice(0, at).trim() !== setting) continue;
+        const raw = entry.slice(at + 1).trim();
+        let value;
+        try {
+          value = JSON.parse(raw);
+        } catch {
+          value = raw;
+        }
+        if (typeof value === "string") found = value;
+      }
+      return found;
+    }
+    function environmentFromPairs(pairs) {
+      const result = {};
+      for (const pair of pairs ?? []) {
+        const at = pair.indexOf("=", pair.startsWith("=") ? 1 : 0);
+        if (at > 0) result[pair.slice(0, at)] = pair.slice(at + 1);
+      }
+      return result;
+    }
+    function providerTrust(environment, cwd) {
+      const get = (name) => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1];
+      const configured = get("CODEX_CA_CERTIFICATE") ?? get("SSL_CERT_FILE");
+      if (configured === void 0) return void 0;
+      if (typeof configured !== "string" || !configured) throw fail2("backend_provider_trust_unsupported");
+      const target = path.resolve(cwd, configured);
+      let info;
+      try {
+        info = fs.statSync(target);
+      } catch {
+        throw fail2("backend_provider_trust_unsupported");
+      }
+      if (!info.isFile() || info.size < 1 || info.size > 128 * 1024) throw fail2("backend_provider_trust_unsupported");
+      let pem;
+      try {
+        pem = fs.readFileSync(target, "utf8");
+      } catch {
+        throw fail2("backend_provider_trust_unsupported");
+      }
+      if (!/^(?:\\s*-----BEGIN CERTIFICATE-----\\s+[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE-----\\s*)+$/u.test(pem)) throw fail2("backend_provider_trust_unsupported");
+      return pem;
+    }
+    function effectiveProviders(policy) {
+      if (!policy || typeof policy !== "object") throw fail2("backend_config_unavailable");
+      const routes = /* @__PURE__ */ new Map();
+      if (policy.openaiBaseUrl == null && ![null, "chatgpt", "apiKey"].includes(policy.accountType)) throw fail2("backend_auth_mode_unsupported");
+      const builtIn = policy.openaiBaseUrl ?? (policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI);
+      if (typeof builtIn !== "string") throw fail2("backend_config_unavailable");
+      routes.set("openai_base_url", builtIn);
+      const configured = policy.providerBaseUrls ?? {};
+      if (!configured || typeof configured !== "object" || Object.keys(configured).length > 16) throw fail2("backend_provider_unsupported");
+      if ((policy.modelProvider ?? "openai") !== "openai" && !Object.hasOwn(configured, policy.modelProvider)) throw fail2("backend_provider_unsupported");
+      for (const [name, url] of Object.entries(configured)) {
+        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== "string") throw fail2("backend_provider_unsupported");
+        routes.set(\`model_providers.\${name}.base_url\`, url);
+      }
+      return routes;
+    }
+    function installBackendSpawn2(configuration, dependencies = {}) {
+      const prototype = dependencies.prototype ?? childProcess.ChildProcess.prototype;
+      const originalSpawn = prototype.spawn;
+      const prepare = dependencies.prepare ?? prepareBackendLaunch;
+      const verify = dependencies.verify ?? verifyBackend;
+      const probe = dependencies.probe ?? ((plan) => {
+        const result = childProcess.spawnSync(configuration.runtimeExecutable, ["--no-addons", "--no-global-search-paths", "--eval", \`(\${runConfigProbe.toString()})()\`], {
+          input: JSON.stringify(plan),
+          env: plan.environment,
+          cwd: plan.cwd,
+          windowsHide: true,
+          encoding: "utf8",
+          maxBuffer: 256 * 1024,
+          timeout: 4500
+        });
+        if (result.error || result.status !== 0) throw fail2("backend_config_unavailable");
+        let value;
+        try {
+          value = JSON.parse(result.stdout);
+        } catch {
+          throw fail2("backend_config_unavailable");
+        }
+        if (value.error) throw fail2(value.error);
+        return value;
+      });
+      if (!configuration?.source?.reserveRoute || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail2("invalid_launch_configuration");
+      let closed = false, prepared = 0, declined = 0, reason = null;
+      const state = dependencies.state ?? { owned: /* @__PURE__ */ new WeakSet(), trust: /* @__PURE__ */ new WeakMap(), accounts: /* @__PURE__ */ new WeakMap(), providers: /* @__PURE__ */ new WeakMap(), records: /* @__PURE__ */ new Set(), pending: /* @__PURE__ */ new Set(), prepared: 0 };
+      const shared = !!dependencies.state;
+      const active = /* @__PURE__ */ new Set(), pending = state.pending, owned = state.owned, trustByProcess = state.trust, accountByProcess = state.accounts, providersByProcess = state.providers;
+      prepared = state.prepared;
+      function wrapped(options) {
+        const args = options?.args, file = options?.file;
+        if (closed || !Array.isArray(args) || !args.includes("app-server") || typeof file !== "string" || !path.isAbsolute(file) || !/^codex(?:\\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
+        let reservations = [], dispatched = false;
+        try {
+          const identity = verify(file, process.platform);
+          const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);
+          const cwd = options.cwd ?? process.cwd();
+          const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd, recordedRouting: identity.recorded === true });
+          const directOpenaiBaseUrl = lastStringOverride(actualArgs, "openai_base_url");
+          if (directOpenaiBaseUrl !== void 0) policy.openaiBaseUrl = directOpenaiBaseUrl;
+          const additionalCaPem = providerTrust(environment, cwd);
+          const providers = effectiveProviders(policy), providerRoutes = {};
+          if (!supportsBackendContract(policy.contract, [...providers.keys()])) throw fail2("backend_contract_unavailable");
+          for (const [setting, upstreamBaseUrl] of providers) {
+            const url = new URL(upstreamBaseUrl);
+            if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");
+            const reservation = configuration.source.reserveRoute({ upstreamBaseUrl, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });
+            reservations.push(reservation);
+            providerRoutes[setting] = reservation.baseUrl;
+          }
+          const launch = prepare({
+            executable: file,
+            arguments: actualArgs,
+            originalEnvironment: environment,
+            providerRoutes,
+            platform: process.platform,
+            compatibility: { ...identity, contract: policy.contract }
+          });
+          const next = { ...options, args: [args[0], ...launch.arguments] };
+          dispatched = true;
+          const result = originalSpawn.call(this, next);
+          owned.add(this);
+          trustByProcess.set(this, additionalCaPem);
+          providersByProcess.set(this, /* @__PURE__ */ new Set(["openai", ...Object.keys(policy.providerBaseUrls ?? {})]));
+          accountByProcess.set(this, {
+            route: reservations[0],
+            explicit: policy.openaiBaseUrl != null,
+            current: effectiveProviders(policy).get("openai_base_url"),
+            pending: null
+          });
+          prepared++;
+          state.prepared = prepared;
+          const ready = Promise.all(reservations.map((item) => item.ready));
+          ready.catch(() => {
+            reason = "route_unavailable";
+          });
+          pending.add(ready);
+          ready.finally(() => pending.delete(ready)).catch(() => {
+          });
+          const record = { child: this, reservations, compatibility: { binarySha256: identity.binarySha256, contract: policy.contract } };
+          state.records.add(record);
+          if (shared && dependencies.trackBackend) dependencies.trackBackend(record, { methodKey: "method", method: "account/updated", paramsKey: "params", modeKey: "authMode", targets: { chatgpt: DEFAULT_CHATGPT, apiKey: DEFAULT_OPENAI } });
+          else {
+            const release = () => {
+              for (const item of reservations) closeRoute(item);
+              active.delete(release);
+              state.records.delete(record);
+            };
+            active.add(release);
+            this.once("exit", release);
+            this.once("error", release);
+          }
+          return result;
+        } catch (error) {
+          for (const item of reservations) closeRoute(item);
+          declined++;
+          reason = [
+            "backend_identity_unavailable",
+            "backend_identity_changed",
+            "backend_contract_unavailable",
+            "backend_routing_contract_unavailable",
+            "backend_config_unavailable",
+            "backend_config_timeout",
+            "backend_config_too_large",
+            "backend_probe_cleanup_failed",
+            "backend_provider_unsupported",
+            "backend_auth_mode_unsupported",
+            "backend_provider_trust_unsupported",
+            "backend_route_unavailable"
+          ].includes(error.code) ? error.code : "route_unavailable";
+          if (dispatched) throw error;
+          return originalSpawn.call(this, options);
+        }
+      }
+      prototype.spawn = wrapped;
+      return Object.freeze({
+        async ready({ deadlineUnixMs = configuration.deadlineUnixMs } = {}) {
+          while (!prepared && !declined && !closed && Date.now() < deadlineUnixMs - 500) await new Promise((resolve) => setTimeout(resolve, 20));
+          if (prepared && pending.size > 0) {
+            const limit = deadlineUnixMs - 500 - Date.now();
+            if (limit <= 0) throw fail2("backend_route_timeout");
+            let timer;
+            try {
+              await Promise.race([Promise.all([...pending]), new Promise((_, reject) => {
+                timer = setTimeout(() => reject(fail2("backend_route_timeout")), limit);
+              })]);
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+          return this.inspect();
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          if (prototype.spawn === wrapped) prototype.spawn = originalSpawn;
+          if (!shared) for (const release of active) release();
+        },
+        ownsProcess: (child) => !closed && !!child && owned.has(child),
+        providerTrustForProcess: (child) => owned.has(child) ? trustByProcess.get(child) : void 0,
+        isProviderSupported: (child, provider) => owned.has(child) && providersByProcess.get(child)?.has(provider) === true,
+        pendingAccountUpdate: (child) => accountByProcess.get(child)?.pending ?? null,
+        updateAccountMode(child, mode) {
+          const state2 = accountByProcess.get(child);
+          if (!state2 || state2.explicit || mode == null) return;
+          if (mode !== "chatgpt" && mode !== "apiKey") {
+            reason = "backend_auth_mode_unsupported";
+            closeRoute(state2.route);
+            return;
+          }
+          const upstreamBaseUrl = mode === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI;
+          if (state2.current === upstreamBaseUrl) return;
+          const update = (state2.pending ?? Promise.resolve()).then(() => state2.route.update({ upstreamBaseUrl })).then(() => {
+            state2.current = upstreamBaseUrl;
+          }, (error) => {
+            reason = "route_unavailable";
+            closeRoute(state2.route);
+            throw error;
+          });
+          update.catch(() => {
+          });
+          state2.pending = update;
+          update.finally(() => {
+            if (state2.pending === update) state2.pending = null;
+          }).catch(() => {
+          });
+        },
+        inspect: () => ({
+          installed: !closed,
+          backendRootsPrepared: prepared,
+          backendRootsDeclined: declined,
+          available: state.records.size > 0 && !reason,
+          reason: reason ?? (state.records.size ? null : "child_unavailable")
+        })
+      });
+    }
+    module2.exports = { installBackendSpawn: installBackendSpawn2, effectiveProviders, configArguments, lastStringOverride, environmentFromPairs, providerTrust };
+  }
+});
+
+// ../host/source-diagnostics.cjs
+var require_source_diagnostics = __commonJS({
+  "../host/source-diagnostics.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var os = require("node:os");
+    var code = (value) => typeof value === "string" && /^[a-z_]{1,80}$/i.test(value) ? value : null;
+    var integer = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    function sourceDiagnostic(value) {
+      const desktop = value.desktop ?? {}, backend = value.backend ?? {};
+      return {
+        schema: 1,
+        pid: integer(value.pid),
+        startedUnixMs: integer(value.startedUnixMs),
+        finishedUnixMs: integer(value.finishedUnixMs),
+        phase: ["startup", "recovery"].includes(value.phase) ? value.phase : null,
+        appReady: value.appReady === true,
+        installed: value.installed === true,
+        sourceConnected: value.sourceConnected === true,
+        error: code(value.error),
+        recoveryReason: code(value.recoveryReason),
+        desktop: {
+          available: desktop.available === true,
+          reason: code(desktop.reason),
+          taskConfigurationAvailable: desktop.taskConfigurationAvailable === true,
+          taskConfigurationReason: code(desktop.taskConfigurationReason),
+          modules: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, desktop.modules?.[kind] === true])),
+          bindingErrors: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, code(desktop.bindingErrors?.[kind])])),
+          deferredBindings: Number.isSafeInteger(desktop.deferredBindings) ? desktop.deferredBindings : null,
+          mismatch: typeof desktop.mismatch?.name === "string" && /^[A-Za-z0-9_.-]{1,100}$/.test(desktop.mismatch.name) && /^[a-f0-9]{64}$/.test(desktop.mismatch.observedSha256) ? { name: desktop.mismatch.name, observedSha256: desktop.mismatch.observedSha256 } : null
+        },
+        backend: {
+          available: backend.available === true,
+          reason: code(backend.reason),
+          prepared: Number.isSafeInteger(backend.backendRootsPrepared) ? backend.backendRootsPrepared : null,
+          declined: Number.isSafeInteger(backend.backendRootsDeclined) ? backend.backendRootsDeclined : null
+        }
+      };
+    }
+    function recordSourceDiagnostic2(value) {
+      const report = sourceDiagnostic(value);
+      try {
+        fs.writeFileSync(path.join(os.tmpdir(), \`codlet-client-source-\${process.pid}-\${report.startedUnixMs}.json\`), JSON.stringify(report) + "\\n", { flag: "wx", mode: 384 });
+      } catch {
+      }
+    }
+    module2.exports = { recordSourceDiagnostic: recordSourceDiagnostic2, sourceDiagnostic };
+  }
+});
+
+// ../host/electron-main.cjs
+var { connectPlaintextSource } = require_plaintext_source_client();
+var { installDesktopPlaintext } = require_electron_plaintext();
+var { installBackendSpawn } = require_backend_spawn();
+var { recordSourceDiagnostic } = require_source_diagnostics();
+var fail = (code) => Object.assign(new Error(code), { code });
+function localBackends(context, ownsProcess, dependencies = {}) {
+  const profiles = dependencies.profiles ?? require_electron_plaintext().reviewedSourceProfiles;
+  const verify = dependencies.verify ?? require_backend_launch().verifyBackend;
+  const connections = /* @__PURE__ */ new Set();
+  const constructors = new Set(dependencies.connections ?? []);
+  if (dependencies.connections === void 0) for (const record of context.modules.list()) {
+    const profile = profiles[record.name];
+    const connectionSymbol = profile?.connectionSymbol ?? (profile?.kind === "connection" ? profile.symbol : null);
+    if (!connectionSymbol || profile.hash !== record.hash) continue;
+    constructors.add(record.evaluate(connectionSymbol));
+  }
+  for (const Constructor of constructors) {
+    for (const connection of context.modules.instances(Constructor)) {
+      const child = connection.connection?.proc;
+      if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== "string" || !/^codex(?:\\.exe)?$/i.test(require("node:path").basename(child.spawnfile))) continue;
+      verify(child.spawnfile, process.platform);
+      if (connection.getPendingRequestCount() !== 0 || connection.turnCwds?.pendingByStartId?.size || connection.turnCwds?.startedByTurnId?.size) throw fail("client_source_backend_busy");
+      connections.add(connection);
+    }
+  }
+  return connections;
+}
+async function recoverLocalBackends(context, ownsProcess, dependencies) {
+  for (const connection of localBackends(context, ownsProcess, dependencies)) {
+    await connection.restart({ intent: "restart", killCodexProcess: false });
+  }
+}
+function validateClientSource(electron, context) {
+  if (!electron.app.isReady()) return;
+  if (typeof context?.modules?.list !== "function" || typeof context.modules.subscribe !== "function") throw fail("client_bridge_required");
+}
+function installElectronTraffic(electron, configuration, context, dependencies = {}) {
+  if (!configuration?.source || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail("invalid_launch_configuration");
+  const shared = context?.resources.get("plaintextSource");
+  const source = shared ?? connectPlaintextSource(configuration.source);
+  const installedBeforeReady = !electron.app.isReady();
+  const installBackend = dependencies.installBackend ?? installBackendSpawn;
+  const installDesktop = dependencies.installDesktop ?? installDesktopPlaintext;
+  const recover = dependencies.recover ?? recoverLocalBackends;
+  let recoveryReason = null;
+  let readinessDeadlineUnixMs = null;
+  let readinessStartedUnixMs = null;
+  const diagnose = (installed, error) => {
+    try {
+      const desktopState = desktop?.inspect(), backendState = backend?.inspect();
+      (dependencies.diagnose ?? recordSourceDiagnostic)({
+        pid: process.pid,
+        startedUnixMs: readinessStartedUnixMs,
+        finishedUnixMs: Date.now(),
+        phase: installedBeforeReady ? "startup" : "recovery",
+        appReady: electron.app.isReady(),
+        installed,
+        sourceConnected,
+        error: error?.code ?? error?.name,
+        recoveryReason,
+        desktop: desktopState,
+        backend: backendState
+      });
+    } catch {
+    }
+  };
+  let sourceConnected = false, sourceReason = null;
+  source.ready.then(() => {
+    sourceConnected = true;
+  }, (error) => {
+    sourceReason = typeof error?.code === "string" ? error.code : "source_unavailable";
+  });
+  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null, expectedSources = [];
+  function attachHooks() {
+    backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs }, { state: context?.resources.get("backendState"), trackBackend: context?.trackBackend });
+    desktop = installDesktop(electron, {
+      source,
+      deadlineUnixMs: configuration.deadlineUnixMs,
+      ownsBackendProcess: backend.ownsProcess,
+      isProviderSupported: backend.isProviderSupported,
+      providerTrustForProcess: backend.providerTrustForProcess,
+      pendingAccountUpdate: backend.pendingAccountUpdate,
+      updateAccountMode: backend.updateAccountMode,
+      moduleRegistry: context?.modules,
+      state: context?.resources.get("desktopState"),
+      onlineUpdates: context?.onlineUpdates
+    });
+  }
+  try {
+    attachHooks();
+  } catch (error) {
+    desktop?.close();
+    backend?.close();
+    if (!shared) source.close();
+    throw error;
+  }
+  const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason } });
+  return Object.freeze({
+    handoffVersion: 1,
+    snapshot() {
+      const state = context?.resources.get("backendState");
+      if (!state || !context.resources.get("desktopState")) throw fail("core_update_next_start_required");
+      return { schema: 1, recoveryReason, activatedSources: lastActivation?.activatedSources?.map((source2) => source2.id) ?? [], backends: [...state.records].map((record) => ({
+        pid: record.child.pid ?? null,
+        routes: record.reservations.map((route) => route.baseUrl)
+      })), taskRoutes: context.resources.get("desktopState").taskRoutes.size };
+    },
+    suspend() {
+      if (closed || suspended || !shared || typeof desktop.suspend !== "function") return false;
+      desktop.suspend();
+      backend.close();
+      suspended = true;
+      return true;
+    },
+    restore(snapshot) {
+      if (!validateSnapshot(snapshot)) throw fail("core_update_snapshot_incompatible");
+      const records = [...context.resources.get("backendState").records];
+      if (snapshot.backends.some((previous) => !records.some((record) => record.child.pid === previous.pid && JSON.stringify(record.reservations.map((route) => route.baseUrl)) === JSON.stringify(previous.routes)))) throw fail("core_update_backend_changed");
+      recoveryReason = snapshot.recoveryReason;
+      expectedSources = snapshot.activatedSources ?? [];
+      restored = true;
+    },
+    async resume(snapshot) {
+      if (closed || !suspended) return false;
+      recoveryReason = snapshot.recoveryReason;
+      expectedSources = snapshot.activatedSources ?? [];
+      restored = true;
+      readinessDeadlineUnixMs = Date.now() + 8e3;
+      attachHooks();
+      suspended = false;
+      lastActivation = await this.ready();
+      return lastActivation.installed === true;
+    },
+    confirmTakeover() {
+      return !closed && !suspended && lastActivation?.installed === true;
+    },
+    async ready() {
+      readinessStartedUnixMs ??= Date.now();
+      try {
+        readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5e3 : configuration.deadlineUnixMs;
+        await source.ready;
+        if (context?.modules && !installedBeforeReady && !restored) {
+          try {
+            await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.() });
+          } catch (error) {
+            if (!["client_source_backend_busy", "backend_identity_unavailable", "backend_identity_changed"].includes(error?.code)) throw error;
+            recoveryReason = error.code;
+          }
+        }
+        const readyOptions = { deadlineUnixMs: readinessDeadlineUnixMs };
+        const backendReady = recoveryReason ? backend.inspect() : backend.ready(readyOptions).catch((error) => {
+          if (error?.code !== "backend_route_timeout") throw error;
+          recoveryReason = error.code;
+          return { ...backend.inspect(), available: false, reason: "route_unavailable" };
+        });
+        const [desktopState, backendState] = await Promise.all([desktop.ready(readyOptions), backendReady]);
+        const activatedSources = [], unsupportedSources = [];
+        if (desktopState.available) activatedSources.push({
+          id: "desktop-main-http",
+          operations: ["http.intercept"],
+          protocols: ["http", "sse"],
+          coverage: ["desktop-main-fetch", "desktop-main-upload-progress"]
+        });
+        else unsupportedSources.push({ id: "desktop-main-http", reason: ["unsupported_build", "timeout"].includes(desktopState.reason) ? desktopState.reason : "hook_unavailable" });
+        if (backendState.available && desktopState.taskConfigurationAvailable) activatedSources.push({
+          id: "owned-backend-provider",
+          operations: ["route.register", "route.update", "route.close", "http.intercept"],
+          protocols: ["http", "sse", "webSocket"],
+          coverage: ["owned-local-app-server-model-provider"]
+        });
+        else unsupportedSources.push({ id: "owned-backend-provider", reason: !desktopState.taskConfigurationAvailable ? desktopState.taskConfigurationReason === "unsupported_build" ? "unsupported_build" : "hook_unavailable" : backendState.reason === "child_unavailable" ? "child_unavailable" : "route_unavailable" });
+        const installed = activatedSources.length > 0;
+        if (expectedSources.some((id) => !activatedSources.some((source2) => source2.id === id))) throw fail("core_update_source_capability_lost");
+        diagnose(installed, null);
+        return lastActivation = { installed, activatedSources, unsupportedSources };
+      } catch (error) {
+        diagnose(false, error);
+        throw error;
+      }
+    },
+    inspect: status,
+    async close() {
+      if (closed) return;
+      closed = true;
+      desktop.close();
+      backend.close();
+      if (!shared) source.close();
+    }
+  });
+}
+function validateSnapshot(value) {
+  return !!value && value.schema === 1 && (value.recoveryReason === null || typeof value.recoveryReason === "string") && (value.activatedSources === void 0 || Array.isArray(value.activatedSources) && value.activatedSources.length <= 2 && new Set(value.activatedSources).size === value.activatedSources.length && value.activatedSources.every((id) => ["desktop-main-http", "owned-backend-provider"].includes(id))) && Array.isArray(value.backends) && value.backends.length <= 64 && Number.isSafeInteger(value.taskRoutes) && value.taskRoutes >= 0 && value.backends.every((record) => Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.routes) && record.routes.every((route) => typeof route === "string" && route.length < 2048));
+}
+module.exports = { handoffVersion: 1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };
+`,
     configuration: { source, runtimeExecutable: process.execPath }
   });
 }
@@ -493,7 +5090,4602 @@ module.exports = {
   prepareClientLaunch,
   attachClientLaunch,
   clientSource() {
-    return { code: '"use strict";\nvar __getOwnPropNames = Object.getOwnPropertyNames;\nvar __commonJS = (cb, mod) => function __require() {\n  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n};\n\n// ../host/vendor/plaintext-source-client.cjs\nvar require_plaintext_source_client = __commonJS({\n  "../host/vendor/plaintext-source-client.cjs"(exports2, module2) {\n    "use strict";\n    var __getOwnPropNames2 = Object.getOwnPropertyNames;\n    var __commonJS2 = (cb, mod) => function __require() {\n      return mod || (0, cb[__getOwnPropNames2(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;\n    };\n    var require_traffic_wire = __commonJS2({\n      "../runtime/traffic-wire.cjs"(exports22, module22) {\n        "use strict";\n        var net = require("node:net");\n        var { randomBytes: randomBytes2, timingSafeEqual } = require("node:crypto");\n        var MAX_FRAME = 64 * 1024;\n        var CHUNK = 32 * 1024;\n        var MAX_BODY = 64 * 1024 * 1024;\n        var failure2 = (code) => Object.assign(new Error(code), { code });\n        async function connectTrafficPeer2(endpoint, { signal, handle, event = () => {\n        }, detach = (fn) => fn() } = {}) {\n          if (endpoint?.host !== "127.0.0.1" || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== "string" || endpoint.token.length > 128) throw failure2("invalid_data_endpoint");\n          if (signal?.aborted) throw failure2("host_stopping");\n          const socket = net.createConnection({ host: endpoint.host, port: endpoint.port });\n          socket.setNoDelay(true);\n          const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();\n          let sequence = 0, closed = false, buffer = Buffer.alloc(0), ready, failReady;\n          const connected = new Promise((resolve, reject) => {\n            ready = resolve;\n            failReady = reject;\n          });\n          const handshake = setTimeout(() => close(failure2("traffic_connect_timeout")), 5e3);\n          function close(reason = failure2("peer_closed")) {\n            if (closed) return;\n            closed = true;\n            clearTimeout(handshake);\n            signal?.removeEventListener("abort", aborted);\n            socket.destroy();\n            failReady(reason);\n            for (const item of pending.values()) {\n              clearTimeout(item.timer);\n              item.signal?.removeEventListener("abort", item.abort);\n              item.reject(reason);\n            }\n            pending.clear();\n            inbound.clear();\n            buffer = Buffer.alloc(0);\n            try {\n              event({ event: "closed" });\n            } catch {\n            }\n          }\n          const aborted = () => close(failure2("host_stopping"));\n          signal?.addEventListener("abort", aborted, { once: true });\n          function send(value) {\n            if (closed) throw failure2("peer_closed");\n            const encoded = Buffer.from(JSON.stringify(value));\n            if (encoded.length > MAX_FRAME) throw failure2("frame_too_large");\n            if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");\n            const packet = Buffer.allocUnsafe(encoded.length + 4);\n            packet.writeUInt32BE(encoded.length);\n            encoded.copy(packet, 4);\n            socket.write(packet);\n          }\n          socket.once("connect", () => {\n            try {\n              send({ token: endpoint.token });\n            } catch (error) {\n              close(error);\n            }\n          });\n          socket.on("error", () => close(failure2("peer_closed")));\n          socket.on("close", () => close());\n          socket.on("data", (chunk) => detach(() => {\n            try {\n              let offset = 0;\n              while (offset < chunk.length) {\n                const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;\n                if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");\n                const take = Math.min(required - buffer.length, chunk.length - offset);\n                buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);\n                offset += take;\n                if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");\n                if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;\n                const size = buffer.readUInt32BE(0);\n                if (!size || size > MAX_FRAME) throw failure2("invalid_frame");\n                const message = JSON.parse(buffer.subarray(4).toString("utf8"));\n                buffer = Buffer.alloc(0);\n                if (message.event) {\n                  if (message.event === "connected") {\n                    clearTimeout(handshake);\n                    ready();\n                  } else event(message);\n                  continue;\n                }\n                if (typeof message.method === "string") {\n                  if (inbound.size >= 256 || typeof handle !== "function" || inbound.has(message.id)) throw failure2("traffic_backpressure");\n                  inbound.add(message.id);\n                  let operation;\n                  try {\n                    operation = handle(message.method, message.params);\n                  } catch (error) {\n                    operation = Promise.reject(error);\n                  }\n                  Promise.resolve(operation).then((result) => {\n                    if (!closed && inbound.has(message.id)) send({ id: message.id, result: result ?? null });\n                  }, (error) => {\n                    if (!closed && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });\n                  }).catch(() => close(failure2("invalid_frame"))).finally(() => inbound.delete(message.id));\n                  continue;\n                }\n                const item = pending.get(message.id);\n                if (!item) continue;\n                pending.delete(message.id);\n                clearTimeout(item.timer);\n                item.signal?.removeEventListener("abort", item.abort);\n                if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));\n                else {\n                  try {\n                    item.prepareResult?.(message.result);\n                    item.resolve(message.result);\n                  } catch {\n                    item.reject(failure2("invalid_frame"));\n                  }\n                }\n              }\n            } catch {\n              close(failure2("invalid_frame"));\n            }\n          }));\n          await connected;\n          function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {\n            if (closed || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));\n            if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure2("resource_limit"));\n            if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));\n            return new Promise((resolve, reject) => {\n              const id = ++sequence;\n              const abort = () => {\n                const item = pending.get(id);\n                if (!item) return;\n                pending.delete(id);\n                clearTimeout(item.timer);\n                requestSignal?.removeEventListener("abort", abort);\n                if (cancelOpen && method === "open" && !closed) {\n                  try {\n                    send({ id: ++sequence, method: "cancelOpen", params: { request: id } });\n                  } catch {\n                    close(failure2("peer_closed"));\n                  }\n                }\n                reject(failure2("request_cancelled"));\n              };\n              const timer = setTimeout(abort, timeoutMs);\n              pending.set(id, { resolve, reject, timer, signal: requestSignal, abort, prepareResult });\n              requestSignal?.addEventListener("abort", abort, { once: true });\n              try {\n                send({ id, method, params });\n              } catch (error) {\n                abort();\n                close(error);\n              }\n            });\n          }\n          return Object.freeze({ request, close, status: () => ({ open: !closed, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });\n        }\n        function createTrafficStreams2(peer, lease, signal) {\n          const sources = /* @__PURE__ */ new Map();\n          let disposed = false;\n          const check = () => {\n            if (disposed || signal.aborted) throw failure2("stream_retired");\n          };\n          function exportBody(body) {\n            check();\n            if (body == null) return null;\n            if (typeof body === "string" || body instanceof Uint8Array) {\n              if (Buffer.byteLength(body) > MAX_BODY) throw failure2("body_too_large");\n              const bytes = Buffer.from(body);\n              if (bytes.length <= 1024) return { inline: bytes.toString("base64") };\n              body = [bytes];\n            }\n            if (!body?.[Symbol.iterator] && !body?.[Symbol.asyncIterator]) throw failure2("invalid_body");\n            if (sources.size >= 8) throw failure2("resource_limit");\n            const stream = randomBytes2(16).toString("hex");\n            sources.set(stream, { body, iterator: null, chunk: null, offset: 0, total: 0, reading: false, cancelled: false, cancelRead: null });\n            return { stream };\n          }\n          function importBody(reference, maximum = MAX_BODY) {\n            if (reference == null) return null;\n            if (typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1) throw failure2("invalid_body");\n            let used = false, finished = false, cancelled = false, cancelPromise = Promise.resolve();\n            const controller = new AbortController();\n            const rootAborted = () => controller.abort(failure2("stream_retired"));\n            signal.addEventListener("abort", rootAborted, { once: true });\n            const finish = () => {\n              finished = true;\n              signal.removeEventListener("abort", rootAborted);\n            };\n            const cancel = () => {\n              if (finished || cancelled) return false;\n              used = true;\n              cancelled = true;\n              finish();\n              controller.abort(failure2("request_cancelled"));\n              if (reference.stream) cancelPromise = peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).then(() => {\n              }, () => {\n              });\n              return true;\n            };\n            const cancelAndWait = () => {\n              cancel();\n              return cancelPromise;\n            };\n            return Object.freeze({ cancel, cancelAndWait, [Symbol.asyncIterator]() {\n              if (used) throw failure2("body_already_consumed");\n              used = true;\n              let total = 0, ended = false, reading = false;\n              return {\n                async next() {\n                  check();\n                  if (cancelled) throw failure2("request_cancelled");\n                  if (ended) return { done: true };\n                  if (reading) throw failure2("body_read_pending");\n                  reading = true;\n                  try {\n                    let bytes;\n                    if (reference.inline !== void 0) {\n                      if (typeof reference.inline !== "string" || reference.inline.length > 1368) throw failure2("invalid_body");\n                      bytes = Buffer.from(reference.inline, "base64");\n                      ended = true;\n                      finish();\n                    } else {\n                      if (typeof reference.stream !== "string" || !/^[a-f0-9]{32}$/u.test(reference.stream)) throw failure2("invalid_body");\n                      const value = await peer.request("relay", { lease, operation: "stream.read", payload: { stream: reference.stream } }, { signal: controller.signal, timeoutMs: 3e5 });\n                      check();\n                      if (value.done === true) {\n                        ended = true;\n                        finish();\n                        return { done: true };\n                      }\n                      if (typeof value.bytes !== "string" || !value.bytes.length || value.bytes.length > Math.ceil(CHUNK / 3) * 4) throw failure2("invalid_body");\n                      bytes = Buffer.from(value.bytes, "base64");\n                      if (bytes.length > CHUNK || bytes.toString("base64") !== value.bytes) throw failure2("invalid_body");\n                    }\n                    const encoded = reference.inline !== void 0 ? reference.inline : void 0;\n                    if (encoded !== void 0 && bytes.toString("base64") !== encoded) throw failure2("invalid_body");\n                    total += bytes.length;\n                    if (total > maximum) throw failure2("body_too_large");\n                    return { done: false, value: bytes };\n                  } catch (error) {\n                    finish();\n                    throw error;\n                  } finally {\n                    reading = false;\n                  }\n                },\n                async return() {\n                  ended = true;\n                  finish();\n                  controller.abort();\n                  if (reference.stream && !signal.aborted) await peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).catch(() => {\n                  });\n                  return { done: true };\n                }\n              };\n            } });\n          }\n          async function handle(operation, payload) {\n            check();\n            const source = sources.get(payload?.stream);\n            if (!source) throw failure2("stream_retired");\n            if (operation === "stream.cancel") {\n              sources.delete(payload.stream);\n              source.cancelled = true;\n              source.cancelRead?.();\n              if (source.body.cancelAndWait) await source.body.cancelAndWait().catch(() => {\n              });\n              else if (source.body.cancel) Promise.resolve(source.body.cancel()).catch(() => {\n              });\n              if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {\n              });\n              return { cancelled: true };\n            }\n            if (operation !== "stream.read" || source.reading) throw failure2("body_read_pending");\n            source.reading = true;\n            try {\n              source.iterator ??= source.body[Symbol.asyncIterator]?.() ?? source.body[Symbol.iterator]();\n              for (let empty = 0; !source.chunk || source.offset >= source.chunk.length; empty++) {\n                if (empty >= 128) throw failure2("invalid_body");\n                const value = await new Promise((resolve, reject) => {\n                  source.cancelRead = () => reject(failure2("stream_retired"));\n                  Promise.resolve().then(() => source.iterator.next()).then(resolve, reject);\n                });\n                source.cancelRead = null;\n                check();\n                if (source.cancelled) throw failure2("stream_retired");\n                if (value.done) {\n                  sources.delete(payload.stream);\n                  return { done: true };\n                }\n                if (typeof value.value !== "string" && !(value.value instanceof Uint8Array)) throw failure2("invalid_body");\n                source.total += Buffer.byteLength(value.value);\n                if (source.total > MAX_BODY) throw failure2("body_too_large");\n                source.chunk = Buffer.from(value.value);\n                source.offset = 0;\n              }\n              const chunk = source.chunk.subarray(source.offset, source.offset + CHUNK);\n              source.offset += chunk.length;\n              return { done: false, bytes: chunk.toString("base64") };\n            } finally {\n              source.reading = false;\n              source.cancelRead = null;\n            }\n          }\n          async function importFrame(frame) {\n            if (typeof frame?.binary !== "boolean") throw failure2("invalid_frame");\n            const body = importBody(frame.body, 8 * 1024 * 1024);\n            if (!body) throw failure2("invalid_frame");\n            const chunks = [];\n            for await (const chunk of body) chunks.push(Buffer.from(chunk));\n            const bytes = Buffer.concat(chunks);\n            return Object.freeze({ binary: frame.binary, data: frame.binary ? bytes : bytes.toString("utf8") });\n          }\n          function exportFrame(frame) {\n            if (frame == null) return null;\n            if (typeof frame === "string") frame = { binary: false, data: frame };\n            if (frame instanceof Uint8Array) frame = { binary: true, data: frame };\n            if (typeof frame?.binary !== "boolean" || (frame.binary ? !(frame.data instanceof Uint8Array) : typeof frame.data !== "string") || Buffer.byteLength(frame.data) > 8 * 1024 * 1024) throw failure2("invalid_frame");\n            return { binary: frame.binary, body: exportBody(frame.data) };\n          }\n          function dispose() {\n            if (disposed) return;\n            disposed = true;\n            signal.removeEventListener("abort", dispose);\n            for (const source of sources.values()) {\n              source.cancelled = true;\n              source.cancelRead?.();\n              try {\n                source.body.cancel?.();\n                if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {\n                });\n              } catch {\n              }\n            }\n            sources.clear();\n          }\n          signal.addEventListener("abort", dispose, { once: true });\n          return Object.freeze({ exportBody, importBody, exportFrame, importFrame, handle, dispose, status: () => ({ streams: sources.size, retired: disposed }) });\n        }\n        async function listenTrafficPeer({ signal, handle, onConnect = () => {\n        }, onClose = () => {\n        } }) {\n          if (signal?.aborted) throw failure2("host_stopping");\n          const token = randomBytes2(32).toString("base64url");\n          let active = null, closed = false;\n          const sockets = /* @__PURE__ */ new Set();\n          const server = net.createServer((socket) => {\n            if (closed || active || sockets.size >= 4) {\n              socket.destroy();\n              return;\n            }\n            sockets.add(socket);\n            socket.once("close", () => sockets.delete(socket));\n            socket.setNoDelay(true);\n            let buffer = Buffer.alloc(0), authenticated = false, retired = false, sequence = 0;\n            const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();\n            const handshake = setTimeout(() => retire(), 5e3);\n            function retire() {\n              if (retired) return;\n              retired = true;\n              clearTimeout(handshake);\n              socket.destroy();\n              for (const item of pending.values()) {\n                clearTimeout(item.timer);\n                item.signal?.removeEventListener("abort", item.abort);\n                item.reject(failure2("peer_closed"));\n              }\n              pending.clear();\n              inbound.clear();\n              buffer = Buffer.alloc(0);\n              if (active === peer) {\n                active = null;\n                onClose(peer);\n              }\n            }\n            function send(value) {\n              if (retired) throw failure2("peer_closed");\n              const encoded = Buffer.from(JSON.stringify(value));\n              if (!encoded.length || encoded.length > MAX_FRAME) throw failure2("frame_too_large");\n              if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");\n              const packet = Buffer.allocUnsafe(encoded.length + 4);\n              packet.writeUInt32BE(encoded.length);\n              encoded.copy(packet, 4);\n              socket.write(packet);\n            }\n            function request(method, params = {}, { signal: requestSignal, timeoutMs = 3e4 } = {}) {\n              if (retired || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));\n              if (pending.size >= 64) return Promise.reject(failure2("resource_limit"));\n              if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));\n              return new Promise((resolve, reject) => {\n                const id = ++sequence;\n                const abort = () => {\n                  if (!pending.has(id)) return;\n                  pending.delete(id);\n                  clearTimeout(timer);\n                  requestSignal?.removeEventListener("abort", abort);\n                  reject(failure2("request_cancelled"));\n                };\n                const timer = setTimeout(abort, timeoutMs);\n                pending.set(id, { resolve, reject, timer, signal: requestSignal, abort });\n                requestSignal?.addEventListener("abort", abort, { once: true });\n                try {\n                  send({ id, method, params });\n                } catch (error) {\n                  abort();\n                  retire();\n                }\n              });\n            }\n            const peer = Object.freeze({ request, close: retire, status: () => ({ open: !retired, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });\n            socket.on("error", retire);\n            socket.on("close", retire);\n            socket.on("data", (chunk) => {\n              try {\n                let offset = 0;\n                while (offset < chunk.length) {\n                  const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;\n                  if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");\n                  const take = Math.min(required - buffer.length, chunk.length - offset);\n                  buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);\n                  offset += take;\n                  if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");\n                  if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;\n                  const message = JSON.parse(buffer.subarray(4).toString("utf8"));\n                  buffer = Buffer.alloc(0);\n                  if (!authenticated) {\n                    const offered = typeof message?.token === "string" ? Buffer.from(message.token) : Buffer.alloc(0);\n                    const expected = Buffer.from(token);\n                    if (active || offered.length !== expected.length || !timingSafeEqual(offered, expected) || Object.keys(message).length !== 1) throw failure2("permission_denied");\n                    authenticated = true;\n                    clearTimeout(handshake);\n                    active = peer;\n                    send({ event: "connected" });\n                    onConnect(peer);\n                    continue;\n                  }\n                  if (typeof message.method === "string") {\n                    if (inbound.size >= 256 || inbound.has(message.id)) throw failure2("traffic_backpressure");\n                    inbound.add(message.id);\n                    let operation;\n                    try {\n                      operation = handle(peer, message.method, message.params);\n                    } catch (error) {\n                      operation = Promise.reject(error);\n                    }\n                    Promise.resolve(operation).then((result) => {\n                      if (!retired && inbound.has(message.id)) send({ id: message.id, result: result ?? null });\n                    }, (error) => {\n                      if (!retired && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });\n                    }).catch(retire).finally(() => inbound.delete(message.id));\n                    continue;\n                  }\n                  const item = pending.get(message.id);\n                  if (!item) continue;\n                  pending.delete(message.id);\n                  clearTimeout(item.timer);\n                  item.signal?.removeEventListener("abort", item.abort);\n                  if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));\n                  else item.resolve(message.result);\n                }\n              } catch {\n                retire();\n              }\n            });\n          });\n          const stopped = () => close();\n          signal?.addEventListener("abort", stopped, { once: true });\n          try {\n            await new Promise((resolve, reject) => {\n              const cleanup = () => {\n                server.off("error", failed);\n                signal?.removeEventListener("abort", aborted);\n              };\n              const failed = () => {\n                cleanup();\n                reject(failure2("channel_listen_failed"));\n              };\n              const aborted = () => {\n                cleanup();\n                reject(failure2("host_stopping"));\n              };\n              server.once("error", failed);\n              signal?.addEventListener("abort", aborted, { once: true });\n              server.listen(0, "127.0.0.1", () => {\n                cleanup();\n                if (closed) {\n                  close();\n                  reject(failure2("host_stopping"));\n                } else resolve();\n              });\n            });\n          } catch (error) {\n            close();\n            throw error;\n          }\n          const address = server.address();\n          function close() {\n            if (!closed) {\n              closed = true;\n              signal?.removeEventListener("abort", stopped);\n            }\n            for (const socket of sockets) socket.destroy();\n            if (server.listening) server.close();\n          }\n          if (closed || signal?.aborted) {\n            close();\n            throw failure2("host_stopping");\n          }\n          return Object.freeze({ endpoint: Object.freeze({ host: "127.0.0.1", port: address.port, token }), close, status: () => ({ open: !closed, connected: !!active, peer: active?.status() ?? null }) });\n        }\n        module22.exports = { connectTrafficPeer: connectTrafficPeer2, listenTrafficPeer, createTrafficStreams: createTrafficStreams2 };\n      }\n    });\n    var { randomBytes } = require("node:crypto");\n    var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();\n    var failure = (code) => Object.assign(new Error(code), { code });\n    var TOKEN = /^[A-Za-z0-9_-]{43}$/u;\n    function connectPlaintextSource2(source, { signal } = {}) {\n      if (source?.version !== 1 || source.kind !== "plaintext" || !Array.isArray(source.protocols) || !Array.isArray(source.operations) || typeof source.routeBaseUrl !== "string") throw failure("invalid_source");\n      const routeBase = new URL(source.routeBaseUrl);\n      if (routeBase.protocol !== "http:" || routeBase.hostname !== "127.0.0.1" || !routeBase.port || routeBase.username || routeBase.password || routeBase.search || routeBase.hash || routeBase.pathname === "/") throw failure("invalid_source");\n      const controller = new AbortController(), exchanges = /* @__PURE__ */ new Map(), routes = /* @__PURE__ */ new Set(), routeRecords = /* @__PURE__ */ new Map();\n      let closed = false, peer;\n      const stop = () => close();\n      signal?.addEventListener("abort", stop, { once: true });\n      if (signal?.aborted) throw failure("host_stopping");\n      function retire(record, notify = false) {\n        if (!record || !exchanges.has(record.id)) return;\n        exchanges.delete(record.id);\n        record.signal?.removeEventListener("abort", record.abort);\n        record.controller.abort(failure("stream_retired"));\n        record.streams.dispose();\n        if (notify && !closed) peer.request("http.cancel", { exchange: record.id }, { timeoutMs: 2e3 }).catch(() => {\n        });\n      }\n      async function handle(method, params) {\n        if (method === "relay") {\n          const streamOwner = exchanges.get(params?.lease) ?? routeRecords.get(params?.lease);\n          if (!streamOwner) throw failure("stream_retired");\n          return streamOwner.streams.handle(params.operation, params.payload);\n        }\n        const record = exchanges.get(params?.exchange);\n        if (!record) throw failure("stream_retired");\n        if (method === "http.cancel") {\n          retire(record);\n          return { cancelled: true };\n        }\n        if (method !== "http.forward" || record.forwarding) throw failure("invalid_method");\n        record.forwarding = true;\n        try {\n          const input = { ...params.request, body: record.streams.importBody(params.request.body) };\n          const response = await record.forward(input, { signal: record.controller.signal });\n          if (record.controller.signal.aborted) throw failure("stream_retired");\n          if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw failure("invalid_response");\n          return { ...response, headers: response.headers ?? [], body: record.streams.exportBody(response.body) };\n        } finally {\n          record.forwarding = false;\n        }\n      }\n      function close() {\n        if (closed) return;\n        closed = true;\n        signal?.removeEventListener("abort", stop);\n        for (const record of [...exchanges.values()]) retire(record);\n        for (const record of routes) {\n          record.controller.abort();\n          record.streams?.dispose();\n        }\n        routeRecords.clear();\n        routes.clear();\n        controller.abort();\n        peer?.close();\n      }\n      const ready = connectTrafficPeer(source.endpoint, {\n        signal: controller.signal,\n        handle,\n        event(event) {\n          if (event.event === "closed") close();\n        }\n      }).then(\n        (value) => {\n          peer = value;\n          return true;\n        },\n        (error) => {\n          close();\n          throw error;\n        }\n      );\n      function certificateReference(record, value) {\n        if (value === void 0) return void 0;\n        if (typeof value !== "string" || Buffer.byteLength(value) > 128 * 1024) throw failure("invalid_ca_bundle");\n        return record.streams.exportBody(value);\n      }\n      function closeRouteRecord(record) {\n        routeRecords.delete(record.token);\n        record.controller.abort();\n        record.streams?.dispose();\n      }\n      function reserveRoute({ upstreamBaseUrl, additionalCaPem } = {}) {\n        if (closed) throw failure("peer_closed");\n        if (routes.size >= 32) throw failure("resource_limit");\n        const token = randomBytes(32).toString("base64url");\n        if (!TOKEN.test(token)) throw failure("invalid_source");\n        const baseUrl = `${source.routeBaseUrl}/${token}`;\n        const record = { token, closed: false, registered: false, controller: new AbortController(), streams: null };\n        routes.add(record);\n        const reservationReady = ready.then(() => {\n          if (record.closed) throw failure("route_closed");\n          record.streams = createTrafficStreams(peer, token, record.controller.signal);\n          routeRecords.set(token, record);\n          return peer.request("route.register", {\n            token,\n            upstreamBaseUrl,\n            additionalCaPem: certificateReference(record, additionalCaPem)\n          }, { timeoutMs: 5e3 });\n        }).then((result) => {\n          if (result?.baseUrl !== baseUrl) throw failure("invalid_source");\n          record.registered = true;\n          if (record.closed) return peer.request("route.close", { token }, { timeoutMs: 2e3 }).then(() => {\n            record.registered = false;\n            throw failure("route_closed");\n          });\n          return record;\n        }).catch((error) => {\n          routes.delete(record);\n          closeRouteRecord(record);\n          throw error;\n        });\n        record.pending = reservationReady;\n        return Object.freeze({ baseUrl, ready: reservationReady, update({ upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: additionalCaPem2 } = {}) {\n          if (record.closed || closed) return Promise.reject(failure("route_closed"));\n          const update = record.pending.then(async () => {\n            const reference = certificateReference(record, additionalCaPem2);\n            try {\n              return await peer.request("route.update", { token, upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: reference }, { timeoutMs: 5e3 });\n            } catch (error) {\n              if (reference?.stream) await record.streams.handle("stream.cancel", { stream: reference.stream }).catch(() => {\n              });\n              throw error;\n            }\n          });\n          record.pending = update.catch(() => {\n          });\n          return update;\n        }, async close() {\n          if (record.closed) return;\n          record.closed = true;\n          routes.delete(record);\n          try {\n            await record.pending;\n            if (record.registered && !closed) await peer.request("route.close", { token }, { timeoutMs: 2e3 });\n          } catch {\n          } finally {\n            closeRouteRecord(record);\n          }\n        } });\n      }\n      async function registerRoute(options) {\n        const reservation = reserveRoute(options);\n        await reservation.ready;\n        return reservation;\n      }\n      async function interceptHttp(input, { forward, signal: requestSignal } = {}) {\n        if (closed || typeof forward !== "function") throw failure("invalid_source");\n        await ready;\n        const id = randomBytes(32).toString("base64url"), requestController = new AbortController();\n        const abort = () => retire(record, true);\n        const record = {\n          id,\n          forward,\n          controller: requestController,\n          signal: requestSignal,\n          abort,\n          forwarding: false,\n          streams: createTrafficStreams(peer, id, requestController.signal)\n        };\n        exchanges.set(id, record);\n        requestSignal?.addEventListener("abort", abort, { once: true });\n        if (requestSignal?.aborted) {\n          abort();\n          throw failure("request_cancelled");\n        }\n        let result;\n        try {\n          result = await peer.request(\n            "http.intercept",\n            {\n              exchange: id,\n              request: { url: input.url, method: input.method ?? "GET", headers: input.headers ?? [], body: record.streams.exportBody(input.body) }\n            },\n            { signal: requestController.signal, timeoutMs: 3e5 }\n          );\n          if (requestController.signal.aborted) throw failure("request_cancelled");\n          const body = record.streams.importBody(result.body);\n          if (!body) {\n            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {\n            });\n            retire(record);\n            return { ...result, body: null };\n          }\n          let consumed = false;\n          const finish = async () => {\n            if (consumed) return;\n            consumed = true;\n            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {\n            });\n            retire(record);\n          };\n          const wrapped = Object.freeze({\n            async cancel() {\n              await finish();\n            },\n            [Symbol.asyncIterator]() {\n              const iterator = body[Symbol.asyncIterator]();\n              return {\n                async next() {\n                  try {\n                    const item = await iterator.next();\n                    if (item.done) await finish();\n                    return item;\n                  } catch (error) {\n                    await finish();\n                    throw error;\n                  }\n                },\n                async return() {\n                  try {\n                    return await iterator.return?.() ?? { done: true };\n                  } finally {\n                    await finish();\n                  }\n                }\n              };\n            }\n          });\n          return { ...result, body: wrapped };\n        } catch (error) {\n          retire(record, true);\n          throw error;\n        }\n      }\n      return Object.freeze({\n        ready,\n        reserveRoute,\n        registerRoute,\n        interceptHttp,\n        close,\n        status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size })\n      });\n    }\n    module2.exports = { connectPlaintextSource: connectPlaintextSource2 };\n  }\n});\n\n// ../host/electron-plaintext.cjs\nvar require_electron_plaintext = __commonJS({\n  "../host/electron-plaintext.cjs"(exports2, module2) {\n    "use strict";\n    var Module = require("node:module");\n    var path = require("node:path");\n    var { createHash } = require("node:crypto");\n    var { EventEmitter } = require("node:events");\n    var { Readable } = require("node:stream");\n    var { AsyncLocalStorage } = require("node:async_hooks");\n    var PROFILES = Object.freeze({\n      "bootstrap-D2PJMYEh.js": { hash: "0d62d7be4491d5ef84d93ea9b753c270096de217f2e49064e5f8f701af53e9ed", kind: "bootstrap", symbol: "He" },\n      "main-DAwJoFgo.js": { hash: "18beea7d7e46866168528ff5dab5108ffe6d39fc13433367ce8dee7b187044f8", kind: "main", symbol: "kEe" },\n      "application-network-startup-CY4ZWOz-.js": { hash: "7936a5b6373be818c7cce78cad7c18e4e156c8400d3b16f5b440d2626a1cc661", kind: "stdio", symbol: "$s" },\n      "src-BSSLXJxP.js": { hash: "50c7cf9c144594cfa6f33298e977f0b144976cc70c579f59fdc7242615c4af98", kind: "connection", symbol: "Yh" },\n      "bootstrap-CiIGnI3y.js": { hash: "119bb54ee12ed5d2b0d3b98dd068a4322232a4aa342323eb9cb5dfa6575ca158", kind: "bootstrap", symbol: "Nt" },\n      "main-BR_2NHW6.js": { hash: "1f2b91cf92fc023fb2fa41e1c1d03698fa6e37354ecd07dd0cebd21337607b08", kind: "main", symbol: "ZTe" },\n      "bootstrap-DK4EfNwt.js": { hash: "dbdbdd3ef5dde93dd196a59846edf244dc653341213e0fd45eebb133b5df10ba", kind: "bootstrap", symbol: "Pt" },\n      "main-LM8MUIFp.js": { hash: "c71bf3ffecef5fd390b4cd16d120d39dce30d30bffe3c563c8c74c1b691da018", kind: "main", symbol: "wEe" },\n      "src-C3YaUE83.js": { hash: "14c8c23e8b8dfa874d3fb5a50d54fb28eccf55fb83232c3ab29cb7c0ef0a0472", kind: "src", symbol: "mQ", managerExport: "un" },\n      "bootstrap-DwqRMhlU.js": { hash: "79ad86bda1f6171d43bab09b1b4a5d379afefc07a13d6f4f58470a823f6f575f", kind: "bootstrap", symbol: "Nt" },\n      "main-Bx5zswAj.js": { hash: "610ea8b045f207360ac50fcccfe43ca896c6298fa75562f323f1a45ed2364a1b", kind: "main", symbol: "ZTe" },\n      "src-mOb8On4V.js": { hash: "0639e87d51c132a7440bfa06624fb8e99031a3bb331ae11577278ce4a515cbb4", kind: "src", symbol: "Pq", managerExport: "un" },\n      "bootstrap-C4dRql4x.js": { hash: "0757af0981f4552ca79ed1a364eafa6a73e71a92e65ea4fce747c7b6c715ed4a", kind: "bootstrap", symbol: "Nt" },\n      "main-C-Mhak1n.js": { hash: "457c79be69620d4489e94c14ac665f81731d869635606dcf175b7b4cc2e8b467", kind: "main", symbol: "ZTe" },\n      "src-DldfpmrL.js": { hash: "88ec69722b5d87a7081edf2e2d6a2e21c3f25300cee587363d74b8b87969a412", kind: "src", symbol: "WQ", managerExport: "un" },\n      "bootstrap-CYu4H4X5.js": { hash: "9b9d3c9e8312dba970daf31fd3950b3f2bd760a89e1d7bf480c4efefb3d2b102", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },\n      "main-Dn18kdv3.js": { hash: "447e4900075d8cb41f5c55f1728c20147ea23ab761bb4377348eea8c8f3d4a48", kind: "main", symbol: "Dce" },\n      "application-network-startup-DN7Ktmlk.js": { hash: "3c2ebf430f24e55975f81e95b33e0f71470d04886f229b935939a7e32c587cf0", kind: "stdio", symbol: "Hs" },\n      "bootstrap-CZlEGA2m.js": { hash: "343072f02e604fe06f7864a72b1cbcc6004a8a318c66982995a188ee97430a3b", kind: "bootstrap", symbol: "vY", connectionSymbol: "DN" },\n      "main-C_jM0dPl.js": { hash: "d940b7ba89557a640cf23967c60555fa2a2344d6899807478c69ffc304314302", kind: "main", symbol: "kce" },\n      "application-network-startup-ouXbhtc5.js": { hash: "e92e5333cc38b06c6e94242d5bb680321f044bc9355013739d059a2d3e2f5b8d", kind: "stdio", symbol: "Hs" },\n      // Windows 26.930.7945.0 / frontend 26.930.61225: reviewed native methods\n      // retain the ApplicationNetwork, final fetch, stdio and notification contracts.\n      "bootstrap-C8gUBg5L.js": { hash: "1f726d0e3103d81501551546d3b6e70f1fc10646f9326e00fe68605f144c5f4f", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },\n      "main-gtVueRkt.js": { hash: "a4b72dcd241e8ee360aa960442cc585aa822685a42efd056c760937d9f8b623e", kind: "main", symbol: "kce" },\n      "application-network-startup-BEAX-hka.js": { hash: "634382c7af55d0ff57eb028aa4dd904130215c44fb559ea90a4f4035a5419f6e", kind: "stdio", symbol: "Hs" },\n      // Windows 26.1002.7124.0 / frontend 26.1002.52244 / build 13536:\n      // reviewed live bindings retain policy checks, final fetch, stdio and account notifications.\n      "bootstrap-Dz9A8y86.js": { hash: "a70497f5ffa764fe74f4de7ac05a5f73aff8d1e2f44de4476d1d9a684af43ddd", kind: "bootstrap", symbol: "jY", connectionSymbol: "hN" },\n      "main-p91kJShj.js": { hash: "aafd6a750458cb39b6202f9be00231482122d32ac14017b79d544c4ab741e889", kind: "main", symbol: "Hb" },\n      "application-network-startup-Bt0a8E1L.js": { hash: "aa5478e31c8a623632dfedffcecfbe40d5033d38a8504649716657681a0840b4", kind: "stdio", symbol: "Hs" },\n      // Windows package 26.1007.9446.0 / frontend 26.1007.71326 / build 20398.\n      // Exact source review and local extracted-method probes are recorded in\n      // docs/native-source-26.1007.9446.0.json; Native acceptance is separate.\n      "bootstrap-iULMfRBf.js": { hash: "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869", kind: "bootstrap", symbol: "tr" },\n      "main-Bgi5Xaw-.js": { hash: "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54", kind: "main", symbol: "ple" },\n      "application-network-startup-YSC7OAs0.js": { hash: "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e", kind: "stdio", symbol: "Gs" },\n      "src-DCNiwad_.js": { hash: "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25", kind: "connection", symbol: "mB" }\n    });\n    var HASHES = Object.freeze(Object.fromEntries(Object.entries(PROFILES).map(([name, profile]) => [name, profile.hash])));\n    var fail2 = (code) => Object.assign(new Error(code), { code });\n    var closeRoute = (route) => {\n      try {\n        Promise.resolve(route.close()).catch(() => {\n        });\n      } catch {\n      }\n    };\n    function headers(value) {\n      if (Array.isArray(value)) return value.flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));\n      if (value && !(value instanceof Headers) && typeof value === "object") return Object.entries(value).flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));\n      const source = new Headers(value ?? {}), result = [...source.entries()].filter(([name]) => name.toLowerCase() !== "set-cookie");\n      for (const cookie of source.getSetCookie?.() ?? []) result.push(["set-cookie", cookie]);\n      return result;\n    }\n    var sameOrigin = (left, right) => new URL(left).origin === new URL(right).origin;\n    var withoutCredentials = (values) => headers(values).filter(([name]) => !["authorization", "cookie", "proxy-authorization"].includes(name.toLowerCase()));\n    function headerObject(values) {\n      const result = /* @__PURE__ */ Object.create(null);\n      for (const [name, value] of values) {\n        const key = Object.keys(result).find((existing) => existing.toLowerCase() === name.toLowerCase()) ?? name;\n        result[key] = result[key] === void 0 ? value : Array.isArray(result[key]) ? [...result[key], value] : [result[key], value];\n      }\n      return result;\n    }\n    var requestBody = (value) => value == null ? void 0 : typeof value === "string" ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : value;\n    var asUrl = (value) => typeof value === "string" ? value : value instanceof URL ? value.href : value?.url;\n    async function bytes(body, signal) {\n      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;\n      const chunks = [];\n      let size = 0;\n      for await (const chunk of body) {\n        signal?.throwIfAborted();\n        size += chunk.length;\n        if (size > 64 * 1024 * 1024) throw fail2("desktop_body_too_large");\n        chunks.push(Buffer.from(chunk));\n      }\n      return Buffer.concat(chunks);\n    }\n    function stream(body) {\n      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;\n      const iterator = body[Symbol.asyncIterator]();\n      return new ReadableStream({\n        async pull(controller) {\n          try {\n            const item = await iterator.next();\n            item.done ? controller.close() : controller.enqueue(item.value);\n          } catch (error) {\n            controller.error(error);\n          }\n        },\n        cancel() {\n          body.cancel?.();\n          iterator.return?.();\n        }\n      });\n    }\n    var bodyless = (status, method) => [204, 205, 304].includes(status) || method?.toUpperCase() === "HEAD";\n    async function response(result, method) {\n      const options = { status: result.status, headers: result.headers };\n      if (bodyless(result.status, method)) {\n        await result.body?.cancel?.();\n        return new Response(null, options);\n      }\n      return new Response(stream(result.body), options);\n    }\n    function providerUrl(value) {\n      if (typeof value !== "string") throw fail2("backend_provider_unsupported");\n      const url = new URL(value);\n      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");\n      return url.href;\n    }\n    function routedThreadMessage(message, reserve, isProviderSupported = () => true) {\n      let payload;\n      try {\n        payload = JSON.parse(message);\n      } catch {\n        return message;\n      }\n      if (!["thread/start", "thread/resume"].includes(payload?.method)) return message;\n      const inputConfig = payload.params?.config;\n      const selected = payload.params?.modelProvider ?? inputConfig?.model_provider;\n      const inline = typeof selected === "string" ? inputConfig?.[`model_providers.${selected}`] ?? inputConfig?.model_providers?.[selected] : null;\n      if (typeof selected === "string" && !isProviderSupported(selected) && typeof inline?.base_url !== "string") throw fail2("backend_provider_unsupported");\n      if (!inputConfig || typeof inputConfig !== "object" || Array.isArray(inputConfig)) return message;\n      const config = { ...inputConfig };\n      let changed = false;\n      for (const [key, value] of Object.entries(config)) {\n        if (key === "model_providers" && value && typeof value === "object" && !Array.isArray(value)) {\n          const mapped = { ...value };\n          for (const [name, provider] of Object.entries(mapped)) if (provider && typeof provider === "object" && typeof provider.base_url === "string") {\n            if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail2("backend_provider_unsupported");\n            mapped[name] = { ...provider, base_url: reserve(providerUrl(provider.base_url)) };\n            changed = true;\n          }\n          config[key] = mapped;\n        } else if (/^model_providers\\..*\\.base_url$/u.test(key) && !/^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) throw fail2("backend_provider_unsupported");\n        else if (/^model_providers\\..+$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string" && !/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key)) throw fail2("backend_provider_unsupported");\n        if (key === "openai_base_url" || /^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) {\n          config[key] = reserve(providerUrl(value));\n          changed = true;\n        } else if (/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string") {\n          config[key] = { ...value, base_url: reserve(providerUrl(value.base_url)) };\n          changed = true;\n        }\n      }\n      return changed ? JSON.stringify({ ...payload, params: { ...payload.params, config } }) : message;\n    }\n    function installDesktopPlaintext2({ app }, {\n      source,\n      deadlineUnixMs,\n      ownsBackendProcess = () => false,\n      isProviderSupported = () => true,\n      providerTrustForProcess = () => void 0,\n      pendingAccountUpdate = () => null,\n      updateAccountMode = () => {\n      },\n      moduleRegistry,\n      state,\n      onlineUpdates\n    }, { expectedHashes = HASHES } = {}) {\n      if (!moduleRegistry && app.isReady() || !source?.interceptHttp) throw fail2("desktop_bootstrap_too_late");\n      const scope = state?.scope ?? new AsyncLocalStorage();\n      if (state && !state.scope) state.scope = scope;\n      const symbol = Symbol("codlet.private.plaintext");\n      const originalCompile = Module.prototype._compile;\n      const deferredModules = /* @__PURE__ */ new Set();\n      let bootstrapVerified = false, mainVerified = false, srcVerified = false, fetchInstalled = false, requestInstalled = false, stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;\n      const bindingErrors = /* @__PURE__ */ Object.create(null);\n      const restores = [];\n      const taskRoutes = state?.taskRoutes ?? /* @__PURE__ */ new Set(), routesByProcess = state?.routesByProcess ?? /* @__PURE__ */ new WeakMap(), sendQueues = state?.sendQueues ?? /* @__PURE__ */ new WeakMap();\n      const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();\n      function reserve(url, proc) {\n        let routes = routesByProcess.get(proc);\n        if (!routes) {\n          routes = /* @__PURE__ */ new Map();\n          routesByProcess.set(proc, routes);\n          proc.once("exit", () => {\n            for (const route2 of routes.values()) {\n              closeRoute(route2);\n              taskRoutes.delete(route2);\n            }\n            routes.clear();\n          });\n        }\n        if (routes.has(url)) return routes.get(url);\n        if (taskRoutes.size >= 64) throw fail2("backend_route_limit");\n        const additionalCaPem = providerTrustForProcess(proc);\n        const route = source.reserveRoute({ upstreamBaseUrl: url, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });\n        route.ready.catch(() => {\n          routes.delete(url);\n          taskRoutes.delete(route);\n          closeRoute(route);\n        });\n        routes.set(url, route);\n        taskRoutes.add(route);\n        return route;\n      }\n      function failOutbound(connection, message) {\n        let id;\n        try {\n          id = JSON.parse(message).id;\n        } catch {\n        }\n        if (typeof id === "string" || typeof id === "number") queueMicrotask(() => connection.onmessage?.({\n          type: "message",\n          data: JSON.stringify({ id, error: { code: -32e3, message: "Provider route unavailable" } })\n        }));\n        else connection.onerror?.(fail2("backend_route_unavailable"));\n      }\n      function hookStdio(Stdio) {\n        if (stdioInstalled || typeof Stdio !== "function" || typeof Stdio.prototype.send !== "function") {\n          if (!stdioInstalled) taskReason = "hook_unavailable";\n          return;\n        }\n        const original = Stdio.prototype.send;\n        Stdio.prototype.send = function(message) {\n          if (closed || !ownsBackendProcess(this.proc) || typeof message !== "string") return original.call(this, message);\n          if (onlineUpdates && !onlineUpdates.accepting()) {\n            onlineUpdates.whenAccepting().then(() => Stdio.prototype.send.call(this, message)).catch(() => failOutbound(this, message));\n            return;\n          }\n          const waits = [];\n          let routed;\n          try {\n            routed = routedThreadMessage(\n              message,\n              (url) => {\n                const route = reserve(url, this.proc);\n                waits.push(route.ready);\n                return route.baseUrl;\n              },\n              (provider) => isProviderSupported(this.proc, provider)\n            );\n          } catch {\n            failOutbound(this, message);\n            return;\n          }\n          const account = pendingAccountUpdate(this.proc);\n          const previous = sendQueues.get(this);\n          const dispatch = () => tracked("backend.send", () => original.call(this, routed));\n          if (!waits.length && !account && !previous) {\n            if (!onlineUpdates) return original.call(this, routed);\n            dispatch().catch(() => failOutbound(this, message));\n            return;\n          }\n          const operation = tracked("backend.send", async () => {\n            await (previous ?? Promise.resolve());\n            await Promise.all([...waits, ...account ? [account] : []]);\n            if (!closed && ownsBackendProcess(this.proc)) return original.call(this, routed);\n            throw Object.assign(fail2("core_write_owner_closed"), { outcome: "not_applied" });\n          }).catch(() => failOutbound(this, message));\n          sendQueues.set(this, operation);\n          operation.finally(() => {\n            if (sendQueues.get(this) === operation) sendQueues.delete(this);\n          }).catch(() => {\n          });\n        };\n        stdioInstalled = true;\n        restores.push(() => {\n          Stdio.prototype.send = original;\n        });\n      }\n      function hookConnection(Connection) {\n        if (connectionInstalled || typeof Connection !== "function" || typeof Connection.prototype.routeIncomingMessage !== "function") {\n          if (!connectionInstalled) taskReason = "hook_unavailable";\n          return;\n        }\n        const original = Connection.prototype.routeIncomingMessage;\n        Connection.prototype.routeIncomingMessage = function(message, ...rest) {\n          if (!closed && message?.method === "account/updated" && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);\n          return original.call(this, message, ...rest);\n        };\n        connectionInstalled = true;\n        restores.push(() => {\n          Connection.prototype.routeIncomingMessage = original;\n        });\n      }\n      function hookNetwork(Network) {\n        if (typeof Network !== "function" || typeof Network.prototype.fetch !== "function" || typeof Network.prototype.request !== "function") {\n          desktopReason = "hook_unavailable";\n          return;\n        }\n        const originalFetch = Network.prototype.fetch, originalRequest = Network.prototype.request;\n        function nativeForward(network, request, options, signal, onRequest) {\n          return new Promise((resolve, reject) => {\n            let settled = false, finalUrl = request.url, redirects = 0, live;\n            const finish = (error, value) => {\n              if (settled) return;\n              settled = true;\n              if (error) reject(error);\n              else resolve(value);\n            };\n            const abort = () => {\n              finish(fail2("desktop_request_aborted"));\n              live?.abort();\n            };\n            try {\n              signal?.throwIfAborted();\n              live = originalRequest.call(network, {\n                ...options,\n                url: request.url,\n                method: request.method,\n                headers: headerObject(headers(request.headers))\n              });\n              onRequest?.(live);\n              signal?.addEventListener("abort", abort, { once: true });\n              live.on("redirect", (_status, _method, destination) => {\n                try {\n                  if (options.redirect === "error") throw fail2("desktop_redirect_disallowed");\n                  if (options.redirect === "manual") throw fail2("desktop_manual_redirect_unavailable");\n                  if (++redirects > 20 || !["http:", "https:"].includes(new URL(destination).protocol)) throw fail2("desktop_redirect_disallowed");\n                  network.assertAllowed(destination);\n                  finalUrl = destination;\n                  live.followRedirect();\n                } catch (error) {\n                  finish(error);\n                  live.abort();\n                }\n              });\n              live.once("error", (error) => {\n                signal?.removeEventListener("abort", abort);\n                finish(error);\n              });\n              live.once("response", (incoming) => {\n                incoming.once("end", () => signal?.removeEventListener("abort", abort));\n                incoming.once("close", () => signal?.removeEventListener("abort", abort));\n                finish(null, { status: incoming.statusCode, headers: headers(incoming.headers), body: incoming, finalUrl });\n              });\n              live.end(request.body == null || typeof request.body === "string" ? request.body : Buffer.from(request.body));\n            } catch (error) {\n              signal?.removeEventListener("abort", abort);\n              finish(error);\n              live?.abort();\n            }\n          });\n        }\n        Network.prototype.fetch = async function(input, init = {}) {\n          if (closed || !scope.getStore()) return originalFetch.call(this, input, init);\n          if (onlineUpdates && !onlineUpdates.accepting()) {\n            await onlineUpdates.whenAccepting(init.signal);\n            return Network.prototype.fetch.call(this, input, init);\n          }\n          const url = asUrl(input);\n          this.assertAllowed(url);\n          const signal = init.signal;\n          const current = { url, method: init.method ?? "GET", headers: headers(init.headers), body: requestBody(init.body) };\n          const result = await tracked("desktop.fetch", () => source.interceptHttp(current, { signal, forward: async (next, control) => {\n            const body = await bytes(next.body, control.signal);\n            const omit = next.credentialMode === "omit" || !sameOrigin(url, next.url);\n            return nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, {\n              redirect: init.redirect ?? "follow",\n              credentials: omit ? "omit" : init.credentials,\n              cache: init.cache,\n              referrerPolicy: init.referrerPolicy,\n              priority: init.priority,\n              ...init.credentials === "same-origin" && !omit ? { origin: new URL(url).origin } : {}\n            }, control.signal);\n          } }));\n          return response(result, current.method);\n        };\n        Network.prototype.request = function(options) {\n          if (closed || !scope.getStore()) return originalRequest.call(this, options);\n          this.assertAllowed(options.url);\n          const network = this;\n          const proxy = new EventEmitter();\n          const controller = new AbortController();\n          let liveRequest, upload = { started: false, current: 0, total: 0 }, ended = false;\n          proxy.getUploadProgress = () => liveRequest?.getUploadProgress?.() ?? upload;\n          proxy.abort = () => {\n            controller.abort();\n            liveRequest?.abort?.();\n          };\n          proxy.end = function(body) {\n            if (ended) throw fail2("desktop_request_already_ended");\n            ended = true;\n            const send = async () => {\n              if (onlineUpdates && !onlineUpdates.accepting()) {\n                await onlineUpdates.whenAccepting(controller.signal);\n                if (closed) {\n                  const next = network.request(options);\n                  next.once("error", (error) => proxy.emit("error", error));\n                  next.once("response", (output2) => proxy.emit("response", output2));\n                  controller.signal.addEventListener("abort", () => next.abort(), { once: true });\n                  liveRequest = next;\n                  next.end(body);\n                  return;\n                }\n              }\n              const current = { url: options.url, method: options.method ?? "GET", headers: headers(options.headers), body: requestBody(body) };\n              const result = await tracked("desktop.request", () => source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {\n                const forwardBody = await bytes(next.body, control.signal);\n                const omit = next.credentialMode === "omit" || !sameOrigin(options.url, next.url);\n                return nativeForward(\n                  network,\n                  { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers },\n                  {\n                    ...options,\n                    redirect: options.redirect ?? "follow",\n                    credentials: omit ? "omit" : options.credentials,\n                    useSessionCookies: !omit && options.useSessionCookies === true\n                  },\n                  control.signal,\n                  (request) => {\n                    liveRequest = request;\n                    upload = request.getUploadProgress?.() ?? upload;\n                  }\n                );\n              } }));\n              if (bodyless(result.status, current.method)) await result.body?.cancel?.();\n              const output = Readable.from(bodyless(result.status, current.method) ? [] : result.body ?? []);\n              output.statusCode = result.status;\n              output.statusMessage = "";\n              output.headers = headerObject(result.headers);\n              proxy.emit("response", output);\n            };\n            send().catch((error) => proxy.emit("error", error));\n          };\n          requestInstalled = true;\n          return proxy;\n        };\n        fetchInstalled = true;\n        requestInstalled = true;\n        restores.push(() => {\n          Network.prototype.fetch = originalFetch;\n          Network.prototype.request = originalRequest;\n        });\n      }\n      function hookFetchWrapper(FetchWrapper) {\n        if (typeof FetchWrapper !== "function" || typeof FetchWrapper.prototype.performDesktopFetch !== "function") {\n          desktopReason = "hook_unavailable";\n          return;\n        }\n        const original = FetchWrapper.prototype.performDesktopFetch;\n        FetchWrapper.prototype.performDesktopFetch = function(...args) {\n          return scope.run(true, () => original.apply(this, args));\n        };\n        restores.push(() => {\n          FetchWrapper.prototype.performDesktopFetch = original;\n        });\n      }\n      function applyRecord(record) {\n        const { name, hash: observedSha256, exported } = record;\n        if (!Object.hasOwn(expectedHashes, name)) {\n          if (moduleRegistry && /^(bootstrap-|main-|application-network-startup-)/.test(name)) {\n            if (name.startsWith("application-network-startup-")) taskReason = "unsupported_build";\n            else desktopReason = "unsupported_build";\n            mismatch = { name, observedSha256 };\n          }\n          return;\n        }\n        const profile = PROFILES[name] ?? {\n          kind: name.startsWith("bootstrap-") ? "bootstrap" : name.startsWith("main-") ? "main" : "src",\n          symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ"\n        };\n        if (observedSha256 !== expectedHashes[name]) {\n          if (["src", "stdio", "connection"].includes(profile.kind)) taskReason = "unsupported_build";\n          else desktopReason = "unsupported_build";\n          mismatch = { name, observedSha256 };\n          return;\n        }\n        const expression = profile.connectionSymbol ? `({primary:${profile.symbol},connection:${profile.connectionSymbol}})` : profile.symbol;\n        const read = () => record.evaluate(expression);\n        const apply = () => {\n          const captured = read();\n          let pending = false;\n          if (profile.kind === "bootstrap") {\n            const primary = profile.connectionSymbol ? captured.primary : captured;\n            if (!bootstrapVerified) {\n              if (primary == null) pending = true;\n              else {\n                bootstrapVerified = true;\n                hookNetwork(primary);\n              }\n            }\n            if (profile.connectionSymbol && !connectionVerified) {\n              if (captured.connection == null) pending = true;\n              else {\n                connectionVerified = true;\n                hookConnection(captured.connection);\n              }\n            }\n          } else if (profile.kind === "main") {\n            if (!mainVerified) {\n              if (captured == null) pending = true;\n              else {\n                mainVerified = true;\n                hookFetchWrapper(captured);\n              }\n            }\n          } else if (profile.kind === "stdio") {\n            if (!stdioVerified) {\n              if (captured == null) pending = true;\n              else {\n                stdioVerified = true;\n                hookStdio(captured);\n              }\n            }\n          } else if (profile.kind === "connection") {\n            if (!connectionVerified) {\n              if (captured == null) pending = true;\n              else {\n                connectionVerified = true;\n                hookConnection(captured);\n              }\n            }\n          } else {\n            stdioVerified = true;\n            connectionVerified = true;\n            hookStdio(captured);\n            hookConnection(exported[profile.managerExport ?? "un"]);\n          }\n          srcVerified = stdioVerified && connectionVerified;\n          return !pending;\n        };\n        const attempt = () => {\n          try {\n            const result = apply();\n            delete bindingErrors[profile.kind];\n            return result;\n          } catch (error) {\n            bindingErrors[profile.kind] = ["ReferenceError", "TypeError"].includes(error?.name) ? error.name : "binding_error";\n            if (error?.name === "ReferenceError") return false;\n            if (["bootstrap", "main"].includes(profile.kind)) desktopReason = "hook_unavailable";\n            else taskReason = "hook_unavailable";\n            return true;\n          }\n        };\n        if (!attempt()) deferredModules.add(attempt);\n      }\n      Module.prototype._compile = function(code, filename) {\n        const name = path.basename(filename);\n        if (!Object.hasOwn(expectedHashes, name)) return originalCompile.call(this, code, filename);\n        const profile = PROFILES[name] ?? { symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ" };\n        const expression = profile.connectionSymbol ? `({primary:${profile.symbol},connection:${profile.connectionSymbol}})` : profile.symbol;\n        const hash = createHash("sha256").update(code).digest("hex");\n        if (hash !== expectedHashes[name]) {\n          applyRecord({ name, hash });\n          return originalCompile.call(this, code, filename);\n        }\n        const result = originalCompile.call(this, `${code}\n;Object.defineProperty(module.exports,Symbol.for(${JSON.stringify(String(symbol))}),{value:()=>${expression},configurable:true});`, filename);\n        const read = this.exports[Symbol.for(String(symbol))], exported = this.exports;\n        delete this.exports[Symbol.for(String(symbol))];\n        applyRecord({ name, hash, exported, evaluate: () => read() });\n        return result;\n      };\n      restores.push(() => {\n        if (Module.prototype._compile === wrappedCompile) Module.prototype._compile = originalCompile;\n      });\n      const wrappedCompile = Module.prototype._compile;\n      if (moduleRegistry) {\n        Module.prototype._compile = originalCompile;\n        const unsubscribe = moduleRegistry.subscribe(applyRecord);\n        restores.push(unsubscribe);\n      }\n      const desktopDone = () => desktopReason || bootstrapVerified && mainVerified && fetchInstalled && requestInstalled;\n      const needsTaskSources = Object.keys(expectedHashes).some((name) => ["src", "stdio", "connection"].includes(PROFILES[name]?.kind) || name.startsWith("src-"));\n      const taskDone = () => taskReason || !needsTaskSources || srcVerified && stdioInstalled && connectionInstalled;\n      return Object.freeze({\n        async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {\n          while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {\n            for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);\n            await new Promise((resolve) => setTimeout(resolve, 20));\n          }\n          if (!closed) {\n            for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);\n          }\n          return this.inspect();\n        },\n        inspect: () => ({\n          installed: !closed,\n          available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,\n          taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,\n          modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },\n          mismatch,\n          bindingErrors: { ...bindingErrors },\n          deferredBindings: deferredModules.size,\n          reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "hook_unavailable"),\n          taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "hook_unavailable")\n        }),\n        suspend() {\n          if (closed) return;\n          closed = true;\n          deferredModules.clear();\n          for (const restore of restores.splice(0).reverse()) restore();\n        },\n        close() {\n          this.suspend();\n          if (!state) {\n            for (const route of taskRoutes) closeRoute(route);\n            taskRoutes.clear();\n            scope.disable();\n          }\n        }\n      });\n    }\n    module2.exports = { installDesktopPlaintext: installDesktopPlaintext2, routedThreadMessage, reviewedSourceProfiles: PROFILES };\n  }\n});\n\n// ../host/codex-traffic.cjs\nvar require_codex_traffic = __commonJS({\n  "../host/codex-traffic.cjs"(exports2, module2) {\n    "use strict";\n    var zlib = require("node:zlib");\n    var failure = (code) => Object.assign(new Error(code), { code });\n    var VERIFIED_BACKENDS = Object.freeze({\n      win32: Object.freeze([\n        // Disposable Windows acceptance covers both signed distributions of the\n        // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.\n        Object.freeze({ sha256: "3553cd6e7df5a093d8cb8301cd8088a57e0971aba71ddbe0e67f7f44a15cdf68", version: "0.162.0-alpha.2", evidence: "same-pe-image-as-controlled-0.162.0-alpha.2-http-sse-ws-routing-fixture" }),\n        Object.freeze({ sha256: "d83cc3582592e307df008411f02f61a93fb93580b53dc173608a63202d97bbe4", version: "0.162.0-alpha.2", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),\n        // The installed and published 0.160.1 files differ only in Authenticode\n        // data/checksum. Their complete remaining PE image matches the CI fixture.\n        Object.freeze({ sha256: "3b8f6e33caa75f232558a3cf76ff9b87bb5ef6dbcf4996372f24e55c78b1b916", version: "0.160.1", evidence: "same-pe-image-as-controlled-0.160.1-http-sse-ws-routing-fixture" }),\n        Object.freeze({ sha256: "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d", version: "0.160.1", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),\n        Object.freeze({ sha256: "37762753b554982eef1c109303d1be652b6397f1479e844794353a85650199c6", version: "0.160.0", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),\n        Object.freeze({ sha256: "1722907aa64401bcc9b34467ef5c2af43f6aef9a5045ef04d11d19dfae4589fb", version: "0.159.0-alpha.12.1", evidence: "controlled-functional-http-sse-ws-local-fixture" }),\n        Object.freeze({ sha256: "8f0554ede25bbc5450921897c468b2e84635aa513c5017457997af0954581f49", version: "0.158.0-alpha.2.1", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),\n        Object.freeze({ sha256: "a19f8f6c3c9dd5b71b6b1e3eb1ec55d75aafb2fdfb686d9e1f7a5f47db07d0d2", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),\n        Object.freeze({ sha256: "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226", version: "0.155.0-alpha.9.2", evidence: "controlled-custom-provider-two-thread-http-ws" }),\n        Object.freeze({ sha256: "97d4d67419d0ac2f71342f9a5e850f9468aa622618de8ea823223edb9a91926a", version: "0.155.0-alpha.16", evidence: "controlled-custom-provider-two-thread-http-ws" })\n      ]),\n      darwin: Object.freeze([\n        Object.freeze({ sha256: "c67698d0990aae05211d9c43ab343ad9517e406824dea77eca103a2806232b3a", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws" })\n      ])\n    });\n    function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {\n      const backend = VERIFIED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);\n      const fixtureVerified = !!backend;\n      return Object.freeze({\n        available: false,\n        fixtureVerified,\n        restartRequired: true,\n        officialOAuth: false,\n        existingLoadedThreads: false,\n        desktop: false,\n        attachments: false,\n        fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],\n        reason: fixtureVerified ? "native_process_ingress_not_attached" : "backend_build_unverified"\n      });\n    }\n    function threadIdFromHeaders(headers) {\n      if (!Array.isArray(headers)) return null;\n      const values = headers.filter((item) => Array.isArray(item) && typeof item[0] === "string" && item[0].toLowerCase() === "x-client-request-id").map((item) => item[1]);\n      return values.length === 1 && typeof values[0] === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(values[0]) ? values[0] : null;\n    }\n    function classifyCodexTraffic({ url, method, headers, verified = false, allowedOrigins = ["https://chatgpt.com", "https://api.openai.com"] }) {\n      let target;\n      try {\n        target = new URL(url);\n      } catch {\n        return Object.freeze({ kind: "unknown", threadId: null, model: null });\n      }\n      const protocol = target.protocol === "wss:" ? "https:" : target.protocol === "ws:" ? "http:" : target.protocol;\n      const normalizedOrigin = `${protocol}//${target.host}`;\n      const trusted = allowedOrigins.includes(normalizedOrigin) && !target.username && !target.password;\n      let kind = "unknown";\n      if (trusted && /\\/responses$/u.test(target.pathname) && ["POST", "GET"].includes(method)) kind = "model.responses";\n      if (trusted && target.hostname === "chatgpt.com" && target.pathname === "/backend-api/codex/models" && method === "GET") kind = "model.list";\n      return Object.freeze({ kind, threadId: verified && kind === "model.responses" ? threadIdFromHeaders(headers) : null, model: null });\n    }\n    async function readCodexJsonBody(request, maximum = 8 * 1024 * 1024) {\n      if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 8 * 1024 * 1024) throw failure("invalid_body_limit");\n      const chunks = [];\n      let bytes = 0;\n      for await (const chunk of request.body) {\n        bytes += chunk.length;\n        if (bytes > maximum) throw failure("codex_body_too_large");\n        chunks.push(Buffer.from(chunk));\n      }\n      const encodings = request.headers.filter(([name]) => name.toLowerCase() === "content-encoding").map(([, value]) => value.toLowerCase().trim());\n      if (encodings.length > 1) throw failure("codex_encoding_unsupported");\n      const encoding = encodings[0] ?? "identity";\n      const decoder = { gzip: zlib.gunzipSync, br: zlib.brotliDecompressSync, deflate: zlib.inflateSync, zstd: zlib.zstdDecompressSync }[encoding];\n      if (encoding !== "identity" && !decoder) throw failure("codex_encoding_unsupported");\n      try {\n        const raw = Buffer.concat(chunks);\n        return JSON.parse(decoder ? decoder(raw, { maxOutputLength: maximum }) : raw);\n      } catch {\n        throw failure("codex_body_invalid");\n      }\n    }\n    function rewrittenCodexJsonBody(request, value) {\n      const body = JSON.stringify(value);\n      if (Buffer.byteLength(body) > 8 * 1024 * 1024) throw failure("codex_body_too_large");\n      return { body, headers: request.headers.filter(([name]) => !["content-encoding", "content-length", "content-md5", "content-digest", "digest"].includes(name.toLowerCase())) };\n    }\n    function createCodexTraffic(context, compatibility = {}) {\n      if (!context?.traffic?.registerInterceptor || !context.traffic.inspect || !context.signal) throw failure("core_traffic_unavailable");\n      const verified = probeCodexTraffic(compatibility);\n      async function probe() {\n        let native;\n        try {\n          native = await context.traffic.inspect();\n        } catch (error) {\n          if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");\n          return Object.freeze({ ...verified, listening: false, attached: false, reason: verified.fixtureVerified ? error.code : verified.reason });\n        }\n        const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;\n        return Object.freeze({\n          ...verified,\n          available: verified.fixtureVerified && attached,\n          listening: native.listening === true,\n          attached,\n          restartRequired: !attached,\n          reason: !verified.fixtureVerified ? verified.reason : attached ? null : "native_process_ingress_not_attached",\n          coverage: "registered-backend-origins",\n          registered: native.registered,\n          active: native.active\n        });\n      }\n      async function registerInterceptor(options, handlers) {\n        if (context.signal.aborted) throw failure("host_stopping");\n        if (!verified.fixtureVerified) throw failure("backend_build_unverified");\n        if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");\n        const kinds = options.kinds ?? ["model.responses", "model.list"];\n        if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");\n        if (!handlers || typeof handlers !== "object" || !Object.keys(handlers).length || Object.entries(handlers).some(([key, value]) => !["request", "response", "webSocket"].includes(key) || typeof value !== "function")) throw failure("invalid_handler");\n        const origins = options.origins ?? ["https://chatgpt.com", "https://api.openai.com"];\n        if (!Array.isArray(origins) || !origins.length || origins.length > 16 || origins.some((origin) => {\n          try {\n            const url = new URL(origin);\n            return url.origin !== origin || !["https:", "http:"].includes(url.protocol) || url.username || url.password || url.protocol === "http:" && !["127.0.0.1", "localhost"].includes(url.hostname);\n          } catch {\n            return true;\n          }\n        })) throw failure("invalid_argument");\n        const wrapped = {};\n        const metadata = (value) => {\n          const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins });\n          return kinds.includes(info.kind) ? info : null;\n        };\n        const requestThreads = /* @__PURE__ */ new Map();\n        wrapped.request = (value, call) => {\n          const codex = metadata(value);\n          if (handlers.response && codex?.threadId && typeof value.id === "string") {\n            requestThreads.set(value.id, { threadId: codex.threadId, at: Date.now() });\n            if (requestThreads.size > 1024) requestThreads.delete(requestThreads.keys().next().value);\n          }\n          return codex && handlers.request ? handlers.request(value, Object.freeze({ ...call, codex })) : void 0;\n        };\n        if (handlers.response) wrapped.response = (value, call) => {\n          const codex = metadata(call.request), known = requestThreads.get(call.request?.id);\n          if (typeof call.request?.id === "string") requestThreads.delete(call.request.id);\n          const threadId = known && Date.now() - known.at <= 10 * 60 * 1e3 ? known.threadId : null;\n          return codex ? handlers.response(value, Object.freeze({ ...call, codex: Object.freeze({ ...codex, threadId }) })) : void 0;\n        };\n        if (handlers.webSocket) wrapped.webSocket = (value, call) => {\n          const codex = metadata({ ...value, method: "GET" });\n          return codex ? handlers.webSocket(value, Object.freeze({ ...call, codex })) : void 0;\n        };\n        const { kinds: ignored, ...registration } = options;\n        return context.traffic.registerInterceptor({ ...registration, origins }, wrapped);\n      }\n      return Object.freeze({ probe, registerInterceptor, classify: classifyCodexTraffic, readJsonBody: readCodexJsonBody, rewriteJsonBody: rewrittenCodexJsonBody });\n    }\n    module2.exports = { createCodexTraffic, probeCodexTraffic, classifyCodexTraffic, threadIdFromHeaders, readCodexJsonBody, rewrittenCodexJsonBody };\n  }\n});\n\n// ../host/backend-launch.cjs\nvar require_backend_launch = __commonJS({\n  "../host/backend-launch.cjs"(exports2, module2) {\n    "use strict";\n    var fs = require("node:fs");\n    var path = require("node:path");\n    var { createHash } = require("node:crypto");\n    var { probeCodexTraffic } = require_codex_traffic();\n    var fail2 = (code) => Object.assign(new Error(code), { code });\n    var toml = (value) => JSON.stringify(value);\n    function verifyBackend(executable, platform = process.platform) {\n      if (typeof executable !== "string" || !path.isAbsolute(executable) || !/^codex(?:\\.exe)?$/iu.test(path.basename(executable))) throw fail2("invalid_backend_launch");\n      const fd = fs.openSync(executable, "r");\n      let binarySha256;\n      try {\n        const before = fs.fstatSync(fd);\n        if (!before.isFile() || before.size > 512 * 1024 * 1024) throw fail2("backend_build_unverified");\n        const hash = createHash("sha256"), bytes = Buffer.alloc(64 * 1024);\n        for (; ; ) {\n          const count = fs.readSync(fd, bytes);\n          if (!count) break;\n          hash.update(bytes.subarray(0, count));\n        }\n        const after = fs.fstatSync(fd);\n        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw fail2("backend_build_unverified");\n        binarySha256 = hash.digest("hex");\n      } finally {\n        fs.closeSync(fd);\n      }\n      if (!probeCodexTraffic({ platform, binarySha256 }).fixtureVerified) throw fail2("backend_build_unverified");\n      return Object.freeze({ platform, binarySha256 });\n    }\n    function prepareBackendLaunch({ executable, arguments: args, originalEnvironment, providerRoutes, platform = process.platform }) {\n      if (!Array.isArray(args) || args.some((value) => typeof value !== "string") || !args.includes("app-server") || !originalEnvironment || typeof originalEnvironment !== "object" || !providerRoutes || typeof providerRoutes !== "object") throw fail2("invalid_backend_launch");\n      const compatibility = verifyBackend(executable, platform), overrides = [];\n      for (const [setting, baseUrl] of Object.entries(providerRoutes)) {\n        if (setting !== "openai_base_url" && setting !== "chatgpt_base_url" && !/^model_providers\\.[A-Za-z0-9_-]+\\.base_url$/u.test(setting)) throw fail2("invalid_backend_route");\n        const url = new URL(baseUrl);\n        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.search || url.hash) throw fail2("invalid_backend_route");\n        overrides.push("-c", `${setting}=${toml(baseUrl)}`);\n      }\n      if (!overrides.length) throw fail2("backend_route_unavailable");\n      return Object.freeze({\n        executable,\n        arguments: Object.freeze([...args, ...overrides]),\n        environment: originalEnvironment,\n        compatibility,\n        status: Object.freeze({ available: true, backendProviderPrepared: true, coverage: ["owned-local-app-server-model-provider"] })\n      });\n    }\n    module2.exports = { prepareBackendLaunch, verifyBackend, toml };\n  }\n});\n\n// ../host/backend-config-probe.cjs\nvar require_backend_config_probe = __commonJS({\n  "../host/backend-config-probe.cjs"(exports2, module2) {\n    "use strict";\n    function runConfigProbe() {\n      const fs = require("node:fs"), { spawn } = require("node:child_process"), { createInterface } = require("node:readline");\n      let child, lines, emitted = false;\n      const finish = async (value) => {\n        if (emitted) return;\n        emitted = true;\n        clearTimeout(deadline);\n        lines?.close();\n        if (child && child.exitCode === null && child.signalCode === null) {\n          const exited = new Promise((resolve) => child.once("exit", resolve));\n          child.stdin?.end();\n          child.kill();\n          let stopTimer;\n          await Promise.race([exited, new Promise((resolve) => {\n            stopTimer = setTimeout(resolve, 650);\n          })]);\n          clearTimeout(stopTimer);\n          if (child.exitCode === null && child.signalCode === null) value = { error: "backend_config_unavailable" };\n        }\n        process.stdout.write(JSON.stringify(value), () => {\n          if (!child || child.exitCode !== null || child.signalCode !== null) process.exit(0);\n        });\n      };\n      const deadline = setTimeout(() => finish({ error: "backend_config_timeout" }), 3500);\n      try {\n        const bytes = fs.readFileSync(0);\n        if (bytes.length > 256 * 1024) throw new Error();\n        const plan = JSON.parse(bytes);\n        child = spawn(plan.executable, [...plan.configArguments, "-c", "analytics.enabled=false", "-c", "features.code_mode_host=false", "-c", "features.remote_plugin=false", "app-server", "--stdio"], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });\n        child.stderr.on("data", () => {\n        });\n        child.on("error", () => finish({ error: "backend_config_unavailable" }));\n        child.stdin.on("error", () => finish({ error: "backend_config_unavailable" }));\n        child.once("exit", () => {\n          if (!emitted) finish({ error: "backend_config_unavailable" });\n        });\n        let buffer = "", count = 0;\n        child.stdout.on("data", (chunk) => {\n          count += chunk.length;\n          if (count > 2 * 1024 * 1024) {\n            finish({ error: "backend_config_too_large" });\n            return;\n          }\n          buffer += chunk.toString();\n          let index;\n          while ((index = buffer.indexOf("\\n")) >= 0) {\n            const line = buffer.slice(0, index);\n            buffer = buffer.slice(index + 1);\n            let message;\n            try {\n              message = JSON.parse(line);\n            } catch {\n              continue;\n            }\n            if (message.id === 1) {\n              if (message.error) {\n                finish({ error: "backend_config_unavailable" });\n                return;\n              }\n              child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\\n");\n              child.stdin.write(JSON.stringify({ id: 2, method: "config/read", params: { cwd: plan.cwd, includeLayers: false } }) + "\\n");\n            } else if (message.id === 2) {\n              if (message.error || !message.result?.config) {\n                finish({ error: "backend_config_unavailable" });\n                return;\n              }\n              const config = message.result.config;\n              const providers = {};\n              for (const [name, provider] of Object.entries(config.model_providers ?? {}))\n                if (typeof provider?.base_url === "string" && provider.wire_api === "responses") providers[name] = provider.base_url;\n              plan.config = {\n                modelProvider: config.model_provider ?? "openai",\n                providerBaseUrls: providers,\n                openaiBaseUrl: config.openai_base_url ?? null\n              };\n              child.stdin.write(JSON.stringify({ id: 3, method: "account/read", params: { refreshToken: false } }) + "\\n");\n            } else if (message.id === 3) {\n              if (message.error || !message.result) {\n                finish({ error: "backend_config_unavailable" });\n                return;\n              }\n              const kind = message.result.account?.type;\n              finish({ ...plan.config, accountType: kind == null ? null : kind === "chatgpt" || kind === "apiKey" ? kind : "unknown" });\n            }\n          }\n        });\n        child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "codlet-launch-policy", version: "1" }, capabilities: { experimentalApi: true } } }) + "\\n");\n      } catch {\n        finish({ error: "backend_config_unavailable" });\n      }\n    }\n    module2.exports = { runConfigProbe };\n  }\n});\n\n// ../host/backend-spawn.cjs\nvar require_backend_spawn = __commonJS({\n  "../host/backend-spawn.cjs"(exports2, module2) {\n    "use strict";\n    var fs = require("node:fs");\n    var path = require("node:path");\n    var childProcess = require("node:child_process");\n    var { prepareBackendLaunch, verifyBackend } = require_backend_launch();\n    var { runConfigProbe } = require_backend_config_probe();\n    var fail2 = (code) => Object.assign(new Error(code), { code });\n    var closeRoute = (route) => {\n      try {\n        Promise.resolve(route.close()).catch(() => {\n        });\n      } catch {\n      }\n    };\n    var DEFAULT_OPENAI = "https://api.openai.com/v1";\n    var DEFAULT_CHATGPT = "https://chatgpt.com/backend-api/codex";\n    function configArguments(args) {\n      const result = [];\n      for (let index = 0; index < args.length; index++) {\n        if (["-c", "--config", "--enable", "--disable", "-p", "--profile"].includes(args[index])) result.push(args[index], args[++index]);\n        else if (/^--(?:config|enable|disable|profile)=/u.test(args[index])) result.push(args[index]);\n      }\n      return result;\n    }\n    function lastStringOverride(args, setting) {\n      let found;\n      for (let index = 0; index < args.length; index++) {\n        const current = args[index];\n        const entry = current === "-c" || current === "--config" ? args[++index] : current.startsWith("--config=") ? current.slice("--config=".length) : null;\n        if (typeof entry !== "string") continue;\n        const at = entry.indexOf("=");\n        if (at < 0 || entry.slice(0, at).trim() !== setting) continue;\n        const raw = entry.slice(at + 1).trim();\n        let value;\n        try {\n          value = JSON.parse(raw);\n        } catch {\n          value = raw;\n        }\n        if (typeof value === "string") found = value;\n      }\n      return found;\n    }\n    function environmentFromPairs(pairs) {\n      const result = {};\n      for (const pair of pairs ?? []) {\n        const at = pair.indexOf("=", pair.startsWith("=") ? 1 : 0);\n        if (at > 0) result[pair.slice(0, at)] = pair.slice(at + 1);\n      }\n      return result;\n    }\n    function providerTrust(environment, cwd) {\n      const get = (name) => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1];\n      const configured = get("CODEX_CA_CERTIFICATE") ?? get("SSL_CERT_FILE");\n      if (configured === void 0) return void 0;\n      if (typeof configured !== "string" || !configured) throw fail2("backend_provider_trust_unsupported");\n      const target = path.resolve(cwd, configured);\n      let info;\n      try {\n        info = fs.statSync(target);\n      } catch {\n        throw fail2("backend_provider_trust_unsupported");\n      }\n      if (!info.isFile() || info.size < 1 || info.size > 128 * 1024) throw fail2("backend_provider_trust_unsupported");\n      let pem;\n      try {\n        pem = fs.readFileSync(target, "utf8");\n      } catch {\n        throw fail2("backend_provider_trust_unsupported");\n      }\n      if (!/^(?:\\s*-----BEGIN CERTIFICATE-----\\s+[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE-----\\s*)+$/u.test(pem)) throw fail2("backend_provider_trust_unsupported");\n      return pem;\n    }\n    function effectiveProviders(policy) {\n      if (!policy || typeof policy !== "object") throw fail2("backend_config_unavailable");\n      const routes = /* @__PURE__ */ new Map();\n      if (policy.openaiBaseUrl == null && ![null, "chatgpt", "apiKey"].includes(policy.accountType)) throw fail2("backend_auth_mode_unsupported");\n      const builtIn = policy.openaiBaseUrl ?? (policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI);\n      if (typeof builtIn !== "string") throw fail2("backend_config_unavailable");\n      routes.set("openai_base_url", builtIn);\n      const configured = policy.providerBaseUrls ?? {};\n      if (!configured || typeof configured !== "object" || Object.keys(configured).length > 16) throw fail2("backend_provider_unsupported");\n      if ((policy.modelProvider ?? "openai") !== "openai" && !Object.hasOwn(configured, policy.modelProvider)) throw fail2("backend_provider_unsupported");\n      for (const [name, url] of Object.entries(configured)) {\n        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== "string") throw fail2("backend_provider_unsupported");\n        routes.set(`model_providers.${name}.base_url`, url);\n      }\n      return routes;\n    }\n    function installBackendSpawn2(configuration, dependencies = {}) {\n      const prototype = dependencies.prototype ?? childProcess.ChildProcess.prototype;\n      const originalSpawn = prototype.spawn;\n      const prepare = dependencies.prepare ?? prepareBackendLaunch;\n      const verify = dependencies.verify ?? verifyBackend;\n      const probe = dependencies.probe ?? ((plan) => {\n        const result = childProcess.spawnSync(configuration.runtimeExecutable, ["--no-addons", "--no-global-search-paths", "--eval", `(${runConfigProbe.toString()})()`], {\n          input: JSON.stringify(plan),\n          env: plan.environment,\n          cwd: plan.cwd,\n          windowsHide: true,\n          encoding: "utf8",\n          maxBuffer: 256 * 1024,\n          timeout: 4500\n        });\n        if (result.error || result.status !== 0) throw fail2("backend_config_unavailable");\n        let value;\n        try {\n          value = JSON.parse(result.stdout);\n        } catch {\n          throw fail2("backend_config_unavailable");\n        }\n        if (value.error) throw fail2(value.error);\n        return value;\n      });\n      if (!configuration?.source?.reserveRoute || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail2("invalid_launch_configuration");\n      let closed = false, prepared = 0, declined = 0, reason = null;\n      const state = dependencies.state ?? { owned: /* @__PURE__ */ new WeakSet(), trust: /* @__PURE__ */ new WeakMap(), accounts: /* @__PURE__ */ new WeakMap(), providers: /* @__PURE__ */ new WeakMap(), records: /* @__PURE__ */ new Set(), pending: /* @__PURE__ */ new Set(), prepared: 0 };\n      const shared = !!dependencies.state;\n      const active = /* @__PURE__ */ new Set(), pending = state.pending, owned = state.owned, trustByProcess = state.trust, accountByProcess = state.accounts, providersByProcess = state.providers;\n      prepared = state.prepared;\n      function wrapped(options) {\n        const args = options?.args, file = options?.file;\n        if (closed || !Array.isArray(args) || !args.includes("app-server") || typeof file !== "string" || !path.isAbsolute(file) || !/^codex(?:\\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);\n        let reservations = [], dispatched = false;\n        try {\n          verify(file, process.platform);\n          const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);\n          const cwd = options.cwd ?? process.cwd();\n          const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd });\n          const directOpenaiBaseUrl = lastStringOverride(actualArgs, "openai_base_url");\n          if (directOpenaiBaseUrl !== void 0) policy.openaiBaseUrl = directOpenaiBaseUrl;\n          const additionalCaPem = providerTrust(environment, cwd);\n          const providerRoutes = {};\n          for (const [setting, upstreamBaseUrl] of effectiveProviders(policy)) {\n            const url = new URL(upstreamBaseUrl);\n            if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");\n            const reservation = configuration.source.reserveRoute({ upstreamBaseUrl, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });\n            reservations.push(reservation);\n            providerRoutes[setting] = reservation.baseUrl;\n          }\n          const launch = prepare({ executable: file, arguments: actualArgs, originalEnvironment: environment, providerRoutes, platform: process.platform });\n          const next = { ...options, args: [args[0], ...launch.arguments] };\n          dispatched = true;\n          const result = originalSpawn.call(this, next);\n          owned.add(this);\n          trustByProcess.set(this, additionalCaPem);\n          providersByProcess.set(this, /* @__PURE__ */ new Set(["openai", ...Object.keys(policy.providerBaseUrls ?? {})]));\n          accountByProcess.set(this, {\n            route: reservations[0],\n            explicit: policy.openaiBaseUrl != null,\n            current: effectiveProviders(policy).get("openai_base_url"),\n            pending: null\n          });\n          prepared++;\n          state.prepared = prepared;\n          const ready = Promise.all(reservations.map((item) => item.ready));\n          ready.catch(() => {\n            reason = "route_unavailable";\n          });\n          pending.add(ready);\n          ready.finally(() => pending.delete(ready)).catch(() => {\n          });\n          const record = { child: this, reservations };\n          state.records.add(record);\n          if (shared && dependencies.trackBackend) dependencies.trackBackend(record, { methodKey: "method", method: "account/updated", paramsKey: "params", modeKey: "authMode", targets: { chatgpt: DEFAULT_CHATGPT, apiKey: DEFAULT_OPENAI } });\n          else {\n            const release = () => {\n              for (const item of reservations) closeRoute(item);\n              active.delete(release);\n              state.records.delete(record);\n            };\n            active.add(release);\n            this.once("exit", release);\n            this.once("error", release);\n          }\n          return result;\n        } catch (error) {\n          for (const item of reservations) closeRoute(item);\n          declined++;\n          reason = ["backend_build_unverified", "backend_config_unavailable", "backend_provider_unsupported", "backend_auth_mode_unsupported", "backend_provider_trust_unsupported", "backend_route_unavailable"].includes(error.code) ? error.code : "route_unavailable";\n          if (dispatched) throw error;\n          return originalSpawn.call(this, options);\n        }\n      }\n      prototype.spawn = wrapped;\n      return Object.freeze({\n        async ready({ deadlineUnixMs = configuration.deadlineUnixMs } = {}) {\n          while (!prepared && !declined && !closed && Date.now() < deadlineUnixMs - 500) await new Promise((resolve) => setTimeout(resolve, 20));\n          if (prepared && pending.size > 0) {\n            const limit = deadlineUnixMs - 500 - Date.now();\n            if (limit <= 0) throw fail2("backend_route_timeout");\n            let timer;\n            try {\n              await Promise.race([Promise.all([...pending]), new Promise((_, reject) => {\n                timer = setTimeout(() => reject(fail2("backend_route_timeout")), limit);\n              })]);\n            } finally {\n              clearTimeout(timer);\n            }\n          }\n          return this.inspect();\n        },\n        close() {\n          if (closed) return;\n          closed = true;\n          if (prototype.spawn === wrapped) prototype.spawn = originalSpawn;\n          if (!shared) for (const release of active) release();\n        },\n        ownsProcess: (child) => !closed && !!child && owned.has(child),\n        providerTrustForProcess: (child) => owned.has(child) ? trustByProcess.get(child) : void 0,\n        isProviderSupported: (child, provider) => owned.has(child) && providersByProcess.get(child)?.has(provider) === true,\n        pendingAccountUpdate: (child) => accountByProcess.get(child)?.pending ?? null,\n        updateAccountMode(child, mode) {\n          const state2 = accountByProcess.get(child);\n          if (!state2 || state2.explicit || mode == null) return;\n          if (mode !== "chatgpt" && mode !== "apiKey") {\n            reason = "backend_auth_mode_unsupported";\n            closeRoute(state2.route);\n            return;\n          }\n          const upstreamBaseUrl = mode === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI;\n          if (state2.current === upstreamBaseUrl) return;\n          const update = (state2.pending ?? Promise.resolve()).then(() => state2.route.update({ upstreamBaseUrl })).then(() => {\n            state2.current = upstreamBaseUrl;\n          }, (error) => {\n            reason = "route_unavailable";\n            closeRoute(state2.route);\n            throw error;\n          });\n          update.catch(() => {\n          });\n          state2.pending = update;\n          update.finally(() => {\n            if (state2.pending === update) state2.pending = null;\n          }).catch(() => {\n          });\n        },\n        inspect: () => ({\n          installed: !closed,\n          backendRootsPrepared: prepared,\n          backendRootsDeclined: declined,\n          available: state.records.size > 0 && !reason,\n          reason: reason ?? (state.records.size ? null : "child_unavailable")\n        })\n      });\n    }\n    module2.exports = { installBackendSpawn: installBackendSpawn2, effectiveProviders, configArguments, lastStringOverride, environmentFromPairs, providerTrust };\n  }\n});\n\n// ../host/source-diagnostics.cjs\nvar require_source_diagnostics = __commonJS({\n  "../host/source-diagnostics.cjs"(exports2, module2) {\n    "use strict";\n    var fs = require("node:fs");\n    var path = require("node:path");\n    var os = require("node:os");\n    var code = (value) => typeof value === "string" && /^[a-z_]{1,80}$/i.test(value) ? value : null;\n    var integer = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;\n    function sourceDiagnostic(value) {\n      const desktop = value.desktop ?? {}, backend = value.backend ?? {};\n      return {\n        schema: 1,\n        pid: integer(value.pid),\n        startedUnixMs: integer(value.startedUnixMs),\n        finishedUnixMs: integer(value.finishedUnixMs),\n        phase: ["startup", "recovery"].includes(value.phase) ? value.phase : null,\n        appReady: value.appReady === true,\n        installed: value.installed === true,\n        sourceConnected: value.sourceConnected === true,\n        error: code(value.error),\n        recoveryReason: code(value.recoveryReason),\n        desktop: {\n          available: desktop.available === true,\n          reason: code(desktop.reason),\n          taskConfigurationAvailable: desktop.taskConfigurationAvailable === true,\n          taskConfigurationReason: code(desktop.taskConfigurationReason),\n          modules: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, desktop.modules?.[kind] === true])),\n          bindingErrors: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, code(desktop.bindingErrors?.[kind])])),\n          deferredBindings: Number.isSafeInteger(desktop.deferredBindings) ? desktop.deferredBindings : null,\n          mismatch: typeof desktop.mismatch?.name === "string" && /^[A-Za-z0-9_.-]{1,100}$/.test(desktop.mismatch.name) && /^[a-f0-9]{64}$/.test(desktop.mismatch.observedSha256) ? { name: desktop.mismatch.name, observedSha256: desktop.mismatch.observedSha256 } : null\n        },\n        backend: {\n          available: backend.available === true,\n          reason: code(backend.reason),\n          prepared: Number.isSafeInteger(backend.backendRootsPrepared) ? backend.backendRootsPrepared : null,\n          declined: Number.isSafeInteger(backend.backendRootsDeclined) ? backend.backendRootsDeclined : null\n        }\n      };\n    }\n    function recordSourceDiagnostic2(value) {\n      const report = sourceDiagnostic(value);\n      try {\n        fs.writeFileSync(path.join(os.tmpdir(), `codlet-client-source-${process.pid}-${report.startedUnixMs}.json`), JSON.stringify(report) + "\\n", { flag: "wx", mode: 384 });\n      } catch {\n      }\n    }\n    module2.exports = { recordSourceDiagnostic: recordSourceDiagnostic2, sourceDiagnostic };\n  }\n});\n\n// ../host/electron-main.cjs\nvar { connectPlaintextSource } = require_plaintext_source_client();\nvar { installDesktopPlaintext } = require_electron_plaintext();\nvar { installBackendSpawn } = require_backend_spawn();\nvar { recordSourceDiagnostic } = require_source_diagnostics();\nvar fail = (code) => Object.assign(new Error(code), { code });\nfunction localBackends(context, ownsProcess, dependencies = {}) {\n  const profiles = dependencies.profiles ?? require_electron_plaintext().reviewedSourceProfiles;\n  const verify = dependencies.verify ?? require_backend_launch().verifyBackend;\n  const connections = /* @__PURE__ */ new Set();\n  for (const record of context.modules.list()) {\n    const profile = profiles[record.name];\n    const connectionSymbol = profile?.connectionSymbol ?? (profile?.kind === "connection" ? profile.symbol : null);\n    if (!connectionSymbol || profile.hash !== record.hash) continue;\n    for (const connection of context.modules.instances(record.evaluate(connectionSymbol))) {\n      const child = connection.connection?.proc;\n      if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== "string" || !/^codex(?:\\.exe)?$/i.test(require("node:path").basename(child.spawnfile))) continue;\n      verify(child.spawnfile, process.platform);\n      if (connection.getPendingRequestCount() !== 0 || connection.turnCwds?.pendingByStartId?.size || connection.turnCwds?.startedByTurnId?.size) throw fail("client_source_backend_busy");\n      connections.add(connection);\n    }\n  }\n  return connections;\n}\nasync function recoverLocalBackends(context, ownsProcess, dependencies) {\n  for (const connection of localBackends(context, ownsProcess, dependencies)) {\n    await connection.restart({ intent: "restart", killCodexProcess: false });\n  }\n}\nfunction validateClientSource(electron, context) {\n  if (!electron.app.isReady()) return;\n  if (!context?.modules) throw fail("client_bridge_required");\n  const profiles = require_electron_plaintext().reviewedSourceProfiles;\n  const kinds = /* @__PURE__ */ new Set();\n  for (const record of context.modules.list()) {\n    const profile = profiles[record.name];\n    if (profile && profile.hash === record.hash) kinds.add(profile.kind);\n  }\n  if (!kinds.has("bootstrap") || !kinds.has("main") || !kinds.has("stdio") && !kinds.has("src")) throw fail("desktop_build_unverified");\n}\nfunction installElectronTraffic(electron, configuration, context, dependencies = {}) {\n  if (!configuration?.source || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail("invalid_launch_configuration");\n  const shared = context?.resources.get("plaintextSource");\n  const source = shared ?? connectPlaintextSource(configuration.source);\n  const installedBeforeReady = !electron.app.isReady();\n  const installBackend = dependencies.installBackend ?? installBackendSpawn;\n  const installDesktop = dependencies.installDesktop ?? installDesktopPlaintext;\n  const recover = dependencies.recover ?? recoverLocalBackends;\n  let recoveryReason = null;\n  let readinessDeadlineUnixMs = null;\n  let readinessStartedUnixMs = null;\n  const diagnose = (installed, error) => {\n    try {\n      const desktopState = desktop?.inspect(), backendState = backend?.inspect();\n      (dependencies.diagnose ?? recordSourceDiagnostic)({\n        pid: process.pid,\n        startedUnixMs: readinessStartedUnixMs,\n        finishedUnixMs: Date.now(),\n        phase: installedBeforeReady ? "startup" : "recovery",\n        appReady: electron.app.isReady(),\n        installed,\n        sourceConnected,\n        error: error?.code ?? error?.name,\n        recoveryReason,\n        desktop: desktopState,\n        backend: backendState\n      });\n    } catch {\n    }\n  };\n  let sourceConnected = false, sourceReason = null;\n  source.ready.then(() => {\n    sourceConnected = true;\n  }, (error) => {\n    sourceReason = typeof error?.code === "string" ? error.code : "source_unavailable";\n  });\n  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null;\n  function attachHooks() {\n    backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs }, { state: context?.resources.get("backendState"), trackBackend: context?.trackBackend });\n    desktop = installDesktop(electron, {\n      source,\n      deadlineUnixMs: configuration.deadlineUnixMs,\n      ownsBackendProcess: backend.ownsProcess,\n      isProviderSupported: backend.isProviderSupported,\n      providerTrustForProcess: backend.providerTrustForProcess,\n      pendingAccountUpdate: backend.pendingAccountUpdate,\n      updateAccountMode: backend.updateAccountMode,\n      moduleRegistry: context?.modules,\n      state: context?.resources.get("desktopState"),\n      onlineUpdates: context?.onlineUpdates\n    });\n  }\n  try {\n    attachHooks();\n  } catch (error) {\n    desktop?.close();\n    backend?.close();\n    if (!shared) source.close();\n    throw error;\n  }\n  const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason } });\n  return Object.freeze({\n    handoffVersion: 1,\n    snapshot() {\n      const state = context?.resources.get("backendState");\n      if (!state || !context.resources.get("desktopState")) throw fail("core_update_next_start_required");\n      return { schema: 1, recoveryReason, backends: [...state.records].map((record) => ({\n        pid: record.child.pid ?? null,\n        routes: record.reservations.map((route) => route.baseUrl)\n      })), taskRoutes: context.resources.get("desktopState").taskRoutes.size };\n    },\n    suspend() {\n      if (closed || suspended || !shared || typeof desktop.suspend !== "function") return false;\n      desktop.suspend();\n      backend.close();\n      suspended = true;\n      return true;\n    },\n    restore(snapshot) {\n      if (!validateSnapshot(snapshot)) throw fail("core_update_snapshot_incompatible");\n      const records = [...context.resources.get("backendState").records];\n      if (snapshot.backends.some((previous) => !records.some((record) => record.child.pid === previous.pid && JSON.stringify(record.reservations.map((route) => route.baseUrl)) === JSON.stringify(previous.routes)))) throw fail("core_update_backend_changed");\n      recoveryReason = snapshot.recoveryReason;\n      restored = true;\n    },\n    async resume(snapshot) {\n      if (closed || !suspended) return false;\n      recoveryReason = snapshot.recoveryReason;\n      restored = true;\n      readinessDeadlineUnixMs = Date.now() + 8e3;\n      attachHooks();\n      suspended = false;\n      lastActivation = await this.ready();\n      return lastActivation.installed === true;\n    },\n    confirmTakeover() {\n      return !closed && !suspended && lastActivation?.installed === true;\n    },\n    async ready() {\n      readinessStartedUnixMs ??= Date.now();\n      try {\n        readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5e3 : configuration.deadlineUnixMs;\n        await source.ready;\n        if (context?.modules && !installedBeforeReady && !restored) {\n          try {\n            await recover(context, backend.ownsProcess);\n          } catch (error) {\n            if (!["client_source_backend_busy", "backend_build_unverified"].includes(error?.code)) throw error;\n            recoveryReason = error.code;\n          }\n        }\n        const readyOptions = { deadlineUnixMs: readinessDeadlineUnixMs };\n        const backendReady = recoveryReason ? backend.inspect() : backend.ready(readyOptions).catch((error) => {\n          if (error?.code !== "backend_route_timeout") throw error;\n          recoveryReason = error.code;\n          return { ...backend.inspect(), available: false, reason: "route_unavailable" };\n        });\n        const [desktopState, backendState] = await Promise.all([desktop.ready(readyOptions), backendReady]);\n        const activatedSources = [], unsupportedSources = [];\n        if (desktopState.available) activatedSources.push({\n          id: "desktop-main-http",\n          operations: ["http.intercept"],\n          protocols: ["http", "sse"],\n          coverage: ["desktop-main-fetch", "desktop-main-upload-progress"]\n        });\n        else unsupportedSources.push({ id: "desktop-main-http", reason: ["unsupported_build", "timeout"].includes(desktopState.reason) ? desktopState.reason : "hook_unavailable" });\n        if (backendState.available && desktopState.taskConfigurationAvailable) activatedSources.push({\n          id: "owned-backend-provider",\n          operations: ["route.register", "route.update", "route.close", "http.intercept"],\n          protocols: ["http", "sse", "webSocket"],\n          coverage: ["owned-local-app-server-model-provider"]\n        });\n        else unsupportedSources.push({ id: "owned-backend-provider", reason: !desktopState.taskConfigurationAvailable ? desktopState.taskConfigurationReason === "unsupported_build" ? "unsupported_build" : "hook_unavailable" : backendState.reason === "child_unavailable" ? "child_unavailable" : "route_unavailable" });\n        const installed = activatedSources.length > 0;\n        diagnose(installed, null);\n        return lastActivation = { installed, activatedSources, unsupportedSources };\n      } catch (error) {\n        diagnose(false, error);\n        throw error;\n      }\n    },\n    inspect: status,\n    async close() {\n      if (closed) return;\n      closed = true;\n      desktop.close();\n      backend.close();\n      if (!shared) source.close();\n    }\n  });\n}\nfunction validateSnapshot(value) {\n  return !!value && value.schema === 1 && (value.recoveryReason === null || typeof value.recoveryReason === "string") && Array.isArray(value.backends) && value.backends.length <= 64 && Number.isSafeInteger(value.taskRoutes) && value.taskRoutes >= 0 && value.backends.every((record) => Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.routes) && record.routes.every((route) => typeof route === "string" && route.length < 2048));\n}\nmodule.exports = { handoffVersion: 1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };\n' };
+    return { code: `"use strict";
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+
+// ../host/vendor/plaintext-source-client.cjs
+var require_plaintext_source_client = __commonJS({
+  "../host/vendor/plaintext-source-client.cjs"(exports2, module2) {
+    "use strict";
+    var __getOwnPropNames2 = Object.getOwnPropertyNames;
+    var __commonJS2 = (cb, mod) => function __require() {
+      return mod || (0, cb[__getOwnPropNames2(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+    };
+    var require_traffic_wire = __commonJS2({
+      "../runtime/traffic-wire.cjs"(exports22, module22) {
+        "use strict";
+        var net = require("node:net");
+        var { randomBytes: randomBytes2, timingSafeEqual } = require("node:crypto");
+        var MAX_FRAME = 64 * 1024;
+        var CHUNK = 32 * 1024;
+        var MAX_BODY = 64 * 1024 * 1024;
+        var failure2 = (code) => Object.assign(new Error(code), { code });
+        async function connectTrafficPeer2(endpoint, { signal, handle, event = () => {
+        }, detach = (fn) => fn() } = {}) {
+          if (endpoint?.host !== "127.0.0.1" || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || typeof endpoint.token !== "string" || endpoint.token.length > 128) throw failure2("invalid_data_endpoint");
+          if (signal?.aborted) throw failure2("host_stopping");
+          const socket = net.createConnection({ host: endpoint.host, port: endpoint.port });
+          socket.setNoDelay(true);
+          const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();
+          let sequence = 0, closed = false, buffer = Buffer.alloc(0), ready, failReady;
+          const connected = new Promise((resolve, reject) => {
+            ready = resolve;
+            failReady = reject;
+          });
+          const handshake = setTimeout(() => close(failure2("traffic_connect_timeout")), 5e3);
+          function close(reason = failure2("peer_closed")) {
+            if (closed) return;
+            closed = true;
+            clearTimeout(handshake);
+            signal?.removeEventListener("abort", aborted);
+            socket.destroy();
+            failReady(reason);
+            for (const item of pending.values()) {
+              clearTimeout(item.timer);
+              item.signal?.removeEventListener("abort", item.abort);
+              item.reject(reason);
+            }
+            pending.clear();
+            inbound.clear();
+            buffer = Buffer.alloc(0);
+            try {
+              event({ event: "closed" });
+            } catch {
+            }
+          }
+          const aborted = () => close(failure2("host_stopping"));
+          signal?.addEventListener("abort", aborted, { once: true });
+          function send(value) {
+            if (closed) throw failure2("peer_closed");
+            const encoded = Buffer.from(JSON.stringify(value));
+            if (encoded.length > MAX_FRAME) throw failure2("frame_too_large");
+            if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");
+            const packet = Buffer.allocUnsafe(encoded.length + 4);
+            packet.writeUInt32BE(encoded.length);
+            encoded.copy(packet, 4);
+            socket.write(packet);
+          }
+          socket.once("connect", () => {
+            try {
+              send({ token: endpoint.token });
+            } catch (error) {
+              close(error);
+            }
+          });
+          socket.on("error", () => close(failure2("peer_closed")));
+          socket.on("close", () => close());
+          socket.on("data", (chunk) => detach(() => {
+            try {
+              let offset = 0;
+              while (offset < chunk.length) {
+                const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;
+                if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");
+                const take = Math.min(required - buffer.length, chunk.length - offset);
+                buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);
+                offset += take;
+                if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");
+                if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;
+                const size = buffer.readUInt32BE(0);
+                if (!size || size > MAX_FRAME) throw failure2("invalid_frame");
+                const message = JSON.parse(buffer.subarray(4).toString("utf8"));
+                buffer = Buffer.alloc(0);
+                if (message.event) {
+                  if (message.event === "connected") {
+                    clearTimeout(handshake);
+                    ready();
+                  } else event(message);
+                  continue;
+                }
+                if (typeof message.method === "string") {
+                  if (inbound.size >= 256 || typeof handle !== "function" || inbound.has(message.id)) throw failure2("traffic_backpressure");
+                  inbound.add(message.id);
+                  let operation;
+                  try {
+                    operation = handle(message.method, message.params);
+                  } catch (error) {
+                    operation = Promise.reject(error);
+                  }
+                  Promise.resolve(operation).then((result) => {
+                    if (!closed && inbound.has(message.id)) send({ id: message.id, result: result ?? null });
+                  }, (error) => {
+                    if (!closed && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });
+                  }).catch(() => close(failure2("invalid_frame"))).finally(() => inbound.delete(message.id));
+                  continue;
+                }
+                const item = pending.get(message.id);
+                if (!item) continue;
+                pending.delete(message.id);
+                clearTimeout(item.timer);
+                item.signal?.removeEventListener("abort", item.abort);
+                if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));
+                else {
+                  try {
+                    item.prepareResult?.(message.result);
+                    item.resolve(message.result);
+                  } catch {
+                    item.reject(failure2("invalid_frame"));
+                  }
+                }
+              }
+            } catch {
+              close(failure2("invalid_frame"));
+            }
+          }));
+          await connected;
+          function request(method, params = {}, { timeoutMs = 3e4, signal: requestSignal, prepareResult, cancelOpen = false } = {}) {
+            if (closed || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));
+            if (pending.size >= Math.min(endpoint.maxPendingRequests ?? 64, 256)) return Promise.reject(failure2("resource_limit"));
+            if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));
+            return new Promise((resolve, reject) => {
+              const id = ++sequence;
+              const abort = () => {
+                const item = pending.get(id);
+                if (!item) return;
+                pending.delete(id);
+                clearTimeout(item.timer);
+                requestSignal?.removeEventListener("abort", abort);
+                if (cancelOpen && method === "open" && !closed) {
+                  try {
+                    send({ id: ++sequence, method: "cancelOpen", params: { request: id } });
+                  } catch {
+                    close(failure2("peer_closed"));
+                  }
+                }
+                reject(failure2("request_cancelled"));
+              };
+              const timer = setTimeout(abort, timeoutMs);
+              pending.set(id, { resolve, reject, timer, signal: requestSignal, abort, prepareResult });
+              requestSignal?.addEventListener("abort", abort, { once: true });
+              try {
+                send({ id, method, params });
+              } catch (error) {
+                abort();
+                close(error);
+              }
+            });
+          }
+          return Object.freeze({ request, close, status: () => ({ open: !closed, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });
+        }
+        function createTrafficStreams2(peer, lease, signal) {
+          const sources = /* @__PURE__ */ new Map();
+          let disposed = false;
+          const check = () => {
+            if (disposed || signal.aborted) throw failure2("stream_retired");
+          };
+          function exportBody(body) {
+            check();
+            if (body == null) return null;
+            if (typeof body === "string" || body instanceof Uint8Array) {
+              if (Buffer.byteLength(body) > MAX_BODY) throw failure2("body_too_large");
+              const bytes = Buffer.from(body);
+              if (bytes.length <= 1024) return { inline: bytes.toString("base64") };
+              body = [bytes];
+            }
+            if (!body?.[Symbol.iterator] && !body?.[Symbol.asyncIterator]) throw failure2("invalid_body");
+            if (sources.size >= 8) throw failure2("resource_limit");
+            const stream = randomBytes2(16).toString("hex");
+            sources.set(stream, { body, iterator: null, chunk: null, offset: 0, total: 0, reading: false, cancelled: false, cancelRead: null });
+            return { stream };
+          }
+          function importBody(reference, maximum = MAX_BODY) {
+            if (reference == null) return null;
+            if (typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 1) throw failure2("invalid_body");
+            let used = false, finished = false, cancelled = false, cancelPromise = Promise.resolve();
+            const controller = new AbortController();
+            const rootAborted = () => controller.abort(failure2("stream_retired"));
+            signal.addEventListener("abort", rootAborted, { once: true });
+            const finish = () => {
+              finished = true;
+              signal.removeEventListener("abort", rootAborted);
+            };
+            const cancel = () => {
+              if (finished || cancelled) return false;
+              used = true;
+              cancelled = true;
+              finish();
+              controller.abort(failure2("request_cancelled"));
+              if (reference.stream) cancelPromise = peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).then(() => {
+              }, () => {
+              });
+              return true;
+            };
+            const cancelAndWait = () => {
+              cancel();
+              return cancelPromise;
+            };
+            return Object.freeze({ cancel, cancelAndWait, [Symbol.asyncIterator]() {
+              if (used) throw failure2("body_already_consumed");
+              used = true;
+              let total = 0, ended = false, reading = false;
+              return {
+                async next() {
+                  check();
+                  if (cancelled) throw failure2("request_cancelled");
+                  if (ended) return { done: true };
+                  if (reading) throw failure2("body_read_pending");
+                  reading = true;
+                  try {
+                    let bytes;
+                    if (reference.inline !== void 0) {
+                      if (typeof reference.inline !== "string" || reference.inline.length > 1368) throw failure2("invalid_body");
+                      bytes = Buffer.from(reference.inline, "base64");
+                      ended = true;
+                      finish();
+                    } else {
+                      if (typeof reference.stream !== "string" || !/^[a-f0-9]{32}$/u.test(reference.stream)) throw failure2("invalid_body");
+                      const value = await peer.request("relay", { lease, operation: "stream.read", payload: { stream: reference.stream } }, { signal: controller.signal, timeoutMs: 3e5 });
+                      check();
+                      if (value.done === true) {
+                        ended = true;
+                        finish();
+                        return { done: true };
+                      }
+                      if (typeof value.bytes !== "string" || !value.bytes.length || value.bytes.length > Math.ceil(CHUNK / 3) * 4) throw failure2("invalid_body");
+                      bytes = Buffer.from(value.bytes, "base64");
+                      if (bytes.length > CHUNK || bytes.toString("base64") !== value.bytes) throw failure2("invalid_body");
+                    }
+                    const encoded = reference.inline !== void 0 ? reference.inline : void 0;
+                    if (encoded !== void 0 && bytes.toString("base64") !== encoded) throw failure2("invalid_body");
+                    total += bytes.length;
+                    if (total > maximum) throw failure2("body_too_large");
+                    return { done: false, value: bytes };
+                  } catch (error) {
+                    finish();
+                    throw error;
+                  } finally {
+                    reading = false;
+                  }
+                },
+                async return() {
+                  ended = true;
+                  finish();
+                  controller.abort();
+                  if (reference.stream && !signal.aborted) await peer.request("relay", { lease, operation: "stream.cancel", payload: { stream: reference.stream } }, { signal }).catch(() => {
+                  });
+                  return { done: true };
+                }
+              };
+            } });
+          }
+          async function handle(operation, payload) {
+            check();
+            const source = sources.get(payload?.stream);
+            if (!source) throw failure2("stream_retired");
+            if (operation === "stream.cancel") {
+              sources.delete(payload.stream);
+              source.cancelled = true;
+              source.cancelRead?.();
+              if (source.body.cancelAndWait) await source.body.cancelAndWait().catch(() => {
+              });
+              else if (source.body.cancel) Promise.resolve(source.body.cancel()).catch(() => {
+              });
+              if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {
+              });
+              return { cancelled: true };
+            }
+            if (operation !== "stream.read" || source.reading) throw failure2("body_read_pending");
+            source.reading = true;
+            try {
+              source.iterator ??= source.body[Symbol.asyncIterator]?.() ?? source.body[Symbol.iterator]();
+              for (let empty = 0; !source.chunk || source.offset >= source.chunk.length; empty++) {
+                if (empty >= 128) throw failure2("invalid_body");
+                const value = await new Promise((resolve, reject) => {
+                  source.cancelRead = () => reject(failure2("stream_retired"));
+                  Promise.resolve().then(() => source.iterator.next()).then(resolve, reject);
+                });
+                source.cancelRead = null;
+                check();
+                if (source.cancelled) throw failure2("stream_retired");
+                if (value.done) {
+                  sources.delete(payload.stream);
+                  return { done: true };
+                }
+                if (typeof value.value !== "string" && !(value.value instanceof Uint8Array)) throw failure2("invalid_body");
+                source.total += Buffer.byteLength(value.value);
+                if (source.total > MAX_BODY) throw failure2("body_too_large");
+                source.chunk = Buffer.from(value.value);
+                source.offset = 0;
+              }
+              const chunk = source.chunk.subarray(source.offset, source.offset + CHUNK);
+              source.offset += chunk.length;
+              return { done: false, bytes: chunk.toString("base64") };
+            } finally {
+              source.reading = false;
+              source.cancelRead = null;
+            }
+          }
+          async function importFrame(frame) {
+            if (typeof frame?.binary !== "boolean") throw failure2("invalid_frame");
+            const body = importBody(frame.body, 8 * 1024 * 1024);
+            if (!body) throw failure2("invalid_frame");
+            const chunks = [];
+            for await (const chunk of body) chunks.push(Buffer.from(chunk));
+            const bytes = Buffer.concat(chunks);
+            return Object.freeze({ binary: frame.binary, data: frame.binary ? bytes : bytes.toString("utf8") });
+          }
+          function exportFrame(frame) {
+            if (frame == null) return null;
+            if (typeof frame === "string") frame = { binary: false, data: frame };
+            if (frame instanceof Uint8Array) frame = { binary: true, data: frame };
+            if (typeof frame?.binary !== "boolean" || (frame.binary ? !(frame.data instanceof Uint8Array) : typeof frame.data !== "string") || Buffer.byteLength(frame.data) > 8 * 1024 * 1024) throw failure2("invalid_frame");
+            return { binary: frame.binary, body: exportBody(frame.data) };
+          }
+          function dispose() {
+            if (disposed) return;
+            disposed = true;
+            signal.removeEventListener("abort", dispose);
+            for (const source of sources.values()) {
+              source.cancelled = true;
+              source.cancelRead?.();
+              try {
+                source.body.cancel?.();
+                if (source.iterator?.return) Promise.resolve(source.iterator.return()).catch(() => {
+                });
+              } catch {
+              }
+            }
+            sources.clear();
+          }
+          signal.addEventListener("abort", dispose, { once: true });
+          return Object.freeze({ exportBody, importBody, exportFrame, importFrame, handle, dispose, status: () => ({ streams: sources.size, retired: disposed }) });
+        }
+        async function listenTrafficPeer({ signal, handle, onConnect = () => {
+        }, onClose = () => {
+        } }) {
+          if (signal?.aborted) throw failure2("host_stopping");
+          const token = randomBytes2(32).toString("base64url");
+          let active = null, closed = false;
+          const sockets = /* @__PURE__ */ new Set();
+          const server = net.createServer((socket) => {
+            if (closed || active || sockets.size >= 4) {
+              socket.destroy();
+              return;
+            }
+            sockets.add(socket);
+            socket.once("close", () => sockets.delete(socket));
+            socket.setNoDelay(true);
+            let buffer = Buffer.alloc(0), authenticated = false, retired = false, sequence = 0;
+            const pending = /* @__PURE__ */ new Map(), inbound = /* @__PURE__ */ new Set();
+            const handshake = setTimeout(() => retire(), 5e3);
+            function retire() {
+              if (retired) return;
+              retired = true;
+              clearTimeout(handshake);
+              socket.destroy();
+              for (const item of pending.values()) {
+                clearTimeout(item.timer);
+                item.signal?.removeEventListener("abort", item.abort);
+                item.reject(failure2("peer_closed"));
+              }
+              pending.clear();
+              inbound.clear();
+              buffer = Buffer.alloc(0);
+              if (active === peer) {
+                active = null;
+                onClose(peer);
+              }
+            }
+            function send(value) {
+              if (retired) throw failure2("peer_closed");
+              const encoded = Buffer.from(JSON.stringify(value));
+              if (!encoded.length || encoded.length > MAX_FRAME) throw failure2("frame_too_large");
+              if (socket.writableLength + encoded.length + 4 > 512 * 1024) throw failure2("traffic_backpressure");
+              const packet = Buffer.allocUnsafe(encoded.length + 4);
+              packet.writeUInt32BE(encoded.length);
+              encoded.copy(packet, 4);
+              socket.write(packet);
+            }
+            function request(method, params = {}, { signal: requestSignal, timeoutMs = 3e4 } = {}) {
+              if (retired || requestSignal?.aborted) return Promise.reject(failure2("peer_closed"));
+              if (pending.size >= 64) return Promise.reject(failure2("resource_limit"));
+              if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3e5) return Promise.reject(failure2("invalid_timeout"));
+              return new Promise((resolve, reject) => {
+                const id = ++sequence;
+                const abort = () => {
+                  if (!pending.has(id)) return;
+                  pending.delete(id);
+                  clearTimeout(timer);
+                  requestSignal?.removeEventListener("abort", abort);
+                  reject(failure2("request_cancelled"));
+                };
+                const timer = setTimeout(abort, timeoutMs);
+                pending.set(id, { resolve, reject, timer, signal: requestSignal, abort });
+                requestSignal?.addEventListener("abort", abort, { once: true });
+                try {
+                  send({ id, method, params });
+                } catch (error) {
+                  abort();
+                  retire();
+                }
+              });
+            }
+            const peer = Object.freeze({ request, close: retire, status: () => ({ open: !retired, pending: pending.size, incoming: inbound.size, queuedBytes: socket.writableLength }) });
+            socket.on("error", retire);
+            socket.on("close", retire);
+            socket.on("data", (chunk) => {
+              try {
+                let offset = 0;
+                while (offset < chunk.length) {
+                  const required = buffer.length < 4 ? 4 : buffer.readUInt32BE(0) + 4;
+                  if (required > MAX_FRAME + 4 || required === 4 && buffer.length === 4) throw failure2("invalid_frame");
+                  const take = Math.min(required - buffer.length, chunk.length - offset);
+                  buffer = Buffer.concat([buffer, chunk.subarray(offset, offset + take)]);
+                  offset += take;
+                  if (buffer.length >= 4 && (!buffer.readUInt32BE(0) || buffer.readUInt32BE(0) > MAX_FRAME)) throw failure2("invalid_frame");
+                  if (buffer.length < 4 || buffer.length < buffer.readUInt32BE(0) + 4) continue;
+                  const message = JSON.parse(buffer.subarray(4).toString("utf8"));
+                  buffer = Buffer.alloc(0);
+                  if (!authenticated) {
+                    const offered = typeof message?.token === "string" ? Buffer.from(message.token) : Buffer.alloc(0);
+                    const expected = Buffer.from(token);
+                    if (active || offered.length !== expected.length || !timingSafeEqual(offered, expected) || Object.keys(message).length !== 1) throw failure2("permission_denied");
+                    authenticated = true;
+                    clearTimeout(handshake);
+                    active = peer;
+                    send({ event: "connected" });
+                    onConnect(peer);
+                    continue;
+                  }
+                  if (typeof message.method === "string") {
+                    if (inbound.size >= 256 || inbound.has(message.id)) throw failure2("traffic_backpressure");
+                    inbound.add(message.id);
+                    let operation;
+                    try {
+                      operation = handle(peer, message.method, message.params);
+                    } catch (error) {
+                      operation = Promise.reject(error);
+                    }
+                    Promise.resolve(operation).then((result) => {
+                      if (!retired && inbound.has(message.id)) send({ id: message.id, result: result ?? null });
+                    }, (error) => {
+                      if (!retired && inbound.has(message.id)) send({ id: message.id, error: { code: /^[a-z_]{1,64}$/u.test(error?.code) ? error.code : "traffic_callback_failed" } });
+                    }).catch(retire).finally(() => inbound.delete(message.id));
+                    continue;
+                  }
+                  const item = pending.get(message.id);
+                  if (!item) continue;
+                  pending.delete(message.id);
+                  clearTimeout(item.timer);
+                  item.signal?.removeEventListener("abort", item.abort);
+                  if (message.error) item.reject(failure2(/^[a-z_]{1,64}$/u.test(message.error.code) ? message.error.code : "traffic_callback_failed"));
+                  else item.resolve(message.result);
+                }
+              } catch {
+                retire();
+              }
+            });
+          });
+          const stopped = () => close();
+          signal?.addEventListener("abort", stopped, { once: true });
+          try {
+            await new Promise((resolve, reject) => {
+              const cleanup = () => {
+                server.off("error", failed);
+                signal?.removeEventListener("abort", aborted);
+              };
+              const failed = () => {
+                cleanup();
+                reject(failure2("channel_listen_failed"));
+              };
+              const aborted = () => {
+                cleanup();
+                reject(failure2("host_stopping"));
+              };
+              server.once("error", failed);
+              signal?.addEventListener("abort", aborted, { once: true });
+              server.listen(0, "127.0.0.1", () => {
+                cleanup();
+                if (closed) {
+                  close();
+                  reject(failure2("host_stopping"));
+                } else resolve();
+              });
+            });
+          } catch (error) {
+            close();
+            throw error;
+          }
+          const address = server.address();
+          function close() {
+            if (!closed) {
+              closed = true;
+              signal?.removeEventListener("abort", stopped);
+            }
+            for (const socket of sockets) socket.destroy();
+            if (server.listening) server.close();
+          }
+          if (closed || signal?.aborted) {
+            close();
+            throw failure2("host_stopping");
+          }
+          return Object.freeze({ endpoint: Object.freeze({ host: "127.0.0.1", port: address.port, token }), close, status: () => ({ open: !closed, connected: !!active, peer: active?.status() ?? null }) });
+        }
+        module22.exports = { connectTrafficPeer: connectTrafficPeer2, listenTrafficPeer, createTrafficStreams: createTrafficStreams2 };
+      }
+    });
+    var { randomBytes } = require("node:crypto");
+    var { connectTrafficPeer, createTrafficStreams } = require_traffic_wire();
+    var failure = (code) => Object.assign(new Error(code), { code });
+    var TOKEN = /^[A-Za-z0-9_-]{43}$/u;
+    function connectPlaintextSource2(source, { signal } = {}) {
+      if (source?.version !== 1 || source.kind !== "plaintext" || !Array.isArray(source.protocols) || !Array.isArray(source.operations) || typeof source.routeBaseUrl !== "string") throw failure("invalid_source");
+      const routeBase = new URL(source.routeBaseUrl);
+      if (routeBase.protocol !== "http:" || routeBase.hostname !== "127.0.0.1" || !routeBase.port || routeBase.username || routeBase.password || routeBase.search || routeBase.hash || routeBase.pathname === "/") throw failure("invalid_source");
+      const controller = new AbortController(), exchanges = /* @__PURE__ */ new Map(), routes = /* @__PURE__ */ new Set(), routeRecords = /* @__PURE__ */ new Map();
+      let closed = false, peer;
+      const stop = () => close();
+      signal?.addEventListener("abort", stop, { once: true });
+      if (signal?.aborted) throw failure("host_stopping");
+      function retire(record, notify = false) {
+        if (!record || !exchanges.has(record.id)) return;
+        exchanges.delete(record.id);
+        record.signal?.removeEventListener("abort", record.abort);
+        record.controller.abort(failure("stream_retired"));
+        record.streams.dispose();
+        if (notify && !closed) peer.request("http.cancel", { exchange: record.id }, { timeoutMs: 2e3 }).catch(() => {
+        });
+      }
+      async function handle(method, params) {
+        if (method === "relay") {
+          const streamOwner = exchanges.get(params?.lease) ?? routeRecords.get(params?.lease);
+          if (!streamOwner) throw failure("stream_retired");
+          return streamOwner.streams.handle(params.operation, params.payload);
+        }
+        const record = exchanges.get(params?.exchange);
+        if (!record) throw failure("stream_retired");
+        if (method === "http.cancel") {
+          retire(record);
+          return { cancelled: true };
+        }
+        if (method !== "http.forward" || record.forwarding) throw failure("invalid_method");
+        record.forwarding = true;
+        try {
+          const input = { ...params.request, body: record.streams.importBody(params.request.body) };
+          const response = await record.forward(input, { signal: record.controller.signal });
+          if (record.controller.signal.aborted) throw failure("stream_retired");
+          if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw failure("invalid_response");
+          return { ...response, headers: response.headers ?? [], body: record.streams.exportBody(response.body) };
+        } finally {
+          record.forwarding = false;
+        }
+      }
+      function close() {
+        if (closed) return;
+        closed = true;
+        signal?.removeEventListener("abort", stop);
+        for (const record of [...exchanges.values()]) retire(record);
+        for (const record of routes) {
+          record.controller.abort();
+          record.streams?.dispose();
+        }
+        routeRecords.clear();
+        routes.clear();
+        controller.abort();
+        peer?.close();
+      }
+      const ready = connectTrafficPeer(source.endpoint, {
+        signal: controller.signal,
+        handle,
+        event(event) {
+          if (event.event === "closed") close();
+        }
+      }).then(
+        (value) => {
+          peer = value;
+          return true;
+        },
+        (error) => {
+          close();
+          throw error;
+        }
+      );
+      function certificateReference(record, value) {
+        if (value === void 0) return void 0;
+        if (typeof value !== "string" || Buffer.byteLength(value) > 128 * 1024) throw failure("invalid_ca_bundle");
+        return record.streams.exportBody(value);
+      }
+      function closeRouteRecord(record) {
+        routeRecords.delete(record.token);
+        record.controller.abort();
+        record.streams?.dispose();
+      }
+      function reserveRoute({ upstreamBaseUrl, additionalCaPem } = {}) {
+        if (closed) throw failure("peer_closed");
+        if (routes.size >= 32) throw failure("resource_limit");
+        const token = randomBytes(32).toString("base64url");
+        if (!TOKEN.test(token)) throw failure("invalid_source");
+        const baseUrl = \`\${source.routeBaseUrl}/\${token}\`;
+        const record = { token, closed: false, registered: false, controller: new AbortController(), streams: null };
+        routes.add(record);
+        const reservationReady = ready.then(() => {
+          if (record.closed) throw failure("route_closed");
+          record.streams = createTrafficStreams(peer, token, record.controller.signal);
+          routeRecords.set(token, record);
+          return peer.request("route.register", {
+            token,
+            upstreamBaseUrl,
+            additionalCaPem: certificateReference(record, additionalCaPem)
+          }, { timeoutMs: 5e3 });
+        }).then((result) => {
+          if (result?.baseUrl !== baseUrl) throw failure("invalid_source");
+          record.registered = true;
+          if (record.closed) return peer.request("route.close", { token }, { timeoutMs: 2e3 }).then(() => {
+            record.registered = false;
+            throw failure("route_closed");
+          });
+          return record;
+        }).catch((error) => {
+          routes.delete(record);
+          closeRouteRecord(record);
+          throw error;
+        });
+        record.pending = reservationReady;
+        return Object.freeze({ baseUrl, ready: reservationReady, update({ upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: additionalCaPem2 } = {}) {
+          if (record.closed || closed) return Promise.reject(failure("route_closed"));
+          const update = record.pending.then(async () => {
+            const reference = certificateReference(record, additionalCaPem2);
+            try {
+              return await peer.request("route.update", { token, upstreamBaseUrl: upstreamBaseUrl2, additionalCaPem: reference }, { timeoutMs: 5e3 });
+            } catch (error) {
+              if (reference?.stream) await record.streams.handle("stream.cancel", { stream: reference.stream }).catch(() => {
+              });
+              throw error;
+            }
+          });
+          record.pending = update.catch(() => {
+          });
+          return update;
+        }, async close() {
+          if (record.closed) return;
+          record.closed = true;
+          routes.delete(record);
+          try {
+            await record.pending;
+            if (record.registered && !closed) await peer.request("route.close", { token }, { timeoutMs: 2e3 });
+          } catch {
+          } finally {
+            closeRouteRecord(record);
+          }
+        } });
+      }
+      async function registerRoute(options) {
+        const reservation = reserveRoute(options);
+        await reservation.ready;
+        return reservation;
+      }
+      async function interceptHttp(input, { forward, signal: requestSignal } = {}) {
+        if (closed || typeof forward !== "function") throw failure("invalid_source");
+        await ready;
+        const id = randomBytes(32).toString("base64url"), requestController = new AbortController();
+        const abort = () => retire(record, true);
+        const record = {
+          id,
+          forward,
+          controller: requestController,
+          signal: requestSignal,
+          abort,
+          forwarding: false,
+          streams: createTrafficStreams(peer, id, requestController.signal)
+        };
+        exchanges.set(id, record);
+        requestSignal?.addEventListener("abort", abort, { once: true });
+        if (requestSignal?.aborted) {
+          abort();
+          throw failure("request_cancelled");
+        }
+        let result;
+        try {
+          result = await peer.request(
+            "http.intercept",
+            {
+              exchange: id,
+              request: { url: input.url, method: input.method ?? "GET", headers: input.headers ?? [], body: record.streams.exportBody(input.body) }
+            },
+            { signal: requestController.signal, timeoutMs: 3e5 }
+          );
+          if (requestController.signal.aborted) throw failure("request_cancelled");
+          const body = record.streams.importBody(result.body);
+          if (!body) {
+            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {
+            });
+            retire(record);
+            return { ...result, body: null };
+          }
+          let consumed = false;
+          const finish = async () => {
+            if (consumed) return;
+            consumed = true;
+            await peer.request("http.release", { exchange: id }, { timeoutMs: 2e3 }).catch(() => {
+            });
+            retire(record);
+          };
+          const wrapped = Object.freeze({
+            async cancel() {
+              await finish();
+            },
+            [Symbol.asyncIterator]() {
+              const iterator = body[Symbol.asyncIterator]();
+              return {
+                async next() {
+                  try {
+                    const item = await iterator.next();
+                    if (item.done) await finish();
+                    return item;
+                  } catch (error) {
+                    await finish();
+                    throw error;
+                  }
+                },
+                async return() {
+                  try {
+                    return await iterator.return?.() ?? { done: true };
+                  } finally {
+                    await finish();
+                  }
+                }
+              };
+            }
+          });
+          return { ...result, body: wrapped };
+        } catch (error) {
+          retire(record, true);
+          throw error;
+        }
+      }
+      return Object.freeze({
+        ready,
+        reserveRoute,
+        registerRoute,
+        interceptHttp,
+        close,
+        status: () => ({ open: !closed, routes: routes.size, exchanges: exchanges.size })
+      });
+    }
+    module2.exports = { connectPlaintextSource: connectPlaintextSource2 };
+  }
+});
+
+// ../../runtime/sdk-source-parser.cjs
+var require_sdk_source_parser = __commonJS({
+  "../../runtime/sdk-source-parser.cjs"(exports2, module2) {
+    var si = (g, L) => () => (L || g((L = { exports: {} }).exports, L), L.exports);
+    var vt = si((me, mt) => {
+      (function(g, L) {
+        typeof me == "object" && typeof mt < "u" ? L(me) : typeof define == "function" && define.amd ? define(["exports"], L) : (g = typeof globalThis < "u" ? globalThis : g || self, L(g.acorn = {}));
+      })(me, (function(g) {
+        "use strict";
+        var L = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 80, 3, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 343, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 330, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 726, 6, 110, 6, 6, 9, 4759, 9, 787719, 239], Ne = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 71, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 2, 60, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 328, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 129, 74, 6, 0, 67, 12, 65, 1, 2, 0, 29, 6135, 9, 1237, 42, 9, 8936, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 496, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4153, 7, 221, 3, 5761, 15, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 4191], gt = "\\u200C\\u200D\\xB7\\u0300-\\u036F\\u0387\\u0483-\\u0487\\u0591-\\u05BD\\u05BF\\u05C1\\u05C2\\u05C4\\u05C5\\u05C7\\u0610-\\u061A\\u064B-\\u0669\\u0670\\u06D6-\\u06DC\\u06DF-\\u06E4\\u06E7\\u06E8\\u06EA-\\u06ED\\u06F0-\\u06F9\\u0711\\u0730-\\u074A\\u07A6-\\u07B0\\u07C0-\\u07C9\\u07EB-\\u07F3\\u07FD\\u0816-\\u0819\\u081B-\\u0823\\u0825-\\u0827\\u0829-\\u082D\\u0859-\\u085B\\u0897-\\u089F\\u08CA-\\u08E1\\u08E3-\\u0903\\u093A-\\u093C\\u093E-\\u094F\\u0951-\\u0957\\u0962\\u0963\\u0966-\\u096F\\u0981-\\u0983\\u09BC\\u09BE-\\u09C4\\u09C7\\u09C8\\u09CB-\\u09CD\\u09D7\\u09E2\\u09E3\\u09E6-\\u09EF\\u09FE\\u0A01-\\u0A03\\u0A3C\\u0A3E-\\u0A42\\u0A47\\u0A48\\u0A4B-\\u0A4D\\u0A51\\u0A66-\\u0A71\\u0A75\\u0A81-\\u0A83\\u0ABC\\u0ABE-\\u0AC5\\u0AC7-\\u0AC9\\u0ACB-\\u0ACD\\u0AE2\\u0AE3\\u0AE6-\\u0AEF\\u0AFA-\\u0AFF\\u0B01-\\u0B03\\u0B3C\\u0B3E-\\u0B44\\u0B47\\u0B48\\u0B4B-\\u0B4D\\u0B55-\\u0B57\\u0B62\\u0B63\\u0B66-\\u0B6F\\u0B82\\u0BBE-\\u0BC2\\u0BC6-\\u0BC8\\u0BCA-\\u0BCD\\u0BD7\\u0BE6-\\u0BEF\\u0C00-\\u0C04\\u0C3C\\u0C3E-\\u0C44\\u0C46-\\u0C48\\u0C4A-\\u0C4D\\u0C55\\u0C56\\u0C62\\u0C63\\u0C66-\\u0C6F\\u0C81-\\u0C83\\u0CBC\\u0CBE-\\u0CC4\\u0CC6-\\u0CC8\\u0CCA-\\u0CCD\\u0CD5\\u0CD6\\u0CE2\\u0CE3\\u0CE6-\\u0CEF\\u0CF3\\u0D00-\\u0D03\\u0D3B\\u0D3C\\u0D3E-\\u0D44\\u0D46-\\u0D48\\u0D4A-\\u0D4D\\u0D57\\u0D62\\u0D63\\u0D66-\\u0D6F\\u0D81-\\u0D83\\u0DCA\\u0DCF-\\u0DD4\\u0DD6\\u0DD8-\\u0DDF\\u0DE6-\\u0DEF\\u0DF2\\u0DF3\\u0E31\\u0E34-\\u0E3A\\u0E47-\\u0E4E\\u0E50-\\u0E59\\u0EB1\\u0EB4-\\u0EBC\\u0EC8-\\u0ECE\\u0ED0-\\u0ED9\\u0F18\\u0F19\\u0F20-\\u0F29\\u0F35\\u0F37\\u0F39\\u0F3E\\u0F3F\\u0F71-\\u0F84\\u0F86\\u0F87\\u0F8D-\\u0F97\\u0F99-\\u0FBC\\u0FC6\\u102B-\\u103E\\u1040-\\u1049\\u1056-\\u1059\\u105E-\\u1060\\u1062-\\u1064\\u1067-\\u106D\\u1071-\\u1074\\u1082-\\u108D\\u108F-\\u109D\\u135D-\\u135F\\u1369-\\u1371\\u1712-\\u1715\\u1732-\\u1734\\u1752\\u1753\\u1772\\u1773\\u17B4-\\u17D3\\u17DD\\u17E0-\\u17E9\\u180B-\\u180D\\u180F-\\u1819\\u18A9\\u1920-\\u192B\\u1930-\\u193B\\u1946-\\u194F\\u19D0-\\u19DA\\u1A17-\\u1A1B\\u1A55-\\u1A5E\\u1A60-\\u1A7C\\u1A7F-\\u1A89\\u1A90-\\u1A99\\u1AB0-\\u1ABD\\u1ABF-\\u1ACE\\u1B00-\\u1B04\\u1B34-\\u1B44\\u1B50-\\u1B59\\u1B6B-\\u1B73\\u1B80-\\u1B82\\u1BA1-\\u1BAD\\u1BB0-\\u1BB9\\u1BE6-\\u1BF3\\u1C24-\\u1C37\\u1C40-\\u1C49\\u1C50-\\u1C59\\u1CD0-\\u1CD2\\u1CD4-\\u1CE8\\u1CED\\u1CF4\\u1CF7-\\u1CF9\\u1DC0-\\u1DFF\\u200C\\u200D\\u203F\\u2040\\u2054\\u20D0-\\u20DC\\u20E1\\u20E5-\\u20F0\\u2CEF-\\u2CF1\\u2D7F\\u2DE0-\\u2DFF\\u302A-\\u302F\\u3099\\u309A\\u30FB\\uA620-\\uA629\\uA66F\\uA674-\\uA67D\\uA69E\\uA69F\\uA6F0\\uA6F1\\uA802\\uA806\\uA80B\\uA823-\\uA827\\uA82C\\uA880\\uA881\\uA8B4-\\uA8C5\\uA8D0-\\uA8D9\\uA8E0-\\uA8F1\\uA8FF-\\uA909\\uA926-\\uA92D\\uA947-\\uA953\\uA980-\\uA983\\uA9B3-\\uA9C0\\uA9D0-\\uA9D9\\uA9E5\\uA9F0-\\uA9F9\\uAA29-\\uAA36\\uAA43\\uAA4C\\uAA4D\\uAA50-\\uAA59\\uAA7B-\\uAA7D\\uAAB0\\uAAB2-\\uAAB4\\uAAB7\\uAAB8\\uAABE\\uAABF\\uAAC1\\uAAEB-\\uAAEF\\uAAF5\\uAAF6\\uABE3-\\uABEA\\uABEC\\uABED\\uABF0-\\uABF9\\uFB1E\\uFE00-\\uFE0F\\uFE20-\\uFE2F\\uFE33\\uFE34\\uFE4D-\\uFE4F\\uFF10-\\uFF19\\uFF3F\\uFF65", Ve = "\\xAA\\xB5\\xBA\\xC0-\\xD6\\xD8-\\xF6\\xF8-\\u02C1\\u02C6-\\u02D1\\u02E0-\\u02E4\\u02EC\\u02EE\\u0370-\\u0374\\u0376\\u0377\\u037A-\\u037D\\u037F\\u0386\\u0388-\\u038A\\u038C\\u038E-\\u03A1\\u03A3-\\u03F5\\u03F7-\\u0481\\u048A-\\u052F\\u0531-\\u0556\\u0559\\u0560-\\u0588\\u05D0-\\u05EA\\u05EF-\\u05F2\\u0620-\\u064A\\u066E\\u066F\\u0671-\\u06D3\\u06D5\\u06E5\\u06E6\\u06EE\\u06EF\\u06FA-\\u06FC\\u06FF\\u0710\\u0712-\\u072F\\u074D-\\u07A5\\u07B1\\u07CA-\\u07EA\\u07F4\\u07F5\\u07FA\\u0800-\\u0815\\u081A\\u0824\\u0828\\u0840-\\u0858\\u0860-\\u086A\\u0870-\\u0887\\u0889-\\u088E\\u08A0-\\u08C9\\u0904-\\u0939\\u093D\\u0950\\u0958-\\u0961\\u0971-\\u0980\\u0985-\\u098C\\u098F\\u0990\\u0993-\\u09A8\\u09AA-\\u09B0\\u09B2\\u09B6-\\u09B9\\u09BD\\u09CE\\u09DC\\u09DD\\u09DF-\\u09E1\\u09F0\\u09F1\\u09FC\\u0A05-\\u0A0A\\u0A0F\\u0A10\\u0A13-\\u0A28\\u0A2A-\\u0A30\\u0A32\\u0A33\\u0A35\\u0A36\\u0A38\\u0A39\\u0A59-\\u0A5C\\u0A5E\\u0A72-\\u0A74\\u0A85-\\u0A8D\\u0A8F-\\u0A91\\u0A93-\\u0AA8\\u0AAA-\\u0AB0\\u0AB2\\u0AB3\\u0AB5-\\u0AB9\\u0ABD\\u0AD0\\u0AE0\\u0AE1\\u0AF9\\u0B05-\\u0B0C\\u0B0F\\u0B10\\u0B13-\\u0B28\\u0B2A-\\u0B30\\u0B32\\u0B33\\u0B35-\\u0B39\\u0B3D\\u0B5C\\u0B5D\\u0B5F-\\u0B61\\u0B71\\u0B83\\u0B85-\\u0B8A\\u0B8E-\\u0B90\\u0B92-\\u0B95\\u0B99\\u0B9A\\u0B9C\\u0B9E\\u0B9F\\u0BA3\\u0BA4\\u0BA8-\\u0BAA\\u0BAE-\\u0BB9\\u0BD0\\u0C05-\\u0C0C\\u0C0E-\\u0C10\\u0C12-\\u0C28\\u0C2A-\\u0C39\\u0C3D\\u0C58-\\u0C5A\\u0C5D\\u0C60\\u0C61\\u0C80\\u0C85-\\u0C8C\\u0C8E-\\u0C90\\u0C92-\\u0CA8\\u0CAA-\\u0CB3\\u0CB5-\\u0CB9\\u0CBD\\u0CDD\\u0CDE\\u0CE0\\u0CE1\\u0CF1\\u0CF2\\u0D04-\\u0D0C\\u0D0E-\\u0D10\\u0D12-\\u0D3A\\u0D3D\\u0D4E\\u0D54-\\u0D56\\u0D5F-\\u0D61\\u0D7A-\\u0D7F\\u0D85-\\u0D96\\u0D9A-\\u0DB1\\u0DB3-\\u0DBB\\u0DBD\\u0DC0-\\u0DC6\\u0E01-\\u0E30\\u0E32\\u0E33\\u0E40-\\u0E46\\u0E81\\u0E82\\u0E84\\u0E86-\\u0E8A\\u0E8C-\\u0EA3\\u0EA5\\u0EA7-\\u0EB0\\u0EB2\\u0EB3\\u0EBD\\u0EC0-\\u0EC4\\u0EC6\\u0EDC-\\u0EDF\\u0F00\\u0F40-\\u0F47\\u0F49-\\u0F6C\\u0F88-\\u0F8C\\u1000-\\u102A\\u103F\\u1050-\\u1055\\u105A-\\u105D\\u1061\\u1065\\u1066\\u106E-\\u1070\\u1075-\\u1081\\u108E\\u10A0-\\u10C5\\u10C7\\u10CD\\u10D0-\\u10FA\\u10FC-\\u1248\\u124A-\\u124D\\u1250-\\u1256\\u1258\\u125A-\\u125D\\u1260-\\u1288\\u128A-\\u128D\\u1290-\\u12B0\\u12B2-\\u12B5\\u12B8-\\u12BE\\u12C0\\u12C2-\\u12C5\\u12C8-\\u12D6\\u12D8-\\u1310\\u1312-\\u1315\\u1318-\\u135A\\u1380-\\u138F\\u13A0-\\u13F5\\u13F8-\\u13FD\\u1401-\\u166C\\u166F-\\u167F\\u1681-\\u169A\\u16A0-\\u16EA\\u16EE-\\u16F8\\u1700-\\u1711\\u171F-\\u1731\\u1740-\\u1751\\u1760-\\u176C\\u176E-\\u1770\\u1780-\\u17B3\\u17D7\\u17DC\\u1820-\\u1878\\u1880-\\u18A8\\u18AA\\u18B0-\\u18F5\\u1900-\\u191E\\u1950-\\u196D\\u1970-\\u1974\\u1980-\\u19AB\\u19B0-\\u19C9\\u1A00-\\u1A16\\u1A20-\\u1A54\\u1AA7\\u1B05-\\u1B33\\u1B45-\\u1B4C\\u1B83-\\u1BA0\\u1BAE\\u1BAF\\u1BBA-\\u1BE5\\u1C00-\\u1C23\\u1C4D-\\u1C4F\\u1C5A-\\u1C7D\\u1C80-\\u1C8A\\u1C90-\\u1CBA\\u1CBD-\\u1CBF\\u1CE9-\\u1CEC\\u1CEE-\\u1CF3\\u1CF5\\u1CF6\\u1CFA\\u1D00-\\u1DBF\\u1E00-\\u1F15\\u1F18-\\u1F1D\\u1F20-\\u1F45\\u1F48-\\u1F4D\\u1F50-\\u1F57\\u1F59\\u1F5B\\u1F5D\\u1F5F-\\u1F7D\\u1F80-\\u1FB4\\u1FB6-\\u1FBC\\u1FBE\\u1FC2-\\u1FC4\\u1FC6-\\u1FCC\\u1FD0-\\u1FD3\\u1FD6-\\u1FDB\\u1FE0-\\u1FEC\\u1FF2-\\u1FF4\\u1FF6-\\u1FFC\\u2071\\u207F\\u2090-\\u209C\\u2102\\u2107\\u210A-\\u2113\\u2115\\u2118-\\u211D\\u2124\\u2126\\u2128\\u212A-\\u2139\\u213C-\\u213F\\u2145-\\u2149\\u214E\\u2160-\\u2188\\u2C00-\\u2CE4\\u2CEB-\\u2CEE\\u2CF2\\u2CF3\\u2D00-\\u2D25\\u2D27\\u2D2D\\u2D30-\\u2D67\\u2D6F\\u2D80-\\u2D96\\u2DA0-\\u2DA6\\u2DA8-\\u2DAE\\u2DB0-\\u2DB6\\u2DB8-\\u2DBE\\u2DC0-\\u2DC6\\u2DC8-\\u2DCE\\u2DD0-\\u2DD6\\u2DD8-\\u2DDE\\u3005-\\u3007\\u3021-\\u3029\\u3031-\\u3035\\u3038-\\u303C\\u3041-\\u3096\\u309B-\\u309F\\u30A1-\\u30FA\\u30FC-\\u30FF\\u3105-\\u312F\\u3131-\\u318E\\u31A0-\\u31BF\\u31F0-\\u31FF\\u3400-\\u4DBF\\u4E00-\\uA48C\\uA4D0-\\uA4FD\\uA500-\\uA60C\\uA610-\\uA61F\\uA62A\\uA62B\\uA640-\\uA66E\\uA67F-\\uA69D\\uA6A0-\\uA6EF\\uA717-\\uA71F\\uA722-\\uA788\\uA78B-\\uA7CD\\uA7D0\\uA7D1\\uA7D3\\uA7D5-\\uA7DC\\uA7F2-\\uA801\\uA803-\\uA805\\uA807-\\uA80A\\uA80C-\\uA822\\uA840-\\uA873\\uA882-\\uA8B3\\uA8F2-\\uA8F7\\uA8FB\\uA8FD\\uA8FE\\uA90A-\\uA925\\uA930-\\uA946\\uA960-\\uA97C\\uA984-\\uA9B2\\uA9CF\\uA9E0-\\uA9E4\\uA9E6-\\uA9EF\\uA9FA-\\uA9FE\\uAA00-\\uAA28\\uAA40-\\uAA42\\uAA44-\\uAA4B\\uAA60-\\uAA76\\uAA7A\\uAA7E-\\uAAAF\\uAAB1\\uAAB5\\uAAB6\\uAAB9-\\uAABD\\uAAC0\\uAAC2\\uAADB-\\uAADD\\uAAE0-\\uAAEA\\uAAF2-\\uAAF4\\uAB01-\\uAB06\\uAB09-\\uAB0E\\uAB11-\\uAB16\\uAB20-\\uAB26\\uAB28-\\uAB2E\\uAB30-\\uAB5A\\uAB5C-\\uAB69\\uAB70-\\uABE2\\uAC00-\\uD7A3\\uD7B0-\\uD7C6\\uD7CB-\\uD7FB\\uF900-\\uFA6D\\uFA70-\\uFAD9\\uFB00-\\uFB06\\uFB13-\\uFB17\\uFB1D\\uFB1F-\\uFB28\\uFB2A-\\uFB36\\uFB38-\\uFB3C\\uFB3E\\uFB40\\uFB41\\uFB43\\uFB44\\uFB46-\\uFBB1\\uFBD3-\\uFD3D\\uFD50-\\uFD8F\\uFD92-\\uFDC7\\uFDF0-\\uFDFB\\uFE70-\\uFE74\\uFE76-\\uFEFC\\uFF21-\\uFF3A\\uFF41-\\uFF5A\\uFF66-\\uFFBE\\uFFC2-\\uFFC7\\uFFCA-\\uFFCF\\uFFD2-\\uFFD7\\uFFDA-\\uFFDC", ve = { 3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile", 5: "class enum extends super const export import", 6: "enum", strict: "implements interface let package private protected public static yield", strictBind: "eval arguments" }, ge = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this", bt = { 5: ge, "5module": ge + " export import", 6: ge + " const class extends export import super" }, yt = /^in(stanceof)?$/, _t = new RegExp("[" + Ve + "]"), Ct = new RegExp("[" + Ve + gt + "]");
+        function be(e, t) {
+          for (var i = 65536, s = 0; s < t.length; s += 2) {
+            if (i += t[s], i > e) return false;
+            if (i += t[s + 1], i >= e) return true;
+          }
+          return false;
+        }
+        function T(e, t) {
+          return e < 65 ? e === 36 : e < 91 ? true : e < 97 ? e === 95 : e < 123 ? true : e <= 65535 ? e >= 170 && _t.test(String.fromCharCode(e)) : t === false ? false : be(e, Ne);
+        }
+        function B(e, t) {
+          return e < 48 ? e === 36 : e < 58 ? true : e < 65 ? false : e < 91 ? true : e < 97 ? e === 95 : e < 123 ? true : e <= 65535 ? e >= 170 && Ct.test(String.fromCharCode(e)) : t === false ? false : be(e, Ne) || be(e, L);
+        }
+        var v = function(t, i) {
+          i === void 0 && (i = {}), this.label = t, this.keyword = i.keyword, this.beforeExpr = !!i.beforeExpr, this.startsExpr = !!i.startsExpr, this.isLoop = !!i.isLoop, this.isAssign = !!i.isAssign, this.prefix = !!i.prefix, this.postfix = !!i.postfix, this.binop = i.binop || null, this.updateContext = null;
+        };
+        function I(e, t) {
+          return new v(e, { beforeExpr: true, binop: t });
+        }
+        var E = { beforeExpr: true }, A = { startsExpr: true }, ae = {};
+        function m(e, t) {
+          return t === void 0 && (t = {}), t.keyword = e, ae[e] = new v(e, t);
+        }
+        var a = { num: new v("num", A), regexp: new v("regexp", A), string: new v("string", A), name: new v("name", A), privateId: new v("privateId", A), eof: new v("eof"), bracketL: new v("[", { beforeExpr: true, startsExpr: true }), bracketR: new v("]"), braceL: new v("{", { beforeExpr: true, startsExpr: true }), braceR: new v("}"), parenL: new v("(", { beforeExpr: true, startsExpr: true }), parenR: new v(")"), comma: new v(",", E), semi: new v(";", E), colon: new v(":", E), dot: new v("."), question: new v("?", E), questionDot: new v("?."), arrow: new v("=>", E), template: new v("template"), invalidTemplate: new v("invalidTemplate"), ellipsis: new v("...", E), backQuote: new v("\`", A), dollarBraceL: new v("\${", { beforeExpr: true, startsExpr: true }), eq: new v("=", { beforeExpr: true, isAssign: true }), assign: new v("_=", { beforeExpr: true, isAssign: true }), incDec: new v("++/--", { prefix: true, postfix: true, startsExpr: true }), prefix: new v("!/~", { beforeExpr: true, prefix: true, startsExpr: true }), logicalOR: I("||", 1), logicalAND: I("&&", 2), bitwiseOR: I("|", 3), bitwiseXOR: I("^", 4), bitwiseAND: I("&", 5), equality: I("==/!=/===/!==", 6), relational: I("</>/<=/>=", 7), bitShift: I("<</>>/>>>", 8), plusMin: new v("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }), modulo: I("%", 10), star: I("*", 10), slash: I("/", 10), starstar: new v("**", { beforeExpr: true }), coalesce: I("??", 1), _break: m("break"), _case: m("case", E), _catch: m("catch"), _continue: m("continue"), _debugger: m("debugger"), _default: m("default", E), _do: m("do", { isLoop: true, beforeExpr: true }), _else: m("else", E), _finally: m("finally"), _for: m("for", { isLoop: true }), _function: m("function", A), _if: m("if"), _return: m("return", E), _switch: m("switch"), _throw: m("throw", E), _try: m("try"), _var: m("var"), _const: m("const"), _while: m("while", { isLoop: true }), _with: m("with"), _new: m("new", { beforeExpr: true, startsExpr: true }), _this: m("this", A), _super: m("super", A), _class: m("class", A), _extends: m("extends", E), _export: m("export"), _import: m("import", A), _null: m("null", A), _true: m("true", A), _false: m("false", A), _in: m("in", { beforeExpr: true, binop: 7 }), _instanceof: m("instanceof", { beforeExpr: true, binop: 7 }), _typeof: m("typeof", { beforeExpr: true, prefix: true, startsExpr: true }), _void: m("void", { beforeExpr: true, prefix: true, startsExpr: true }), _delete: m("delete", { beforeExpr: true, prefix: true, startsExpr: true }) }, k = /\\r\\n?|\\n|\\u2028|\\u2029/, Te = new RegExp(k.source, "g");
+        function j(e) {
+          return e === 10 || e === 13 || e === 8232 || e === 8233;
+        }
+        function Le(e, t, i) {
+          i === void 0 && (i = e.length);
+          for (var s = t; s < i; s++) {
+            var r = e.charCodeAt(s);
+            if (j(r)) return s < i - 1 && r === 13 && e.charCodeAt(s + 1) === 10 ? s + 2 : s + 1;
+          }
+          return -1;
+        }
+        var ye = /[\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000\\ufeff]/, C = /(?:\\s|\\/\\/.*|\\/\\*[^]*?\\*\\/)*/g, Re = Object.prototype, St = Re.hasOwnProperty, kt = Re.toString, H = Object.hasOwn || (function(e, t) {
+          return St.call(e, t);
+        }), Oe = Array.isArray || (function(e) {
+          return kt.call(e) === "[object Array]";
+        }), Be = /* @__PURE__ */ Object.create(null);
+        function U(e) {
+          return Be[e] || (Be[e] = new RegExp("^(?:" + e.replace(/ /g, "|") + ")$"));
+        }
+        function D(e) {
+          return e <= 65535 ? String.fromCharCode(e) : (e -= 65536, String.fromCharCode((e >> 10) + 55296, (e & 1023) + 56320));
+        }
+        var wt = /(?:[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?:[^\\uD800-\\uDBFF]|^)[\\uDC00-\\uDFFF])/, W = function(t, i) {
+          this.line = t, this.column = i;
+        };
+        W.prototype.offset = function(t) {
+          return new W(this.line, this.column + t);
+        };
+        var Z = function(t, i, s) {
+          this.start = i, this.end = s, t.sourceFile !== null && (this.source = t.sourceFile);
+        };
+        function _e(e, t) {
+          for (var i = 1, s = 0; ; ) {
+            var r = Le(e, s, t);
+            if (r < 0) return new W(i, t - s);
+            ++i, s = r;
+          }
+        }
+        var re = { ecmaVersion: null, sourceType: "script", onInsertedSemicolon: null, onTrailingComma: null, allowReserved: null, allowReturnOutsideFunction: false, allowImportExportEverywhere: false, allowAwaitOutsideFunction: null, allowSuperOutsideMethod: null, allowHashBang: false, checkPrivateFields: true, locations: false, onToken: null, onComment: null, ranges: false, program: null, sourceFile: null, directSourceFile: null, preserveParens: false }, De = false;
+        function At(e) {
+          var t = {};
+          for (var i in re) t[i] = e && H(e, i) ? e[i] : re[i];
+          if (t.ecmaVersion === "latest" ? t.ecmaVersion = 1e8 : t.ecmaVersion == null ? (!De && typeof console == "object" && console.warn && (De = true, console.warn(\`Since Acorn 8.0.0, options.ecmaVersion is required.
+Defaulting to 2020, but this will stop working in the future.\`)), t.ecmaVersion = 11) : t.ecmaVersion >= 2015 && (t.ecmaVersion -= 2009), t.allowReserved == null && (t.allowReserved = t.ecmaVersion < 5), (!e || e.allowHashBang == null) && (t.allowHashBang = t.ecmaVersion >= 14), Oe(t.onToken)) {
+            var s = t.onToken;
+            t.onToken = function(r) {
+              return s.push(r);
+            };
+          }
+          return Oe(t.onComment) && (t.onComment = It(t, t.onComment)), t;
+        }
+        function It(e, t) {
+          return function(i, s, r, n, u, o) {
+            var h = { type: i ? "Block" : "Line", value: s, start: r, end: n };
+            e.locations && (h.loc = new Z(this, u, o)), e.ranges && (h.range = [r, n]), t.push(h);
+          };
+        }
+        var J = 1, z = 2, Ce = 4, Fe = 8, Se = 16, Me = 32, ne = 64, Ue = 128, G = 256, $ = 512, ue = J | z | G;
+        function ke(e, t) {
+          return z | (e ? Ce : 0) | (t ? Fe : 0);
+        }
+        var oe = 0, we = 1, F = 2, qe = 3, je = 4, Ge = 5, _ = function(t, i, s) {
+          this.options = t = At(t), this.sourceFile = t.sourceFile, this.keywords = U(bt[t.ecmaVersion >= 6 ? 6 : t.sourceType === "module" ? "5module" : 5]);
+          var r = "";
+          t.allowReserved !== true && (r = ve[t.ecmaVersion >= 6 ? 6 : t.ecmaVersion === 5 ? 5 : 3], t.sourceType === "module" && (r += " await")), this.reservedWords = U(r);
+          var n = (r ? r + " " : "") + ve.strict;
+          this.reservedWordsStrict = U(n), this.reservedWordsStrictBind = U(n + " " + ve.strictBind), this.input = String(i), this.containsEsc = false, s ? (this.pos = s, this.lineStart = this.input.lastIndexOf(\`
+\`, s - 1) + 1, this.curLine = this.input.slice(0, this.lineStart).split(k).length) : (this.pos = this.lineStart = 0, this.curLine = 1), this.type = a.eof, this.value = null, this.start = this.end = this.pos, this.startLoc = this.endLoc = this.curPosition(), this.lastTokEndLoc = this.lastTokStartLoc = null, this.lastTokStart = this.lastTokEnd = this.pos, this.context = this.initialContext(), this.exprAllowed = true, this.inModule = t.sourceType === "module", this.strict = this.inModule || this.strictDirective(this.pos), this.potentialArrowAt = -1, this.potentialArrowInForAwait = false, this.yieldPos = this.awaitPos = this.awaitIdentPos = 0, this.labels = [], this.undefinedExports = /* @__PURE__ */ Object.create(null), this.pos === 0 && t.allowHashBang && this.input.slice(0, 2) === "#!" && this.skipLineComment(2), this.scopeStack = [], this.enterScope(J), this.regexpState = null, this.privateNameStack = [];
+        }, R = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, inClassStaticBlock: { configurable: true } };
+        _.prototype.parse = function() {
+          var t = this.options.program || this.startNode();
+          return this.nextToken(), this.parseTopLevel(t);
+        }, R.inFunction.get = function() {
+          return (this.currentVarScope().flags & z) > 0;
+        }, R.inGenerator.get = function() {
+          return (this.currentVarScope().flags & Fe) > 0;
+        }, R.inAsync.get = function() {
+          return (this.currentVarScope().flags & Ce) > 0;
+        }, R.canAwait.get = function() {
+          for (var e = this.scopeStack.length - 1; e >= 0; e--) {
+            var t = this.scopeStack[e], i = t.flags;
+            if (i & (G | $)) return false;
+            if (i & z) return (i & Ce) > 0;
+          }
+          return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+        }, R.allowSuper.get = function() {
+          var e = this.currentThisScope(), t = e.flags;
+          return (t & ne) > 0 || this.options.allowSuperOutsideMethod;
+        }, R.allowDirectSuper.get = function() {
+          return (this.currentThisScope().flags & Ue) > 0;
+        }, R.treatFunctionsAsVar.get = function() {
+          return this.treatFunctionsAsVarInScope(this.currentScope());
+        }, R.allowNewDotTarget.get = function() {
+          for (var e = this.scopeStack.length - 1; e >= 0; e--) {
+            var t = this.scopeStack[e], i = t.flags;
+            if (i & (G | $) || i & z && !(i & Se)) return true;
+          }
+          return false;
+        }, R.inClassStaticBlock.get = function() {
+          return (this.currentVarScope().flags & G) > 0;
+        }, _.extend = function() {
+          for (var t = [], i = arguments.length; i--; ) t[i] = arguments[i];
+          for (var s = this, r = 0; r < t.length; r++) s = t[r](s);
+          return s;
+        }, _.parse = function(t, i) {
+          return new this(i, t).parse();
+        }, _.parseExpressionAt = function(t, i, s) {
+          var r = new this(s, t, i);
+          return r.nextToken(), r.parseExpression();
+        }, _.tokenizer = function(t, i) {
+          return new this(i, t);
+        }, Object.defineProperties(_.prototype, R);
+        var w = _.prototype, Et = /^(?:'((?:\\\\[^]|[^'\\\\])*?)'|"((?:\\\\[^]|[^"\\\\])*?)")/;
+        w.strictDirective = function(e) {
+          if (this.options.ecmaVersion < 5) return false;
+          for (; ; ) {
+            C.lastIndex = e, e += C.exec(this.input)[0].length;
+            var t = Et.exec(this.input.slice(e));
+            if (!t) return false;
+            if ((t[1] || t[2]) === "use strict") {
+              C.lastIndex = e + t[0].length;
+              var i = C.exec(this.input), s = i.index + i[0].length, r = this.input.charAt(s);
+              return r === ";" || r === "}" || k.test(i[0]) && !(/[(\`.[+\\-/*%<>=,?^&]/.test(r) || r === "!" && this.input.charAt(s + 1) === "=");
+            }
+            e += t[0].length, C.lastIndex = e, e += C.exec(this.input)[0].length, this.input[e] === ";" && e++;
+          }
+        }, w.eat = function(e) {
+          return this.type === e ? (this.next(), true) : false;
+        }, w.isContextual = function(e) {
+          return this.type === a.name && this.value === e && !this.containsEsc;
+        }, w.eatContextual = function(e) {
+          return this.isContextual(e) ? (this.next(), true) : false;
+        }, w.expectContextual = function(e) {
+          this.eatContextual(e) || this.unexpected();
+        }, w.canInsertSemicolon = function() {
+          return this.type === a.eof || this.type === a.braceR || k.test(this.input.slice(this.lastTokEnd, this.start));
+        }, w.insertSemicolon = function() {
+          if (this.canInsertSemicolon()) return this.options.onInsertedSemicolon && this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc), true;
+        }, w.semicolon = function() {
+          !this.eat(a.semi) && !this.insertSemicolon() && this.unexpected();
+        }, w.afterTrailingComma = function(e, t) {
+          if (this.type === e) return this.options.onTrailingComma && this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc), t || this.next(), true;
+        }, w.expect = function(e) {
+          this.eat(e) || this.unexpected();
+        }, w.unexpected = function(e) {
+          this.raise(e ?? this.start, "Unexpected token");
+        };
+        var he = function() {
+          this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+        };
+        w.checkPatternErrors = function(e, t) {
+          if (e) {
+            e.trailingComma > -1 && this.raiseRecoverable(e.trailingComma, "Comma is not permitted after the rest element");
+            var i = t ? e.parenthesizedAssign : e.parenthesizedBind;
+            i > -1 && this.raiseRecoverable(i, t ? "Assigning to rvalue" : "Parenthesized pattern");
+          }
+        }, w.checkExpressionErrors = function(e, t) {
+          if (!e) return false;
+          var i = e.shorthandAssign, s = e.doubleProto;
+          if (!t) return i >= 0 || s >= 0;
+          i >= 0 && this.raise(i, "Shorthand property assignments are valid only in destructuring patterns"), s >= 0 && this.raiseRecoverable(s, "Redefinition of __proto__ property");
+        }, w.checkYieldAwaitInDefaultParams = function() {
+          this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos) && this.raise(this.yieldPos, "Yield expression cannot be a default value"), this.awaitPos && this.raise(this.awaitPos, "Await expression cannot be a default value");
+        }, w.isSimpleAssignTarget = function(e) {
+          return e.type === "ParenthesizedExpression" ? this.isSimpleAssignTarget(e.expression) : e.type === "Identifier" || e.type === "MemberExpression";
+        };
+        var p = _.prototype;
+        p.parseTopLevel = function(e) {
+          var t = /* @__PURE__ */ Object.create(null);
+          for (e.body || (e.body = []); this.type !== a.eof; ) {
+            var i = this.parseStatement(null, true, t);
+            e.body.push(i);
+          }
+          if (this.inModule) for (var s = 0, r = Object.keys(this.undefinedExports); s < r.length; s += 1) {
+            var n = r[s];
+            this.raiseRecoverable(this.undefinedExports[n].start, "Export '" + n + "' is not defined");
+          }
+          return this.adaptDirectivePrologue(e.body), this.next(), e.sourceType = this.options.sourceType, this.finishNode(e, "Program");
+        };
+        var Ae = { kind: "loop" }, Pt = { kind: "switch" };
+        p.isLet = function(e) {
+          if (this.options.ecmaVersion < 6 || !this.isContextual("let")) return false;
+          C.lastIndex = this.pos;
+          var t = C.exec(this.input), i = this.pos + t[0].length, s = this.input.charCodeAt(i);
+          if (s === 91 || s === 92) return true;
+          if (e) return false;
+          if (s === 123 || s > 55295 && s < 56320) return true;
+          if (T(s, true)) {
+            for (var r = i + 1; B(s = this.input.charCodeAt(r), true); ) ++r;
+            if (s === 92 || s > 55295 && s < 56320) return true;
+            var n = this.input.slice(i, r);
+            if (!yt.test(n)) return true;
+          }
+          return false;
+        }, p.isAsyncFunction = function() {
+          if (this.options.ecmaVersion < 8 || !this.isContextual("async")) return false;
+          C.lastIndex = this.pos;
+          var e = C.exec(this.input), t = this.pos + e[0].length, i;
+          return !k.test(this.input.slice(this.pos, t)) && this.input.slice(t, t + 8) === "function" && (t + 8 === this.input.length || !(B(i = this.input.charCodeAt(t + 8)) || i > 55295 && i < 56320));
+        }, p.isUsingKeyword = function(e, t) {
+          if (this.options.ecmaVersion < 17 || !this.isContextual(e ? "await" : "using")) return false;
+          C.lastIndex = this.pos;
+          var i = C.exec(this.input), s = this.pos + i[0].length;
+          if (k.test(this.input.slice(this.pos, s))) return false;
+          if (e) {
+            var r = s + 5, n;
+            if (this.input.slice(s, r) !== "using" || r === this.input.length || B(n = this.input.charCodeAt(r)) || n > 55295 && n < 56320) return false;
+            C.lastIndex = r;
+            var u = C.exec(this.input);
+            if (u && k.test(this.input.slice(r, r + u[0].length))) return false;
+          }
+          if (t) {
+            var o = s + 2, h;
+            if (this.input.slice(s, o) === "of" && (o === this.input.length || !B(h = this.input.charCodeAt(o)) && !(h > 55295 && h < 56320))) return false;
+          }
+          var l = this.input.charCodeAt(s);
+          return T(l, true) || l === 92;
+        }, p.isAwaitUsing = function(e) {
+          return this.isUsingKeyword(true, e);
+        }, p.isUsing = function(e) {
+          return this.isUsingKeyword(false, e);
+        }, p.parseStatement = function(e, t, i) {
+          var s = this.type, r = this.startNode(), n;
+          switch (this.isLet(e) && (s = a._var, n = "let"), s) {
+            case a._break:
+            case a._continue:
+              return this.parseBreakContinueStatement(r, s.keyword);
+            case a._debugger:
+              return this.parseDebuggerStatement(r);
+            case a._do:
+              return this.parseDoStatement(r);
+            case a._for:
+              return this.parseForStatement(r);
+            case a._function:
+              return e && (this.strict || e !== "if" && e !== "label") && this.options.ecmaVersion >= 6 && this.unexpected(), this.parseFunctionStatement(r, false, !e);
+            case a._class:
+              return e && this.unexpected(), this.parseClass(r, true);
+            case a._if:
+              return this.parseIfStatement(r);
+            case a._return:
+              return this.parseReturnStatement(r);
+            case a._switch:
+              return this.parseSwitchStatement(r);
+            case a._throw:
+              return this.parseThrowStatement(r);
+            case a._try:
+              return this.parseTryStatement(r);
+            case a._const:
+            case a._var:
+              return n = n || this.value, e && n !== "var" && this.unexpected(), this.parseVarStatement(r, n);
+            case a._while:
+              return this.parseWhileStatement(r);
+            case a._with:
+              return this.parseWithStatement(r);
+            case a.braceL:
+              return this.parseBlock(true, r);
+            case a.semi:
+              return this.parseEmptyStatement(r);
+            case a._export:
+            case a._import:
+              if (this.options.ecmaVersion > 10 && s === a._import) {
+                C.lastIndex = this.pos;
+                var u = C.exec(this.input), o = this.pos + u[0].length, h = this.input.charCodeAt(o);
+                if (h === 40 || h === 46) return this.parseExpressionStatement(r, this.parseExpression());
+              }
+              return this.options.allowImportExportEverywhere || (t || this.raise(this.start, "'import' and 'export' may only appear at the top level"), this.inModule || this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'")), s === a._import ? this.parseImport(r) : this.parseExport(r, i);
+            default:
+              if (this.isAsyncFunction()) return e && this.unexpected(), this.next(), this.parseFunctionStatement(r, true, !e);
+              var l = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+              if (l) return t && this.options.sourceType === "script" && this.raise(this.start, "Using declaration cannot appear in the top level when source type is \`script\`"), l === "await using" && (this.canAwait || this.raise(this.start, "Await using cannot appear outside of async function"), this.next()), this.next(), this.parseVar(r, false, l), this.semicolon(), this.finishNode(r, "VariableDeclaration");
+              var d = this.value, y = this.parseExpression();
+              return s === a.name && y.type === "Identifier" && this.eat(a.colon) ? this.parseLabeledStatement(r, d, y, e) : this.parseExpressionStatement(r, y);
+          }
+        }, p.parseBreakContinueStatement = function(e, t) {
+          var i = t === "break";
+          this.next(), this.eat(a.semi) || this.insertSemicolon() ? e.label = null : this.type !== a.name ? this.unexpected() : (e.label = this.parseIdent(), this.semicolon());
+          for (var s = 0; s < this.labels.length; ++s) {
+            var r = this.labels[s];
+            if ((e.label == null || r.name === e.label.name) && (r.kind != null && (i || r.kind === "loop") || e.label && i)) break;
+          }
+          return s === this.labels.length && this.raise(e.start, "Unsyntactic " + t), this.finishNode(e, i ? "BreakStatement" : "ContinueStatement");
+        }, p.parseDebuggerStatement = function(e) {
+          return this.next(), this.semicolon(), this.finishNode(e, "DebuggerStatement");
+        }, p.parseDoStatement = function(e) {
+          return this.next(), this.labels.push(Ae), e.body = this.parseStatement("do"), this.labels.pop(), this.expect(a._while), e.test = this.parseParenExpression(), this.options.ecmaVersion >= 6 ? this.eat(a.semi) : this.semicolon(), this.finishNode(e, "DoWhileStatement");
+        }, p.parseForStatement = function(e) {
+          this.next();
+          var t = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+          if (this.labels.push(Ae), this.enterScope(0), this.expect(a.parenL), this.type === a.semi) return t > -1 && this.unexpected(t), this.parseFor(e, null);
+          var i = this.isLet();
+          if (this.type === a._var || this.type === a._const || i) {
+            var s = this.startNode(), r = i ? "let" : this.value;
+            return this.next(), this.parseVar(s, true, r), this.finishNode(s, "VariableDeclaration"), this.parseForAfterInit(e, s, t);
+          }
+          var n = this.isContextual("let"), u = false, o = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+          if (o) {
+            var h = this.startNode();
+            return this.next(), o === "await using" && this.next(), this.parseVar(h, true, o), this.finishNode(h, "VariableDeclaration"), this.parseForAfterInit(e, h, t);
+          }
+          var l = this.containsEsc, d = new he(), y = this.start, S = t > -1 ? this.parseExprSubscripts(d, "await") : this.parseExpression(true, d);
+          return this.type === a._in || (u = this.options.ecmaVersion >= 6 && this.isContextual("of")) ? (t > -1 ? (this.type === a._in && this.unexpected(t), e.await = true) : u && this.options.ecmaVersion >= 8 && (S.start === y && !l && S.type === "Identifier" && S.name === "async" ? this.unexpected() : this.options.ecmaVersion >= 9 && (e.await = false)), n && u && this.raise(S.start, "The left-hand side of a for-of loop may not start with 'let'."), this.toAssignable(S, false, d), this.checkLValPattern(S), this.parseForIn(e, S)) : (this.checkExpressionErrors(d, true), t > -1 && this.unexpected(t), this.parseFor(e, S));
+        }, p.parseForAfterInit = function(e, t, i) {
+          return (this.type === a._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && t.declarations.length === 1 ? (this.options.ecmaVersion >= 9 && (this.type === a._in ? i > -1 && this.unexpected(i) : e.await = i > -1), this.parseForIn(e, t)) : (i > -1 && this.unexpected(i), this.parseFor(e, t));
+        }, p.parseFunctionStatement = function(e, t, i) {
+          return this.next(), this.parseFunction(e, ee | (i ? 0 : Ie), false, t);
+        }, p.parseIfStatement = function(e) {
+          return this.next(), e.test = this.parseParenExpression(), e.consequent = this.parseStatement("if"), e.alternate = this.eat(a._else) ? this.parseStatement("if") : null, this.finishNode(e, "IfStatement");
+        }, p.parseReturnStatement = function(e) {
+          return !this.inFunction && !this.options.allowReturnOutsideFunction && this.raise(this.start, "'return' outside of function"), this.next(), this.eat(a.semi) || this.insertSemicolon() ? e.argument = null : (e.argument = this.parseExpression(), this.semicolon()), this.finishNode(e, "ReturnStatement");
+        }, p.parseSwitchStatement = function(e) {
+          this.next(), e.discriminant = this.parseParenExpression(), e.cases = [], this.expect(a.braceL), this.labels.push(Pt), this.enterScope(0);
+          for (var t, i = false; this.type !== a.braceR; ) if (this.type === a._case || this.type === a._default) {
+            var s = this.type === a._case;
+            t && this.finishNode(t, "SwitchCase"), e.cases.push(t = this.startNode()), t.consequent = [], this.next(), s ? t.test = this.parseExpression() : (i && this.raiseRecoverable(this.lastTokStart, "Multiple default clauses"), i = true, t.test = null), this.expect(a.colon);
+          } else t || this.unexpected(), t.consequent.push(this.parseStatement(null));
+          return this.exitScope(), t && this.finishNode(t, "SwitchCase"), this.next(), this.labels.pop(), this.finishNode(e, "SwitchStatement");
+        }, p.parseThrowStatement = function(e) {
+          return this.next(), k.test(this.input.slice(this.lastTokEnd, this.start)) && this.raise(this.lastTokEnd, "Illegal newline after throw"), e.argument = this.parseExpression(), this.semicolon(), this.finishNode(e, "ThrowStatement");
+        };
+        var Nt = [];
+        p.parseCatchClauseParam = function() {
+          var e = this.parseBindingAtom(), t = e.type === "Identifier";
+          return this.enterScope(t ? Me : 0), this.checkLValPattern(e, t ? je : F), this.expect(a.parenR), e;
+        }, p.parseTryStatement = function(e) {
+          if (this.next(), e.block = this.parseBlock(), e.handler = null, this.type === a._catch) {
+            var t = this.startNode();
+            this.next(), this.eat(a.parenL) ? t.param = this.parseCatchClauseParam() : (this.options.ecmaVersion < 10 && this.unexpected(), t.param = null, this.enterScope(0)), t.body = this.parseBlock(false), this.exitScope(), e.handler = this.finishNode(t, "CatchClause");
+          }
+          return e.finalizer = this.eat(a._finally) ? this.parseBlock() : null, !e.handler && !e.finalizer && this.raise(e.start, "Missing catch or finally clause"), this.finishNode(e, "TryStatement");
+        }, p.parseVarStatement = function(e, t, i) {
+          return this.next(), this.parseVar(e, false, t, i), this.semicolon(), this.finishNode(e, "VariableDeclaration");
+        }, p.parseWhileStatement = function(e) {
+          return this.next(), e.test = this.parseParenExpression(), this.labels.push(Ae), e.body = this.parseStatement("while"), this.labels.pop(), this.finishNode(e, "WhileStatement");
+        }, p.parseWithStatement = function(e) {
+          return this.strict && this.raise(this.start, "'with' in strict mode"), this.next(), e.object = this.parseParenExpression(), e.body = this.parseStatement("with"), this.finishNode(e, "WithStatement");
+        }, p.parseEmptyStatement = function(e) {
+          return this.next(), this.finishNode(e, "EmptyStatement");
+        }, p.parseLabeledStatement = function(e, t, i, s) {
+          for (var r = 0, n = this.labels; r < n.length; r += 1) {
+            var u = n[r];
+            u.name === t && this.raise(i.start, "Label '" + t + "' is already declared");
+          }
+          for (var o = this.type.isLoop ? "loop" : this.type === a._switch ? "switch" : null, h = this.labels.length - 1; h >= 0; h--) {
+            var l = this.labels[h];
+            if (l.statementStart === e.start) l.statementStart = this.start, l.kind = o;
+            else break;
+          }
+          return this.labels.push({ name: t, kind: o, statementStart: this.start }), e.body = this.parseStatement(s ? s.indexOf("label") === -1 ? s + "label" : s : "label"), this.labels.pop(), e.label = i, this.finishNode(e, "LabeledStatement");
+        }, p.parseExpressionStatement = function(e, t) {
+          return e.expression = t, this.semicolon(), this.finishNode(e, "ExpressionStatement");
+        }, p.parseBlock = function(e, t, i) {
+          for (e === void 0 && (e = true), t === void 0 && (t = this.startNode()), t.body = [], this.expect(a.braceL), e && this.enterScope(0); this.type !== a.braceR; ) {
+            var s = this.parseStatement(null);
+            t.body.push(s);
+          }
+          return i && (this.strict = false), this.next(), e && this.exitScope(), this.finishNode(t, "BlockStatement");
+        }, p.parseFor = function(e, t) {
+          return e.init = t, this.expect(a.semi), e.test = this.type === a.semi ? null : this.parseExpression(), this.expect(a.semi), e.update = this.type === a.parenR ? null : this.parseExpression(), this.expect(a.parenR), e.body = this.parseStatement("for"), this.exitScope(), this.labels.pop(), this.finishNode(e, "ForStatement");
+        }, p.parseForIn = function(e, t) {
+          var i = this.type === a._in;
+          return this.next(), t.type === "VariableDeclaration" && t.declarations[0].init != null && (!i || this.options.ecmaVersion < 8 || this.strict || t.kind !== "var" || t.declarations[0].id.type !== "Identifier") && this.raise(t.start, (i ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"), e.left = t, e.right = i ? this.parseExpression() : this.parseMaybeAssign(), this.expect(a.parenR), e.body = this.parseStatement("for"), this.exitScope(), this.labels.pop(), this.finishNode(e, i ? "ForInStatement" : "ForOfStatement");
+        }, p.parseVar = function(e, t, i, s) {
+          for (e.declarations = [], e.kind = i; ; ) {
+            var r = this.startNode();
+            if (this.parseVarId(r, i), this.eat(a.eq) ? r.init = this.parseMaybeAssign(t) : !s && i === "const" && !(this.type === a._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) ? this.unexpected() : !s && (i === "using" || i === "await using") && this.options.ecmaVersion >= 17 && this.type !== a._in && !this.isContextual("of") ? this.raise(this.lastTokEnd, "Missing initializer in " + i + " declaration") : !s && r.id.type !== "Identifier" && !(t && (this.type === a._in || this.isContextual("of"))) ? this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value") : r.init = null, e.declarations.push(this.finishNode(r, "VariableDeclarator")), !this.eat(a.comma)) break;
+          }
+          return e;
+        }, p.parseVarId = function(e, t) {
+          e.id = t === "using" || t === "await using" ? this.parseIdent() : this.parseBindingAtom(), this.checkLValPattern(e.id, t === "var" ? we : F, false);
+        };
+        var ee = 1, Ie = 2, He = 4;
+        p.parseFunction = function(e, t, i, s, r) {
+          this.initFunction(e), (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !s) && (this.type === a.star && t & Ie && this.unexpected(), e.generator = this.eat(a.star)), this.options.ecmaVersion >= 8 && (e.async = !!s), t & ee && (e.id = t & He && this.type !== a.name ? null : this.parseIdent(), e.id && !(t & Ie) && this.checkLValSimple(e.id, this.strict || e.generator || e.async ? this.treatFunctionsAsVar ? we : F : qe));
+          var n = this.yieldPos, u = this.awaitPos, o = this.awaitIdentPos;
+          return this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, this.enterScope(ke(e.async, e.generator)), t & ee || (e.id = this.type === a.name ? this.parseIdent() : null), this.parseFunctionParams(e), this.parseFunctionBody(e, i, false, r), this.yieldPos = n, this.awaitPos = u, this.awaitIdentPos = o, this.finishNode(e, t & ee ? "FunctionDeclaration" : "FunctionExpression");
+        }, p.parseFunctionParams = function(e) {
+          this.expect(a.parenL), e.params = this.parseBindingList(a.parenR, false, this.options.ecmaVersion >= 8), this.checkYieldAwaitInDefaultParams();
+        }, p.parseClass = function(e, t) {
+          this.next();
+          var i = this.strict;
+          this.strict = true, this.parseClassId(e, t), this.parseClassSuper(e);
+          var s = this.enterClassBody(), r = this.startNode(), n = false;
+          for (r.body = [], this.expect(a.braceL); this.type !== a.braceR; ) {
+            var u = this.parseClassElement(e.superClass !== null);
+            u && (r.body.push(u), u.type === "MethodDefinition" && u.kind === "constructor" ? (n && this.raiseRecoverable(u.start, "Duplicate constructor in the same class"), n = true) : u.key && u.key.type === "PrivateIdentifier" && Vt(s, u) && this.raiseRecoverable(u.key.start, "Identifier '#" + u.key.name + "' has already been declared"));
+          }
+          return this.strict = i, this.next(), e.body = this.finishNode(r, "ClassBody"), this.exitClassBody(), this.finishNode(e, t ? "ClassDeclaration" : "ClassExpression");
+        }, p.parseClassElement = function(e) {
+          if (this.eat(a.semi)) return null;
+          var t = this.options.ecmaVersion, i = this.startNode(), s = "", r = false, n = false, u = "method", o = false;
+          if (this.eatContextual("static")) {
+            if (t >= 13 && this.eat(a.braceL)) return this.parseClassStaticBlock(i), i;
+            this.isClassElementNameStart() || this.type === a.star ? o = true : s = "static";
+          }
+          if (i.static = o, !s && t >= 8 && this.eatContextual("async") && ((this.isClassElementNameStart() || this.type === a.star) && !this.canInsertSemicolon() ? n = true : s = "async"), !s && (t >= 9 || !n) && this.eat(a.star) && (r = true), !s && !n && !r) {
+            var h = this.value;
+            (this.eatContextual("get") || this.eatContextual("set")) && (this.isClassElementNameStart() ? u = h : s = h);
+          }
+          if (s ? (i.computed = false, i.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc), i.key.name = s, this.finishNode(i.key, "Identifier")) : this.parseClassElementName(i), t < 13 || this.type === a.parenL || u !== "method" || r || n) {
+            var l = !i.static && ce(i, "constructor"), d = l && e;
+            l && u !== "method" && this.raise(i.key.start, "Constructor can't have get/set modifier"), i.kind = l ? "constructor" : u, this.parseClassMethod(i, r, n, d);
+          } else this.parseClassField(i);
+          return i;
+        }, p.isClassElementNameStart = function() {
+          return this.type === a.name || this.type === a.privateId || this.type === a.num || this.type === a.string || this.type === a.bracketL || this.type.keyword;
+        }, p.parseClassElementName = function(e) {
+          this.type === a.privateId ? (this.value === "constructor" && this.raise(this.start, "Classes can't have an element named '#constructor'"), e.computed = false, e.key = this.parsePrivateIdent()) : this.parsePropertyName(e);
+        }, p.parseClassMethod = function(e, t, i, s) {
+          var r = e.key;
+          e.kind === "constructor" ? (t && this.raise(r.start, "Constructor can't be a generator"), i && this.raise(r.start, "Constructor can't be an async method")) : e.static && ce(e, "prototype") && this.raise(r.start, "Classes may not have a static property named prototype");
+          var n = e.value = this.parseMethod(t, i, s);
+          return e.kind === "get" && n.params.length !== 0 && this.raiseRecoverable(n.start, "getter should have no params"), e.kind === "set" && n.params.length !== 1 && this.raiseRecoverable(n.start, "setter should have exactly one param"), e.kind === "set" && n.params[0].type === "RestElement" && this.raiseRecoverable(n.params[0].start, "Setter cannot use rest params"), this.finishNode(e, "MethodDefinition");
+        }, p.parseClassField = function(e) {
+          return ce(e, "constructor") ? this.raise(e.key.start, "Classes can't have a field named 'constructor'") : e.static && ce(e, "prototype") && this.raise(e.key.start, "Classes can't have a static field named 'prototype'"), this.eat(a.eq) ? (this.enterScope($ | ne), e.value = this.parseMaybeAssign(), this.exitScope()) : e.value = null, this.semicolon(), this.finishNode(e, "PropertyDefinition");
+        }, p.parseClassStaticBlock = function(e) {
+          e.body = [];
+          var t = this.labels;
+          for (this.labels = [], this.enterScope(G | ne); this.type !== a.braceR; ) {
+            var i = this.parseStatement(null);
+            e.body.push(i);
+          }
+          return this.next(), this.exitScope(), this.labels = t, this.finishNode(e, "StaticBlock");
+        }, p.parseClassId = function(e, t) {
+          this.type === a.name ? (e.id = this.parseIdent(), t && this.checkLValSimple(e.id, F, false)) : (t === true && this.unexpected(), e.id = null);
+        }, p.parseClassSuper = function(e) {
+          e.superClass = this.eat(a._extends) ? this.parseExprSubscripts(null, false) : null;
+        }, p.enterClassBody = function() {
+          var e = { declared: /* @__PURE__ */ Object.create(null), used: [] };
+          return this.privateNameStack.push(e), e.declared;
+        }, p.exitClassBody = function() {
+          var e = this.privateNameStack.pop(), t = e.declared, i = e.used;
+          if (this.options.checkPrivateFields) for (var s = this.privateNameStack.length, r = s === 0 ? null : this.privateNameStack[s - 1], n = 0; n < i.length; ++n) {
+            var u = i[n];
+            H(t, u.name) || (r ? r.used.push(u) : this.raiseRecoverable(u.start, "Private field '#" + u.name + "' must be declared in an enclosing class"));
+          }
+        };
+        function Vt(e, t) {
+          var i = t.key.name, s = e[i], r = "true";
+          return t.type === "MethodDefinition" && (t.kind === "get" || t.kind === "set") && (r = (t.static ? "s" : "i") + t.kind), s === "iget" && r === "iset" || s === "iset" && r === "iget" || s === "sget" && r === "sset" || s === "sset" && r === "sget" ? (e[i] = "true", false) : s ? true : (e[i] = r, false);
+        }
+        function ce(e, t) {
+          var i = e.computed, s = e.key;
+          return !i && (s.type === "Identifier" && s.name === t || s.type === "Literal" && s.value === t);
+        }
+        p.parseExportAllDeclaration = function(e, t) {
+          return this.options.ecmaVersion >= 11 && (this.eatContextual("as") ? (e.exported = this.parseModuleExportName(), this.checkExport(t, e.exported, this.lastTokStart)) : e.exported = null), this.expectContextual("from"), this.type !== a.string && this.unexpected(), e.source = this.parseExprAtom(), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause()), this.semicolon(), this.finishNode(e, "ExportAllDeclaration");
+        }, p.parseExport = function(e, t) {
+          if (this.next(), this.eat(a.star)) return this.parseExportAllDeclaration(e, t);
+          if (this.eat(a._default)) return this.checkExport(t, "default", this.lastTokStart), e.declaration = this.parseExportDefaultDeclaration(), this.finishNode(e, "ExportDefaultDeclaration");
+          if (this.shouldParseExportStatement()) e.declaration = this.parseExportDeclaration(e), e.declaration.type === "VariableDeclaration" ? this.checkVariableExport(t, e.declaration.declarations) : this.checkExport(t, e.declaration.id, e.declaration.id.start), e.specifiers = [], e.source = null, this.options.ecmaVersion >= 16 && (e.attributes = []);
+          else {
+            if (e.declaration = null, e.specifiers = this.parseExportSpecifiers(t), this.eatContextual("from")) this.type !== a.string && this.unexpected(), e.source = this.parseExprAtom(), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause());
+            else {
+              for (var i = 0, s = e.specifiers; i < s.length; i += 1) {
+                var r = s[i];
+                this.checkUnreserved(r.local), this.checkLocalExport(r.local), r.local.type === "Literal" && this.raise(r.local.start, "A string literal cannot be used as an exported binding without \`from\`.");
+              }
+              e.source = null, this.options.ecmaVersion >= 16 && (e.attributes = []);
+            }
+            this.semicolon();
+          }
+          return this.finishNode(e, "ExportNamedDeclaration");
+        }, p.parseExportDeclaration = function(e) {
+          return this.parseStatement(null);
+        }, p.parseExportDefaultDeclaration = function() {
+          var e;
+          if (this.type === a._function || (e = this.isAsyncFunction())) {
+            var t = this.startNode();
+            return this.next(), e && this.next(), this.parseFunction(t, ee | He, false, e);
+          } else if (this.type === a._class) {
+            var i = this.startNode();
+            return this.parseClass(i, "nullableID");
+          } else {
+            var s = this.parseMaybeAssign();
+            return this.semicolon(), s;
+          }
+        }, p.checkExport = function(e, t, i) {
+          e && (typeof t != "string" && (t = t.type === "Identifier" ? t.name : t.value), H(e, t) && this.raiseRecoverable(i, "Duplicate export '" + t + "'"), e[t] = true);
+        }, p.checkPatternExport = function(e, t) {
+          var i = t.type;
+          if (i === "Identifier") this.checkExport(e, t, t.start);
+          else if (i === "ObjectPattern") for (var s = 0, r = t.properties; s < r.length; s += 1) {
+            var n = r[s];
+            this.checkPatternExport(e, n);
+          }
+          else if (i === "ArrayPattern") for (var u = 0, o = t.elements; u < o.length; u += 1) {
+            var h = o[u];
+            h && this.checkPatternExport(e, h);
+          }
+          else i === "Property" ? this.checkPatternExport(e, t.value) : i === "AssignmentPattern" ? this.checkPatternExport(e, t.left) : i === "RestElement" && this.checkPatternExport(e, t.argument);
+        }, p.checkVariableExport = function(e, t) {
+          if (e) for (var i = 0, s = t; i < s.length; i += 1) {
+            var r = s[i];
+            this.checkPatternExport(e, r.id);
+          }
+        }, p.shouldParseExportStatement = function() {
+          return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+        }, p.parseExportSpecifier = function(e) {
+          var t = this.startNode();
+          return t.local = this.parseModuleExportName(), t.exported = this.eatContextual("as") ? this.parseModuleExportName() : t.local, this.checkExport(e, t.exported, t.exported.start), this.finishNode(t, "ExportSpecifier");
+        }, p.parseExportSpecifiers = function(e) {
+          var t = [], i = true;
+          for (this.expect(a.braceL); !this.eat(a.braceR); ) {
+            if (i) i = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            t.push(this.parseExportSpecifier(e));
+          }
+          return t;
+        }, p.parseImport = function(e) {
+          return this.next(), this.type === a.string ? (e.specifiers = Nt, e.source = this.parseExprAtom()) : (e.specifiers = this.parseImportSpecifiers(), this.expectContextual("from"), e.source = this.type === a.string ? this.parseExprAtom() : this.unexpected()), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause()), this.semicolon(), this.finishNode(e, "ImportDeclaration");
+        }, p.parseImportSpecifier = function() {
+          var e = this.startNode();
+          return e.imported = this.parseModuleExportName(), this.eatContextual("as") ? e.local = this.parseIdent() : (this.checkUnreserved(e.imported), e.local = e.imported), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportSpecifier");
+        }, p.parseImportDefaultSpecifier = function() {
+          var e = this.startNode();
+          return e.local = this.parseIdent(), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportDefaultSpecifier");
+        }, p.parseImportNamespaceSpecifier = function() {
+          var e = this.startNode();
+          return this.next(), this.expectContextual("as"), e.local = this.parseIdent(), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportNamespaceSpecifier");
+        }, p.parseImportSpecifiers = function() {
+          var e = [], t = true;
+          if (this.type === a.name && (e.push(this.parseImportDefaultSpecifier()), !this.eat(a.comma))) return e;
+          if (this.type === a.star) return e.push(this.parseImportNamespaceSpecifier()), e;
+          for (this.expect(a.braceL); !this.eat(a.braceR); ) {
+            if (t) t = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            e.push(this.parseImportSpecifier());
+          }
+          return e;
+        }, p.parseWithClause = function() {
+          var e = [];
+          if (!this.eat(a._with)) return e;
+          this.expect(a.braceL);
+          for (var t = {}, i = true; !this.eat(a.braceR); ) {
+            if (i) i = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            var s = this.parseImportAttribute(), r = s.key.type === "Identifier" ? s.key.name : s.key.value;
+            H(t, r) && this.raiseRecoverable(s.key.start, "Duplicate attribute key '" + r + "'"), t[r] = true, e.push(s);
+          }
+          return e;
+        }, p.parseImportAttribute = function() {
+          var e = this.startNode();
+          return e.key = this.type === a.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never"), this.expect(a.colon), this.type !== a.string && this.unexpected(), e.value = this.parseExprAtom(), this.finishNode(e, "ImportAttribute");
+        }, p.parseModuleExportName = function() {
+          if (this.options.ecmaVersion >= 13 && this.type === a.string) {
+            var e = this.parseLiteral(this.value);
+            return wt.test(e.value) && this.raise(e.start, "An export name cannot include a lone surrogate."), e;
+          }
+          return this.parseIdent(true);
+        }, p.adaptDirectivePrologue = function(e) {
+          for (var t = 0; t < e.length && this.isDirectiveCandidate(e[t]); ++t) e[t].directive = e[t].expression.raw.slice(1, -1);
+        }, p.isDirectiveCandidate = function(e) {
+          return this.options.ecmaVersion >= 5 && e.type === "ExpressionStatement" && e.expression.type === "Literal" && typeof e.expression.value == "string" && (this.input[e.start] === '"' || this.input[e.start] === "'");
+        };
+        var P = _.prototype;
+        P.toAssignable = function(e, t, i) {
+          if (this.options.ecmaVersion >= 6 && e) switch (e.type) {
+            case "Identifier":
+              this.inAsync && e.name === "await" && this.raise(e.start, "Cannot use 'await' as identifier inside an async function");
+              break;
+            case "ObjectPattern":
+            case "ArrayPattern":
+            case "AssignmentPattern":
+            case "RestElement":
+              break;
+            case "ObjectExpression":
+              e.type = "ObjectPattern", i && this.checkPatternErrors(i, true);
+              for (var s = 0, r = e.properties; s < r.length; s += 1) {
+                var n = r[s];
+                this.toAssignable(n, t), n.type === "RestElement" && (n.argument.type === "ArrayPattern" || n.argument.type === "ObjectPattern") && this.raise(n.argument.start, "Unexpected token");
+              }
+              break;
+            case "Property":
+              e.kind !== "init" && this.raise(e.key.start, "Object pattern can't contain getter or setter"), this.toAssignable(e.value, t);
+              break;
+            case "ArrayExpression":
+              e.type = "ArrayPattern", i && this.checkPatternErrors(i, true), this.toAssignableList(e.elements, t);
+              break;
+            case "SpreadElement":
+              e.type = "RestElement", this.toAssignable(e.argument, t), e.argument.type === "AssignmentPattern" && this.raise(e.argument.start, "Rest elements cannot have a default value");
+              break;
+            case "AssignmentExpression":
+              e.operator !== "=" && this.raise(e.left.end, "Only '=' operator can be used for specifying default value."), e.type = "AssignmentPattern", delete e.operator, this.toAssignable(e.left, t);
+              break;
+            case "ParenthesizedExpression":
+              this.toAssignable(e.expression, t, i);
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(e.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              if (!t) break;
+            default:
+              this.raise(e.start, "Assigning to rvalue");
+          }
+          else i && this.checkPatternErrors(i, true);
+          return e;
+        }, P.toAssignableList = function(e, t) {
+          for (var i = e.length, s = 0; s < i; s++) {
+            var r = e[s];
+            r && this.toAssignable(r, t);
+          }
+          if (i) {
+            var n = e[i - 1];
+            this.options.ecmaVersion === 6 && t && n && n.type === "RestElement" && n.argument.type !== "Identifier" && this.unexpected(n.argument.start);
+          }
+          return e;
+        }, P.parseSpread = function(e) {
+          var t = this.startNode();
+          return this.next(), t.argument = this.parseMaybeAssign(false, e), this.finishNode(t, "SpreadElement");
+        }, P.parseRestBinding = function() {
+          var e = this.startNode();
+          return this.next(), this.options.ecmaVersion === 6 && this.type !== a.name && this.unexpected(), e.argument = this.parseBindingAtom(), this.finishNode(e, "RestElement");
+        }, P.parseBindingAtom = function() {
+          if (this.options.ecmaVersion >= 6) switch (this.type) {
+            case a.bracketL:
+              var e = this.startNode();
+              return this.next(), e.elements = this.parseBindingList(a.bracketR, true, true), this.finishNode(e, "ArrayPattern");
+            case a.braceL:
+              return this.parseObj(true);
+          }
+          return this.parseIdent();
+        }, P.parseBindingList = function(e, t, i, s) {
+          for (var r = [], n = true; !this.eat(e); ) if (n ? n = false : this.expect(a.comma), t && this.type === a.comma) r.push(null);
+          else {
+            if (i && this.afterTrailingComma(e)) break;
+            if (this.type === a.ellipsis) {
+              var u = this.parseRestBinding();
+              this.parseBindingListItem(u), r.push(u), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element"), this.expect(e);
+              break;
+            } else r.push(this.parseAssignableListItem(s));
+          }
+          return r;
+        }, P.parseAssignableListItem = function(e) {
+          var t = this.parseMaybeDefault(this.start, this.startLoc);
+          return this.parseBindingListItem(t), t;
+        }, P.parseBindingListItem = function(e) {
+          return e;
+        }, P.parseMaybeDefault = function(e, t, i) {
+          if (i = i || this.parseBindingAtom(), this.options.ecmaVersion < 6 || !this.eat(a.eq)) return i;
+          var s = this.startNodeAt(e, t);
+          return s.left = i, s.right = this.parseMaybeAssign(), this.finishNode(s, "AssignmentPattern");
+        }, P.checkLValSimple = function(e, t, i) {
+          t === void 0 && (t = oe);
+          var s = t !== oe;
+          switch (e.type) {
+            case "Identifier":
+              this.strict && this.reservedWordsStrictBind.test(e.name) && this.raiseRecoverable(e.start, (s ? "Binding " : "Assigning to ") + e.name + " in strict mode"), s && (t === F && e.name === "let" && this.raiseRecoverable(e.start, "let is disallowed as a lexically bound name"), i && (H(i, e.name) && this.raiseRecoverable(e.start, "Argument name clash"), i[e.name] = true), t !== Ge && this.declareName(e.name, t, e.start));
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(e.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              s && this.raiseRecoverable(e.start, "Binding member expression");
+              break;
+            case "ParenthesizedExpression":
+              return s && this.raiseRecoverable(e.start, "Binding parenthesized expression"), this.checkLValSimple(e.expression, t, i);
+            default:
+              this.raise(e.start, (s ? "Binding" : "Assigning to") + " rvalue");
+          }
+        }, P.checkLValPattern = function(e, t, i) {
+          switch (t === void 0 && (t = oe), e.type) {
+            case "ObjectPattern":
+              for (var s = 0, r = e.properties; s < r.length; s += 1) {
+                var n = r[s];
+                this.checkLValInnerPattern(n, t, i);
+              }
+              break;
+            case "ArrayPattern":
+              for (var u = 0, o = e.elements; u < o.length; u += 1) {
+                var h = o[u];
+                h && this.checkLValInnerPattern(h, t, i);
+              }
+              break;
+            default:
+              this.checkLValSimple(e, t, i);
+          }
+        }, P.checkLValInnerPattern = function(e, t, i) {
+          switch (t === void 0 && (t = oe), e.type) {
+            case "Property":
+              this.checkLValInnerPattern(e.value, t, i);
+              break;
+            case "AssignmentPattern":
+              this.checkLValPattern(e.left, t, i);
+              break;
+            case "RestElement":
+              this.checkLValPattern(e.argument, t, i);
+              break;
+            default:
+              this.checkLValPattern(e, t, i);
+          }
+        };
+        var N = function(t, i, s, r, n) {
+          this.token = t, this.isExpr = !!i, this.preserveSpace = !!s, this.override = r, this.generator = !!n;
+        }, b = { b_stat: new N("{", false), b_expr: new N("{", true), b_tmpl: new N("\${", false), p_stat: new N("(", false), p_expr: new N("(", true), q_tmpl: new N("\`", true, true, function(e) {
+          return e.tryReadTemplateToken();
+        }), f_stat: new N("function", false), f_expr: new N("function", true), f_expr_gen: new N("function", true, false, null, true), f_gen: new N("function", false, false, null, true) }, K = _.prototype;
+        K.initialContext = function() {
+          return [b.b_stat];
+        }, K.curContext = function() {
+          return this.context[this.context.length - 1];
+        }, K.braceIsBlock = function(e) {
+          var t = this.curContext();
+          return t === b.f_expr || t === b.f_stat ? true : e === a.colon && (t === b.b_stat || t === b.b_expr) ? !t.isExpr : e === a._return || e === a.name && this.exprAllowed ? k.test(this.input.slice(this.lastTokEnd, this.start)) : e === a._else || e === a.semi || e === a.eof || e === a.parenR || e === a.arrow ? true : e === a.braceL ? t === b.b_stat : e === a._var || e === a._const || e === a.name ? false : !this.exprAllowed;
+        }, K.inGeneratorContext = function() {
+          for (var e = this.context.length - 1; e >= 1; e--) {
+            var t = this.context[e];
+            if (t.token === "function") return t.generator;
+          }
+          return false;
+        }, K.updateContext = function(e) {
+          var t, i = this.type;
+          i.keyword && e === a.dot ? this.exprAllowed = false : (t = i.updateContext) ? t.call(this, e) : this.exprAllowed = i.beforeExpr;
+        }, K.overrideContext = function(e) {
+          this.curContext() !== e && (this.context[this.context.length - 1] = e);
+        }, a.parenR.updateContext = a.braceR.updateContext = function() {
+          if (this.context.length === 1) {
+            this.exprAllowed = true;
+            return;
+          }
+          var e = this.context.pop();
+          e === b.b_stat && this.curContext().token === "function" && (e = this.context.pop()), this.exprAllowed = !e.isExpr;
+        }, a.braceL.updateContext = function(e) {
+          this.context.push(this.braceIsBlock(e) ? b.b_stat : b.b_expr), this.exprAllowed = true;
+        }, a.dollarBraceL.updateContext = function() {
+          this.context.push(b.b_tmpl), this.exprAllowed = true;
+        }, a.parenL.updateContext = function(e) {
+          var t = e === a._if || e === a._for || e === a._with || e === a._while;
+          this.context.push(t ? b.p_stat : b.p_expr), this.exprAllowed = true;
+        }, a.incDec.updateContext = function() {
+        }, a._function.updateContext = a._class.updateContext = function(e) {
+          e.beforeExpr && e !== a._else && !(e === a.semi && this.curContext() !== b.p_stat) && !(e === a._return && k.test(this.input.slice(this.lastTokEnd, this.start))) && !((e === a.colon || e === a.braceL) && this.curContext() === b.b_stat) ? this.context.push(b.f_expr) : this.context.push(b.f_stat), this.exprAllowed = false;
+        }, a.colon.updateContext = function() {
+          this.curContext().token === "function" && this.context.pop(), this.exprAllowed = true;
+        }, a.backQuote.updateContext = function() {
+          this.curContext() === b.q_tmpl ? this.context.pop() : this.context.push(b.q_tmpl), this.exprAllowed = false;
+        }, a.star.updateContext = function(e) {
+          if (e === a._function) {
+            var t = this.context.length - 1;
+            this.context[t] === b.f_expr ? this.context[t] = b.f_expr_gen : this.context[t] = b.f_gen;
+          }
+          this.exprAllowed = true;
+        }, a.name.updateContext = function(e) {
+          var t = false;
+          this.options.ecmaVersion >= 6 && e !== a.dot && (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) && (t = true), this.exprAllowed = t;
+        };
+        var f = _.prototype;
+        f.checkPropClash = function(e, t, i) {
+          if (!(this.options.ecmaVersion >= 9 && e.type === "SpreadElement") && !(this.options.ecmaVersion >= 6 && (e.computed || e.method || e.shorthand))) {
+            var s = e.key, r;
+            switch (s.type) {
+              case "Identifier":
+                r = s.name;
+                break;
+              case "Literal":
+                r = String(s.value);
+                break;
+              default:
+                return;
+            }
+            var n = e.kind;
+            if (this.options.ecmaVersion >= 6) {
+              r === "__proto__" && n === "init" && (t.proto && (i ? i.doubleProto < 0 && (i.doubleProto = s.start) : this.raiseRecoverable(s.start, "Redefinition of __proto__ property")), t.proto = true);
+              return;
+            }
+            r = "$" + r;
+            var u = t[r];
+            if (u) {
+              var o;
+              n === "init" ? o = this.strict && u.init || u.get || u.set : o = u.init || u[n], o && this.raiseRecoverable(s.start, "Redefinition of property");
+            } else u = t[r] = { init: false, get: false, set: false };
+            u[n] = true;
+          }
+        }, f.parseExpression = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseMaybeAssign(e, t);
+          if (this.type === a.comma) {
+            var n = this.startNodeAt(i, s);
+            for (n.expressions = [r]; this.eat(a.comma); ) n.expressions.push(this.parseMaybeAssign(e, t));
+            return this.finishNode(n, "SequenceExpression");
+          }
+          return r;
+        }, f.parseMaybeAssign = function(e, t, i) {
+          if (this.isContextual("yield")) {
+            if (this.inGenerator) return this.parseYield(e);
+            this.exprAllowed = false;
+          }
+          var s = false, r = -1, n = -1, u = -1;
+          t ? (r = t.parenthesizedAssign, n = t.trailingComma, u = t.doubleProto, t.parenthesizedAssign = t.trailingComma = -1) : (t = new he(), s = true);
+          var o = this.start, h = this.startLoc;
+          (this.type === a.parenL || this.type === a.name) && (this.potentialArrowAt = this.start, this.potentialArrowInForAwait = e === "await");
+          var l = this.parseMaybeConditional(e, t);
+          if (i && (l = i.call(this, l, o, h)), this.type.isAssign) {
+            var d = this.startNodeAt(o, h);
+            return d.operator = this.value, this.type === a.eq && (l = this.toAssignable(l, false, t)), s || (t.parenthesizedAssign = t.trailingComma = t.doubleProto = -1), t.shorthandAssign >= l.start && (t.shorthandAssign = -1), this.type === a.eq ? this.checkLValPattern(l) : this.checkLValSimple(l), d.left = l, this.next(), d.right = this.parseMaybeAssign(e), u > -1 && (t.doubleProto = u), this.finishNode(d, "AssignmentExpression");
+          } else s && this.checkExpressionErrors(t, true);
+          return r > -1 && (t.parenthesizedAssign = r), n > -1 && (t.trailingComma = n), l;
+        }, f.parseMaybeConditional = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseExprOps(e, t);
+          if (this.checkExpressionErrors(t)) return r;
+          if (this.eat(a.question)) {
+            var n = this.startNodeAt(i, s);
+            return n.test = r, n.consequent = this.parseMaybeAssign(), this.expect(a.colon), n.alternate = this.parseMaybeAssign(e), this.finishNode(n, "ConditionalExpression");
+          }
+          return r;
+        }, f.parseExprOps = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseMaybeUnary(t, false, false, e);
+          return this.checkExpressionErrors(t) || r.start === i && r.type === "ArrowFunctionExpression" ? r : this.parseExprOp(r, i, s, -1, e);
+        }, f.parseExprOp = function(e, t, i, s, r) {
+          var n = this.type.binop;
+          if (n != null && (!r || this.type !== a._in) && n > s) {
+            var u = this.type === a.logicalOR || this.type === a.logicalAND, o = this.type === a.coalesce;
+            o && (n = a.logicalAND.binop);
+            var h = this.value;
+            this.next();
+            var l = this.start, d = this.startLoc, y = this.parseExprOp(this.parseMaybeUnary(null, false, false, r), l, d, n, r), S = this.buildBinary(t, i, e, y, h, u || o);
+            return (u && this.type === a.coalesce || o && (this.type === a.logicalOR || this.type === a.logicalAND)) && this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses"), this.parseExprOp(S, t, i, s, r);
+          }
+          return e;
+        }, f.buildBinary = function(e, t, i, s, r, n) {
+          s.type === "PrivateIdentifier" && this.raise(s.start, "Private identifier can only be left side of binary expression");
+          var u = this.startNodeAt(e, t);
+          return u.left = i, u.operator = r, u.right = s, this.finishNode(u, n ? "LogicalExpression" : "BinaryExpression");
+        }, f.parseMaybeUnary = function(e, t, i, s) {
+          var r = this.start, n = this.startLoc, u;
+          if (this.isContextual("await") && this.canAwait) u = this.parseAwait(s), t = true;
+          else if (this.type.prefix) {
+            var o = this.startNode(), h = this.type === a.incDec;
+            o.operator = this.value, o.prefix = true, this.next(), o.argument = this.parseMaybeUnary(null, true, h, s), this.checkExpressionErrors(e, true), h ? this.checkLValSimple(o.argument) : this.strict && o.operator === "delete" && We(o.argument) ? this.raiseRecoverable(o.start, "Deleting local variable in strict mode") : o.operator === "delete" && Ee(o.argument) ? this.raiseRecoverable(o.start, "Private fields can not be deleted") : t = true, u = this.finishNode(o, h ? "UpdateExpression" : "UnaryExpression");
+          } else if (!t && this.type === a.privateId) (s || this.privateNameStack.length === 0) && this.options.checkPrivateFields && this.unexpected(), u = this.parsePrivateIdent(), this.type !== a._in && this.unexpected();
+          else {
+            if (u = this.parseExprSubscripts(e, s), this.checkExpressionErrors(e)) return u;
+            for (; this.type.postfix && !this.canInsertSemicolon(); ) {
+              var l = this.startNodeAt(r, n);
+              l.operator = this.value, l.prefix = false, l.argument = u, this.checkLValSimple(u), this.next(), u = this.finishNode(l, "UpdateExpression");
+            }
+          }
+          if (!i && this.eat(a.starstar)) if (t) this.unexpected(this.lastTokStart);
+          else return this.buildBinary(r, n, u, this.parseMaybeUnary(null, false, false, s), "**", false);
+          else return u;
+        };
+        function We(e) {
+          return e.type === "Identifier" || e.type === "ParenthesizedExpression" && We(e.expression);
+        }
+        function Ee(e) {
+          return e.type === "MemberExpression" && e.property.type === "PrivateIdentifier" || e.type === "ChainExpression" && Ee(e.expression) || e.type === "ParenthesizedExpression" && Ee(e.expression);
+        }
+        f.parseExprSubscripts = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseExprAtom(e, t);
+          if (r.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") return r;
+          var n = this.parseSubscripts(r, i, s, false, t);
+          return e && n.type === "MemberExpression" && (e.parenthesizedAssign >= n.start && (e.parenthesizedAssign = -1), e.parenthesizedBind >= n.start && (e.parenthesizedBind = -1), e.trailingComma >= n.start && (e.trailingComma = -1)), n;
+        }, f.parseSubscripts = function(e, t, i, s, r) {
+          for (var n = this.options.ecmaVersion >= 8 && e.type === "Identifier" && e.name === "async" && this.lastTokEnd === e.end && !this.canInsertSemicolon() && e.end - e.start === 5 && this.potentialArrowAt === e.start, u = false; ; ) {
+            var o = this.parseSubscript(e, t, i, s, n, u, r);
+            if (o.optional && (u = true), o === e || o.type === "ArrowFunctionExpression") {
+              if (u) {
+                var h = this.startNodeAt(t, i);
+                h.expression = o, o = this.finishNode(h, "ChainExpression");
+              }
+              return o;
+            }
+            e = o;
+          }
+        }, f.shouldParseAsyncArrow = function() {
+          return !this.canInsertSemicolon() && this.eat(a.arrow);
+        }, f.parseSubscriptAsyncArrow = function(e, t, i, s) {
+          return this.parseArrowExpression(this.startNodeAt(e, t), i, true, s);
+        }, f.parseSubscript = function(e, t, i, s, r, n, u) {
+          var o = this.options.ecmaVersion >= 11, h = o && this.eat(a.questionDot);
+          s && h && this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+          var l = this.eat(a.bracketL);
+          if (l || h && this.type !== a.parenL && this.type !== a.backQuote || this.eat(a.dot)) {
+            var d = this.startNodeAt(t, i);
+            d.object = e, l ? (d.property = this.parseExpression(), this.expect(a.bracketR)) : this.type === a.privateId && e.type !== "Super" ? d.property = this.parsePrivateIdent() : d.property = this.parseIdent(this.options.allowReserved !== "never"), d.computed = !!l, o && (d.optional = h), e = this.finishNode(d, "MemberExpression");
+          } else if (!s && this.eat(a.parenL)) {
+            var y = new he(), S = this.yieldPos, se = this.awaitPos, Q = this.awaitIdentPos;
+            this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0;
+            var xe = this.parseExprList(a.parenR, this.options.ecmaVersion >= 8, false, y);
+            if (r && !h && this.shouldParseAsyncArrow()) return this.checkPatternErrors(y, false), this.checkYieldAwaitInDefaultParams(), this.awaitIdentPos > 0 && this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function"), this.yieldPos = S, this.awaitPos = se, this.awaitIdentPos = Q, this.parseSubscriptAsyncArrow(t, i, xe, u);
+            this.checkExpressionErrors(y, true), this.yieldPos = S || this.yieldPos, this.awaitPos = se || this.awaitPos, this.awaitIdentPos = Q || this.awaitIdentPos;
+            var Y = this.startNodeAt(t, i);
+            Y.callee = e, Y.arguments = xe, o && (Y.optional = h), e = this.finishNode(Y, "CallExpression");
+          } else if (this.type === a.backQuote) {
+            (h || n) && this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+            var X = this.startNodeAt(t, i);
+            X.tag = e, X.quasi = this.parseTemplate({ isTagged: true }), e = this.finishNode(X, "TaggedTemplateExpression");
+          }
+          return e;
+        }, f.parseExprAtom = function(e, t, i) {
+          this.type === a.slash && this.readRegexp();
+          var s, r = this.potentialArrowAt === this.start;
+          switch (this.type) {
+            case a._super:
+              return this.allowSuper || this.raise(this.start, "'super' keyword outside a method"), s = this.startNode(), this.next(), this.type === a.parenL && !this.allowDirectSuper && this.raise(s.start, "super() call outside constructor of a subclass"), this.type !== a.dot && this.type !== a.bracketL && this.type !== a.parenL && this.unexpected(), this.finishNode(s, "Super");
+            case a._this:
+              return s = this.startNode(), this.next(), this.finishNode(s, "ThisExpression");
+            case a.name:
+              var n = this.start, u = this.startLoc, o = this.containsEsc, h = this.parseIdent(false);
+              if (this.options.ecmaVersion >= 8 && !o && h.name === "async" && !this.canInsertSemicolon() && this.eat(a._function)) return this.overrideContext(b.f_expr), this.parseFunction(this.startNodeAt(n, u), 0, false, true, t);
+              if (r && !this.canInsertSemicolon()) {
+                if (this.eat(a.arrow)) return this.parseArrowExpression(this.startNodeAt(n, u), [h], false, t);
+                if (this.options.ecmaVersion >= 8 && h.name === "async" && this.type === a.name && !o && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) return h = this.parseIdent(false), (this.canInsertSemicolon() || !this.eat(a.arrow)) && this.unexpected(), this.parseArrowExpression(this.startNodeAt(n, u), [h], true, t);
+              }
+              return h;
+            case a.regexp:
+              var l = this.value;
+              return s = this.parseLiteral(l.value), s.regex = { pattern: l.pattern, flags: l.flags }, s;
+            case a.num:
+            case a.string:
+              return this.parseLiteral(this.value);
+            case a._null:
+            case a._true:
+            case a._false:
+              return s = this.startNode(), s.value = this.type === a._null ? null : this.type === a._true, s.raw = this.type.keyword, this.next(), this.finishNode(s, "Literal");
+            case a.parenL:
+              var d = this.start, y = this.parseParenAndDistinguishExpression(r, t);
+              return e && (e.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(y) && (e.parenthesizedAssign = d), e.parenthesizedBind < 0 && (e.parenthesizedBind = d)), y;
+            case a.bracketL:
+              return s = this.startNode(), this.next(), s.elements = this.parseExprList(a.bracketR, true, true, e), this.finishNode(s, "ArrayExpression");
+            case a.braceL:
+              return this.overrideContext(b.b_expr), this.parseObj(false, e);
+            case a._function:
+              return s = this.startNode(), this.next(), this.parseFunction(s, 0);
+            case a._class:
+              return this.parseClass(this.startNode(), false);
+            case a._new:
+              return this.parseNew();
+            case a.backQuote:
+              return this.parseTemplate();
+            case a._import:
+              return this.options.ecmaVersion >= 11 ? this.parseExprImport(i) : this.unexpected();
+            default:
+              return this.parseExprAtomDefault();
+          }
+        }, f.parseExprAtomDefault = function() {
+          this.unexpected();
+        }, f.parseExprImport = function(e) {
+          var t = this.startNode();
+          if (this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword import"), this.next(), this.type === a.parenL && !e) return this.parseDynamicImport(t);
+          if (this.type === a.dot) {
+            var i = this.startNodeAt(t.start, t.loc && t.loc.start);
+            return i.name = "import", t.meta = this.finishNode(i, "Identifier"), this.parseImportMeta(t);
+          } else this.unexpected();
+        }, f.parseDynamicImport = function(e) {
+          if (this.next(), e.source = this.parseMaybeAssign(), this.options.ecmaVersion >= 16) this.eat(a.parenR) ? e.options = null : (this.expect(a.comma), this.afterTrailingComma(a.parenR) ? e.options = null : (e.options = this.parseMaybeAssign(), this.eat(a.parenR) || (this.expect(a.comma), this.afterTrailingComma(a.parenR) || this.unexpected())));
+          else if (!this.eat(a.parenR)) {
+            var t = this.start;
+            this.eat(a.comma) && this.eat(a.parenR) ? this.raiseRecoverable(t, "Trailing comma is not allowed in import()") : this.unexpected(t);
+          }
+          return this.finishNode(e, "ImportExpression");
+        }, f.parseImportMeta = function(e) {
+          this.next();
+          var t = this.containsEsc;
+          return e.property = this.parseIdent(true), e.property.name !== "meta" && this.raiseRecoverable(e.property.start, "The only valid meta property for import is 'import.meta'"), t && this.raiseRecoverable(e.start, "'import.meta' must not contain escaped characters"), this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere && this.raiseRecoverable(e.start, "Cannot use 'import.meta' outside a module"), this.finishNode(e, "MetaProperty");
+        }, f.parseLiteral = function(e) {
+          var t = this.startNode();
+          return t.value = e, t.raw = this.input.slice(this.start, this.end), t.raw.charCodeAt(t.raw.length - 1) === 110 && (t.bigint = t.value != null ? t.value.toString() : t.raw.slice(0, -1).replace(/_/g, "")), this.next(), this.finishNode(t, "Literal");
+        }, f.parseParenExpression = function() {
+          this.expect(a.parenL);
+          var e = this.parseExpression();
+          return this.expect(a.parenR), e;
+        }, f.shouldParseArrow = function(e) {
+          return !this.canInsertSemicolon();
+        }, f.parseParenAndDistinguishExpression = function(e, t) {
+          var i = this.start, s = this.startLoc, r, n = this.options.ecmaVersion >= 8;
+          if (this.options.ecmaVersion >= 6) {
+            this.next();
+            var u = this.start, o = this.startLoc, h = [], l = true, d = false, y = new he(), S = this.yieldPos, se = this.awaitPos, Q;
+            for (this.yieldPos = 0, this.awaitPos = 0; this.type !== a.parenR; ) if (l ? l = false : this.expect(a.comma), n && this.afterTrailingComma(a.parenR, true)) {
+              d = true;
+              break;
+            } else if (this.type === a.ellipsis) {
+              Q = this.start, h.push(this.parseParenItem(this.parseRestBinding())), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+              break;
+            } else h.push(this.parseMaybeAssign(false, y, this.parseParenItem));
+            var xe = this.lastTokEnd, Y = this.lastTokEndLoc;
+            if (this.expect(a.parenR), e && this.shouldParseArrow(h) && this.eat(a.arrow)) return this.checkPatternErrors(y, false), this.checkYieldAwaitInDefaultParams(), this.yieldPos = S, this.awaitPos = se, this.parseParenArrowList(i, s, h, t);
+            (!h.length || d) && this.unexpected(this.lastTokStart), Q && this.unexpected(Q), this.checkExpressionErrors(y, true), this.yieldPos = S || this.yieldPos, this.awaitPos = se || this.awaitPos, h.length > 1 ? (r = this.startNodeAt(u, o), r.expressions = h, this.finishNodeAt(r, "SequenceExpression", xe, Y)) : r = h[0];
+          } else r = this.parseParenExpression();
+          if (this.options.preserveParens) {
+            var X = this.startNodeAt(i, s);
+            return X.expression = r, this.finishNode(X, "ParenthesizedExpression");
+          } else return r;
+        }, f.parseParenItem = function(e) {
+          return e;
+        }, f.parseParenArrowList = function(e, t, i, s) {
+          return this.parseArrowExpression(this.startNodeAt(e, t), i, false, s);
+        };
+        var Tt = [];
+        f.parseNew = function() {
+          this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+          var e = this.startNode();
+          if (this.next(), this.options.ecmaVersion >= 6 && this.type === a.dot) {
+            var t = this.startNodeAt(e.start, e.loc && e.loc.start);
+            t.name = "new", e.meta = this.finishNode(t, "Identifier"), this.next();
+            var i = this.containsEsc;
+            return e.property = this.parseIdent(true), e.property.name !== "target" && this.raiseRecoverable(e.property.start, "The only valid meta property for new is 'new.target'"), i && this.raiseRecoverable(e.start, "'new.target' must not contain escaped characters"), this.allowNewDotTarget || this.raiseRecoverable(e.start, "'new.target' can only be used in functions and class static block"), this.finishNode(e, "MetaProperty");
+          }
+          var s = this.start, r = this.startLoc;
+          return e.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), s, r, true, false), this.eat(a.parenL) ? e.arguments = this.parseExprList(a.parenR, this.options.ecmaVersion >= 8, false) : e.arguments = Tt, this.finishNode(e, "NewExpression");
+        }, f.parseTemplateElement = function(e) {
+          var t = e.isTagged, i = this.startNode();
+          return this.type === a.invalidTemplate ? (t || this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal"), i.value = { raw: this.value.replace(/\\r\\n?/g, \`
+\`), cooked: null }) : i.value = { raw: this.input.slice(this.start, this.end).replace(/\\r\\n?/g, \`
+\`), cooked: this.value }, this.next(), i.tail = this.type === a.backQuote, this.finishNode(i, "TemplateElement");
+        }, f.parseTemplate = function(e) {
+          e === void 0 && (e = {});
+          var t = e.isTagged;
+          t === void 0 && (t = false);
+          var i = this.startNode();
+          this.next(), i.expressions = [];
+          var s = this.parseTemplateElement({ isTagged: t });
+          for (i.quasis = [s]; !s.tail; ) this.type === a.eof && this.raise(this.pos, "Unterminated template literal"), this.expect(a.dollarBraceL), i.expressions.push(this.parseExpression()), this.expect(a.braceR), i.quasis.push(s = this.parseTemplateElement({ isTagged: t }));
+          return this.next(), this.finishNode(i, "TemplateLiteral");
+        }, f.isAsyncProp = function(e) {
+          return !e.computed && e.key.type === "Identifier" && e.key.name === "async" && (this.type === a.name || this.type === a.num || this.type === a.string || this.type === a.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === a.star) && !k.test(this.input.slice(this.lastTokEnd, this.start));
+        }, f.parseObj = function(e, t) {
+          var i = this.startNode(), s = true, r = {};
+          for (i.properties = [], this.next(); !this.eat(a.braceR); ) {
+            if (s) s = false;
+            else if (this.expect(a.comma), this.options.ecmaVersion >= 5 && this.afterTrailingComma(a.braceR)) break;
+            var n = this.parseProperty(e, t);
+            e || this.checkPropClash(n, r, t), i.properties.push(n);
+          }
+          return this.finishNode(i, e ? "ObjectPattern" : "ObjectExpression");
+        }, f.parseProperty = function(e, t) {
+          var i = this.startNode(), s, r, n, u;
+          if (this.options.ecmaVersion >= 9 && this.eat(a.ellipsis)) return e ? (i.argument = this.parseIdent(false), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element"), this.finishNode(i, "RestElement")) : (i.argument = this.parseMaybeAssign(false, t), this.type === a.comma && t && t.trailingComma < 0 && (t.trailingComma = this.start), this.finishNode(i, "SpreadElement"));
+          this.options.ecmaVersion >= 6 && (i.method = false, i.shorthand = false, (e || t) && (n = this.start, u = this.startLoc), e || (s = this.eat(a.star)));
+          var o = this.containsEsc;
+          return this.parsePropertyName(i), !e && !o && this.options.ecmaVersion >= 8 && !s && this.isAsyncProp(i) ? (r = true, s = this.options.ecmaVersion >= 9 && this.eat(a.star), this.parsePropertyName(i)) : r = false, this.parsePropertyValue(i, e, s, r, n, u, t, o), this.finishNode(i, "Property");
+        }, f.parseGetterSetter = function(e) {
+          var t = e.key.name;
+          this.parsePropertyName(e), e.value = this.parseMethod(false), e.kind = t;
+          var i = e.kind === "get" ? 0 : 1;
+          if (e.value.params.length !== i) {
+            var s = e.value.start;
+            e.kind === "get" ? this.raiseRecoverable(s, "getter should have no params") : this.raiseRecoverable(s, "setter should have exactly one param");
+          } else e.kind === "set" && e.value.params[0].type === "RestElement" && this.raiseRecoverable(e.value.params[0].start, "Setter cannot use rest params");
+        }, f.parsePropertyValue = function(e, t, i, s, r, n, u, o) {
+          (i || s) && this.type === a.colon && this.unexpected(), this.eat(a.colon) ? (e.value = t ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, u), e.kind = "init") : this.options.ecmaVersion >= 6 && this.type === a.parenL ? (t && this.unexpected(), e.method = true, e.value = this.parseMethod(i, s), e.kind = "init") : !t && !o && this.options.ecmaVersion >= 5 && !e.computed && e.key.type === "Identifier" && (e.key.name === "get" || e.key.name === "set") && this.type !== a.comma && this.type !== a.braceR && this.type !== a.eq ? ((i || s) && this.unexpected(), this.parseGetterSetter(e)) : this.options.ecmaVersion >= 6 && !e.computed && e.key.type === "Identifier" ? ((i || s) && this.unexpected(), this.checkUnreserved(e.key), e.key.name === "await" && !this.awaitIdentPos && (this.awaitIdentPos = r), t ? e.value = this.parseMaybeDefault(r, n, this.copyNode(e.key)) : this.type === a.eq && u ? (u.shorthandAssign < 0 && (u.shorthandAssign = this.start), e.value = this.parseMaybeDefault(r, n, this.copyNode(e.key))) : e.value = this.copyNode(e.key), e.kind = "init", e.shorthand = true) : this.unexpected();
+        }, f.parsePropertyName = function(e) {
+          if (this.options.ecmaVersion >= 6) {
+            if (this.eat(a.bracketL)) return e.computed = true, e.key = this.parseMaybeAssign(), this.expect(a.bracketR), e.key;
+            e.computed = false;
+          }
+          return e.key = this.type === a.num || this.type === a.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+        }, f.initFunction = function(e) {
+          e.id = null, this.options.ecmaVersion >= 6 && (e.generator = e.expression = false), this.options.ecmaVersion >= 8 && (e.async = false);
+        }, f.parseMethod = function(e, t, i) {
+          var s = this.startNode(), r = this.yieldPos, n = this.awaitPos, u = this.awaitIdentPos;
+          return this.initFunction(s), this.options.ecmaVersion >= 6 && (s.generator = e), this.options.ecmaVersion >= 8 && (s.async = !!t), this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, this.enterScope(ke(t, s.generator) | ne | (i ? Ue : 0)), this.expect(a.parenL), s.params = this.parseBindingList(a.parenR, false, this.options.ecmaVersion >= 8), this.checkYieldAwaitInDefaultParams(), this.parseFunctionBody(s, false, true, false), this.yieldPos = r, this.awaitPos = n, this.awaitIdentPos = u, this.finishNode(s, "FunctionExpression");
+        }, f.parseArrowExpression = function(e, t, i, s) {
+          var r = this.yieldPos, n = this.awaitPos, u = this.awaitIdentPos;
+          return this.enterScope(ke(i, false) | Se), this.initFunction(e), this.options.ecmaVersion >= 8 && (e.async = !!i), this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, e.params = this.toAssignableList(t, true), this.parseFunctionBody(e, true, false, s), this.yieldPos = r, this.awaitPos = n, this.awaitIdentPos = u, this.finishNode(e, "ArrowFunctionExpression");
+        }, f.parseFunctionBody = function(e, t, i, s) {
+          var r = t && this.type !== a.braceL, n = this.strict, u = false;
+          if (r) e.body = this.parseMaybeAssign(s), e.expression = true, this.checkParams(e, false);
+          else {
+            var o = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(e.params);
+            (!n || o) && (u = this.strictDirective(this.end), u && o && this.raiseRecoverable(e.start, "Illegal 'use strict' directive in function with non-simple parameter list"));
+            var h = this.labels;
+            this.labels = [], u && (this.strict = true), this.checkParams(e, !n && !u && !t && !i && this.isSimpleParamList(e.params)), this.strict && e.id && this.checkLValSimple(e.id, Ge), e.body = this.parseBlock(false, void 0, u && !n), e.expression = false, this.adaptDirectivePrologue(e.body.body), this.labels = h;
+          }
+          this.exitScope();
+        }, f.isSimpleParamList = function(e) {
+          for (var t = 0, i = e; t < i.length; t += 1) {
+            var s = i[t];
+            if (s.type !== "Identifier") return false;
+          }
+          return true;
+        }, f.checkParams = function(e, t) {
+          for (var i = /* @__PURE__ */ Object.create(null), s = 0, r = e.params; s < r.length; s += 1) {
+            var n = r[s];
+            this.checkLValInnerPattern(n, we, t ? null : i);
+          }
+        }, f.parseExprList = function(e, t, i, s) {
+          for (var r = [], n = true; !this.eat(e); ) {
+            if (n) n = false;
+            else if (this.expect(a.comma), t && this.afterTrailingComma(e)) break;
+            var u = void 0;
+            i && this.type === a.comma ? u = null : this.type === a.ellipsis ? (u = this.parseSpread(s), s && this.type === a.comma && s.trailingComma < 0 && (s.trailingComma = this.start)) : u = this.parseMaybeAssign(false, s), r.push(u);
+          }
+          return r;
+        }, f.checkUnreserved = function(e) {
+          var t = e.start, i = e.end, s = e.name;
+          if (this.inGenerator && s === "yield" && this.raiseRecoverable(t, "Cannot use 'yield' as identifier inside a generator"), this.inAsync && s === "await" && this.raiseRecoverable(t, "Cannot use 'await' as identifier inside an async function"), !(this.currentThisScope().flags & ue) && s === "arguments" && this.raiseRecoverable(t, "Cannot use 'arguments' in class field initializer"), this.inClassStaticBlock && (s === "arguments" || s === "await") && this.raise(t, "Cannot use " + s + " in class static initialization block"), this.keywords.test(s) && this.raise(t, "Unexpected keyword '" + s + "'"), !(this.options.ecmaVersion < 6 && this.input.slice(t, i).indexOf("\\\\") !== -1)) {
+            var r = this.strict ? this.reservedWordsStrict : this.reservedWords;
+            r.test(s) && (!this.inAsync && s === "await" && this.raiseRecoverable(t, "Cannot use keyword 'await' outside an async function"), this.raiseRecoverable(t, "The keyword '" + s + "' is reserved"));
+          }
+        }, f.parseIdent = function(e) {
+          var t = this.parseIdentNode();
+          return this.next(!!e), this.finishNode(t, "Identifier"), e || (this.checkUnreserved(t), t.name === "await" && !this.awaitIdentPos && (this.awaitIdentPos = t.start)), t;
+        }, f.parseIdentNode = function() {
+          var e = this.startNode();
+          return this.type === a.name ? e.name = this.value : this.type.keyword ? (e.name = this.type.keyword, (e.name === "class" || e.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46) && this.context.pop(), this.type = a.name) : this.unexpected(), e;
+        }, f.parsePrivateIdent = function() {
+          var e = this.startNode();
+          return this.type === a.privateId ? e.name = this.value : this.unexpected(), this.next(), this.finishNode(e, "PrivateIdentifier"), this.options.checkPrivateFields && (this.privateNameStack.length === 0 ? this.raise(e.start, "Private field '#" + e.name + "' must be declared in an enclosing class") : this.privateNameStack[this.privateNameStack.length - 1].used.push(e)), e;
+        }, f.parseYield = function(e) {
+          this.yieldPos || (this.yieldPos = this.start);
+          var t = this.startNode();
+          return this.next(), this.type === a.semi || this.canInsertSemicolon() || this.type !== a.star && !this.type.startsExpr ? (t.delegate = false, t.argument = null) : (t.delegate = this.eat(a.star), t.argument = this.parseMaybeAssign(e)), this.finishNode(t, "YieldExpression");
+        }, f.parseAwait = function(e) {
+          this.awaitPos || (this.awaitPos = this.start);
+          var t = this.startNode();
+          return this.next(), t.argument = this.parseMaybeUnary(null, true, false, e), this.finishNode(t, "AwaitExpression");
+        };
+        var pe = _.prototype;
+        pe.raise = function(e, t) {
+          var i = _e(this.input, e);
+          t += " (" + i.line + ":" + i.column + ")", this.sourceFile && (t += " in " + this.sourceFile);
+          var s = new SyntaxError(t);
+          throw s.pos = e, s.loc = i, s.raisedAt = this.pos, s;
+        }, pe.raiseRecoverable = pe.raise, pe.curPosition = function() {
+          if (this.options.locations) return new W(this.curLine, this.pos - this.lineStart);
+        };
+        var q = _.prototype, Lt = function(t) {
+          this.flags = t, this.var = [], this.lexical = [], this.functions = [];
+        };
+        q.enterScope = function(e) {
+          this.scopeStack.push(new Lt(e));
+        }, q.exitScope = function() {
+          this.scopeStack.pop();
+        }, q.treatFunctionsAsVarInScope = function(e) {
+          return e.flags & z || !this.inModule && e.flags & J;
+        }, q.declareName = function(e, t, i) {
+          var s = false;
+          if (t === F) {
+            var r = this.currentScope();
+            s = r.lexical.indexOf(e) > -1 || r.functions.indexOf(e) > -1 || r.var.indexOf(e) > -1, r.lexical.push(e), this.inModule && r.flags & J && delete this.undefinedExports[e];
+          } else if (t === je) {
+            var n = this.currentScope();
+            n.lexical.push(e);
+          } else if (t === qe) {
+            var u = this.currentScope();
+            this.treatFunctionsAsVar ? s = u.lexical.indexOf(e) > -1 : s = u.lexical.indexOf(e) > -1 || u.var.indexOf(e) > -1, u.functions.push(e);
+          } else for (var o = this.scopeStack.length - 1; o >= 0; --o) {
+            var h = this.scopeStack[o];
+            if (h.lexical.indexOf(e) > -1 && !(h.flags & Me && h.lexical[0] === e) || !this.treatFunctionsAsVarInScope(h) && h.functions.indexOf(e) > -1) {
+              s = true;
+              break;
+            }
+            if (h.var.push(e), this.inModule && h.flags & J && delete this.undefinedExports[e], h.flags & ue) break;
+          }
+          s && this.raiseRecoverable(i, "Identifier '" + e + "' has already been declared");
+        }, q.checkLocalExport = function(e) {
+          this.scopeStack[0].lexical.indexOf(e.name) === -1 && this.scopeStack[0].var.indexOf(e.name) === -1 && (this.undefinedExports[e.name] = e);
+        }, q.currentScope = function() {
+          return this.scopeStack[this.scopeStack.length - 1];
+        }, q.currentVarScope = function() {
+          for (var e = this.scopeStack.length - 1; ; e--) {
+            var t = this.scopeStack[e];
+            if (t.flags & (ue | $ | G)) return t;
+          }
+        }, q.currentThisScope = function() {
+          for (var e = this.scopeStack.length - 1; ; e--) {
+            var t = this.scopeStack[e];
+            if (t.flags & (ue | $ | G) && !(t.flags & Se)) return t;
+          }
+        };
+        var te = function(t, i, s) {
+          this.type = "", this.start = i, this.end = 0, t.options.locations && (this.loc = new Z(t, s)), t.options.directSourceFile && (this.sourceFile = t.options.directSourceFile), t.options.ranges && (this.range = [i, 0]);
+        }, ie = _.prototype;
+        ie.startNode = function() {
+          return new te(this, this.start, this.startLoc);
+        }, ie.startNodeAt = function(e, t) {
+          return new te(this, e, t);
+        };
+        function ze(e, t, i, s) {
+          return e.type = t, e.end = i, this.options.locations && (e.loc.end = s), this.options.ranges && (e.range[1] = i), e;
+        }
+        ie.finishNode = function(e, t) {
+          return ze.call(this, e, t, this.lastTokEnd, this.lastTokEndLoc);
+        }, ie.finishNodeAt = function(e, t, i, s) {
+          return ze.call(this, e, t, i, s);
+        }, ie.copyNode = function(e) {
+          var t = new te(this, e.start, this.startLoc);
+          for (var i in e) t[i] = e[i];
+          return t;
+        };
+        var Rt = "Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sunu Sunuwar Todhri Todr Tulu_Tigalari Tutg Unknown Zzzz", Ke = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS", Qe = Ke + " Extended_Pictographic", Ye = Qe, Xe = Ye + " EBase EComp EMod EPres ExtPict", Ze = Xe, Ot = Ze, Bt = { 9: Ke, 10: Qe, 11: Ye, 12: Xe, 13: Ze, 14: Ot }, Dt = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji", Ft = { 9: "", 10: "", 11: "", 12: "", 13: "", 14: Dt }, Je = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu", $e = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb", et = $e + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd", tt = et + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho", it = tt + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi", st = it + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith", Mt = st + " " + Rt, Ut = { 9: $e, 10: et, 11: tt, 12: it, 13: st, 14: Mt }, at = {};
+        function qt(e) {
+          var t = at[e] = { binary: U(Bt[e] + " " + Je), binaryOfStrings: U(Ft[e]), nonBinary: { General_Category: U(Je), Script: U(Ut[e]) } };
+          t.nonBinary.Script_Extensions = t.nonBinary.Script, t.nonBinary.gc = t.nonBinary.General_Category, t.nonBinary.sc = t.nonBinary.Script, t.nonBinary.scx = t.nonBinary.Script_Extensions;
+        }
+        for (var Pe = 0, rt = [9, 10, 11, 12, 13, 14]; Pe < rt.length; Pe += 1) {
+          var jt = rt[Pe];
+          qt(jt);
+        }
+        var c = _.prototype, le = function(t, i) {
+          this.parent = t, this.base = i || this;
+        };
+        le.prototype.separatedFrom = function(t) {
+          for (var i = this; i; i = i.parent) for (var s = t; s; s = s.parent) if (i.base === s.base && i !== s) return true;
+          return false;
+        }, le.prototype.sibling = function() {
+          return new le(this.parent, this.base);
+        };
+        var O = function(t) {
+          this.parser = t, this.validFlags = "gim" + (t.options.ecmaVersion >= 6 ? "uy" : "") + (t.options.ecmaVersion >= 9 ? "s" : "") + (t.options.ecmaVersion >= 13 ? "d" : "") + (t.options.ecmaVersion >= 15 ? "v" : ""), this.unicodeProperties = at[t.options.ecmaVersion >= 14 ? 14 : t.options.ecmaVersion], this.source = "", this.flags = "", this.start = 0, this.switchU = false, this.switchV = false, this.switchN = false, this.pos = 0, this.lastIntValue = 0, this.lastStringValue = "", this.lastAssertionIsQuantifiable = false, this.numCapturingParens = 0, this.maxBackReference = 0, this.groupNames = /* @__PURE__ */ Object.create(null), this.backReferenceNames = [], this.branchID = null;
+        };
+        O.prototype.reset = function(t, i, s) {
+          var r = s.indexOf("v") !== -1, n = s.indexOf("u") !== -1;
+          this.start = t | 0, this.source = i + "", this.flags = s, r && this.parser.options.ecmaVersion >= 15 ? (this.switchU = true, this.switchV = true, this.switchN = true) : (this.switchU = n && this.parser.options.ecmaVersion >= 6, this.switchV = false, this.switchN = n && this.parser.options.ecmaVersion >= 9);
+        }, O.prototype.raise = function(t) {
+          this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + t);
+        }, O.prototype.at = function(t, i) {
+          i === void 0 && (i = false);
+          var s = this.source, r = s.length;
+          if (t >= r) return -1;
+          var n = s.charCodeAt(t);
+          if (!(i || this.switchU) || n <= 55295 || n >= 57344 || t + 1 >= r) return n;
+          var u = s.charCodeAt(t + 1);
+          return u >= 56320 && u <= 57343 ? (n << 10) + u - 56613888 : n;
+        }, O.prototype.nextIndex = function(t, i) {
+          i === void 0 && (i = false);
+          var s = this.source, r = s.length;
+          if (t >= r) return r;
+          var n = s.charCodeAt(t), u;
+          return !(i || this.switchU) || n <= 55295 || n >= 57344 || t + 1 >= r || (u = s.charCodeAt(t + 1)) < 56320 || u > 57343 ? t + 1 : t + 2;
+        }, O.prototype.current = function(t) {
+          return t === void 0 && (t = false), this.at(this.pos, t);
+        }, O.prototype.lookahead = function(t) {
+          return t === void 0 && (t = false), this.at(this.nextIndex(this.pos, t), t);
+        }, O.prototype.advance = function(t) {
+          t === void 0 && (t = false), this.pos = this.nextIndex(this.pos, t);
+        }, O.prototype.eat = function(t, i) {
+          return i === void 0 && (i = false), this.current(i) === t ? (this.advance(i), true) : false;
+        }, O.prototype.eatChars = function(t, i) {
+          i === void 0 && (i = false);
+          for (var s = this.pos, r = 0, n = t; r < n.length; r += 1) {
+            var u = n[r], o = this.at(s, i);
+            if (o === -1 || o !== u) return false;
+            s = this.nextIndex(s, i);
+          }
+          return this.pos = s, true;
+        }, c.validateRegExpFlags = function(e) {
+          for (var t = e.validFlags, i = e.flags, s = false, r = false, n = 0; n < i.length; n++) {
+            var u = i.charAt(n);
+            t.indexOf(u) === -1 && this.raise(e.start, "Invalid regular expression flag"), i.indexOf(u, n + 1) > -1 && this.raise(e.start, "Duplicate regular expression flag"), u === "u" && (s = true), u === "v" && (r = true);
+          }
+          this.options.ecmaVersion >= 15 && s && r && this.raise(e.start, "Invalid regular expression flag");
+        };
+        function Gt(e) {
+          for (var t in e) return true;
+          return false;
+        }
+        c.validateRegExpPattern = function(e) {
+          this.regexp_pattern(e), !e.switchN && this.options.ecmaVersion >= 9 && Gt(e.groupNames) && (e.switchN = true, this.regexp_pattern(e));
+        }, c.regexp_pattern = function(e) {
+          e.pos = 0, e.lastIntValue = 0, e.lastStringValue = "", e.lastAssertionIsQuantifiable = false, e.numCapturingParens = 0, e.maxBackReference = 0, e.groupNames = /* @__PURE__ */ Object.create(null), e.backReferenceNames.length = 0, e.branchID = null, this.regexp_disjunction(e), e.pos !== e.source.length && (e.eat(41) && e.raise("Unmatched ')'"), (e.eat(93) || e.eat(125)) && e.raise("Lone quantifier brackets")), e.maxBackReference > e.numCapturingParens && e.raise("Invalid escape");
+          for (var t = 0, i = e.backReferenceNames; t < i.length; t += 1) {
+            var s = i[t];
+            e.groupNames[s] || e.raise("Invalid named capture referenced");
+          }
+        }, c.regexp_disjunction = function(e) {
+          var t = this.options.ecmaVersion >= 16;
+          for (t && (e.branchID = new le(e.branchID, null)), this.regexp_alternative(e); e.eat(124); ) t && (e.branchID = e.branchID.sibling()), this.regexp_alternative(e);
+          t && (e.branchID = e.branchID.parent), this.regexp_eatQuantifier(e, true) && e.raise("Nothing to repeat"), e.eat(123) && e.raise("Lone quantifier brackets");
+        }, c.regexp_alternative = function(e) {
+          for (; e.pos < e.source.length && this.regexp_eatTerm(e); ) ;
+        }, c.regexp_eatTerm = function(e) {
+          return this.regexp_eatAssertion(e) ? (e.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(e) && e.switchU && e.raise("Invalid quantifier"), true) : (e.switchU ? this.regexp_eatAtom(e) : this.regexp_eatExtendedAtom(e)) ? (this.regexp_eatQuantifier(e), true) : false;
+        }, c.regexp_eatAssertion = function(e) {
+          var t = e.pos;
+          if (e.lastAssertionIsQuantifiable = false, e.eat(94) || e.eat(36)) return true;
+          if (e.eat(92)) {
+            if (e.eat(66) || e.eat(98)) return true;
+            e.pos = t;
+          }
+          if (e.eat(40) && e.eat(63)) {
+            var i = false;
+            if (this.options.ecmaVersion >= 9 && (i = e.eat(60)), e.eat(61) || e.eat(33)) return this.regexp_disjunction(e), e.eat(41) || e.raise("Unterminated group"), e.lastAssertionIsQuantifiable = !i, true;
+          }
+          return e.pos = t, false;
+        }, c.regexp_eatQuantifier = function(e, t) {
+          return t === void 0 && (t = false), this.regexp_eatQuantifierPrefix(e, t) ? (e.eat(63), true) : false;
+        }, c.regexp_eatQuantifierPrefix = function(e, t) {
+          return e.eat(42) || e.eat(43) || e.eat(63) || this.regexp_eatBracedQuantifier(e, t);
+        }, c.regexp_eatBracedQuantifier = function(e, t) {
+          var i = e.pos;
+          if (e.eat(123)) {
+            var s = 0, r = -1;
+            if (this.regexp_eatDecimalDigits(e) && (s = e.lastIntValue, e.eat(44) && this.regexp_eatDecimalDigits(e) && (r = e.lastIntValue), e.eat(125))) return r !== -1 && r < s && !t && e.raise("numbers out of order in {} quantifier"), true;
+            e.switchU && !t && e.raise("Incomplete quantifier"), e.pos = i;
+          }
+          return false;
+        }, c.regexp_eatAtom = function(e) {
+          return this.regexp_eatPatternCharacters(e) || e.eat(46) || this.regexp_eatReverseSolidusAtomEscape(e) || this.regexp_eatCharacterClass(e) || this.regexp_eatUncapturingGroup(e) || this.regexp_eatCapturingGroup(e);
+        }, c.regexp_eatReverseSolidusAtomEscape = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) {
+            if (this.regexp_eatAtomEscape(e)) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatUncapturingGroup = function(e) {
+          var t = e.pos;
+          if (e.eat(40)) {
+            if (e.eat(63)) {
+              if (this.options.ecmaVersion >= 16) {
+                var i = this.regexp_eatModifiers(e), s = e.eat(45);
+                if (i || s) {
+                  for (var r = 0; r < i.length; r++) {
+                    var n = i.charAt(r);
+                    i.indexOf(n, r + 1) > -1 && e.raise("Duplicate regular expression modifiers");
+                  }
+                  if (s) {
+                    var u = this.regexp_eatModifiers(e);
+                    !i && !u && e.current() === 58 && e.raise("Invalid regular expression modifiers");
+                    for (var o = 0; o < u.length; o++) {
+                      var h = u.charAt(o);
+                      (u.indexOf(h, o + 1) > -1 || i.indexOf(h) > -1) && e.raise("Duplicate regular expression modifiers");
+                    }
+                  }
+                }
+              }
+              if (e.eat(58)) {
+                if (this.regexp_disjunction(e), e.eat(41)) return true;
+                e.raise("Unterminated group");
+              }
+            }
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatCapturingGroup = function(e) {
+          if (e.eat(40)) {
+            if (this.options.ecmaVersion >= 9 ? this.regexp_groupSpecifier(e) : e.current() === 63 && e.raise("Invalid group"), this.regexp_disjunction(e), e.eat(41)) return e.numCapturingParens += 1, true;
+            e.raise("Unterminated group");
+          }
+          return false;
+        }, c.regexp_eatModifiers = function(e) {
+          for (var t = "", i = 0; (i = e.current()) !== -1 && Ht(i); ) t += D(i), e.advance();
+          return t;
+        };
+        function Ht(e) {
+          return e === 105 || e === 109 || e === 115;
+        }
+        c.regexp_eatExtendedAtom = function(e) {
+          return e.eat(46) || this.regexp_eatReverseSolidusAtomEscape(e) || this.regexp_eatCharacterClass(e) || this.regexp_eatUncapturingGroup(e) || this.regexp_eatCapturingGroup(e) || this.regexp_eatInvalidBracedQuantifier(e) || this.regexp_eatExtendedPatternCharacter(e);
+        }, c.regexp_eatInvalidBracedQuantifier = function(e) {
+          return this.regexp_eatBracedQuantifier(e, true) && e.raise("Nothing to repeat"), false;
+        }, c.regexp_eatSyntaxCharacter = function(e) {
+          var t = e.current();
+          return nt(t) ? (e.lastIntValue = t, e.advance(), true) : false;
+        };
+        function nt(e) {
+          return e === 36 || e >= 40 && e <= 43 || e === 46 || e === 63 || e >= 91 && e <= 94 || e >= 123 && e <= 125;
+        }
+        c.regexp_eatPatternCharacters = function(e) {
+          for (var t = e.pos, i = 0; (i = e.current()) !== -1 && !nt(i); ) e.advance();
+          return e.pos !== t;
+        }, c.regexp_eatExtendedPatternCharacter = function(e) {
+          var t = e.current();
+          return t !== -1 && t !== 36 && !(t >= 40 && t <= 43) && t !== 46 && t !== 63 && t !== 91 && t !== 94 && t !== 124 ? (e.advance(), true) : false;
+        }, c.regexp_groupSpecifier = function(e) {
+          if (e.eat(63)) {
+            this.regexp_eatGroupName(e) || e.raise("Invalid group");
+            var t = this.options.ecmaVersion >= 16, i = e.groupNames[e.lastStringValue];
+            if (i) if (t) for (var s = 0, r = i; s < r.length; s += 1) {
+              var n = r[s];
+              n.separatedFrom(e.branchID) || e.raise("Duplicate capture group name");
+            }
+            else e.raise("Duplicate capture group name");
+            t ? (i || (e.groupNames[e.lastStringValue] = [])).push(e.branchID) : e.groupNames[e.lastStringValue] = true;
+          }
+        }, c.regexp_eatGroupName = function(e) {
+          if (e.lastStringValue = "", e.eat(60)) {
+            if (this.regexp_eatRegExpIdentifierName(e) && e.eat(62)) return true;
+            e.raise("Invalid capture group name");
+          }
+          return false;
+        }, c.regexp_eatRegExpIdentifierName = function(e) {
+          if (e.lastStringValue = "", this.regexp_eatRegExpIdentifierStart(e)) {
+            for (e.lastStringValue += D(e.lastIntValue); this.regexp_eatRegExpIdentifierPart(e); ) e.lastStringValue += D(e.lastIntValue);
+            return true;
+          }
+          return false;
+        }, c.regexp_eatRegExpIdentifierStart = function(e) {
+          var t = e.pos, i = this.options.ecmaVersion >= 11, s = e.current(i);
+          return e.advance(i), s === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(e, i) && (s = e.lastIntValue), Wt(s) ? (e.lastIntValue = s, true) : (e.pos = t, false);
+        };
+        function Wt(e) {
+          return T(e, true) || e === 36 || e === 95;
+        }
+        c.regexp_eatRegExpIdentifierPart = function(e) {
+          var t = e.pos, i = this.options.ecmaVersion >= 11, s = e.current(i);
+          return e.advance(i), s === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(e, i) && (s = e.lastIntValue), zt(s) ? (e.lastIntValue = s, true) : (e.pos = t, false);
+        };
+        function zt(e) {
+          return B(e, true) || e === 36 || e === 95 || e === 8204 || e === 8205;
+        }
+        c.regexp_eatAtomEscape = function(e) {
+          return this.regexp_eatBackReference(e) || this.regexp_eatCharacterClassEscape(e) || this.regexp_eatCharacterEscape(e) || e.switchN && this.regexp_eatKGroupName(e) ? true : (e.switchU && (e.current() === 99 && e.raise("Invalid unicode escape"), e.raise("Invalid escape")), false);
+        }, c.regexp_eatBackReference = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatDecimalEscape(e)) {
+            var i = e.lastIntValue;
+            if (e.switchU) return i > e.maxBackReference && (e.maxBackReference = i), true;
+            if (i <= e.numCapturingParens) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatKGroupName = function(e) {
+          if (e.eat(107)) {
+            if (this.regexp_eatGroupName(e)) return e.backReferenceNames.push(e.lastStringValue), true;
+            e.raise("Invalid named reference");
+          }
+          return false;
+        }, c.regexp_eatCharacterEscape = function(e) {
+          return this.regexp_eatControlEscape(e) || this.regexp_eatCControlLetter(e) || this.regexp_eatZero(e) || this.regexp_eatHexEscapeSequence(e) || this.regexp_eatRegExpUnicodeEscapeSequence(e, false) || !e.switchU && this.regexp_eatLegacyOctalEscapeSequence(e) || this.regexp_eatIdentityEscape(e);
+        }, c.regexp_eatCControlLetter = function(e) {
+          var t = e.pos;
+          if (e.eat(99)) {
+            if (this.regexp_eatControlLetter(e)) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatZero = function(e) {
+          return e.current() === 48 && !fe(e.lookahead()) ? (e.lastIntValue = 0, e.advance(), true) : false;
+        }, c.regexp_eatControlEscape = function(e) {
+          var t = e.current();
+          return t === 116 ? (e.lastIntValue = 9, e.advance(), true) : t === 110 ? (e.lastIntValue = 10, e.advance(), true) : t === 118 ? (e.lastIntValue = 11, e.advance(), true) : t === 102 ? (e.lastIntValue = 12, e.advance(), true) : t === 114 ? (e.lastIntValue = 13, e.advance(), true) : false;
+        }, c.regexp_eatControlLetter = function(e) {
+          var t = e.current();
+          return ut(t) ? (e.lastIntValue = t % 32, e.advance(), true) : false;
+        };
+        function ut(e) {
+          return e >= 65 && e <= 90 || e >= 97 && e <= 122;
+        }
+        c.regexp_eatRegExpUnicodeEscapeSequence = function(e, t) {
+          t === void 0 && (t = false);
+          var i = e.pos, s = t || e.switchU;
+          if (e.eat(117)) {
+            if (this.regexp_eatFixedHexDigits(e, 4)) {
+              var r = e.lastIntValue;
+              if (s && r >= 55296 && r <= 56319) {
+                var n = e.pos;
+                if (e.eat(92) && e.eat(117) && this.regexp_eatFixedHexDigits(e, 4)) {
+                  var u = e.lastIntValue;
+                  if (u >= 56320 && u <= 57343) return e.lastIntValue = (r - 55296) * 1024 + (u - 56320) + 65536, true;
+                }
+                e.pos = n, e.lastIntValue = r;
+              }
+              return true;
+            }
+            if (s && e.eat(123) && this.regexp_eatHexDigits(e) && e.eat(125) && Kt(e.lastIntValue)) return true;
+            s && e.raise("Invalid unicode escape"), e.pos = i;
+          }
+          return false;
+        };
+        function Kt(e) {
+          return e >= 0 && e <= 1114111;
+        }
+        c.regexp_eatIdentityEscape = function(e) {
+          if (e.switchU) return this.regexp_eatSyntaxCharacter(e) ? true : e.eat(47) ? (e.lastIntValue = 47, true) : false;
+          var t = e.current();
+          return t !== 99 && (!e.switchN || t !== 107) ? (e.lastIntValue = t, e.advance(), true) : false;
+        }, c.regexp_eatDecimalEscape = function(e) {
+          e.lastIntValue = 0;
+          var t = e.current();
+          if (t >= 49 && t <= 57) {
+            do
+              e.lastIntValue = 10 * e.lastIntValue + (t - 48), e.advance();
+            while ((t = e.current()) >= 48 && t <= 57);
+            return true;
+          }
+          return false;
+        };
+        var ot = 0, M = 1, V = 2;
+        c.regexp_eatCharacterClassEscape = function(e) {
+          var t = e.current();
+          if (Qt(t)) return e.lastIntValue = -1, e.advance(), M;
+          var i = false;
+          if (e.switchU && this.options.ecmaVersion >= 9 && ((i = t === 80) || t === 112)) {
+            e.lastIntValue = -1, e.advance();
+            var s;
+            if (e.eat(123) && (s = this.regexp_eatUnicodePropertyValueExpression(e)) && e.eat(125)) return i && s === V && e.raise("Invalid property name"), s;
+            e.raise("Invalid property name");
+          }
+          return ot;
+        };
+        function Qt(e) {
+          return e === 100 || e === 68 || e === 115 || e === 83 || e === 119 || e === 87;
+        }
+        c.regexp_eatUnicodePropertyValueExpression = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatUnicodePropertyName(e) && e.eat(61)) {
+            var i = e.lastStringValue;
+            if (this.regexp_eatUnicodePropertyValue(e)) {
+              var s = e.lastStringValue;
+              return this.regexp_validateUnicodePropertyNameAndValue(e, i, s), M;
+            }
+          }
+          if (e.pos = t, this.regexp_eatLoneUnicodePropertyNameOrValue(e)) {
+            var r = e.lastStringValue;
+            return this.regexp_validateUnicodePropertyNameOrValue(e, r);
+          }
+          return ot;
+        }, c.regexp_validateUnicodePropertyNameAndValue = function(e, t, i) {
+          H(e.unicodeProperties.nonBinary, t) || e.raise("Invalid property name"), e.unicodeProperties.nonBinary[t].test(i) || e.raise("Invalid property value");
+        }, c.regexp_validateUnicodePropertyNameOrValue = function(e, t) {
+          if (e.unicodeProperties.binary.test(t)) return M;
+          if (e.switchV && e.unicodeProperties.binaryOfStrings.test(t)) return V;
+          e.raise("Invalid property name");
+        }, c.regexp_eatUnicodePropertyName = function(e) {
+          var t = 0;
+          for (e.lastStringValue = ""; ht(t = e.current()); ) e.lastStringValue += D(t), e.advance();
+          return e.lastStringValue !== "";
+        };
+        function ht(e) {
+          return ut(e) || e === 95;
+        }
+        c.regexp_eatUnicodePropertyValue = function(e) {
+          var t = 0;
+          for (e.lastStringValue = ""; Yt(t = e.current()); ) e.lastStringValue += D(t), e.advance();
+          return e.lastStringValue !== "";
+        };
+        function Yt(e) {
+          return ht(e) || fe(e);
+        }
+        c.regexp_eatLoneUnicodePropertyNameOrValue = function(e) {
+          return this.regexp_eatUnicodePropertyValue(e);
+        }, c.regexp_eatCharacterClass = function(e) {
+          if (e.eat(91)) {
+            var t = e.eat(94), i = this.regexp_classContents(e);
+            return e.eat(93) || e.raise("Unterminated character class"), t && i === V && e.raise("Negated character class may contain strings"), true;
+          }
+          return false;
+        }, c.regexp_classContents = function(e) {
+          return e.current() === 93 ? M : e.switchV ? this.regexp_classSetExpression(e) : (this.regexp_nonEmptyClassRanges(e), M);
+        }, c.regexp_nonEmptyClassRanges = function(e) {
+          for (; this.regexp_eatClassAtom(e); ) {
+            var t = e.lastIntValue;
+            if (e.eat(45) && this.regexp_eatClassAtom(e)) {
+              var i = e.lastIntValue;
+              e.switchU && (t === -1 || i === -1) && e.raise("Invalid character class"), t !== -1 && i !== -1 && t > i && e.raise("Range out of order in character class");
+            }
+          }
+        }, c.regexp_eatClassAtom = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) {
+            if (this.regexp_eatClassEscape(e)) return true;
+            if (e.switchU) {
+              var i = e.current();
+              (i === 99 || lt(i)) && e.raise("Invalid class escape"), e.raise("Invalid escape");
+            }
+            e.pos = t;
+          }
+          var s = e.current();
+          return s !== 93 ? (e.lastIntValue = s, e.advance(), true) : false;
+        }, c.regexp_eatClassEscape = function(e) {
+          var t = e.pos;
+          if (e.eat(98)) return e.lastIntValue = 8, true;
+          if (e.switchU && e.eat(45)) return e.lastIntValue = 45, true;
+          if (!e.switchU && e.eat(99)) {
+            if (this.regexp_eatClassControlLetter(e)) return true;
+            e.pos = t;
+          }
+          return this.regexp_eatCharacterClassEscape(e) || this.regexp_eatCharacterEscape(e);
+        }, c.regexp_classSetExpression = function(e) {
+          var t = M, i;
+          if (!this.regexp_eatClassSetRange(e)) if (i = this.regexp_eatClassSetOperand(e)) {
+            i === V && (t = V);
+            for (var s = e.pos; e.eatChars([38, 38]); ) {
+              if (e.current() !== 38 && (i = this.regexp_eatClassSetOperand(e))) {
+                i !== V && (t = M);
+                continue;
+              }
+              e.raise("Invalid character in character class");
+            }
+            if (s !== e.pos) return t;
+            for (; e.eatChars([45, 45]); ) this.regexp_eatClassSetOperand(e) || e.raise("Invalid character in character class");
+            if (s !== e.pos) return t;
+          } else e.raise("Invalid character in character class");
+          for (; ; ) if (!this.regexp_eatClassSetRange(e)) {
+            if (i = this.regexp_eatClassSetOperand(e), !i) return t;
+            i === V && (t = V);
+          }
+        }, c.regexp_eatClassSetRange = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatClassSetCharacter(e)) {
+            var i = e.lastIntValue;
+            if (e.eat(45) && this.regexp_eatClassSetCharacter(e)) {
+              var s = e.lastIntValue;
+              return i !== -1 && s !== -1 && i > s && e.raise("Range out of order in character class"), true;
+            }
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatClassSetOperand = function(e) {
+          return this.regexp_eatClassSetCharacter(e) ? M : this.regexp_eatClassStringDisjunction(e) || this.regexp_eatNestedClass(e);
+        }, c.regexp_eatNestedClass = function(e) {
+          var t = e.pos;
+          if (e.eat(91)) {
+            var i = e.eat(94), s = this.regexp_classContents(e);
+            if (e.eat(93)) return i && s === V && e.raise("Negated character class may contain strings"), s;
+            e.pos = t;
+          }
+          if (e.eat(92)) {
+            var r = this.regexp_eatCharacterClassEscape(e);
+            if (r) return r;
+            e.pos = t;
+          }
+          return null;
+        }, c.regexp_eatClassStringDisjunction = function(e) {
+          var t = e.pos;
+          if (e.eatChars([92, 113])) {
+            if (e.eat(123)) {
+              var i = this.regexp_classStringDisjunctionContents(e);
+              if (e.eat(125)) return i;
+            } else e.raise("Invalid escape");
+            e.pos = t;
+          }
+          return null;
+        }, c.regexp_classStringDisjunctionContents = function(e) {
+          for (var t = this.regexp_classString(e); e.eat(124); ) this.regexp_classString(e) === V && (t = V);
+          return t;
+        }, c.regexp_classString = function(e) {
+          for (var t = 0; this.regexp_eatClassSetCharacter(e); ) t++;
+          return t === 1 ? M : V;
+        }, c.regexp_eatClassSetCharacter = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) return this.regexp_eatCharacterEscape(e) || this.regexp_eatClassSetReservedPunctuator(e) ? true : e.eat(98) ? (e.lastIntValue = 8, true) : (e.pos = t, false);
+          var i = e.current();
+          return i < 0 || i === e.lookahead() && Xt(i) || Zt(i) ? false : (e.advance(), e.lastIntValue = i, true);
+        };
+        function Xt(e) {
+          return e === 33 || e >= 35 && e <= 38 || e >= 42 && e <= 44 || e === 46 || e >= 58 && e <= 64 || e === 94 || e === 96 || e === 126;
+        }
+        function Zt(e) {
+          return e === 40 || e === 41 || e === 45 || e === 47 || e >= 91 && e <= 93 || e >= 123 && e <= 125;
+        }
+        c.regexp_eatClassSetReservedPunctuator = function(e) {
+          var t = e.current();
+          return Jt(t) ? (e.lastIntValue = t, e.advance(), true) : false;
+        };
+        function Jt(e) {
+          return e === 33 || e === 35 || e === 37 || e === 38 || e === 44 || e === 45 || e >= 58 && e <= 62 || e === 64 || e === 96 || e === 126;
+        }
+        c.regexp_eatClassControlLetter = function(e) {
+          var t = e.current();
+          return fe(t) || t === 95 ? (e.lastIntValue = t % 32, e.advance(), true) : false;
+        }, c.regexp_eatHexEscapeSequence = function(e) {
+          var t = e.pos;
+          if (e.eat(120)) {
+            if (this.regexp_eatFixedHexDigits(e, 2)) return true;
+            e.switchU && e.raise("Invalid escape"), e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatDecimalDigits = function(e) {
+          var t = e.pos, i = 0;
+          for (e.lastIntValue = 0; fe(i = e.current()); ) e.lastIntValue = 10 * e.lastIntValue + (i - 48), e.advance();
+          return e.pos !== t;
+        };
+        function fe(e) {
+          return e >= 48 && e <= 57;
+        }
+        c.regexp_eatHexDigits = function(e) {
+          var t = e.pos, i = 0;
+          for (e.lastIntValue = 0; ct(i = e.current()); ) e.lastIntValue = 16 * e.lastIntValue + pt(i), e.advance();
+          return e.pos !== t;
+        };
+        function ct(e) {
+          return e >= 48 && e <= 57 || e >= 65 && e <= 70 || e >= 97 && e <= 102;
+        }
+        function pt(e) {
+          return e >= 65 && e <= 70 ? 10 + (e - 65) : e >= 97 && e <= 102 ? 10 + (e - 97) : e - 48;
+        }
+        c.regexp_eatLegacyOctalEscapeSequence = function(e) {
+          if (this.regexp_eatOctalDigit(e)) {
+            var t = e.lastIntValue;
+            if (this.regexp_eatOctalDigit(e)) {
+              var i = e.lastIntValue;
+              t <= 3 && this.regexp_eatOctalDigit(e) ? e.lastIntValue = t * 64 + i * 8 + e.lastIntValue : e.lastIntValue = t * 8 + i;
+            } else e.lastIntValue = t;
+            return true;
+          }
+          return false;
+        }, c.regexp_eatOctalDigit = function(e) {
+          var t = e.current();
+          return lt(t) ? (e.lastIntValue = t - 48, e.advance(), true) : (e.lastIntValue = 0, false);
+        };
+        function lt(e) {
+          return e >= 48 && e <= 55;
+        }
+        c.regexp_eatFixedHexDigits = function(e, t) {
+          var i = e.pos;
+          e.lastIntValue = 0;
+          for (var s = 0; s < t; ++s) {
+            var r = e.current();
+            if (!ct(r)) return e.pos = i, false;
+            e.lastIntValue = 16 * e.lastIntValue + pt(r), e.advance();
+          }
+          return true;
+        };
+        var de = function(t) {
+          this.type = t.type, this.value = t.value, this.start = t.start, this.end = t.end, t.options.locations && (this.loc = new Z(t, t.startLoc, t.endLoc)), t.options.ranges && (this.range = [t.start, t.end]);
+        }, x = _.prototype;
+        x.next = function(e) {
+          !e && this.type.keyword && this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword), this.options.onToken && this.options.onToken(new de(this)), this.lastTokEnd = this.end, this.lastTokStart = this.start, this.lastTokEndLoc = this.endLoc, this.lastTokStartLoc = this.startLoc, this.nextToken();
+        }, x.getToken = function() {
+          return this.next(), new de(this);
+        }, typeof Symbol < "u" && (x[Symbol.iterator] = function() {
+          var e = this;
+          return { next: function() {
+            var t = e.getToken();
+            return { done: t.type === a.eof, value: t };
+          } };
+        }), x.nextToken = function() {
+          var e = this.curContext();
+          if ((!e || !e.preserveSpace) && this.skipSpace(), this.start = this.pos, this.options.locations && (this.startLoc = this.curPosition()), this.pos >= this.input.length) return this.finishToken(a.eof);
+          if (e.override) return e.override(this);
+          this.readToken(this.fullCharCodeAtPos());
+        }, x.readToken = function(e) {
+          return T(e, this.options.ecmaVersion >= 6) || e === 92 ? this.readWord() : this.getTokenFromCode(e);
+        }, x.fullCharCodeAtPos = function() {
+          var e = this.input.charCodeAt(this.pos);
+          if (e <= 55295 || e >= 56320) return e;
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t <= 56319 || t >= 57344 ? e : (e << 10) + t - 56613888;
+        }, x.skipBlockComment = function() {
+          var e = this.options.onComment && this.curPosition(), t = this.pos, i = this.input.indexOf("*/", this.pos += 2);
+          if (i === -1 && this.raise(this.pos - 2, "Unterminated comment"), this.pos = i + 2, this.options.locations) for (var s = void 0, r = t; (s = Le(this.input, r, this.pos)) > -1; ) ++this.curLine, r = this.lineStart = s;
+          this.options.onComment && this.options.onComment(true, this.input.slice(t + 2, i), t, this.pos, e, this.curPosition());
+        }, x.skipLineComment = function(e) {
+          for (var t = this.pos, i = this.options.onComment && this.curPosition(), s = this.input.charCodeAt(this.pos += e); this.pos < this.input.length && !j(s); ) s = this.input.charCodeAt(++this.pos);
+          this.options.onComment && this.options.onComment(false, this.input.slice(t + e, this.pos), t, this.pos, i, this.curPosition());
+        }, x.skipSpace = function() {
+          e: for (; this.pos < this.input.length; ) {
+            var e = this.input.charCodeAt(this.pos);
+            switch (e) {
+              case 32:
+              case 160:
+                ++this.pos;
+                break;
+              case 13:
+                this.input.charCodeAt(this.pos + 1) === 10 && ++this.pos;
+              case 10:
+              case 8232:
+              case 8233:
+                ++this.pos, this.options.locations && (++this.curLine, this.lineStart = this.pos);
+                break;
+              case 47:
+                switch (this.input.charCodeAt(this.pos + 1)) {
+                  case 42:
+                    this.skipBlockComment();
+                    break;
+                  case 47:
+                    this.skipLineComment(2);
+                    break;
+                  default:
+                    break e;
+                }
+                break;
+              default:
+                if (e > 8 && e < 14 || e >= 5760 && ye.test(String.fromCharCode(e))) ++this.pos;
+                else break e;
+            }
+          }
+        }, x.finishToken = function(e, t) {
+          this.end = this.pos, this.options.locations && (this.endLoc = this.curPosition());
+          var i = this.type;
+          this.type = e, this.value = t, this.updateContext(i);
+        }, x.readToken_dot = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          if (e >= 48 && e <= 57) return this.readNumber(true);
+          var t = this.input.charCodeAt(this.pos + 2);
+          return this.options.ecmaVersion >= 6 && e === 46 && t === 46 ? (this.pos += 3, this.finishToken(a.ellipsis)) : (++this.pos, this.finishToken(a.dot));
+        }, x.readToken_slash = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          return this.exprAllowed ? (++this.pos, this.readRegexp()) : e === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.slash, 1);
+        }, x.readToken_mult_modulo_exp = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1), i = 1, s = e === 42 ? a.star : a.modulo;
+          return this.options.ecmaVersion >= 7 && e === 42 && t === 42 && (++i, s = a.starstar, t = this.input.charCodeAt(this.pos + 2)), t === 61 ? this.finishOp(a.assign, i + 1) : this.finishOp(s, i);
+        }, x.readToken_pipe_amp = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          if (t === e) {
+            if (this.options.ecmaVersion >= 12) {
+              var i = this.input.charCodeAt(this.pos + 2);
+              if (i === 61) return this.finishOp(a.assign, 3);
+            }
+            return this.finishOp(e === 124 ? a.logicalOR : a.logicalAND, 2);
+          }
+          return t === 61 ? this.finishOp(a.assign, 2) : this.finishOp(e === 124 ? a.bitwiseOR : a.bitwiseAND, 1);
+        }, x.readToken_caret = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          return e === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.bitwiseXOR, 1);
+        }, x.readToken_plus_min = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t === e ? t === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || k.test(this.input.slice(this.lastTokEnd, this.pos))) ? (this.skipLineComment(3), this.skipSpace(), this.nextToken()) : this.finishOp(a.incDec, 2) : t === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.plusMin, 1);
+        }, x.readToken_lt_gt = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1), i = 1;
+          return t === e ? (i = e === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2, this.input.charCodeAt(this.pos + i) === 61 ? this.finishOp(a.assign, i + 1) : this.finishOp(a.bitShift, i)) : t === 33 && e === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45 ? (this.skipLineComment(4), this.skipSpace(), this.nextToken()) : (t === 61 && (i = 2), this.finishOp(a.relational, i));
+        }, x.readToken_eq_excl = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t === 61 ? this.finishOp(a.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2) : e === 61 && t === 62 && this.options.ecmaVersion >= 6 ? (this.pos += 2, this.finishToken(a.arrow)) : this.finishOp(e === 61 ? a.eq : a.prefix, 1);
+        }, x.readToken_question = function() {
+          var e = this.options.ecmaVersion;
+          if (e >= 11) {
+            var t = this.input.charCodeAt(this.pos + 1);
+            if (t === 46) {
+              var i = this.input.charCodeAt(this.pos + 2);
+              if (i < 48 || i > 57) return this.finishOp(a.questionDot, 2);
+            }
+            if (t === 63) {
+              if (e >= 12) {
+                var s = this.input.charCodeAt(this.pos + 2);
+                if (s === 61) return this.finishOp(a.assign, 3);
+              }
+              return this.finishOp(a.coalesce, 2);
+            }
+          }
+          return this.finishOp(a.question, 1);
+        }, x.readToken_numberSign = function() {
+          var e = this.options.ecmaVersion, t = 35;
+          if (e >= 13 && (++this.pos, t = this.fullCharCodeAtPos(), T(t, true) || t === 92)) return this.finishToken(a.privateId, this.readWord1());
+          this.raise(this.pos, "Unexpected character '" + D(t) + "'");
+        }, x.getTokenFromCode = function(e) {
+          switch (e) {
+            case 46:
+              return this.readToken_dot();
+            case 40:
+              return ++this.pos, this.finishToken(a.parenL);
+            case 41:
+              return ++this.pos, this.finishToken(a.parenR);
+            case 59:
+              return ++this.pos, this.finishToken(a.semi);
+            case 44:
+              return ++this.pos, this.finishToken(a.comma);
+            case 91:
+              return ++this.pos, this.finishToken(a.bracketL);
+            case 93:
+              return ++this.pos, this.finishToken(a.bracketR);
+            case 123:
+              return ++this.pos, this.finishToken(a.braceL);
+            case 125:
+              return ++this.pos, this.finishToken(a.braceR);
+            case 58:
+              return ++this.pos, this.finishToken(a.colon);
+            case 96:
+              if (this.options.ecmaVersion < 6) break;
+              return ++this.pos, this.finishToken(a.backQuote);
+            case 48:
+              var t = this.input.charCodeAt(this.pos + 1);
+              if (t === 120 || t === 88) return this.readRadixNumber(16);
+              if (this.options.ecmaVersion >= 6) {
+                if (t === 111 || t === 79) return this.readRadixNumber(8);
+                if (t === 98 || t === 66) return this.readRadixNumber(2);
+              }
+            case 49:
+            case 50:
+            case 51:
+            case 52:
+            case 53:
+            case 54:
+            case 55:
+            case 56:
+            case 57:
+              return this.readNumber(false);
+            case 34:
+            case 39:
+              return this.readString(e);
+            case 47:
+              return this.readToken_slash();
+            case 37:
+            case 42:
+              return this.readToken_mult_modulo_exp(e);
+            case 124:
+            case 38:
+              return this.readToken_pipe_amp(e);
+            case 94:
+              return this.readToken_caret();
+            case 43:
+            case 45:
+              return this.readToken_plus_min(e);
+            case 60:
+            case 62:
+              return this.readToken_lt_gt(e);
+            case 61:
+            case 33:
+              return this.readToken_eq_excl(e);
+            case 63:
+              return this.readToken_question();
+            case 126:
+              return this.finishOp(a.prefix, 1);
+            case 35:
+              return this.readToken_numberSign();
+          }
+          this.raise(this.pos, "Unexpected character '" + D(e) + "'");
+        }, x.finishOp = function(e, t) {
+          var i = this.input.slice(this.pos, this.pos + t);
+          return this.pos += t, this.finishToken(e, i);
+        }, x.readRegexp = function() {
+          for (var e, t, i = this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(i, "Unterminated regular expression");
+            var s = this.input.charAt(this.pos);
+            if (k.test(s) && this.raise(i, "Unterminated regular expression"), e) e = false;
+            else {
+              if (s === "[") t = true;
+              else if (s === "]" && t) t = false;
+              else if (s === "/" && !t) break;
+              e = s === "\\\\";
+            }
+            ++this.pos;
+          }
+          var r = this.input.slice(i, this.pos);
+          ++this.pos;
+          var n = this.pos, u = this.readWord1();
+          this.containsEsc && this.unexpected(n);
+          var o = this.regexpState || (this.regexpState = new O(this));
+          o.reset(i, r, u), this.validateRegExpFlags(o), this.validateRegExpPattern(o);
+          var h = null;
+          try {
+            h = new RegExp(r, u);
+          } catch {
+          }
+          return this.finishToken(a.regexp, { pattern: r, flags: u, value: h });
+        }, x.readInt = function(e, t, i) {
+          for (var s = this.options.ecmaVersion >= 12 && t === void 0, r = i && this.input.charCodeAt(this.pos) === 48, n = this.pos, u = 0, o = 0, h = 0, l = t ?? 1 / 0; h < l; ++h, ++this.pos) {
+            var d = this.input.charCodeAt(this.pos), y = void 0;
+            if (s && d === 95) {
+              r && this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals"), o === 95 && this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore"), h === 0 && this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits"), o = d;
+              continue;
+            }
+            if (d >= 97 ? y = d - 97 + 10 : d >= 65 ? y = d - 65 + 10 : d >= 48 && d <= 57 ? y = d - 48 : y = 1 / 0, y >= e) break;
+            o = d, u = u * e + y;
+          }
+          return s && o === 95 && this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits"), this.pos === n || t != null && this.pos - n !== t ? null : u;
+        };
+        function $t(e, t) {
+          return t ? parseInt(e, 8) : parseFloat(e.replace(/_/g, ""));
+        }
+        function ft(e) {
+          return typeof BigInt != "function" ? null : BigInt(e.replace(/_/g, ""));
+        }
+        x.readRadixNumber = function(e) {
+          var t = this.pos;
+          this.pos += 2;
+          var i = this.readInt(e);
+          return i == null && this.raise(this.start + 2, "Expected number in radix " + e), this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110 ? (i = ft(this.input.slice(t, this.pos)), ++this.pos) : T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number"), this.finishToken(a.num, i);
+        }, x.readNumber = function(e) {
+          var t = this.pos;
+          !e && this.readInt(10, void 0, true) === null && this.raise(t, "Invalid number");
+          var i = this.pos - t >= 2 && this.input.charCodeAt(t) === 48;
+          i && this.strict && this.raise(t, "Invalid number");
+          var s = this.input.charCodeAt(this.pos);
+          if (!i && !e && this.options.ecmaVersion >= 11 && s === 110) {
+            var r = ft(this.input.slice(t, this.pos));
+            return ++this.pos, T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number"), this.finishToken(a.num, r);
+          }
+          i && /[89]/.test(this.input.slice(t, this.pos)) && (i = false), s === 46 && !i && (++this.pos, this.readInt(10), s = this.input.charCodeAt(this.pos)), (s === 69 || s === 101) && !i && (s = this.input.charCodeAt(++this.pos), (s === 43 || s === 45) && ++this.pos, this.readInt(10) === null && this.raise(t, "Invalid number")), T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number");
+          var n = $t(this.input.slice(t, this.pos), i);
+          return this.finishToken(a.num, n);
+        }, x.readCodePoint = function() {
+          var e = this.input.charCodeAt(this.pos), t;
+          if (e === 123) {
+            this.options.ecmaVersion < 6 && this.unexpected();
+            var i = ++this.pos;
+            t = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos), ++this.pos, t > 1114111 && this.invalidStringToken(i, "Code point out of bounds");
+          } else t = this.readHexChar(4);
+          return t;
+        }, x.readString = function(e) {
+          for (var t = "", i = ++this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(this.start, "Unterminated string constant");
+            var s = this.input.charCodeAt(this.pos);
+            if (s === e) break;
+            s === 92 ? (t += this.input.slice(i, this.pos), t += this.readEscapedChar(false), i = this.pos) : s === 8232 || s === 8233 ? (this.options.ecmaVersion < 10 && this.raise(this.start, "Unterminated string constant"), ++this.pos, this.options.locations && (this.curLine++, this.lineStart = this.pos)) : (j(s) && this.raise(this.start, "Unterminated string constant"), ++this.pos);
+          }
+          return t += this.input.slice(i, this.pos++), this.finishToken(a.string, t);
+        };
+        var dt = {};
+        x.tryReadTemplateToken = function() {
+          this.inTemplateElement = true;
+          try {
+            this.readTmplToken();
+          } catch (e) {
+            if (e === dt) this.readInvalidTemplateToken();
+            else throw e;
+          }
+          this.inTemplateElement = false;
+        }, x.invalidStringToken = function(e, t) {
+          if (this.inTemplateElement && this.options.ecmaVersion >= 9) throw dt;
+          this.raise(e, t);
+        }, x.readTmplToken = function() {
+          for (var e = "", t = this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(this.start, "Unterminated template");
+            var i = this.input.charCodeAt(this.pos);
+            if (i === 96 || i === 36 && this.input.charCodeAt(this.pos + 1) === 123) return this.pos === this.start && (this.type === a.template || this.type === a.invalidTemplate) ? i === 36 ? (this.pos += 2, this.finishToken(a.dollarBraceL)) : (++this.pos, this.finishToken(a.backQuote)) : (e += this.input.slice(t, this.pos), this.finishToken(a.template, e));
+            if (i === 92) e += this.input.slice(t, this.pos), e += this.readEscapedChar(true), t = this.pos;
+            else if (j(i)) {
+              switch (e += this.input.slice(t, this.pos), ++this.pos, i) {
+                case 13:
+                  this.input.charCodeAt(this.pos) === 10 && ++this.pos;
+                case 10:
+                  e += \`
+\`;
+                  break;
+                default:
+                  e += String.fromCharCode(i);
+                  break;
+              }
+              this.options.locations && (++this.curLine, this.lineStart = this.pos), t = this.pos;
+            } else ++this.pos;
+          }
+        }, x.readInvalidTemplateToken = function() {
+          for (; this.pos < this.input.length; this.pos++) switch (this.input[this.pos]) {
+            case "\\\\":
+              ++this.pos;
+              break;
+            case "$":
+              if (this.input[this.pos + 1] !== "{") break;
+            case "\`":
+              return this.finishToken(a.invalidTemplate, this.input.slice(this.start, this.pos));
+            case "\\r":
+              this.input[this.pos + 1] === \`
+\` && ++this.pos;
+            case \`
+\`:
+            case "\\u2028":
+            case "\\u2029":
+              ++this.curLine, this.lineStart = this.pos + 1;
+              break;
+          }
+          this.raise(this.start, "Unterminated template");
+        }, x.readEscapedChar = function(e) {
+          var t = this.input.charCodeAt(++this.pos);
+          switch (++this.pos, t) {
+            case 110:
+              return \`
+\`;
+            case 114:
+              return "\\r";
+            case 120:
+              return String.fromCharCode(this.readHexChar(2));
+            case 117:
+              return D(this.readCodePoint());
+            case 116:
+              return "	";
+            case 98:
+              return "\\b";
+            case 118:
+              return "\\v";
+            case 102:
+              return "\\f";
+            case 13:
+              this.input.charCodeAt(this.pos) === 10 && ++this.pos;
+            case 10:
+              return this.options.locations && (this.lineStart = this.pos, ++this.curLine), "";
+            case 56:
+            case 57:
+              if (this.strict && this.invalidStringToken(this.pos - 1, "Invalid escape sequence"), e) {
+                var i = this.pos - 1;
+                this.invalidStringToken(i, "Invalid escape sequence in template string");
+              }
+            default:
+              if (t >= 48 && t <= 55) {
+                var s = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0], r = parseInt(s, 8);
+                return r > 255 && (s = s.slice(0, -1), r = parseInt(s, 8)), this.pos += s.length - 1, t = this.input.charCodeAt(this.pos), (s !== "0" || t === 56 || t === 57) && (this.strict || e) && this.invalidStringToken(this.pos - 1 - s.length, e ? "Octal literal in template string" : "Octal literal in strict mode"), String.fromCharCode(r);
+              }
+              return j(t) ? (this.options.locations && (this.lineStart = this.pos, ++this.curLine), "") : String.fromCharCode(t);
+          }
+        }, x.readHexChar = function(e) {
+          var t = this.pos, i = this.readInt(16, e);
+          return i === null && this.invalidStringToken(t, "Bad character escape sequence"), i;
+        }, x.readWord1 = function() {
+          this.containsEsc = false;
+          for (var e = "", t = true, i = this.pos, s = this.options.ecmaVersion >= 6; this.pos < this.input.length; ) {
+            var r = this.fullCharCodeAtPos();
+            if (B(r, s)) this.pos += r <= 65535 ? 1 : 2;
+            else if (r === 92) {
+              this.containsEsc = true, e += this.input.slice(i, this.pos);
+              var n = this.pos;
+              this.input.charCodeAt(++this.pos) !== 117 && this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\\\uXXXX"), ++this.pos;
+              var u = this.readCodePoint();
+              (t ? T : B)(u, s) || this.invalidStringToken(n, "Invalid Unicode escape"), e += D(u), i = this.pos;
+            } else break;
+            t = false;
+          }
+          return e + this.input.slice(i, this.pos);
+        }, x.readWord = function() {
+          var e = this.readWord1(), t = a.name;
+          return this.keywords.test(e) && (t = ae[e]), this.finishToken(t, e);
+        };
+        var xt = "8.15.0";
+        _.acorn = { Parser: _, version: xt, defaultOptions: re, Position: W, SourceLocation: Z, getLineInfo: _e, Node: te, TokenType: v, tokTypes: a, keywordTypes: ae, TokContext: N, tokContexts: b, isIdentifierChar: B, isIdentifierStart: T, Token: de, isNewLine: j, lineBreak: k, lineBreakG: Te, nonASCIIwhitespace: ye };
+        function ei(e, t) {
+          return _.parse(e, t);
+        }
+        function ti(e, t, i) {
+          return _.parseExpressionAt(e, t, i);
+        }
+        function ii(e, t) {
+          return _.tokenizer(e, t);
+        }
+        g.Node = te, g.Parser = _, g.Position = W, g.SourceLocation = Z, g.TokContext = N, g.Token = de, g.TokenType = v, g.defaultOptions = re, g.getLineInfo = _e, g.isIdentifierChar = B, g.isIdentifierStart = T, g.isNewLine = j, g.keywordTypes = ae, g.lineBreak = k, g.lineBreakG = Te, g.nonASCIIwhitespace = ye, g.parse = ei, g.parseExpressionAt = ti, g.tokContexts = b, g.tokTypes = a, g.tokenizer = ii, g.version = xt;
+      }));
+    });
+    module2.exports.parse = vt().parse;
+  }
+});
+
+// ../host/source-contracts.cjs
+var require_source_contracts = __commonJS({
+  "../host/source-contracts.cjs"(exports2, module2) {
+    "use strict";
+    var { parse } = require_sdk_source_parser();
+    var required = Object.freeze({
+      network: ["assertAllowed", "fetch", "request"],
+      fetch: ["performDesktopFetch", "performProgressRequest"],
+      stdio: ["send"],
+      connection: ["routeIncomingMessage", "getPendingRequestCount", "restart"]
+    });
+    var identifier = (value) => typeof value === "string" && /^[A-Za-z_$][\\w$]*$/u.test(value);
+    function method(Constructor, name) {
+      const value = Object.getOwnPropertyDescriptor(Constructor?.prototype ?? {}, name)?.value;
+      return typeof value === "function" ? value : null;
+    }
+    var parsedMethods = /* @__PURE__ */ new WeakMap();
+    function memberPath(node) {
+      if (node?.type === "ThisExpression") return ["this"];
+      if (node?.type === "Identifier") return [node.name];
+      if (node?.type !== "MemberExpression") return null;
+      const parent = memberPath(node.object), key = !node.computed && node.property.type === "Identifier" ? node.property.name : node.property.type === "Literal" && typeof node.property.value === "string" ? node.property.value : null;
+      return parent && key !== null ? [...parent, key] : null;
+    }
+    function inspectMethod(Constructor, name) {
+      const value = method(Constructor, name);
+      if (!value) return null;
+      if (parsedMethods.has(value)) return parsedMethods.get(value);
+      const source = Function.prototype.toString.call(value);
+      let result = null;
+      if (source.length <= 256 * 1024) try {
+        const tree = parse(\`({\${source}})\`, { ecmaVersion: "latest", sourceType: "script" });
+        const fn = tree.body[0]?.expression?.properties?.[0]?.value;
+        if (!fn?.body) throw Error("method_missing");
+        const calls = [], members = [], strings = [], variables = /* @__PURE__ */ new Map();
+        const walk = (node) => {
+          if (!node || typeof node !== "object") return;
+          if (node.type === "CallExpression") calls.push({ path: memberPath(node.callee)?.join("."), args: node.arguments, start: node.start });
+          if (node.type === "MemberExpression") members.push(memberPath(node)?.join("."));
+          if (node.type === "Literal" && typeof node.value === "string") strings.push(node.value);
+          if (node.type === "TemplateLiteral" && !node.expressions.length) strings.push(node.quasis[0].value.cooked);
+          if (node.type === "VariableDeclarator" && node.id.type === "Identifier") variables.set(node.id.name, node.init);
+          for (const [key, child] of Object.entries(node)) if (key !== "start" && key !== "end") {
+            if (Array.isArray(child)) child.forEach(walk);
+            else if (child && typeof child === "object") walk(child);
+          }
+        };
+        walk(fn.body);
+        result = { calls, members, strings, variables, params: fn.params };
+      } catch {
+      }
+      parsedMethods.set(value, result);
+      return result;
+    }
+    function delegatesNetwork(Constructor, name) {
+      const info = inspectMethod(Constructor, name);
+      if (!info) return false;
+      const guard = info.calls.find((call) => call.path === "this.assertAllowed");
+      const calls = info.calls.filter((call) => call.path?.endsWith(".net." + name));
+      if (!guard || calls.length !== 1 || guard.start >= calls[0].start || info.params[0]?.type !== "Identifier") return false;
+      const input = info.params[0].name, same = (node) => node?.type === "Identifier" && node.name === input;
+      let argument = calls[0].args[0];
+      if (!same(argument) && argument?.type === "Identifier") argument = info.variables.get(argument.name);
+      const normalizedUrl = argument?.type === "ConditionalExpression" && argument.test.type === "BinaryExpression" && argument.test.operator === "instanceof" && same(argument.test.left) && argument.test.right.type === "Identifier" && argument.test.right.name === "URL" && memberPath(argument.consequent)?.join(".") === input + ".href" && same(argument.alternate);
+      return (same(argument) || name === "fetch" && normalizedUrl) && (info.params.length < 2 || info.params[1]?.type === "Identifier" && calls[0].args[1]?.type === "Identifier" && calls[0].args[1].name === info.params[1].name);
+    }
+    function writesJsonl(Constructor) {
+      const info = inspectMethod(Constructor, "send");
+      if (!info) return false;
+      const writes = info.calls.filter((call) => call.path === "this.proc.stdin.write");
+      if (writes.length !== 1 || !info.members.includes("this.readyState") || !info.calls.some((call) => call.path === "this.ioStatsTracker.trackWritten")) return false;
+      let line = writes[0].args[0];
+      if (line?.type === "Identifier") line = info.variables.get(line.name);
+      const suffix = line?.right?.type === "Literal" ? line.right.value : line?.right?.type === "TemplateLiteral" && !line.right.expressions.length ? line.right.quasis[0].value.cooked : null;
+      const input = info.params[0]?.type === "Identifier" ? info.params[0].name : null;
+      return !!input && (line?.type === "BinaryExpression" && line.operator === "+" && line.left.type === "Identifier" && line.left.name === input && suffix === "\\n" || line?.type === "TemplateLiteral" && line.expressions.length === 1 && line.expressions[0].type === "Identifier" && line.expressions[0].name === input && line.quasis[0].value.cooked === "" && line.quasis[1].value.cooked === "\\n");
+    }
+    function supportsRole(Constructor, role, recorded = false) {
+      if (typeof Constructor !== "function" || !Constructor.prototype) return false;
+      const names = recorded ? { network: ["fetch", "request"], fetch: ["performDesktopFetch"], stdio: ["send"], connection: ["routeIncomingMessage"] }[role] : required[role];
+      if (!names?.every((name) => method(Constructor, name))) return false;
+      if (recorded) return true;
+      if (role === "network") return delegatesNetwork(Constructor, "fetch") && delegatesNetwork(Constructor, "request");
+      if (role === "fetch") {
+        const fetch = inspectMethod(Constructor, "performDesktopFetch"), progress = inspectMethod(Constructor, "performProgressRequest");
+        return ["this.options.applicationNetwork.fetch", "this.options.applicationNetwork.assertAllowed", "this.performProgressRequest"].every((path) => fetch?.calls.some((call) => call.path === path)) && progress?.calls.some((call) => call.path === "this.options.applicationNetwork.request") === true;
+      }
+      if (role === "stdio") return writesJsonl(Constructor);
+      if (role === "connection") {
+        const info = inspectMethod(Constructor, "routeIncomingMessage");
+        return !!info && info.strings.includes("account/updated") && info.members.some((path) => path?.endsWith(".params.authMode")) && info.calls.some((call) => call.path === "this.clearAuthTokenCache");
+      }
+      return false;
+    }
+    function sourceCandidates(record, profiles, expectedHashes) {
+      const candidates = [];
+      const add = (role, binding, recorded, read) => candidates.push({
+        role,
+        binding,
+        recorded,
+        read: read ?? (() => record.evaluate(binding)),
+        resolved: null
+      });
+      if (Object.hasOwn(expectedHashes, record.name) && record.hash === expectedHashes[record.name]) {
+        const profile = profiles[record.name] ?? {
+          kind: record.name.startsWith("bootstrap-") ? "bootstrap" : record.name.startsWith("main-") ? "main" : "src",
+          symbol: record.name.startsWith("bootstrap-") ? "Pt" : record.name.startsWith("main-") ? "wEe" : "mQ"
+        };
+        if (profile.kind === "bootstrap") {
+          add("network", profile.symbol, true);
+          if (profile.connectionSymbol) add("connection", profile.connectionSymbol, true);
+        } else if (profile.kind === "main") add("fetch", profile.symbol, true);
+        else if (profile.kind === "stdio") add("stdio", profile.symbol, true);
+        else if (profile.kind === "connection") add("connection", profile.symbol, true);
+        else {
+          add("stdio", profile.symbol, true);
+          add("connection", profile.managerExport ?? "un", true, () => Object.getOwnPropertyDescriptor(record.exported ?? {}, profile.managerExport ?? "un")?.value);
+        }
+        return candidates;
+      }
+      for (const description of (Array.isArray(record.classes) ? record.classes : []).slice(0, 1024)) {
+        if (!identifier(description.binding) || !Array.isArray(description.methods)) continue;
+        for (const [role, names] of Object.entries(required)) if (names.every((name) => description.methods.includes(name))) add(role, description.binding, false);
+      }
+      return candidates;
+    }
+    module2.exports = { sourceCandidates, supportsRole, required };
+  }
+});
+
+// ../host/electron-plaintext.cjs
+var require_electron_plaintext = __commonJS({
+  "../host/electron-plaintext.cjs"(exports2, module2) {
+    "use strict";
+    var Module = require("node:module");
+    var path = require("node:path");
+    var { createHash } = require("node:crypto");
+    var { EventEmitter } = require("node:events");
+    var { Readable } = require("node:stream");
+    var { AsyncLocalStorage } = require("node:async_hooks");
+    var { sourceCandidates, supportsRole } = require_source_contracts();
+    var PROFILES = Object.freeze({
+      "bootstrap-D2PJMYEh.js": { hash: "0d62d7be4491d5ef84d93ea9b753c270096de217f2e49064e5f8f701af53e9ed", kind: "bootstrap", symbol: "He" },
+      "main-DAwJoFgo.js": { hash: "18beea7d7e46866168528ff5dab5108ffe6d39fc13433367ce8dee7b187044f8", kind: "main", symbol: "kEe" },
+      "application-network-startup-CY4ZWOz-.js": { hash: "7936a5b6373be818c7cce78cad7c18e4e156c8400d3b16f5b440d2626a1cc661", kind: "stdio", symbol: "$s" },
+      "src-BSSLXJxP.js": { hash: "50c7cf9c144594cfa6f33298e977f0b144976cc70c579f59fdc7242615c4af98", kind: "connection", symbol: "Yh" },
+      "bootstrap-CiIGnI3y.js": { hash: "119bb54ee12ed5d2b0d3b98dd068a4322232a4aa342323eb9cb5dfa6575ca158", kind: "bootstrap", symbol: "Nt" },
+      "main-BR_2NHW6.js": { hash: "1f2b91cf92fc023fb2fa41e1c1d03698fa6e37354ecd07dd0cebd21337607b08", kind: "main", symbol: "ZTe" },
+      "bootstrap-DK4EfNwt.js": { hash: "dbdbdd3ef5dde93dd196a59846edf244dc653341213e0fd45eebb133b5df10ba", kind: "bootstrap", symbol: "Pt" },
+      "main-LM8MUIFp.js": { hash: "c71bf3ffecef5fd390b4cd16d120d39dce30d30bffe3c563c8c74c1b691da018", kind: "main", symbol: "wEe" },
+      "src-C3YaUE83.js": { hash: "14c8c23e8b8dfa874d3fb5a50d54fb28eccf55fb83232c3ab29cb7c0ef0a0472", kind: "src", symbol: "mQ", managerExport: "un" },
+      "bootstrap-DwqRMhlU.js": { hash: "79ad86bda1f6171d43bab09b1b4a5d379afefc07a13d6f4f58470a823f6f575f", kind: "bootstrap", symbol: "Nt" },
+      "main-Bx5zswAj.js": { hash: "610ea8b045f207360ac50fcccfe43ca896c6298fa75562f323f1a45ed2364a1b", kind: "main", symbol: "ZTe" },
+      "src-mOb8On4V.js": { hash: "0639e87d51c132a7440bfa06624fb8e99031a3bb331ae11577278ce4a515cbb4", kind: "src", symbol: "Pq", managerExport: "un" },
+      "bootstrap-C4dRql4x.js": { hash: "0757af0981f4552ca79ed1a364eafa6a73e71a92e65ea4fce747c7b6c715ed4a", kind: "bootstrap", symbol: "Nt" },
+      "main-C-Mhak1n.js": { hash: "457c79be69620d4489e94c14ac665f81731d869635606dcf175b7b4cc2e8b467", kind: "main", symbol: "ZTe" },
+      "src-DldfpmrL.js": { hash: "88ec69722b5d87a7081edf2e2d6a2e21c3f25300cee587363d74b8b87969a412", kind: "src", symbol: "WQ", managerExport: "un" },
+      "bootstrap-CYu4H4X5.js": { hash: "9b9d3c9e8312dba970daf31fd3950b3f2bd760a89e1d7bf480c4efefb3d2b102", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },
+      "main-Dn18kdv3.js": { hash: "447e4900075d8cb41f5c55f1728c20147ea23ab761bb4377348eea8c8f3d4a48", kind: "main", symbol: "Dce" },
+      "application-network-startup-DN7Ktmlk.js": { hash: "3c2ebf430f24e55975f81e95b33e0f71470d04886f229b935939a7e32c587cf0", kind: "stdio", symbol: "Hs" },
+      "bootstrap-CZlEGA2m.js": { hash: "343072f02e604fe06f7864a72b1cbcc6004a8a318c66982995a188ee97430a3b", kind: "bootstrap", symbol: "vY", connectionSymbol: "DN" },
+      "main-C_jM0dPl.js": { hash: "d940b7ba89557a640cf23967c60555fa2a2344d6899807478c69ffc304314302", kind: "main", symbol: "kce" },
+      "application-network-startup-ouXbhtc5.js": { hash: "e92e5333cc38b06c6e94242d5bb680321f044bc9355013739d059a2d3e2f5b8d", kind: "stdio", symbol: "Hs" },
+      // Windows 26.930.7945.0 / frontend 26.930.61225: reviewed native methods
+      // retain the ApplicationNetwork, final fetch, stdio and notification contracts.
+      "bootstrap-C8gUBg5L.js": { hash: "1f726d0e3103d81501551546d3b6e70f1fc10646f9326e00fe68605f144c5f4f", kind: "bootstrap", symbol: "yY", connectionSymbol: "ON" },
+      "main-gtVueRkt.js": { hash: "a4b72dcd241e8ee360aa960442cc585aa822685a42efd056c760937d9f8b623e", kind: "main", symbol: "kce" },
+      "application-network-startup-BEAX-hka.js": { hash: "634382c7af55d0ff57eb028aa4dd904130215c44fb559ea90a4f4035a5419f6e", kind: "stdio", symbol: "Hs" },
+      // Windows 26.1002.7124.0 / frontend 26.1002.52244 / build 13536:
+      // reviewed live bindings retain policy checks, final fetch, stdio and account notifications.
+      "bootstrap-Dz9A8y86.js": { hash: "a70497f5ffa764fe74f4de7ac05a5f73aff8d1e2f44de4476d1d9a684af43ddd", kind: "bootstrap", symbol: "jY", connectionSymbol: "hN" },
+      "main-p91kJShj.js": { hash: "aafd6a750458cb39b6202f9be00231482122d32ac14017b79d544c4ab741e889", kind: "main", symbol: "Hb" },
+      "application-network-startup-Bt0a8E1L.js": { hash: "aa5478e31c8a623632dfedffcecfbe40d5033d38a8504649716657681a0840b4", kind: "stdio", symbol: "Hs" },
+      // Windows package 26.1007.9446.0 / frontend 26.1007.71326 / build 20398.
+      // Exact source review and local extracted-method probes are recorded in
+      // docs/native-source-26.1007.9446.0.json; Native acceptance is separate.
+      "bootstrap-iULMfRBf.js": { hash: "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869", kind: "bootstrap", symbol: "tr" },
+      "main-Bgi5Xaw-.js": { hash: "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54", kind: "main", symbol: "ple" },
+      "application-network-startup-YSC7OAs0.js": { hash: "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e", kind: "stdio", symbol: "Gs" },
+      "src-DCNiwad_.js": { hash: "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25", kind: "connection", symbol: "mB" }
+    });
+    var HASHES = Object.freeze(Object.fromEntries(Object.entries(PROFILES).map(([name, profile]) => [name, profile.hash])));
+    var fail2 = (code) => Object.assign(new Error(code), { code });
+    var closeRoute = (route) => {
+      try {
+        Promise.resolve(route.close()).catch(() => {
+        });
+      } catch {
+      }
+    };
+    function headers(value) {
+      if (Array.isArray(value)) return value.flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));
+      if (value && !(value instanceof Headers) && typeof value === "object") return Object.entries(value).flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map((part) => [name, String(part)]));
+      const source = new Headers(value ?? {}), result = [...source.entries()].filter(([name]) => name.toLowerCase() !== "set-cookie");
+      for (const cookie of source.getSetCookie?.() ?? []) result.push(["set-cookie", cookie]);
+      return result;
+    }
+    var sameOrigin = (left, right) => new URL(left).origin === new URL(right).origin;
+    var withoutCredentials = (values) => headers(values).filter(([name]) => !["authorization", "cookie", "proxy-authorization"].includes(name.toLowerCase()));
+    function headerObject(values) {
+      const result = /* @__PURE__ */ Object.create(null);
+      for (const [name, value] of values) {
+        const key = Object.keys(result).find((existing) => existing.toLowerCase() === name.toLowerCase()) ?? name;
+        result[key] = result[key] === void 0 ? value : Array.isArray(result[key]) ? [...result[key], value] : [result[key], value];
+      }
+      return result;
+    }
+    var requestBody = (value) => value == null ? void 0 : typeof value === "string" ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : value;
+    var asUrl = (value) => typeof value === "string" ? value : value instanceof URL ? value.href : value?.url;
+    async function bytes(body, signal) {
+      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of body) {
+        signal?.throwIfAborted();
+        size += chunk.length;
+        if (size > 64 * 1024 * 1024) throw fail2("desktop_body_too_large");
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    }
+    function stream(body) {
+      if (body == null || typeof body === "string" || body instanceof Uint8Array) return body;
+      const iterator = body[Symbol.asyncIterator]();
+      return new ReadableStream({
+        async pull(controller) {
+          try {
+            const item = await iterator.next();
+            item.done ? controller.close() : controller.enqueue(item.value);
+          } catch (error) {
+            controller.error(error);
+          }
+        },
+        cancel() {
+          body.cancel?.();
+          iterator.return?.();
+        }
+      });
+    }
+    var bodyless = (status, method) => [204, 205, 304].includes(status) || method?.toUpperCase() === "HEAD";
+    async function response(result, method) {
+      const options = { status: result.status, headers: result.headers };
+      if (bodyless(result.status, method)) {
+        await result.body?.cancel?.();
+        return new Response(null, options);
+      }
+      return new Response(stream(result.body), options);
+    }
+    function providerUrl(value) {
+      if (typeof value !== "string") throw fail2("backend_provider_unsupported");
+      const url = new URL(value);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");
+      return url.href;
+    }
+    function routedThreadMessage(message, reserve, isProviderSupported = () => true) {
+      let payload;
+      try {
+        payload = JSON.parse(message);
+      } catch {
+        return message;
+      }
+      if (!["thread/start", "thread/resume"].includes(payload?.method)) return message;
+      const inputConfig = payload.params?.config;
+      const selected = payload.params?.modelProvider ?? inputConfig?.model_provider;
+      const inline = typeof selected === "string" ? inputConfig?.[\`model_providers.\${selected}\`] ?? inputConfig?.model_providers?.[selected] : null;
+      if (typeof selected === "string" && !isProviderSupported(selected) && typeof inline?.base_url !== "string") throw fail2("backend_provider_unsupported");
+      if (!inputConfig || typeof inputConfig !== "object" || Array.isArray(inputConfig)) return message;
+      const config = { ...inputConfig };
+      let changed = false;
+      for (const [key, value] of Object.entries(config)) {
+        if (key === "model_providers" && value && typeof value === "object" && !Array.isArray(value)) {
+          const mapped = { ...value };
+          for (const [name, provider] of Object.entries(mapped)) if (provider && typeof provider === "object" && typeof provider.base_url === "string") {
+            if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail2("backend_provider_unsupported");
+            mapped[name] = { ...provider, base_url: reserve(providerUrl(provider.base_url)) };
+            changed = true;
+          }
+          config[key] = mapped;
+        } else if (/^model_providers\\..*\\.base_url$/u.test(key) && !/^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) throw fail2("backend_provider_unsupported");
+        else if (/^model_providers\\..+$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string" && !/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key)) throw fail2("backend_provider_unsupported");
+        if (key === "openai_base_url" || /^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(key)) {
+          config[key] = reserve(providerUrl(value));
+          changed = true;
+        } else if (/^model_providers\\.[A-Za-z0-9_-]{1,64}$/u.test(key) && value && typeof value === "object" && typeof value.base_url === "string") {
+          config[key] = { ...value, base_url: reserve(providerUrl(value.base_url)) };
+          changed = true;
+        }
+      }
+      return changed ? JSON.stringify({ ...payload, params: { ...payload.params, config } }) : message;
+    }
+    function installDesktopPlaintext2({ app }, {
+      source,
+      deadlineUnixMs,
+      ownsBackendProcess = () => false,
+      isProviderSupported = () => true,
+      providerTrustForProcess = () => void 0,
+      pendingAccountUpdate = () => null,
+      updateAccountMode = () => {
+      },
+      moduleRegistry,
+      state,
+      onlineUpdates
+    }, { expectedHashes = HASHES } = {}) {
+      if (!moduleRegistry && app.isReady() || !source?.interceptHttp) throw fail2("desktop_bootstrap_too_late");
+      const scope = state?.scope ?? new AsyncLocalStorage();
+      if (state && !state.scope) state.scope = scope;
+      const symbol = Symbol("codlet.private.plaintext");
+      const originalCompile = Module.prototype._compile;
+      let bootstrapVerified = false, mainVerified = false, srcVerified = false, fetchInstalled = false, requestInstalled = false, stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;
+      const bindingErrors = /* @__PURE__ */ Object.create(null);
+      const restores = [];
+      const observed = /* @__PURE__ */ new Map(), roleBindings = /* @__PURE__ */ new Map(), roleReasons = /* @__PURE__ */ new Map(), driftedRoles = /* @__PURE__ */ new Set();
+      const wrappedMethods = { network: ["fetch", "request"], fetch: ["performDesktopFetch"], stdio: ["send"], connection: ["routeIncomingMessage"] };
+      const taskRoutes = state?.taskRoutes ?? /* @__PURE__ */ new Set(), routesByProcess = state?.routesByProcess ?? /* @__PURE__ */ new WeakMap(), sendQueues = state?.sendQueues ?? /* @__PURE__ */ new WeakMap();
+      const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();
+      function reserve(url, proc) {
+        let routes = routesByProcess.get(proc);
+        if (!routes) {
+          routes = /* @__PURE__ */ new Map();
+          routesByProcess.set(proc, routes);
+          proc.once("exit", () => {
+            for (const route2 of routes.values()) {
+              closeRoute(route2);
+              taskRoutes.delete(route2);
+            }
+            routes.clear();
+          });
+        }
+        if (routes.has(url)) return routes.get(url);
+        if (taskRoutes.size >= 64) throw fail2("backend_route_limit");
+        const additionalCaPem = providerTrustForProcess(proc);
+        const route = source.reserveRoute({ upstreamBaseUrl: url, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });
+        route.ready.catch(() => {
+          routes.delete(url);
+          taskRoutes.delete(route);
+          closeRoute(route);
+        });
+        routes.set(url, route);
+        taskRoutes.add(route);
+        return route;
+      }
+      function failOutbound(connection, message) {
+        let id;
+        try {
+          id = JSON.parse(message).id;
+        } catch {
+        }
+        if (typeof id === "string" || typeof id === "number") queueMicrotask(() => connection.onmessage?.({
+          type: "message",
+          data: JSON.stringify({ id, error: { code: -32e3, message: "Provider route unavailable" } })
+        }));
+        else connection.onerror?.(fail2("backend_route_unavailable"));
+      }
+      function hookStdio(Stdio) {
+        if (stdioInstalled || typeof Stdio !== "function" || typeof Stdio.prototype.send !== "function") {
+          if (!stdioInstalled) taskReason = "hook_unavailable";
+          return;
+        }
+        const original = Stdio.prototype.send;
+        Stdio.prototype.send = function(message) {
+          if (closed || !roleLive("stdio", Stdio) || !ownsBackendProcess(this.proc) || typeof message !== "string") return original.call(this, message);
+          if (onlineUpdates && !onlineUpdates.accepting()) {
+            onlineUpdates.whenAccepting().then(() => Stdio.prototype.send.call(this, message)).catch(() => failOutbound(this, message));
+            return;
+          }
+          const waits = [];
+          let routed;
+          try {
+            routed = routedThreadMessage(
+              message,
+              (url) => {
+                const route = reserve(url, this.proc);
+                waits.push(route.ready);
+                return route.baseUrl;
+              },
+              (provider) => isProviderSupported(this.proc, provider)
+            );
+          } catch {
+            failOutbound(this, message);
+            return;
+          }
+          const account = pendingAccountUpdate(this.proc);
+          const previous = sendQueues.get(this);
+          const dispatch = () => tracked("backend.send", () => original.call(this, routed));
+          if (!waits.length && !account && !previous) {
+            if (!onlineUpdates) return original.call(this, routed);
+            dispatch().catch(() => failOutbound(this, message));
+            return;
+          }
+          const operation = tracked("backend.send", async () => {
+            await (previous ?? Promise.resolve());
+            await Promise.all([...waits, ...account ? [account] : []]);
+            if (!closed && ownsBackendProcess(this.proc)) return original.call(this, routed);
+            throw Object.assign(fail2("core_write_owner_closed"), { outcome: "not_applied" });
+          }).catch(() => failOutbound(this, message));
+          sendQueues.set(this, operation);
+          operation.finally(() => {
+            if (sendQueues.get(this) === operation) sendQueues.delete(this);
+          }).catch(() => {
+          });
+        };
+        stdioInstalled = true;
+        const wrapped = Stdio.prototype.send;
+        restores.push(() => {
+          if (Stdio.prototype.send === wrapped) Stdio.prototype.send = original;
+        });
+      }
+      function hookConnection(Connection) {
+        if (connectionInstalled || typeof Connection !== "function" || typeof Connection.prototype.routeIncomingMessage !== "function") {
+          if (!connectionInstalled) taskReason = "hook_unavailable";
+          return;
+        }
+        const original = Connection.prototype.routeIncomingMessage;
+        Connection.prototype.routeIncomingMessage = function(message, ...rest) {
+          if (!closed && roleLive("connection", Connection) && message?.method === "account/updated" && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
+          return original.call(this, message, ...rest);
+        };
+        connectionInstalled = true;
+        const wrapped = Connection.prototype.routeIncomingMessage;
+        restores.push(() => {
+          if (Connection.prototype.routeIncomingMessage === wrapped) Connection.prototype.routeIncomingMessage = original;
+        });
+      }
+      function hookNetwork(Network) {
+        if (typeof Network !== "function" || typeof Network.prototype.fetch !== "function" || typeof Network.prototype.request !== "function") {
+          desktopReason = "hook_unavailable";
+          return;
+        }
+        const originalFetch = Network.prototype.fetch, originalRequest = Network.prototype.request;
+        function nativeForward(network, request, options, signal, onRequest) {
+          return new Promise((resolve, reject) => {
+            let settled = false, finalUrl = request.url, redirects = 0, live;
+            const finish = (error, value) => {
+              if (settled) return;
+              settled = true;
+              if (error) reject(error);
+              else resolve(value);
+            };
+            const abort = () => {
+              finish(fail2("desktop_request_aborted"));
+              live?.abort();
+            };
+            try {
+              signal?.throwIfAborted();
+              live = originalRequest.call(network, {
+                ...options,
+                url: request.url,
+                method: request.method,
+                headers: headerObject(headers(request.headers))
+              });
+              onRequest?.(live);
+              signal?.addEventListener("abort", abort, { once: true });
+              live.on("redirect", (_status, _method, destination) => {
+                try {
+                  if (options.redirect === "error") throw fail2("desktop_redirect_disallowed");
+                  if (options.redirect === "manual") throw fail2("desktop_manual_redirect_unavailable");
+                  if (++redirects > 20 || !["http:", "https:"].includes(new URL(destination).protocol)) throw fail2("desktop_redirect_disallowed");
+                  network.assertAllowed(destination);
+                  finalUrl = destination;
+                  live.followRedirect();
+                } catch (error) {
+                  finish(error);
+                  live.abort();
+                }
+              });
+              live.once("error", (error) => {
+                signal?.removeEventListener("abort", abort);
+                finish(error);
+              });
+              live.once("response", (incoming) => {
+                incoming.once("end", () => signal?.removeEventListener("abort", abort));
+                incoming.once("close", () => signal?.removeEventListener("abort", abort));
+                finish(null, { status: incoming.statusCode, headers: headers(incoming.headers), body: incoming, finalUrl });
+              });
+              live.end(request.body == null || typeof request.body === "string" ? request.body : Buffer.from(request.body));
+            } catch (error) {
+              signal?.removeEventListener("abort", abort);
+              finish(error);
+              live?.abort();
+            }
+          });
+        }
+        Network.prototype.fetch = async function(input, init = {}) {
+          if (closed || !roleLive("network", Network) || !scope.getStore()) return originalFetch.call(this, input, init);
+          if (onlineUpdates && !onlineUpdates.accepting()) {
+            await onlineUpdates.whenAccepting(init.signal);
+            return Network.prototype.fetch.call(this, input, init);
+          }
+          const url = asUrl(input);
+          this.assertAllowed(url);
+          const signal = init.signal;
+          const current = { url, method: init.method ?? "GET", headers: headers(init.headers), body: requestBody(init.body) };
+          const result = await tracked("desktop.fetch", () => source.interceptHttp(current, { signal, forward: async (next, control) => {
+            const body = await bytes(next.body, control.signal);
+            const omit = next.credentialMode === "omit" || !sameOrigin(url, next.url);
+            return nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, {
+              redirect: init.redirect ?? "follow",
+              credentials: omit ? "omit" : init.credentials,
+              cache: init.cache,
+              referrerPolicy: init.referrerPolicy,
+              priority: init.priority,
+              ...init.credentials === "same-origin" && !omit ? { origin: new URL(url).origin } : {}
+            }, control.signal);
+          } }));
+          return response(result, current.method);
+        };
+        Network.prototype.request = function(options) {
+          if (closed || !roleLive("network", Network) || !scope.getStore()) return originalRequest.call(this, options);
+          this.assertAllowed(options.url);
+          const network = this;
+          const proxy = new EventEmitter();
+          const controller = new AbortController();
+          let liveRequest, upload = { started: false, current: 0, total: 0 }, ended = false;
+          proxy.getUploadProgress = () => liveRequest?.getUploadProgress?.() ?? upload;
+          proxy.abort = () => {
+            controller.abort();
+            liveRequest?.abort?.();
+          };
+          proxy.end = function(body) {
+            if (ended) throw fail2("desktop_request_already_ended");
+            ended = true;
+            const send = async () => {
+              if (onlineUpdates && !onlineUpdates.accepting()) {
+                await onlineUpdates.whenAccepting(controller.signal);
+                if (closed) {
+                  const next = network.request(options);
+                  next.once("error", (error) => proxy.emit("error", error));
+                  next.once("response", (output2) => proxy.emit("response", output2));
+                  controller.signal.addEventListener("abort", () => next.abort(), { once: true });
+                  liveRequest = next;
+                  next.end(body);
+                  return;
+                }
+              }
+              const current = { url: options.url, method: options.method ?? "GET", headers: headers(options.headers), body: requestBody(body) };
+              const result = await tracked("desktop.request", () => source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {
+                const forwardBody = await bytes(next.body, control.signal);
+                const omit = next.credentialMode === "omit" || !sameOrigin(options.url, next.url);
+                return nativeForward(
+                  network,
+                  { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers },
+                  {
+                    ...options,
+                    redirect: options.redirect ?? "follow",
+                    credentials: omit ? "omit" : options.credentials,
+                    useSessionCookies: !omit && options.useSessionCookies === true
+                  },
+                  control.signal,
+                  (request) => {
+                    liveRequest = request;
+                    upload = request.getUploadProgress?.() ?? upload;
+                  }
+                );
+              } }));
+              if (bodyless(result.status, current.method)) await result.body?.cancel?.();
+              const output = Readable.from(bodyless(result.status, current.method) ? [] : result.body ?? []);
+              output.statusCode = result.status;
+              output.statusMessage = "";
+              output.headers = headerObject(result.headers);
+              proxy.emit("response", output);
+            };
+            send().catch((error) => proxy.emit("error", error));
+          };
+          requestInstalled = true;
+          return proxy;
+        };
+        fetchInstalled = true;
+        requestInstalled = true;
+        const wrappedFetch = Network.prototype.fetch, wrappedRequest = Network.prototype.request;
+        restores.push(() => {
+          if (Network.prototype.fetch === wrappedFetch) Network.prototype.fetch = originalFetch;
+          if (Network.prototype.request === wrappedRequest) Network.prototype.request = originalRequest;
+        });
+      }
+      function hookFetchWrapper(FetchWrapper) {
+        if (typeof FetchWrapper !== "function" || typeof FetchWrapper.prototype.performDesktopFetch !== "function") {
+          desktopReason = "hook_unavailable";
+          return;
+        }
+        const original = FetchWrapper.prototype.performDesktopFetch;
+        FetchWrapper.prototype.performDesktopFetch = function(...args) {
+          return closed || !roleLive("fetch", FetchWrapper) ? original.apply(this, args) : scope.run(true, () => original.apply(this, args));
+        };
+        const wrapped = FetchWrapper.prototype.performDesktopFetch;
+        restores.push(() => {
+          if (FetchWrapper.prototype.performDesktopFetch === wrapped) FetchWrapper.prototype.performDesktopFetch = original;
+        });
+      }
+      function resetRole(role) {
+        const binding = roleBindings.get(role);
+        if (binding) for (const restore of binding.restores.reverse()) {
+          restore();
+          const index = restores.indexOf(restore);
+          if (index !== -1) restores.splice(index, 1);
+        }
+        roleBindings.delete(role);
+        if (role === "network") {
+          bootstrapVerified = false;
+          fetchInstalled = false;
+          requestInstalled = false;
+        }
+        if (role === "fetch") mainVerified = false;
+        if (role === "stdio") {
+          stdioVerified = false;
+          stdioInstalled = false;
+        }
+        if (role === "connection") {
+          connectionVerified = false;
+          connectionInstalled = false;
+        }
+      }
+      function roleLive(role, Constructor) {
+        const binding = roleBindings.get(role);
+        if (!binding || binding.Constructor !== Constructor) return false;
+        if (Object.entries(binding.installed).every(([name, method]) => Object.getOwnPropertyDescriptor(Constructor.prototype, name)?.value === method)) return true;
+        resetRole(role);
+        driftedRoles.add(role);
+        roleReasons.set(role, "binding_changed");
+        if (["network", "fetch"].includes(role)) desktopReason = "binding_changed";
+        else taskReason = "binding_changed";
+        srcVerified = stdioVerified && connectionVerified;
+        return false;
+      }
+      function refreshBindings() {
+        for (const role of ["network", "fetch", "stdio", "connection"]) {
+          const diagnosticRole = role === "network" ? "bootstrap" : role === "fetch" ? "main" : role;
+          const active = roleBindings.get(role);
+          if (active && Object.entries(active.installed).some(([name, method]) => Object.getOwnPropertyDescriptor(active.Constructor.prototype, name)?.value !== method)) {
+            resetRole(role);
+            driftedRoles.add(role);
+          }
+          if (driftedRoles.has(role)) {
+            roleReasons.set(role, "binding_changed");
+            continue;
+          }
+          const candidates = [...observed.values()].flat().filter((candidate) => candidate.role === role);
+          const collect = (selected2) => {
+            const found2 = /* @__PURE__ */ new Set();
+            let pending2 = false;
+            for (const candidate of selected2) try {
+              const Constructor2 = candidate.read();
+              if (Constructor2 == null) {
+                pending2 = true;
+                continue;
+              }
+              if (candidate.resolved === Constructor2 || supportsRole(Constructor2, role, candidate.recorded)) {
+                candidate.resolved = Constructor2;
+                found2.add(Constructor2);
+              }
+              delete bindingErrors[diagnosticRole];
+            } catch (error) {
+              bindingErrors[diagnosticRole] = ["ReferenceError", "TypeError"].includes(error?.name) ? error.name : "binding_error";
+              if (error?.name === "ReferenceError") pending2 = true;
+            }
+            return { found: found2, pending: pending2 };
+          };
+          let selected = collect(candidates.filter((candidate) => candidate.recorded));
+          if (!selected.found.size && !selected.pending) selected = collect(candidates.filter((candidate) => !candidate.recorded));
+          const { found, pending } = selected;
+          if (found.size !== 1 || pending) {
+            resetRole(role);
+            roleReasons.set(role, found.size > 1 ? "ambiguous_contract" : pending ? "initializing" : "contract_unavailable");
+            continue;
+          }
+          const Constructor = [...found][0];
+          if (roleBindings.get(role)?.Constructor === Constructor) {
+            roleReasons.delete(role);
+            continue;
+          }
+          resetRole(role);
+          const at = restores.length;
+          try {
+            if (role === "network") {
+              hookNetwork(Constructor);
+              bootstrapVerified = fetchInstalled && requestInstalled;
+            }
+            if (role === "fetch") {
+              hookFetchWrapper(Constructor);
+              mainVerified = true;
+            }
+            if (role === "stdio") {
+              hookStdio(Constructor);
+              stdioVerified = stdioInstalled;
+            }
+            if (role === "connection") {
+              hookConnection(Constructor);
+              connectionVerified = connectionInstalled;
+            }
+            roleBindings.set(role, { Constructor, restores: restores.slice(at), installed: Object.fromEntries(wrappedMethods[role].map((name) => [name, Object.getOwnPropertyDescriptor(Constructor.prototype, name)?.value])) });
+            roleReasons.delete(role);
+          } catch (error) {
+            for (const restore of restores.splice(at).reverse()) restore();
+            roleReasons.set(role, "contract_unavailable");
+          }
+        }
+        srcVerified = stdioVerified && connectionVerified;
+        const terminal = (roles) => roles.map((role) => roleReasons.get(role)).find((reason) => ["ambiguous_contract", "binding_changed"].includes(reason)) ?? null;
+        desktopReason = bootstrapVerified && mainVerified ? null : terminal(["network", "fetch"]);
+        taskReason = srcVerified ? null : terminal(["stdio", "connection"]);
+      }
+      function applyRecord(record) {
+        const { name, hash: observedSha256 } = record;
+        if (Object.hasOwn(expectedHashes, name) && observedSha256 !== expectedHashes[name]) mismatch = { name, observedSha256 };
+        const key = record.filename ?? name, candidates = sourceCandidates(record, PROFILES, expectedHashes);
+        if (!candidates.length && !observed.has(key)) return;
+        if (candidates.length) observed.set(key, candidates);
+        else observed.delete(key);
+        refreshBindings();
+      }
+      Module.prototype._compile = function(code, filename) {
+        const name = path.basename(filename);
+        if (!Object.hasOwn(expectedHashes, name)) return originalCompile.call(this, code, filename);
+        const profile = PROFILES[name] ?? { symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ" };
+        const expression = profile.connectionSymbol ? \`({primary:\${profile.symbol},connection:\${profile.connectionSymbol}})\` : profile.symbol;
+        const hash = createHash("sha256").update(code).digest("hex");
+        if (hash !== expectedHashes[name]) {
+          applyRecord({ name, hash });
+          return originalCompile.call(this, code, filename);
+        }
+        const result = originalCompile.call(this, \`\${code}
+;Object.defineProperty(module.exports,Symbol.for(\${JSON.stringify(String(symbol))}),{value:()=>\${expression},configurable:true});\`, filename);
+        const read = this.exports[Symbol.for(String(symbol))], exported = this.exports;
+        delete this.exports[Symbol.for(String(symbol))];
+        applyRecord({ name, hash, exported, evaluate: (binding) => {
+          const value = read();
+          return profile.connectionSymbol ? binding === profile.connectionSymbol ? value.connection : value.primary : value;
+        } });
+        return result;
+      };
+      restores.push(() => {
+        if (Module.prototype._compile === wrappedCompile) Module.prototype._compile = originalCompile;
+      });
+      const wrappedCompile = Module.prototype._compile;
+      if (moduleRegistry) {
+        Module.prototype._compile = originalCompile;
+        const unsubscribe = moduleRegistry.subscribe(applyRecord);
+        restores.push(unsubscribe);
+      }
+      const desktopDone = () => desktopReason || bootstrapVerified && mainVerified && fetchInstalled && requestInstalled;
+      const needsTaskSources = Object.keys(expectedHashes).some((name) => ["src", "stdio", "connection"].includes(PROFILES[name]?.kind) || name.startsWith("src-"));
+      const taskDone = () => taskReason || !needsTaskSources || srcVerified && stdioInstalled && connectionInstalled;
+      return Object.freeze({
+        async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {
+          while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {
+            refreshBindings();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          if (!closed) refreshBindings();
+          return this.inspect();
+        },
+        inspect: () => {
+          for (const [role, binding] of [...roleBindings]) roleLive(role, binding.Constructor);
+          return {
+            installed: !closed,
+            available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
+            taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,
+            modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },
+            mismatch,
+            bindingErrors: { ...bindingErrors },
+            deferredBindings: [...roleReasons.values()].filter((reason) => reason === "initializing").length,
+            reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "contract_unavailable"),
+            taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "contract_unavailable")
+          };
+        },
+        connectionConstructors: () => roleBindings.has("connection") ? [roleBindings.get("connection").Constructor] : [],
+        suspend() {
+          if (closed) return;
+          closed = true;
+          observed.clear();
+          roleBindings.clear();
+          for (const restore of restores.splice(0).reverse()) restore();
+        },
+        close() {
+          this.suspend();
+          if (!state) {
+            for (const route of taskRoutes) closeRoute(route);
+            taskRoutes.clear();
+            scope.disable();
+          }
+        }
+      });
+    }
+    module2.exports = { installDesktopPlaintext: installDesktopPlaintext2, routedThreadMessage, reviewedSourceProfiles: PROFILES };
+  }
+});
+
+// ../host/codex-traffic.cjs
+var require_codex_traffic = __commonJS({
+  "../host/codex-traffic.cjs"(exports2, module2) {
+    "use strict";
+    var zlib = require("node:zlib");
+    var failure = (code) => Object.assign(new Error(code), { code });
+    var RECORDED_BACKENDS = Object.freeze({
+      win32: Object.freeze([
+        // Disposable Windows acceptance covers both signed distributions of the
+        // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.
+        Object.freeze({ sha256: "3553cd6e7df5a093d8cb8301cd8088a57e0971aba71ddbe0e67f7f44a15cdf68", version: "0.162.0-alpha.2", evidence: "same-pe-image-as-controlled-0.162.0-alpha.2-http-sse-ws-routing-fixture" }),
+        Object.freeze({ sha256: "d83cc3582592e307df008411f02f61a93fb93580b53dc173608a63202d97bbe4", version: "0.162.0-alpha.2", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),
+        // The installed and published 0.160.1 files differ only in Authenticode
+        // data/checksum. Their complete remaining PE image matches the CI fixture.
+        Object.freeze({ sha256: "3b8f6e33caa75f232558a3cf76ff9b87bb5ef6dbcf4996372f24e55c78b1b916", version: "0.160.1", evidence: "same-pe-image-as-controlled-0.160.1-http-sse-ws-routing-fixture" }),
+        Object.freeze({ sha256: "9e7c59c05cc1ce5677b1f94e835b2ac038ca3be14504e78d558eacdb0ea3f55d", version: "0.160.1", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),
+        Object.freeze({ sha256: "37762753b554982eef1c109303d1be652b6397f1479e844794353a85650199c6", version: "0.160.0", evidence: "controlled-custom-builtin-chatgpt-http-sse-ws-two-thread-routing" }),
+        Object.freeze({ sha256: "1722907aa64401bcc9b34467ef5c2af43f6aef9a5045ef04d11d19dfae4589fb", version: "0.159.0-alpha.12.1", evidence: "controlled-functional-http-sse-ws-local-fixture" }),
+        Object.freeze({ sha256: "8f0554ede25bbc5450921897c468b2e84635aa513c5017457997af0954581f49", version: "0.158.0-alpha.2.1", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),
+        Object.freeze({ sha256: "a19f8f6c3c9dd5b71b6b1e3eb1ec55d75aafb2fdfb686d9e1f7a5f47db07d0d2", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws-reconfiguration" }),
+        Object.freeze({ sha256: "bc45017e8239dc150258f69309ced9df6bbcdf5b8e4f346decf780ac0999e226", version: "0.155.0-alpha.9.2", evidence: "controlled-custom-provider-two-thread-http-ws" }),
+        Object.freeze({ sha256: "97d4d67419d0ac2f71342f9a5e850f9468aa622618de8ea823223edb9a91926a", version: "0.155.0-alpha.16", evidence: "controlled-custom-provider-two-thread-http-ws" })
+      ]),
+      darwin: Object.freeze([
+        Object.freeze({ sha256: "c67698d0990aae05211d9c43ab343ad9517e406824dea77eca103a2806232b3a", version: "0.155.0-alpha.16.3", evidence: "controlled-custom-provider-two-thread-http-ws" })
+      ])
+    });
+    function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {
+      const backend = RECORDED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
+      const fixtureVerified = !!backend;
+      return Object.freeze({
+        available: false,
+        fixtureVerified,
+        restartRequired: true,
+        officialOAuth: false,
+        existingLoadedThreads: false,
+        desktop: false,
+        attachments: false,
+        fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],
+        reason: "native_process_ingress_not_attached"
+      });
+    }
+    function threadIdFromHeaders(headers) {
+      if (!Array.isArray(headers)) return null;
+      const values = headers.filter((item) => Array.isArray(item) && typeof item[0] === "string" && item[0].toLowerCase() === "x-client-request-id").map((item) => item[1]);
+      return values.length === 1 && typeof values[0] === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(values[0]) ? values[0] : null;
+    }
+    function classifyCodexTraffic({ url, method, headers, verified = false, allowedOrigins = ["https://chatgpt.com", "https://api.openai.com"] }) {
+      let target;
+      try {
+        target = new URL(url);
+      } catch {
+        return Object.freeze({ kind: "unknown", threadId: null, model: null });
+      }
+      const protocol = target.protocol === "wss:" ? "https:" : target.protocol === "ws:" ? "http:" : target.protocol;
+      const normalizedOrigin = \`\${protocol}//\${target.host}\`;
+      const trusted = allowedOrigins.includes(normalizedOrigin) && !target.username && !target.password;
+      let kind = "unknown";
+      if (trusted && /\\/responses$/u.test(target.pathname) && ["POST", "GET"].includes(method)) kind = "model.responses";
+      if (trusted && target.hostname === "chatgpt.com" && target.pathname === "/backend-api/codex/models" && method === "GET") kind = "model.list";
+      return Object.freeze({ kind, threadId: verified && kind === "model.responses" ? threadIdFromHeaders(headers) : null, model: null });
+    }
+    async function readCodexJsonBody(request, maximum = 8 * 1024 * 1024) {
+      if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 8 * 1024 * 1024) throw failure("invalid_body_limit");
+      const chunks = [];
+      let bytes = 0;
+      for await (const chunk of request.body) {
+        bytes += chunk.length;
+        if (bytes > maximum) throw failure("codex_body_too_large");
+        chunks.push(Buffer.from(chunk));
+      }
+      const encodings = request.headers.filter(([name]) => name.toLowerCase() === "content-encoding").map(([, value]) => value.toLowerCase().trim());
+      if (encodings.length > 1) throw failure("codex_encoding_unsupported");
+      const encoding = encodings[0] ?? "identity";
+      const decoder = { gzip: zlib.gunzipSync, br: zlib.brotliDecompressSync, deflate: zlib.inflateSync, zstd: zlib.zstdDecompressSync }[encoding];
+      if (encoding !== "identity" && !decoder) throw failure("codex_encoding_unsupported");
+      try {
+        const raw = Buffer.concat(chunks);
+        return JSON.parse(decoder ? decoder(raw, { maxOutputLength: maximum }) : raw);
+      } catch {
+        throw failure("codex_body_invalid");
+      }
+    }
+    function rewrittenCodexJsonBody(request, value) {
+      const body = JSON.stringify(value);
+      if (Buffer.byteLength(body) > 8 * 1024 * 1024) throw failure("codex_body_too_large");
+      return { body, headers: request.headers.filter(([name]) => !["content-encoding", "content-length", "content-md5", "content-digest", "digest"].includes(name.toLowerCase())) };
+    }
+    function createCodexTraffic(context, compatibility = {}) {
+      if (!context?.traffic?.registerInterceptor || !context.traffic.inspect || !context.signal) throw failure("core_traffic_unavailable");
+      const verified = probeCodexTraffic(compatibility);
+      async function probe() {
+        let native;
+        try {
+          native = await context.traffic.inspect();
+        } catch (error) {
+          if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");
+          return Object.freeze({ ...verified, listening: false, attached: false, reason: error.code });
+        }
+        const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;
+        return Object.freeze({
+          ...verified,
+          available: attached,
+          listening: native.listening === true,
+          attached,
+          restartRequired: !attached,
+          reason: attached ? null : "native_process_ingress_not_attached",
+          coverage: "registered-backend-origins",
+          registered: native.registered,
+          active: native.active
+        });
+      }
+      async function registerInterceptor(options, handlers) {
+        if (context.signal.aborted) throw failure("host_stopping");
+        if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");
+        const kinds = options.kinds ?? ["model.responses", "model.list"];
+        if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");
+        if (!handlers || typeof handlers !== "object" || !Object.keys(handlers).length || Object.entries(handlers).some(([key, value]) => !["request", "response", "webSocket"].includes(key) || typeof value !== "function")) throw failure("invalid_handler");
+        const origins = options.origins ?? ["https://chatgpt.com", "https://api.openai.com"];
+        if (!Array.isArray(origins) || !origins.length || origins.length > 16 || origins.some((origin) => {
+          try {
+            const url = new URL(origin);
+            return url.origin !== origin || !["https:", "http:"].includes(url.protocol) || url.username || url.password || url.protocol === "http:" && !["127.0.0.1", "localhost"].includes(url.hostname);
+          } catch {
+            return true;
+          }
+        })) throw failure("invalid_argument");
+        const readiness = await probe();
+        if (!readiness.available) throw failure(readiness.reason);
+        if (context.signal.aborted) throw failure("host_stopping");
+        const wrapped = {};
+        const metadata = (value) => {
+          const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins });
+          return kinds.includes(info.kind) ? info : null;
+        };
+        const requestThreads = /* @__PURE__ */ new Map();
+        wrapped.request = (value, call) => {
+          const codex = metadata(value);
+          if (handlers.response && codex?.threadId && typeof value.id === "string") {
+            requestThreads.set(value.id, { threadId: codex.threadId, at: Date.now() });
+            if (requestThreads.size > 1024) requestThreads.delete(requestThreads.keys().next().value);
+          }
+          return codex && handlers.request ? handlers.request(value, Object.freeze({ ...call, codex })) : void 0;
+        };
+        if (handlers.response) wrapped.response = (value, call) => {
+          const codex = metadata(call.request), known = requestThreads.get(call.request?.id);
+          if (typeof call.request?.id === "string") requestThreads.delete(call.request.id);
+          const threadId = known && Date.now() - known.at <= 10 * 60 * 1e3 ? known.threadId : null;
+          return codex ? handlers.response(value, Object.freeze({ ...call, codex: Object.freeze({ ...codex, threadId }) })) : void 0;
+        };
+        if (handlers.webSocket) wrapped.webSocket = (value, call) => {
+          const codex = metadata({ ...value, method: "GET" });
+          return codex ? handlers.webSocket(value, Object.freeze({ ...call, codex })) : void 0;
+        };
+        const { kinds: ignored, ...registration } = options;
+        return context.traffic.registerInterceptor({ ...registration, origins }, wrapped);
+      }
+      return Object.freeze({ probe, registerInterceptor, classify: classifyCodexTraffic, readJsonBody: readCodexJsonBody, rewriteJsonBody: rewrittenCodexJsonBody });
+    }
+    module2.exports = { createCodexTraffic, probeCodexTraffic, classifyCodexTraffic, threadIdFromHeaders, readCodexJsonBody, rewrittenCodexJsonBody };
+  }
+});
+
+// ../host/backend-launch.cjs
+var require_backend_launch = __commonJS({
+  "../host/backend-launch.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var { createHash } = require("node:crypto");
+    var { probeCodexTraffic } = require_codex_traffic();
+    var fail2 = (code) => Object.assign(new Error(code), { code });
+    var toml = (value) => JSON.stringify(value);
+    function verifyBackend(executable, platform = process.platform) {
+      if (typeof executable !== "string" || !path.isAbsolute(executable) || !/^codex(?:\\.exe)?$/iu.test(path.basename(executable))) throw fail2("invalid_backend_launch");
+      const fd = fs.openSync(executable, "r");
+      let binarySha256;
+      try {
+        const before = fs.fstatSync(fd);
+        if (!before.isFile() || before.size < 1 || before.size > 512 * 1024 * 1024) throw fail2("backend_identity_unavailable");
+        const hash = createHash("sha256"), bytes = Buffer.alloc(64 * 1024);
+        for (; ; ) {
+          const count = fs.readSync(fd, bytes);
+          if (!count) break;
+          hash.update(bytes.subarray(0, count));
+        }
+        const after = fs.fstatSync(fd);
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw fail2("backend_identity_changed");
+        binarySha256 = hash.digest("hex");
+      } finally {
+        fs.closeSync(fd);
+      }
+      const recorded = probeCodexTraffic({ platform, binarySha256 }).fixtureVerified;
+      return Object.freeze({ platform, binarySha256, recorded });
+    }
+    function supportsBackendContract(contract, settings) {
+      return contract?.api === 1 && contract.initialize === true && contract.configRead === true && contract.accountRead === true && ["runtime", "recorded"].includes(contract.routing) && Array.isArray(contract.providerOverrides) && contract.providerOverrides.length > 0 && contract.providerOverrides.length <= 17 && new Set(contract.providerOverrides).size === contract.providerOverrides.length && contract.providerOverrides.every((value) => typeof value === "string" && (value === "openai_base_url" || /^model_providers\\.[A-Za-z0-9_-]{1,64}\\.base_url$/u.test(value))) && settings.every((setting) => contract.providerOverrides.includes(setting));
+    }
+    function prepareBackendLaunch({ executable, arguments: args, originalEnvironment, providerRoutes, platform = process.platform, compatibility }) {
+      if (!Array.isArray(args) || args.some((value) => typeof value !== "string") || !args.includes("app-server") || !originalEnvironment || typeof originalEnvironment !== "object" || !providerRoutes || typeof providerRoutes !== "object") throw fail2("invalid_backend_launch");
+      const identity = verifyBackend(executable, platform), overrides = [];
+      if (compatibility?.binarySha256 !== identity.binarySha256) throw fail2("backend_identity_changed");
+      if (!supportsBackendContract(compatibility.contract, Object.keys(providerRoutes)) || compatibility.contract.routing === "recorded" && !identity.recorded) throw fail2("backend_contract_unavailable");
+      for (const [setting, baseUrl] of Object.entries(providerRoutes)) {
+        if (setting !== "openai_base_url" && setting !== "chatgpt_base_url" && !/^model_providers\\.[A-Za-z0-9_-]+\\.base_url$/u.test(setting)) throw fail2("invalid_backend_route");
+        const url = new URL(baseUrl);
+        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.search || url.hash) throw fail2("invalid_backend_route");
+        overrides.push("-c", \`\${setting}=\${toml(baseUrl)}\`);
+      }
+      if (!overrides.length) throw fail2("backend_route_unavailable");
+      return Object.freeze({
+        executable,
+        arguments: Object.freeze([...args, ...overrides]),
+        environment: originalEnvironment,
+        compatibility,
+        status: Object.freeze({ available: true, backendProviderPrepared: true, coverage: ["owned-local-app-server-model-provider"] })
+      });
+    }
+    module2.exports = { prepareBackendLaunch, verifyBackend, supportsBackendContract, toml };
+  }
+});
+
+// ../host/backend-config-probe.cjs
+var require_backend_config_probe = __commonJS({
+  "../host/backend-config-probe.cjs"(exports2, module2) {
+    "use strict";
+    function runConfigProbe() {
+      const fs = require("node:fs"), { spawn } = require("node:child_process"), { randomBytes } = require("node:crypto");
+      const fail2 = (code) => Object.assign(new Error(code), { code });
+      const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+      const until = Date.now() + 3500;
+      let liveChild;
+      async function stop(child) {
+        if (!child || child.exitCode !== null || child.signalCode !== null) return;
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.stdin?.end();
+        let timer;
+        await Promise.race([exited, new Promise((resolve) => {
+          timer = setTimeout(resolve, 150);
+        })]);
+        clearTimeout(timer);
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill();
+        await Promise.race([exited, new Promise((resolve) => {
+          timer = setTimeout(resolve, 650);
+        })]);
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) throw fail2("backend_probe_cleanup_failed");
+      }
+      async function read(plan, overrides, includeAccount) {
+        if (Date.now() >= until) throw fail2("backend_config_timeout");
+        const child = spawn(plan.executable, [
+          ...plan.configArguments,
+          ...overrides,
+          "-c",
+          "analytics.enabled=false",
+          "-c",
+          "features.code_mode_host=false",
+          "-c",
+          "features.remote_plugin=false",
+          "app-server",
+          "--stdio"
+        ], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        liveChild = child;
+        try {
+          return await new Promise((resolve, reject) => {
+            let settled = false, buffer = "", count = 0, expected = 1, config;
+            const timer = setTimeout(() => finish(fail2("backend_config_timeout")), Math.max(1, until - Date.now()));
+            function finish(error, result) {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              error ? reject(error) : resolve(result);
+            }
+            const send = (message) => child.stdin.write(JSON.stringify(message) + "\\n");
+            child.stderr.on("data", () => {
+            });
+            child.on("error", () => finish(fail2("backend_config_unavailable")));
+            child.stdin.on("error", () => finish(fail2("backend_config_unavailable")));
+            child.once("exit", () => finish(fail2("backend_config_unavailable")));
+            child.stdout.on("data", (chunk) => {
+              if (settled) return;
+              count += chunk.length;
+              if (count > 2 * 1024 * 1024) {
+                finish(fail2("backend_config_too_large"));
+                return;
+              }
+              buffer += chunk.toString();
+              let at;
+              while (!settled && (at = buffer.indexOf("\\n")) >= 0) {
+                const line = buffer.slice(0, at);
+                buffer = buffer.slice(at + 1);
+                let message;
+                try {
+                  message = JSON.parse(line);
+                } catch {
+                  continue;
+                }
+                if (!object(message) || message.id !== expected) continue;
+                if (message.error || !object(message.result)) {
+                  finish(fail2("backend_contract_unavailable"));
+                  return;
+                }
+                if (expected === 1) {
+                  if (typeof message.result.userAgent !== "string" || !message.result.userAgent || message.result.userAgent.length > 4096) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  expected = 2;
+                  send({ method: "initialized", params: {} });
+                  send({ id: 2, method: "config/read", params: { cwd: plan.cwd, includeLayers: false } });
+                } else if (expected === 2) {
+                  config = message.result.config;
+                  if (!object(config)) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  if (!includeAccount) {
+                    finish(null, { config });
+                    return;
+                  }
+                  expected = 3;
+                  send({ id: 3, method: "account/read", params: { refreshToken: false } });
+                } else {
+                  const account = message.result.account;
+                  if (account !== null && (!object(account) || typeof account.type !== "string")) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  finish(null, { config, accountType: account?.type ?? null });
+                }
+              }
+            });
+            send({ id: 1, method: "initialize", params: { clientInfo: { name: "codlet-launch-policy", version: "1" }, capabilities: { experimentalApi: true } } });
+          });
+        } finally {
+          await stop(child);
+          liveChild = null;
+        }
+      }
+      (async () => {
+        const bytes = fs.readFileSync(0);
+        if (bytes.length > 256 * 1024) throw fail2("backend_config_unavailable");
+        const plan = JSON.parse(bytes);
+        if (!object(plan) || typeof plan.executable !== "string" || typeof plan.cwd !== "string" || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256 || plan.configArguments.some((value) => typeof value !== "string")) throw fail2("backend_config_unavailable");
+        const { config, accountType } = await read(plan, [], true);
+        if (config.model_providers != null && !object(config.model_providers) || config.model_provider != null && typeof config.model_provider !== "string" || config.openai_base_url != null && typeof config.openai_base_url !== "string") throw fail2("backend_contract_unavailable");
+        const providers = {};
+        for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
+          if (typeof provider?.base_url !== "string" || provider.wire_api !== "responses") continue;
+          if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail2("backend_provider_unsupported");
+          providers[name] = provider.base_url;
+        }
+        const settings = ["openai_base_url", ...Object.keys(providers).map((name) => \`model_providers.\${name}.base_url\`)];
+        if (plan.recordedRouting !== true) {
+          const marker = \`http://127.0.0.1:9/codlet-capability-\${randomBytes(12).toString("hex")}/\`;
+          const overrides = settings.flatMap((setting) => ["-c", \`\${setting}=\${JSON.stringify(marker)}\`]);
+          const observed = (await read(plan, overrides, false)).config;
+          if (observed.openai_base_url !== marker || Object.keys(providers).some((name) => observed.model_providers?.[name]?.base_url !== marker || observed.model_providers[name].wire_api !== "responses")) throw fail2("backend_routing_contract_unavailable");
+        }
+        return {
+          modelProvider: config.model_provider ?? "openai",
+          providerBaseUrls: providers,
+          openaiBaseUrl: config.openai_base_url ?? null,
+          accountType: accountType == null || ["chatgpt", "apiKey"].includes(accountType) ? accountType : "unknown",
+          contract: { api: 1, initialize: true, configRead: true, accountRead: true, routing: plan.recordedRouting === true ? "recorded" : "runtime", providerOverrides: settings }
+        };
+      })().catch(async (error) => {
+        try {
+          await stop(liveChild);
+        } catch {
+          return { error: "backend_probe_cleanup_failed" };
+        }
+        return { error: /^backend_[a-z_]+$/u.test(error?.code) ? error.code : "backend_config_unavailable" };
+      }).then((value) => {
+        process.stdout.write(JSON.stringify(value), () => {
+          if (!liveChild || liveChild.exitCode !== null || liveChild.signalCode !== null) process.exit(0);
+        });
+      });
+    }
+    module2.exports = { runConfigProbe };
+  }
+});
+
+// ../host/backend-spawn.cjs
+var require_backend_spawn = __commonJS({
+  "../host/backend-spawn.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var childProcess = require("node:child_process");
+    var { prepareBackendLaunch, verifyBackend, supportsBackendContract } = require_backend_launch();
+    var { runConfigProbe } = require_backend_config_probe();
+    var fail2 = (code) => Object.assign(new Error(code), { code });
+    var closeRoute = (route) => {
+      try {
+        Promise.resolve(route.close()).catch(() => {
+        });
+      } catch {
+      }
+    };
+    var DEFAULT_OPENAI = "https://api.openai.com/v1";
+    var DEFAULT_CHATGPT = "https://chatgpt.com/backend-api/codex";
+    function configArguments(args) {
+      const result = [];
+      for (let index = 0; index < args.length; index++) {
+        if (["-c", "--config", "--enable", "--disable", "-p", "--profile"].includes(args[index])) result.push(args[index], args[++index]);
+        else if (/^--(?:config|enable|disable|profile)=/u.test(args[index])) result.push(args[index]);
+      }
+      return result;
+    }
+    function lastStringOverride(args, setting) {
+      let found;
+      for (let index = 0; index < args.length; index++) {
+        const current = args[index];
+        const entry = current === "-c" || current === "--config" ? args[++index] : current.startsWith("--config=") ? current.slice("--config=".length) : null;
+        if (typeof entry !== "string") continue;
+        const at = entry.indexOf("=");
+        if (at < 0 || entry.slice(0, at).trim() !== setting) continue;
+        const raw = entry.slice(at + 1).trim();
+        let value;
+        try {
+          value = JSON.parse(raw);
+        } catch {
+          value = raw;
+        }
+        if (typeof value === "string") found = value;
+      }
+      return found;
+    }
+    function environmentFromPairs(pairs) {
+      const result = {};
+      for (const pair of pairs ?? []) {
+        const at = pair.indexOf("=", pair.startsWith("=") ? 1 : 0);
+        if (at > 0) result[pair.slice(0, at)] = pair.slice(at + 1);
+      }
+      return result;
+    }
+    function providerTrust(environment, cwd) {
+      const get = (name) => Object.entries(environment).find(([key]) => key.toUpperCase() === name)?.[1];
+      const configured = get("CODEX_CA_CERTIFICATE") ?? get("SSL_CERT_FILE");
+      if (configured === void 0) return void 0;
+      if (typeof configured !== "string" || !configured) throw fail2("backend_provider_trust_unsupported");
+      const target = path.resolve(cwd, configured);
+      let info;
+      try {
+        info = fs.statSync(target);
+      } catch {
+        throw fail2("backend_provider_trust_unsupported");
+      }
+      if (!info.isFile() || info.size < 1 || info.size > 128 * 1024) throw fail2("backend_provider_trust_unsupported");
+      let pem;
+      try {
+        pem = fs.readFileSync(target, "utf8");
+      } catch {
+        throw fail2("backend_provider_trust_unsupported");
+      }
+      if (!/^(?:\\s*-----BEGIN CERTIFICATE-----\\s+[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE-----\\s*)+$/u.test(pem)) throw fail2("backend_provider_trust_unsupported");
+      return pem;
+    }
+    function effectiveProviders(policy) {
+      if (!policy || typeof policy !== "object") throw fail2("backend_config_unavailable");
+      const routes = /* @__PURE__ */ new Map();
+      if (policy.openaiBaseUrl == null && ![null, "chatgpt", "apiKey"].includes(policy.accountType)) throw fail2("backend_auth_mode_unsupported");
+      const builtIn = policy.openaiBaseUrl ?? (policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI);
+      if (typeof builtIn !== "string") throw fail2("backend_config_unavailable");
+      routes.set("openai_base_url", builtIn);
+      const configured = policy.providerBaseUrls ?? {};
+      if (!configured || typeof configured !== "object" || Object.keys(configured).length > 16) throw fail2("backend_provider_unsupported");
+      if ((policy.modelProvider ?? "openai") !== "openai" && !Object.hasOwn(configured, policy.modelProvider)) throw fail2("backend_provider_unsupported");
+      for (const [name, url] of Object.entries(configured)) {
+        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== "string") throw fail2("backend_provider_unsupported");
+        routes.set(\`model_providers.\${name}.base_url\`, url);
+      }
+      return routes;
+    }
+    function installBackendSpawn2(configuration, dependencies = {}) {
+      const prototype = dependencies.prototype ?? childProcess.ChildProcess.prototype;
+      const originalSpawn = prototype.spawn;
+      const prepare = dependencies.prepare ?? prepareBackendLaunch;
+      const verify = dependencies.verify ?? verifyBackend;
+      const probe = dependencies.probe ?? ((plan) => {
+        const result = childProcess.spawnSync(configuration.runtimeExecutable, ["--no-addons", "--no-global-search-paths", "--eval", \`(\${runConfigProbe.toString()})()\`], {
+          input: JSON.stringify(plan),
+          env: plan.environment,
+          cwd: plan.cwd,
+          windowsHide: true,
+          encoding: "utf8",
+          maxBuffer: 256 * 1024,
+          timeout: 4500
+        });
+        if (result.error || result.status !== 0) throw fail2("backend_config_unavailable");
+        let value;
+        try {
+          value = JSON.parse(result.stdout);
+        } catch {
+          throw fail2("backend_config_unavailable");
+        }
+        if (value.error) throw fail2(value.error);
+        return value;
+      });
+      if (!configuration?.source?.reserveRoute || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail2("invalid_launch_configuration");
+      let closed = false, prepared = 0, declined = 0, reason = null;
+      const state = dependencies.state ?? { owned: /* @__PURE__ */ new WeakSet(), trust: /* @__PURE__ */ new WeakMap(), accounts: /* @__PURE__ */ new WeakMap(), providers: /* @__PURE__ */ new WeakMap(), records: /* @__PURE__ */ new Set(), pending: /* @__PURE__ */ new Set(), prepared: 0 };
+      const shared = !!dependencies.state;
+      const active = /* @__PURE__ */ new Set(), pending = state.pending, owned = state.owned, trustByProcess = state.trust, accountByProcess = state.accounts, providersByProcess = state.providers;
+      prepared = state.prepared;
+      function wrapped(options) {
+        const args = options?.args, file = options?.file;
+        if (closed || !Array.isArray(args) || !args.includes("app-server") || typeof file !== "string" || !path.isAbsolute(file) || !/^codex(?:\\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
+        let reservations = [], dispatched = false;
+        try {
+          const identity = verify(file, process.platform);
+          const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);
+          const cwd = options.cwd ?? process.cwd();
+          const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd, recordedRouting: identity.recorded === true });
+          const directOpenaiBaseUrl = lastStringOverride(actualArgs, "openai_base_url");
+          if (directOpenaiBaseUrl !== void 0) policy.openaiBaseUrl = directOpenaiBaseUrl;
+          const additionalCaPem = providerTrust(environment, cwd);
+          const providers = effectiveProviders(policy), providerRoutes = {};
+          if (!supportsBackendContract(policy.contract, [...providers.keys()])) throw fail2("backend_contract_unavailable");
+          for (const [setting, upstreamBaseUrl] of providers) {
+            const url = new URL(upstreamBaseUrl);
+            if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");
+            const reservation = configuration.source.reserveRoute({ upstreamBaseUrl, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });
+            reservations.push(reservation);
+            providerRoutes[setting] = reservation.baseUrl;
+          }
+          const launch = prepare({
+            executable: file,
+            arguments: actualArgs,
+            originalEnvironment: environment,
+            providerRoutes,
+            platform: process.platform,
+            compatibility: { ...identity, contract: policy.contract }
+          });
+          const next = { ...options, args: [args[0], ...launch.arguments] };
+          dispatched = true;
+          const result = originalSpawn.call(this, next);
+          owned.add(this);
+          trustByProcess.set(this, additionalCaPem);
+          providersByProcess.set(this, /* @__PURE__ */ new Set(["openai", ...Object.keys(policy.providerBaseUrls ?? {})]));
+          accountByProcess.set(this, {
+            route: reservations[0],
+            explicit: policy.openaiBaseUrl != null,
+            current: effectiveProviders(policy).get("openai_base_url"),
+            pending: null
+          });
+          prepared++;
+          state.prepared = prepared;
+          const ready = Promise.all(reservations.map((item) => item.ready));
+          ready.catch(() => {
+            reason = "route_unavailable";
+          });
+          pending.add(ready);
+          ready.finally(() => pending.delete(ready)).catch(() => {
+          });
+          const record = { child: this, reservations, compatibility: { binarySha256: identity.binarySha256, contract: policy.contract } };
+          state.records.add(record);
+          if (shared && dependencies.trackBackend) dependencies.trackBackend(record, { methodKey: "method", method: "account/updated", paramsKey: "params", modeKey: "authMode", targets: { chatgpt: DEFAULT_CHATGPT, apiKey: DEFAULT_OPENAI } });
+          else {
+            const release = () => {
+              for (const item of reservations) closeRoute(item);
+              active.delete(release);
+              state.records.delete(record);
+            };
+            active.add(release);
+            this.once("exit", release);
+            this.once("error", release);
+          }
+          return result;
+        } catch (error) {
+          for (const item of reservations) closeRoute(item);
+          declined++;
+          reason = [
+            "backend_identity_unavailable",
+            "backend_identity_changed",
+            "backend_contract_unavailable",
+            "backend_routing_contract_unavailable",
+            "backend_config_unavailable",
+            "backend_config_timeout",
+            "backend_config_too_large",
+            "backend_probe_cleanup_failed",
+            "backend_provider_unsupported",
+            "backend_auth_mode_unsupported",
+            "backend_provider_trust_unsupported",
+            "backend_route_unavailable"
+          ].includes(error.code) ? error.code : "route_unavailable";
+          if (dispatched) throw error;
+          return originalSpawn.call(this, options);
+        }
+      }
+      prototype.spawn = wrapped;
+      return Object.freeze({
+        async ready({ deadlineUnixMs = configuration.deadlineUnixMs } = {}) {
+          while (!prepared && !declined && !closed && Date.now() < deadlineUnixMs - 500) await new Promise((resolve) => setTimeout(resolve, 20));
+          if (prepared && pending.size > 0) {
+            const limit = deadlineUnixMs - 500 - Date.now();
+            if (limit <= 0) throw fail2("backend_route_timeout");
+            let timer;
+            try {
+              await Promise.race([Promise.all([...pending]), new Promise((_, reject) => {
+                timer = setTimeout(() => reject(fail2("backend_route_timeout")), limit);
+              })]);
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+          return this.inspect();
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          if (prototype.spawn === wrapped) prototype.spawn = originalSpawn;
+          if (!shared) for (const release of active) release();
+        },
+        ownsProcess: (child) => !closed && !!child && owned.has(child),
+        providerTrustForProcess: (child) => owned.has(child) ? trustByProcess.get(child) : void 0,
+        isProviderSupported: (child, provider) => owned.has(child) && providersByProcess.get(child)?.has(provider) === true,
+        pendingAccountUpdate: (child) => accountByProcess.get(child)?.pending ?? null,
+        updateAccountMode(child, mode) {
+          const state2 = accountByProcess.get(child);
+          if (!state2 || state2.explicit || mode == null) return;
+          if (mode !== "chatgpt" && mode !== "apiKey") {
+            reason = "backend_auth_mode_unsupported";
+            closeRoute(state2.route);
+            return;
+          }
+          const upstreamBaseUrl = mode === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI;
+          if (state2.current === upstreamBaseUrl) return;
+          const update = (state2.pending ?? Promise.resolve()).then(() => state2.route.update({ upstreamBaseUrl })).then(() => {
+            state2.current = upstreamBaseUrl;
+          }, (error) => {
+            reason = "route_unavailable";
+            closeRoute(state2.route);
+            throw error;
+          });
+          update.catch(() => {
+          });
+          state2.pending = update;
+          update.finally(() => {
+            if (state2.pending === update) state2.pending = null;
+          }).catch(() => {
+          });
+        },
+        inspect: () => ({
+          installed: !closed,
+          backendRootsPrepared: prepared,
+          backendRootsDeclined: declined,
+          available: state.records.size > 0 && !reason,
+          reason: reason ?? (state.records.size ? null : "child_unavailable")
+        })
+      });
+    }
+    module2.exports = { installBackendSpawn: installBackendSpawn2, effectiveProviders, configArguments, lastStringOverride, environmentFromPairs, providerTrust };
+  }
+});
+
+// ../host/source-diagnostics.cjs
+var require_source_diagnostics = __commonJS({
+  "../host/source-diagnostics.cjs"(exports2, module2) {
+    "use strict";
+    var fs = require("node:fs");
+    var path = require("node:path");
+    var os = require("node:os");
+    var code = (value) => typeof value === "string" && /^[a-z_]{1,80}$/i.test(value) ? value : null;
+    var integer = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+    function sourceDiagnostic(value) {
+      const desktop = value.desktop ?? {}, backend = value.backend ?? {};
+      return {
+        schema: 1,
+        pid: integer(value.pid),
+        startedUnixMs: integer(value.startedUnixMs),
+        finishedUnixMs: integer(value.finishedUnixMs),
+        phase: ["startup", "recovery"].includes(value.phase) ? value.phase : null,
+        appReady: value.appReady === true,
+        installed: value.installed === true,
+        sourceConnected: value.sourceConnected === true,
+        error: code(value.error),
+        recoveryReason: code(value.recoveryReason),
+        desktop: {
+          available: desktop.available === true,
+          reason: code(desktop.reason),
+          taskConfigurationAvailable: desktop.taskConfigurationAvailable === true,
+          taskConfigurationReason: code(desktop.taskConfigurationReason),
+          modules: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, desktop.modules?.[kind] === true])),
+          bindingErrors: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, code(desktop.bindingErrors?.[kind])])),
+          deferredBindings: Number.isSafeInteger(desktop.deferredBindings) ? desktop.deferredBindings : null,
+          mismatch: typeof desktop.mismatch?.name === "string" && /^[A-Za-z0-9_.-]{1,100}$/.test(desktop.mismatch.name) && /^[a-f0-9]{64}$/.test(desktop.mismatch.observedSha256) ? { name: desktop.mismatch.name, observedSha256: desktop.mismatch.observedSha256 } : null
+        },
+        backend: {
+          available: backend.available === true,
+          reason: code(backend.reason),
+          prepared: Number.isSafeInteger(backend.backendRootsPrepared) ? backend.backendRootsPrepared : null,
+          declined: Number.isSafeInteger(backend.backendRootsDeclined) ? backend.backendRootsDeclined : null
+        }
+      };
+    }
+    function recordSourceDiagnostic2(value) {
+      const report = sourceDiagnostic(value);
+      try {
+        fs.writeFileSync(path.join(os.tmpdir(), \`codlet-client-source-\${process.pid}-\${report.startedUnixMs}.json\`), JSON.stringify(report) + "\\n", { flag: "wx", mode: 384 });
+      } catch {
+      }
+    }
+    module2.exports = { recordSourceDiagnostic: recordSourceDiagnostic2, sourceDiagnostic };
+  }
+});
+
+// ../host/electron-main.cjs
+var { connectPlaintextSource } = require_plaintext_source_client();
+var { installDesktopPlaintext } = require_electron_plaintext();
+var { installBackendSpawn } = require_backend_spawn();
+var { recordSourceDiagnostic } = require_source_diagnostics();
+var fail = (code) => Object.assign(new Error(code), { code });
+function localBackends(context, ownsProcess, dependencies = {}) {
+  const profiles = dependencies.profiles ?? require_electron_plaintext().reviewedSourceProfiles;
+  const verify = dependencies.verify ?? require_backend_launch().verifyBackend;
+  const connections = /* @__PURE__ */ new Set();
+  const constructors = new Set(dependencies.connections ?? []);
+  if (dependencies.connections === void 0) for (const record of context.modules.list()) {
+    const profile = profiles[record.name];
+    const connectionSymbol = profile?.connectionSymbol ?? (profile?.kind === "connection" ? profile.symbol : null);
+    if (!connectionSymbol || profile.hash !== record.hash) continue;
+    constructors.add(record.evaluate(connectionSymbol));
+  }
+  for (const Constructor of constructors) {
+    for (const connection of context.modules.instances(Constructor)) {
+      const child = connection.connection?.proc;
+      if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== "string" || !/^codex(?:\\.exe)?$/i.test(require("node:path").basename(child.spawnfile))) continue;
+      verify(child.spawnfile, process.platform);
+      if (connection.getPendingRequestCount() !== 0 || connection.turnCwds?.pendingByStartId?.size || connection.turnCwds?.startedByTurnId?.size) throw fail("client_source_backend_busy");
+      connections.add(connection);
+    }
+  }
+  return connections;
+}
+async function recoverLocalBackends(context, ownsProcess, dependencies) {
+  for (const connection of localBackends(context, ownsProcess, dependencies)) {
+    await connection.restart({ intent: "restart", killCodexProcess: false });
+  }
+}
+function validateClientSource(electron, context) {
+  if (!electron.app.isReady()) return;
+  if (typeof context?.modules?.list !== "function" || typeof context.modules.subscribe !== "function") throw fail("client_bridge_required");
+}
+function installElectronTraffic(electron, configuration, context, dependencies = {}) {
+  if (!configuration?.source || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail("invalid_launch_configuration");
+  const shared = context?.resources.get("plaintextSource");
+  const source = shared ?? connectPlaintextSource(configuration.source);
+  const installedBeforeReady = !electron.app.isReady();
+  const installBackend = dependencies.installBackend ?? installBackendSpawn;
+  const installDesktop = dependencies.installDesktop ?? installDesktopPlaintext;
+  const recover = dependencies.recover ?? recoverLocalBackends;
+  let recoveryReason = null;
+  let readinessDeadlineUnixMs = null;
+  let readinessStartedUnixMs = null;
+  const diagnose = (installed, error) => {
+    try {
+      const desktopState = desktop?.inspect(), backendState = backend?.inspect();
+      (dependencies.diagnose ?? recordSourceDiagnostic)({
+        pid: process.pid,
+        startedUnixMs: readinessStartedUnixMs,
+        finishedUnixMs: Date.now(),
+        phase: installedBeforeReady ? "startup" : "recovery",
+        appReady: electron.app.isReady(),
+        installed,
+        sourceConnected,
+        error: error?.code ?? error?.name,
+        recoveryReason,
+        desktop: desktopState,
+        backend: backendState
+      });
+    } catch {
+    }
+  };
+  let sourceConnected = false, sourceReason = null;
+  source.ready.then(() => {
+    sourceConnected = true;
+  }, (error) => {
+    sourceReason = typeof error?.code === "string" ? error.code : "source_unavailable";
+  });
+  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null, expectedSources = [];
+  function attachHooks() {
+    backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs }, { state: context?.resources.get("backendState"), trackBackend: context?.trackBackend });
+    desktop = installDesktop(electron, {
+      source,
+      deadlineUnixMs: configuration.deadlineUnixMs,
+      ownsBackendProcess: backend.ownsProcess,
+      isProviderSupported: backend.isProviderSupported,
+      providerTrustForProcess: backend.providerTrustForProcess,
+      pendingAccountUpdate: backend.pendingAccountUpdate,
+      updateAccountMode: backend.updateAccountMode,
+      moduleRegistry: context?.modules,
+      state: context?.resources.get("desktopState"),
+      onlineUpdates: context?.onlineUpdates
+    });
+  }
+  try {
+    attachHooks();
+  } catch (error) {
+    desktop?.close();
+    backend?.close();
+    if (!shared) source.close();
+    throw error;
+  }
+  const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason } });
+  return Object.freeze({
+    handoffVersion: 1,
+    snapshot() {
+      const state = context?.resources.get("backendState");
+      if (!state || !context.resources.get("desktopState")) throw fail("core_update_next_start_required");
+      return { schema: 1, recoveryReason, activatedSources: lastActivation?.activatedSources?.map((source2) => source2.id) ?? [], backends: [...state.records].map((record) => ({
+        pid: record.child.pid ?? null,
+        routes: record.reservations.map((route) => route.baseUrl)
+      })), taskRoutes: context.resources.get("desktopState").taskRoutes.size };
+    },
+    suspend() {
+      if (closed || suspended || !shared || typeof desktop.suspend !== "function") return false;
+      desktop.suspend();
+      backend.close();
+      suspended = true;
+      return true;
+    },
+    restore(snapshot) {
+      if (!validateSnapshot(snapshot)) throw fail("core_update_snapshot_incompatible");
+      const records = [...context.resources.get("backendState").records];
+      if (snapshot.backends.some((previous) => !records.some((record) => record.child.pid === previous.pid && JSON.stringify(record.reservations.map((route) => route.baseUrl)) === JSON.stringify(previous.routes)))) throw fail("core_update_backend_changed");
+      recoveryReason = snapshot.recoveryReason;
+      expectedSources = snapshot.activatedSources ?? [];
+      restored = true;
+    },
+    async resume(snapshot) {
+      if (closed || !suspended) return false;
+      recoveryReason = snapshot.recoveryReason;
+      expectedSources = snapshot.activatedSources ?? [];
+      restored = true;
+      readinessDeadlineUnixMs = Date.now() + 8e3;
+      attachHooks();
+      suspended = false;
+      lastActivation = await this.ready();
+      return lastActivation.installed === true;
+    },
+    confirmTakeover() {
+      return !closed && !suspended && lastActivation?.installed === true;
+    },
+    async ready() {
+      readinessStartedUnixMs ??= Date.now();
+      try {
+        readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5e3 : configuration.deadlineUnixMs;
+        await source.ready;
+        if (context?.modules && !installedBeforeReady && !restored) {
+          try {
+            await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.() });
+          } catch (error) {
+            if (!["client_source_backend_busy", "backend_identity_unavailable", "backend_identity_changed"].includes(error?.code)) throw error;
+            recoveryReason = error.code;
+          }
+        }
+        const readyOptions = { deadlineUnixMs: readinessDeadlineUnixMs };
+        const backendReady = recoveryReason ? backend.inspect() : backend.ready(readyOptions).catch((error) => {
+          if (error?.code !== "backend_route_timeout") throw error;
+          recoveryReason = error.code;
+          return { ...backend.inspect(), available: false, reason: "route_unavailable" };
+        });
+        const [desktopState, backendState] = await Promise.all([desktop.ready(readyOptions), backendReady]);
+        const activatedSources = [], unsupportedSources = [];
+        if (desktopState.available) activatedSources.push({
+          id: "desktop-main-http",
+          operations: ["http.intercept"],
+          protocols: ["http", "sse"],
+          coverage: ["desktop-main-fetch", "desktop-main-upload-progress"]
+        });
+        else unsupportedSources.push({ id: "desktop-main-http", reason: ["unsupported_build", "timeout"].includes(desktopState.reason) ? desktopState.reason : "hook_unavailable" });
+        if (backendState.available && desktopState.taskConfigurationAvailable) activatedSources.push({
+          id: "owned-backend-provider",
+          operations: ["route.register", "route.update", "route.close", "http.intercept"],
+          protocols: ["http", "sse", "webSocket"],
+          coverage: ["owned-local-app-server-model-provider"]
+        });
+        else unsupportedSources.push({ id: "owned-backend-provider", reason: !desktopState.taskConfigurationAvailable ? desktopState.taskConfigurationReason === "unsupported_build" ? "unsupported_build" : "hook_unavailable" : backendState.reason === "child_unavailable" ? "child_unavailable" : "route_unavailable" });
+        const installed = activatedSources.length > 0;
+        if (expectedSources.some((id) => !activatedSources.some((source2) => source2.id === id))) throw fail("core_update_source_capability_lost");
+        diagnose(installed, null);
+        return lastActivation = { installed, activatedSources, unsupportedSources };
+      } catch (error) {
+        diagnose(false, error);
+        throw error;
+      }
+    },
+    inspect: status,
+    async close() {
+      if (closed) return;
+      closed = true;
+      desktop.close();
+      backend.close();
+      if (!shared) source.close();
+    }
+  });
+}
+function validateSnapshot(value) {
+  return !!value && value.schema === 1 && (value.recoveryReason === null || typeof value.recoveryReason === "string") && (value.activatedSources === void 0 || Array.isArray(value.activatedSources) && value.activatedSources.length <= 2 && new Set(value.activatedSources).size === value.activatedSources.length && value.activatedSources.every((id) => ["desktop-main-http", "owned-backend-provider"].includes(id))) && Array.isArray(value.backends) && value.backends.length <= 64 && Number.isSafeInteger(value.taskRoutes) && value.taskRoutes >= 0 && value.backends.every((record) => Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.routes) && record.routes.every((route) => typeof route === "string" && route.length < 2048));
+}
+module.exports = { handoffVersion: 1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };
+` };
   },
   beforeClientResume: require_windows_bootstrap().beforeClientResume,
   ...require_codex_traffic()
@@ -712,6 +9904,30 @@ Apache License
    limitations under the License.
 
 acorn@8.15.0 (MIT)
+
+MIT License
+
+Copyright (C) 2012-2022 by various contributors (see AUTHORS)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Acorn source parser (MIT)
 
 MIT License
 

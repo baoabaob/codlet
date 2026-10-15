@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const childProcess = require('node:child_process');
-const { prepareBackendLaunch, verifyBackend } = require('./backend-launch.cjs');
+const { prepareBackendLaunch, verifyBackend, supportsBackendContract } = require('./backend-launch.cjs');
 const { runConfigProbe } = require('./backend-config-probe.cjs');
 const fail = code => Object.assign(new Error(code), { code });
 const closeRoute = route => { try { Promise.resolve(route.close()).catch(() => {}); } catch {} };
@@ -65,7 +65,7 @@ function effectiveProviders(policy) {
   return routes;
 }
 
-// Intercept only an exact, verified local app-server child. Node's spawn entry is
+// Intercept only a local app-server child whose actual contract passed. Node's spawn entry is
 // synchronous, so reserveRoute supplies a URL immediately and completes its
 // authenticated registration before launch readiness is reported.
 function installBackendSpawn(configuration, dependencies = {}) {
@@ -92,21 +92,23 @@ function installBackendSpawn(configuration, dependencies = {}) {
     if (closed || !Array.isArray(args) || !args.includes('app-server') || typeof file !== 'string' || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
     let reservations = [], dispatched = false;
     try {
-      verify(file, process.platform);
+      const identity = verify(file, process.platform);
       const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);
       const cwd = options.cwd ?? process.cwd();
-      const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd });
+      const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd, recordedRouting: identity.recorded === true });
       const directOpenaiBaseUrl = lastStringOverride(actualArgs, 'openai_base_url');
       if (directOpenaiBaseUrl !== undefined) policy.openaiBaseUrl = directOpenaiBaseUrl;
       const additionalCaPem = providerTrust(environment, cwd);
-      const providerRoutes = {};
-      for (const [setting, upstreamBaseUrl] of effectiveProviders(policy)) {
+      const providers = effectiveProviders(policy), providerRoutes = {};
+      if (!supportsBackendContract(policy.contract, [...providers.keys()])) throw fail('backend_contract_unavailable');
+      for (const [setting, upstreamBaseUrl] of providers) {
         const url = new URL(upstreamBaseUrl);
         if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail('backend_provider_unsupported');
         const reservation = configuration.source.reserveRoute({ upstreamBaseUrl, ...(additionalCaPem === undefined ? {} : { additionalCaPem }) });
         reservations.push(reservation); providerRoutes[setting] = reservation.baseUrl;
       }
-      const launch = prepare({ executable: file, arguments: actualArgs, originalEnvironment: environment, providerRoutes, platform: process.platform });
+      const launch = prepare({ executable: file, arguments: actualArgs, originalEnvironment: environment, providerRoutes, platform: process.platform,
+        compatibility: { ...identity, contract: policy.contract } });
       const next = { ...options, args: [args[0], ...launch.arguments] };
       dispatched = true;
       const result = originalSpawn.call(this, next);
@@ -117,14 +119,16 @@ function installBackendSpawn(configuration, dependencies = {}) {
       prepared++;state.prepared=prepared;
       const ready = Promise.all(reservations.map(item => item.ready));
       ready.catch(() => { reason = 'route_unavailable'; }); pending.add(ready); ready.finally(() => pending.delete(ready)).catch(() => {});
-      const record={child:this,reservations};state.records.add(record);
+      const record={child:this,reservations,compatibility:{binarySha256:identity.binarySha256,contract:policy.contract}};state.records.add(record);
       if(shared&&dependencies.trackBackend) dependencies.trackBackend(record,{methodKey:'method',method:'account/updated',paramsKey:'params',modeKey:'authMode',targets:{chatgpt:DEFAULT_CHATGPT,apiKey:DEFAULT_OPENAI}});
       else {const release = () => { for (const item of reservations) closeRoute(item); active.delete(release);state.records.delete(record); };
         active.add(release); this.once('exit', release); this.once('error', release);}
       return result;
     } catch (error) {
       for (const item of reservations) closeRoute(item);
-      declined++; reason = ['backend_build_unverified', 'backend_config_unavailable', 'backend_provider_unsupported', 'backend_auth_mode_unsupported', 'backend_provider_trust_unsupported', 'backend_route_unavailable'].includes(error.code) ? error.code : 'route_unavailable';
+      declined++; reason = ['backend_identity_unavailable', 'backend_identity_changed', 'backend_contract_unavailable', 'backend_routing_contract_unavailable',
+        'backend_config_unavailable', 'backend_config_timeout', 'backend_config_too_large', 'backend_probe_cleanup_failed', 'backend_provider_unsupported',
+        'backend_auth_mode_unsupported', 'backend_provider_trust_unsupported', 'backend_route_unavailable'].includes(error.code) ? error.code : 'route_unavailable';
       if (dispatched) throw error;
       return originalSpawn.call(this, options);
     }

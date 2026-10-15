@@ -145,7 +145,7 @@ test('split stdio and connection modules require both hashes and restore their o
   assert.equal(transport.Stdio.prototype.send,transport.original);
   assert.equal(manager.Connection.prototype.routeIncomingMessage,manager.original);
   const denied=installDesktopPlaintext({app:{isReady:()=>false}},{source,deadlineUnixMs:Date.now()+1000},{expectedHashes:{'application-network-startup-CY4ZWOz-.js':'0'.repeat(64)}});
-  try{compile('application-network-startup-CY4ZWOz-.js',stdio);assert.equal(denied.inspect().taskConfigurationAvailable,false);assert.equal(denied.inspect().taskConfigurationReason,'unsupported_build');}finally{denied.close();}
+  try{compile('application-network-startup-CY4ZWOz-.js',stdio);assert.equal(denied.inspect().taskConfigurationAvailable,false);assert.equal(denied.inspect().taskConfigurationReason,'contract_unavailable');}finally{denied.close();}
 });
 
 test('verified wEe context intercepts final fetch and upload request while preserving official options', async () => {
@@ -342,6 +342,6 @@ test('unsupported Stdio source leaves verified Desktop fetch source available', 
     compile('src-C3YaUE83.js','class mQ{};module.exports={};');
     const state=await hook.ready();
     assert.equal(state.available,true);assert.equal(state.taskConfigurationAvailable,false);
-    assert.equal(state.reason,null);assert.equal(state.taskConfigurationReason,'unsupported_build');
+    assert.equal(state.reason,null);assert.equal(state.taskConfigurationReason,'contract_unavailable');
   } finally {hook.close();}
 });

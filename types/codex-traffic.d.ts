@@ -20,6 +20,7 @@ export interface HostContext {
     inspect(): Promise<{ available: boolean; listening: boolean; attached: boolean; activatedSources: readonly { id: string; operations: readonly string[]; protocols: readonly string[]; coverage: readonly string[] }[]; registered: number; active: number; pending: number }>;
   };
 }
+/** Optional legacy evidence lookup. It neither enables nor disables capabilities. */
 export interface CodexTrafficCompatibility { platform?: 'win32' | 'darwin'; binarySha256?: string }
 export interface CodexTrafficMetadata { readonly kind: 'model.responses' | 'model.list' | 'unknown'; readonly threadId: string | null; readonly model: null }
 export type CodexTrafficHandlers = {
@@ -28,6 +29,7 @@ export type CodexTrafficHandlers = {
 };
 export interface CodexTrafficStatus {
   readonly available: boolean;
+  /** Historical fixture evidence for the optional lookup, independent of availability. */
   readonly fixtureVerified: boolean;
   readonly listening: boolean;
   readonly attached: boolean;
@@ -51,7 +53,7 @@ export declare function rewrittenCodexJsonBody(request: Pick<HttpChannelResponse
 export interface CodexHostSdk {
   readonly api: 1;
   readonly traffic: {
-    /** Creates a semantic helper bound to this Host's traffic grants/lifetime. */
+    /** Creates a semantic helper bound to this Host's grants and live Core source capabilities. No client version or fingerprint is required. */
     create(compatibility?: CodexTrafficCompatibility): ReturnType<typeof createCodexTraffic>;
     probe(compatibility?: CodexTrafficCompatibility): Promise<CodexTrafficStatus>;
     readonly classify: typeof classifyCodexTraffic;

@@ -18,7 +18,11 @@ pub(crate) fn startup_affected(plugins: &[LoadedPlugin]) -> BTreeSet<String> {
                 && capability.api.get() == 1
                 && capability.scope == CapabilityScope::Runtime
         });
-        if provider || crate::traffic_owner::required_for_plugins(std::slice::from_ref(plugin)) {
+        // Core's Desktop read/write/event provider is independent of its native
+        // traffic source. A traffic permission is also not a required capability:
+        // its consumer can inspect availability and keep its other features live.
+        // Only an external launch provider's explicit dependents suspend with it.
+        if provider && !crate::codex::is_internal_plugin(plugin) {
             affected.extend(crate::plugin_lifecycle::dependent_closure(
                 plugins,
                 &plugin.manifest.id,

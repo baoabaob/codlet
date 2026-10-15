@@ -11,7 +11,7 @@ var require_codex_traffic = __commonJS({
     "use strict";
     var zlib = require("node:zlib");
     var failure = (code) => Object.assign(new Error(code), { code });
-    var VERIFIED_BACKENDS = Object.freeze({
+    var RECORDED_BACKENDS = Object.freeze({
       win32: Object.freeze([
         // Disposable Windows acceptance covers both signed distributions of the
         // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.
@@ -33,7 +33,7 @@ var require_codex_traffic = __commonJS({
       ])
     });
     function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {
-      const backend = VERIFIED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
+      const backend = RECORDED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
       const fixtureVerified = !!backend;
       return Object.freeze({
         available: false,
@@ -44,7 +44,7 @@ var require_codex_traffic = __commonJS({
         desktop: false,
         attachments: false,
         fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],
-        reason: fixtureVerified ? "native_process_ingress_not_attached" : "backend_build_unverified"
+        reason: "native_process_ingress_not_attached"
       });
     }
     function threadIdFromHeaders(headers) {
@@ -102,16 +102,16 @@ var require_codex_traffic = __commonJS({
           native = await context.traffic.inspect();
         } catch (error) {
           if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");
-          return Object.freeze({ ...verified, listening: false, attached: false, reason: verified.fixtureVerified ? error.code : verified.reason });
+          return Object.freeze({ ...verified, listening: false, attached: false, reason: error.code });
         }
         const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;
         return Object.freeze({
           ...verified,
-          available: verified.fixtureVerified && attached,
+          available: attached,
           listening: native.listening === true,
           attached,
           restartRequired: !attached,
-          reason: !verified.fixtureVerified ? verified.reason : attached ? null : "native_process_ingress_not_attached",
+          reason: attached ? null : "native_process_ingress_not_attached",
           coverage: "registered-backend-origins",
           registered: native.registered,
           active: native.active
@@ -119,7 +119,6 @@ var require_codex_traffic = __commonJS({
       }
       async function registerInterceptor(options, handlers) {
         if (context.signal.aborted) throw failure("host_stopping");
-        if (!verified.fixtureVerified) throw failure("backend_build_unverified");
         if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");
         const kinds = options.kinds ?? ["model.responses", "model.list"];
         if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");
@@ -133,6 +132,9 @@ var require_codex_traffic = __commonJS({
             return true;
           }
         })) throw failure("invalid_argument");
+        const readiness = await probe();
+        if (!readiness.available) throw failure(readiness.reason);
+        if (context.signal.aborted) throw failure("host_stopping");
         const wrapped = {};
         const metadata = (value) => {
           const info = classifyCodexTraffic2({ ...value, verified: true, allowedOrigins: origins });

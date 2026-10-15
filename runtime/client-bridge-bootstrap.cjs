@@ -1,6 +1,6 @@
 'use strict';
 // Core bootstrap uses Electron's public fuse schema and Node inspector protocol.
-// Application fingerprints and private bindings remain in ordinary plugins.
+// Application contracts and private bindings belong to Core's source module.
 const fs=require('node:fs'),path=require('node:path'),net=require('node:net');
 const {createHash,randomBytes}=require('node:crypto');
 const fail=code=>Object.assign(new Error(code),{code});
@@ -70,7 +70,7 @@ async function attach(context,source) {
     const identity=await request('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,expression:"({pid:process.pid,executable:process.execPath,type:process.type,ready:require('electron').app.isReady()})",returnByValue:true});
     const value=identity.result?.value;
     if(identity.exceptionDetails||value?.pid!==context.expectedPid||!sameExecutable(context.executable,value.executable)||value.type!=='browser'||value.ready!==false)throw fail('client_bridge_identity_mismatch');
-    const expression=`(() => { const electron=require('electron');(${consumeInspector.toString()})(process,electron);const module={exports:{}};((module,exports,require)=>{${source}\n})(module,module.exports,require);const bridge=module.exports.startClientBridge(electron,${JSON.stringify({token,source:context.traffic.source,ownedFixtureRoutes:context.ownedFixtureRoutes===true})});globalThis[Symbol.for(${key})]=bridge;${context.selection?`bridge.installInitial(${JSON.stringify(context.selection)}).catch(()=>{});`:''}return true;})()`;
+    const expression=`((entry) => { const electron=require('electron');(${consumeInspector.toString()})(process,electron);const bootstrapModule={exports:{}};((module,exports,require)=>{${source}\n})(bootstrapModule,bootstrapModule.exports,require);const bridge=bootstrapModule.exports.startClientBridge(electron,${JSON.stringify({token,source:context.traffic.source,ownedFixtureRoutes:context.ownedFixtureRoutes===true})},{entry});globalThis[Symbol.for(${key})]=bridge;${context.selection?`bridge.installInitial(${JSON.stringify(context.selection)}).catch(()=>{});`:''}return true;})({filename:typeof __filename==='string'?__filename:null,exported:typeof module==='object'?module.exports:null,evaluate:expression=>eval(expression)})`;
     const installed=await request('Debugger.evaluateOnCallFrame',{callFrameId:frame.callFrameId,expression,returnByValue:true});
     if(installed.exceptionDetails||installed.result?.value!==true)throw fail('client_bridge_install_failed');
     await request('Debugger.resume');

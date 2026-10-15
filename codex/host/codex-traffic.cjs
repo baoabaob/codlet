@@ -1,10 +1,9 @@
 'use strict';
-// Official Adapter-owned protocol/launch knowledge. Core has no Codex names.
-// Native owns launch attachment. The public SDK registers with the consuming
-// Host context, so the Adapter cannot lend its own permissions to other plugins.
+// Core-owned protocol metadata. Recorded file identities are historical evidence;
+// live source capabilities decide availability for the consuming Host.
 const zlib = require('node:zlib');
 const failure = code => Object.assign(new Error(code), { code });
-const VERIFIED_BACKENDS = Object.freeze({
+const RECORDED_BACKENDS = Object.freeze({
   win32: Object.freeze([
     // Disposable Windows acceptance covers both signed distributions of the
     // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.
@@ -26,11 +25,11 @@ const VERIFIED_BACKENDS = Object.freeze({
   ]),
 });
 function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {
-  const backend = VERIFIED_BACKENDS[platform]?.find(profile => binarySha256?.toLowerCase() === profile.sha256);
+  const backend = RECORDED_BACKENDS[platform]?.find(profile => binarySha256?.toLowerCase() === profile.sha256);
   const fixtureVerified = !!backend;
   return Object.freeze({ available: false, fixtureVerified, restartRequired: true, officialOAuth: false, existingLoadedThreads: false, desktop: false, attachments: false,
     fixtureProtocols: fixtureVerified ? ['http', 'https', 'sse', 'ws', 'wss'] : [],
-    reason: fixtureVerified ? 'native_process_ingress_not_attached' : 'backend_build_unverified' });
+    reason: 'native_process_ingress_not_attached' });
 }
 function threadIdFromHeaders(headers) {
   if (!Array.isArray(headers)) return null;
@@ -75,17 +74,16 @@ function createCodexTraffic(context, compatibility = {}) {
     try { native = await context.traffic.inspect(); }
     catch (error) {
       if (!['traffic_unavailable', 'permission_denied', 'capability_unavailable', 'host_stopping', 'authorization_revoked'].includes(error.code)) throw failure('core_traffic_unavailable');
-      return Object.freeze({ ...verified, listening: false, attached: false, reason: verified.fixtureVerified ? error.code : verified.reason });
+      return Object.freeze({ ...verified, listening: false, attached: false, reason: error.code });
     }
     const attached = native.attached === true && native.available === true
       && native.activatedSources?.some(source => source.id === 'owned-backend-provider' && source.coverage?.includes('owned-local-app-server-model-provider')) === true;
-    return Object.freeze({ ...verified, available: verified.fixtureVerified && attached, listening: native.listening === true, attached,
-      restartRequired: !attached, reason: !verified.fixtureVerified ? verified.reason : attached ? null : 'native_process_ingress_not_attached',
+    return Object.freeze({ ...verified, available: attached, listening: native.listening === true, attached,
+      restartRequired: !attached, reason: attached ? null : 'native_process_ingress_not_attached',
       coverage: 'registered-backend-origins', registered: native.registered, active: native.active });
   }
   async function registerInterceptor(options, handlers) {
     if (context.signal.aborted) throw failure('host_stopping');
-    if (!verified.fixtureVerified) throw failure('backend_build_unverified');
     if (!options || typeof options !== 'object' || Object.keys(options).some(key => !['id', 'priority', 'timeoutMs', 'kinds', 'origins'].includes(key))) throw failure('invalid_argument');
     const kinds = options.kinds ?? ['model.responses', 'model.list'];
     if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some(kind => !['model.responses', 'model.list'].includes(kind))) throw failure('invalid_argument');
@@ -95,6 +93,9 @@ function createCodexTraffic(context, compatibility = {}) {
       try { const url = new URL(origin); return url.origin !== origin || !['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.protocol === 'http:' && !['127.0.0.1', 'localhost'].includes(url.hostname); }
       catch { return true; }
     })) throw failure('invalid_argument');
+    const readiness = await probe();
+    if (!readiness.available) throw failure(readiness.reason);
+    if (context.signal.aborted) throw failure('host_stopping');
     const wrapped = {};
     const metadata = value => { const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins }); return kinds.includes(info.kind) ? info : null; };
     const requestThreads = new Map();

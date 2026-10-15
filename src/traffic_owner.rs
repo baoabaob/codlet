@@ -8,19 +8,6 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Input is the launch catalog's enabled plugins, after normal validation.
-pub(crate) fn required_for_plugins(plugins: &[crate::plugins::LoadedPlugin]) -> bool {
-    use crate::plugins::Permission::TrafficIntercept;
-    plugins.iter().any(|plugin| {
-        plugin.manifest.host.is_some()
-            && plugin.manifest.permissions.contains(&TrafficIntercept)
-            && plugin
-                .authorization
-                .as_ref()
-                .is_some_and(|record| record.grants.contains(&TrafficIntercept))
-    })
-}
-
 pub(crate) struct TrafficOwner {
     traffic: Traffic,
     directory: tempfile::TempDir,
@@ -461,40 +448,6 @@ pub(crate) fn secure_directory(path: &Path) -> Result<(), HostError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn entrance_requires_an_enabled_host_with_declared_and_explicitly_granted_interception() {
-        use crate::plugins::{LoadedPlugin, LocalPluginRegistration, Permission};
-        let mut plugin = LoadedPlugin {
-            manifest: serde_json::from_value(json!({"schema":1,"id":"traffic-test","version":"1","host":{"entry":"host.js"},"permissions":["host.process","traffic.intercept"]})).unwrap(),
-            authorization: None, source: None, host: None, generation: 1,
-        };
-        assert!(!required_for_plugins(&[]));
-        assert!(!required_for_plugins(&[plugin.clone()]));
-        plugin.authorization = Some(LocalPluginRegistration {
-            grants: vec![Permission::HostProcess],
-            ..Default::default()
-        });
-        assert!(!required_for_plugins(&[plugin.clone()]));
-        plugin
-            .authorization
-            .as_mut()
-            .unwrap()
-            .grants
-            .push(Permission::TrafficIntercept);
-        assert!(required_for_plugins(&[plugin.clone()]));
-        plugin
-            .manifest
-            .permissions
-            .retain(|permission| *permission != Permission::TrafficIntercept);
-        assert!(!required_for_plugins(&[plugin.clone()]));
-        plugin
-            .manifest
-            .permissions
-            .push(Permission::TrafficIntercept);
-        plugin.manifest.host = None;
-        assert!(!required_for_plugins(&[plugin]));
-    }
 
     fn descriptor() -> Value {
         json!({"source":{"version":1,"kind":"plaintext","protocols":["http","sse","webSocket"],

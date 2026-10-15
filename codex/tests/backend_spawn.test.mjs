@@ -6,6 +6,7 @@ import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 const { installBackendSpawn, effectiveProviders, providerTrust, lastStringOverride } = createRequire(import.meta.url)('../host/backend-spawn.cjs');
+const contract=(...settings)=>({api:1,initialize:true,configRead:true,accountRead:true,routing:'runtime',providerOverrides:['openai_base_url',...settings]});
 
 test('effective provider routing preserves ChatGPT/API-key defaults and custom response providers', () => {
   assert.equal(effectiveProviders({accountType:'chatgpt'}).get('openai_base_url'),'https://chatgpt.com/backend-api/codex');
@@ -26,7 +27,7 @@ test('owned verified backend receives only route config; original environment an
   const prototype={spawn(options){dispatched.push(options);return 'started';}}, original=prototype.spawn;
   const hook=installBackendSpawn({source,runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000},{prototype,
     verify(){return {binarySha256:'verified'}},
-    probe(){return {accountType:'chatgpt',providerBaseUrls:{custom:'https://custom.example/v1'}}},
+    probe(){return {accountType:'chatgpt',providerBaseUrls:{custom:'https://custom.example/v1'},contract:contract('model_providers.custom.base_url')}},
     prepare(plan){return {arguments:[...plan.arguments,'-c',`openai_base_url=${plan.providerRoutes.openai_base_url}`,'-c',`model_providers.custom.base_url=${plan.providerRoutes['model_providers.custom.base_url']}`]}}});
   try {
     const unrelated={file:process.execPath,args:[process.execPath,'--version'],envPairs:['OTHER=original']};
@@ -55,14 +56,14 @@ test('existing provider CA is passed only as a scoped route trust input', t => {
   assert.throws(()=>providerTrust({CODEX_CA_CERTIFICATE:''},directory),{code:'backend_provider_trust_unsupported'});
 });
 
-test('unverified backend uses its original launch and reports only backend source unsupported', async () => {
+test('a failed backend contract keeps its original launch and reports only the failed source', async () => {
   const dispatched=[],prototype={spawn(value){dispatched.push(value);return 'original';}};
-  const hook=installBackendSpawn({source:{reserveRoute(){throw Error('should not route')}},runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000},{prototype,verify(){throw Object.assign(Error('unverified'),{code:'backend_build_unverified'})}});
+  const hook=installBackendSpawn({source:{reserveRoute(){throw Error('should not route')}},runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000},{prototype,verify(){return{binarySha256:'unlisted',recorded:false}},probe(){return{accountType:'apiKey'}}});
   try {
     const executable=path.resolve('codex.exe'),options={file:executable,args:[executable,'app-server'],envPairs:['OTHER=original']};
     assert.equal(prototype.spawn.call(new EventEmitter(),options),'original');
     assert.equal(dispatched[0],options);
-    assert.equal((await hook.ready()).reason,'backend_build_unverified');
+    assert.equal((await hook.ready()).reason,'backend_contract_unavailable');
   } finally {hook.close();}
 });
 
@@ -70,7 +71,7 @@ test('client-owned backend routes and process identity survive source replacemen
   const routes=[],state={owned:new WeakSet(),trust:new WeakMap(),accounts:new WeakMap(),providers:new WeakMap(),records:new Set(),pending:new Set(),prepared:0};
   const source={reserveRoute(){const route={baseUrl:'http://127.0.0.1:43210/owned/',ready:Promise.resolve(),closed:false,close(){route.closed=true;}};routes.push(route);return route;}};
   const prototype={spawn(){return 'started';}},original=prototype.spawn;
-  const dependencies={prototype,state,verify(){},probe(){return {accountType:'apiKey'};},prepare(plan){return {arguments:plan.arguments};}};
+  const dependencies={prototype,state,verify(){return{binarySha256:'unlisted',recorded:false}},probe(){return {accountType:'apiKey',contract:contract()};},prepare(plan){return {arguments:plan.arguments};}};
   const configuration={source,runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000};
   const first=installBackendSpawn(configuration,dependencies),child=new EventEmitter(),file=path.resolve('codex.exe');
   prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});

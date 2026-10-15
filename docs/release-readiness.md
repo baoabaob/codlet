@@ -1,12 +1,12 @@
 # Codlet 发布准备与验证范围
 
-当前 **1.0.0-rc.1** 是统一 Core 的本地候选，尚未公开发布，也未安装到日常 Native。UI/Desktop 实现由 Core 维护；GUI、完整功能验收插件和分屏工作台使用 `context.codex`。旧 Adapter 注册、授权和数据保留，安装器只提供可选 GUI。
+当前候选为 **1.0.0-rc.2**。Core 根据实际接口和能力接入客户端；未知文件指纹进入协议和结构验证。UI/Desktop 实现由 Core 维护，普通插件使用 `context.codex`。
 
-源码、不可覆写制品、自动检查和实际 Native 结果集中在 [1.0.0-rc.1 验证记录](releases/1.0.0-rc.1/validation.md)。[实现契约](releases/1.0.0-rc.1/implementation.md)说明迁移与 SDK；[仓库职责](repository-layout.md)说明源码、分发和归档位置。
+本轮变更与检查集中在 [1.0.0-rc.2 验证记录](releases/1.0.0-rc.2/validation.md)。[1.0.0-rc.1 记录](releases/1.0.0-rc.1/validation.md)保留此前验收和制品身份；它使用专用 source 的流量检查没有覆盖正式安装后的自动接入。[仓库职责](repository-layout.md)说明源码、分发和归档位置。
 
 兼容在线更新覆盖明确列出的 Core JavaScript 模块、Native source 和显式插件状态。Rust/Node、固定桥接与注入组件继续常驻；这些组件变化以及首次从旧架构升级，需要自然退出后的下一次启动。回执未知时查询原操作，不盲目重放。详见[在线更新契约](core-online-update.md)。
 
-本候选的实机证据来自独立 Windows Native 和合成数据。自动测试、实际 IPC、Native 功能和人工输入验收分别记录。以下范围仍独立保留：
+本轮已验证真实后端的只读协议与配置往返、生产后端启动函数，以及真实 Node 调试器暂停入口的捕获。正式安装包的完整桌面启动需要在当前托管窗口退出后验证。以下范围另行保留：
 
 - macOS 本轮桌面验收与 Windows ARM64；macOS 整包更新走 next-start，尚无在线组件包契约。
 - 干净设备的安装、升级、卸载及签名。

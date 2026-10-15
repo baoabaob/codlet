@@ -129,7 +129,7 @@ test('Core establishes its recovery transport before entry without an adapter an
   await writeFile(path.join(root,'node_modules','electron','index.js'),`module.exports={app:{isReady:()=>globalThis.nativeReady===true,getAppPath:()=>${JSON.stringify(root)}}};`);
   await writeFile(path.join(root,'preload.cjs'),'process.type="browser";');
   await writeFile(path.join(root,'native.cjs'),'class Native {constructor(){this.live=true;}};module.exports={Native};');
-  await writeFile(path.join(root,'main.cjs'),'require("./native.cjs");globalThis.nativeReady=true;setInterval(()=>{},1000);');
+  await writeFile(path.join(root,'main.cjs'),'class NativeEntry {value(){return "entry-original";}};require("./native.cjs");globalThis.nativeEntry=new NativeEntry();globalThis.nativeReady=true;setInterval(()=>{},1000);');
   const child=spawn(process.execPath,['--inspect-brk=127.0.0.1:0','--require',path.join(root,'preload.cjs'),path.join(root,'main.cjs')],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
   child.stdout.on('error',()=>{});child.stderr.on('error',()=>{});
   t.after(async()=>{child.kill();await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));assert.equal(path.dirname(path.resolve(root)),path.resolve(tmpdir()));await rm(root,{recursive:true});});
@@ -140,6 +140,15 @@ test('Core establishes its recovery transport before entry without an adapter an
   assert.equal(result.exactChildVerified,true);assert.equal(result.bridge.pid,child.pid);assert.equal(result.activation.installed,false);
   let status;try{status=await request(result.bridge,{op:'status'},result.bridge.token);}catch(error){error.message='bridge status: '+error.message;throw error;}
   assert.equal(status.result.pid,child.pid);assert.ok(status.result.moduleObserver.modules>=1);
+  const entrySource=`module.exports={installElectronTraffic(_electron,_configuration,context){
+    const record=context.modules.list().find(record=>record.name==='main.cjs');
+    if(!record||!record.classes.some(value=>value.binding==='NativeEntry'))throw Error('entry_not_captured');
+    const Constructor=record.evaluate('NativeEntry'),original=Constructor.prototype.value;
+    Constructor.prototype.value=()=>"entry-hooked";
+    return{ready:async()=>({installed:true,activatedSources:[],unsupportedSources:[],entryValue:record.evaluate('globalThis.nativeEntry').value()}),close(){Constructor.prototype.value=original;}};
+  }};`;
+  const entry=await request(result.bridge,{op:'replace',operationId:'entry-source',expectedEpoch:0,previousOwner:null,owner:'dev.entry',generation:1,code:entrySource,configuration:{}},result.bridge.token);
+  assert.equal(entry.result.outcome,'applied');assert.equal(entry.result.activation.entryValue,'entry-hooked');
 });
 test('public fuse planning binds a single bounded edit to the current owned image and rejects unknown schemas', {skip:process.platform!=='win32'},async t=>{
   const root=await mkdtemp(path.join(tmpdir(),'codlet-public-fuse-'));

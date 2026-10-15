@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "kind": "production-backend-spawn-hook",
+  "identity": {
+    "platform": "win32",
+    "binarySha256": "e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242e031c495b99e",
+    "recorded": false
+  },
+  "backendPid": 18692,
+  "elapsedMs": 2657,
+  "automaticOwnership": true,
+  "providerOverrides": [
+    "openai_base_url",
+    "model_providers.contract_fixture.base_url"
+  ],
+  "contract": {
+    "api": 1,
+    "initialize": true,
+    "configRead": true,
+    "accountRead": true,
+    "routing": "runtime",
+    "providerOverrides": [
+      "openai_base_url",
+      "model_providers.contract_fixture.base_url"
+    ]
+  },
+  "childExited": true,
+  "routesClosed": true
+}

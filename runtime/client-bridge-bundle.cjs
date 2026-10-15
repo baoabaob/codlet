@@ -6571,7 +6571,7 @@ var require_acorn = __commonJS({
 // runtime/client-bridge.cjs
 var net = require("node:net");
 var path = require("node:path");
-var { realpathSync } = require("node:fs");
+var { realpathSync, readFileSync, statSync } = require("node:fs");
 var Module = require("node:module");
 var { createHash, timingSafeEqual, randomUUID } = require("node:crypto");
 var { connectPlaintextSource } = require_plaintext_source_client();
@@ -6591,6 +6591,32 @@ async function bounded(operation, code) {
     clearTimeout(timer);
   }
 }
+function describeClasses(ast) {
+  const bindings = /* @__PURE__ */ new Set(), classes = /* @__PURE__ */ new Map();
+  for (const node of ast.body) {
+    if (node.type === "VariableDeclaration") {
+      for (const item of node.declarations) if (item.id.type === "Identifier") bindings.add(item.id.name);
+    }
+    if (node.type === "ClassDeclaration" && node.id) bindings.add(node.id.name);
+  }
+  const add = (name, node) => {
+    if (!bindings.has(name) || !/^[A-Za-z_$][\w$]*$/u.test(name) || classes.size >= 1024) return;
+    const methods = node.body.body.filter((item) => item.type === "MethodDefinition" && !item.static && item.kind === "method").map((item) => !item.computed && item.key.type === "Identifier" ? item.key.name : item.key.type === "Literal" && typeof item.key.value === "string" ? item.key.value : null).filter((value) => value !== null).slice(0, 256);
+    if (methods.length) classes.set(name, { binding: name, methods });
+  };
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "ClassDeclaration" && node.id) add(node.id.name, node);
+    if (node.type === "VariableDeclarator" && node.id.type === "Identifier" && node.init?.type === "ClassExpression") add(node.id.name, node.init);
+    if (node.type === "AssignmentExpression" && node.left.type === "Identifier" && node.right.type === "ClassExpression") add(node.left.name, node.right);
+    for (const [name, child] of Object.entries(node)) if (name !== "start" && name !== "end") {
+      if (Array.isArray(child)) child.forEach(walk);
+      else if (child && typeof child === "object") walk(child);
+    }
+  };
+  walk(ast);
+  return [...classes.values()];
+}
 function observeModules(root, key, dependencies = {}) {
   const roots = [.../* @__PURE__ */ new Set([path.resolve(root), realpathSync(root)])];
   const prototype = dependencies.prototype ?? Module.prototype;
@@ -6598,10 +6624,15 @@ function observeModules(root, key, dependencies = {}) {
   const records = /* @__PURE__ */ new Map(), subscribers = /* @__PURE__ */ new Set(), instances = /* @__PURE__ */ new Set();
   const finalized = new FinalizationRegistry((ref) => instances.delete(ref));
   let closed = false;
+  const inScope = (filename) => typeof filename === "string" && roots.some((root2) => {
+    const relative = path.relative(root2, filename);
+    return relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+  });
   const registry = Object.freeze({
-    register(filename, hash, exported, evaluate) {
+    register(filename, hash, exported, evaluate, classes = []) {
       if (closed || records.size >= 4096 || typeof evaluate !== "function") return;
-      const record = Object.freeze({ filename, name: path.basename(filename), hash, exported, evaluate });
+      const descriptions = Object.freeze(classes.map((item) => Object.freeze({ binding: item.binding, methods: Object.freeze([...item.methods]) })));
+      const record = Object.freeze({ filename, name: path.basename(filename), hash, exported, evaluate, classes: descriptions });
       records.set(filename, record);
       for (const callback of subscribers) {
         try {
@@ -6651,18 +6682,14 @@ function observeModules(root, key, dependencies = {}) {
     }
   });
   const compile = function(code, filename) {
-    const inScope = typeof filename === "string" && roots.some((root2) => {
-      const relative = path.relative(root2, filename);
-      return relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
-    });
-    if (closed || typeof code !== "string" || !inScope || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
+    if (closed || typeof code !== "string" || !inScope(filename) || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
     const hash = createHash("sha256").update(code).digest("hex");
     const reference = `globalThis[Symbol.for(${JSON.stringify(Symbol.keyFor(key))})]`;
-    const registration = `
-;${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(expression)=>eval(expression));`;
     const edits = [];
+    let classes = [];
     try {
       const ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true });
+      classes = describeClasses(ast);
       const walk = (node) => {
         if (!node || typeof node !== "object") return;
         if (node.type === "MethodDefinition" && node.kind === "constructor") edits.push({ at: node.value.body.end - 1, text: `;${reference}?.instance(this);` });
@@ -6674,12 +6701,26 @@ function observeModules(root, key, dependencies = {}) {
       walk(ast);
     } catch {
     }
+    const registration = `
+;${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(expression)=>eval(expression),${JSON.stringify(classes)});`;
     let instrumented = code;
     for (const edit of edits.sort((a, b) => b.at - a.at)) instrumented = instrumented.slice(0, edit.at) + edit.text + instrumented.slice(edit.at);
     return original.call(this, instrumented + registration, filename);
   };
   Object.defineProperty(globalThis, key, { value: registry, configurable: true });
   prototype._compile = compile;
+  const entry = dependencies.entry;
+  if (entry && inScope(entry.filename) && typeof entry.evaluate === "function") {
+    try {
+      const info = statSync(entry.filename);
+      if (info.isFile() && info.size <= 20 * 1024 * 1024) {
+        const code = readFileSync(entry.filename, "utf8");
+        const ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true });
+        registry.register(entry.filename, createHash("sha256").update(code).digest("hex"), entry.exported, entry.evaluate, describeClasses(ast));
+      }
+    } catch {
+    }
+  }
   return registry;
 }
 function startClientBridge(electron, configuration, dependencies = {}) {

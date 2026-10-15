@@ -45,7 +45,8 @@ On Windows Core reads Electron's public versioned fuse schema and, when needed,
 plans a one-byte temporary inspector edit in the exact owned image. Native still
 verifies the whole file, mapped non-executable data and restoration. This public
 platform bootstrap has no application source hashes or private application
-symbols. Internal Codex modules retain their reviewed source/backend profiles and hook logic.
+symbols. Internal Codex modules use recorded mappings and live interface checks;
+unknown builds enter capability discovery. See [client compatibility](spec/client-compatibility.md).
 The temporary native debugger worker retires before activation; no additional
 distributed helper executable or permanent Node service is introduced.
 

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "identity": {
+    "platform": "win32",
+    "binarySha256": "e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242e031c495b99e",
+    "recorded": false
+  },
+  "elapsedMs": 1484,
+  "contract": {
+    "api": 1,
+    "initialize": true,
+    "configRead": true,
+    "accountRead": true,
+    "routing": "runtime",
+    "providerOverrides": [
+      "openai_base_url",
+      "model_providers.contract_fixture.base_url"
+    ]
+  },
+  "error": null
+}

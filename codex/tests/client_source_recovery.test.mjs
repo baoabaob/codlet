@@ -39,9 +39,14 @@ test('pending requests or active turns reject recovery before any backend is rec
     assert.equal(f.calls.length,0);
   }
 });
-test('unknown backend binaries and stale module hashes never receive a reconnect',async()=>{
+test('runtime-discovered connections can recover an unlisted backend identity through normal launch probing',async()=>{
+  const f=fixture(),local=new f.Connection();f.connections.push(local);
+  await recoverLocalBackends(f.context,()=>false,{connections:[f.Connection],verify:()=>({recorded:false,binarySha256:'unlisted'})});
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].connection,local);
+});
+test('unreadable backend identities and unmatched legacy module mappings never receive a reconnect',async()=>{
   const f=fixture();f.connections.push(new f.Connection());
-  await assert.rejects(recoverLocalBackends(f.context,()=>false,{...f.dependencies,verify(){throw Object.assign(Error(),{code:'backend_build_unverified'});}}),{code:'backend_build_unverified'});
+  await assert.rejects(recoverLocalBackends(f.context,()=>false,{...f.dependencies,verify(){throw Object.assign(Error(),{code:'backend_identity_unavailable'});}}),{code:'backend_identity_unavailable'});
   f.dependencies.profiles['native.cjs'].hash='different';
   await recoverLocalBackends(f.context,()=>false,f.dependencies);
   assert.equal(f.calls.length,0);
@@ -121,15 +126,27 @@ test('a startup backend route timeout does not discard verified Desktop coverage
   assert.deepEqual(result.unsupportedSources,[{id:'owned-backend-provider',reason:'route_unavailable'}]);
   assert.equal(entry.inspect().recovery.reason,'backend_route_timeout');await entry.close();
 });
-test('private source preflight validates reviewed Desktop modules without forcing a backend reconnect',()=>{
-  const {reviewedSourceProfiles}=createRequire(import.meta.url)('../host/electron-plaintext.cjs');
-  const names=['bootstrap-CZlEGA2m.js','main-C_jM0dPl.js','application-network-startup-ouXbhtc5.js'];
-  const context={modules:{list:()=>names.map(name=>({name,hash:reviewedSourceProfiles[name].hash})),instances(){throw Error('preflight must not select a reconnect');}}};
+test('source preflight admits the observer ABI independently of source fingerprints and reconnects',()=>{
+  const context={modules:{list:()=>[{name:'future-entry.js',hash:'unlisted'}],subscribe(){return()=>{}},instances(){throw Error('preflight must not select a reconnect');}}};
   assert.doesNotThrow(()=>validateClientSource({app:{isReady:()=>true}},context));
+  assert.throws(()=>validateClientSource({app:{isReady:()=>true}},{modules:{list:()=>[]}}),{code:'client_bridge_required'});
 });
 
 test('a diagnostic write failure cannot reject source activation',async()=>{
   const f=entryFixture();f.dependencies.diagnose=()=>{throw Error('read-only temporary directory');};
   const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();
   assert.equal((await entry.ready()).installed,true);await entry.close();
+});
+
+test('a source replacement cannot silently lose an active capability and the old source resumes',async()=>{
+  const f=entryFixture();f.context.resources.set('backendState',{records:new Set()});f.context.resources.set('desktopState',{taskRoutes:new Set()});
+  const install=f.dependencies.installDesktop;
+  f.dependencies.installDesktop=(...args)=>({...install(...args),suspend(){}});
+  const original=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();await original.ready();
+  const snapshot=original.snapshot();assert.deepEqual(snapshot.activatedSources,['desktop-main-http','owned-backend-provider']);assert.equal(original.suspend(),true);
+  const candidate=installElectronTraffic(f.electron,f.configuration,f.context,{...f.dependencies,installBackend:()=>({
+    ready:async()=>({available:false,reason:'backend_contract_unavailable'}),inspect:()=>({available:false}),ownsProcess:()=>false,close(){}
+  })});
+  candidate.restore(snapshot);await assert.rejects(candidate.ready(),{code:'core_update_source_capability_lost'});await candidate.close();
+  assert.equal(await original.resume(snapshot),true);assert.deepEqual(original.inspect().backend.available,true);await original.close();
 });

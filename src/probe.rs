@@ -928,7 +928,7 @@ fn start_codlet_runtime_with_connector_filtered(
     {
         let registry = PluginRegistry::load(renderer.registry_path())?;
         let prepared =
-            prepare_plugin_runtimes_filtered(registry, Some("client_source_build_unverified"))?;
+            prepare_plugin_runtimes_filtered(registry, Some("client_source_unavailable"))?;
         renderer = prepared.0;
         renderer.enable_runtime_skill();
         renderer.set_status_publisher(status.clone());

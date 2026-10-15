@@ -767,6 +767,2273 @@ var require_plaintext_source_client = __commonJS({
   }
 });
 
+// ../../runtime/sdk-source-parser.cjs
+var require_sdk_source_parser = __commonJS({
+  "../../runtime/sdk-source-parser.cjs"(exports2, module2) {
+    var si = (g, L) => () => (L || g((L = { exports: {} }).exports, L), L.exports);
+    var vt = si((me, mt) => {
+      (function(g, L) {
+        typeof me == "object" && typeof mt < "u" ? L(me) : typeof define == "function" && define.amd ? define(["exports"], L) : (g = typeof globalThis < "u" ? globalThis : g || self, L(g.acorn = {}));
+      })(me, (function(g) {
+        "use strict";
+        var L = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 80, 3, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 343, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 330, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 726, 6, 110, 6, 6, 9, 4759, 9, 787719, 239], Ne = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 71, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 2, 60, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 328, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 129, 74, 6, 0, 67, 12, 65, 1, 2, 0, 29, 6135, 9, 1237, 42, 9, 8936, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 496, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4153, 7, 221, 3, 5761, 15, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 4191], gt = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ACE\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65", Ve = "\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0559\u0560-\u0588\u05D0-\u05EA\u05EF-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u0870-\u0887\u0889-\u088E\u08A0-\u08C9\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C5D\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDD\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D04-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E86-\u0E8A\u0E8C-\u0EA3\u0EA5\u0EA7-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u1711\u171F-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1878\u1880-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4C\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C8A\u1C90-\u1CBA\u1CBD-\u1CBF\u1CE9-\u1CEC\u1CEE-\u1CF3\u1CF5\u1CF6\u1CFA\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u2090-\u209C\u2102\u2107\u210A-\u2113\u2115\u2118-\u211D\u2124\u2126\u2128\u212A-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309B-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312F\u3131-\u318E\u31A0-\u31BF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7CD\uA7D0\uA7D1\uA7D3\uA7D5-\uA7DC\uA7F2-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA8FE\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB69\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC", ve = { 3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile", 5: "class enum extends super const export import", 6: "enum", strict: "implements interface let package private protected public static yield", strictBind: "eval arguments" }, ge = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this", bt = { 5: ge, "5module": ge + " export import", 6: ge + " const class extends export import super" }, yt = /^in(stanceof)?$/, _t = new RegExp("[" + Ve + "]"), Ct = new RegExp("[" + Ve + gt + "]");
+        function be(e, t) {
+          for (var i = 65536, s = 0; s < t.length; s += 2) {
+            if (i += t[s], i > e) return false;
+            if (i += t[s + 1], i >= e) return true;
+          }
+          return false;
+        }
+        function T(e, t) {
+          return e < 65 ? e === 36 : e < 91 ? true : e < 97 ? e === 95 : e < 123 ? true : e <= 65535 ? e >= 170 && _t.test(String.fromCharCode(e)) : t === false ? false : be(e, Ne);
+        }
+        function B(e, t) {
+          return e < 48 ? e === 36 : e < 58 ? true : e < 65 ? false : e < 91 ? true : e < 97 ? e === 95 : e < 123 ? true : e <= 65535 ? e >= 170 && Ct.test(String.fromCharCode(e)) : t === false ? false : be(e, Ne) || be(e, L);
+        }
+        var v = function(t, i) {
+          i === void 0 && (i = {}), this.label = t, this.keyword = i.keyword, this.beforeExpr = !!i.beforeExpr, this.startsExpr = !!i.startsExpr, this.isLoop = !!i.isLoop, this.isAssign = !!i.isAssign, this.prefix = !!i.prefix, this.postfix = !!i.postfix, this.binop = i.binop || null, this.updateContext = null;
+        };
+        function I(e, t) {
+          return new v(e, { beforeExpr: true, binop: t });
+        }
+        var E = { beforeExpr: true }, A = { startsExpr: true }, ae = {};
+        function m(e, t) {
+          return t === void 0 && (t = {}), t.keyword = e, ae[e] = new v(e, t);
+        }
+        var a = { num: new v("num", A), regexp: new v("regexp", A), string: new v("string", A), name: new v("name", A), privateId: new v("privateId", A), eof: new v("eof"), bracketL: new v("[", { beforeExpr: true, startsExpr: true }), bracketR: new v("]"), braceL: new v("{", { beforeExpr: true, startsExpr: true }), braceR: new v("}"), parenL: new v("(", { beforeExpr: true, startsExpr: true }), parenR: new v(")"), comma: new v(",", E), semi: new v(";", E), colon: new v(":", E), dot: new v("."), question: new v("?", E), questionDot: new v("?."), arrow: new v("=>", E), template: new v("template"), invalidTemplate: new v("invalidTemplate"), ellipsis: new v("...", E), backQuote: new v("`", A), dollarBraceL: new v("${", { beforeExpr: true, startsExpr: true }), eq: new v("=", { beforeExpr: true, isAssign: true }), assign: new v("_=", { beforeExpr: true, isAssign: true }), incDec: new v("++/--", { prefix: true, postfix: true, startsExpr: true }), prefix: new v("!/~", { beforeExpr: true, prefix: true, startsExpr: true }), logicalOR: I("||", 1), logicalAND: I("&&", 2), bitwiseOR: I("|", 3), bitwiseXOR: I("^", 4), bitwiseAND: I("&", 5), equality: I("==/!=/===/!==", 6), relational: I("</>/<=/>=", 7), bitShift: I("<</>>/>>>", 8), plusMin: new v("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }), modulo: I("%", 10), star: I("*", 10), slash: I("/", 10), starstar: new v("**", { beforeExpr: true }), coalesce: I("??", 1), _break: m("break"), _case: m("case", E), _catch: m("catch"), _continue: m("continue"), _debugger: m("debugger"), _default: m("default", E), _do: m("do", { isLoop: true, beforeExpr: true }), _else: m("else", E), _finally: m("finally"), _for: m("for", { isLoop: true }), _function: m("function", A), _if: m("if"), _return: m("return", E), _switch: m("switch"), _throw: m("throw", E), _try: m("try"), _var: m("var"), _const: m("const"), _while: m("while", { isLoop: true }), _with: m("with"), _new: m("new", { beforeExpr: true, startsExpr: true }), _this: m("this", A), _super: m("super", A), _class: m("class", A), _extends: m("extends", E), _export: m("export"), _import: m("import", A), _null: m("null", A), _true: m("true", A), _false: m("false", A), _in: m("in", { beforeExpr: true, binop: 7 }), _instanceof: m("instanceof", { beforeExpr: true, binop: 7 }), _typeof: m("typeof", { beforeExpr: true, prefix: true, startsExpr: true }), _void: m("void", { beforeExpr: true, prefix: true, startsExpr: true }), _delete: m("delete", { beforeExpr: true, prefix: true, startsExpr: true }) }, k = /\r\n?|\n|\u2028|\u2029/, Te = new RegExp(k.source, "g");
+        function j(e) {
+          return e === 10 || e === 13 || e === 8232 || e === 8233;
+        }
+        function Le(e, t, i) {
+          i === void 0 && (i = e.length);
+          for (var s = t; s < i; s++) {
+            var r = e.charCodeAt(s);
+            if (j(r)) return s < i - 1 && r === 13 && e.charCodeAt(s + 1) === 10 ? s + 2 : s + 1;
+          }
+          return -1;
+        }
+        var ye = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/, C = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g, Re = Object.prototype, St = Re.hasOwnProperty, kt = Re.toString, H = Object.hasOwn || (function(e, t) {
+          return St.call(e, t);
+        }), Oe = Array.isArray || (function(e) {
+          return kt.call(e) === "[object Array]";
+        }), Be = /* @__PURE__ */ Object.create(null);
+        function U(e) {
+          return Be[e] || (Be[e] = new RegExp("^(?:" + e.replace(/ /g, "|") + ")$"));
+        }
+        function D(e) {
+          return e <= 65535 ? String.fromCharCode(e) : (e -= 65536, String.fromCharCode((e >> 10) + 55296, (e & 1023) + 56320));
+        }
+        var wt = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF])/, W = function(t, i) {
+          this.line = t, this.column = i;
+        };
+        W.prototype.offset = function(t) {
+          return new W(this.line, this.column + t);
+        };
+        var Z = function(t, i, s) {
+          this.start = i, this.end = s, t.sourceFile !== null && (this.source = t.sourceFile);
+        };
+        function _e(e, t) {
+          for (var i = 1, s = 0; ; ) {
+            var r = Le(e, s, t);
+            if (r < 0) return new W(i, t - s);
+            ++i, s = r;
+          }
+        }
+        var re = { ecmaVersion: null, sourceType: "script", onInsertedSemicolon: null, onTrailingComma: null, allowReserved: null, allowReturnOutsideFunction: false, allowImportExportEverywhere: false, allowAwaitOutsideFunction: null, allowSuperOutsideMethod: null, allowHashBang: false, checkPrivateFields: true, locations: false, onToken: null, onComment: null, ranges: false, program: null, sourceFile: null, directSourceFile: null, preserveParens: false }, De = false;
+        function At(e) {
+          var t = {};
+          for (var i in re) t[i] = e && H(e, i) ? e[i] : re[i];
+          if (t.ecmaVersion === "latest" ? t.ecmaVersion = 1e8 : t.ecmaVersion == null ? (!De && typeof console == "object" && console.warn && (De = true, console.warn(`Since Acorn 8.0.0, options.ecmaVersion is required.
+Defaulting to 2020, but this will stop working in the future.`)), t.ecmaVersion = 11) : t.ecmaVersion >= 2015 && (t.ecmaVersion -= 2009), t.allowReserved == null && (t.allowReserved = t.ecmaVersion < 5), (!e || e.allowHashBang == null) && (t.allowHashBang = t.ecmaVersion >= 14), Oe(t.onToken)) {
+            var s = t.onToken;
+            t.onToken = function(r) {
+              return s.push(r);
+            };
+          }
+          return Oe(t.onComment) && (t.onComment = It(t, t.onComment)), t;
+        }
+        function It(e, t) {
+          return function(i, s, r, n, u, o) {
+            var h = { type: i ? "Block" : "Line", value: s, start: r, end: n };
+            e.locations && (h.loc = new Z(this, u, o)), e.ranges && (h.range = [r, n]), t.push(h);
+          };
+        }
+        var J = 1, z = 2, Ce = 4, Fe = 8, Se = 16, Me = 32, ne = 64, Ue = 128, G = 256, $ = 512, ue = J | z | G;
+        function ke(e, t) {
+          return z | (e ? Ce : 0) | (t ? Fe : 0);
+        }
+        var oe = 0, we = 1, F = 2, qe = 3, je = 4, Ge = 5, _ = function(t, i, s) {
+          this.options = t = At(t), this.sourceFile = t.sourceFile, this.keywords = U(bt[t.ecmaVersion >= 6 ? 6 : t.sourceType === "module" ? "5module" : 5]);
+          var r = "";
+          t.allowReserved !== true && (r = ve[t.ecmaVersion >= 6 ? 6 : t.ecmaVersion === 5 ? 5 : 3], t.sourceType === "module" && (r += " await")), this.reservedWords = U(r);
+          var n = (r ? r + " " : "") + ve.strict;
+          this.reservedWordsStrict = U(n), this.reservedWordsStrictBind = U(n + " " + ve.strictBind), this.input = String(i), this.containsEsc = false, s ? (this.pos = s, this.lineStart = this.input.lastIndexOf(`
+`, s - 1) + 1, this.curLine = this.input.slice(0, this.lineStart).split(k).length) : (this.pos = this.lineStart = 0, this.curLine = 1), this.type = a.eof, this.value = null, this.start = this.end = this.pos, this.startLoc = this.endLoc = this.curPosition(), this.lastTokEndLoc = this.lastTokStartLoc = null, this.lastTokStart = this.lastTokEnd = this.pos, this.context = this.initialContext(), this.exprAllowed = true, this.inModule = t.sourceType === "module", this.strict = this.inModule || this.strictDirective(this.pos), this.potentialArrowAt = -1, this.potentialArrowInForAwait = false, this.yieldPos = this.awaitPos = this.awaitIdentPos = 0, this.labels = [], this.undefinedExports = /* @__PURE__ */ Object.create(null), this.pos === 0 && t.allowHashBang && this.input.slice(0, 2) === "#!" && this.skipLineComment(2), this.scopeStack = [], this.enterScope(J), this.regexpState = null, this.privateNameStack = [];
+        }, R = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, inClassStaticBlock: { configurable: true } };
+        _.prototype.parse = function() {
+          var t = this.options.program || this.startNode();
+          return this.nextToken(), this.parseTopLevel(t);
+        }, R.inFunction.get = function() {
+          return (this.currentVarScope().flags & z) > 0;
+        }, R.inGenerator.get = function() {
+          return (this.currentVarScope().flags & Fe) > 0;
+        }, R.inAsync.get = function() {
+          return (this.currentVarScope().flags & Ce) > 0;
+        }, R.canAwait.get = function() {
+          for (var e = this.scopeStack.length - 1; e >= 0; e--) {
+            var t = this.scopeStack[e], i = t.flags;
+            if (i & (G | $)) return false;
+            if (i & z) return (i & Ce) > 0;
+          }
+          return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+        }, R.allowSuper.get = function() {
+          var e = this.currentThisScope(), t = e.flags;
+          return (t & ne) > 0 || this.options.allowSuperOutsideMethod;
+        }, R.allowDirectSuper.get = function() {
+          return (this.currentThisScope().flags & Ue) > 0;
+        }, R.treatFunctionsAsVar.get = function() {
+          return this.treatFunctionsAsVarInScope(this.currentScope());
+        }, R.allowNewDotTarget.get = function() {
+          for (var e = this.scopeStack.length - 1; e >= 0; e--) {
+            var t = this.scopeStack[e], i = t.flags;
+            if (i & (G | $) || i & z && !(i & Se)) return true;
+          }
+          return false;
+        }, R.inClassStaticBlock.get = function() {
+          return (this.currentVarScope().flags & G) > 0;
+        }, _.extend = function() {
+          for (var t = [], i = arguments.length; i--; ) t[i] = arguments[i];
+          for (var s = this, r = 0; r < t.length; r++) s = t[r](s);
+          return s;
+        }, _.parse = function(t, i) {
+          return new this(i, t).parse();
+        }, _.parseExpressionAt = function(t, i, s) {
+          var r = new this(s, t, i);
+          return r.nextToken(), r.parseExpression();
+        }, _.tokenizer = function(t, i) {
+          return new this(i, t);
+        }, Object.defineProperties(_.prototype, R);
+        var w = _.prototype, Et = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
+        w.strictDirective = function(e) {
+          if (this.options.ecmaVersion < 5) return false;
+          for (; ; ) {
+            C.lastIndex = e, e += C.exec(this.input)[0].length;
+            var t = Et.exec(this.input.slice(e));
+            if (!t) return false;
+            if ((t[1] || t[2]) === "use strict") {
+              C.lastIndex = e + t[0].length;
+              var i = C.exec(this.input), s = i.index + i[0].length, r = this.input.charAt(s);
+              return r === ";" || r === "}" || k.test(i[0]) && !(/[(`.[+\-/*%<>=,?^&]/.test(r) || r === "!" && this.input.charAt(s + 1) === "=");
+            }
+            e += t[0].length, C.lastIndex = e, e += C.exec(this.input)[0].length, this.input[e] === ";" && e++;
+          }
+        }, w.eat = function(e) {
+          return this.type === e ? (this.next(), true) : false;
+        }, w.isContextual = function(e) {
+          return this.type === a.name && this.value === e && !this.containsEsc;
+        }, w.eatContextual = function(e) {
+          return this.isContextual(e) ? (this.next(), true) : false;
+        }, w.expectContextual = function(e) {
+          this.eatContextual(e) || this.unexpected();
+        }, w.canInsertSemicolon = function() {
+          return this.type === a.eof || this.type === a.braceR || k.test(this.input.slice(this.lastTokEnd, this.start));
+        }, w.insertSemicolon = function() {
+          if (this.canInsertSemicolon()) return this.options.onInsertedSemicolon && this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc), true;
+        }, w.semicolon = function() {
+          !this.eat(a.semi) && !this.insertSemicolon() && this.unexpected();
+        }, w.afterTrailingComma = function(e, t) {
+          if (this.type === e) return this.options.onTrailingComma && this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc), t || this.next(), true;
+        }, w.expect = function(e) {
+          this.eat(e) || this.unexpected();
+        }, w.unexpected = function(e) {
+          this.raise(e ?? this.start, "Unexpected token");
+        };
+        var he = function() {
+          this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+        };
+        w.checkPatternErrors = function(e, t) {
+          if (e) {
+            e.trailingComma > -1 && this.raiseRecoverable(e.trailingComma, "Comma is not permitted after the rest element");
+            var i = t ? e.parenthesizedAssign : e.parenthesizedBind;
+            i > -1 && this.raiseRecoverable(i, t ? "Assigning to rvalue" : "Parenthesized pattern");
+          }
+        }, w.checkExpressionErrors = function(e, t) {
+          if (!e) return false;
+          var i = e.shorthandAssign, s = e.doubleProto;
+          if (!t) return i >= 0 || s >= 0;
+          i >= 0 && this.raise(i, "Shorthand property assignments are valid only in destructuring patterns"), s >= 0 && this.raiseRecoverable(s, "Redefinition of __proto__ property");
+        }, w.checkYieldAwaitInDefaultParams = function() {
+          this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos) && this.raise(this.yieldPos, "Yield expression cannot be a default value"), this.awaitPos && this.raise(this.awaitPos, "Await expression cannot be a default value");
+        }, w.isSimpleAssignTarget = function(e) {
+          return e.type === "ParenthesizedExpression" ? this.isSimpleAssignTarget(e.expression) : e.type === "Identifier" || e.type === "MemberExpression";
+        };
+        var p = _.prototype;
+        p.parseTopLevel = function(e) {
+          var t = /* @__PURE__ */ Object.create(null);
+          for (e.body || (e.body = []); this.type !== a.eof; ) {
+            var i = this.parseStatement(null, true, t);
+            e.body.push(i);
+          }
+          if (this.inModule) for (var s = 0, r = Object.keys(this.undefinedExports); s < r.length; s += 1) {
+            var n = r[s];
+            this.raiseRecoverable(this.undefinedExports[n].start, "Export '" + n + "' is not defined");
+          }
+          return this.adaptDirectivePrologue(e.body), this.next(), e.sourceType = this.options.sourceType, this.finishNode(e, "Program");
+        };
+        var Ae = { kind: "loop" }, Pt = { kind: "switch" };
+        p.isLet = function(e) {
+          if (this.options.ecmaVersion < 6 || !this.isContextual("let")) return false;
+          C.lastIndex = this.pos;
+          var t = C.exec(this.input), i = this.pos + t[0].length, s = this.input.charCodeAt(i);
+          if (s === 91 || s === 92) return true;
+          if (e) return false;
+          if (s === 123 || s > 55295 && s < 56320) return true;
+          if (T(s, true)) {
+            for (var r = i + 1; B(s = this.input.charCodeAt(r), true); ) ++r;
+            if (s === 92 || s > 55295 && s < 56320) return true;
+            var n = this.input.slice(i, r);
+            if (!yt.test(n)) return true;
+          }
+          return false;
+        }, p.isAsyncFunction = function() {
+          if (this.options.ecmaVersion < 8 || !this.isContextual("async")) return false;
+          C.lastIndex = this.pos;
+          var e = C.exec(this.input), t = this.pos + e[0].length, i;
+          return !k.test(this.input.slice(this.pos, t)) && this.input.slice(t, t + 8) === "function" && (t + 8 === this.input.length || !(B(i = this.input.charCodeAt(t + 8)) || i > 55295 && i < 56320));
+        }, p.isUsingKeyword = function(e, t) {
+          if (this.options.ecmaVersion < 17 || !this.isContextual(e ? "await" : "using")) return false;
+          C.lastIndex = this.pos;
+          var i = C.exec(this.input), s = this.pos + i[0].length;
+          if (k.test(this.input.slice(this.pos, s))) return false;
+          if (e) {
+            var r = s + 5, n;
+            if (this.input.slice(s, r) !== "using" || r === this.input.length || B(n = this.input.charCodeAt(r)) || n > 55295 && n < 56320) return false;
+            C.lastIndex = r;
+            var u = C.exec(this.input);
+            if (u && k.test(this.input.slice(r, r + u[0].length))) return false;
+          }
+          if (t) {
+            var o = s + 2, h;
+            if (this.input.slice(s, o) === "of" && (o === this.input.length || !B(h = this.input.charCodeAt(o)) && !(h > 55295 && h < 56320))) return false;
+          }
+          var l = this.input.charCodeAt(s);
+          return T(l, true) || l === 92;
+        }, p.isAwaitUsing = function(e) {
+          return this.isUsingKeyword(true, e);
+        }, p.isUsing = function(e) {
+          return this.isUsingKeyword(false, e);
+        }, p.parseStatement = function(e, t, i) {
+          var s = this.type, r = this.startNode(), n;
+          switch (this.isLet(e) && (s = a._var, n = "let"), s) {
+            case a._break:
+            case a._continue:
+              return this.parseBreakContinueStatement(r, s.keyword);
+            case a._debugger:
+              return this.parseDebuggerStatement(r);
+            case a._do:
+              return this.parseDoStatement(r);
+            case a._for:
+              return this.parseForStatement(r);
+            case a._function:
+              return e && (this.strict || e !== "if" && e !== "label") && this.options.ecmaVersion >= 6 && this.unexpected(), this.parseFunctionStatement(r, false, !e);
+            case a._class:
+              return e && this.unexpected(), this.parseClass(r, true);
+            case a._if:
+              return this.parseIfStatement(r);
+            case a._return:
+              return this.parseReturnStatement(r);
+            case a._switch:
+              return this.parseSwitchStatement(r);
+            case a._throw:
+              return this.parseThrowStatement(r);
+            case a._try:
+              return this.parseTryStatement(r);
+            case a._const:
+            case a._var:
+              return n = n || this.value, e && n !== "var" && this.unexpected(), this.parseVarStatement(r, n);
+            case a._while:
+              return this.parseWhileStatement(r);
+            case a._with:
+              return this.parseWithStatement(r);
+            case a.braceL:
+              return this.parseBlock(true, r);
+            case a.semi:
+              return this.parseEmptyStatement(r);
+            case a._export:
+            case a._import:
+              if (this.options.ecmaVersion > 10 && s === a._import) {
+                C.lastIndex = this.pos;
+                var u = C.exec(this.input), o = this.pos + u[0].length, h = this.input.charCodeAt(o);
+                if (h === 40 || h === 46) return this.parseExpressionStatement(r, this.parseExpression());
+              }
+              return this.options.allowImportExportEverywhere || (t || this.raise(this.start, "'import' and 'export' may only appear at the top level"), this.inModule || this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'")), s === a._import ? this.parseImport(r) : this.parseExport(r, i);
+            default:
+              if (this.isAsyncFunction()) return e && this.unexpected(), this.next(), this.parseFunctionStatement(r, true, !e);
+              var l = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+              if (l) return t && this.options.sourceType === "script" && this.raise(this.start, "Using declaration cannot appear in the top level when source type is `script`"), l === "await using" && (this.canAwait || this.raise(this.start, "Await using cannot appear outside of async function"), this.next()), this.next(), this.parseVar(r, false, l), this.semicolon(), this.finishNode(r, "VariableDeclaration");
+              var d = this.value, y = this.parseExpression();
+              return s === a.name && y.type === "Identifier" && this.eat(a.colon) ? this.parseLabeledStatement(r, d, y, e) : this.parseExpressionStatement(r, y);
+          }
+        }, p.parseBreakContinueStatement = function(e, t) {
+          var i = t === "break";
+          this.next(), this.eat(a.semi) || this.insertSemicolon() ? e.label = null : this.type !== a.name ? this.unexpected() : (e.label = this.parseIdent(), this.semicolon());
+          for (var s = 0; s < this.labels.length; ++s) {
+            var r = this.labels[s];
+            if ((e.label == null || r.name === e.label.name) && (r.kind != null && (i || r.kind === "loop") || e.label && i)) break;
+          }
+          return s === this.labels.length && this.raise(e.start, "Unsyntactic " + t), this.finishNode(e, i ? "BreakStatement" : "ContinueStatement");
+        }, p.parseDebuggerStatement = function(e) {
+          return this.next(), this.semicolon(), this.finishNode(e, "DebuggerStatement");
+        }, p.parseDoStatement = function(e) {
+          return this.next(), this.labels.push(Ae), e.body = this.parseStatement("do"), this.labels.pop(), this.expect(a._while), e.test = this.parseParenExpression(), this.options.ecmaVersion >= 6 ? this.eat(a.semi) : this.semicolon(), this.finishNode(e, "DoWhileStatement");
+        }, p.parseForStatement = function(e) {
+          this.next();
+          var t = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+          if (this.labels.push(Ae), this.enterScope(0), this.expect(a.parenL), this.type === a.semi) return t > -1 && this.unexpected(t), this.parseFor(e, null);
+          var i = this.isLet();
+          if (this.type === a._var || this.type === a._const || i) {
+            var s = this.startNode(), r = i ? "let" : this.value;
+            return this.next(), this.parseVar(s, true, r), this.finishNode(s, "VariableDeclaration"), this.parseForAfterInit(e, s, t);
+          }
+          var n = this.isContextual("let"), u = false, o = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+          if (o) {
+            var h = this.startNode();
+            return this.next(), o === "await using" && this.next(), this.parseVar(h, true, o), this.finishNode(h, "VariableDeclaration"), this.parseForAfterInit(e, h, t);
+          }
+          var l = this.containsEsc, d = new he(), y = this.start, S = t > -1 ? this.parseExprSubscripts(d, "await") : this.parseExpression(true, d);
+          return this.type === a._in || (u = this.options.ecmaVersion >= 6 && this.isContextual("of")) ? (t > -1 ? (this.type === a._in && this.unexpected(t), e.await = true) : u && this.options.ecmaVersion >= 8 && (S.start === y && !l && S.type === "Identifier" && S.name === "async" ? this.unexpected() : this.options.ecmaVersion >= 9 && (e.await = false)), n && u && this.raise(S.start, "The left-hand side of a for-of loop may not start with 'let'."), this.toAssignable(S, false, d), this.checkLValPattern(S), this.parseForIn(e, S)) : (this.checkExpressionErrors(d, true), t > -1 && this.unexpected(t), this.parseFor(e, S));
+        }, p.parseForAfterInit = function(e, t, i) {
+          return (this.type === a._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && t.declarations.length === 1 ? (this.options.ecmaVersion >= 9 && (this.type === a._in ? i > -1 && this.unexpected(i) : e.await = i > -1), this.parseForIn(e, t)) : (i > -1 && this.unexpected(i), this.parseFor(e, t));
+        }, p.parseFunctionStatement = function(e, t, i) {
+          return this.next(), this.parseFunction(e, ee | (i ? 0 : Ie), false, t);
+        }, p.parseIfStatement = function(e) {
+          return this.next(), e.test = this.parseParenExpression(), e.consequent = this.parseStatement("if"), e.alternate = this.eat(a._else) ? this.parseStatement("if") : null, this.finishNode(e, "IfStatement");
+        }, p.parseReturnStatement = function(e) {
+          return !this.inFunction && !this.options.allowReturnOutsideFunction && this.raise(this.start, "'return' outside of function"), this.next(), this.eat(a.semi) || this.insertSemicolon() ? e.argument = null : (e.argument = this.parseExpression(), this.semicolon()), this.finishNode(e, "ReturnStatement");
+        }, p.parseSwitchStatement = function(e) {
+          this.next(), e.discriminant = this.parseParenExpression(), e.cases = [], this.expect(a.braceL), this.labels.push(Pt), this.enterScope(0);
+          for (var t, i = false; this.type !== a.braceR; ) if (this.type === a._case || this.type === a._default) {
+            var s = this.type === a._case;
+            t && this.finishNode(t, "SwitchCase"), e.cases.push(t = this.startNode()), t.consequent = [], this.next(), s ? t.test = this.parseExpression() : (i && this.raiseRecoverable(this.lastTokStart, "Multiple default clauses"), i = true, t.test = null), this.expect(a.colon);
+          } else t || this.unexpected(), t.consequent.push(this.parseStatement(null));
+          return this.exitScope(), t && this.finishNode(t, "SwitchCase"), this.next(), this.labels.pop(), this.finishNode(e, "SwitchStatement");
+        }, p.parseThrowStatement = function(e) {
+          return this.next(), k.test(this.input.slice(this.lastTokEnd, this.start)) && this.raise(this.lastTokEnd, "Illegal newline after throw"), e.argument = this.parseExpression(), this.semicolon(), this.finishNode(e, "ThrowStatement");
+        };
+        var Nt = [];
+        p.parseCatchClauseParam = function() {
+          var e = this.parseBindingAtom(), t = e.type === "Identifier";
+          return this.enterScope(t ? Me : 0), this.checkLValPattern(e, t ? je : F), this.expect(a.parenR), e;
+        }, p.parseTryStatement = function(e) {
+          if (this.next(), e.block = this.parseBlock(), e.handler = null, this.type === a._catch) {
+            var t = this.startNode();
+            this.next(), this.eat(a.parenL) ? t.param = this.parseCatchClauseParam() : (this.options.ecmaVersion < 10 && this.unexpected(), t.param = null, this.enterScope(0)), t.body = this.parseBlock(false), this.exitScope(), e.handler = this.finishNode(t, "CatchClause");
+          }
+          return e.finalizer = this.eat(a._finally) ? this.parseBlock() : null, !e.handler && !e.finalizer && this.raise(e.start, "Missing catch or finally clause"), this.finishNode(e, "TryStatement");
+        }, p.parseVarStatement = function(e, t, i) {
+          return this.next(), this.parseVar(e, false, t, i), this.semicolon(), this.finishNode(e, "VariableDeclaration");
+        }, p.parseWhileStatement = function(e) {
+          return this.next(), e.test = this.parseParenExpression(), this.labels.push(Ae), e.body = this.parseStatement("while"), this.labels.pop(), this.finishNode(e, "WhileStatement");
+        }, p.parseWithStatement = function(e) {
+          return this.strict && this.raise(this.start, "'with' in strict mode"), this.next(), e.object = this.parseParenExpression(), e.body = this.parseStatement("with"), this.finishNode(e, "WithStatement");
+        }, p.parseEmptyStatement = function(e) {
+          return this.next(), this.finishNode(e, "EmptyStatement");
+        }, p.parseLabeledStatement = function(e, t, i, s) {
+          for (var r = 0, n = this.labels; r < n.length; r += 1) {
+            var u = n[r];
+            u.name === t && this.raise(i.start, "Label '" + t + "' is already declared");
+          }
+          for (var o = this.type.isLoop ? "loop" : this.type === a._switch ? "switch" : null, h = this.labels.length - 1; h >= 0; h--) {
+            var l = this.labels[h];
+            if (l.statementStart === e.start) l.statementStart = this.start, l.kind = o;
+            else break;
+          }
+          return this.labels.push({ name: t, kind: o, statementStart: this.start }), e.body = this.parseStatement(s ? s.indexOf("label") === -1 ? s + "label" : s : "label"), this.labels.pop(), e.label = i, this.finishNode(e, "LabeledStatement");
+        }, p.parseExpressionStatement = function(e, t) {
+          return e.expression = t, this.semicolon(), this.finishNode(e, "ExpressionStatement");
+        }, p.parseBlock = function(e, t, i) {
+          for (e === void 0 && (e = true), t === void 0 && (t = this.startNode()), t.body = [], this.expect(a.braceL), e && this.enterScope(0); this.type !== a.braceR; ) {
+            var s = this.parseStatement(null);
+            t.body.push(s);
+          }
+          return i && (this.strict = false), this.next(), e && this.exitScope(), this.finishNode(t, "BlockStatement");
+        }, p.parseFor = function(e, t) {
+          return e.init = t, this.expect(a.semi), e.test = this.type === a.semi ? null : this.parseExpression(), this.expect(a.semi), e.update = this.type === a.parenR ? null : this.parseExpression(), this.expect(a.parenR), e.body = this.parseStatement("for"), this.exitScope(), this.labels.pop(), this.finishNode(e, "ForStatement");
+        }, p.parseForIn = function(e, t) {
+          var i = this.type === a._in;
+          return this.next(), t.type === "VariableDeclaration" && t.declarations[0].init != null && (!i || this.options.ecmaVersion < 8 || this.strict || t.kind !== "var" || t.declarations[0].id.type !== "Identifier") && this.raise(t.start, (i ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"), e.left = t, e.right = i ? this.parseExpression() : this.parseMaybeAssign(), this.expect(a.parenR), e.body = this.parseStatement("for"), this.exitScope(), this.labels.pop(), this.finishNode(e, i ? "ForInStatement" : "ForOfStatement");
+        }, p.parseVar = function(e, t, i, s) {
+          for (e.declarations = [], e.kind = i; ; ) {
+            var r = this.startNode();
+            if (this.parseVarId(r, i), this.eat(a.eq) ? r.init = this.parseMaybeAssign(t) : !s && i === "const" && !(this.type === a._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) ? this.unexpected() : !s && (i === "using" || i === "await using") && this.options.ecmaVersion >= 17 && this.type !== a._in && !this.isContextual("of") ? this.raise(this.lastTokEnd, "Missing initializer in " + i + " declaration") : !s && r.id.type !== "Identifier" && !(t && (this.type === a._in || this.isContextual("of"))) ? this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value") : r.init = null, e.declarations.push(this.finishNode(r, "VariableDeclarator")), !this.eat(a.comma)) break;
+          }
+          return e;
+        }, p.parseVarId = function(e, t) {
+          e.id = t === "using" || t === "await using" ? this.parseIdent() : this.parseBindingAtom(), this.checkLValPattern(e.id, t === "var" ? we : F, false);
+        };
+        var ee = 1, Ie = 2, He = 4;
+        p.parseFunction = function(e, t, i, s, r) {
+          this.initFunction(e), (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !s) && (this.type === a.star && t & Ie && this.unexpected(), e.generator = this.eat(a.star)), this.options.ecmaVersion >= 8 && (e.async = !!s), t & ee && (e.id = t & He && this.type !== a.name ? null : this.parseIdent(), e.id && !(t & Ie) && this.checkLValSimple(e.id, this.strict || e.generator || e.async ? this.treatFunctionsAsVar ? we : F : qe));
+          var n = this.yieldPos, u = this.awaitPos, o = this.awaitIdentPos;
+          return this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, this.enterScope(ke(e.async, e.generator)), t & ee || (e.id = this.type === a.name ? this.parseIdent() : null), this.parseFunctionParams(e), this.parseFunctionBody(e, i, false, r), this.yieldPos = n, this.awaitPos = u, this.awaitIdentPos = o, this.finishNode(e, t & ee ? "FunctionDeclaration" : "FunctionExpression");
+        }, p.parseFunctionParams = function(e) {
+          this.expect(a.parenL), e.params = this.parseBindingList(a.parenR, false, this.options.ecmaVersion >= 8), this.checkYieldAwaitInDefaultParams();
+        }, p.parseClass = function(e, t) {
+          this.next();
+          var i = this.strict;
+          this.strict = true, this.parseClassId(e, t), this.parseClassSuper(e);
+          var s = this.enterClassBody(), r = this.startNode(), n = false;
+          for (r.body = [], this.expect(a.braceL); this.type !== a.braceR; ) {
+            var u = this.parseClassElement(e.superClass !== null);
+            u && (r.body.push(u), u.type === "MethodDefinition" && u.kind === "constructor" ? (n && this.raiseRecoverable(u.start, "Duplicate constructor in the same class"), n = true) : u.key && u.key.type === "PrivateIdentifier" && Vt(s, u) && this.raiseRecoverable(u.key.start, "Identifier '#" + u.key.name + "' has already been declared"));
+          }
+          return this.strict = i, this.next(), e.body = this.finishNode(r, "ClassBody"), this.exitClassBody(), this.finishNode(e, t ? "ClassDeclaration" : "ClassExpression");
+        }, p.parseClassElement = function(e) {
+          if (this.eat(a.semi)) return null;
+          var t = this.options.ecmaVersion, i = this.startNode(), s = "", r = false, n = false, u = "method", o = false;
+          if (this.eatContextual("static")) {
+            if (t >= 13 && this.eat(a.braceL)) return this.parseClassStaticBlock(i), i;
+            this.isClassElementNameStart() || this.type === a.star ? o = true : s = "static";
+          }
+          if (i.static = o, !s && t >= 8 && this.eatContextual("async") && ((this.isClassElementNameStart() || this.type === a.star) && !this.canInsertSemicolon() ? n = true : s = "async"), !s && (t >= 9 || !n) && this.eat(a.star) && (r = true), !s && !n && !r) {
+            var h = this.value;
+            (this.eatContextual("get") || this.eatContextual("set")) && (this.isClassElementNameStart() ? u = h : s = h);
+          }
+          if (s ? (i.computed = false, i.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc), i.key.name = s, this.finishNode(i.key, "Identifier")) : this.parseClassElementName(i), t < 13 || this.type === a.parenL || u !== "method" || r || n) {
+            var l = !i.static && ce(i, "constructor"), d = l && e;
+            l && u !== "method" && this.raise(i.key.start, "Constructor can't have get/set modifier"), i.kind = l ? "constructor" : u, this.parseClassMethod(i, r, n, d);
+          } else this.parseClassField(i);
+          return i;
+        }, p.isClassElementNameStart = function() {
+          return this.type === a.name || this.type === a.privateId || this.type === a.num || this.type === a.string || this.type === a.bracketL || this.type.keyword;
+        }, p.parseClassElementName = function(e) {
+          this.type === a.privateId ? (this.value === "constructor" && this.raise(this.start, "Classes can't have an element named '#constructor'"), e.computed = false, e.key = this.parsePrivateIdent()) : this.parsePropertyName(e);
+        }, p.parseClassMethod = function(e, t, i, s) {
+          var r = e.key;
+          e.kind === "constructor" ? (t && this.raise(r.start, "Constructor can't be a generator"), i && this.raise(r.start, "Constructor can't be an async method")) : e.static && ce(e, "prototype") && this.raise(r.start, "Classes may not have a static property named prototype");
+          var n = e.value = this.parseMethod(t, i, s);
+          return e.kind === "get" && n.params.length !== 0 && this.raiseRecoverable(n.start, "getter should have no params"), e.kind === "set" && n.params.length !== 1 && this.raiseRecoverable(n.start, "setter should have exactly one param"), e.kind === "set" && n.params[0].type === "RestElement" && this.raiseRecoverable(n.params[0].start, "Setter cannot use rest params"), this.finishNode(e, "MethodDefinition");
+        }, p.parseClassField = function(e) {
+          return ce(e, "constructor") ? this.raise(e.key.start, "Classes can't have a field named 'constructor'") : e.static && ce(e, "prototype") && this.raise(e.key.start, "Classes can't have a static field named 'prototype'"), this.eat(a.eq) ? (this.enterScope($ | ne), e.value = this.parseMaybeAssign(), this.exitScope()) : e.value = null, this.semicolon(), this.finishNode(e, "PropertyDefinition");
+        }, p.parseClassStaticBlock = function(e) {
+          e.body = [];
+          var t = this.labels;
+          for (this.labels = [], this.enterScope(G | ne); this.type !== a.braceR; ) {
+            var i = this.parseStatement(null);
+            e.body.push(i);
+          }
+          return this.next(), this.exitScope(), this.labels = t, this.finishNode(e, "StaticBlock");
+        }, p.parseClassId = function(e, t) {
+          this.type === a.name ? (e.id = this.parseIdent(), t && this.checkLValSimple(e.id, F, false)) : (t === true && this.unexpected(), e.id = null);
+        }, p.parseClassSuper = function(e) {
+          e.superClass = this.eat(a._extends) ? this.parseExprSubscripts(null, false) : null;
+        }, p.enterClassBody = function() {
+          var e = { declared: /* @__PURE__ */ Object.create(null), used: [] };
+          return this.privateNameStack.push(e), e.declared;
+        }, p.exitClassBody = function() {
+          var e = this.privateNameStack.pop(), t = e.declared, i = e.used;
+          if (this.options.checkPrivateFields) for (var s = this.privateNameStack.length, r = s === 0 ? null : this.privateNameStack[s - 1], n = 0; n < i.length; ++n) {
+            var u = i[n];
+            H(t, u.name) || (r ? r.used.push(u) : this.raiseRecoverable(u.start, "Private field '#" + u.name + "' must be declared in an enclosing class"));
+          }
+        };
+        function Vt(e, t) {
+          var i = t.key.name, s = e[i], r = "true";
+          return t.type === "MethodDefinition" && (t.kind === "get" || t.kind === "set") && (r = (t.static ? "s" : "i") + t.kind), s === "iget" && r === "iset" || s === "iset" && r === "iget" || s === "sget" && r === "sset" || s === "sset" && r === "sget" ? (e[i] = "true", false) : s ? true : (e[i] = r, false);
+        }
+        function ce(e, t) {
+          var i = e.computed, s = e.key;
+          return !i && (s.type === "Identifier" && s.name === t || s.type === "Literal" && s.value === t);
+        }
+        p.parseExportAllDeclaration = function(e, t) {
+          return this.options.ecmaVersion >= 11 && (this.eatContextual("as") ? (e.exported = this.parseModuleExportName(), this.checkExport(t, e.exported, this.lastTokStart)) : e.exported = null), this.expectContextual("from"), this.type !== a.string && this.unexpected(), e.source = this.parseExprAtom(), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause()), this.semicolon(), this.finishNode(e, "ExportAllDeclaration");
+        }, p.parseExport = function(e, t) {
+          if (this.next(), this.eat(a.star)) return this.parseExportAllDeclaration(e, t);
+          if (this.eat(a._default)) return this.checkExport(t, "default", this.lastTokStart), e.declaration = this.parseExportDefaultDeclaration(), this.finishNode(e, "ExportDefaultDeclaration");
+          if (this.shouldParseExportStatement()) e.declaration = this.parseExportDeclaration(e), e.declaration.type === "VariableDeclaration" ? this.checkVariableExport(t, e.declaration.declarations) : this.checkExport(t, e.declaration.id, e.declaration.id.start), e.specifiers = [], e.source = null, this.options.ecmaVersion >= 16 && (e.attributes = []);
+          else {
+            if (e.declaration = null, e.specifiers = this.parseExportSpecifiers(t), this.eatContextual("from")) this.type !== a.string && this.unexpected(), e.source = this.parseExprAtom(), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause());
+            else {
+              for (var i = 0, s = e.specifiers; i < s.length; i += 1) {
+                var r = s[i];
+                this.checkUnreserved(r.local), this.checkLocalExport(r.local), r.local.type === "Literal" && this.raise(r.local.start, "A string literal cannot be used as an exported binding without `from`.");
+              }
+              e.source = null, this.options.ecmaVersion >= 16 && (e.attributes = []);
+            }
+            this.semicolon();
+          }
+          return this.finishNode(e, "ExportNamedDeclaration");
+        }, p.parseExportDeclaration = function(e) {
+          return this.parseStatement(null);
+        }, p.parseExportDefaultDeclaration = function() {
+          var e;
+          if (this.type === a._function || (e = this.isAsyncFunction())) {
+            var t = this.startNode();
+            return this.next(), e && this.next(), this.parseFunction(t, ee | He, false, e);
+          } else if (this.type === a._class) {
+            var i = this.startNode();
+            return this.parseClass(i, "nullableID");
+          } else {
+            var s = this.parseMaybeAssign();
+            return this.semicolon(), s;
+          }
+        }, p.checkExport = function(e, t, i) {
+          e && (typeof t != "string" && (t = t.type === "Identifier" ? t.name : t.value), H(e, t) && this.raiseRecoverable(i, "Duplicate export '" + t + "'"), e[t] = true);
+        }, p.checkPatternExport = function(e, t) {
+          var i = t.type;
+          if (i === "Identifier") this.checkExport(e, t, t.start);
+          else if (i === "ObjectPattern") for (var s = 0, r = t.properties; s < r.length; s += 1) {
+            var n = r[s];
+            this.checkPatternExport(e, n);
+          }
+          else if (i === "ArrayPattern") for (var u = 0, o = t.elements; u < o.length; u += 1) {
+            var h = o[u];
+            h && this.checkPatternExport(e, h);
+          }
+          else i === "Property" ? this.checkPatternExport(e, t.value) : i === "AssignmentPattern" ? this.checkPatternExport(e, t.left) : i === "RestElement" && this.checkPatternExport(e, t.argument);
+        }, p.checkVariableExport = function(e, t) {
+          if (e) for (var i = 0, s = t; i < s.length; i += 1) {
+            var r = s[i];
+            this.checkPatternExport(e, r.id);
+          }
+        }, p.shouldParseExportStatement = function() {
+          return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+        }, p.parseExportSpecifier = function(e) {
+          var t = this.startNode();
+          return t.local = this.parseModuleExportName(), t.exported = this.eatContextual("as") ? this.parseModuleExportName() : t.local, this.checkExport(e, t.exported, t.exported.start), this.finishNode(t, "ExportSpecifier");
+        }, p.parseExportSpecifiers = function(e) {
+          var t = [], i = true;
+          for (this.expect(a.braceL); !this.eat(a.braceR); ) {
+            if (i) i = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            t.push(this.parseExportSpecifier(e));
+          }
+          return t;
+        }, p.parseImport = function(e) {
+          return this.next(), this.type === a.string ? (e.specifiers = Nt, e.source = this.parseExprAtom()) : (e.specifiers = this.parseImportSpecifiers(), this.expectContextual("from"), e.source = this.type === a.string ? this.parseExprAtom() : this.unexpected()), this.options.ecmaVersion >= 16 && (e.attributes = this.parseWithClause()), this.semicolon(), this.finishNode(e, "ImportDeclaration");
+        }, p.parseImportSpecifier = function() {
+          var e = this.startNode();
+          return e.imported = this.parseModuleExportName(), this.eatContextual("as") ? e.local = this.parseIdent() : (this.checkUnreserved(e.imported), e.local = e.imported), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportSpecifier");
+        }, p.parseImportDefaultSpecifier = function() {
+          var e = this.startNode();
+          return e.local = this.parseIdent(), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportDefaultSpecifier");
+        }, p.parseImportNamespaceSpecifier = function() {
+          var e = this.startNode();
+          return this.next(), this.expectContextual("as"), e.local = this.parseIdent(), this.checkLValSimple(e.local, F), this.finishNode(e, "ImportNamespaceSpecifier");
+        }, p.parseImportSpecifiers = function() {
+          var e = [], t = true;
+          if (this.type === a.name && (e.push(this.parseImportDefaultSpecifier()), !this.eat(a.comma))) return e;
+          if (this.type === a.star) return e.push(this.parseImportNamespaceSpecifier()), e;
+          for (this.expect(a.braceL); !this.eat(a.braceR); ) {
+            if (t) t = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            e.push(this.parseImportSpecifier());
+          }
+          return e;
+        }, p.parseWithClause = function() {
+          var e = [];
+          if (!this.eat(a._with)) return e;
+          this.expect(a.braceL);
+          for (var t = {}, i = true; !this.eat(a.braceR); ) {
+            if (i) i = false;
+            else if (this.expect(a.comma), this.afterTrailingComma(a.braceR)) break;
+            var s = this.parseImportAttribute(), r = s.key.type === "Identifier" ? s.key.name : s.key.value;
+            H(t, r) && this.raiseRecoverable(s.key.start, "Duplicate attribute key '" + r + "'"), t[r] = true, e.push(s);
+          }
+          return e;
+        }, p.parseImportAttribute = function() {
+          var e = this.startNode();
+          return e.key = this.type === a.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never"), this.expect(a.colon), this.type !== a.string && this.unexpected(), e.value = this.parseExprAtom(), this.finishNode(e, "ImportAttribute");
+        }, p.parseModuleExportName = function() {
+          if (this.options.ecmaVersion >= 13 && this.type === a.string) {
+            var e = this.parseLiteral(this.value);
+            return wt.test(e.value) && this.raise(e.start, "An export name cannot include a lone surrogate."), e;
+          }
+          return this.parseIdent(true);
+        }, p.adaptDirectivePrologue = function(e) {
+          for (var t = 0; t < e.length && this.isDirectiveCandidate(e[t]); ++t) e[t].directive = e[t].expression.raw.slice(1, -1);
+        }, p.isDirectiveCandidate = function(e) {
+          return this.options.ecmaVersion >= 5 && e.type === "ExpressionStatement" && e.expression.type === "Literal" && typeof e.expression.value == "string" && (this.input[e.start] === '"' || this.input[e.start] === "'");
+        };
+        var P = _.prototype;
+        P.toAssignable = function(e, t, i) {
+          if (this.options.ecmaVersion >= 6 && e) switch (e.type) {
+            case "Identifier":
+              this.inAsync && e.name === "await" && this.raise(e.start, "Cannot use 'await' as identifier inside an async function");
+              break;
+            case "ObjectPattern":
+            case "ArrayPattern":
+            case "AssignmentPattern":
+            case "RestElement":
+              break;
+            case "ObjectExpression":
+              e.type = "ObjectPattern", i && this.checkPatternErrors(i, true);
+              for (var s = 0, r = e.properties; s < r.length; s += 1) {
+                var n = r[s];
+                this.toAssignable(n, t), n.type === "RestElement" && (n.argument.type === "ArrayPattern" || n.argument.type === "ObjectPattern") && this.raise(n.argument.start, "Unexpected token");
+              }
+              break;
+            case "Property":
+              e.kind !== "init" && this.raise(e.key.start, "Object pattern can't contain getter or setter"), this.toAssignable(e.value, t);
+              break;
+            case "ArrayExpression":
+              e.type = "ArrayPattern", i && this.checkPatternErrors(i, true), this.toAssignableList(e.elements, t);
+              break;
+            case "SpreadElement":
+              e.type = "RestElement", this.toAssignable(e.argument, t), e.argument.type === "AssignmentPattern" && this.raise(e.argument.start, "Rest elements cannot have a default value");
+              break;
+            case "AssignmentExpression":
+              e.operator !== "=" && this.raise(e.left.end, "Only '=' operator can be used for specifying default value."), e.type = "AssignmentPattern", delete e.operator, this.toAssignable(e.left, t);
+              break;
+            case "ParenthesizedExpression":
+              this.toAssignable(e.expression, t, i);
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(e.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              if (!t) break;
+            default:
+              this.raise(e.start, "Assigning to rvalue");
+          }
+          else i && this.checkPatternErrors(i, true);
+          return e;
+        }, P.toAssignableList = function(e, t) {
+          for (var i = e.length, s = 0; s < i; s++) {
+            var r = e[s];
+            r && this.toAssignable(r, t);
+          }
+          if (i) {
+            var n = e[i - 1];
+            this.options.ecmaVersion === 6 && t && n && n.type === "RestElement" && n.argument.type !== "Identifier" && this.unexpected(n.argument.start);
+          }
+          return e;
+        }, P.parseSpread = function(e) {
+          var t = this.startNode();
+          return this.next(), t.argument = this.parseMaybeAssign(false, e), this.finishNode(t, "SpreadElement");
+        }, P.parseRestBinding = function() {
+          var e = this.startNode();
+          return this.next(), this.options.ecmaVersion === 6 && this.type !== a.name && this.unexpected(), e.argument = this.parseBindingAtom(), this.finishNode(e, "RestElement");
+        }, P.parseBindingAtom = function() {
+          if (this.options.ecmaVersion >= 6) switch (this.type) {
+            case a.bracketL:
+              var e = this.startNode();
+              return this.next(), e.elements = this.parseBindingList(a.bracketR, true, true), this.finishNode(e, "ArrayPattern");
+            case a.braceL:
+              return this.parseObj(true);
+          }
+          return this.parseIdent();
+        }, P.parseBindingList = function(e, t, i, s) {
+          for (var r = [], n = true; !this.eat(e); ) if (n ? n = false : this.expect(a.comma), t && this.type === a.comma) r.push(null);
+          else {
+            if (i && this.afterTrailingComma(e)) break;
+            if (this.type === a.ellipsis) {
+              var u = this.parseRestBinding();
+              this.parseBindingListItem(u), r.push(u), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element"), this.expect(e);
+              break;
+            } else r.push(this.parseAssignableListItem(s));
+          }
+          return r;
+        }, P.parseAssignableListItem = function(e) {
+          var t = this.parseMaybeDefault(this.start, this.startLoc);
+          return this.parseBindingListItem(t), t;
+        }, P.parseBindingListItem = function(e) {
+          return e;
+        }, P.parseMaybeDefault = function(e, t, i) {
+          if (i = i || this.parseBindingAtom(), this.options.ecmaVersion < 6 || !this.eat(a.eq)) return i;
+          var s = this.startNodeAt(e, t);
+          return s.left = i, s.right = this.parseMaybeAssign(), this.finishNode(s, "AssignmentPattern");
+        }, P.checkLValSimple = function(e, t, i) {
+          t === void 0 && (t = oe);
+          var s = t !== oe;
+          switch (e.type) {
+            case "Identifier":
+              this.strict && this.reservedWordsStrictBind.test(e.name) && this.raiseRecoverable(e.start, (s ? "Binding " : "Assigning to ") + e.name + " in strict mode"), s && (t === F && e.name === "let" && this.raiseRecoverable(e.start, "let is disallowed as a lexically bound name"), i && (H(i, e.name) && this.raiseRecoverable(e.start, "Argument name clash"), i[e.name] = true), t !== Ge && this.declareName(e.name, t, e.start));
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(e.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              s && this.raiseRecoverable(e.start, "Binding member expression");
+              break;
+            case "ParenthesizedExpression":
+              return s && this.raiseRecoverable(e.start, "Binding parenthesized expression"), this.checkLValSimple(e.expression, t, i);
+            default:
+              this.raise(e.start, (s ? "Binding" : "Assigning to") + " rvalue");
+          }
+        }, P.checkLValPattern = function(e, t, i) {
+          switch (t === void 0 && (t = oe), e.type) {
+            case "ObjectPattern":
+              for (var s = 0, r = e.properties; s < r.length; s += 1) {
+                var n = r[s];
+                this.checkLValInnerPattern(n, t, i);
+              }
+              break;
+            case "ArrayPattern":
+              for (var u = 0, o = e.elements; u < o.length; u += 1) {
+                var h = o[u];
+                h && this.checkLValInnerPattern(h, t, i);
+              }
+              break;
+            default:
+              this.checkLValSimple(e, t, i);
+          }
+        }, P.checkLValInnerPattern = function(e, t, i) {
+          switch (t === void 0 && (t = oe), e.type) {
+            case "Property":
+              this.checkLValInnerPattern(e.value, t, i);
+              break;
+            case "AssignmentPattern":
+              this.checkLValPattern(e.left, t, i);
+              break;
+            case "RestElement":
+              this.checkLValPattern(e.argument, t, i);
+              break;
+            default:
+              this.checkLValPattern(e, t, i);
+          }
+        };
+        var N = function(t, i, s, r, n) {
+          this.token = t, this.isExpr = !!i, this.preserveSpace = !!s, this.override = r, this.generator = !!n;
+        }, b = { b_stat: new N("{", false), b_expr: new N("{", true), b_tmpl: new N("${", false), p_stat: new N("(", false), p_expr: new N("(", true), q_tmpl: new N("`", true, true, function(e) {
+          return e.tryReadTemplateToken();
+        }), f_stat: new N("function", false), f_expr: new N("function", true), f_expr_gen: new N("function", true, false, null, true), f_gen: new N("function", false, false, null, true) }, K = _.prototype;
+        K.initialContext = function() {
+          return [b.b_stat];
+        }, K.curContext = function() {
+          return this.context[this.context.length - 1];
+        }, K.braceIsBlock = function(e) {
+          var t = this.curContext();
+          return t === b.f_expr || t === b.f_stat ? true : e === a.colon && (t === b.b_stat || t === b.b_expr) ? !t.isExpr : e === a._return || e === a.name && this.exprAllowed ? k.test(this.input.slice(this.lastTokEnd, this.start)) : e === a._else || e === a.semi || e === a.eof || e === a.parenR || e === a.arrow ? true : e === a.braceL ? t === b.b_stat : e === a._var || e === a._const || e === a.name ? false : !this.exprAllowed;
+        }, K.inGeneratorContext = function() {
+          for (var e = this.context.length - 1; e >= 1; e--) {
+            var t = this.context[e];
+            if (t.token === "function") return t.generator;
+          }
+          return false;
+        }, K.updateContext = function(e) {
+          var t, i = this.type;
+          i.keyword && e === a.dot ? this.exprAllowed = false : (t = i.updateContext) ? t.call(this, e) : this.exprAllowed = i.beforeExpr;
+        }, K.overrideContext = function(e) {
+          this.curContext() !== e && (this.context[this.context.length - 1] = e);
+        }, a.parenR.updateContext = a.braceR.updateContext = function() {
+          if (this.context.length === 1) {
+            this.exprAllowed = true;
+            return;
+          }
+          var e = this.context.pop();
+          e === b.b_stat && this.curContext().token === "function" && (e = this.context.pop()), this.exprAllowed = !e.isExpr;
+        }, a.braceL.updateContext = function(e) {
+          this.context.push(this.braceIsBlock(e) ? b.b_stat : b.b_expr), this.exprAllowed = true;
+        }, a.dollarBraceL.updateContext = function() {
+          this.context.push(b.b_tmpl), this.exprAllowed = true;
+        }, a.parenL.updateContext = function(e) {
+          var t = e === a._if || e === a._for || e === a._with || e === a._while;
+          this.context.push(t ? b.p_stat : b.p_expr), this.exprAllowed = true;
+        }, a.incDec.updateContext = function() {
+        }, a._function.updateContext = a._class.updateContext = function(e) {
+          e.beforeExpr && e !== a._else && !(e === a.semi && this.curContext() !== b.p_stat) && !(e === a._return && k.test(this.input.slice(this.lastTokEnd, this.start))) && !((e === a.colon || e === a.braceL) && this.curContext() === b.b_stat) ? this.context.push(b.f_expr) : this.context.push(b.f_stat), this.exprAllowed = false;
+        }, a.colon.updateContext = function() {
+          this.curContext().token === "function" && this.context.pop(), this.exprAllowed = true;
+        }, a.backQuote.updateContext = function() {
+          this.curContext() === b.q_tmpl ? this.context.pop() : this.context.push(b.q_tmpl), this.exprAllowed = false;
+        }, a.star.updateContext = function(e) {
+          if (e === a._function) {
+            var t = this.context.length - 1;
+            this.context[t] === b.f_expr ? this.context[t] = b.f_expr_gen : this.context[t] = b.f_gen;
+          }
+          this.exprAllowed = true;
+        }, a.name.updateContext = function(e) {
+          var t = false;
+          this.options.ecmaVersion >= 6 && e !== a.dot && (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) && (t = true), this.exprAllowed = t;
+        };
+        var f = _.prototype;
+        f.checkPropClash = function(e, t, i) {
+          if (!(this.options.ecmaVersion >= 9 && e.type === "SpreadElement") && !(this.options.ecmaVersion >= 6 && (e.computed || e.method || e.shorthand))) {
+            var s = e.key, r;
+            switch (s.type) {
+              case "Identifier":
+                r = s.name;
+                break;
+              case "Literal":
+                r = String(s.value);
+                break;
+              default:
+                return;
+            }
+            var n = e.kind;
+            if (this.options.ecmaVersion >= 6) {
+              r === "__proto__" && n === "init" && (t.proto && (i ? i.doubleProto < 0 && (i.doubleProto = s.start) : this.raiseRecoverable(s.start, "Redefinition of __proto__ property")), t.proto = true);
+              return;
+            }
+            r = "$" + r;
+            var u = t[r];
+            if (u) {
+              var o;
+              n === "init" ? o = this.strict && u.init || u.get || u.set : o = u.init || u[n], o && this.raiseRecoverable(s.start, "Redefinition of property");
+            } else u = t[r] = { init: false, get: false, set: false };
+            u[n] = true;
+          }
+        }, f.parseExpression = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseMaybeAssign(e, t);
+          if (this.type === a.comma) {
+            var n = this.startNodeAt(i, s);
+            for (n.expressions = [r]; this.eat(a.comma); ) n.expressions.push(this.parseMaybeAssign(e, t));
+            return this.finishNode(n, "SequenceExpression");
+          }
+          return r;
+        }, f.parseMaybeAssign = function(e, t, i) {
+          if (this.isContextual("yield")) {
+            if (this.inGenerator) return this.parseYield(e);
+            this.exprAllowed = false;
+          }
+          var s = false, r = -1, n = -1, u = -1;
+          t ? (r = t.parenthesizedAssign, n = t.trailingComma, u = t.doubleProto, t.parenthesizedAssign = t.trailingComma = -1) : (t = new he(), s = true);
+          var o = this.start, h = this.startLoc;
+          (this.type === a.parenL || this.type === a.name) && (this.potentialArrowAt = this.start, this.potentialArrowInForAwait = e === "await");
+          var l = this.parseMaybeConditional(e, t);
+          if (i && (l = i.call(this, l, o, h)), this.type.isAssign) {
+            var d = this.startNodeAt(o, h);
+            return d.operator = this.value, this.type === a.eq && (l = this.toAssignable(l, false, t)), s || (t.parenthesizedAssign = t.trailingComma = t.doubleProto = -1), t.shorthandAssign >= l.start && (t.shorthandAssign = -1), this.type === a.eq ? this.checkLValPattern(l) : this.checkLValSimple(l), d.left = l, this.next(), d.right = this.parseMaybeAssign(e), u > -1 && (t.doubleProto = u), this.finishNode(d, "AssignmentExpression");
+          } else s && this.checkExpressionErrors(t, true);
+          return r > -1 && (t.parenthesizedAssign = r), n > -1 && (t.trailingComma = n), l;
+        }, f.parseMaybeConditional = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseExprOps(e, t);
+          if (this.checkExpressionErrors(t)) return r;
+          if (this.eat(a.question)) {
+            var n = this.startNodeAt(i, s);
+            return n.test = r, n.consequent = this.parseMaybeAssign(), this.expect(a.colon), n.alternate = this.parseMaybeAssign(e), this.finishNode(n, "ConditionalExpression");
+          }
+          return r;
+        }, f.parseExprOps = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseMaybeUnary(t, false, false, e);
+          return this.checkExpressionErrors(t) || r.start === i && r.type === "ArrowFunctionExpression" ? r : this.parseExprOp(r, i, s, -1, e);
+        }, f.parseExprOp = function(e, t, i, s, r) {
+          var n = this.type.binop;
+          if (n != null && (!r || this.type !== a._in) && n > s) {
+            var u = this.type === a.logicalOR || this.type === a.logicalAND, o = this.type === a.coalesce;
+            o && (n = a.logicalAND.binop);
+            var h = this.value;
+            this.next();
+            var l = this.start, d = this.startLoc, y = this.parseExprOp(this.parseMaybeUnary(null, false, false, r), l, d, n, r), S = this.buildBinary(t, i, e, y, h, u || o);
+            return (u && this.type === a.coalesce || o && (this.type === a.logicalOR || this.type === a.logicalAND)) && this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses"), this.parseExprOp(S, t, i, s, r);
+          }
+          return e;
+        }, f.buildBinary = function(e, t, i, s, r, n) {
+          s.type === "PrivateIdentifier" && this.raise(s.start, "Private identifier can only be left side of binary expression");
+          var u = this.startNodeAt(e, t);
+          return u.left = i, u.operator = r, u.right = s, this.finishNode(u, n ? "LogicalExpression" : "BinaryExpression");
+        }, f.parseMaybeUnary = function(e, t, i, s) {
+          var r = this.start, n = this.startLoc, u;
+          if (this.isContextual("await") && this.canAwait) u = this.parseAwait(s), t = true;
+          else if (this.type.prefix) {
+            var o = this.startNode(), h = this.type === a.incDec;
+            o.operator = this.value, o.prefix = true, this.next(), o.argument = this.parseMaybeUnary(null, true, h, s), this.checkExpressionErrors(e, true), h ? this.checkLValSimple(o.argument) : this.strict && o.operator === "delete" && We(o.argument) ? this.raiseRecoverable(o.start, "Deleting local variable in strict mode") : o.operator === "delete" && Ee(o.argument) ? this.raiseRecoverable(o.start, "Private fields can not be deleted") : t = true, u = this.finishNode(o, h ? "UpdateExpression" : "UnaryExpression");
+          } else if (!t && this.type === a.privateId) (s || this.privateNameStack.length === 0) && this.options.checkPrivateFields && this.unexpected(), u = this.parsePrivateIdent(), this.type !== a._in && this.unexpected();
+          else {
+            if (u = this.parseExprSubscripts(e, s), this.checkExpressionErrors(e)) return u;
+            for (; this.type.postfix && !this.canInsertSemicolon(); ) {
+              var l = this.startNodeAt(r, n);
+              l.operator = this.value, l.prefix = false, l.argument = u, this.checkLValSimple(u), this.next(), u = this.finishNode(l, "UpdateExpression");
+            }
+          }
+          if (!i && this.eat(a.starstar)) if (t) this.unexpected(this.lastTokStart);
+          else return this.buildBinary(r, n, u, this.parseMaybeUnary(null, false, false, s), "**", false);
+          else return u;
+        };
+        function We(e) {
+          return e.type === "Identifier" || e.type === "ParenthesizedExpression" && We(e.expression);
+        }
+        function Ee(e) {
+          return e.type === "MemberExpression" && e.property.type === "PrivateIdentifier" || e.type === "ChainExpression" && Ee(e.expression) || e.type === "ParenthesizedExpression" && Ee(e.expression);
+        }
+        f.parseExprSubscripts = function(e, t) {
+          var i = this.start, s = this.startLoc, r = this.parseExprAtom(e, t);
+          if (r.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") return r;
+          var n = this.parseSubscripts(r, i, s, false, t);
+          return e && n.type === "MemberExpression" && (e.parenthesizedAssign >= n.start && (e.parenthesizedAssign = -1), e.parenthesizedBind >= n.start && (e.parenthesizedBind = -1), e.trailingComma >= n.start && (e.trailingComma = -1)), n;
+        }, f.parseSubscripts = function(e, t, i, s, r) {
+          for (var n = this.options.ecmaVersion >= 8 && e.type === "Identifier" && e.name === "async" && this.lastTokEnd === e.end && !this.canInsertSemicolon() && e.end - e.start === 5 && this.potentialArrowAt === e.start, u = false; ; ) {
+            var o = this.parseSubscript(e, t, i, s, n, u, r);
+            if (o.optional && (u = true), o === e || o.type === "ArrowFunctionExpression") {
+              if (u) {
+                var h = this.startNodeAt(t, i);
+                h.expression = o, o = this.finishNode(h, "ChainExpression");
+              }
+              return o;
+            }
+            e = o;
+          }
+        }, f.shouldParseAsyncArrow = function() {
+          return !this.canInsertSemicolon() && this.eat(a.arrow);
+        }, f.parseSubscriptAsyncArrow = function(e, t, i, s) {
+          return this.parseArrowExpression(this.startNodeAt(e, t), i, true, s);
+        }, f.parseSubscript = function(e, t, i, s, r, n, u) {
+          var o = this.options.ecmaVersion >= 11, h = o && this.eat(a.questionDot);
+          s && h && this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+          var l = this.eat(a.bracketL);
+          if (l || h && this.type !== a.parenL && this.type !== a.backQuote || this.eat(a.dot)) {
+            var d = this.startNodeAt(t, i);
+            d.object = e, l ? (d.property = this.parseExpression(), this.expect(a.bracketR)) : this.type === a.privateId && e.type !== "Super" ? d.property = this.parsePrivateIdent() : d.property = this.parseIdent(this.options.allowReserved !== "never"), d.computed = !!l, o && (d.optional = h), e = this.finishNode(d, "MemberExpression");
+          } else if (!s && this.eat(a.parenL)) {
+            var y = new he(), S = this.yieldPos, se = this.awaitPos, Q = this.awaitIdentPos;
+            this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0;
+            var xe = this.parseExprList(a.parenR, this.options.ecmaVersion >= 8, false, y);
+            if (r && !h && this.shouldParseAsyncArrow()) return this.checkPatternErrors(y, false), this.checkYieldAwaitInDefaultParams(), this.awaitIdentPos > 0 && this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function"), this.yieldPos = S, this.awaitPos = se, this.awaitIdentPos = Q, this.parseSubscriptAsyncArrow(t, i, xe, u);
+            this.checkExpressionErrors(y, true), this.yieldPos = S || this.yieldPos, this.awaitPos = se || this.awaitPos, this.awaitIdentPos = Q || this.awaitIdentPos;
+            var Y = this.startNodeAt(t, i);
+            Y.callee = e, Y.arguments = xe, o && (Y.optional = h), e = this.finishNode(Y, "CallExpression");
+          } else if (this.type === a.backQuote) {
+            (h || n) && this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+            var X = this.startNodeAt(t, i);
+            X.tag = e, X.quasi = this.parseTemplate({ isTagged: true }), e = this.finishNode(X, "TaggedTemplateExpression");
+          }
+          return e;
+        }, f.parseExprAtom = function(e, t, i) {
+          this.type === a.slash && this.readRegexp();
+          var s, r = this.potentialArrowAt === this.start;
+          switch (this.type) {
+            case a._super:
+              return this.allowSuper || this.raise(this.start, "'super' keyword outside a method"), s = this.startNode(), this.next(), this.type === a.parenL && !this.allowDirectSuper && this.raise(s.start, "super() call outside constructor of a subclass"), this.type !== a.dot && this.type !== a.bracketL && this.type !== a.parenL && this.unexpected(), this.finishNode(s, "Super");
+            case a._this:
+              return s = this.startNode(), this.next(), this.finishNode(s, "ThisExpression");
+            case a.name:
+              var n = this.start, u = this.startLoc, o = this.containsEsc, h = this.parseIdent(false);
+              if (this.options.ecmaVersion >= 8 && !o && h.name === "async" && !this.canInsertSemicolon() && this.eat(a._function)) return this.overrideContext(b.f_expr), this.parseFunction(this.startNodeAt(n, u), 0, false, true, t);
+              if (r && !this.canInsertSemicolon()) {
+                if (this.eat(a.arrow)) return this.parseArrowExpression(this.startNodeAt(n, u), [h], false, t);
+                if (this.options.ecmaVersion >= 8 && h.name === "async" && this.type === a.name && !o && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) return h = this.parseIdent(false), (this.canInsertSemicolon() || !this.eat(a.arrow)) && this.unexpected(), this.parseArrowExpression(this.startNodeAt(n, u), [h], true, t);
+              }
+              return h;
+            case a.regexp:
+              var l = this.value;
+              return s = this.parseLiteral(l.value), s.regex = { pattern: l.pattern, flags: l.flags }, s;
+            case a.num:
+            case a.string:
+              return this.parseLiteral(this.value);
+            case a._null:
+            case a._true:
+            case a._false:
+              return s = this.startNode(), s.value = this.type === a._null ? null : this.type === a._true, s.raw = this.type.keyword, this.next(), this.finishNode(s, "Literal");
+            case a.parenL:
+              var d = this.start, y = this.parseParenAndDistinguishExpression(r, t);
+              return e && (e.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(y) && (e.parenthesizedAssign = d), e.parenthesizedBind < 0 && (e.parenthesizedBind = d)), y;
+            case a.bracketL:
+              return s = this.startNode(), this.next(), s.elements = this.parseExprList(a.bracketR, true, true, e), this.finishNode(s, "ArrayExpression");
+            case a.braceL:
+              return this.overrideContext(b.b_expr), this.parseObj(false, e);
+            case a._function:
+              return s = this.startNode(), this.next(), this.parseFunction(s, 0);
+            case a._class:
+              return this.parseClass(this.startNode(), false);
+            case a._new:
+              return this.parseNew();
+            case a.backQuote:
+              return this.parseTemplate();
+            case a._import:
+              return this.options.ecmaVersion >= 11 ? this.parseExprImport(i) : this.unexpected();
+            default:
+              return this.parseExprAtomDefault();
+          }
+        }, f.parseExprAtomDefault = function() {
+          this.unexpected();
+        }, f.parseExprImport = function(e) {
+          var t = this.startNode();
+          if (this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword import"), this.next(), this.type === a.parenL && !e) return this.parseDynamicImport(t);
+          if (this.type === a.dot) {
+            var i = this.startNodeAt(t.start, t.loc && t.loc.start);
+            return i.name = "import", t.meta = this.finishNode(i, "Identifier"), this.parseImportMeta(t);
+          } else this.unexpected();
+        }, f.parseDynamicImport = function(e) {
+          if (this.next(), e.source = this.parseMaybeAssign(), this.options.ecmaVersion >= 16) this.eat(a.parenR) ? e.options = null : (this.expect(a.comma), this.afterTrailingComma(a.parenR) ? e.options = null : (e.options = this.parseMaybeAssign(), this.eat(a.parenR) || (this.expect(a.comma), this.afterTrailingComma(a.parenR) || this.unexpected())));
+          else if (!this.eat(a.parenR)) {
+            var t = this.start;
+            this.eat(a.comma) && this.eat(a.parenR) ? this.raiseRecoverable(t, "Trailing comma is not allowed in import()") : this.unexpected(t);
+          }
+          return this.finishNode(e, "ImportExpression");
+        }, f.parseImportMeta = function(e) {
+          this.next();
+          var t = this.containsEsc;
+          return e.property = this.parseIdent(true), e.property.name !== "meta" && this.raiseRecoverable(e.property.start, "The only valid meta property for import is 'import.meta'"), t && this.raiseRecoverable(e.start, "'import.meta' must not contain escaped characters"), this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere && this.raiseRecoverable(e.start, "Cannot use 'import.meta' outside a module"), this.finishNode(e, "MetaProperty");
+        }, f.parseLiteral = function(e) {
+          var t = this.startNode();
+          return t.value = e, t.raw = this.input.slice(this.start, this.end), t.raw.charCodeAt(t.raw.length - 1) === 110 && (t.bigint = t.value != null ? t.value.toString() : t.raw.slice(0, -1).replace(/_/g, "")), this.next(), this.finishNode(t, "Literal");
+        }, f.parseParenExpression = function() {
+          this.expect(a.parenL);
+          var e = this.parseExpression();
+          return this.expect(a.parenR), e;
+        }, f.shouldParseArrow = function(e) {
+          return !this.canInsertSemicolon();
+        }, f.parseParenAndDistinguishExpression = function(e, t) {
+          var i = this.start, s = this.startLoc, r, n = this.options.ecmaVersion >= 8;
+          if (this.options.ecmaVersion >= 6) {
+            this.next();
+            var u = this.start, o = this.startLoc, h = [], l = true, d = false, y = new he(), S = this.yieldPos, se = this.awaitPos, Q;
+            for (this.yieldPos = 0, this.awaitPos = 0; this.type !== a.parenR; ) if (l ? l = false : this.expect(a.comma), n && this.afterTrailingComma(a.parenR, true)) {
+              d = true;
+              break;
+            } else if (this.type === a.ellipsis) {
+              Q = this.start, h.push(this.parseParenItem(this.parseRestBinding())), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+              break;
+            } else h.push(this.parseMaybeAssign(false, y, this.parseParenItem));
+            var xe = this.lastTokEnd, Y = this.lastTokEndLoc;
+            if (this.expect(a.parenR), e && this.shouldParseArrow(h) && this.eat(a.arrow)) return this.checkPatternErrors(y, false), this.checkYieldAwaitInDefaultParams(), this.yieldPos = S, this.awaitPos = se, this.parseParenArrowList(i, s, h, t);
+            (!h.length || d) && this.unexpected(this.lastTokStart), Q && this.unexpected(Q), this.checkExpressionErrors(y, true), this.yieldPos = S || this.yieldPos, this.awaitPos = se || this.awaitPos, h.length > 1 ? (r = this.startNodeAt(u, o), r.expressions = h, this.finishNodeAt(r, "SequenceExpression", xe, Y)) : r = h[0];
+          } else r = this.parseParenExpression();
+          if (this.options.preserveParens) {
+            var X = this.startNodeAt(i, s);
+            return X.expression = r, this.finishNode(X, "ParenthesizedExpression");
+          } else return r;
+        }, f.parseParenItem = function(e) {
+          return e;
+        }, f.parseParenArrowList = function(e, t, i, s) {
+          return this.parseArrowExpression(this.startNodeAt(e, t), i, false, s);
+        };
+        var Tt = [];
+        f.parseNew = function() {
+          this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+          var e = this.startNode();
+          if (this.next(), this.options.ecmaVersion >= 6 && this.type === a.dot) {
+            var t = this.startNodeAt(e.start, e.loc && e.loc.start);
+            t.name = "new", e.meta = this.finishNode(t, "Identifier"), this.next();
+            var i = this.containsEsc;
+            return e.property = this.parseIdent(true), e.property.name !== "target" && this.raiseRecoverable(e.property.start, "The only valid meta property for new is 'new.target'"), i && this.raiseRecoverable(e.start, "'new.target' must not contain escaped characters"), this.allowNewDotTarget || this.raiseRecoverable(e.start, "'new.target' can only be used in functions and class static block"), this.finishNode(e, "MetaProperty");
+          }
+          var s = this.start, r = this.startLoc;
+          return e.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), s, r, true, false), this.eat(a.parenL) ? e.arguments = this.parseExprList(a.parenR, this.options.ecmaVersion >= 8, false) : e.arguments = Tt, this.finishNode(e, "NewExpression");
+        }, f.parseTemplateElement = function(e) {
+          var t = e.isTagged, i = this.startNode();
+          return this.type === a.invalidTemplate ? (t || this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal"), i.value = { raw: this.value.replace(/\r\n?/g, `
+`), cooked: null }) : i.value = { raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, `
+`), cooked: this.value }, this.next(), i.tail = this.type === a.backQuote, this.finishNode(i, "TemplateElement");
+        }, f.parseTemplate = function(e) {
+          e === void 0 && (e = {});
+          var t = e.isTagged;
+          t === void 0 && (t = false);
+          var i = this.startNode();
+          this.next(), i.expressions = [];
+          var s = this.parseTemplateElement({ isTagged: t });
+          for (i.quasis = [s]; !s.tail; ) this.type === a.eof && this.raise(this.pos, "Unterminated template literal"), this.expect(a.dollarBraceL), i.expressions.push(this.parseExpression()), this.expect(a.braceR), i.quasis.push(s = this.parseTemplateElement({ isTagged: t }));
+          return this.next(), this.finishNode(i, "TemplateLiteral");
+        }, f.isAsyncProp = function(e) {
+          return !e.computed && e.key.type === "Identifier" && e.key.name === "async" && (this.type === a.name || this.type === a.num || this.type === a.string || this.type === a.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === a.star) && !k.test(this.input.slice(this.lastTokEnd, this.start));
+        }, f.parseObj = function(e, t) {
+          var i = this.startNode(), s = true, r = {};
+          for (i.properties = [], this.next(); !this.eat(a.braceR); ) {
+            if (s) s = false;
+            else if (this.expect(a.comma), this.options.ecmaVersion >= 5 && this.afterTrailingComma(a.braceR)) break;
+            var n = this.parseProperty(e, t);
+            e || this.checkPropClash(n, r, t), i.properties.push(n);
+          }
+          return this.finishNode(i, e ? "ObjectPattern" : "ObjectExpression");
+        }, f.parseProperty = function(e, t) {
+          var i = this.startNode(), s, r, n, u;
+          if (this.options.ecmaVersion >= 9 && this.eat(a.ellipsis)) return e ? (i.argument = this.parseIdent(false), this.type === a.comma && this.raiseRecoverable(this.start, "Comma is not permitted after the rest element"), this.finishNode(i, "RestElement")) : (i.argument = this.parseMaybeAssign(false, t), this.type === a.comma && t && t.trailingComma < 0 && (t.trailingComma = this.start), this.finishNode(i, "SpreadElement"));
+          this.options.ecmaVersion >= 6 && (i.method = false, i.shorthand = false, (e || t) && (n = this.start, u = this.startLoc), e || (s = this.eat(a.star)));
+          var o = this.containsEsc;
+          return this.parsePropertyName(i), !e && !o && this.options.ecmaVersion >= 8 && !s && this.isAsyncProp(i) ? (r = true, s = this.options.ecmaVersion >= 9 && this.eat(a.star), this.parsePropertyName(i)) : r = false, this.parsePropertyValue(i, e, s, r, n, u, t, o), this.finishNode(i, "Property");
+        }, f.parseGetterSetter = function(e) {
+          var t = e.key.name;
+          this.parsePropertyName(e), e.value = this.parseMethod(false), e.kind = t;
+          var i = e.kind === "get" ? 0 : 1;
+          if (e.value.params.length !== i) {
+            var s = e.value.start;
+            e.kind === "get" ? this.raiseRecoverable(s, "getter should have no params") : this.raiseRecoverable(s, "setter should have exactly one param");
+          } else e.kind === "set" && e.value.params[0].type === "RestElement" && this.raiseRecoverable(e.value.params[0].start, "Setter cannot use rest params");
+        }, f.parsePropertyValue = function(e, t, i, s, r, n, u, o) {
+          (i || s) && this.type === a.colon && this.unexpected(), this.eat(a.colon) ? (e.value = t ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, u), e.kind = "init") : this.options.ecmaVersion >= 6 && this.type === a.parenL ? (t && this.unexpected(), e.method = true, e.value = this.parseMethod(i, s), e.kind = "init") : !t && !o && this.options.ecmaVersion >= 5 && !e.computed && e.key.type === "Identifier" && (e.key.name === "get" || e.key.name === "set") && this.type !== a.comma && this.type !== a.braceR && this.type !== a.eq ? ((i || s) && this.unexpected(), this.parseGetterSetter(e)) : this.options.ecmaVersion >= 6 && !e.computed && e.key.type === "Identifier" ? ((i || s) && this.unexpected(), this.checkUnreserved(e.key), e.key.name === "await" && !this.awaitIdentPos && (this.awaitIdentPos = r), t ? e.value = this.parseMaybeDefault(r, n, this.copyNode(e.key)) : this.type === a.eq && u ? (u.shorthandAssign < 0 && (u.shorthandAssign = this.start), e.value = this.parseMaybeDefault(r, n, this.copyNode(e.key))) : e.value = this.copyNode(e.key), e.kind = "init", e.shorthand = true) : this.unexpected();
+        }, f.parsePropertyName = function(e) {
+          if (this.options.ecmaVersion >= 6) {
+            if (this.eat(a.bracketL)) return e.computed = true, e.key = this.parseMaybeAssign(), this.expect(a.bracketR), e.key;
+            e.computed = false;
+          }
+          return e.key = this.type === a.num || this.type === a.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+        }, f.initFunction = function(e) {
+          e.id = null, this.options.ecmaVersion >= 6 && (e.generator = e.expression = false), this.options.ecmaVersion >= 8 && (e.async = false);
+        }, f.parseMethod = function(e, t, i) {
+          var s = this.startNode(), r = this.yieldPos, n = this.awaitPos, u = this.awaitIdentPos;
+          return this.initFunction(s), this.options.ecmaVersion >= 6 && (s.generator = e), this.options.ecmaVersion >= 8 && (s.async = !!t), this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, this.enterScope(ke(t, s.generator) | ne | (i ? Ue : 0)), this.expect(a.parenL), s.params = this.parseBindingList(a.parenR, false, this.options.ecmaVersion >= 8), this.checkYieldAwaitInDefaultParams(), this.parseFunctionBody(s, false, true, false), this.yieldPos = r, this.awaitPos = n, this.awaitIdentPos = u, this.finishNode(s, "FunctionExpression");
+        }, f.parseArrowExpression = function(e, t, i, s) {
+          var r = this.yieldPos, n = this.awaitPos, u = this.awaitIdentPos;
+          return this.enterScope(ke(i, false) | Se), this.initFunction(e), this.options.ecmaVersion >= 8 && (e.async = !!i), this.yieldPos = 0, this.awaitPos = 0, this.awaitIdentPos = 0, e.params = this.toAssignableList(t, true), this.parseFunctionBody(e, true, false, s), this.yieldPos = r, this.awaitPos = n, this.awaitIdentPos = u, this.finishNode(e, "ArrowFunctionExpression");
+        }, f.parseFunctionBody = function(e, t, i, s) {
+          var r = t && this.type !== a.braceL, n = this.strict, u = false;
+          if (r) e.body = this.parseMaybeAssign(s), e.expression = true, this.checkParams(e, false);
+          else {
+            var o = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(e.params);
+            (!n || o) && (u = this.strictDirective(this.end), u && o && this.raiseRecoverable(e.start, "Illegal 'use strict' directive in function with non-simple parameter list"));
+            var h = this.labels;
+            this.labels = [], u && (this.strict = true), this.checkParams(e, !n && !u && !t && !i && this.isSimpleParamList(e.params)), this.strict && e.id && this.checkLValSimple(e.id, Ge), e.body = this.parseBlock(false, void 0, u && !n), e.expression = false, this.adaptDirectivePrologue(e.body.body), this.labels = h;
+          }
+          this.exitScope();
+        }, f.isSimpleParamList = function(e) {
+          for (var t = 0, i = e; t < i.length; t += 1) {
+            var s = i[t];
+            if (s.type !== "Identifier") return false;
+          }
+          return true;
+        }, f.checkParams = function(e, t) {
+          for (var i = /* @__PURE__ */ Object.create(null), s = 0, r = e.params; s < r.length; s += 1) {
+            var n = r[s];
+            this.checkLValInnerPattern(n, we, t ? null : i);
+          }
+        }, f.parseExprList = function(e, t, i, s) {
+          for (var r = [], n = true; !this.eat(e); ) {
+            if (n) n = false;
+            else if (this.expect(a.comma), t && this.afterTrailingComma(e)) break;
+            var u = void 0;
+            i && this.type === a.comma ? u = null : this.type === a.ellipsis ? (u = this.parseSpread(s), s && this.type === a.comma && s.trailingComma < 0 && (s.trailingComma = this.start)) : u = this.parseMaybeAssign(false, s), r.push(u);
+          }
+          return r;
+        }, f.checkUnreserved = function(e) {
+          var t = e.start, i = e.end, s = e.name;
+          if (this.inGenerator && s === "yield" && this.raiseRecoverable(t, "Cannot use 'yield' as identifier inside a generator"), this.inAsync && s === "await" && this.raiseRecoverable(t, "Cannot use 'await' as identifier inside an async function"), !(this.currentThisScope().flags & ue) && s === "arguments" && this.raiseRecoverable(t, "Cannot use 'arguments' in class field initializer"), this.inClassStaticBlock && (s === "arguments" || s === "await") && this.raise(t, "Cannot use " + s + " in class static initialization block"), this.keywords.test(s) && this.raise(t, "Unexpected keyword '" + s + "'"), !(this.options.ecmaVersion < 6 && this.input.slice(t, i).indexOf("\\") !== -1)) {
+            var r = this.strict ? this.reservedWordsStrict : this.reservedWords;
+            r.test(s) && (!this.inAsync && s === "await" && this.raiseRecoverable(t, "Cannot use keyword 'await' outside an async function"), this.raiseRecoverable(t, "The keyword '" + s + "' is reserved"));
+          }
+        }, f.parseIdent = function(e) {
+          var t = this.parseIdentNode();
+          return this.next(!!e), this.finishNode(t, "Identifier"), e || (this.checkUnreserved(t), t.name === "await" && !this.awaitIdentPos && (this.awaitIdentPos = t.start)), t;
+        }, f.parseIdentNode = function() {
+          var e = this.startNode();
+          return this.type === a.name ? e.name = this.value : this.type.keyword ? (e.name = this.type.keyword, (e.name === "class" || e.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46) && this.context.pop(), this.type = a.name) : this.unexpected(), e;
+        }, f.parsePrivateIdent = function() {
+          var e = this.startNode();
+          return this.type === a.privateId ? e.name = this.value : this.unexpected(), this.next(), this.finishNode(e, "PrivateIdentifier"), this.options.checkPrivateFields && (this.privateNameStack.length === 0 ? this.raise(e.start, "Private field '#" + e.name + "' must be declared in an enclosing class") : this.privateNameStack[this.privateNameStack.length - 1].used.push(e)), e;
+        }, f.parseYield = function(e) {
+          this.yieldPos || (this.yieldPos = this.start);
+          var t = this.startNode();
+          return this.next(), this.type === a.semi || this.canInsertSemicolon() || this.type !== a.star && !this.type.startsExpr ? (t.delegate = false, t.argument = null) : (t.delegate = this.eat(a.star), t.argument = this.parseMaybeAssign(e)), this.finishNode(t, "YieldExpression");
+        }, f.parseAwait = function(e) {
+          this.awaitPos || (this.awaitPos = this.start);
+          var t = this.startNode();
+          return this.next(), t.argument = this.parseMaybeUnary(null, true, false, e), this.finishNode(t, "AwaitExpression");
+        };
+        var pe = _.prototype;
+        pe.raise = function(e, t) {
+          var i = _e(this.input, e);
+          t += " (" + i.line + ":" + i.column + ")", this.sourceFile && (t += " in " + this.sourceFile);
+          var s = new SyntaxError(t);
+          throw s.pos = e, s.loc = i, s.raisedAt = this.pos, s;
+        }, pe.raiseRecoverable = pe.raise, pe.curPosition = function() {
+          if (this.options.locations) return new W(this.curLine, this.pos - this.lineStart);
+        };
+        var q = _.prototype, Lt = function(t) {
+          this.flags = t, this.var = [], this.lexical = [], this.functions = [];
+        };
+        q.enterScope = function(e) {
+          this.scopeStack.push(new Lt(e));
+        }, q.exitScope = function() {
+          this.scopeStack.pop();
+        }, q.treatFunctionsAsVarInScope = function(e) {
+          return e.flags & z || !this.inModule && e.flags & J;
+        }, q.declareName = function(e, t, i) {
+          var s = false;
+          if (t === F) {
+            var r = this.currentScope();
+            s = r.lexical.indexOf(e) > -1 || r.functions.indexOf(e) > -1 || r.var.indexOf(e) > -1, r.lexical.push(e), this.inModule && r.flags & J && delete this.undefinedExports[e];
+          } else if (t === je) {
+            var n = this.currentScope();
+            n.lexical.push(e);
+          } else if (t === qe) {
+            var u = this.currentScope();
+            this.treatFunctionsAsVar ? s = u.lexical.indexOf(e) > -1 : s = u.lexical.indexOf(e) > -1 || u.var.indexOf(e) > -1, u.functions.push(e);
+          } else for (var o = this.scopeStack.length - 1; o >= 0; --o) {
+            var h = this.scopeStack[o];
+            if (h.lexical.indexOf(e) > -1 && !(h.flags & Me && h.lexical[0] === e) || !this.treatFunctionsAsVarInScope(h) && h.functions.indexOf(e) > -1) {
+              s = true;
+              break;
+            }
+            if (h.var.push(e), this.inModule && h.flags & J && delete this.undefinedExports[e], h.flags & ue) break;
+          }
+          s && this.raiseRecoverable(i, "Identifier '" + e + "' has already been declared");
+        }, q.checkLocalExport = function(e) {
+          this.scopeStack[0].lexical.indexOf(e.name) === -1 && this.scopeStack[0].var.indexOf(e.name) === -1 && (this.undefinedExports[e.name] = e);
+        }, q.currentScope = function() {
+          return this.scopeStack[this.scopeStack.length - 1];
+        }, q.currentVarScope = function() {
+          for (var e = this.scopeStack.length - 1; ; e--) {
+            var t = this.scopeStack[e];
+            if (t.flags & (ue | $ | G)) return t;
+          }
+        }, q.currentThisScope = function() {
+          for (var e = this.scopeStack.length - 1; ; e--) {
+            var t = this.scopeStack[e];
+            if (t.flags & (ue | $ | G) && !(t.flags & Se)) return t;
+          }
+        };
+        var te = function(t, i, s) {
+          this.type = "", this.start = i, this.end = 0, t.options.locations && (this.loc = new Z(t, s)), t.options.directSourceFile && (this.sourceFile = t.options.directSourceFile), t.options.ranges && (this.range = [i, 0]);
+        }, ie = _.prototype;
+        ie.startNode = function() {
+          return new te(this, this.start, this.startLoc);
+        }, ie.startNodeAt = function(e, t) {
+          return new te(this, e, t);
+        };
+        function ze(e, t, i, s) {
+          return e.type = t, e.end = i, this.options.locations && (e.loc.end = s), this.options.ranges && (e.range[1] = i), e;
+        }
+        ie.finishNode = function(e, t) {
+          return ze.call(this, e, t, this.lastTokEnd, this.lastTokEndLoc);
+        }, ie.finishNodeAt = function(e, t, i, s) {
+          return ze.call(this, e, t, i, s);
+        }, ie.copyNode = function(e) {
+          var t = new te(this, e.start, this.startLoc);
+          for (var i in e) t[i] = e[i];
+          return t;
+        };
+        var Rt = "Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sunu Sunuwar Todhri Todr Tulu_Tigalari Tutg Unknown Zzzz", Ke = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS", Qe = Ke + " Extended_Pictographic", Ye = Qe, Xe = Ye + " EBase EComp EMod EPres ExtPict", Ze = Xe, Ot = Ze, Bt = { 9: Ke, 10: Qe, 11: Ye, 12: Xe, 13: Ze, 14: Ot }, Dt = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji", Ft = { 9: "", 10: "", 11: "", 12: "", 13: "", 14: Dt }, Je = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu", $e = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb", et = $e + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd", tt = et + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho", it = tt + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi", st = it + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith", Mt = st + " " + Rt, Ut = { 9: $e, 10: et, 11: tt, 12: it, 13: st, 14: Mt }, at = {};
+        function qt(e) {
+          var t = at[e] = { binary: U(Bt[e] + " " + Je), binaryOfStrings: U(Ft[e]), nonBinary: { General_Category: U(Je), Script: U(Ut[e]) } };
+          t.nonBinary.Script_Extensions = t.nonBinary.Script, t.nonBinary.gc = t.nonBinary.General_Category, t.nonBinary.sc = t.nonBinary.Script, t.nonBinary.scx = t.nonBinary.Script_Extensions;
+        }
+        for (var Pe = 0, rt = [9, 10, 11, 12, 13, 14]; Pe < rt.length; Pe += 1) {
+          var jt = rt[Pe];
+          qt(jt);
+        }
+        var c = _.prototype, le = function(t, i) {
+          this.parent = t, this.base = i || this;
+        };
+        le.prototype.separatedFrom = function(t) {
+          for (var i = this; i; i = i.parent) for (var s = t; s; s = s.parent) if (i.base === s.base && i !== s) return true;
+          return false;
+        }, le.prototype.sibling = function() {
+          return new le(this.parent, this.base);
+        };
+        var O = function(t) {
+          this.parser = t, this.validFlags = "gim" + (t.options.ecmaVersion >= 6 ? "uy" : "") + (t.options.ecmaVersion >= 9 ? "s" : "") + (t.options.ecmaVersion >= 13 ? "d" : "") + (t.options.ecmaVersion >= 15 ? "v" : ""), this.unicodeProperties = at[t.options.ecmaVersion >= 14 ? 14 : t.options.ecmaVersion], this.source = "", this.flags = "", this.start = 0, this.switchU = false, this.switchV = false, this.switchN = false, this.pos = 0, this.lastIntValue = 0, this.lastStringValue = "", this.lastAssertionIsQuantifiable = false, this.numCapturingParens = 0, this.maxBackReference = 0, this.groupNames = /* @__PURE__ */ Object.create(null), this.backReferenceNames = [], this.branchID = null;
+        };
+        O.prototype.reset = function(t, i, s) {
+          var r = s.indexOf("v") !== -1, n = s.indexOf("u") !== -1;
+          this.start = t | 0, this.source = i + "", this.flags = s, r && this.parser.options.ecmaVersion >= 15 ? (this.switchU = true, this.switchV = true, this.switchN = true) : (this.switchU = n && this.parser.options.ecmaVersion >= 6, this.switchV = false, this.switchN = n && this.parser.options.ecmaVersion >= 9);
+        }, O.prototype.raise = function(t) {
+          this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + t);
+        }, O.prototype.at = function(t, i) {
+          i === void 0 && (i = false);
+          var s = this.source, r = s.length;
+          if (t >= r) return -1;
+          var n = s.charCodeAt(t);
+          if (!(i || this.switchU) || n <= 55295 || n >= 57344 || t + 1 >= r) return n;
+          var u = s.charCodeAt(t + 1);
+          return u >= 56320 && u <= 57343 ? (n << 10) + u - 56613888 : n;
+        }, O.prototype.nextIndex = function(t, i) {
+          i === void 0 && (i = false);
+          var s = this.source, r = s.length;
+          if (t >= r) return r;
+          var n = s.charCodeAt(t), u;
+          return !(i || this.switchU) || n <= 55295 || n >= 57344 || t + 1 >= r || (u = s.charCodeAt(t + 1)) < 56320 || u > 57343 ? t + 1 : t + 2;
+        }, O.prototype.current = function(t) {
+          return t === void 0 && (t = false), this.at(this.pos, t);
+        }, O.prototype.lookahead = function(t) {
+          return t === void 0 && (t = false), this.at(this.nextIndex(this.pos, t), t);
+        }, O.prototype.advance = function(t) {
+          t === void 0 && (t = false), this.pos = this.nextIndex(this.pos, t);
+        }, O.prototype.eat = function(t, i) {
+          return i === void 0 && (i = false), this.current(i) === t ? (this.advance(i), true) : false;
+        }, O.prototype.eatChars = function(t, i) {
+          i === void 0 && (i = false);
+          for (var s = this.pos, r = 0, n = t; r < n.length; r += 1) {
+            var u = n[r], o = this.at(s, i);
+            if (o === -1 || o !== u) return false;
+            s = this.nextIndex(s, i);
+          }
+          return this.pos = s, true;
+        }, c.validateRegExpFlags = function(e) {
+          for (var t = e.validFlags, i = e.flags, s = false, r = false, n = 0; n < i.length; n++) {
+            var u = i.charAt(n);
+            t.indexOf(u) === -1 && this.raise(e.start, "Invalid regular expression flag"), i.indexOf(u, n + 1) > -1 && this.raise(e.start, "Duplicate regular expression flag"), u === "u" && (s = true), u === "v" && (r = true);
+          }
+          this.options.ecmaVersion >= 15 && s && r && this.raise(e.start, "Invalid regular expression flag");
+        };
+        function Gt(e) {
+          for (var t in e) return true;
+          return false;
+        }
+        c.validateRegExpPattern = function(e) {
+          this.regexp_pattern(e), !e.switchN && this.options.ecmaVersion >= 9 && Gt(e.groupNames) && (e.switchN = true, this.regexp_pattern(e));
+        }, c.regexp_pattern = function(e) {
+          e.pos = 0, e.lastIntValue = 0, e.lastStringValue = "", e.lastAssertionIsQuantifiable = false, e.numCapturingParens = 0, e.maxBackReference = 0, e.groupNames = /* @__PURE__ */ Object.create(null), e.backReferenceNames.length = 0, e.branchID = null, this.regexp_disjunction(e), e.pos !== e.source.length && (e.eat(41) && e.raise("Unmatched ')'"), (e.eat(93) || e.eat(125)) && e.raise("Lone quantifier brackets")), e.maxBackReference > e.numCapturingParens && e.raise("Invalid escape");
+          for (var t = 0, i = e.backReferenceNames; t < i.length; t += 1) {
+            var s = i[t];
+            e.groupNames[s] || e.raise("Invalid named capture referenced");
+          }
+        }, c.regexp_disjunction = function(e) {
+          var t = this.options.ecmaVersion >= 16;
+          for (t && (e.branchID = new le(e.branchID, null)), this.regexp_alternative(e); e.eat(124); ) t && (e.branchID = e.branchID.sibling()), this.regexp_alternative(e);
+          t && (e.branchID = e.branchID.parent), this.regexp_eatQuantifier(e, true) && e.raise("Nothing to repeat"), e.eat(123) && e.raise("Lone quantifier brackets");
+        }, c.regexp_alternative = function(e) {
+          for (; e.pos < e.source.length && this.regexp_eatTerm(e); ) ;
+        }, c.regexp_eatTerm = function(e) {
+          return this.regexp_eatAssertion(e) ? (e.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(e) && e.switchU && e.raise("Invalid quantifier"), true) : (e.switchU ? this.regexp_eatAtom(e) : this.regexp_eatExtendedAtom(e)) ? (this.regexp_eatQuantifier(e), true) : false;
+        }, c.regexp_eatAssertion = function(e) {
+          var t = e.pos;
+          if (e.lastAssertionIsQuantifiable = false, e.eat(94) || e.eat(36)) return true;
+          if (e.eat(92)) {
+            if (e.eat(66) || e.eat(98)) return true;
+            e.pos = t;
+          }
+          if (e.eat(40) && e.eat(63)) {
+            var i = false;
+            if (this.options.ecmaVersion >= 9 && (i = e.eat(60)), e.eat(61) || e.eat(33)) return this.regexp_disjunction(e), e.eat(41) || e.raise("Unterminated group"), e.lastAssertionIsQuantifiable = !i, true;
+          }
+          return e.pos = t, false;
+        }, c.regexp_eatQuantifier = function(e, t) {
+          return t === void 0 && (t = false), this.regexp_eatQuantifierPrefix(e, t) ? (e.eat(63), true) : false;
+        }, c.regexp_eatQuantifierPrefix = function(e, t) {
+          return e.eat(42) || e.eat(43) || e.eat(63) || this.regexp_eatBracedQuantifier(e, t);
+        }, c.regexp_eatBracedQuantifier = function(e, t) {
+          var i = e.pos;
+          if (e.eat(123)) {
+            var s = 0, r = -1;
+            if (this.regexp_eatDecimalDigits(e) && (s = e.lastIntValue, e.eat(44) && this.regexp_eatDecimalDigits(e) && (r = e.lastIntValue), e.eat(125))) return r !== -1 && r < s && !t && e.raise("numbers out of order in {} quantifier"), true;
+            e.switchU && !t && e.raise("Incomplete quantifier"), e.pos = i;
+          }
+          return false;
+        }, c.regexp_eatAtom = function(e) {
+          return this.regexp_eatPatternCharacters(e) || e.eat(46) || this.regexp_eatReverseSolidusAtomEscape(e) || this.regexp_eatCharacterClass(e) || this.regexp_eatUncapturingGroup(e) || this.regexp_eatCapturingGroup(e);
+        }, c.regexp_eatReverseSolidusAtomEscape = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) {
+            if (this.regexp_eatAtomEscape(e)) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatUncapturingGroup = function(e) {
+          var t = e.pos;
+          if (e.eat(40)) {
+            if (e.eat(63)) {
+              if (this.options.ecmaVersion >= 16) {
+                var i = this.regexp_eatModifiers(e), s = e.eat(45);
+                if (i || s) {
+                  for (var r = 0; r < i.length; r++) {
+                    var n = i.charAt(r);
+                    i.indexOf(n, r + 1) > -1 && e.raise("Duplicate regular expression modifiers");
+                  }
+                  if (s) {
+                    var u = this.regexp_eatModifiers(e);
+                    !i && !u && e.current() === 58 && e.raise("Invalid regular expression modifiers");
+                    for (var o = 0; o < u.length; o++) {
+                      var h = u.charAt(o);
+                      (u.indexOf(h, o + 1) > -1 || i.indexOf(h) > -1) && e.raise("Duplicate regular expression modifiers");
+                    }
+                  }
+                }
+              }
+              if (e.eat(58)) {
+                if (this.regexp_disjunction(e), e.eat(41)) return true;
+                e.raise("Unterminated group");
+              }
+            }
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatCapturingGroup = function(e) {
+          if (e.eat(40)) {
+            if (this.options.ecmaVersion >= 9 ? this.regexp_groupSpecifier(e) : e.current() === 63 && e.raise("Invalid group"), this.regexp_disjunction(e), e.eat(41)) return e.numCapturingParens += 1, true;
+            e.raise("Unterminated group");
+          }
+          return false;
+        }, c.regexp_eatModifiers = function(e) {
+          for (var t = "", i = 0; (i = e.current()) !== -1 && Ht(i); ) t += D(i), e.advance();
+          return t;
+        };
+        function Ht(e) {
+          return e === 105 || e === 109 || e === 115;
+        }
+        c.regexp_eatExtendedAtom = function(e) {
+          return e.eat(46) || this.regexp_eatReverseSolidusAtomEscape(e) || this.regexp_eatCharacterClass(e) || this.regexp_eatUncapturingGroup(e) || this.regexp_eatCapturingGroup(e) || this.regexp_eatInvalidBracedQuantifier(e) || this.regexp_eatExtendedPatternCharacter(e);
+        }, c.regexp_eatInvalidBracedQuantifier = function(e) {
+          return this.regexp_eatBracedQuantifier(e, true) && e.raise("Nothing to repeat"), false;
+        }, c.regexp_eatSyntaxCharacter = function(e) {
+          var t = e.current();
+          return nt(t) ? (e.lastIntValue = t, e.advance(), true) : false;
+        };
+        function nt(e) {
+          return e === 36 || e >= 40 && e <= 43 || e === 46 || e === 63 || e >= 91 && e <= 94 || e >= 123 && e <= 125;
+        }
+        c.regexp_eatPatternCharacters = function(e) {
+          for (var t = e.pos, i = 0; (i = e.current()) !== -1 && !nt(i); ) e.advance();
+          return e.pos !== t;
+        }, c.regexp_eatExtendedPatternCharacter = function(e) {
+          var t = e.current();
+          return t !== -1 && t !== 36 && !(t >= 40 && t <= 43) && t !== 46 && t !== 63 && t !== 91 && t !== 94 && t !== 124 ? (e.advance(), true) : false;
+        }, c.regexp_groupSpecifier = function(e) {
+          if (e.eat(63)) {
+            this.regexp_eatGroupName(e) || e.raise("Invalid group");
+            var t = this.options.ecmaVersion >= 16, i = e.groupNames[e.lastStringValue];
+            if (i) if (t) for (var s = 0, r = i; s < r.length; s += 1) {
+              var n = r[s];
+              n.separatedFrom(e.branchID) || e.raise("Duplicate capture group name");
+            }
+            else e.raise("Duplicate capture group name");
+            t ? (i || (e.groupNames[e.lastStringValue] = [])).push(e.branchID) : e.groupNames[e.lastStringValue] = true;
+          }
+        }, c.regexp_eatGroupName = function(e) {
+          if (e.lastStringValue = "", e.eat(60)) {
+            if (this.regexp_eatRegExpIdentifierName(e) && e.eat(62)) return true;
+            e.raise("Invalid capture group name");
+          }
+          return false;
+        }, c.regexp_eatRegExpIdentifierName = function(e) {
+          if (e.lastStringValue = "", this.regexp_eatRegExpIdentifierStart(e)) {
+            for (e.lastStringValue += D(e.lastIntValue); this.regexp_eatRegExpIdentifierPart(e); ) e.lastStringValue += D(e.lastIntValue);
+            return true;
+          }
+          return false;
+        }, c.regexp_eatRegExpIdentifierStart = function(e) {
+          var t = e.pos, i = this.options.ecmaVersion >= 11, s = e.current(i);
+          return e.advance(i), s === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(e, i) && (s = e.lastIntValue), Wt(s) ? (e.lastIntValue = s, true) : (e.pos = t, false);
+        };
+        function Wt(e) {
+          return T(e, true) || e === 36 || e === 95;
+        }
+        c.regexp_eatRegExpIdentifierPart = function(e) {
+          var t = e.pos, i = this.options.ecmaVersion >= 11, s = e.current(i);
+          return e.advance(i), s === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(e, i) && (s = e.lastIntValue), zt(s) ? (e.lastIntValue = s, true) : (e.pos = t, false);
+        };
+        function zt(e) {
+          return B(e, true) || e === 36 || e === 95 || e === 8204 || e === 8205;
+        }
+        c.regexp_eatAtomEscape = function(e) {
+          return this.regexp_eatBackReference(e) || this.regexp_eatCharacterClassEscape(e) || this.regexp_eatCharacterEscape(e) || e.switchN && this.regexp_eatKGroupName(e) ? true : (e.switchU && (e.current() === 99 && e.raise("Invalid unicode escape"), e.raise("Invalid escape")), false);
+        }, c.regexp_eatBackReference = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatDecimalEscape(e)) {
+            var i = e.lastIntValue;
+            if (e.switchU) return i > e.maxBackReference && (e.maxBackReference = i), true;
+            if (i <= e.numCapturingParens) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatKGroupName = function(e) {
+          if (e.eat(107)) {
+            if (this.regexp_eatGroupName(e)) return e.backReferenceNames.push(e.lastStringValue), true;
+            e.raise("Invalid named reference");
+          }
+          return false;
+        }, c.regexp_eatCharacterEscape = function(e) {
+          return this.regexp_eatControlEscape(e) || this.regexp_eatCControlLetter(e) || this.regexp_eatZero(e) || this.regexp_eatHexEscapeSequence(e) || this.regexp_eatRegExpUnicodeEscapeSequence(e, false) || !e.switchU && this.regexp_eatLegacyOctalEscapeSequence(e) || this.regexp_eatIdentityEscape(e);
+        }, c.regexp_eatCControlLetter = function(e) {
+          var t = e.pos;
+          if (e.eat(99)) {
+            if (this.regexp_eatControlLetter(e)) return true;
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatZero = function(e) {
+          return e.current() === 48 && !fe(e.lookahead()) ? (e.lastIntValue = 0, e.advance(), true) : false;
+        }, c.regexp_eatControlEscape = function(e) {
+          var t = e.current();
+          return t === 116 ? (e.lastIntValue = 9, e.advance(), true) : t === 110 ? (e.lastIntValue = 10, e.advance(), true) : t === 118 ? (e.lastIntValue = 11, e.advance(), true) : t === 102 ? (e.lastIntValue = 12, e.advance(), true) : t === 114 ? (e.lastIntValue = 13, e.advance(), true) : false;
+        }, c.regexp_eatControlLetter = function(e) {
+          var t = e.current();
+          return ut(t) ? (e.lastIntValue = t % 32, e.advance(), true) : false;
+        };
+        function ut(e) {
+          return e >= 65 && e <= 90 || e >= 97 && e <= 122;
+        }
+        c.regexp_eatRegExpUnicodeEscapeSequence = function(e, t) {
+          t === void 0 && (t = false);
+          var i = e.pos, s = t || e.switchU;
+          if (e.eat(117)) {
+            if (this.regexp_eatFixedHexDigits(e, 4)) {
+              var r = e.lastIntValue;
+              if (s && r >= 55296 && r <= 56319) {
+                var n = e.pos;
+                if (e.eat(92) && e.eat(117) && this.regexp_eatFixedHexDigits(e, 4)) {
+                  var u = e.lastIntValue;
+                  if (u >= 56320 && u <= 57343) return e.lastIntValue = (r - 55296) * 1024 + (u - 56320) + 65536, true;
+                }
+                e.pos = n, e.lastIntValue = r;
+              }
+              return true;
+            }
+            if (s && e.eat(123) && this.regexp_eatHexDigits(e) && e.eat(125) && Kt(e.lastIntValue)) return true;
+            s && e.raise("Invalid unicode escape"), e.pos = i;
+          }
+          return false;
+        };
+        function Kt(e) {
+          return e >= 0 && e <= 1114111;
+        }
+        c.regexp_eatIdentityEscape = function(e) {
+          if (e.switchU) return this.regexp_eatSyntaxCharacter(e) ? true : e.eat(47) ? (e.lastIntValue = 47, true) : false;
+          var t = e.current();
+          return t !== 99 && (!e.switchN || t !== 107) ? (e.lastIntValue = t, e.advance(), true) : false;
+        }, c.regexp_eatDecimalEscape = function(e) {
+          e.lastIntValue = 0;
+          var t = e.current();
+          if (t >= 49 && t <= 57) {
+            do
+              e.lastIntValue = 10 * e.lastIntValue + (t - 48), e.advance();
+            while ((t = e.current()) >= 48 && t <= 57);
+            return true;
+          }
+          return false;
+        };
+        var ot = 0, M = 1, V = 2;
+        c.regexp_eatCharacterClassEscape = function(e) {
+          var t = e.current();
+          if (Qt(t)) return e.lastIntValue = -1, e.advance(), M;
+          var i = false;
+          if (e.switchU && this.options.ecmaVersion >= 9 && ((i = t === 80) || t === 112)) {
+            e.lastIntValue = -1, e.advance();
+            var s;
+            if (e.eat(123) && (s = this.regexp_eatUnicodePropertyValueExpression(e)) && e.eat(125)) return i && s === V && e.raise("Invalid property name"), s;
+            e.raise("Invalid property name");
+          }
+          return ot;
+        };
+        function Qt(e) {
+          return e === 100 || e === 68 || e === 115 || e === 83 || e === 119 || e === 87;
+        }
+        c.regexp_eatUnicodePropertyValueExpression = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatUnicodePropertyName(e) && e.eat(61)) {
+            var i = e.lastStringValue;
+            if (this.regexp_eatUnicodePropertyValue(e)) {
+              var s = e.lastStringValue;
+              return this.regexp_validateUnicodePropertyNameAndValue(e, i, s), M;
+            }
+          }
+          if (e.pos = t, this.regexp_eatLoneUnicodePropertyNameOrValue(e)) {
+            var r = e.lastStringValue;
+            return this.regexp_validateUnicodePropertyNameOrValue(e, r);
+          }
+          return ot;
+        }, c.regexp_validateUnicodePropertyNameAndValue = function(e, t, i) {
+          H(e.unicodeProperties.nonBinary, t) || e.raise("Invalid property name"), e.unicodeProperties.nonBinary[t].test(i) || e.raise("Invalid property value");
+        }, c.regexp_validateUnicodePropertyNameOrValue = function(e, t) {
+          if (e.unicodeProperties.binary.test(t)) return M;
+          if (e.switchV && e.unicodeProperties.binaryOfStrings.test(t)) return V;
+          e.raise("Invalid property name");
+        }, c.regexp_eatUnicodePropertyName = function(e) {
+          var t = 0;
+          for (e.lastStringValue = ""; ht(t = e.current()); ) e.lastStringValue += D(t), e.advance();
+          return e.lastStringValue !== "";
+        };
+        function ht(e) {
+          return ut(e) || e === 95;
+        }
+        c.regexp_eatUnicodePropertyValue = function(e) {
+          var t = 0;
+          for (e.lastStringValue = ""; Yt(t = e.current()); ) e.lastStringValue += D(t), e.advance();
+          return e.lastStringValue !== "";
+        };
+        function Yt(e) {
+          return ht(e) || fe(e);
+        }
+        c.regexp_eatLoneUnicodePropertyNameOrValue = function(e) {
+          return this.regexp_eatUnicodePropertyValue(e);
+        }, c.regexp_eatCharacterClass = function(e) {
+          if (e.eat(91)) {
+            var t = e.eat(94), i = this.regexp_classContents(e);
+            return e.eat(93) || e.raise("Unterminated character class"), t && i === V && e.raise("Negated character class may contain strings"), true;
+          }
+          return false;
+        }, c.regexp_classContents = function(e) {
+          return e.current() === 93 ? M : e.switchV ? this.regexp_classSetExpression(e) : (this.regexp_nonEmptyClassRanges(e), M);
+        }, c.regexp_nonEmptyClassRanges = function(e) {
+          for (; this.regexp_eatClassAtom(e); ) {
+            var t = e.lastIntValue;
+            if (e.eat(45) && this.regexp_eatClassAtom(e)) {
+              var i = e.lastIntValue;
+              e.switchU && (t === -1 || i === -1) && e.raise("Invalid character class"), t !== -1 && i !== -1 && t > i && e.raise("Range out of order in character class");
+            }
+          }
+        }, c.regexp_eatClassAtom = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) {
+            if (this.regexp_eatClassEscape(e)) return true;
+            if (e.switchU) {
+              var i = e.current();
+              (i === 99 || lt(i)) && e.raise("Invalid class escape"), e.raise("Invalid escape");
+            }
+            e.pos = t;
+          }
+          var s = e.current();
+          return s !== 93 ? (e.lastIntValue = s, e.advance(), true) : false;
+        }, c.regexp_eatClassEscape = function(e) {
+          var t = e.pos;
+          if (e.eat(98)) return e.lastIntValue = 8, true;
+          if (e.switchU && e.eat(45)) return e.lastIntValue = 45, true;
+          if (!e.switchU && e.eat(99)) {
+            if (this.regexp_eatClassControlLetter(e)) return true;
+            e.pos = t;
+          }
+          return this.regexp_eatCharacterClassEscape(e) || this.regexp_eatCharacterEscape(e);
+        }, c.regexp_classSetExpression = function(e) {
+          var t = M, i;
+          if (!this.regexp_eatClassSetRange(e)) if (i = this.regexp_eatClassSetOperand(e)) {
+            i === V && (t = V);
+            for (var s = e.pos; e.eatChars([38, 38]); ) {
+              if (e.current() !== 38 && (i = this.regexp_eatClassSetOperand(e))) {
+                i !== V && (t = M);
+                continue;
+              }
+              e.raise("Invalid character in character class");
+            }
+            if (s !== e.pos) return t;
+            for (; e.eatChars([45, 45]); ) this.regexp_eatClassSetOperand(e) || e.raise("Invalid character in character class");
+            if (s !== e.pos) return t;
+          } else e.raise("Invalid character in character class");
+          for (; ; ) if (!this.regexp_eatClassSetRange(e)) {
+            if (i = this.regexp_eatClassSetOperand(e), !i) return t;
+            i === V && (t = V);
+          }
+        }, c.regexp_eatClassSetRange = function(e) {
+          var t = e.pos;
+          if (this.regexp_eatClassSetCharacter(e)) {
+            var i = e.lastIntValue;
+            if (e.eat(45) && this.regexp_eatClassSetCharacter(e)) {
+              var s = e.lastIntValue;
+              return i !== -1 && s !== -1 && i > s && e.raise("Range out of order in character class"), true;
+            }
+            e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatClassSetOperand = function(e) {
+          return this.regexp_eatClassSetCharacter(e) ? M : this.regexp_eatClassStringDisjunction(e) || this.regexp_eatNestedClass(e);
+        }, c.regexp_eatNestedClass = function(e) {
+          var t = e.pos;
+          if (e.eat(91)) {
+            var i = e.eat(94), s = this.regexp_classContents(e);
+            if (e.eat(93)) return i && s === V && e.raise("Negated character class may contain strings"), s;
+            e.pos = t;
+          }
+          if (e.eat(92)) {
+            var r = this.regexp_eatCharacterClassEscape(e);
+            if (r) return r;
+            e.pos = t;
+          }
+          return null;
+        }, c.regexp_eatClassStringDisjunction = function(e) {
+          var t = e.pos;
+          if (e.eatChars([92, 113])) {
+            if (e.eat(123)) {
+              var i = this.regexp_classStringDisjunctionContents(e);
+              if (e.eat(125)) return i;
+            } else e.raise("Invalid escape");
+            e.pos = t;
+          }
+          return null;
+        }, c.regexp_classStringDisjunctionContents = function(e) {
+          for (var t = this.regexp_classString(e); e.eat(124); ) this.regexp_classString(e) === V && (t = V);
+          return t;
+        }, c.regexp_classString = function(e) {
+          for (var t = 0; this.regexp_eatClassSetCharacter(e); ) t++;
+          return t === 1 ? M : V;
+        }, c.regexp_eatClassSetCharacter = function(e) {
+          var t = e.pos;
+          if (e.eat(92)) return this.regexp_eatCharacterEscape(e) || this.regexp_eatClassSetReservedPunctuator(e) ? true : e.eat(98) ? (e.lastIntValue = 8, true) : (e.pos = t, false);
+          var i = e.current();
+          return i < 0 || i === e.lookahead() && Xt(i) || Zt(i) ? false : (e.advance(), e.lastIntValue = i, true);
+        };
+        function Xt(e) {
+          return e === 33 || e >= 35 && e <= 38 || e >= 42 && e <= 44 || e === 46 || e >= 58 && e <= 64 || e === 94 || e === 96 || e === 126;
+        }
+        function Zt(e) {
+          return e === 40 || e === 41 || e === 45 || e === 47 || e >= 91 && e <= 93 || e >= 123 && e <= 125;
+        }
+        c.regexp_eatClassSetReservedPunctuator = function(e) {
+          var t = e.current();
+          return Jt(t) ? (e.lastIntValue = t, e.advance(), true) : false;
+        };
+        function Jt(e) {
+          return e === 33 || e === 35 || e === 37 || e === 38 || e === 44 || e === 45 || e >= 58 && e <= 62 || e === 64 || e === 96 || e === 126;
+        }
+        c.regexp_eatClassControlLetter = function(e) {
+          var t = e.current();
+          return fe(t) || t === 95 ? (e.lastIntValue = t % 32, e.advance(), true) : false;
+        }, c.regexp_eatHexEscapeSequence = function(e) {
+          var t = e.pos;
+          if (e.eat(120)) {
+            if (this.regexp_eatFixedHexDigits(e, 2)) return true;
+            e.switchU && e.raise("Invalid escape"), e.pos = t;
+          }
+          return false;
+        }, c.regexp_eatDecimalDigits = function(e) {
+          var t = e.pos, i = 0;
+          for (e.lastIntValue = 0; fe(i = e.current()); ) e.lastIntValue = 10 * e.lastIntValue + (i - 48), e.advance();
+          return e.pos !== t;
+        };
+        function fe(e) {
+          return e >= 48 && e <= 57;
+        }
+        c.regexp_eatHexDigits = function(e) {
+          var t = e.pos, i = 0;
+          for (e.lastIntValue = 0; ct(i = e.current()); ) e.lastIntValue = 16 * e.lastIntValue + pt(i), e.advance();
+          return e.pos !== t;
+        };
+        function ct(e) {
+          return e >= 48 && e <= 57 || e >= 65 && e <= 70 || e >= 97 && e <= 102;
+        }
+        function pt(e) {
+          return e >= 65 && e <= 70 ? 10 + (e - 65) : e >= 97 && e <= 102 ? 10 + (e - 97) : e - 48;
+        }
+        c.regexp_eatLegacyOctalEscapeSequence = function(e) {
+          if (this.regexp_eatOctalDigit(e)) {
+            var t = e.lastIntValue;
+            if (this.regexp_eatOctalDigit(e)) {
+              var i = e.lastIntValue;
+              t <= 3 && this.regexp_eatOctalDigit(e) ? e.lastIntValue = t * 64 + i * 8 + e.lastIntValue : e.lastIntValue = t * 8 + i;
+            } else e.lastIntValue = t;
+            return true;
+          }
+          return false;
+        }, c.regexp_eatOctalDigit = function(e) {
+          var t = e.current();
+          return lt(t) ? (e.lastIntValue = t - 48, e.advance(), true) : (e.lastIntValue = 0, false);
+        };
+        function lt(e) {
+          return e >= 48 && e <= 55;
+        }
+        c.regexp_eatFixedHexDigits = function(e, t) {
+          var i = e.pos;
+          e.lastIntValue = 0;
+          for (var s = 0; s < t; ++s) {
+            var r = e.current();
+            if (!ct(r)) return e.pos = i, false;
+            e.lastIntValue = 16 * e.lastIntValue + pt(r), e.advance();
+          }
+          return true;
+        };
+        var de = function(t) {
+          this.type = t.type, this.value = t.value, this.start = t.start, this.end = t.end, t.options.locations && (this.loc = new Z(t, t.startLoc, t.endLoc)), t.options.ranges && (this.range = [t.start, t.end]);
+        }, x = _.prototype;
+        x.next = function(e) {
+          !e && this.type.keyword && this.containsEsc && this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword), this.options.onToken && this.options.onToken(new de(this)), this.lastTokEnd = this.end, this.lastTokStart = this.start, this.lastTokEndLoc = this.endLoc, this.lastTokStartLoc = this.startLoc, this.nextToken();
+        }, x.getToken = function() {
+          return this.next(), new de(this);
+        }, typeof Symbol < "u" && (x[Symbol.iterator] = function() {
+          var e = this;
+          return { next: function() {
+            var t = e.getToken();
+            return { done: t.type === a.eof, value: t };
+          } };
+        }), x.nextToken = function() {
+          var e = this.curContext();
+          if ((!e || !e.preserveSpace) && this.skipSpace(), this.start = this.pos, this.options.locations && (this.startLoc = this.curPosition()), this.pos >= this.input.length) return this.finishToken(a.eof);
+          if (e.override) return e.override(this);
+          this.readToken(this.fullCharCodeAtPos());
+        }, x.readToken = function(e) {
+          return T(e, this.options.ecmaVersion >= 6) || e === 92 ? this.readWord() : this.getTokenFromCode(e);
+        }, x.fullCharCodeAtPos = function() {
+          var e = this.input.charCodeAt(this.pos);
+          if (e <= 55295 || e >= 56320) return e;
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t <= 56319 || t >= 57344 ? e : (e << 10) + t - 56613888;
+        }, x.skipBlockComment = function() {
+          var e = this.options.onComment && this.curPosition(), t = this.pos, i = this.input.indexOf("*/", this.pos += 2);
+          if (i === -1 && this.raise(this.pos - 2, "Unterminated comment"), this.pos = i + 2, this.options.locations) for (var s = void 0, r = t; (s = Le(this.input, r, this.pos)) > -1; ) ++this.curLine, r = this.lineStart = s;
+          this.options.onComment && this.options.onComment(true, this.input.slice(t + 2, i), t, this.pos, e, this.curPosition());
+        }, x.skipLineComment = function(e) {
+          for (var t = this.pos, i = this.options.onComment && this.curPosition(), s = this.input.charCodeAt(this.pos += e); this.pos < this.input.length && !j(s); ) s = this.input.charCodeAt(++this.pos);
+          this.options.onComment && this.options.onComment(false, this.input.slice(t + e, this.pos), t, this.pos, i, this.curPosition());
+        }, x.skipSpace = function() {
+          e: for (; this.pos < this.input.length; ) {
+            var e = this.input.charCodeAt(this.pos);
+            switch (e) {
+              case 32:
+              case 160:
+                ++this.pos;
+                break;
+              case 13:
+                this.input.charCodeAt(this.pos + 1) === 10 && ++this.pos;
+              case 10:
+              case 8232:
+              case 8233:
+                ++this.pos, this.options.locations && (++this.curLine, this.lineStart = this.pos);
+                break;
+              case 47:
+                switch (this.input.charCodeAt(this.pos + 1)) {
+                  case 42:
+                    this.skipBlockComment();
+                    break;
+                  case 47:
+                    this.skipLineComment(2);
+                    break;
+                  default:
+                    break e;
+                }
+                break;
+              default:
+                if (e > 8 && e < 14 || e >= 5760 && ye.test(String.fromCharCode(e))) ++this.pos;
+                else break e;
+            }
+          }
+        }, x.finishToken = function(e, t) {
+          this.end = this.pos, this.options.locations && (this.endLoc = this.curPosition());
+          var i = this.type;
+          this.type = e, this.value = t, this.updateContext(i);
+        }, x.readToken_dot = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          if (e >= 48 && e <= 57) return this.readNumber(true);
+          var t = this.input.charCodeAt(this.pos + 2);
+          return this.options.ecmaVersion >= 6 && e === 46 && t === 46 ? (this.pos += 3, this.finishToken(a.ellipsis)) : (++this.pos, this.finishToken(a.dot));
+        }, x.readToken_slash = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          return this.exprAllowed ? (++this.pos, this.readRegexp()) : e === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.slash, 1);
+        }, x.readToken_mult_modulo_exp = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1), i = 1, s = e === 42 ? a.star : a.modulo;
+          return this.options.ecmaVersion >= 7 && e === 42 && t === 42 && (++i, s = a.starstar, t = this.input.charCodeAt(this.pos + 2)), t === 61 ? this.finishOp(a.assign, i + 1) : this.finishOp(s, i);
+        }, x.readToken_pipe_amp = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          if (t === e) {
+            if (this.options.ecmaVersion >= 12) {
+              var i = this.input.charCodeAt(this.pos + 2);
+              if (i === 61) return this.finishOp(a.assign, 3);
+            }
+            return this.finishOp(e === 124 ? a.logicalOR : a.logicalAND, 2);
+          }
+          return t === 61 ? this.finishOp(a.assign, 2) : this.finishOp(e === 124 ? a.bitwiseOR : a.bitwiseAND, 1);
+        }, x.readToken_caret = function() {
+          var e = this.input.charCodeAt(this.pos + 1);
+          return e === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.bitwiseXOR, 1);
+        }, x.readToken_plus_min = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t === e ? t === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || k.test(this.input.slice(this.lastTokEnd, this.pos))) ? (this.skipLineComment(3), this.skipSpace(), this.nextToken()) : this.finishOp(a.incDec, 2) : t === 61 ? this.finishOp(a.assign, 2) : this.finishOp(a.plusMin, 1);
+        }, x.readToken_lt_gt = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1), i = 1;
+          return t === e ? (i = e === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2, this.input.charCodeAt(this.pos + i) === 61 ? this.finishOp(a.assign, i + 1) : this.finishOp(a.bitShift, i)) : t === 33 && e === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45 ? (this.skipLineComment(4), this.skipSpace(), this.nextToken()) : (t === 61 && (i = 2), this.finishOp(a.relational, i));
+        }, x.readToken_eq_excl = function(e) {
+          var t = this.input.charCodeAt(this.pos + 1);
+          return t === 61 ? this.finishOp(a.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2) : e === 61 && t === 62 && this.options.ecmaVersion >= 6 ? (this.pos += 2, this.finishToken(a.arrow)) : this.finishOp(e === 61 ? a.eq : a.prefix, 1);
+        }, x.readToken_question = function() {
+          var e = this.options.ecmaVersion;
+          if (e >= 11) {
+            var t = this.input.charCodeAt(this.pos + 1);
+            if (t === 46) {
+              var i = this.input.charCodeAt(this.pos + 2);
+              if (i < 48 || i > 57) return this.finishOp(a.questionDot, 2);
+            }
+            if (t === 63) {
+              if (e >= 12) {
+                var s = this.input.charCodeAt(this.pos + 2);
+                if (s === 61) return this.finishOp(a.assign, 3);
+              }
+              return this.finishOp(a.coalesce, 2);
+            }
+          }
+          return this.finishOp(a.question, 1);
+        }, x.readToken_numberSign = function() {
+          var e = this.options.ecmaVersion, t = 35;
+          if (e >= 13 && (++this.pos, t = this.fullCharCodeAtPos(), T(t, true) || t === 92)) return this.finishToken(a.privateId, this.readWord1());
+          this.raise(this.pos, "Unexpected character '" + D(t) + "'");
+        }, x.getTokenFromCode = function(e) {
+          switch (e) {
+            case 46:
+              return this.readToken_dot();
+            case 40:
+              return ++this.pos, this.finishToken(a.parenL);
+            case 41:
+              return ++this.pos, this.finishToken(a.parenR);
+            case 59:
+              return ++this.pos, this.finishToken(a.semi);
+            case 44:
+              return ++this.pos, this.finishToken(a.comma);
+            case 91:
+              return ++this.pos, this.finishToken(a.bracketL);
+            case 93:
+              return ++this.pos, this.finishToken(a.bracketR);
+            case 123:
+              return ++this.pos, this.finishToken(a.braceL);
+            case 125:
+              return ++this.pos, this.finishToken(a.braceR);
+            case 58:
+              return ++this.pos, this.finishToken(a.colon);
+            case 96:
+              if (this.options.ecmaVersion < 6) break;
+              return ++this.pos, this.finishToken(a.backQuote);
+            case 48:
+              var t = this.input.charCodeAt(this.pos + 1);
+              if (t === 120 || t === 88) return this.readRadixNumber(16);
+              if (this.options.ecmaVersion >= 6) {
+                if (t === 111 || t === 79) return this.readRadixNumber(8);
+                if (t === 98 || t === 66) return this.readRadixNumber(2);
+              }
+            case 49:
+            case 50:
+            case 51:
+            case 52:
+            case 53:
+            case 54:
+            case 55:
+            case 56:
+            case 57:
+              return this.readNumber(false);
+            case 34:
+            case 39:
+              return this.readString(e);
+            case 47:
+              return this.readToken_slash();
+            case 37:
+            case 42:
+              return this.readToken_mult_modulo_exp(e);
+            case 124:
+            case 38:
+              return this.readToken_pipe_amp(e);
+            case 94:
+              return this.readToken_caret();
+            case 43:
+            case 45:
+              return this.readToken_plus_min(e);
+            case 60:
+            case 62:
+              return this.readToken_lt_gt(e);
+            case 61:
+            case 33:
+              return this.readToken_eq_excl(e);
+            case 63:
+              return this.readToken_question();
+            case 126:
+              return this.finishOp(a.prefix, 1);
+            case 35:
+              return this.readToken_numberSign();
+          }
+          this.raise(this.pos, "Unexpected character '" + D(e) + "'");
+        }, x.finishOp = function(e, t) {
+          var i = this.input.slice(this.pos, this.pos + t);
+          return this.pos += t, this.finishToken(e, i);
+        }, x.readRegexp = function() {
+          for (var e, t, i = this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(i, "Unterminated regular expression");
+            var s = this.input.charAt(this.pos);
+            if (k.test(s) && this.raise(i, "Unterminated regular expression"), e) e = false;
+            else {
+              if (s === "[") t = true;
+              else if (s === "]" && t) t = false;
+              else if (s === "/" && !t) break;
+              e = s === "\\";
+            }
+            ++this.pos;
+          }
+          var r = this.input.slice(i, this.pos);
+          ++this.pos;
+          var n = this.pos, u = this.readWord1();
+          this.containsEsc && this.unexpected(n);
+          var o = this.regexpState || (this.regexpState = new O(this));
+          o.reset(i, r, u), this.validateRegExpFlags(o), this.validateRegExpPattern(o);
+          var h = null;
+          try {
+            h = new RegExp(r, u);
+          } catch {
+          }
+          return this.finishToken(a.regexp, { pattern: r, flags: u, value: h });
+        }, x.readInt = function(e, t, i) {
+          for (var s = this.options.ecmaVersion >= 12 && t === void 0, r = i && this.input.charCodeAt(this.pos) === 48, n = this.pos, u = 0, o = 0, h = 0, l = t ?? 1 / 0; h < l; ++h, ++this.pos) {
+            var d = this.input.charCodeAt(this.pos), y = void 0;
+            if (s && d === 95) {
+              r && this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals"), o === 95 && this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore"), h === 0 && this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits"), o = d;
+              continue;
+            }
+            if (d >= 97 ? y = d - 97 + 10 : d >= 65 ? y = d - 65 + 10 : d >= 48 && d <= 57 ? y = d - 48 : y = 1 / 0, y >= e) break;
+            o = d, u = u * e + y;
+          }
+          return s && o === 95 && this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits"), this.pos === n || t != null && this.pos - n !== t ? null : u;
+        };
+        function $t(e, t) {
+          return t ? parseInt(e, 8) : parseFloat(e.replace(/_/g, ""));
+        }
+        function ft(e) {
+          return typeof BigInt != "function" ? null : BigInt(e.replace(/_/g, ""));
+        }
+        x.readRadixNumber = function(e) {
+          var t = this.pos;
+          this.pos += 2;
+          var i = this.readInt(e);
+          return i == null && this.raise(this.start + 2, "Expected number in radix " + e), this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110 ? (i = ft(this.input.slice(t, this.pos)), ++this.pos) : T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number"), this.finishToken(a.num, i);
+        }, x.readNumber = function(e) {
+          var t = this.pos;
+          !e && this.readInt(10, void 0, true) === null && this.raise(t, "Invalid number");
+          var i = this.pos - t >= 2 && this.input.charCodeAt(t) === 48;
+          i && this.strict && this.raise(t, "Invalid number");
+          var s = this.input.charCodeAt(this.pos);
+          if (!i && !e && this.options.ecmaVersion >= 11 && s === 110) {
+            var r = ft(this.input.slice(t, this.pos));
+            return ++this.pos, T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number"), this.finishToken(a.num, r);
+          }
+          i && /[89]/.test(this.input.slice(t, this.pos)) && (i = false), s === 46 && !i && (++this.pos, this.readInt(10), s = this.input.charCodeAt(this.pos)), (s === 69 || s === 101) && !i && (s = this.input.charCodeAt(++this.pos), (s === 43 || s === 45) && ++this.pos, this.readInt(10) === null && this.raise(t, "Invalid number")), T(this.fullCharCodeAtPos()) && this.raise(this.pos, "Identifier directly after number");
+          var n = $t(this.input.slice(t, this.pos), i);
+          return this.finishToken(a.num, n);
+        }, x.readCodePoint = function() {
+          var e = this.input.charCodeAt(this.pos), t;
+          if (e === 123) {
+            this.options.ecmaVersion < 6 && this.unexpected();
+            var i = ++this.pos;
+            t = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos), ++this.pos, t > 1114111 && this.invalidStringToken(i, "Code point out of bounds");
+          } else t = this.readHexChar(4);
+          return t;
+        }, x.readString = function(e) {
+          for (var t = "", i = ++this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(this.start, "Unterminated string constant");
+            var s = this.input.charCodeAt(this.pos);
+            if (s === e) break;
+            s === 92 ? (t += this.input.slice(i, this.pos), t += this.readEscapedChar(false), i = this.pos) : s === 8232 || s === 8233 ? (this.options.ecmaVersion < 10 && this.raise(this.start, "Unterminated string constant"), ++this.pos, this.options.locations && (this.curLine++, this.lineStart = this.pos)) : (j(s) && this.raise(this.start, "Unterminated string constant"), ++this.pos);
+          }
+          return t += this.input.slice(i, this.pos++), this.finishToken(a.string, t);
+        };
+        var dt = {};
+        x.tryReadTemplateToken = function() {
+          this.inTemplateElement = true;
+          try {
+            this.readTmplToken();
+          } catch (e) {
+            if (e === dt) this.readInvalidTemplateToken();
+            else throw e;
+          }
+          this.inTemplateElement = false;
+        }, x.invalidStringToken = function(e, t) {
+          if (this.inTemplateElement && this.options.ecmaVersion >= 9) throw dt;
+          this.raise(e, t);
+        }, x.readTmplToken = function() {
+          for (var e = "", t = this.pos; ; ) {
+            this.pos >= this.input.length && this.raise(this.start, "Unterminated template");
+            var i = this.input.charCodeAt(this.pos);
+            if (i === 96 || i === 36 && this.input.charCodeAt(this.pos + 1) === 123) return this.pos === this.start && (this.type === a.template || this.type === a.invalidTemplate) ? i === 36 ? (this.pos += 2, this.finishToken(a.dollarBraceL)) : (++this.pos, this.finishToken(a.backQuote)) : (e += this.input.slice(t, this.pos), this.finishToken(a.template, e));
+            if (i === 92) e += this.input.slice(t, this.pos), e += this.readEscapedChar(true), t = this.pos;
+            else if (j(i)) {
+              switch (e += this.input.slice(t, this.pos), ++this.pos, i) {
+                case 13:
+                  this.input.charCodeAt(this.pos) === 10 && ++this.pos;
+                case 10:
+                  e += `
+`;
+                  break;
+                default:
+                  e += String.fromCharCode(i);
+                  break;
+              }
+              this.options.locations && (++this.curLine, this.lineStart = this.pos), t = this.pos;
+            } else ++this.pos;
+          }
+        }, x.readInvalidTemplateToken = function() {
+          for (; this.pos < this.input.length; this.pos++) switch (this.input[this.pos]) {
+            case "\\":
+              ++this.pos;
+              break;
+            case "$":
+              if (this.input[this.pos + 1] !== "{") break;
+            case "`":
+              return this.finishToken(a.invalidTemplate, this.input.slice(this.start, this.pos));
+            case "\r":
+              this.input[this.pos + 1] === `
+` && ++this.pos;
+            case `
+`:
+            case "\u2028":
+            case "\u2029":
+              ++this.curLine, this.lineStart = this.pos + 1;
+              break;
+          }
+          this.raise(this.start, "Unterminated template");
+        }, x.readEscapedChar = function(e) {
+          var t = this.input.charCodeAt(++this.pos);
+          switch (++this.pos, t) {
+            case 110:
+              return `
+`;
+            case 114:
+              return "\r";
+            case 120:
+              return String.fromCharCode(this.readHexChar(2));
+            case 117:
+              return D(this.readCodePoint());
+            case 116:
+              return "	";
+            case 98:
+              return "\b";
+            case 118:
+              return "\v";
+            case 102:
+              return "\f";
+            case 13:
+              this.input.charCodeAt(this.pos) === 10 && ++this.pos;
+            case 10:
+              return this.options.locations && (this.lineStart = this.pos, ++this.curLine), "";
+            case 56:
+            case 57:
+              if (this.strict && this.invalidStringToken(this.pos - 1, "Invalid escape sequence"), e) {
+                var i = this.pos - 1;
+                this.invalidStringToken(i, "Invalid escape sequence in template string");
+              }
+            default:
+              if (t >= 48 && t <= 55) {
+                var s = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0], r = parseInt(s, 8);
+                return r > 255 && (s = s.slice(0, -1), r = parseInt(s, 8)), this.pos += s.length - 1, t = this.input.charCodeAt(this.pos), (s !== "0" || t === 56 || t === 57) && (this.strict || e) && this.invalidStringToken(this.pos - 1 - s.length, e ? "Octal literal in template string" : "Octal literal in strict mode"), String.fromCharCode(r);
+              }
+              return j(t) ? (this.options.locations && (this.lineStart = this.pos, ++this.curLine), "") : String.fromCharCode(t);
+          }
+        }, x.readHexChar = function(e) {
+          var t = this.pos, i = this.readInt(16, e);
+          return i === null && this.invalidStringToken(t, "Bad character escape sequence"), i;
+        }, x.readWord1 = function() {
+          this.containsEsc = false;
+          for (var e = "", t = true, i = this.pos, s = this.options.ecmaVersion >= 6; this.pos < this.input.length; ) {
+            var r = this.fullCharCodeAtPos();
+            if (B(r, s)) this.pos += r <= 65535 ? 1 : 2;
+            else if (r === 92) {
+              this.containsEsc = true, e += this.input.slice(i, this.pos);
+              var n = this.pos;
+              this.input.charCodeAt(++this.pos) !== 117 && this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX"), ++this.pos;
+              var u = this.readCodePoint();
+              (t ? T : B)(u, s) || this.invalidStringToken(n, "Invalid Unicode escape"), e += D(u), i = this.pos;
+            } else break;
+            t = false;
+          }
+          return e + this.input.slice(i, this.pos);
+        }, x.readWord = function() {
+          var e = this.readWord1(), t = a.name;
+          return this.keywords.test(e) && (t = ae[e]), this.finishToken(t, e);
+        };
+        var xt = "8.15.0";
+        _.acorn = { Parser: _, version: xt, defaultOptions: re, Position: W, SourceLocation: Z, getLineInfo: _e, Node: te, TokenType: v, tokTypes: a, keywordTypes: ae, TokContext: N, tokContexts: b, isIdentifierChar: B, isIdentifierStart: T, Token: de, isNewLine: j, lineBreak: k, lineBreakG: Te, nonASCIIwhitespace: ye };
+        function ei(e, t) {
+          return _.parse(e, t);
+        }
+        function ti(e, t, i) {
+          return _.parseExpressionAt(e, t, i);
+        }
+        function ii(e, t) {
+          return _.tokenizer(e, t);
+        }
+        g.Node = te, g.Parser = _, g.Position = W, g.SourceLocation = Z, g.TokContext = N, g.Token = de, g.TokenType = v, g.defaultOptions = re, g.getLineInfo = _e, g.isIdentifierChar = B, g.isIdentifierStart = T, g.isNewLine = j, g.keywordTypes = ae, g.lineBreak = k, g.lineBreakG = Te, g.nonASCIIwhitespace = ye, g.parse = ei, g.parseExpressionAt = ti, g.tokContexts = b, g.tokTypes = a, g.tokenizer = ii, g.version = xt;
+      }));
+    });
+    module2.exports.parse = vt().parse;
+  }
+});
+
+// ../host/source-contracts.cjs
+var require_source_contracts = __commonJS({
+  "../host/source-contracts.cjs"(exports2, module2) {
+    "use strict";
+    var { parse } = require_sdk_source_parser();
+    var required = Object.freeze({
+      network: ["assertAllowed", "fetch", "request"],
+      fetch: ["performDesktopFetch", "performProgressRequest"],
+      stdio: ["send"],
+      connection: ["routeIncomingMessage", "getPendingRequestCount", "restart"]
+    });
+    var identifier = (value) => typeof value === "string" && /^[A-Za-z_$][\w$]*$/u.test(value);
+    function method(Constructor, name) {
+      const value = Object.getOwnPropertyDescriptor(Constructor?.prototype ?? {}, name)?.value;
+      return typeof value === "function" ? value : null;
+    }
+    var parsedMethods = /* @__PURE__ */ new WeakMap();
+    function memberPath(node) {
+      if (node?.type === "ThisExpression") return ["this"];
+      if (node?.type === "Identifier") return [node.name];
+      if (node?.type !== "MemberExpression") return null;
+      const parent = memberPath(node.object), key = !node.computed && node.property.type === "Identifier" ? node.property.name : node.property.type === "Literal" && typeof node.property.value === "string" ? node.property.value : null;
+      return parent && key !== null ? [...parent, key] : null;
+    }
+    function inspectMethod(Constructor, name) {
+      const value = method(Constructor, name);
+      if (!value) return null;
+      if (parsedMethods.has(value)) return parsedMethods.get(value);
+      const source = Function.prototype.toString.call(value);
+      let result = null;
+      if (source.length <= 256 * 1024) try {
+        const tree = parse(`({${source}})`, { ecmaVersion: "latest", sourceType: "script" });
+        const fn = tree.body[0]?.expression?.properties?.[0]?.value;
+        if (!fn?.body) throw Error("method_missing");
+        const calls = [], members = [], strings = [], variables = /* @__PURE__ */ new Map();
+        const walk = (node) => {
+          if (!node || typeof node !== "object") return;
+          if (node.type === "CallExpression") calls.push({ path: memberPath(node.callee)?.join("."), args: node.arguments, start: node.start });
+          if (node.type === "MemberExpression") members.push(memberPath(node)?.join("."));
+          if (node.type === "Literal" && typeof node.value === "string") strings.push(node.value);
+          if (node.type === "TemplateLiteral" && !node.expressions.length) strings.push(node.quasis[0].value.cooked);
+          if (node.type === "VariableDeclarator" && node.id.type === "Identifier") variables.set(node.id.name, node.init);
+          for (const [key, child] of Object.entries(node)) if (key !== "start" && key !== "end") {
+            if (Array.isArray(child)) child.forEach(walk);
+            else if (child && typeof child === "object") walk(child);
+          }
+        };
+        walk(fn.body);
+        result = { calls, members, strings, variables, params: fn.params };
+      } catch {
+      }
+      parsedMethods.set(value, result);
+      return result;
+    }
+    function delegatesNetwork(Constructor, name) {
+      const info = inspectMethod(Constructor, name);
+      if (!info) return false;
+      const guard = info.calls.find((call) => call.path === "this.assertAllowed");
+      const calls = info.calls.filter((call) => call.path?.endsWith(".net." + name));
+      if (!guard || calls.length !== 1 || guard.start >= calls[0].start || info.params[0]?.type !== "Identifier") return false;
+      const input = info.params[0].name, same = (node) => node?.type === "Identifier" && node.name === input;
+      let argument = calls[0].args[0];
+      if (!same(argument) && argument?.type === "Identifier") argument = info.variables.get(argument.name);
+      const normalizedUrl = argument?.type === "ConditionalExpression" && argument.test.type === "BinaryExpression" && argument.test.operator === "instanceof" && same(argument.test.left) && argument.test.right.type === "Identifier" && argument.test.right.name === "URL" && memberPath(argument.consequent)?.join(".") === input + ".href" && same(argument.alternate);
+      return (same(argument) || name === "fetch" && normalizedUrl) && (info.params.length < 2 || info.params[1]?.type === "Identifier" && calls[0].args[1]?.type === "Identifier" && calls[0].args[1].name === info.params[1].name);
+    }
+    function writesJsonl(Constructor) {
+      const info = inspectMethod(Constructor, "send");
+      if (!info) return false;
+      const writes = info.calls.filter((call) => call.path === "this.proc.stdin.write");
+      if (writes.length !== 1 || !info.members.includes("this.readyState") || !info.calls.some((call) => call.path === "this.ioStatsTracker.trackWritten")) return false;
+      let line = writes[0].args[0];
+      if (line?.type === "Identifier") line = info.variables.get(line.name);
+      const suffix = line?.right?.type === "Literal" ? line.right.value : line?.right?.type === "TemplateLiteral" && !line.right.expressions.length ? line.right.quasis[0].value.cooked : null;
+      const input = info.params[0]?.type === "Identifier" ? info.params[0].name : null;
+      return !!input && (line?.type === "BinaryExpression" && line.operator === "+" && line.left.type === "Identifier" && line.left.name === input && suffix === "\n" || line?.type === "TemplateLiteral" && line.expressions.length === 1 && line.expressions[0].type === "Identifier" && line.expressions[0].name === input && line.quasis[0].value.cooked === "" && line.quasis[1].value.cooked === "\n");
+    }
+    function supportsRole(Constructor, role, recorded = false) {
+      if (typeof Constructor !== "function" || !Constructor.prototype) return false;
+      const names = recorded ? { network: ["fetch", "request"], fetch: ["performDesktopFetch"], stdio: ["send"], connection: ["routeIncomingMessage"] }[role] : required[role];
+      if (!names?.every((name) => method(Constructor, name))) return false;
+      if (recorded) return true;
+      if (role === "network") return delegatesNetwork(Constructor, "fetch") && delegatesNetwork(Constructor, "request");
+      if (role === "fetch") {
+        const fetch = inspectMethod(Constructor, "performDesktopFetch"), progress = inspectMethod(Constructor, "performProgressRequest");
+        return ["this.options.applicationNetwork.fetch", "this.options.applicationNetwork.assertAllowed", "this.performProgressRequest"].every((path) => fetch?.calls.some((call) => call.path === path)) && progress?.calls.some((call) => call.path === "this.options.applicationNetwork.request") === true;
+      }
+      if (role === "stdio") return writesJsonl(Constructor);
+      if (role === "connection") {
+        const info = inspectMethod(Constructor, "routeIncomingMessage");
+        return !!info && info.strings.includes("account/updated") && info.members.some((path) => path?.endsWith(".params.authMode")) && info.calls.some((call) => call.path === "this.clearAuthTokenCache");
+      }
+      return false;
+    }
+    function sourceCandidates(record, profiles, expectedHashes) {
+      const candidates = [];
+      const add = (role, binding, recorded, read) => candidates.push({
+        role,
+        binding,
+        recorded,
+        read: read ?? (() => record.evaluate(binding)),
+        resolved: null
+      });
+      if (Object.hasOwn(expectedHashes, record.name) && record.hash === expectedHashes[record.name]) {
+        const profile = profiles[record.name] ?? {
+          kind: record.name.startsWith("bootstrap-") ? "bootstrap" : record.name.startsWith("main-") ? "main" : "src",
+          symbol: record.name.startsWith("bootstrap-") ? "Pt" : record.name.startsWith("main-") ? "wEe" : "mQ"
+        };
+        if (profile.kind === "bootstrap") {
+          add("network", profile.symbol, true);
+          if (profile.connectionSymbol) add("connection", profile.connectionSymbol, true);
+        } else if (profile.kind === "main") add("fetch", profile.symbol, true);
+        else if (profile.kind === "stdio") add("stdio", profile.symbol, true);
+        else if (profile.kind === "connection") add("connection", profile.symbol, true);
+        else {
+          add("stdio", profile.symbol, true);
+          add("connection", profile.managerExport ?? "un", true, () => Object.getOwnPropertyDescriptor(record.exported ?? {}, profile.managerExport ?? "un")?.value);
+        }
+        return candidates;
+      }
+      for (const description of (Array.isArray(record.classes) ? record.classes : []).slice(0, 1024)) {
+        if (!identifier(description.binding) || !Array.isArray(description.methods)) continue;
+        for (const [role, names] of Object.entries(required)) if (names.every((name) => description.methods.includes(name))) add(role, description.binding, false);
+      }
+      return candidates;
+    }
+    module2.exports = { sourceCandidates, supportsRole, required };
+  }
+});
+
 // ../host/electron-plaintext.cjs
 var require_electron_plaintext = __commonJS({
   "../host/electron-plaintext.cjs"(exports2, module2) {
@@ -777,6 +3044,7 @@ var require_electron_plaintext = __commonJS({
     var { EventEmitter } = require("node:events");
     var { Readable } = require("node:stream");
     var { AsyncLocalStorage } = require("node:async_hooks");
+    var { sourceCandidates, supportsRole } = require_source_contracts();
     var PROFILES = Object.freeze({
       "bootstrap-D2PJMYEh.js": { hash: "0d62d7be4491d5ef84d93ea9b753c270096de217f2e49064e5f8f701af53e9ed", kind: "bootstrap", symbol: "He" },
       "main-DAwJoFgo.js": { hash: "18beea7d7e46866168528ff5dab5108ffe6d39fc13433367ce8dee7b187044f8", kind: "main", symbol: "kEe" },
@@ -944,10 +3212,11 @@ var require_electron_plaintext = __commonJS({
       if (state && !state.scope) state.scope = scope;
       const symbol = Symbol("codlet.private.plaintext");
       const originalCompile = Module.prototype._compile;
-      const deferredModules = /* @__PURE__ */ new Set();
       let bootstrapVerified = false, mainVerified = false, srcVerified = false, fetchInstalled = false, requestInstalled = false, stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;
       const bindingErrors = /* @__PURE__ */ Object.create(null);
       const restores = [];
+      const observed = /* @__PURE__ */ new Map(), roleBindings = /* @__PURE__ */ new Map(), roleReasons = /* @__PURE__ */ new Map(), driftedRoles = /* @__PURE__ */ new Set();
+      const wrappedMethods = { network: ["fetch", "request"], fetch: ["performDesktopFetch"], stdio: ["send"], connection: ["routeIncomingMessage"] };
       const taskRoutes = state?.taskRoutes ?? /* @__PURE__ */ new Set(), routesByProcess = state?.routesByProcess ?? /* @__PURE__ */ new WeakMap(), sendQueues = state?.sendQueues ?? /* @__PURE__ */ new WeakMap();
       const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();
       function reserve(url, proc) {
@@ -995,7 +3264,7 @@ var require_electron_plaintext = __commonJS({
         }
         const original = Stdio.prototype.send;
         Stdio.prototype.send = function(message) {
-          if (closed || !ownsBackendProcess(this.proc) || typeof message !== "string") return original.call(this, message);
+          if (closed || !roleLive("stdio", Stdio) || !ownsBackendProcess(this.proc) || typeof message !== "string") return original.call(this, message);
           if (onlineUpdates && !onlineUpdates.accepting()) {
             onlineUpdates.whenAccepting().then(() => Stdio.prototype.send.call(this, message)).catch(() => failOutbound(this, message));
             return;
@@ -1037,8 +3306,9 @@ var require_electron_plaintext = __commonJS({
           });
         };
         stdioInstalled = true;
+        const wrapped = Stdio.prototype.send;
         restores.push(() => {
-          Stdio.prototype.send = original;
+          if (Stdio.prototype.send === wrapped) Stdio.prototype.send = original;
         });
       }
       function hookConnection(Connection) {
@@ -1048,12 +3318,13 @@ var require_electron_plaintext = __commonJS({
         }
         const original = Connection.prototype.routeIncomingMessage;
         Connection.prototype.routeIncomingMessage = function(message, ...rest) {
-          if (!closed && message?.method === "account/updated" && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
+          if (!closed && roleLive("connection", Connection) && message?.method === "account/updated" && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
           return original.call(this, message, ...rest);
         };
         connectionInstalled = true;
+        const wrapped = Connection.prototype.routeIncomingMessage;
         restores.push(() => {
-          Connection.prototype.routeIncomingMessage = original;
+          if (Connection.prototype.routeIncomingMessage === wrapped) Connection.prototype.routeIncomingMessage = original;
         });
       }
       function hookNetwork(Network) {
@@ -1116,7 +3387,7 @@ var require_electron_plaintext = __commonJS({
           });
         }
         Network.prototype.fetch = async function(input, init = {}) {
-          if (closed || !scope.getStore()) return originalFetch.call(this, input, init);
+          if (closed || !roleLive("network", Network) || !scope.getStore()) return originalFetch.call(this, input, init);
           if (onlineUpdates && !onlineUpdates.accepting()) {
             await onlineUpdates.whenAccepting(init.signal);
             return Network.prototype.fetch.call(this, input, init);
@@ -1140,7 +3411,7 @@ var require_electron_plaintext = __commonJS({
           return response(result, current.method);
         };
         Network.prototype.request = function(options) {
-          if (closed || !scope.getStore()) return originalRequest.call(this, options);
+          if (closed || !roleLive("network", Network) || !scope.getStore()) return originalRequest.call(this, options);
           this.assertAllowed(options.url);
           const network = this;
           const proxy = new EventEmitter();
@@ -1201,9 +3472,10 @@ var require_electron_plaintext = __commonJS({
         };
         fetchInstalled = true;
         requestInstalled = true;
+        const wrappedFetch = Network.prototype.fetch, wrappedRequest = Network.prototype.request;
         restores.push(() => {
-          Network.prototype.fetch = originalFetch;
-          Network.prototype.request = originalRequest;
+          if (Network.prototype.fetch === wrappedFetch) Network.prototype.fetch = originalFetch;
+          if (Network.prototype.request === wrappedRequest) Network.prototype.request = originalRequest;
         });
       }
       function hookFetchWrapper(FetchWrapper) {
@@ -1213,100 +3485,133 @@ var require_electron_plaintext = __commonJS({
         }
         const original = FetchWrapper.prototype.performDesktopFetch;
         FetchWrapper.prototype.performDesktopFetch = function(...args) {
-          return scope.run(true, () => original.apply(this, args));
+          return closed || !roleLive("fetch", FetchWrapper) ? original.apply(this, args) : scope.run(true, () => original.apply(this, args));
         };
+        const wrapped = FetchWrapper.prototype.performDesktopFetch;
         restores.push(() => {
-          FetchWrapper.prototype.performDesktopFetch = original;
+          if (FetchWrapper.prototype.performDesktopFetch === wrapped) FetchWrapper.prototype.performDesktopFetch = original;
         });
       }
-      function applyRecord(record) {
-        const { name, hash: observedSha256, exported } = record;
-        if (!Object.hasOwn(expectedHashes, name)) {
-          if (moduleRegistry && /^(bootstrap-|main-|application-network-startup-)/.test(name)) {
-            if (name.startsWith("application-network-startup-")) taskReason = "unsupported_build";
-            else desktopReason = "unsupported_build";
-            mismatch = { name, observedSha256 };
-          }
-          return;
+      function resetRole(role) {
+        const binding = roleBindings.get(role);
+        if (binding) for (const restore of binding.restores.reverse()) {
+          restore();
+          const index = restores.indexOf(restore);
+          if (index !== -1) restores.splice(index, 1);
         }
-        const profile = PROFILES[name] ?? {
-          kind: name.startsWith("bootstrap-") ? "bootstrap" : name.startsWith("main-") ? "main" : "src",
-          symbol: name.startsWith("bootstrap-") ? "Pt" : name.startsWith("main-") ? "wEe" : "mQ"
-        };
-        if (observedSha256 !== expectedHashes[name]) {
-          if (["src", "stdio", "connection"].includes(profile.kind)) taskReason = "unsupported_build";
-          else desktopReason = "unsupported_build";
-          mismatch = { name, observedSha256 };
-          return;
+        roleBindings.delete(role);
+        if (role === "network") {
+          bootstrapVerified = false;
+          fetchInstalled = false;
+          requestInstalled = false;
         }
-        const expression = profile.connectionSymbol ? `({primary:${profile.symbol},connection:${profile.connectionSymbol}})` : profile.symbol;
-        const read = () => record.evaluate(expression);
-        const apply = () => {
-          const captured = read();
-          let pending = false;
-          if (profile.kind === "bootstrap") {
-            const primary = profile.connectionSymbol ? captured.primary : captured;
-            if (!bootstrapVerified) {
-              if (primary == null) pending = true;
-              else {
-                bootstrapVerified = true;
-                hookNetwork(primary);
-              }
-            }
-            if (profile.connectionSymbol && !connectionVerified) {
-              if (captured.connection == null) pending = true;
-              else {
-                connectionVerified = true;
-                hookConnection(captured.connection);
-              }
-            }
-          } else if (profile.kind === "main") {
-            if (!mainVerified) {
-              if (captured == null) pending = true;
-              else {
-                mainVerified = true;
-                hookFetchWrapper(captured);
-              }
-            }
-          } else if (profile.kind === "stdio") {
-            if (!stdioVerified) {
-              if (captured == null) pending = true;
-              else {
-                stdioVerified = true;
-                hookStdio(captured);
-              }
-            }
-          } else if (profile.kind === "connection") {
-            if (!connectionVerified) {
-              if (captured == null) pending = true;
-              else {
-                connectionVerified = true;
-                hookConnection(captured);
-              }
-            }
-          } else {
-            stdioVerified = true;
-            connectionVerified = true;
-            hookStdio(captured);
-            hookConnection(exported[profile.managerExport ?? "un"]);
+        if (role === "fetch") mainVerified = false;
+        if (role === "stdio") {
+          stdioVerified = false;
+          stdioInstalled = false;
+        }
+        if (role === "connection") {
+          connectionVerified = false;
+          connectionInstalled = false;
+        }
+      }
+      function roleLive(role, Constructor) {
+        const binding = roleBindings.get(role);
+        if (!binding || binding.Constructor !== Constructor) return false;
+        if (Object.entries(binding.installed).every(([name, method]) => Object.getOwnPropertyDescriptor(Constructor.prototype, name)?.value === method)) return true;
+        resetRole(role);
+        driftedRoles.add(role);
+        roleReasons.set(role, "binding_changed");
+        if (["network", "fetch"].includes(role)) desktopReason = "binding_changed";
+        else taskReason = "binding_changed";
+        srcVerified = stdioVerified && connectionVerified;
+        return false;
+      }
+      function refreshBindings() {
+        for (const role of ["network", "fetch", "stdio", "connection"]) {
+          const diagnosticRole = role === "network" ? "bootstrap" : role === "fetch" ? "main" : role;
+          const active = roleBindings.get(role);
+          if (active && Object.entries(active.installed).some(([name, method]) => Object.getOwnPropertyDescriptor(active.Constructor.prototype, name)?.value !== method)) {
+            resetRole(role);
+            driftedRoles.add(role);
           }
-          srcVerified = stdioVerified && connectionVerified;
-          return !pending;
-        };
-        const attempt = () => {
+          if (driftedRoles.has(role)) {
+            roleReasons.set(role, "binding_changed");
+            continue;
+          }
+          const candidates = [...observed.values()].flat().filter((candidate) => candidate.role === role);
+          const collect = (selected2) => {
+            const found2 = /* @__PURE__ */ new Set();
+            let pending2 = false;
+            for (const candidate of selected2) try {
+              const Constructor2 = candidate.read();
+              if (Constructor2 == null) {
+                pending2 = true;
+                continue;
+              }
+              if (candidate.resolved === Constructor2 || supportsRole(Constructor2, role, candidate.recorded)) {
+                candidate.resolved = Constructor2;
+                found2.add(Constructor2);
+              }
+              delete bindingErrors[diagnosticRole];
+            } catch (error) {
+              bindingErrors[diagnosticRole] = ["ReferenceError", "TypeError"].includes(error?.name) ? error.name : "binding_error";
+              if (error?.name === "ReferenceError") pending2 = true;
+            }
+            return { found: found2, pending: pending2 };
+          };
+          let selected = collect(candidates.filter((candidate) => candidate.recorded));
+          if (!selected.found.size && !selected.pending) selected = collect(candidates.filter((candidate) => !candidate.recorded));
+          const { found, pending } = selected;
+          if (found.size !== 1 || pending) {
+            resetRole(role);
+            roleReasons.set(role, found.size > 1 ? "ambiguous_contract" : pending ? "initializing" : "contract_unavailable");
+            continue;
+          }
+          const Constructor = [...found][0];
+          if (roleBindings.get(role)?.Constructor === Constructor) {
+            roleReasons.delete(role);
+            continue;
+          }
+          resetRole(role);
+          const at = restores.length;
           try {
-            const result = apply();
-            delete bindingErrors[profile.kind];
-            return result;
+            if (role === "network") {
+              hookNetwork(Constructor);
+              bootstrapVerified = fetchInstalled && requestInstalled;
+            }
+            if (role === "fetch") {
+              hookFetchWrapper(Constructor);
+              mainVerified = true;
+            }
+            if (role === "stdio") {
+              hookStdio(Constructor);
+              stdioVerified = stdioInstalled;
+            }
+            if (role === "connection") {
+              hookConnection(Constructor);
+              connectionVerified = connectionInstalled;
+            }
+            roleBindings.set(role, { Constructor, restores: restores.slice(at), installed: Object.fromEntries(wrappedMethods[role].map((name) => [name, Object.getOwnPropertyDescriptor(Constructor.prototype, name)?.value])) });
+            roleReasons.delete(role);
           } catch (error) {
-            bindingErrors[profile.kind] = ["ReferenceError", "TypeError"].includes(error?.name) ? error.name : "binding_error";
-            if (error?.name === "ReferenceError") return false;
-            if (["bootstrap", "main"].includes(profile.kind)) desktopReason = "hook_unavailable";
-            else taskReason = "hook_unavailable";
-            return true;
+            for (const restore of restores.splice(at).reverse()) restore();
+            roleReasons.set(role, "contract_unavailable");
           }
-        };
-        if (!attempt()) deferredModules.add(attempt);
+        }
+        srcVerified = stdioVerified && connectionVerified;
+        const terminal = (roles) => roles.map((role) => roleReasons.get(role)).find((reason) => ["ambiguous_contract", "binding_changed"].includes(reason)) ?? null;
+        desktopReason = bootstrapVerified && mainVerified ? null : terminal(["network", "fetch"]);
+        taskReason = srcVerified ? null : terminal(["stdio", "connection"]);
+      }
+      function applyRecord(record) {
+        const { name, hash: observedSha256 } = record;
+        if (Object.hasOwn(expectedHashes, name) && observedSha256 !== expectedHashes[name]) mismatch = { name, observedSha256 };
+        const key = record.filename ?? name, candidates = sourceCandidates(record, PROFILES, expectedHashes);
+        if (!candidates.length && !observed.has(key)) return;
+        if (candidates.length) observed.set(key, candidates);
+        else observed.delete(key);
+        refreshBindings();
       }
       Module.prototype._compile = function(code, filename) {
         const name = path.basename(filename);
@@ -1322,7 +3627,10 @@ var require_electron_plaintext = __commonJS({
 ;Object.defineProperty(module.exports,Symbol.for(${JSON.stringify(String(symbol))}),{value:()=>${expression},configurable:true});`, filename);
         const read = this.exports[Symbol.for(String(symbol))], exported = this.exports;
         delete this.exports[Symbol.for(String(symbol))];
-        applyRecord({ name, hash, exported, evaluate: () => read() });
+        applyRecord({ name, hash, exported, evaluate: (binding) => {
+          const value = read();
+          return profile.connectionSymbol ? binding === profile.connectionSymbol ? value.connection : value.primary : value;
+        } });
         return result;
       };
       restores.push(() => {
@@ -1340,29 +3648,32 @@ var require_electron_plaintext = __commonJS({
       return Object.freeze({
         async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {
           while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {
-            for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);
+            refreshBindings();
             await new Promise((resolve) => setTimeout(resolve, 20));
           }
-          if (!closed) {
-            for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);
-          }
+          if (!closed) refreshBindings();
           return this.inspect();
         },
-        inspect: () => ({
-          installed: !closed,
-          available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
-          taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,
-          modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },
-          mismatch,
-          bindingErrors: { ...bindingErrors },
-          deferredBindings: deferredModules.size,
-          reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "hook_unavailable"),
-          taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "hook_unavailable")
-        }),
+        inspect: () => {
+          for (const [role, binding] of [...roleBindings]) roleLive(role, binding.Constructor);
+          return {
+            installed: !closed,
+            available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
+            taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,
+            modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },
+            mismatch,
+            bindingErrors: { ...bindingErrors },
+            deferredBindings: [...roleReasons.values()].filter((reason) => reason === "initializing").length,
+            reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "contract_unavailable"),
+            taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "contract_unavailable")
+          };
+        },
+        connectionConstructors: () => roleBindings.has("connection") ? [roleBindings.get("connection").Constructor] : [],
         suspend() {
           if (closed) return;
           closed = true;
-          deferredModules.clear();
+          observed.clear();
+          roleBindings.clear();
           for (const restore of restores.splice(0).reverse()) restore();
         },
         close() {
@@ -1385,7 +3696,7 @@ var require_codex_traffic = __commonJS({
     "use strict";
     var zlib = require("node:zlib");
     var failure = (code) => Object.assign(new Error(code), { code });
-    var VERIFIED_BACKENDS = Object.freeze({
+    var RECORDED_BACKENDS = Object.freeze({
       win32: Object.freeze([
         // Disposable Windows acceptance covers both signed distributions of the
         // same 0.162.0-alpha.2 PE image; admission pins each complete file separately.
@@ -1407,7 +3718,7 @@ var require_codex_traffic = __commonJS({
       ])
     });
     function probeCodexTraffic({ platform = process.platform, binarySha256 } = {}) {
-      const backend = VERIFIED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
+      const backend = RECORDED_BACKENDS[platform]?.find((profile) => binarySha256?.toLowerCase() === profile.sha256);
       const fixtureVerified = !!backend;
       return Object.freeze({
         available: false,
@@ -1418,7 +3729,7 @@ var require_codex_traffic = __commonJS({
         desktop: false,
         attachments: false,
         fixtureProtocols: fixtureVerified ? ["http", "https", "sse", "ws", "wss"] : [],
-        reason: fixtureVerified ? "native_process_ingress_not_attached" : "backend_build_unverified"
+        reason: "native_process_ingress_not_attached"
       });
     }
     function threadIdFromHeaders(headers) {
@@ -1476,16 +3787,16 @@ var require_codex_traffic = __commonJS({
           native = await context.traffic.inspect();
         } catch (error) {
           if (!["traffic_unavailable", "permission_denied", "capability_unavailable", "host_stopping", "authorization_revoked"].includes(error.code)) throw failure("core_traffic_unavailable");
-          return Object.freeze({ ...verified, listening: false, attached: false, reason: verified.fixtureVerified ? error.code : verified.reason });
+          return Object.freeze({ ...verified, listening: false, attached: false, reason: error.code });
         }
         const attached = native.attached === true && native.available === true && native.activatedSources?.some((source) => source.id === "owned-backend-provider" && source.coverage?.includes("owned-local-app-server-model-provider")) === true;
         return Object.freeze({
           ...verified,
-          available: verified.fixtureVerified && attached,
+          available: attached,
           listening: native.listening === true,
           attached,
           restartRequired: !attached,
-          reason: !verified.fixtureVerified ? verified.reason : attached ? null : "native_process_ingress_not_attached",
+          reason: attached ? null : "native_process_ingress_not_attached",
           coverage: "registered-backend-origins",
           registered: native.registered,
           active: native.active
@@ -1493,7 +3804,6 @@ var require_codex_traffic = __commonJS({
       }
       async function registerInterceptor(options, handlers) {
         if (context.signal.aborted) throw failure("host_stopping");
-        if (!verified.fixtureVerified) throw failure("backend_build_unverified");
         if (!options || typeof options !== "object" || Object.keys(options).some((key) => !["id", "priority", "timeoutMs", "kinds", "origins"].includes(key))) throw failure("invalid_argument");
         const kinds = options.kinds ?? ["model.responses", "model.list"];
         if (!Array.isArray(kinds) || !kinds.length || kinds.length > 2 || new Set(kinds).size !== kinds.length || kinds.some((kind) => !["model.responses", "model.list"].includes(kind))) throw failure("invalid_argument");
@@ -1507,6 +3817,9 @@ var require_codex_traffic = __commonJS({
             return true;
           }
         })) throw failure("invalid_argument");
+        const readiness = await probe();
+        if (!readiness.available) throw failure(readiness.reason);
+        if (context.signal.aborted) throw failure("host_stopping");
         const wrapped = {};
         const metadata = (value) => {
           const info = classifyCodexTraffic({ ...value, verified: true, allowedOrigins: origins });
@@ -1556,7 +3869,7 @@ var require_backend_launch = __commonJS({
       let binarySha256;
       try {
         const before = fs.fstatSync(fd);
-        if (!before.isFile() || before.size > 512 * 1024 * 1024) throw fail2("backend_build_unverified");
+        if (!before.isFile() || before.size < 1 || before.size > 512 * 1024 * 1024) throw fail2("backend_identity_unavailable");
         const hash = createHash("sha256"), bytes = Buffer.alloc(64 * 1024);
         for (; ; ) {
           const count = fs.readSync(fd, bytes);
@@ -1564,17 +3877,22 @@ var require_backend_launch = __commonJS({
           hash.update(bytes.subarray(0, count));
         }
         const after = fs.fstatSync(fd);
-        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw fail2("backend_build_unverified");
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw fail2("backend_identity_changed");
         binarySha256 = hash.digest("hex");
       } finally {
         fs.closeSync(fd);
       }
-      if (!probeCodexTraffic({ platform, binarySha256 }).fixtureVerified) throw fail2("backend_build_unverified");
-      return Object.freeze({ platform, binarySha256 });
+      const recorded = probeCodexTraffic({ platform, binarySha256 }).fixtureVerified;
+      return Object.freeze({ platform, binarySha256, recorded });
     }
-    function prepareBackendLaunch({ executable, arguments: args, originalEnvironment, providerRoutes, platform = process.platform }) {
+    function supportsBackendContract(contract, settings) {
+      return contract?.api === 1 && contract.initialize === true && contract.configRead === true && contract.accountRead === true && ["runtime", "recorded"].includes(contract.routing) && Array.isArray(contract.providerOverrides) && contract.providerOverrides.length > 0 && contract.providerOverrides.length <= 17 && new Set(contract.providerOverrides).size === contract.providerOverrides.length && contract.providerOverrides.every((value) => typeof value === "string" && (value === "openai_base_url" || /^model_providers\.[A-Za-z0-9_-]{1,64}\.base_url$/u.test(value))) && settings.every((setting) => contract.providerOverrides.includes(setting));
+    }
+    function prepareBackendLaunch({ executable, arguments: args, originalEnvironment, providerRoutes, platform = process.platform, compatibility }) {
       if (!Array.isArray(args) || args.some((value) => typeof value !== "string") || !args.includes("app-server") || !originalEnvironment || typeof originalEnvironment !== "object" || !providerRoutes || typeof providerRoutes !== "object") throw fail2("invalid_backend_launch");
-      const compatibility = verifyBackend(executable, platform), overrides = [];
+      const identity = verifyBackend(executable, platform), overrides = [];
+      if (compatibility?.binarySha256 !== identity.binarySha256) throw fail2("backend_identity_changed");
+      if (!supportsBackendContract(compatibility.contract, Object.keys(providerRoutes)) || compatibility.contract.routing === "recorded" && !identity.recorded) throw fail2("backend_contract_unavailable");
       for (const [setting, baseUrl] of Object.entries(providerRoutes)) {
         if (setting !== "openai_base_url" && setting !== "chatgpt_base_url" && !/^model_providers\.[A-Za-z0-9_-]+\.base_url$/u.test(setting)) throw fail2("invalid_backend_route");
         const url = new URL(baseUrl);
@@ -1590,7 +3908,7 @@ var require_backend_launch = __commonJS({
         status: Object.freeze({ available: true, backendProviderPrepared: true, coverage: ["owned-local-app-server-model-provider"] })
       });
     }
-    module2.exports = { prepareBackendLaunch, verifyBackend, toml };
+    module2.exports = { prepareBackendLaunch, verifyBackend, supportsBackendContract, toml };
   }
 });
 
@@ -1599,95 +3917,158 @@ var require_backend_config_probe = __commonJS({
   "../host/backend-config-probe.cjs"(exports2, module2) {
     "use strict";
     function runConfigProbe() {
-      const fs = require("node:fs"), { spawn } = require("node:child_process"), { createInterface } = require("node:readline");
-      let child, lines, emitted = false;
-      const finish = async (value) => {
-        if (emitted) return;
-        emitted = true;
-        clearTimeout(deadline);
-        lines?.close();
-        if (child && child.exitCode === null && child.signalCode === null) {
-          const exited = new Promise((resolve) => child.once("exit", resolve));
-          child.stdin?.end();
-          child.kill();
-          let stopTimer;
-          await Promise.race([exited, new Promise((resolve) => {
-            stopTimer = setTimeout(resolve, 650);
-          })]);
-          clearTimeout(stopTimer);
-          if (child.exitCode === null && child.signalCode === null) value = { error: "backend_config_unavailable" };
-        }
-        process.stdout.write(JSON.stringify(value), () => {
-          if (!child || child.exitCode !== null || child.signalCode !== null) process.exit(0);
-        });
-      };
-      const deadline = setTimeout(() => finish({ error: "backend_config_timeout" }), 3500);
-      try {
-        const bytes = fs.readFileSync(0);
-        if (bytes.length > 256 * 1024) throw new Error();
-        const plan = JSON.parse(bytes);
-        child = spawn(plan.executable, [...plan.configArguments, "-c", "analytics.enabled=false", "-c", "features.code_mode_host=false", "-c", "features.remote_plugin=false", "app-server", "--stdio"], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-        child.stderr.on("data", () => {
-        });
-        child.on("error", () => finish({ error: "backend_config_unavailable" }));
-        child.stdin.on("error", () => finish({ error: "backend_config_unavailable" }));
-        child.once("exit", () => {
-          if (!emitted) finish({ error: "backend_config_unavailable" });
-        });
-        let buffer = "", count = 0;
-        child.stdout.on("data", (chunk) => {
-          count += chunk.length;
-          if (count > 2 * 1024 * 1024) {
-            finish({ error: "backend_config_too_large" });
-            return;
-          }
-          buffer += chunk.toString();
-          let index;
-          while ((index = buffer.indexOf("\n")) >= 0) {
-            const line = buffer.slice(0, index);
-            buffer = buffer.slice(index + 1);
-            let message;
-            try {
-              message = JSON.parse(line);
-            } catch {
-              continue;
-            }
-            if (message.id === 1) {
-              if (message.error) {
-                finish({ error: "backend_config_unavailable" });
-                return;
-              }
-              child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
-              child.stdin.write(JSON.stringify({ id: 2, method: "config/read", params: { cwd: plan.cwd, includeLayers: false } }) + "\n");
-            } else if (message.id === 2) {
-              if (message.error || !message.result?.config) {
-                finish({ error: "backend_config_unavailable" });
-                return;
-              }
-              const config = message.result.config;
-              const providers = {};
-              for (const [name, provider] of Object.entries(config.model_providers ?? {}))
-                if (typeof provider?.base_url === "string" && provider.wire_api === "responses") providers[name] = provider.base_url;
-              plan.config = {
-                modelProvider: config.model_provider ?? "openai",
-                providerBaseUrls: providers,
-                openaiBaseUrl: config.openai_base_url ?? null
-              };
-              child.stdin.write(JSON.stringify({ id: 3, method: "account/read", params: { refreshToken: false } }) + "\n");
-            } else if (message.id === 3) {
-              if (message.error || !message.result) {
-                finish({ error: "backend_config_unavailable" });
-                return;
-              }
-              const kind = message.result.account?.type;
-              finish({ ...plan.config, accountType: kind == null ? null : kind === "chatgpt" || kind === "apiKey" ? kind : "unknown" });
-            }
-          }
-        });
-        child.stdin.write(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "codlet-launch-policy", version: "1" }, capabilities: { experimentalApi: true } } }) + "\n");
-      } catch {
-        finish({ error: "backend_config_unavailable" });
+      const fs = require("node:fs"), { spawn } = require("node:child_process"), { randomBytes } = require("node:crypto");
+      const fail2 = (code) => Object.assign(new Error(code), { code });
+      const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+      const until = Date.now() + 3500;
+      let liveChild;
+      async function stop(child) {
+        if (!child || child.exitCode !== null || child.signalCode !== null) return;
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.stdin?.end();
+        let timer;
+        await Promise.race([exited, new Promise((resolve) => {
+          timer = setTimeout(resolve, 150);
+        })]);
+        clearTimeout(timer);
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill();
+        await Promise.race([exited, new Promise((resolve) => {
+          timer = setTimeout(resolve, 650);
+        })]);
+        clearTimeout(timer);
+        if (child.exitCode === null && child.signalCode === null) throw fail2("backend_probe_cleanup_failed");
       }
+      async function read(plan, overrides, includeAccount) {
+        if (Date.now() >= until) throw fail2("backend_config_timeout");
+        const child = spawn(plan.executable, [
+          ...plan.configArguments,
+          ...overrides,
+          "-c",
+          "analytics.enabled=false",
+          "-c",
+          "features.code_mode_host=false",
+          "-c",
+          "features.remote_plugin=false",
+          "app-server",
+          "--stdio"
+        ], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+        liveChild = child;
+        try {
+          return await new Promise((resolve, reject) => {
+            let settled = false, buffer = "", count = 0, expected = 1, config;
+            const timer = setTimeout(() => finish(fail2("backend_config_timeout")), Math.max(1, until - Date.now()));
+            function finish(error, result) {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              error ? reject(error) : resolve(result);
+            }
+            const send = (message) => child.stdin.write(JSON.stringify(message) + "\n");
+            child.stderr.on("data", () => {
+            });
+            child.on("error", () => finish(fail2("backend_config_unavailable")));
+            child.stdin.on("error", () => finish(fail2("backend_config_unavailable")));
+            child.once("exit", () => finish(fail2("backend_config_unavailable")));
+            child.stdout.on("data", (chunk) => {
+              if (settled) return;
+              count += chunk.length;
+              if (count > 2 * 1024 * 1024) {
+                finish(fail2("backend_config_too_large"));
+                return;
+              }
+              buffer += chunk.toString();
+              let at;
+              while (!settled && (at = buffer.indexOf("\n")) >= 0) {
+                const line = buffer.slice(0, at);
+                buffer = buffer.slice(at + 1);
+                let message;
+                try {
+                  message = JSON.parse(line);
+                } catch {
+                  continue;
+                }
+                if (!object(message) || message.id !== expected) continue;
+                if (message.error || !object(message.result)) {
+                  finish(fail2("backend_contract_unavailable"));
+                  return;
+                }
+                if (expected === 1) {
+                  if (typeof message.result.userAgent !== "string" || !message.result.userAgent || message.result.userAgent.length > 4096) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  expected = 2;
+                  send({ method: "initialized", params: {} });
+                  send({ id: 2, method: "config/read", params: { cwd: plan.cwd, includeLayers: false } });
+                } else if (expected === 2) {
+                  config = message.result.config;
+                  if (!object(config)) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  if (!includeAccount) {
+                    finish(null, { config });
+                    return;
+                  }
+                  expected = 3;
+                  send({ id: 3, method: "account/read", params: { refreshToken: false } });
+                } else {
+                  const account = message.result.account;
+                  if (account !== null && (!object(account) || typeof account.type !== "string")) {
+                    finish(fail2("backend_contract_unavailable"));
+                    return;
+                  }
+                  finish(null, { config, accountType: account?.type ?? null });
+                }
+              }
+            });
+            send({ id: 1, method: "initialize", params: { clientInfo: { name: "codlet-launch-policy", version: "1" }, capabilities: { experimentalApi: true } } });
+          });
+        } finally {
+          await stop(child);
+          liveChild = null;
+        }
+      }
+      (async () => {
+        const bytes = fs.readFileSync(0);
+        if (bytes.length > 256 * 1024) throw fail2("backend_config_unavailable");
+        const plan = JSON.parse(bytes);
+        if (!object(plan) || typeof plan.executable !== "string" || typeof plan.cwd !== "string" || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256 || plan.configArguments.some((value) => typeof value !== "string")) throw fail2("backend_config_unavailable");
+        const { config, accountType } = await read(plan, [], true);
+        if (config.model_providers != null && !object(config.model_providers) || config.model_provider != null && typeof config.model_provider !== "string" || config.openai_base_url != null && typeof config.openai_base_url !== "string") throw fail2("backend_contract_unavailable");
+        const providers = {};
+        for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
+          if (typeof provider?.base_url !== "string" || provider.wire_api !== "responses") continue;
+          if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail2("backend_provider_unsupported");
+          providers[name] = provider.base_url;
+        }
+        const settings = ["openai_base_url", ...Object.keys(providers).map((name) => `model_providers.${name}.base_url`)];
+        if (plan.recordedRouting !== true) {
+          const marker = `http://127.0.0.1:9/codlet-capability-${randomBytes(12).toString("hex")}/`;
+          const overrides = settings.flatMap((setting) => ["-c", `${setting}=${JSON.stringify(marker)}`]);
+          const observed = (await read(plan, overrides, false)).config;
+          if (observed.openai_base_url !== marker || Object.keys(providers).some((name) => observed.model_providers?.[name]?.base_url !== marker || observed.model_providers[name].wire_api !== "responses")) throw fail2("backend_routing_contract_unavailable");
+        }
+        return {
+          modelProvider: config.model_provider ?? "openai",
+          providerBaseUrls: providers,
+          openaiBaseUrl: config.openai_base_url ?? null,
+          accountType: accountType == null || ["chatgpt", "apiKey"].includes(accountType) ? accountType : "unknown",
+          contract: { api: 1, initialize: true, configRead: true, accountRead: true, routing: plan.recordedRouting === true ? "recorded" : "runtime", providerOverrides: settings }
+        };
+      })().catch(async (error) => {
+        try {
+          await stop(liveChild);
+        } catch {
+          return { error: "backend_probe_cleanup_failed" };
+        }
+        return { error: /^backend_[a-z_]+$/u.test(error?.code) ? error.code : "backend_config_unavailable" };
+      }).then((value) => {
+        process.stdout.write(JSON.stringify(value), () => {
+          if (!liveChild || liveChild.exitCode !== null || liveChild.signalCode !== null) process.exit(0);
+        });
+      });
     }
     module2.exports = { runConfigProbe };
   }
@@ -1700,7 +4081,7 @@ var require_backend_spawn = __commonJS({
     var fs = require("node:fs");
     var path = require("node:path");
     var childProcess = require("node:child_process");
-    var { prepareBackendLaunch, verifyBackend } = require_backend_launch();
+    var { prepareBackendLaunch, verifyBackend, supportsBackendContract } = require_backend_launch();
     var { runConfigProbe } = require_backend_config_probe();
     var fail2 = (code) => Object.assign(new Error(code), { code });
     var closeRoute = (route) => {
@@ -1821,22 +4202,30 @@ var require_backend_spawn = __commonJS({
         if (closed || !Array.isArray(args) || !args.includes("app-server") || typeof file !== "string" || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
         let reservations = [], dispatched = false;
         try {
-          verify(file, process.platform);
+          const identity = verify(file, process.platform);
           const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);
           const cwd = options.cwd ?? process.cwd();
-          const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd });
+          const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd, recordedRouting: identity.recorded === true });
           const directOpenaiBaseUrl = lastStringOverride(actualArgs, "openai_base_url");
           if (directOpenaiBaseUrl !== void 0) policy.openaiBaseUrl = directOpenaiBaseUrl;
           const additionalCaPem = providerTrust(environment, cwd);
-          const providerRoutes = {};
-          for (const [setting, upstreamBaseUrl] of effectiveProviders(policy)) {
+          const providers = effectiveProviders(policy), providerRoutes = {};
+          if (!supportsBackendContract(policy.contract, [...providers.keys()])) throw fail2("backend_contract_unavailable");
+          for (const [setting, upstreamBaseUrl] of providers) {
             const url = new URL(upstreamBaseUrl);
             if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail2("backend_provider_unsupported");
             const reservation = configuration.source.reserveRoute({ upstreamBaseUrl, ...additionalCaPem === void 0 ? {} : { additionalCaPem } });
             reservations.push(reservation);
             providerRoutes[setting] = reservation.baseUrl;
           }
-          const launch = prepare({ executable: file, arguments: actualArgs, originalEnvironment: environment, providerRoutes, platform: process.platform });
+          const launch = prepare({
+            executable: file,
+            arguments: actualArgs,
+            originalEnvironment: environment,
+            providerRoutes,
+            platform: process.platform,
+            compatibility: { ...identity, contract: policy.contract }
+          });
           const next = { ...options, args: [args[0], ...launch.arguments] };
           dispatched = true;
           const result = originalSpawn.call(this, next);
@@ -1858,7 +4247,7 @@ var require_backend_spawn = __commonJS({
           pending.add(ready);
           ready.finally(() => pending.delete(ready)).catch(() => {
           });
-          const record = { child: this, reservations };
+          const record = { child: this, reservations, compatibility: { binarySha256: identity.binarySha256, contract: policy.contract } };
           state.records.add(record);
           if (shared && dependencies.trackBackend) dependencies.trackBackend(record, { methodKey: "method", method: "account/updated", paramsKey: "params", modeKey: "authMode", targets: { chatgpt: DEFAULT_CHATGPT, apiKey: DEFAULT_OPENAI } });
           else {
@@ -1875,7 +4264,20 @@ var require_backend_spawn = __commonJS({
         } catch (error) {
           for (const item of reservations) closeRoute(item);
           declined++;
-          reason = ["backend_build_unverified", "backend_config_unavailable", "backend_provider_unsupported", "backend_auth_mode_unsupported", "backend_provider_trust_unsupported", "backend_route_unavailable"].includes(error.code) ? error.code : "route_unavailable";
+          reason = [
+            "backend_identity_unavailable",
+            "backend_identity_changed",
+            "backend_contract_unavailable",
+            "backend_routing_contract_unavailable",
+            "backend_config_unavailable",
+            "backend_config_timeout",
+            "backend_config_too_large",
+            "backend_probe_cleanup_failed",
+            "backend_provider_unsupported",
+            "backend_auth_mode_unsupported",
+            "backend_provider_trust_unsupported",
+            "backend_route_unavailable"
+          ].includes(error.code) ? error.code : "route_unavailable";
           if (dispatched) throw error;
           return originalSpawn.call(this, options);
         }
@@ -2007,11 +4409,15 @@ function localBackends(context, ownsProcess, dependencies = {}) {
   const profiles = dependencies.profiles ?? require_electron_plaintext().reviewedSourceProfiles;
   const verify = dependencies.verify ?? require_backend_launch().verifyBackend;
   const connections = /* @__PURE__ */ new Set();
-  for (const record of context.modules.list()) {
+  const constructors = new Set(dependencies.connections ?? []);
+  if (dependencies.connections === void 0) for (const record of context.modules.list()) {
     const profile = profiles[record.name];
     const connectionSymbol = profile?.connectionSymbol ?? (profile?.kind === "connection" ? profile.symbol : null);
     if (!connectionSymbol || profile.hash !== record.hash) continue;
-    for (const connection of context.modules.instances(record.evaluate(connectionSymbol))) {
+    constructors.add(record.evaluate(connectionSymbol));
+  }
+  for (const Constructor of constructors) {
+    for (const connection of context.modules.instances(Constructor)) {
       const child = connection.connection?.proc;
       if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== "string" || !/^codex(?:\.exe)?$/i.test(require("node:path").basename(child.spawnfile))) continue;
       verify(child.spawnfile, process.platform);
@@ -2028,14 +4434,7 @@ async function recoverLocalBackends(context, ownsProcess, dependencies) {
 }
 function validateClientSource(electron, context) {
   if (!electron.app.isReady()) return;
-  if (!context?.modules) throw fail("client_bridge_required");
-  const profiles = require_electron_plaintext().reviewedSourceProfiles;
-  const kinds = /* @__PURE__ */ new Set();
-  for (const record of context.modules.list()) {
-    const profile = profiles[record.name];
-    if (profile && profile.hash === record.hash) kinds.add(profile.kind);
-  }
-  if (!kinds.has("bootstrap") || !kinds.has("main") || !kinds.has("stdio") && !kinds.has("src")) throw fail("desktop_build_unverified");
+  if (typeof context?.modules?.list !== "function" || typeof context.modules.subscribe !== "function") throw fail("client_bridge_required");
 }
 function installElectronTraffic(electron, configuration, context, dependencies = {}) {
   if (!configuration?.source || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail("invalid_launch_configuration");
@@ -2073,7 +4472,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   }, (error) => {
     sourceReason = typeof error?.code === "string" ? error.code : "source_unavailable";
   });
-  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null;
+  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null, expectedSources = [];
   function attachHooks() {
     backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs }, { state: context?.resources.get("backendState"), trackBackend: context?.trackBackend });
     desktop = installDesktop(electron, {
@@ -2103,7 +4502,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
     snapshot() {
       const state = context?.resources.get("backendState");
       if (!state || !context.resources.get("desktopState")) throw fail("core_update_next_start_required");
-      return { schema: 1, recoveryReason, backends: [...state.records].map((record) => ({
+      return { schema: 1, recoveryReason, activatedSources: lastActivation?.activatedSources?.map((source2) => source2.id) ?? [], backends: [...state.records].map((record) => ({
         pid: record.child.pid ?? null,
         routes: record.reservations.map((route) => route.baseUrl)
       })), taskRoutes: context.resources.get("desktopState").taskRoutes.size };
@@ -2120,11 +4519,13 @@ function installElectronTraffic(electron, configuration, context, dependencies =
       const records = [...context.resources.get("backendState").records];
       if (snapshot.backends.some((previous) => !records.some((record) => record.child.pid === previous.pid && JSON.stringify(record.reservations.map((route) => route.baseUrl)) === JSON.stringify(previous.routes)))) throw fail("core_update_backend_changed");
       recoveryReason = snapshot.recoveryReason;
+      expectedSources = snapshot.activatedSources ?? [];
       restored = true;
     },
     async resume(snapshot) {
       if (closed || !suspended) return false;
       recoveryReason = snapshot.recoveryReason;
+      expectedSources = snapshot.activatedSources ?? [];
       restored = true;
       readinessDeadlineUnixMs = Date.now() + 8e3;
       attachHooks();
@@ -2142,9 +4543,9 @@ function installElectronTraffic(electron, configuration, context, dependencies =
         await source.ready;
         if (context?.modules && !installedBeforeReady && !restored) {
           try {
-            await recover(context, backend.ownsProcess);
+            await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.() });
           } catch (error) {
-            if (!["client_source_backend_busy", "backend_build_unverified"].includes(error?.code)) throw error;
+            if (!["client_source_backend_busy", "backend_identity_unavailable", "backend_identity_changed"].includes(error?.code)) throw error;
             recoveryReason = error.code;
           }
         }
@@ -2171,6 +4572,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
         });
         else unsupportedSources.push({ id: "owned-backend-provider", reason: !desktopState.taskConfigurationAvailable ? desktopState.taskConfigurationReason === "unsupported_build" ? "unsupported_build" : "hook_unavailable" : backendState.reason === "child_unavailable" ? "child_unavailable" : "route_unavailable" });
         const installed = activatedSources.length > 0;
+        if (expectedSources.some((id) => !activatedSources.some((source2) => source2.id === id))) throw fail("core_update_source_capability_lost");
         diagnose(installed, null);
         return lastActivation = { installed, activatedSources, unsupportedSources };
       } catch (error) {
@@ -2189,7 +4591,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   });
 }
 function validateSnapshot(value) {
-  return !!value && value.schema === 1 && (value.recoveryReason === null || typeof value.recoveryReason === "string") && Array.isArray(value.backends) && value.backends.length <= 64 && Number.isSafeInteger(value.taskRoutes) && value.taskRoutes >= 0 && value.backends.every((record) => Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.routes) && record.routes.every((route) => typeof route === "string" && route.length < 2048));
+  return !!value && value.schema === 1 && (value.recoveryReason === null || typeof value.recoveryReason === "string") && (value.activatedSources === void 0 || Array.isArray(value.activatedSources) && value.activatedSources.length <= 2 && new Set(value.activatedSources).size === value.activatedSources.length && value.activatedSources.every((id) => ["desktop-main-http", "owned-backend-provider"].includes(id))) && Array.isArray(value.backends) && value.backends.length <= 64 && Number.isSafeInteger(value.taskRoutes) && value.taskRoutes >= 0 && value.backends.every((record) => Number.isSafeInteger(record.pid) && record.pid > 0 && Array.isArray(record.routes) && record.routes.every((route) => typeof route === "string" && route.length < 2048));
 }
 module.exports = { handoffVersion: 1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };
 
@@ -2406,6 +4808,30 @@ Apache License
    limitations under the License.
 
 acorn@8.15.0 (MIT)
+
+MIT License
+
+Copyright (C) 2012-2022 by various contributors (see AUTHORS)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Acorn source parser (MIT)
 
 MIT License
 

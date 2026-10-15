@@ -172,7 +172,7 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
             let enabled = catalog.enabled_plugins(&registry)?;
             catalog.suspend_startup(
                 &crate::client_launch::startup_affected(&enabled),
-                "client_source_build_unverified",
+                "client_source_unavailable",
             );
             renderer = RendererRuntime::from_catalog(catalog, registry)?;
             renderer.enable_runtime_skill();

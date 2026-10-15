@@ -1,9 +1,19 @@
 # Known issues and current limits
 
-This page records current behavior. The unified Core candidate is
-**1.0.0-rc.1**; it has not been publicly released or installed into the daily
-client. Current and historical evidence are separated in
-[release readiness](release-readiness.md).
+This page records current behavior for **1.0.0-rc.2**. Candidate evidence and
+remaining desktop acceptance are listed in [release readiness](release-readiness.md).
+
+## Client capability discovery
+
+An installed rc.1 session rejected the current backend's unlisted file digest and
+missed the already compiled entry module. Its startup recovery also suspended the
+independent Desktop provider and dependent plugins. rc.2 adds protocol/configuration
+probes, structural source discovery, entry-frame capture and per-capability recovery.
+See the [compatibility contract](spec/client-compatibility.md).
+
+The bootstrap correction changes resident code and takes effect after a new start.
+The complete production-desktop restart remains a separate acceptance step from
+the real-backend and inspector tests in the [candidate record](releases/1.0.0-rc.2/validation.md).
 
 ## Unified Core and compatible online updates
 

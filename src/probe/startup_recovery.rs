@@ -1,5 +1,5 @@
-//! Compatibility failure is local to optional startup plugins. Never retry
-//! arbitrary process failures or weaken a plugin's interception requirements.
+//! Source compatibility failure suspends only explicit external dependencies.
+//! Independent Core services and permission-bearing consumers remain available.
 use super::*;
 use std::collections::BTreeSet;
 
@@ -188,17 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn recovery_excludes_the_launch_provider_traffic_consumers_and_real_dependents() {
+    fn recovery_excludes_only_the_external_launch_provider_and_required_dependents() {
         let (_directory, registry, plugins) = fixture();
         let before = std::fs::read(registry.path()).unwrap();
         let suspended = affected(&plugins);
         assert_eq!(
             suspended,
-            BTreeSet::from([
-                "dev.adapter".into(),
-                "dev.traffic".into(),
-                "dev.dependent".into()
-            ])
+            BTreeSet::from(["dev.adapter".into(), "dev.dependent".into()])
         );
         let mut catalog = PluginCatalog::load(&registry).unwrap();
         catalog.suspend_startup(&suspended, "client_bootstrap_version_unsupported");
@@ -209,9 +205,13 @@ mod tests {
                 .filter(|plugin| plugin.manifest.id.starts_with("dev."))
                 .map(|plugin| plugin.manifest.id.as_str())
                 .collect::<Vec<_>>(),
-            ["dev.unrelated"]
+            ["dev.traffic", "dev.unrelated"]
         );
-        assert!(!crate::traffic_owner::required_for_plugins(&enabled));
+        assert!(
+            enabled
+                .iter()
+                .any(|plugin| plugin.manifest.id == "dev.traffic")
+        );
         assert_eq!(std::fs::read(registry.path()).unwrap(), before);
         assert!(registry.is_enabled("dev.adapter"));
         assert_eq!(
@@ -226,6 +226,24 @@ mod tests {
             4,
             "a fresh launch retries original enablement"
         );
+    }
+
+    #[test]
+    fn core_traffic_source_failure_preserves_desktop_and_its_consumers() {
+        let (_directory, _registry, plugins) = fixture();
+        let mut current = crate::codex::internal_plugins().unwrap();
+        let mut consumer = plugins[2].clone();
+        consumer.manifest = PluginManifest::parse(
+            &json!({
+                "schema":1,"id":"dev.desktop.consumer","version":"1",
+                "renderer":{"entry":"renderer.js","world":"isolated"},
+                "requires":[{"name":"codex.backend.read","api":1,"scope":"target"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        current.extend([consumer, plugins[1].clone(), plugins[3].clone()]);
+        assert!(affected(&current).is_empty());
     }
 
     #[test]

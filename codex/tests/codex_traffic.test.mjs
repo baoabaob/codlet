@@ -10,7 +10,7 @@ test('fixture evidence never upgrades automatic/OAuth/desktop/attachment coverag
   assert.equal(verified.fixtureVerified, true); assert.equal(verified.available, false); assert.equal(verified.officialOAuth, false); assert.equal(verified.existingLoadedThreads, false); assert.equal(verified.attachments, false);
   assert.equal(probeCodexTraffic({ platform:'win32',binarySha256:'97d4d67419d0ac2f71342f9a5e850f9468aa622618de8ea823223edb9a91926a' }).fixtureVerified,true);
   for (const platform of ['darwin', 'linux']) assert.equal(probeCodexTraffic({ platform }).fixtureVerified, false);
-  assert.equal(probeCodexTraffic({ platform: 'win32', binarySha256: 'changed' }).reason, 'backend_build_unverified');
+  assert.equal(probeCodexTraffic({ platform: 'win32', binarySha256: 'changed' }).reason, 'native_process_ingress_not_attached');
 });
 
 test('Codex HTTP JSON rewrites decode gzip/zstd with limits and remove stale representation headers', async () => {

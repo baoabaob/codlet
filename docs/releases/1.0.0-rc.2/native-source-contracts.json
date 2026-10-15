@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "kind": "structural-method-contracts",
+  "files": [
+    {
+      "filename": "application-network-startup-YSC7OAs0.js",
+      "sha256": "52f0be375fb08281e88ad41be64220fb73f85210523e53e7d7acf094fda6344e",
+      "candidates": [
+        {
+          "binding": "Gs",
+          "role": "stdio"
+        }
+      ]
+    },
+    {
+      "filename": "bootstrap-iULMfRBf.js",
+      "sha256": "385e3885eda6a2852d8e0b75d1d0b579ac06e27eb9b9300fa7e92d9b5216c869",
+      "candidates": [
+        {
+          "binding": "tr",
+          "role": "network"
+        }
+      ]
+    },
+    {
+      "filename": "main-Bgi5Xaw-.js",
+      "sha256": "e8923725ad6357380ac7bb25818f78eb4d97e522ebbde2ddf6ff5a2a93032e54",
+      "candidates": [
+        {
+          "binding": "ple",
+          "role": "fetch"
+        }
+      ]
+    },
+    {
+      "filename": "src-DCNiwad_.js",
+      "sha256": "86fb2066bbc2f7428864b76b46ef570b09eb1e92e81e9d6f089f5b048a66df25",
+      "candidates": [
+        {
+          "binding": "mB",
+          "role": "connection"
+        }
+      ]
+    }
+  ],
+  "matches": {
+    "network": [
+      {
+        "filename": "bootstrap-iULMfRBf.js",
+        "binding": "tr"
+      }
+    ],
+    "fetch": [
+      {
+        "filename": "main-Bgi5Xaw-.js",
+        "binding": "ple"
+      }
+    ],
+    "stdio": [
+      {
+        "filename": "application-network-startup-YSC7OAs0.js",
+        "binding": "Gs"
+      }
+    ],
+    "connection": [
+      {
+        "filename": "src-DCNiwad_.js",
+        "binding": "mB"
+      }
+    ]
+  },
+  "passed": true
+}

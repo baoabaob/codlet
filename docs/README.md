@@ -29,6 +29,7 @@ Start with the maintained contracts below. Release evidence and historical resea
 | [Codex SDK](spec/codex.md) | Navigation, workspace, Desktop and Host semantics |
 | [Workspace](spec/workspace.md) | Native surfaces, transcripts, input confirmation, location and viewport ownership |
 | [Client source](spec/client-source.md) | Native attachment, private bridge and component ownership |
+| [Client compatibility](spec/client-compatibility.md) | Runtime contracts, capability discovery and independent degradation |
 | [Management](spec/management.md) | Registration, transactions, updates and removal |
 | [Traffic](spec/traffic.md) | Network channels and interception coverage |
 

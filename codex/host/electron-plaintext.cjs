@@ -5,9 +5,10 @@ const { createHash } = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { sourceCandidates, supportsRole } = require('./source-contracts.cjs');
 
-// Private symbols are specific to source-reviewed Owl builds. The hashes
-// guard every append; a new build needs a new inspected profile.
+// Exact source mappings are a fast path. Core's generic module inventory also
+// discovers unlisted classes through the contracts of the methods we wrap.
 const PROFILES = Object.freeze({
   'bootstrap-D2PJMYEh.js': { hash: '0d62d7be4491d5ef84d93ea9b753c270096de217f2e49064e5f8f701af53e9ed', kind: 'bootstrap', symbol: 'He' },
   'main-DAwJoFgo.js': { hash: '18beea7d7e46866168528ff5dab5108ffe6d39fc13433367ce8dee7b187044f8', kind: 'main', symbol: 'kEe' },
@@ -139,11 +140,12 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   if(state&&!state.scope)state.scope=scope;
   const symbol = Symbol('codlet.private.plaintext');
   const originalCompile = Module.prototype._compile;
-  const deferredModules = new Set();
   let bootstrapVerified = false, mainVerified = false, srcVerified = false, fetchInstalled = false, requestInstalled = false,
     stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;
   const bindingErrors = Object.create(null);
   const restores = [];
+  const observed = new Map(), roleBindings = new Map(), roleReasons = new Map(), driftedRoles = new Set();
+  const wrappedMethods={network:['fetch','request'],fetch:['performDesktopFetch'],stdio:['send'],connection:['routeIncomingMessage']};
   const taskRoutes = state?.taskRoutes??new Set(), routesByProcess = state?.routesByProcess??new WeakMap(), sendQueues = state?.sendQueues??new WeakMap();
   const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();
   function reserve(url, proc) {
@@ -170,7 +172,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     if (stdioInstalled || typeof Stdio !== 'function' || typeof Stdio.prototype.send !== 'function') { if (!stdioInstalled) taskReason = 'hook_unavailable'; return; }
     const original = Stdio.prototype.send;
     Stdio.prototype.send = function(message) {
-      if (closed || !ownsBackendProcess(this.proc) || typeof message !== 'string') return original.call(this, message);
+      if (closed || !roleLive('stdio',Stdio) || !ownsBackendProcess(this.proc) || typeof message !== 'string') return original.call(this, message);
       if(onlineUpdates&&!onlineUpdates.accepting()) {
         onlineUpdates.whenAccepting().then(()=>Stdio.prototype.send.call(this,message)).catch(()=>failOutbound(this,message));return;
       }
@@ -194,17 +196,19 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       operation.finally(() => { if (sendQueues.get(this) === operation) sendQueues.delete(this); }).catch(() => {});
     };
     stdioInstalled = true;
-    restores.push(() => { Stdio.prototype.send = original; });
+    const wrapped=Stdio.prototype.send;
+    restores.push(() => { if(Stdio.prototype.send===wrapped)Stdio.prototype.send = original; });
   }
   function hookConnection(Connection) {
     if (connectionInstalled || typeof Connection !== 'function' || typeof Connection.prototype.routeIncomingMessage !== 'function') { if (!connectionInstalled) taskReason = 'hook_unavailable'; return; }
     const original = Connection.prototype.routeIncomingMessage;
     Connection.prototype.routeIncomingMessage = function(message, ...rest) {
-      if (!closed && message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
+      if (!closed && roleLive('connection',Connection) && message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
       return original.call(this, message, ...rest);
     };
     connectionInstalled = true;
-    restores.push(() => { Connection.prototype.routeIncomingMessage = original; });
+    const wrapped=Connection.prototype.routeIncomingMessage;
+    restores.push(() => { if(Connection.prototype.routeIncomingMessage===wrapped)Connection.prototype.routeIncomingMessage = original; });
   }
   function hookNetwork(Network) {
     if (typeof Network !== 'function' || typeof Network.prototype.fetch !== 'function' || typeof Network.prototype.request !== 'function') { desktopReason = 'hook_unavailable'; return; }
@@ -247,7 +251,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       });
     }
     Network.prototype.fetch = async function(input, init = {}) {
-      if (closed || !scope.getStore()) return originalFetch.call(this, input, init);
+      if (closed || !roleLive('network',Network) || !scope.getStore()) return originalFetch.call(this, input, init);
       if(onlineUpdates&&!onlineUpdates.accepting()) {
         await onlineUpdates.whenAccepting(init.signal);
         return Network.prototype.fetch.call(this,input,init);
@@ -265,7 +269,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       return response(result, current.method);
     };
     Network.prototype.request = function(options) {
-      if (closed || !scope.getStore()) return originalRequest.call(this, options);
+      if (closed || !roleLive('network',Network) || !scope.getStore()) return originalRequest.call(this, options);
       this.assertAllowed(options.url);
       const network = this;
       const proxy = new EventEmitter();
@@ -303,55 +307,94 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       return proxy;
     };
     fetchInstalled = true; requestInstalled = true;
-    restores.push(() => { Network.prototype.fetch = originalFetch; Network.prototype.request = originalRequest; });
+    const wrappedFetch=Network.prototype.fetch,wrappedRequest=Network.prototype.request;
+    restores.push(() => { if(Network.prototype.fetch===wrappedFetch)Network.prototype.fetch = originalFetch; if(Network.prototype.request===wrappedRequest)Network.prototype.request = originalRequest; });
   }
   function hookFetchWrapper(FetchWrapper) {
     if (typeof FetchWrapper !== 'function' || typeof FetchWrapper.prototype.performDesktopFetch !== 'function') { desktopReason = 'hook_unavailable'; return; }
     const original = FetchWrapper.prototype.performDesktopFetch;
-    FetchWrapper.prototype.performDesktopFetch = function(...args) { return scope.run(true, () => original.apply(this, args)); };
-    restores.push(() => { FetchWrapper.prototype.performDesktopFetch = original; });
+    FetchWrapper.prototype.performDesktopFetch = function(...args) { return closed||!roleLive('fetch',FetchWrapper)?original.apply(this,args):scope.run(true, () => original.apply(this, args)); };
+    const wrapped=FetchWrapper.prototype.performDesktopFetch;
+    restores.push(() => { if(FetchWrapper.prototype.performDesktopFetch===wrapped)FetchWrapper.prototype.performDesktopFetch = original; });
+  }
+  function resetRole(role) {
+    const binding = roleBindings.get(role);
+    if (binding) for (const restore of binding.restores.reverse()) {
+      restore(); const index=restores.indexOf(restore); if(index!==-1)restores.splice(index,1);
+    }
+    roleBindings.delete(role);
+    if(role==='network'){bootstrapVerified=false;fetchInstalled=false;requestInstalled=false;}
+    if(role==='fetch')mainVerified=false;
+    if(role==='stdio'){stdioVerified=false;stdioInstalled=false;}
+    if(role==='connection'){connectionVerified=false;connectionInstalled=false;}
+  }
+  function roleLive(role,Constructor) {
+    const binding=roleBindings.get(role);
+    if(!binding||binding.Constructor!==Constructor)return false;
+    if(Object.entries(binding.installed).every(([name,method])=>Object.getOwnPropertyDescriptor(Constructor.prototype,name)?.value===method))return true;
+    resetRole(role);driftedRoles.add(role);roleReasons.set(role,'binding_changed');
+    if(['network','fetch'].includes(role))desktopReason='binding_changed';else taskReason='binding_changed';
+    srcVerified=stdioVerified&&connectionVerified;return false;
+  }
+  function refreshBindings() {
+    for(const role of ['network','fetch','stdio','connection']) {
+      const diagnosticRole=role==='network'?'bootstrap':role==='fetch'?'main':role;
+      const active=roleBindings.get(role);
+      if(active&&Object.entries(active.installed).some(([name,method])=>Object.getOwnPropertyDescriptor(active.Constructor.prototype,name)?.value!==method)) {
+        resetRole(role);driftedRoles.add(role);
+      }
+      if(driftedRoles.has(role)){roleReasons.set(role,'binding_changed');continue;}
+      const candidates=[...observed.values()].flat().filter(candidate=>candidate.role===role);
+      const collect=selected=>{
+        const found=new Set();let pending=false;
+        for(const candidate of selected)try {
+          const Constructor=candidate.read();
+          if(Constructor==null){pending=true;continue;}
+          if(candidate.resolved===Constructor||supportsRole(Constructor,role,candidate.recorded)) {
+            candidate.resolved=Constructor;found.add(Constructor);
+          }
+          delete bindingErrors[diagnosticRole];
+        }catch(error){
+          bindingErrors[diagnosticRole]=['ReferenceError','TypeError'].includes(error?.name)?error.name:'binding_error';
+          if(error?.name==='ReferenceError')pending=true;
+        }
+        return{found,pending};
+      };
+      let selected=collect(candidates.filter(candidate=>candidate.recorded));
+      if(!selected.found.size&&!selected.pending)selected=collect(candidates.filter(candidate=>!candidate.recorded));
+      const {found,pending}=selected;
+      if(found.size!==1||pending) {
+        resetRole(role);
+        roleReasons.set(role,found.size>1?'ambiguous_contract':pending?'initializing':'contract_unavailable');
+        continue;
+      }
+      const Constructor=[...found][0];
+      if(roleBindings.get(role)?.Constructor===Constructor){roleReasons.delete(role);continue;}
+      resetRole(role);
+      const at=restores.length;
+      try {
+        if(role==='network'){hookNetwork(Constructor);bootstrapVerified=fetchInstalled&&requestInstalled;}
+        if(role==='fetch'){hookFetchWrapper(Constructor);mainVerified=true;}
+        if(role==='stdio'){hookStdio(Constructor);stdioVerified=stdioInstalled;}
+        if(role==='connection'){hookConnection(Constructor);connectionVerified=connectionInstalled;}
+        roleBindings.set(role,{Constructor,restores:restores.slice(at),installed:Object.fromEntries(wrappedMethods[role].map(name=>[name,Object.getOwnPropertyDescriptor(Constructor.prototype,name)?.value]))});roleReasons.delete(role);
+      }catch(error){
+        for(const restore of restores.splice(at).reverse())restore();
+        roleReasons.set(role,'contract_unavailable');
+      }
+    }
+    srcVerified=stdioVerified&&connectionVerified;
+    const terminal=roles=>roles.map(role=>roleReasons.get(role)).find(reason=>['ambiguous_contract','binding_changed'].includes(reason))??null;
+    desktopReason=bootstrapVerified&&mainVerified?null:terminal(['network','fetch']);
+    taskReason=srcVerified?null:terminal(['stdio','connection']);
   }
   function applyRecord(record) {
-    const {name, hash: observedSha256, exported}=record;
-    if (!Object.hasOwn(expectedHashes, name)) {
-      if (moduleRegistry && /^(bootstrap-|main-|application-network-startup-)/.test(name)) { if(name.startsWith('application-network-startup-'))taskReason='unsupported_build';else desktopReason='unsupported_build'; mismatch={name,observedSha256}; }
-      return;
-    }
-    const profile = PROFILES[name] ?? { kind: name.startsWith('bootstrap-') ? 'bootstrap' : name.startsWith('main-') ? 'main' : 'src',
-      symbol: name.startsWith('bootstrap-') ? 'Pt' : name.startsWith('main-') ? 'wEe' : 'mQ' };
-    if (observedSha256 !== expectedHashes[name]) {
-      if (['src', 'stdio', 'connection'].includes(profile.kind)) taskReason = 'unsupported_build'; else desktopReason = 'unsupported_build';
-      mismatch = { name, observedSha256 }; return;
-    }
-    const expression = profile.connectionSymbol ? `({primary:${profile.symbol},connection:${profile.connectionSymbol}})` : profile.symbol;
-    const read = () => record.evaluate(expression);
-    // Some reviewed bundles declare classes in lazy native initializers. Capture
-    // their live bindings and wait for Native to initialize them; do not invoke
-    // a native factory or turn an uninitialized class into a permanent failure.
-    const apply = () => {
-      const captured = read(); let pending = false;
-      if (profile.kind === 'bootstrap') {
-        const primary = profile.connectionSymbol ? captured.primary : captured;
-        if (!bootstrapVerified) { if (primary == null) pending = true; else { bootstrapVerified = true; hookNetwork(primary); } }
-        if (profile.connectionSymbol && !connectionVerified) { if (captured.connection == null) pending = true; else { connectionVerified = true; hookConnection(captured.connection); } }
-      }
-      else if (profile.kind === 'main') { if (!mainVerified) { if (captured == null) pending = true; else { mainVerified = true; hookFetchWrapper(captured); } } }
-      else if (profile.kind === 'stdio') { if (!stdioVerified) { if (captured == null) pending = true; else { stdioVerified = true; hookStdio(captured); } } }
-      else if (profile.kind === 'connection') { if (!connectionVerified) { if (captured == null) pending = true; else { connectionVerified = true; hookConnection(captured); } } }
-      else { stdioVerified = true; connectionVerified = true; hookStdio(captured); hookConnection(exported[profile.managerExport ?? 'un']); }
-      srcVerified = stdioVerified && connectionVerified;
-      return !pending;
-    };
-    const attempt = () => {
-      try { const result=apply();delete bindingErrors[profile.kind];return result; }
-      catch (error) {
-        bindingErrors[profile.kind]=['ReferenceError','TypeError'].includes(error?.name)?error.name:'binding_error';
-        if(error?.name==='ReferenceError')return false;
-        if(['bootstrap','main'].includes(profile.kind))desktopReason='hook_unavailable';else taskReason='hook_unavailable';
-        return true;
-      }
-    };
-    if (!attempt()) deferredModules.add(attempt);
+    const {name,hash:observedSha256}=record;
+    if(Object.hasOwn(expectedHashes,name)&&observedSha256!==expectedHashes[name])mismatch={name,observedSha256};
+    const key=record.filename??name,candidates=sourceCandidates(record,PROFILES,expectedHashes);
+    if(!candidates.length&&!observed.has(key))return;
+    if(candidates.length)observed.set(key,candidates);else observed.delete(key);
+    refreshBindings();
   }
   Module.prototype._compile = function(code, filename) {
     const name=path.basename(filename);
@@ -362,7 +405,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     if(hash!==expectedHashes[name]) {applyRecord({name,hash});return originalCompile.call(this,code,filename);}
     const result=originalCompile.call(this,`${code}\n;Object.defineProperty(module.exports,Symbol.for(${JSON.stringify(String(symbol))}),{value:()=>${expression},configurable:true});`,filename);
     const read=this.exports[Symbol.for(String(symbol))],exported=this.exports;delete this.exports[Symbol.for(String(symbol))];
-    applyRecord({name,hash,exported,evaluate:()=>read()});
+    applyRecord({name,hash,exported,evaluate:binding=>{const value=read();return profile.connectionSymbol?(binding===profile.connectionSymbol?value.connection:value.primary):value;}});
     return result;
   };
   restores.push(() => { if (Module.prototype._compile === wrappedCompile) Module.prototype._compile = originalCompile; });
@@ -378,23 +421,24 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   return Object.freeze({
     async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {
       while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {
-        for (const apply of deferredModules) if (apply()) deferredModules.delete(apply);
+        refreshBindings();
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       // A busy native event loop can initialize bindings after the last poll
       // while exhausting the wait budget. Check those verified bindings once
       // more before deciding that their hooks are unavailable.
-      if(!closed)for(const apply of deferredModules)if(apply())deferredModules.delete(apply);
+      if(!closed)refreshBindings();
       return this.inspect();
     },
-    inspect: () => ({ installed: !closed, available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
+    inspect: () => { for(const [role,binding]of [...roleBindings])roleLive(role,binding.Constructor);return ({ installed: !closed, available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
       taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,
       modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },
       mismatch,
-      bindingErrors:{...bindingErrors},deferredBindings:deferredModules.size,
-      reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : 'hook_unavailable'),
-      taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : 'hook_unavailable') }),
-    suspend() { if (closed) return; closed = true; deferredModules.clear(); for (const restore of restores.splice(0).reverse()) restore(); },
+      bindingErrors:{...bindingErrors},deferredBindings:[...roleReasons.values()].filter(reason=>reason==='initializing').length,
+      reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : 'contract_unavailable'),
+      taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : 'contract_unavailable') }); },
+    connectionConstructors:()=>roleBindings.has('connection')?[roleBindings.get('connection').Constructor]:[],
+    suspend() { if (closed) return; closed = true; observed.clear();roleBindings.clear(); for (const restore of restores.splice(0).reverse()) restore(); },
     close() { this.suspend(); if(!state){for (const route of taskRoutes) closeRoute(route); taskRoutes.clear();scope.disable();} },
   });
 }

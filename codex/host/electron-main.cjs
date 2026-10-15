@@ -8,11 +8,15 @@ function localBackends(context, ownsProcess, dependencies = {}) {
   const profiles = dependencies.profiles ?? require('./electron-plaintext.cjs').reviewedSourceProfiles;
   const verify = dependencies.verify ?? require('./backend-launch.cjs').verifyBackend;
   const connections = new Set();
-  for (const record of context.modules.list()) {
+  const constructors = new Set(dependencies.connections ?? []);
+  if (dependencies.connections === undefined) for (const record of context.modules.list()) {
     const profile = profiles[record.name];
     const connectionSymbol = profile?.connectionSymbol ?? (profile?.kind === 'connection' ? profile.symbol : null);
     if (!connectionSymbol || profile.hash !== record.hash) continue;
-    for (const connection of context.modules.instances(record.evaluate(connectionSymbol))) {
+    constructors.add(record.evaluate(connectionSymbol));
+  }
+  for (const Constructor of constructors) {
+    for (const connection of context.modules.instances(Constructor)) {
       const child = connection.connection?.proc;
       if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== 'string'
         || !/^codex(?:\.exe)?$/i.test(require('node:path').basename(child.spawnfile))) continue;
@@ -33,17 +37,9 @@ async function recoverLocalBackends(context, ownsProcess, dependencies) {
 
 function validateClientSource(electron, context) {
   if (!electron.app.isReady()) return;
-  if (!context?.modules) throw fail('client_bridge_required');
-  const profiles=require('./electron-plaintext.cjs').reviewedSourceProfiles;
-  const kinds=new Set();
-  for(const record of context.modules.list()) {
-    const profile=profiles[record.name];
-    if(profile && profile.hash===record.hash) kinds.add(profile.kind);
-  }
-  if(!kinds.has('bootstrap')||!kinds.has('main')||!kinds.has('stdio')&&!kinds.has('src')) throw fail('desktop_build_unverified');
-  // Desktop hooks can be attached without reconnecting a local backend. A
-  // busy or unsupported backend must not reject an independently reviewed
-  // Desktop path; its reconnect guard belongs to that path's recovery below.
+  if (typeof context?.modules?.list!=='function'||typeof context.modules.subscribe!=='function') throw fail('client_bridge_required');
+  // Admission checks the observer ABI. Each source verifies its own runtime
+  // contract during activation, so one missing hook cannot reject the others.
 }
 function installElectronTraffic(electron, configuration, context, dependencies = {}) {
   if (!configuration?.source || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail('invalid_launch_configuration');
@@ -66,7 +62,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   };
   let sourceConnected = false, sourceReason = null;
   source.ready.then(() => { sourceConnected = true; }, error => { sourceReason = typeof error?.code === 'string' ? error.code : 'source_unavailable'; });
-  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null;
+  let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null, expectedSources = [];
   function attachHooks() {
     backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs }, {state:context?.resources.get('backendState'),trackBackend:context?.trackBackend});
     desktop = installDesktop(electron, { source, deadlineUnixMs: configuration.deadlineUnixMs,
@@ -83,7 +79,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
     snapshot() {
       const state=context?.resources.get('backendState');
       if(!state||!context.resources.get('desktopState'))throw fail('core_update_next_start_required');
-      return {schema:1,recoveryReason,backends:[...state.records].map(record=>({pid:record.child.pid??null,
+      return {schema:1,recoveryReason,activatedSources:lastActivation?.activatedSources?.map(source=>source.id)??[],backends:[...state.records].map(record=>({pid:record.child.pid??null,
         routes:record.reservations.map(route=>route.baseUrl)})),taskRoutes:context.resources.get('desktopState').taskRoutes.size};
     },
     suspend() {
@@ -95,11 +91,11 @@ function installElectronTraffic(electron, configuration, context, dependencies =
       const records=[...context.resources.get('backendState').records];
       if(snapshot.backends.some(previous=>!records.some(record=>record.child.pid===previous.pid
         && JSON.stringify(record.reservations.map(route=>route.baseUrl))===JSON.stringify(previous.routes))))throw fail('core_update_backend_changed');
-      recoveryReason=snapshot.recoveryReason;restored=true;
+      recoveryReason=snapshot.recoveryReason;expectedSources=snapshot.activatedSources??[];restored=true;
     },
     async resume(snapshot) {
       if(closed||!suspended)return false;
-      recoveryReason=snapshot.recoveryReason;restored=true;readinessDeadlineUnixMs=Date.now()+8000;attachHooks();suspended=false;
+      recoveryReason=snapshot.recoveryReason;expectedSources=snapshot.activatedSources??[];restored=true;readinessDeadlineUnixMs=Date.now()+8000;attachHooks();suspended=false;
       lastActivation=await this.ready();return lastActivation.installed===true;
     },
     confirmTakeover() {return !closed&&!suspended&&lastActivation?.installed===true;},
@@ -115,9 +111,9 @@ function installElectronTraffic(electron, configuration, context, dependencies =
         // A source learned after startup may need one local app-server reconnect;
         // the desktop process and its native pages stay alive. Never interrupt
         // an active turn or replay an outstanding native request.
-        try { await recover(context, backend.ownsProcess); }
+        try { await recover(context, backend.ownsProcess, {connections:desktop.connectionConstructors?.()}); }
         catch (error) {
-          if (!['client_source_backend_busy','backend_build_unverified'].includes(error?.code)) throw error;
+          if (!['client_source_backend_busy','backend_identity_unavailable','backend_identity_changed'].includes(error?.code)) throw error;
           recoveryReason = error.code;
         }
       }
@@ -140,6 +136,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
         ? desktopState.taskConfigurationReason === 'unsupported_build' ? 'unsupported_build' : 'hook_unavailable'
         : backendState.reason === 'child_unavailable' ? 'child_unavailable' : 'route_unavailable' });
       const installed=activatedSources.length>0;
+      if(expectedSources.some(id=>!activatedSources.some(source=>source.id===id)))throw fail('core_update_source_capability_lost');
       diagnose(installed,null);
       return lastActivation={ installed, activatedSources, unsupportedSources };
       }catch(error){diagnose(false,error);throw error;}
@@ -149,6 +146,8 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   });
 }
 function validateSnapshot(value) {return !!value&&value.schema===1&&(value.recoveryReason===null||typeof value.recoveryReason==='string')
+    &&(value.activatedSources===undefined||Array.isArray(value.activatedSources)&&value.activatedSources.length<=2
+      &&new Set(value.activatedSources).size===value.activatedSources.length&&value.activatedSources.every(id=>['desktop-main-http','owned-backend-provider'].includes(id)))
   &&Array.isArray(value.backends)&&value.backends.length<=64&&Number.isSafeInteger(value.taskRoutes)&&value.taskRoutes>=0
   &&value.backends.every(record=>Number.isSafeInteger(record.pid)&&record.pid>0&&Array.isArray(record.routes)&&record.routes.every(route=>typeof route==='string'&&route.length<2048));}
 module.exports = { handoffVersion:1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };
