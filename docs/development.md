@@ -14,6 +14,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Install-JsRuntime.ps
 
 Use a supported native Rust linker/toolchain. `CARGO_TARGET_DIR` changes executable paths; stage Node beside the executable actually being tested, not an assumed `target/debug` directory. Release delivery uses `cargo build --locked --release --bin codlet --no-default-features`.
 
+`scripts/Build-Core.ps1` checks the development storage budget before and after
+building, including Cargo's actual target directory. When invoking Cargo directly,
+run `node scripts/check-dev-storage.mjs` first; pass `--target-dir` when using a
+target directory configured outside `CARGO_TARGET_DIR`.
+
 ## macOS Apple Silicon
 
 ```sh
@@ -29,6 +34,7 @@ Run checks appropriate to the changed behavior. The wider regression suite is:
 
 ```sh
 cargo fmt --all -- --check
+node scripts/check-dev-storage.mjs
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features -- --test-threads=2
 cargo test --locked --no-default-features --features ipc-test-isolation --test core_sdk_migration -- --test-threads=2
@@ -79,3 +85,31 @@ and test processes before clearing it with `cargo clean` (or `cargo clean
 client copies and experiment downloads can be regenerated. Keep current source,
 lockfiles and compiler installations; retain only the latest useful installers
 locally. Clearing caches makes the next build slower but does not remove source.
+
+### Development storage budget
+
+Development builds retain line tables for source locations in backtraces. Test
+builds omit debug information and symbol tables; assertion failures still identify
+their source location. Both disable incremental compilation. Dependency/object caches remain
+reusable; changes to Rust code may take longer to rebuild. For variable inspection
+or complete symbolic test backtraces, explicitly use `--profile full-debug`, for
+example `cargo build --locked --profile full-debug --bin codlet` or
+`cargo test --locked --profile full-debug --test <name>`. Clear that profile with
+`cargo clean --profile full-debug` after stopping its processes. Stage Node beside
+that profile's executable when launching Core.
+
+`node scripts/check-dev-storage.mjs --json` reports Rust build output, local
+artifacts and available space on both volumes. The limits are 8 GiB for build
+output, 4 GiB for `.codlet-artifacts`, and at least 20 GiB free on each volume.
+`Build-Core.ps1`, Core Native run preparation and the fixture launch entry point
+refuse to add more output when those limits are exceeded. The check counts
+hardlinked files once and skips links inside each selected directory. It does not
+delete files.
+
+After an independent test has stopped, retain its reports, session JSONL and
+databases; remove obsolete executable/runtime copies, temporary profile `home`
+directories, downloaded plugin caches and superseded candidate packages. Keep
+current installers outside the cleanup set. Clear only paths owned by the stopped
+test, and never remove a live profile or an unresolved run. The budget is an
+entry-point check, not a filesystem quota; direct Cargo commands and other tools
+can still write past it.

@@ -6,6 +6,23 @@ license = "Apache-2.0"
 publish = false
 autoexamples = false
 
+[profile.dev]
+# Keep source locations in backtraces without duplicating full type/variable
+# debug information into every integration-test executable.
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+# Assertion failures still report their source location. Opt into full-debug
+# below when an entire symbolic stack or variable inspection is needed.
+debug = false
+strip = "symbols"
+
+# Opt in only when inspecting variables in a native debugger.
+[profile.full-debug]
+inherits = "dev"
+debug = "full"
+
 [profile.release]
 strip = "symbols"
 

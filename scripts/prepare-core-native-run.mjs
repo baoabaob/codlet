@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {assertDevelopmentStorage} from './check-dev-storage.mjs';
 
 export function auditedVersions(source){
   const first=source.match(/const AUDITED_PACKAGE_VERSION: &str = "([\d.]+)";/)?.[1];
@@ -27,6 +28,7 @@ export function preflightBlockers(packages,versions,files){
 function main(){
   if(process.platform!=='win32')throw Error('This preparation targets the Windows isolated launcher');
   const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+  assertDevelopmentStorage({repoRoot:repo});
   const args=process.argv.slice(2);
   if(args.length!==0&&(args.length!==2||args[0]!=='--lab-binary'))throw Error('Optional argument is --lab-binary <absolute immutable owned executable>');
   const selected=args.length?args[1]:null;
