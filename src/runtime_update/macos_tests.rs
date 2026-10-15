@@ -110,6 +110,25 @@ fn verify_signed_archive(app: &Path, zip: &Path, mode: package::NodeRuntimeMode)
     assert_eq!(staged.manifest.files, current.files);
     assert_eq!(staged.manifest.runtime.mode, mode);
     package::recheck_staged(&staged).unwrap();
+    assert!(!online::compatible(root, &staged).unwrap());
+    // A complete signed app must not admit the portable online-component ABI,
+    // even when its resident files and all declared payload hashes are intact.
+    let manifest_path = staged.directory.join(package::MANIFEST);
+    let original_manifest = std::fs::read(&manifest_path).unwrap();
+    let mut claimed_online = staged.clone();
+    claimed_online.manifest.online = Some(package::OnlineRuntime::current());
+    let claimed_bytes = serde_json::to_vec(&claimed_online.manifest).unwrap();
+    claimed_online.manifest_sha256 = format!("{:x}", Sha256::digest(&claimed_bytes));
+    std::fs::write(&manifest_path, claimed_bytes).unwrap();
+    assert!(!online::compatible(root, &claimed_online).unwrap());
+    let rejected = package::recheck_staged(&claimed_online).unwrap_err();
+    assert_eq!(rejected.code, "runtime_update_manifest_invalid");
+    assert_eq!(
+        rejected.message,
+        "Unsupported online Core component contract."
+    );
+    std::fs::write(&manifest_path, original_manifest).unwrap();
+    package::recheck_staged(&staged).unwrap();
     let core = staged
         .directory
         .join("Codlet.app/Contents/Resources/codlet");

@@ -98,10 +98,14 @@ pub(super) fn payload(
     )
 }
 
+// These fixtures use Windows portable payloads and their online component ABI.
+// Signed Mac apps exercise their next-start-only contract in macos_tests.
+#[cfg(windows)]
 #[test]
 fn compatible_online_install_uses_the_real_native_bridge_and_persists_a_validated_source_pin() {
     online_install_fixture(false);
 }
+#[cfg(windows)]
 #[test]
 #[ignore = "owned subprocess entry, invoked by full_core_module_install_has_an_isolated_foreground_owner"]
 fn core_modules_child_fixture() {
@@ -111,6 +115,7 @@ fn core_modules_child_fixture() {
     );
     online_install_fixture(true);
 }
+#[cfg(windows)]
 #[test]
 fn full_core_module_install_has_an_isolated_foreground_owner() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -131,6 +136,7 @@ fn full_core_module_install_has_an_isolated_foreground_owner() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+#[cfg(windows)]
 fn online_install_fixture(include_modules: bool) {
     use crate::client_bridge::{ClientSourceRuntime, Endpoint};
     use crate::platform::host::OwnedPluginProcess;
