@@ -36,7 +36,11 @@ if($StructureOnly){
     }
     $installedFiles=@(Rows 'SELECT `FileName` FROM `File`' 1|ForEach-Object{$_[0]})
     if(@($installedFiles|Where-Object{$_ -match '(^|\|)node\.exe$'}).Count){throw 'Managed MSI contains a bundled Node executable'}
-    if(@($installedFiles|Where-Object{$_ -match '(^|\|)(codlet\.json|renderer\.js|host\.cjs)$'}).Count){throw 'Core MSI contains plugin code'}
+    if(@($installedFiles|Where-Object{$_ -match '(^|\|)codlet\.json$'}).Count -ne 1 -or @($installedFiles|Where-Object{$_ -match '(^|\|)renderer\.js$'}).Count -ne 1 -or @($installedFiles|Where-Object{$_ -match '(^|\|)host\.cjs$'}).Count){throw 'MSI must contain exactly one renderer GUI package'}
+    $guiComponents=@(Rows "SELECT ``Component_`` FROM ``FeatureComponents`` WHERE ``Feature_``='GUI'" 1|ForEach-Object{$_[0]})
+    $coreComponents=@(Rows "SELECT ``Component_`` FROM ``FeatureComponents`` WHERE ``Feature_``='Core'" 1|ForEach-Object{$_[0]})
+    $pluginFiles=@(Rows 'SELECT `FileName`,`Component_` FROM `File`' 2|Where-Object{$_[0] -match '(^|\|)(codlet\.json|renderer\.js|catalog\.json)$'})
+    if($pluginFiles.Count -ne 3 -or @($pluginFiles|Where-Object{$_[1] -notin $guiComponents -or $_[1] -in $coreComponents}).Count){throw 'GUI files must belong exclusively to the optional GUI feature'}
     $choices=@(Rows 'SELECT `Name` FROM `Registry` WHERE `Key` = ''Software\Codlet\Preview\Installer\Plugins''' 1|ForEach-Object{$_[0]})
     if(($choices|Sort-Object)-join ',' -ne 'codlet-gui'){throw 'MSI must persist only the GUI consumer download choice'}
     $shortcuts=@(Rows 'SELECT `Shortcut`,`Target`,`Arguments` FROM `Shortcut`' 3)
@@ -59,7 +63,7 @@ if($StructureOnly){
     if([int]$cleanupAction[0] -ne 66 -or $cleanupAction[1] -ne '--offer-user-cleanup'){throw 'Cleanup must be an impersonated, optional EXE action with no caller-selected data path'}
     $launch=@(Rows "SELECT ``Condition`` FROM ``ControlEvent`` WHERE ``Event``='DoAction' AND ``Argument``='LaunchCodletAfterInstall'" 1)[0][0]
     if($launch -notlike '*WIXUI_EXITDIALOGOPTIONALCHECKBOX*'){throw 'Post-install launch is not opt-in'}
-    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;bundledNode=$false;bundledPlugins=$false;pluginDownloadChoices=$choices;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
+    $report=[ordered]@{schema=1;passed=$true;scope='read-only-msi-structure';features=$featureNames;bundledNode=$false;bundledPlugins=@('codlet-gui');pluginChoices=$choices;guiFeatureOwnsPayload=$true;nativeShortcuts=$shortcuts.Count;preflightBeforeFileValidation=$true;automaticShutdown=$false;optionalLaunch=$true;installationPerformed=$false}
     $report|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $artifacts 'report.json') -Encoding UTF8
     $report|ConvertTo-Json -Compress
   }finally{[Runtime.InteropServices.Marshal]::ReleaseComObject($database)|Out-Null;[Runtime.InteropServices.Marshal]::ReleaseComObject($installer)|Out-Null}
@@ -95,12 +99,12 @@ try{
   Assert (@((Inventory).coreProviders).Count -eq 2) 'Core MSI omitted its internal Codex providers'
   $checks.Add('Core-only MSI runs with no optional plugins')
   Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI') -Name 'add-gui'
-  Assert (-not [IO.Directory]::Exists((Join-Path $install 'optional-plugins'))) 'MSI includes offline plugin code'
+  Assert ([IO.File]::Exists((Join-Path $install 'optional-plugins/catalog.json'))) 'MSI GUI feature omitted its package'
   $choices=Get-ItemProperty -LiteralPath 'HKCU:/Software/Codlet/Preview/Installer/Plugins'
   Assert ($choices.'codlet-gui' -eq 1) 'GUI consumer download choice was not persisted'
   & (Join-Path $install 'Initialize-Codlet.ps1') -NoLaunch -DataDirectory $data
   Assert (@((Inventory).plugins).Count -eq 1) 'MSI first-launch downloaded an obsolete adapter'
-  $checks.Add('GUI-only MSI downloads one GUI consumer through GitHub and uses Core-owned SDK providers')
+  $checks.Add('GUI MSI feature installs its bundled GUI and uses Core-owned SDK providers')
   & (Join-Path $install 'codlet.exe') plugin disable codlet-gui --json | Out-Null
   Assert ($LASTEXITCODE -eq 0) 'Could not set a user preference'
   Run-Msi -Arguments @('/i',('"'+$msi+'"'),('INSTALLFOLDER="'+$install+'"'),'ADDLOCAL=Core,GUI') -Name 'maintain-gui'

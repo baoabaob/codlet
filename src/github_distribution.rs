@@ -1466,14 +1466,27 @@ pub(crate) fn test_prepare_archive_identity(
     bytes: &[u8],
     identity: Option<(u64, u64)>,
 ) -> Result<PreparedGitHubPackage> {
-    let repository = GitHubRepository::parse("https://github.com/dev-owner/dev-repo")?;
+    test_prepare_archive_repository(
+        registry_path,
+        bytes,
+        identity,
+        "https://github.com/dev-owner/dev-repo",
+    )
+}
+#[cfg(test)]
+pub(crate) fn test_prepare_archive_repository(
+    registry_path: &Path,
+    bytes: &[u8],
+    identity: Option<(u64, u64)>,
+    repository_url: &str,
+) -> Result<PreparedGitHubPackage> {
+    let repository = GitHubRepository::parse(repository_url)?;
     let asset = GitHubAsset {
         id: 2,
         name: "plugin.zip".into(),
         size: bytes.len() as u64,
         content_type: "application/zip".into(),
-        download_url: "https://github.com/dev-owner/dev-repo/releases/download/v1.0.0/plugin.zip"
-            .into(),
+        download_url: format!("{repository_url}/releases/download/v1.0.0/plugin.zip"),
         digest: Some(format!("sha256:{:x}", Sha256::digest(bytes))),
         download_count: None,
     };
@@ -1481,7 +1494,7 @@ pub(crate) fn test_prepare_archive_identity(
         id: 1,
         tag: "v1.0.0".into(),
         name: "Fixture".into(),
-        url: "https://github.com/dev-owner/dev-repo/releases/tag/v1.0.0".into(),
+        url: format!("{repository_url}/releases/tag/v1.0.0"),
         prerelease: false,
         published_at: None,
         assets: vec![asset.clone()],

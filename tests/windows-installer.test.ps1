@@ -8,7 +8,7 @@ $app=Join-Path $fixture 'app';[IO.Directory]::CreateDirectory($app)|Out-Null
 $utf8=[Text.UTF8Encoding]::new($false)
 function Write-Json([string]$Path,$Value){[IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 16),$utf8)}
 function Assert($Condition,[string]$Message){if(-not $Condition){throw $Message}}
-Copy-Item -LiteralPath (Join-Path $repo 'scripts/distribution/Initialize-Codlet.ps1') -Destination $app
+[IO.File]::WriteAllText((Join-Path $app 'Initialize-Codlet.ps1'),[IO.File]::ReadAllText((Join-Path $repo 'scripts/distribution/Initialize-Codlet.ps1')),[Text.UTF8Encoding]::new($true))
 Copy-Item -LiteralPath (Join-Path $repo 'scripts/distribution/official-plugins.json') -Destination $app
 $fake=@'
 using System;
@@ -24,6 +24,19 @@ class FixtureCli {
   string home=Environment.GetEnvironmentVariable("CODLET_HOME"), existing=Path.Combine(home,"existing.json");
   File.AppendAllText(Path.Combine(home,"calls.jsonl"),json.Serialize(args)+"\n");
   if(args[1]=="list"){Console.WriteLine(File.Exists(existing)?File.ReadAllText(existing):"{\"plugins\":[]}");return;}
+  if(args[1]=="seed"){
+   if(File.Exists(Path.Combine(home,"custom-source"))){Console.Error.WriteLine("official_seed_source_changed");Environment.Exit(1);}
+   if(args[4]!="codlet-gui"||!args[3].EndsWith("optional-plugins\\catalog.json"))throw new Exception("Wrong bundled selection");
+   bool current=File.Exists(Path.Combine(home,"seed-current"));
+   bool present=File.Exists(existing)&&File.ReadAllText(existing).Contains("codlet-gui");
+   if(args[2]=="install"){
+    if(!args.Contains("--preview")||!args.Contains("review-token")||args.Contains("--enable"))throw new Exception("Missing preview or unsolicited enable");
+    File.AppendAllText(Path.Combine(home,"installed.jsonl"),json.Serialize(args)+"\n");
+    File.WriteAllText(existing,"{\"plugins\":[{\"id\":\"codlet-gui\",\"source\":\"local\",\"version\":\"1.0.0-rc.2\"}]}");
+    File.WriteAllText(Path.Combine(home,"seed-current"),"done");
+   }
+   Console.WriteLine(json.Serialize(new{pluginId="codlet-gui",preview="review-token",outcome=args[2]=="install"?"installed":current?"current":"preview",version=current?"1.0.0":"1.0.0-rc.2",source="local",path=Path.Combine(home,"packages","codlet-gui"),addedPermissions=present?new string[]{}:new[]{"ui.dom","runtime.manage"}}));return;
+  }
   if(args[1]!="github")throw new Exception("Only normal GitHub commands allowed");
   if(args[2]=="install"){
    var rows=new List<object>();if(File.Exists(existing)){var before=json.Deserialize<Dictionary<string,object>>(File.ReadAllText(existing));foreach(var row in (IEnumerable)before["plugins"])rows.Add(row);}
@@ -86,4 +99,27 @@ $result=Initialize $data 'codex.desktop.adapter';Assert ($result.code -eq 0) $re
 Assert (-not [IO.File]::Exists((Join-Path $data 'installed.jsonl'))) 'An obsolete adapter selection downloaded another provider'
 $state=[IO.File]::ReadAllText((Join-Path $data 'plugin-setup.json'))|ConvertFrom-Json
 Assert ($state.decided.'codex.ui.adapter'.result -eq 'pending' -and $state.decided.'codex.desktop.adapter'.result -eq 'existing') 'Setup discarded legacy decisions'
-Write-Output 'Windows installer fixtures passed: GUI-only download, ignored legacy adapter choices, identity/digest, permissions, retry, preserved sources/preferences, no automatic revival or mutation replay.'
+$options=[IO.File]::ReadAllText((Join-Path $app 'official-plugins.json'))|ConvertFrom-Json
+$options|Add-Member -NotePropertyName bundledCatalog -NotePropertyValue 'optional-plugins/catalog.json'
+Write-Json (Join-Path $app 'official-plugins.json') $options
+[IO.Directory]::CreateDirectory((Join-Path $app 'optional-plugins'))|Out-Null
+Write-Json (Join-Path $app 'optional-plugins/catalog.json') @{schema=1;kind='fixture'}
+foreach($scenario in @('fresh bundle','old GUI','newer GUI','custom GUI')){
+ $data=New-Data $scenario
+ if($scenario -ne 'fresh bundle'){Write-Json (Join-Path $data 'existing.json') @{plugins=@(@{id='codlet-gui';enabled=$false;source='github';version='0.1.9'})}}
+ if($scenario -eq 'newer GUI'){[IO.File]::WriteAllText((Join-Path $data 'seed-current'),'newer')}
+ if($scenario -eq 'custom GUI'){[IO.File]::WriteAllText((Join-Path $data 'custom-source'),'custom')}
+ $result=Initialize $data 'codlet-gui';Assert ($result.code -eq 0) $result.text
+ $calls=@([IO.File]::ReadAllLines((Join-Path $data 'calls.jsonl'))|ForEach-Object{ConvertFrom-Json $_})
+ Assert (@($calls|Where-Object{$_[1] -eq 'github'}).Count -eq 0) 'Bundled GUI contacted GitHub'
+ if($scenario -in @('newer GUI','custom GUI')){Assert (-not [IO.File]::Exists((Join-Path $data 'installed.jsonl'))) 'Existing newer or custom GUI was replaced';continue}
+ $installCall=ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $data 'installed.jsonl')))
+ Assert (@($installCall|Where-Object{$_ -eq '--grant'}).Count -eq $(if($scenario -eq 'fresh bundle'){2}else{0})) 'Seed grants did not match the preview'
+ $before=[IO.File]::ReadAllText((Join-Path $data 'installed.jsonl'))
+ $result=Initialize $data;Assert ($result.code -eq 0) $result.text
+ Assert ([IO.File]::ReadAllText((Join-Path $data 'installed.jsonl')) -eq $before) 'Ordinary launch reinstalled a current GUI'
+ Write-Json (Join-Path $data 'existing.json') @{plugins=@()}
+ $result=Initialize $data;Assert ($result.code -eq 0) $result.text
+ Assert ([IO.File]::ReadAllText((Join-Path $data 'installed.jsonl')) -eq $before) 'Ordinary launch revived a removed bundled GUI'
+}
+Write-Output 'Windows installer fixtures passed: bundled GUI first install and upgrade, exact preview grants, current/custom/removed sources, legacy GitHub fallback, identity/digest, permission approval and retry.'

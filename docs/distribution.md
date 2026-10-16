@@ -1,12 +1,12 @@
 # Distribution
 
-Installers contain Codlet with its internal Codex compatibility modules, license/attribution files, SDK types, and an optional GUI download. They contain no separately installed business plugin code or fixed GUI version. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
+Installers contain Codlet with its internal Codex compatibility modules, license/attribution files and SDK types. Windows setup includes an optional matching GUI package. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
 
 Reusing the official client means copying its verified executable and license into Codlet's own data directory. The original client can then update independently. This reduces installer and repeat-download size, not Node's memory use or the space occupied by the prepared runtime. The cache follows `CODLET_HOME`: installed builds reuse their normal data directory, while each portable installation keeps its own cache. First use needs network access when neither an approved official runtime nor a valid cached copy is available; subsequent use can reuse the verified cache offline.
 
 Fallback downloads first try the unchanged official archive mirrored in Codlet's `node-runtimes` dependency release, then the official Node.js URL. Both sources must match the same archive, executable and license hashes. When changing a Node pin, run the **Publish pinned Node.js runtimes** workflow before publishing installers; it verifies the original archives and never overwrites a same-name asset with different bytes. These dependency archives are kept out of ordinary Codlet release downloads.
 
-Version 1.0.0-rc.1 is the local unified-Core candidate. Building and preparing its packages do not publish them or install them in the daily client. The stable updater continues to select published final releases; candidate packages must not replace existing release assets. Public publication remains subject to the [readiness checklist](release-readiness.md).
+Version 1.0.0-rc.3 is the local Windows candidate. The stable updater continues to select published final releases; candidate packages must not replace existing release assets. Public publication remains subject to the [readiness checklist](release-readiness.md).
 
 `Publish-Release.ps1` requires `-WindowsSetup PATH` and validates the native EXE against its embedded MSI build receipt. The setup EXE is the only Windows installation download. Standalone MSI and portable distribution ZIPs remain internal build inputs and are rejected as public installation assets. `-WindowsOnly` prepares a Windows release without advertising unbuilt macOS artifacts; omitting it requires both Windows and macOS build evidence.
 
@@ -24,39 +24,35 @@ For major versions from 1, `-rc.N` uses MSI build `500 + N`, below stable build 
 
 The installer offers the optional GUI and shortcut choices. UI/Desktop capabilities ship inside Core and have no separate download or feature selection. Historical adapter choices and registrations remain saved for migration but cannot load duplicate providers; removing an old registration preserves Core's capabilities and user data. The completion page can launch Codlet. The native `Codlet-Launcher.exe` is the normal entrypoint; internal PowerShell helpers remain implementation details. Windows Installer continues to manage upgrade, repair, and uninstall through the embedded MSI payload.
 
-Installed builds use `%LOCALAPPDATA%/Codlet`. Existing portable installations retain their `data/` directory and runtime update channel; new Windows installation downloads use the setup EXE. Neither redirects official Codex data. `Codlet-Launcher.exe --configure` can add omitted plugins later; ordinary launches do not reinstall removed plugins, and existing disabled states/grants are preserved.
+Installed builds use `%LOCALAPPDATA%/Codlet`. Existing portable installations retain their `data/` directory and runtime update channel; new Windows installation downloads use the setup EXE. Neither redirects official Codex data. Run setup again to add an omitted GUI component. `Codlet-Launcher.exe --configure` revisits first-launch choices for available components; ordinary launches do not reinstall removed plugins, and existing disabled states/grants are preserved.
 
 The first migration from the previous executable requires a new start. After migration, verified compatible JavaScript module updates can preserve the Native process, backend connections and streams while reloading plugins with explicit state. Incompatible resident changes are staged for natural exit and the next start. See [online update](core-online-update.md) for the precise component boundary and evidence; an installed MSI still retains Windows Installer's ownership of executable replacement.
 
 Run a newer setup EXE to upgrade an installed Windows version, including earlier direct MSI installations. Existing portable in-app runtime updates replace Core and its runtime descriptor, reusing an already prepared compatible Node; preparing a missing runtime must succeed before replacement. Those updater ZIPs are compatibility payloads rather than installation downloads. Official plugins have their own GitHub update channels.
 
-`official-plugins.json` contains only the selectable IDs, repository URLs/numeric identities,
-dependencies and initial permission expectations. MSI features persist download choices in
-HKCU; portable and Mac setup ask on first use. Selection fetches the latest published stable
-Release, finds its exact ID/version ZIP and calls the same `plugin github preview/install`
-commands available to users. Core checks the archive; setup checks manifest ID/version,
-repository/owner identity and the upstream SHA-256 before granting the selected permissions.
-Additional permissions require separate approval. The resulting source is `github` from
-the first installation, with no seed/adoption step for new users.
+`official-plugins.json` records selectable IDs, pinned repository identities and initial
+permission expectations. Windows MSI's GUI feature owns `optional-plugins/` and its selection
+registry value. With GUI selected, first launch uses `plugin seed preview/install` against
+the bundled catalog. Every file is verified before replacement. A receipt and transaction
+journal protect the installed copy and record its GitHub update channel.
 
-Only read/download failures are retried once automatically. Failed choices remain pending;
-Windows offers retry/cancel and Mac restores pending choices on the next launch. Previously
-completed plugin registrations are reused without download. An uncertain mutation is never
-blindly replayed. Setup does not overwrite existing registrations or revive removed
-plugins. Before the first normal launch of a changed Core/client version, Core refreshes
-already-installed official download channels through the regular GitHub preparation and
-managed-install transactions. This also runs before the Codlet-owned official-update restart.
-Successful checks are cached across ordinary launches. The network budget is 30 seconds;
-failed checks retain installed packages, record diagnostics and retry on a later launch
-after a five-minute cooldown. Safe mode skips this maintenance.
+Setup upgrades an older GUI only when its complete installer receipt or Core-managed GitHub
+receipt still verifies, including repository/owner identities. Equal or newer versions are
+kept. Custom and modified sources are preserved. Enabled state, revoked permissions and
+broker scopes survive the transition; only previewed new permissions can be granted.
+Interrupted replacement rolls back before commit or finishes cleanup after commit. Ordinary
+launches do not reinstall a plugin the user removed. The GUI remains an ordinary plugin.
 
-Earlier releases installed local seeds. Startup can migrate an unmodified seed to its pinned
-official GitHub channel after verifying the complete receipt/file set and repository/owner
-numeric identities. Downloads must pass the upstream digest check. Existing grants, broker
-scopes and enabled preferences are retained; new authority or dependency-contract changes
-require review. Custom or modified directories are skipped. Legacy seed commands remain
-migration support. Core has no runtime dependency on these plugins and grants them no
-special capabilities.
+Core-only portable packages and macOS use `plugin github preview/install` to download the
+latest stable GUI. They verify the manifest, repository identity and upstream archive digest.
+Read/download failures retry once; unfinished choices remain pending for the next launch.
+
+Before the first normal launch of a changed Core/client version, Core checks installed
+official channels through the regular GitHub preparation and managed-install transactions.
+Verified installer packages can move to their pinned channel using the same permission and
+source checks. Successful checks are cached across ordinary launches. The network budget is
+30 seconds; failures retain the installed package and retry after a five-minute cooldown.
+Safe mode skips this maintenance.
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, and asks the user to save and quit them. Its only actions are check again and cancel. Neither the installer nor the launcher's gate sends a close request. Restart Manager automatic shutdown is disabled. An unattended busy install fails explicitly.
 
@@ -95,6 +91,7 @@ the remaining plugins and original client can still run with preserved preferenc
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-Distribution.ps1 `
   -CodletExecutable C:\build\codlet.exe `
   -SourceCommit FULL_CORE_SHA `
+  -GuiBundleDirectory C:\build\gui-bundle -GuiSourceCommit FULL_GUI_SHA `
   -OutputDirectory C:\output\codlet-0.2.0
 node scripts/build-msi.mjs C:\output\codlet-0.2.0 C:\tools\wix-3.14.1 C:\output\Codlet-0.2.0.msi
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-WindowsInstaller.ps1 `
@@ -102,7 +99,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Build-WindowsInstall
   -Version 0.2.0
 ```
 
-WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The manifest records Core's source revision, distributed files and SHA-256 values. Plugin source commits and package hashes belong to the independently downloaded releases, not to Core's build.
+Prepare `gui-bundle` with `node scripts/package.mjs --output C:\build\gui-bundle` in the GUI source repository. WiX 3.14.1 builds the MSI; the system .NET Framework compiler builds the launcher. The distribution manifest records both source revisions, the GUI version and every payload file's SHA-256. MSI creation rejects a distribution without its GUI package.
 
 Use `Test-DistributionEncoding.ps1` for Windows PowerShell/encoding checks and `Test-WindowsInstaller.ps1` for controlled process and MSI preflight scenarios. `Test-NativeInstaller.ps1` renders the actual native UI in both languages, validates feature/scope/path commands, and exercises real MSI record progress/cancellation without installing. Fixture builds cannot install. `Test-MsiDistribution.ps1 -StructureOnly` inspects tables, scopes, PATH components and features without changing the user's installation. Never deliver fixture or stale-Core packages used by these tests.
 

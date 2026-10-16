@@ -85,15 +85,8 @@
             <StackPanel Margin="0,20,0,20"><CheckBox x:Name="StartMenuChoice" Tag="t:menu" Content="添加到开始菜单" IsChecked="True"/><CheckBox x:Name="DesktopChoice" Tag="t:desktop" Content="创建桌面快捷方式" IsChecked="True"/><CheckBox x:Name="PathChoice" Tag="t:path" Content="将 codlet 加入 PATH" IsChecked="True"/></StackPanel>
             <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="0,10,0,0">
               <StackPanel>
-                <Button x:Name="PluginsButton" Padding="0,7" HorizontalContentAlignment="Stretch">
-                  <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <TextBlock Tag="t:plugins" Text="官方插件" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="PluginCount" Grid.Column="1" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center"/>
-                    <Path x:Name="PluginChevron" Grid.Column="2" Data="M 3,6 L 8,11 L 13,6" Width="16" Height="16" Margin="12,0,0,0" VerticalAlignment="Center" Stroke="{DynamicResource Muted}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" RenderTransformOrigin="0.5,0.5"><Path.RenderTransform><RotateTransform Angle="0"/></Path.RenderTransform></Path>
-                  </Grid>
-                </Button>
-                <StackPanel x:Name="PluginChoices" Visibility="Collapsed"><CheckBox x:Name="GuiChoice" Tag="t:gui" Content="Codlet 管理界面" IsChecked="True"/></StackPanel>
-                <TextBlock Tag="t:download" Text="首次启动时下载所选插件" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,5,0,0"/>
+                <CheckBox x:Name="GuiChoice" Tag="t:gui" Content="安装 Codlet 管理界面" IsChecked="True"/>
+                <TextBlock Tag="t:guiDescription" Text="管理插件和设置" Foreground="{DynamicResource Muted}" FontSize="12" Margin="24,0,0,0"/>
               </StackPanel>
             </Border>
           </StackPanel>

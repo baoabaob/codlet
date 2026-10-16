@@ -39,4 +39,4 @@ foreach($locale in @('zh-CN','en-US','de-DE')){
     if($process.ExitCode -ne 0){throw ('Native window layout failed: '+[IO.File]::ReadAllText((Join-Path $resultDirectory 'layout-failure.txt')))}
   }finally{$process.Dispose()}
 }
-Write-Output 'Native installer passed: Chinese/English and automatic language fallback; actual-window overflow, expansion, footer and keyboard-focus contracts; light/dark rendering, scope/path/features, payload checksum and MSI cancellation. No installation performed.'
+Write-Output 'Native installer passed: Chinese/English and automatic language fallback; actual-window overflow, GUI selection, footer and keyboard-focus contracts; light/dark rendering, scope/path/features, payload checksum and MSI cancellation. No installation performed.'

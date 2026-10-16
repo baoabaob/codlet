@@ -427,14 +427,20 @@ function New-ReleasePlan {
     $portableManifestPath = Assert-PlainPath (Join-Path $portableRoot 'distribution-manifest.json')
     $portableManifest = Read-JsonFile $portableManifestPath
     Assert-DistributionEnvelope $portableManifest 'codlet-portable-distribution' 'win-x64' $version
-    if ($portableManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only Windows distribution.' }
+    if ($portableManifest.pluginDelivery -notin @('github-latest','installer-bundle')) { Fail 'Unsupported Windows plugin delivery.' }
+    if ($portableManifest.pluginDelivery -eq 'installer-bundle') {
+        if ($portableManifest.gui.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $portableManifest.gui.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { Fail 'Bundled GUI provenance is missing.' }
+        $guiCatalog=Read-JsonFile (Join-Path $portableRoot 'optional-plugins/catalog.json')
+        if ($guiCatalog.kind -ne 'codlet-official-plugin-bundle' -or $guiCatalog.schema -ne 1 -or @($guiCatalog.packages).Count -ne 1 -or $guiCatalog.packages[0].id -ne 'codlet-gui' -or $guiCatalog.packages[0].version -ne $portableManifest.gui.version -or $guiCatalog.sourceCommit -ne $portableManifest.gui.sourceCommit) { Fail 'Bundled GUI does not match the Windows distribution.' }
+    }
     Assert-DirectoryManifestPayload $portableRoot $portableManifest
     if ($WindowsPortableZip) { Assert-PortableZip $portableZip $portableRoot $portableManifest }
 
     $msiManifest = Read-JsonFile $msiManifestPath
     Assert-DistributionEnvelope $msiManifest 'codlet-msi-distribution' 'win-x64' $version
     if ($msiManifest.sourceCommit -ne $portableManifest.sourceCommit) { Fail 'Windows MSI and portable builds come from different Core commits.' }
-    if ($msiManifest.pluginDelivery -ne 'github-latest') { Fail 'Expected Core-only MSI distribution.' }
+    if ($msiManifest.pluginDelivery -ne $portableManifest.pluginDelivery) { Fail 'MSI and portable plugin delivery differ.' }
+    if ($msiManifest.pluginDelivery -eq 'installer-bundle' -and ($msiManifest.gui.version -ne $portableManifest.gui.version -or $msiManifest.gui.sourceCommit -ne $portableManifest.gui.sourceCommit)) { Fail 'MSI and portable GUI versions differ.' }
     $msiRoot = Split-Path -Parent $msiManifestPath
     Assert-DirectoryManifestPayload $msiRoot $msiManifest -FallbackDirectory $portableRoot
     $msiMetadataPath = Assert-PlainPath ($msiPath + '.json')
@@ -540,7 +546,7 @@ function New-ReleasePlan {
         $notesLines = @(
             "# Codlet $version",
             '',
-            "Built from Core commit ``$($portableManifest.sourceCommit)``. Optional plugins are downloaded from their published GitHub Releases.",
+            "Built from Core commit ``$($portableManifest.sourceCommit)``.",
             '',
             '## Downloads',
             '',
@@ -581,7 +587,7 @@ function New-ReleasePlan {
             legacyUpdateBridge = [bool]$LegacyUpdateBridge
             windowsOnly = [bool]$WindowsOnly
             sourceCommit = $portableManifest.sourceCommit
-            pluginDelivery = 'github-latest'
+            pluginDelivery = $portableManifest.pluginDelivery
             releaseName = "Codlet $version"
             releaseNotesFile = 'release-notes.md'
             releaseNotesBytes = [long](Get-Item -LiteralPath $notesPath).Length
@@ -629,7 +635,7 @@ function Read-ReleasePlan([string]$Path) {
     Assert-Version ([string]$plan.version) | Out-Null
     if ($plan.version -notmatch '^\d+\.\d+\.\d+$') { Fail 'Stable release plans cannot contain prerelease versions.' }
     if ($plan.tag -ne ('v' + $plan.version) -or $plan.repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
-        $plan.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $plan.pluginDelivery -ne 'github-latest') { Fail 'Release plan version, repository or provenance is invalid.' }
+        $plan.sourceCommit -notmatch '^[0-9a-f]{40}$' -or $plan.pluginDelivery -notin @('github-latest','installer-bundle')) { Fail 'Release plan version, repository or provenance is invalid.' }
     if ($plan.assets -isnot [System.Array] -or $plan.assets.Count -lt 4 -or $plan.assets.Count -gt 128) { Fail 'Release plan asset list is empty or too large.' }
     $root = Split-Path -Parent $planPath
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)

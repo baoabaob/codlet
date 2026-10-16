@@ -51,18 +51,17 @@ function Select-Plugins($Available){
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -AssemblyName System.Drawing
   [Windows.Forms.Application]::EnableVisualStyles()
-  $form=[Windows.Forms.Form]::new();$form.Text='Codlet · 选择官方插件';$form.ClientSize=[Drawing.Size]::new(570,320);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.MaximizeBox=$false;$form.MinimizeBox=$false
+  $form=[Windows.Forms.Form]::new();$form.Text='Codlet · 安装选项';$form.ClientSize=[Drawing.Size]::new(570,220);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedDialog';$form.MaximizeBox=$false;$form.MinimizeBox=$false
   $form.Font=[Drawing.Font]::new('Microsoft YaHei UI',10)
   if([IO.File]::Exists((Join-Path $root 'codlet.ico'))){$form.Icon=[Drawing.Icon]::new((Join-Path $root 'codlet.ico'))}
-  $label=[Windows.Forms.Label]::new();$label.Text="从 GitHub 下载所选插件的最新发布版。`n界面与桌面 SDK 已包含在 Core 中；已有插件保留配置。";$label.SetBounds(22,18,525,65);$form.Controls.Add($label)
-  $boxes=@{};$y=91
+  $label=[Windows.Forms.Label]::new();$label.Text='选择需要安装的组件';$label.SetBounds(22,18,525,36);$form.Controls.Add($label)
+  $boxes=@{};$y=65
   foreach($package in $Available){
-    $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codlet-gui'{'Codlet GUI — 图形化管理插件'}}
+    $box=[Windows.Forms.CheckBox]::new();$box.Text=switch($package.id){'codlet-gui'{'Codlet 管理界面'}}
     $box.SetBounds(24,$y,520,32);$box.Checked=$true;$boxes[$package.id]=$box;$form.Controls.Add($box);$y+=38
   }
-  $notice=[Windows.Forms.Label]::new();$notice.Text='需要网络；超出所选功能的新增权限将单独确认';$notice.SetBounds(22,223,525,32);$form.Controls.Add($notice)
-  $ok=[Windows.Forms.Button]::new();$ok.Text='确认';$ok.SetBounds(354,273,90,30);$ok.DialogResult=[Windows.Forms.DialogResult]::OK;$form.Controls.Add($ok);$form.AcceptButton=$ok
-  $cancel=[Windows.Forms.Button]::new();$cancel.Text='取消';$cancel.SetBounds(455,273,90,30);$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$form.Controls.Add($cancel);$form.CancelButton=$cancel
+  $ok=[Windows.Forms.Button]::new();$ok.Text='确认';$ok.SetBounds(354,173,90,30);$ok.DialogResult=[Windows.Forms.DialogResult]::OK;$form.Controls.Add($ok);$form.AcceptButton=$ok
+  $cancel=[Windows.Forms.Button]::new();$cancel.Text='取消';$cancel.SetBounds(455,173,90,30);$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$form.Controls.Add($cancel);$form.CancelButton=$cancel
   try{if($form.ShowDialog() -ne [Windows.Forms.DialogResult]::OK){throw 'Plugin selection cancelled'};@($Available|Where-Object{$boxes[$_.id].Checked}|ForEach-Object{$_.id})}finally{$form.Dispose()}
 }
 function Invoke-DownloadCli([string[]]$Arguments){
@@ -95,6 +94,12 @@ try{
     $catalogPath=Join-Path $root 'official-plugins.json';Plain $catalogPath
     $catalog=[IO.File]::ReadAllText($catalogPath)|ConvertFrom-Json
     if($catalog.schema -ne 1 -or $catalog.kind -ne 'codlet-plugin-download-options'){throw 'Invalid plugin download options'}
+    $bundledCatalog=$null
+    if($catalog.PSObject.Properties['bundledCatalog']){
+      if($catalog.bundledCatalog -cne 'optional-plugins/catalog.json'){throw 'Invalid bundled plugin catalog path'}
+      $bundledCatalog=Join-Path $root $catalog.bundledCatalog
+      Plain $bundledCatalog
+    }
     $allowed=@('codlet-gui')
     $available=@($catalog.plugins)
     if(@($available|ForEach-Object{$_.id}|Sort-Object -Unique).Count -ne $available.Count){throw 'Duplicate download option'}
@@ -112,11 +117,12 @@ try{
         }
       }
       $selected=@($available|Where-Object{$choices -and $choices.PSObject.Properties[$_.id] -and $choices.($_.id) -eq 1}|ForEach-Object{$_.id})
-    }else{$selected=@($available|Where-Object{$state.decided.ContainsKey($_.id) -and (Decision-Result $_.id) -eq 'pending'}|ForEach-Object{$_.id})}
+    }else{$selected=@($available|Where-Object{$state.decided.ContainsKey($_.id) -and ($bundledCatalog -and $state.decided[$_.id].selected -or (Decision-Result $_.id) -eq 'pending')}|ForEach-Object{$_.id})}
     # Old setup selections may still name the adapters. Core now supplies those
     # capabilities; retain old decisions on disk but never download duplicates.
     $selected=@($selected|Where-Object{$_ -notin @('codex.ui.adapter','codex.desktop.adapter')})
     foreach($id in $selected){if($id -notin @($available.id)){throw "Selected plugin is unavailable: $id"}}
+    if($bundledCatalog -and $selected.Count -gt 0 -and -not [IO.File]::Exists($bundledCatalog)){throw '安装目录中缺少管理界面组件。请重新运行 Codlet 安装程序并勾选“安装 Codlet 管理界面”。'}
     $listing=Invoke-Cli -Arguments @('plugin','list','--json')
     # Persist the entire selection before the first network operation. Otherwise
     # a failure in a dependency could forget plugins later in the same selection.
@@ -130,9 +136,32 @@ try{
     foreach($package in $available){
       $id=[string]$package.id
       if($id -notin $selected){if(-not $state.decided.ContainsKey($id) -or ($explicit -and (Decision-Result $id) -eq 'pending')){$state.decided[$id]=@{selected=$false;result='declined'}};continue}
-      # Setup preserves existing sources. Core's pre-launch refresh separately
-      # verifies installed official channels and preserves their grants/settings.
       $existing=@($listing.plugins|Where-Object{$_.id -eq $id})
+      # A removed plugin stays removed unless the user selects it again explicitly.
+      if($existing.Count -eq 0 -and -not $explicit -and $state.decided.ContainsKey($id) -and $state.decided[$id].selected -and (Decision-Result $id) -ne 'pending'){continue}
+      if($bundledCatalog){
+        try{$preview=Invoke-Cli -Arguments @('plugin','seed','preview',$bundledCatalog,$id,'--json')}
+        catch{
+          if($existing.Count -gt 0 -and $_.Exception.Message -match 'official_seed_source_changed'){
+            $state.decided[$id]=@{selected=$true;result='existing';source='custom'}
+            Write-Warning '现有 Codlet 管理界面使用自定义来源；可在插件管理中更新。'
+            Save-State;continue
+          }
+          throw
+        }
+        if($preview.outcome -eq 'current'){
+          $state.decided[$id]=@{selected=$true;result='existing';version=$preview.version;source=$preview.source;path=$preview.path}
+          Save-State;continue
+        }
+        $permissions=@($preview.addedPermissions)
+        $unapproved=@($permissions|Where-Object{$_ -notin $package.permissions -and $_ -notin $ApproveNewPermissions})
+        if($unapproved.Count){throw "安装 $id 需要明确批准新增权限：$($unapproved -join ', ')。请使用 -ApproveNewPermissions 指定这些权限。"}
+        $argsList=@('plugin','seed','install',$bundledCatalog,$id,'--preview',[string]$preview.preview,'--json')
+        foreach($permission in $permissions){$argsList+=@('--grant',[string]$permission)}
+        $result=Invoke-Cli -Arguments $argsList
+        $state.decided[$id]=@{selected=$true;result='installed';version=$result.version;source='official-installer';path=$result.path}
+        Save-State;continue
+      }
       if($existing.Count -gt 0){if(-not $state.decided.ContainsKey($id) -or (Decision-Result $id) -eq 'pending'){$state.decided[$id]=@{selected=$true;result='existing'}};continue}
       if(-not $explicit -and $state.decided.ContainsKey($id) -and $state.decided[$id].selected -and (Decision-Result $id) -ne 'pending'){continue}
       $state.decided[$id]=@{selected=$true;result='pending'};Save-State

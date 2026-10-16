@@ -10,8 +10,11 @@ const compiler=spawnSync('powershell.exe',['-NoLogo','-NoProfile','-NonInteracti
 if(compiler.error||compiler.status!==0)throw Error('Windows installer helper compilation failed');
 const manifest=JSON.parse(await readFile(resolve(root,'distribution-manifest.json'),'utf8'));
 if(manifest.platform!=='win-x64'||manifest.kind!=='codlet-portable-distribution')throw Error('Expected Windows x64 portable input');
-if(!/^[0-9a-f]{40}$/i.test(manifest.sourceCommit??'')||manifest.pluginDelivery!=='github-latest')throw Error('Expected Core-only distribution with GitHub plugin downloads');
-if(manifest.files.some(file=>file.path.startsWith('optional-plugins/')||/(^|\/)codlet\.json$/.test(file.path)))throw Error('Core installer may not contain plugin payloads');
+if(!/^[0-9a-f]{40}$/i.test(manifest.sourceCommit??'')||manifest.pluginDelivery!=='installer-bundle'||!/^[0-9a-f]{40}$/i.test(manifest.gui?.sourceCommit??''))throw Error('Windows setup requires a matching bundled GUI and source commits');
+const bundle=JSON.parse(await readFile(resolve(root,'optional-plugins/catalog.json'),'utf8'));
+if(bundle.schema!==1||bundle.kind!=='codlet-official-plugin-bundle'||bundle.packages?.length!==1||bundle.packages[0].id!=='codlet-gui'||bundle.packages[0].version!==manifest.gui.version||bundle.sourceCommit!==manifest.gui.sourceCommit)throw Error('Bundled GUI identity mismatch');
+const guiFiles=new Set(['optional-plugins/catalog.json',...bundle.packages[0].files.map(file=>'optional-plugins/packages/codlet-gui/'+file.path)]);
+if(manifest.files.some(file=>(file.path.startsWith('optional-plugins/')&&!guiFiles.has(file.path))||(/(^|\/)codlet\.json$/.test(file.path)&&file.path!=='optional-plugins/packages/codlet-gui/codlet.json'))||[...guiFiles].some(path=>!manifest.files.some(file=>file.path===path)))throw Error('Unexpected or missing installer plugin payload');
 const runtime=JSON.parse(await readFile(resolve(root,'runtime/node-runtime.json'),'utf8'));
 if(runtime.mode!=='managed'||manifest.runtime?.mode!=='managed'||manifest.runtime.version!==runtime.version)throw Error('MSI requires a managed-runtime portable distribution');
 if(manifest.files.some(file=>/^runtime\/node-v[^/]+\/[^/]+$/.test(file.path)))throw Error('Managed-runtime MSI may not bundle Node files');
@@ -38,9 +41,9 @@ for(const file of payload){
   const parent=file.path.includes('/')?file.path.slice(0,file.path.lastIndexOf('/')):'';
   const component=id('C_',file.path),fileId=id('F_',file.path),dir=directory(parent);
   components.push(`<DirectoryRef Id="${dir}"><Component Id="${component}" Guid="${guid(file.path)}" Win64="yes"><File Id="${fileId}" Name="${xml(basename(file.path))}" Source="${xml(file.source)}"/><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer" Name="${component}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
-  features.Core.push(component);
+  features[file.path.startsWith('optional-plugins/')?'GUI':'Core'].push(component);
 }
-// Optional features store the user's download choices, never plugin code.
+// The GUI feature owns its package files and the first-launch selection.
 for(const [feature,plugin] of [['GUI','codlet-gui']]){
   const component=id('Download_',plugin);
   components.push(`<DirectoryRef Id="INSTALLFOLDER"><Component Id="${component}" Guid="${guid('download-choice:'+plugin)}" Win64="yes"><RegistryValue Root="HKMU" Key="Software\\Codlet\\Preview\\Installer\\Plugins" Name="${plugin}" Type="integer" Value="1" KeyPath="yes"/></Component></DirectoryRef>`);
@@ -81,7 +84,7 @@ const source=`<?xml version="1.0" encoding="utf-8"?>
 <InstallExecuteSequence><Custom Action="OfferUserDataCleanup" After="InstallFinalize">Installed AND REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND UILevel &gt;= 4</Custom></InstallExecuteSequence>
 <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="已安装更新版本的 Codlet"/>
 <MediaTemplate EmbedCab="yes" CompressionLevel="medium"/>
-<Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/><Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="首次启动将从 GitHub 下载所选插件，需要网络。已有插件保持不变。卸载默认保留数据，完成后可明确选择清理所列 Codlet 数据。"/>
+<Property Id="ARPPRODUCTICON" Value="CodletIcon"/><Property Id="ARPURLINFOABOUT" Value="https://github.com/baoabaob/codlet"/>
 <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 Codlet"/>
 <CustomAction Id="LaunchCodletAfterInstall" FileKey="${id('F_','Codlet-Launcher.exe')}" ExeCommand="" Return="asyncNoWait" Impersonate="yes"/>
 <Icon Id="CodletIcon" SourceFile="${xml(resolve(root,'codlet.ico'))}"/>
@@ -93,7 +96,7 @@ ${components.join('\n')}
 <Feature Id="StartMenu" Title="开始菜单快捷方式" Description="添加 Codlet 启动入口。" Level="1"><ComponentRef Id="StartMenu"/></Feature>
 <Feature Id="DesktopShortcut" Title="桌面快捷方式" Description="在当前用户桌面添加 Codlet 入口。" Level="2"><ComponentRef Id="DesktopShortcut"/></Feature>
 <Feature Id="CliPath" Title="将 codlet 加入 PATH" Description="在新打开的终端中使用 codlet 命令；卸载时移除本安装目录的 PATH 项。" Level="1">${refs(features.CliPath)}</Feature>
-<Feature Id="GUI" Title="下载 Codlet GUI" Description="从 GitHub 获取最新发布版，提供图形化插件管理。界面与桌面 SDK 已包含在 Core 中。" Level="1">${refs(features.GUI)}</Feature>
+<Feature Id="GUI" Title="安装 Codlet 管理界面" Description="管理插件和设置。" Level="1">${refs(features.GUI)}</Feature>
 <UIRef Id="WixUI_FeatureTree"/><WixVariable Id="WixUILicenseRtf" Value="${xml(resolve(build,'notice.rtf'))}"/>
 <WixVariable Id="WixUIBannerBmp" Value="${xml(resolve(build,'banner.bmp'))}"/><WixVariable Id="WixUIDialogBmp" Value="${xml(resolve(build,'dialog.bmp'))}"/>
 <UI>

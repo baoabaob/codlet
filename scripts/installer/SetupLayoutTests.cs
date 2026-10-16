@@ -40,13 +40,13 @@ class SetupLayoutTests {
             window.Top = SystemParameters.VirtualScreenTop + 100;
             window.ShowActivated = false; window.ShowInTaskbar = false; window.Opacity = 0;
             var viewer = (ScrollViewer)window.FindName("BodyScroll");
-            var toggle = (Button)window.FindName("PluginsButton");
+            var gui = (CheckBox)window.FindName("GuiChoice");
             Action<string, bool> record = (name, overflow) => {
                 window.UpdateLayout();
                 var bar = (ScrollBar)viewer.Template.FindName("PART_VerticalScrollBar", viewer);
                 Assert(bar != null, "Missing overflow scrollbar");
                 Assert(!viewer.Focusable && !viewer.IsTabStop, "Scroll container must not capture keyboard focus");
-                Assert(toggle.Focusable && toggle.IsTabStop && toggle.FocusVisualStyle != null, "Plugin options must retain keyboard navigation and a focus indicator");
+                Assert(gui.IsVisible && gui.Focusable && gui.IsTabStop && gui.FocusVisualStyle != null, "GUI selection must stay visible and keyboard accessible");
                 Assert((viewer.ScrollableHeight > 0) == overflow, name + ": unexpected content overflow");
                 Assert((bar.Visibility == Visibility.Visible) == overflow, name + ": scrollbar must follow real overflow");
                 Assert(window.Title == (args[2].StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "Codlet 安装器" : "Codlet Installer"), "Wrong automatic UI language");
@@ -63,19 +63,19 @@ class SetupLayoutTests {
             Action<Action> later = action => window.Dispatcher.BeginInvoke(action, DispatcherPriority.ApplicationIdle);
             window.Loaded += delegate {
                 later(() => {
-                    record("collapsed", false);
-                    toggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    record("selected", false);
+                    gui.IsChecked = false;
                     later(() => {
-                        record("expanded", false);
-                        toggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        record("unselected", false);
+                        gui.IsChecked = true;
                         later(() => {
-                            record("collapsed-again", false);
-                            toggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); window.Height = 540;
+                            record("selected-again", false);
+                            window.Height = 540;
                             later(() => {
                                 record("short-window", true); viewer.ScrollToBottom();
                                 later(() => {
                                     Assert(viewer.VerticalOffset > 0, "Overflow content must remain reachable");
-                                    toggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                                    window.Height = 620;
                                     later(() => {
                                         record("restored", false);
                                         File.WriteAllText(Path.Combine(output, "layout-report.json"), new JavaScriptSerializer().Serialize(new { passed = true, locale = args[2], installationPerformed = false, observations }));

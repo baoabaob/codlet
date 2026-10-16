@@ -213,12 +213,19 @@ try {
     [IO.Directory]::CreateDirectory((Join-Path $portable 'runtime')) | Out-Null
     Write-Json (Join-Path $portable 'runtime/node-runtime.json') $winPin
     $portablePaths = @('codlet.exe', 'runtime/node-runtime.json')
-    $portableRecords = @($portablePaths | ForEach-Object { File-Record (Join-Path $portable $_) $_ })
     $coreCommit = 'a' * 40
     $pluginCommit = 'b' * 40
+    $guiRoot=Join-Path $portable 'optional-plugins/packages/codlet-gui'
+    [IO.Directory]::CreateDirectory($guiRoot)|Out-Null
+    Write-Json (Join-Path $guiRoot 'codlet.json') @{schema=1;id='codlet-gui';version=$version;permissions=@('ui.dom','runtime.manage');renderer=@{entry='renderer.js';world='isolated'}}
+    [IO.File]::WriteAllText((Join-Path $guiRoot 'renderer.js'),'module.exports={activate(){}};',$utf8)
+    $guiFiles=@('codlet.json','renderer.js'|ForEach-Object{File-Record (Join-Path $guiRoot $_) $_})
+    Write-Json (Join-Path $portable 'optional-plugins/catalog.json') @{schema=1;kind='codlet-official-plugin-bundle';sourceCommit=$pluginCommit;packages=@(@{id='codlet-gui';version=$version;files=$guiFiles})}
+    $portablePaths+=@('optional-plugins/catalog.json','optional-plugins/packages/codlet-gui/codlet.json','optional-plugins/packages/codlet-gui/renderer.js')
+    $portableRecords = @($portablePaths | ForEach-Object { File-Record (Join-Path $portable $_) $_ })
     $portableManifest = [ordered]@{
         schema = 1; kind = 'codlet-portable-distribution'; version = $version; platform = 'win-x64'
-        sourceCommit = $coreCommit; pluginDelivery = 'github-latest'; files = $portableRecords
+        sourceCommit = $coreCommit; pluginDelivery = 'installer-bundle'; gui=@{version=$version;sourceCommit=$pluginCommit}; files = $portableRecords
     }
     Write-Json (Join-Path $portable 'distribution-manifest.json') $portableManifest
     $portableZip = Join-Path $win ("Codlet-$version-windows-x64-portable.zip")
@@ -229,7 +236,7 @@ try {
     $msiRecords = @($portableRecords) + @((File-Record $msiInstallPath 'msi-install.json'))
     $msiManifest = [ordered]@{
         schema = 1; kind = 'codlet-msi-distribution'; version = $version; platform = 'win-x64'
-        sourceCommit = $coreCommit; pluginDelivery = 'github-latest'; files = $msiRecords
+        sourceCommit = $coreCommit; pluginDelivery = 'installer-bundle'; gui=@{version=$version;sourceCommit=$pluginCommit}; files = $msiRecords
     }
     $msiManifestPath = Join-Path $msiBuild 'distribution-manifest.json'
     Write-Json $msiManifestPath $msiManifest

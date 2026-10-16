@@ -50,18 +50,15 @@ namespace Codlet.Setup {
         readonly Dictionary<string, string[]> words = new Dictionary<string, string[]> {
             {"title", new[]{"Codlet 安装器", "Codlet Installer"}},
             {"close", new[]{"关闭安装器", "Close installer"}}, {"version", new[]{"版本", "Version"}},
-            {"expandPlugins", new[]{"展开官方插件选项", "Expand official plugin options"}},
-            {"collapsePlugins", new[]{"收起官方插件选项", "Collapse official plugin options"}},
             {"scope", new[]{"安装范围", "Install for"}}, {"admin", new[]{"需要管理员权限", "Administrator permission required"}},
             {"user", new[]{"仅当前用户", "Just me"}}, {"machine", new[]{"所有用户（全局）", "Everyone on this computer"}},
             {"location", new[]{"安装位置", "Installation folder"}}, {"browse", new[]{"浏览…", "Browse…"}},
             {"menu", new[]{"添加到开始菜单", "Add to Start menu"}}, {"desktop", new[]{"创建桌面快捷方式", "Create a desktop shortcut"}},
-            {"path", new[]{"将 codlet 加入 PATH", "Add codlet to PATH"}}, {"plugins", new[]{"官方插件", "Official plugins"}},
-            {"gui", new[]{"Codlet 管理界面", "Codlet GUI"}},
-            {"download", new[]{"首次启动时下载所选插件；Core 已包含界面与桌面 SDK", "Download selected plugins on first launch; Core includes the UI and desktop SDK"}},
+            {"path", new[]{"将 codlet 加入 PATH", "Add codlet to PATH"}},
+            {"gui", new[]{"安装 Codlet 管理界面", "Install Codlet GUI"}},
+            {"guiDescription", new[]{"管理插件和设置", "Manage plugins and settings"}},
             {"cancel", new[]{"取消", "Cancel"}}, {"install", new[]{"安装", "Install"}}, {"logs", new[]{"查看安装日志 ↗", "View installation log ↗"}},
             {"launch", new[]{"启动 Codlet", "Launch Codlet"}}, {"back", new[]{"返回", "Back"}}, {"done", new[]{"完成", "Done"}},
-            {"selected", new[]{"已选择 {0} 项", "{0} selected"}}, {"none", new[]{"暂不安装", "None selected"}},
             {"invalid", new[]{"请选择一个完整的应用文件夹路径。", "Choose a full application folder path."}},
             {"switch", new[]{"已存在另一安装范围的 Codlet。切换范围前，请先卸载旧版本；插件和配置会保留。", "Codlet is installed in the other scope. Uninstall it before switching scope; plugins and settings are retained."}},
             {"running", new[]{"请先关闭 Codex", "Close Codex to continue"}},
@@ -91,7 +88,6 @@ namespace Codlet.Setup {
             System.Windows.Automation.AutomationProperties.SetName(Control<Button>("CloseButton"), T("close"));
             System.Windows.Automation.AutomationProperties.SetName(Control<TextBox>("InstallPath"), T("location"));
             System.Windows.Automation.AutomationProperties.SetName(Control<TextBlock>("VersionLabel"), T("version") + " " + SetupBuild.Version);
-            System.Windows.Automation.AutomationProperties.SetHelpText(Control<Button>("PluginsButton"), T("expandPlugins"));
             folders["user"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codlet");
             folders["machine"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Codlet");
             if (!preview) {
@@ -114,28 +110,15 @@ namespace Codlet.Setup {
                     if (selected != null) Control<TextBox>("InstallPath").Text = selected;
                 } catch (Exception error) { Notice(error.Message); }
             };
-            Control<Button>("PluginsButton").Click += delegate {
-                SetPluginsExpanded(Control<StackPanel>("PluginChoices").Visibility != Visibility.Visible);
-            };
-            foreach (string name in new[]{"GuiChoice"}) {
-                var box = Control<CheckBox>(name);
-                box.Checked += delegate { SyncPlugins(box); }; box.Unchecked += delegate { SyncPlugins(box); };
-            }
             Control<Button>("LogButton").Click += delegate { if (File.Exists(logPath)) Process.Start(new ProcessStartInfo(logPath) { UseShellExecute = true }); };
             Window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs args) {
                 if (phase == "installing") { args.Cancel = true; CloseOrCancel(); } else closed = true;
             };
-            SyncPlugins(null); Validate();
+            Validate();
         }
         TControl Control<TControl>(string name) where TControl : FrameworkElement { return (TControl)Window.FindName(name); }
         internal static bool UsesChinese(CultureInfo culture) { return String.Equals(culture.TwoLetterISOLanguageName, "zh", StringComparison.OrdinalIgnoreCase); }
         string T(string key) { return words[key][chinese ? 0 : 1]; }
-        void SetPluginsExpanded(bool expanded) {
-            Control<StackPanel>("PluginChoices").Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
-            ((RotateTransform)Control<System.Windows.Shapes.Path>("PluginChevron").RenderTransform).Angle = expanded ? 180 : 0;
-            System.Windows.Automation.AutomationProperties.SetHelpText(Control<Button>("PluginsButton"), T(expanded ? "collapsePlugins" : "expandPlugins"));
-            Window.Height = Math.Min(Window.MaxHeight, expanded ? 722 : 620);
-        }
         void Translate(DependencyObject root) {
             var element = root as FrameworkElement;
             string tag = element == null ? null : element.Tag as string;
@@ -203,12 +186,6 @@ namespace Codlet.Setup {
             return valid;
         }
         bool Checked(string name) { return Control<CheckBox>(name).IsChecked == true; }
-        void SyncPlugins(CheckBox changed) {
-            if (syncing) return; syncing = true;
-            int count = new[]{"GuiChoice"}.Count(Checked);
-            Control<TextBlock>("PluginCount").Text = count == 0 ? T("none") : String.Format(T("selected"), count);
-            syncing = false;
-        }
         internal static string Properties(string scope, string folder, IEnumerable<string> selected) {
             string[] allowed = {"Core", "StartMenu", "DesktopShortcut", "CliPath", "GUI"};
             var choices = new HashSet<string>(selected);
@@ -366,7 +343,7 @@ namespace Codlet.Setup {
             Control<RadioButton>("MachineScope").IsChecked = true;
             if (Control<TextBox>("InstallPath").Text != folders["machine"]) throw new Exception("Scope did not change path");
             Capture(Path.Combine(output, "installer-machine.png"));
-            ApplyTheme(true); SetPluginsExpanded(true);
+            ApplyTheme(true);
             Capture(Path.Combine(output, "installer-dark.png"));
             Status("gate", T("running"), T("save"), T("recheck"));
             Control<Button>("SecondaryButton").Content = T("cancel");

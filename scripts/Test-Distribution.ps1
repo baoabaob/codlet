@@ -31,13 +31,16 @@ Assert (@($empty.plugins).Count -eq 0) 'Release Core unexpectedly contains plugi
 Assert ((@($empty.coreProviders.id|Sort-Object)-join ',') -eq 'codex.desktop.adapter,codex.ui.adapter') 'Core does not own both compatibility providers'
 Setup $env:CODLET_HOME @('none')
 Assert (@((Invoke-CodletTestCli -Arguments @('plugin','list','--json')).plugins).Count -eq 0) 'Core-only choice installed a plugin'
-Assert (-not (Test-Path -LiteralPath (Join-Path $root 'optional-plugins'))) 'Distribution still contains offline plugin payloads'
-$checks.Add('Core-only package has no plugin payloads or plugin source revision')
+$bundled=$manifest.pluginDelivery -eq 'installer-bundle'
+if($bundled){Assert ([IO.File]::Exists((Join-Path $root 'optional-plugins/catalog.json'))) 'Bundled GUI is missing'}
+$checks.Add('Declining GUI registers no optional plugin')
 $env:CODLET_HOME=Join-Path $artifacts 'GUI with spaces'
 Setup $env:CODLET_HOME @('codlet-gui')
 $listed=Invoke-CodletTestCli -Arguments @('plugin','list','--json')
 Assert ((@($listed.plugins.id|Sort-Object)-join ',') -eq 'codlet-gui') 'GUI setup downloaded an obsolete adapter'
-Assert (@($listed.plugins|Where-Object{-not $_.enabled -or $_.validationError -or $_.source -ne 'github'}).Count -eq 0) 'External official plugin registration did not validate'
+$expectedSource=if($bundled){'local'}else{'github'}
+Assert (@($listed.plugins|Where-Object{-not $_.enabled -or $_.validationError -or $_.source -ne $expectedSource}).Count -eq 0) 'Official GUI registration did not validate'
+if($bundled){Assert ($listed.plugins[0].version -eq $manifest.gui.version) 'Installed GUI does not match the bundled version'}
 $config=Join-Path $env:CODLET_HOME 'config.json'
 $before=[IO.File]::ReadAllText($config)
 Setup $env:CODLET_HOME $null
@@ -85,6 +88,6 @@ $env:CODLET_HOME=Join-Path $artifacts 'minimal-registry'
 Setup $env:CODLET_HOME @('codex.desktop.adapter')
 Assert (@((Invoke-CodletTestCli -Arguments @('plugin','list','--json')).plugins).Count -eq 0) 'Obsolete desktop selection downloaded a plugin'
 $checks.Add('legacy disabled GUI preference and minimal valid registry survive GUI-only package setup')
-$report=[ordered]@{schema=1;scope='release-binary-and-github-plugin-setup';passed=$true;checks=$checks.ToArray();clientStarted=$false;userDataUntouched=$true}
+$report=[ordered]@{schema=1;scope='distribution-plugin-setup';pluginDelivery=$manifest.pluginDelivery;passed=$true;checks=$checks.ToArray();clientStarted=$false;userDataUntouched=$true}
 $report|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $artifacts 'report.json') -Encoding UTF8
 $report|ConvertTo-Json -Depth 8

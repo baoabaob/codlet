@@ -4,6 +4,8 @@ param(
   [string]$NodeDirectory,
   [Parameter(Mandatory=$true)][string]$OutputDirectory,
   [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$SourceCommit,
+  [string]$GuiBundleDirectory,
+  [ValidatePattern('^[0-9a-fA-F]{40}$')][string]$GuiSourceCommit,
   [switch]$Zip,
   [switch]$BundleNodeForTests
 )
@@ -54,7 +56,36 @@ foreach($name in @('Start-Codlet.cmd','Codlet-CLI.cmd','Initialize-Codlet.ps1'))
 Copy-Payload (Join-Path $root 'scripts/Restart-Codlet.ps1') 'Restart-Codlet.ps1'
 Copy-Payload (Join-Path $root 'scripts/Export-Diagnostics.ps1') 'Export-Diagnostics.ps1'
 Copy-Payload (Join-Path $root 'assets/codlet/ico/codlet.ico') 'codlet.ico'
-Copy-Payload (Join-Path $root 'scripts/distribution/official-plugins.json') 'official-plugins.json'
+$options=[IO.File]::ReadAllText((Join-Path $root 'scripts/distribution/official-plugins.json'))|ConvertFrom-Json
+$guiPackage=$null
+if($GuiBundleDirectory){
+  if(-not $GuiSourceCommit){throw 'Bundled GUI requires its source commit'}
+  Plain $GuiBundleDirectory
+  $bundleRoot=[IO.Path]::GetFullPath($GuiBundleDirectory)
+  $bundleCatalog=Join-Path $bundleRoot 'catalog.json';Plain $bundleCatalog
+  $bundle=[IO.File]::ReadAllText($bundleCatalog)|ConvertFrom-Json
+  if($bundle.schema -ne 1 -or $bundle.kind -ne 'codlet-official-plugin-bundle' -or @($bundle.packages).Count -ne 1){throw 'Expected one GUI package'}
+  $guiPackage=$bundle.packages[0]
+  $official=@($options.plugins|Where-Object{$_.id -ceq 'codlet-gui'})[0]
+  if($guiPackage.id -cne 'codlet-gui' -or $guiPackage.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or $guiPackage.updateSource.repositoryUrl -cne $official.repositoryUrl -or $guiPackage.updateSource.repositoryId -ne $official.repositoryId -or $guiPackage.updateSource.ownerId -ne $official.ownerId){throw 'GUI identity does not match the official channel'}
+  if((@($guiPackage.permissions|Sort-Object) -join ',') -cne (@($official.permissions|Sort-Object) -join ',')){throw 'Unexpected GUI permissions'}
+  $packageRoot=Join-Path $bundleRoot 'packages/codlet-gui';Plain $packageRoot
+  $names=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase);$total=0L
+  foreach($file in $guiPackage.files){
+    if($file.path -notmatch '^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$' -or @($file.path.Split('/')|Where-Object{$_ -in @('.','..')}).Count -or -not $names.Add($file.path) -or $file.sha256 -notmatch '^[0-9a-f]{64}$' -or $file.bytes -lt 0 -or $file.bytes -gt 16777216){throw 'Invalid GUI file record'}
+    $source=Join-Path $packageRoot $file.path;Plain $source
+    if((Get-Item -LiteralPath $source).Length -ne $file.bytes -or (Hash $source) -cne $file.sha256){throw "GUI file mismatch: $($file.path)"}
+    $total+=$file.bytes
+    Copy-Payload $source ('optional-plugins/packages/codlet-gui/'+$file.path)
+  }
+  if($names.Count -eq 0 -or $names.Count -gt 512 -or $total -gt 67108864 -or -not $names.Contains('codlet.json')){throw 'Invalid GUI package bounds'}
+  $guiManifest=[IO.File]::ReadAllText((Join-Path $packageRoot 'codlet.json'))|ConvertFrom-Json
+  if($guiManifest.id -cne $guiPackage.id -or $guiManifest.version -cne $guiPackage.version -or $guiManifest.PSObject.Properties['host'] -or $guiManifest.renderer.world -cne 'isolated' -or (@($guiManifest.permissions) -join ',') -cne (@($guiPackage.permissions) -join ',')){throw 'GUI manifest does not match its catalog'}
+  $bundled=[ordered]@{schema=1;kind='codlet-official-plugin-bundle';sourceCommit=$GuiSourceCommit.ToLowerInvariant();packages=@($guiPackage)}
+  [IO.File]::WriteAllText((Join-Path $stage 'optional-plugins/catalog.json'),($bundled|ConvertTo-Json -Depth 16)+"`n",$utf8)
+  $options|Add-Member -NotePropertyName bundledCatalog -NotePropertyValue 'optional-plugins/catalog.json'
+}elseif($GuiSourceCommit){throw 'GuiSourceCommit requires GuiBundleDirectory'}
+[IO.File]::WriteAllText((Join-Path $stage 'official-plugins.json'),($options|ConvertTo-Json -Depth 12)+"`n",$utf8)
 Get-ChildItem -LiteralPath (Join-Path $root 'types') -Filter '*.d.ts' -File | ForEach-Object{Copy-Payload $_.FullName ('sdk/types/'+$_.Name)}
 Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_UI_LICENSES.txt') 'THIRD_PARTY_NOTICES.txt'
 Copy-Payload (Join-Path $root 'docs/THIRD_PARTY_RUST_LICENSES.txt') 'THIRD_PARTY_RUST_LICENSES.txt'
@@ -65,19 +96,17 @@ $readme=@'
 
 1. Extract the complete directory to a writable location
 2. Run Codlet-Launcher.exe; it lists running applications before launch
-3. On first portable launch, choose official plugins to download from GitHub
+3. On first portable launch, choose whether to install the Codlet management interface
 
 Codlet prepares its private JavaScript runtime from a verified official Codex
 installation when available. Otherwise it downloads the pinned official Node
 archive into its private cache. A system Node installation is not required.
 
-Core includes the Codex UI and desktop SDK with its native compatibility modules.
-Codlet GUI is an optional ordinary plugin; no separate Adapter installation is needed.
-Setup uses the latest published GitHub Release through the regular CLI importer.
-Existing plugins are never replaced, downgraded or re-enabled by Core setup.
-Network failure leaves an unfinished selection retryable; there is no bundled fallback.
-Use the GUI marketplace or CLI to add other plugins later. Existing registrations,
-disabled states and grants are preserved. To remove a plugin, use GUI or:
+The Windows installer includes a matching Codlet GUI package. First launch installs
+the selected GUI or updates a verified older official copy, keeping its permissions
+and enabled state. Newer GUI versions and custom sources remain in place.
+Use the GUI marketplace or CLI to add other plugins or update them from GitHub.
+To remove a plugin, use the GUI or:
 
     Codlet-CLI.cmd plugin remove PLUGIN_ID --cascade --json
 
@@ -106,10 +135,9 @@ is still pending. The stable update channel uses published final releases.
 
 Source and releases: https://github.com/baoabaob/codlet
 Official plugin development: https://github.com/baoabaob/codlet-plugins
-Plugin download choices, source identities and initial permission expectations
-are recorded in official-plugins.json; no local plugin build is needed for Core.
-Downloads are registered as ordinary GitHub plugins from their first install.
-Private repositories and draft releases are not supported by this importer.
+GUI selection and source identity are recorded in official-plugins.json. The
+distribution manifest records the bundled GUI version and source commit when present.
+Core-only portable packages download the selected GUI from the published GitHub release.
 
 No real account information, registry files or dev-client data is included.
 The manifest records the full Core source commit, each distributed
@@ -119,7 +147,8 @@ with the prepared runtime in Codlet's private cache.
 '@
 [IO.File]::WriteAllText((Join-Path $stage 'README.md'),$readme.Replace("`r`n","`n")+"`n",$utf8)
 $records=@(Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName | ForEach-Object{[ordered]@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');bytes=$_.Length;sha256=Hash $_.FullName}})
-$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';runtime=[ordered]@{mode=$pinMode;version=$pin.version;executableSha256=$spec.executableSha256;licenseSha256=$spec.licenseSha256};sourceCommit=$SourceCommit.ToLowerInvariant();pluginDelivery='github-latest';files=$records}
+$manifest=[ordered]@{schema=1;kind='codlet-portable-distribution';version=$version;platform='win-x64';runtime=[ordered]@{mode=$pinMode;version=$pin.version;executableSha256=$spec.executableSha256;licenseSha256=$spec.licenseSha256};sourceCommit=$SourceCommit.ToLowerInvariant();pluginDelivery=$(if($guiPackage){'installer-bundle'}else{'github-latest'});files=$records}
+if($guiPackage){$manifest.gui=[ordered]@{version=$guiPackage.version;sourceCommit=$GuiSourceCommit.ToLowerInvariant()}}
 [IO.File]::WriteAllText((Join-Path $stage 'distribution-manifest.json'),($manifest|ConvertTo-Json -Depth 8),$utf8)
 [IO.Directory]::Move($stage,$output)
 $zipPath=$null
