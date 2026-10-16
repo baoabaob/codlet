@@ -7,7 +7,7 @@ Core recovery now continues when a traffic source is unavailable and no external
 ## Validation
 
 - Rust: `cargo test --locked --all-features` — 811 passed, 9 ignored.
-- JavaScript: 732 passed, 5 skipped across `tests/*.test.mjs` and `codex/tests/*.test.mjs`. `thread_restoration.test.mjs` requires `CODLET_CORE_ROOT` in this checkout; its nine tests passed after setting that existing test input.
+- JavaScript: 734 passed, 3 skipped across `tests/*.test.mjs` and `codex/tests/*.test.mjs`. The Core integration tests require `CODLET_CORE_ROOT` in this checkout; the nine restoration tests, packaged-source cold boots and Desktop Host ABI passed with that existing test input.
 - Strict Clippy: all targets and all features, with warnings denied.
 - The current user's backend configuration was probed read-only through `initialize`, `config/read`, `account/read`, and route override readback. Its selected `custom` provider has no explicit endpoint; both effective default routes were accepted. No model request was made.
 - The exact installed package passed the Dev/WS isolation review in `docs/native-isolation-26.1013.3656.0.json`.
