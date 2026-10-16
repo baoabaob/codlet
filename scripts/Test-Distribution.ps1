@@ -40,7 +40,7 @@ $listed=Invoke-CodletTestCli -Arguments @('plugin','list','--json')
 Assert ((@($listed.plugins.id|Sort-Object)-join ',') -eq 'codlet-gui') 'GUI setup downloaded an obsolete adapter'
 $expectedSource=if($bundled){'local'}else{'github'}
 Assert (@($listed.plugins|Where-Object{-not $_.enabled -or $_.validationError -or $_.source -ne $expectedSource}).Count -eq 0) 'Official GUI registration did not validate'
-if($bundled){Assert ($listed.plugins[0].version -eq $manifest.gui.version) 'Installed GUI does not match the bundled version'}
+if($bundled){Assert ($listed.plugins[0].manifest.version -eq $manifest.gui.version) 'Installed GUI does not match the bundled version'}
 $config=Join-Path $env:CODLET_HOME 'config.json'
 $before=[IO.File]::ReadAllText($config)
 Setup $env:CODLET_HOME $null
