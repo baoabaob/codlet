@@ -102,11 +102,22 @@ function installElectronTraffic(electron, configuration, context, dependencies =
     async ready() {
       readinessStartedUnixMs??=Date.now();
       try {
-      // The startup installer runs on a paused native entry frame. Arm its
-      // bounded readiness budget when the resumed client starts the handshake,
-      // rather than spending that budget while Native is still paused/loading.
-      readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5000 : configuration.deadlineUnixMs;
       await source.ready;
+      if(readinessDeadlineUnixMs===null) {
+        if(installedBeforeReady) {
+          // The bridge connects before Electron has finished its bootstrap.
+          // Give module discovery its own window after app readiness, within
+          // the bridge's ten-second activation bound.
+          const startupDeadlineUnixMs=readinessStartedUnixMs+8000;
+          if(typeof electron.app.whenReady==='function') {
+            let timer;
+            try {await Promise.race([electron.app.whenReady(),new Promise((_,reject)=>{
+              timer=setTimeout(()=>reject(fail('client_source_startup_timeout')),Math.max(1,startupDeadlineUnixMs-Date.now()));
+            })]);}finally{clearTimeout(timer);}
+          }
+          readinessDeadlineUnixMs=Math.min(Date.now()+5000,startupDeadlineUnixMs);
+        } else readinessDeadlineUnixMs=configuration.deadlineUnixMs;
+      }
       if(context?.modules&&!installedBeforeReady&&!restored) {
         // A source learned after startup may need one local app-server reconnect;
         // the desktop process and its native pages stay alive. Never interrupt

@@ -113,6 +113,21 @@ test('an expired pre-entry deadline is armed again when startup readiness begins
   assert.equal(f.calls.includes('reconnect'),false);await entry.close();
 });
 
+test('module discovery waits for Electron readiness without spending its budget on native bootstrap',async t=>{
+  const f=entryFixture(true,false);let now=100000,resolveApp,observedDeadline;
+  t.mock.method(Date,'now',()=>now);
+  f.electron.app.whenReady=()=>new Promise(resolve=>resolveApp=resolve);
+  f.dependencies.installDesktop=()=>({
+    ready:async options=>{observedDeadline=options.deadlineUnixMs;return {available:true,taskConfigurationAvailable:false};},
+    inspect:()=>({available:true}),close(){}
+  });
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);
+  const pending=entry.ready();f.resume();await Promise.resolve();
+  assert.equal(observedDeadline,undefined);
+  now+=3500;resolveApp();assert.equal((await pending).installed,true);
+  assert.equal(observedDeadline,108000);assert.equal(f.calls.includes('reconnect'),false);await entry.close();
+});
+
 test('a startup backend route timeout does not discard verified Desktop coverage',async()=>{
   const f=entryFixture(true,false);
   f.dependencies.installBackend=()=>({

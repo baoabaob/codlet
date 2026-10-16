@@ -55,6 +55,8 @@ const AUDITED_PACKAGE_VERSIONS: &[&str] = &[
     // Exact static Dev/WS/IPC review: docs/native-isolation-26.1007.9446.0.json.
     // All four IPC client sites remain gated by a dedicated WS override.
     "26.1007.9446.0",
+    // Exact Dev/WS/IPC review: docs/native-isolation-26.1013.3656.0.json.
+    "26.1013.3656.0",
 ];
 const CODEX_CONFIG: &[u8] = b"cli_auth_credentials_store = \"file\"\n";
 const CODLET_CONFIG: &[u8] = b"{\"schema\":2,\"plugins\":{},\"localPlugins\":{}}\n";
@@ -1293,7 +1295,10 @@ fn restricted_features(package_version: &str) -> Value {
         "ambientSuggestionsFeatureDiscovery": false, "artifactSession": false,
         "recordAndReplay": false
     });
-    if matches!(package_version, "26.1007.2314.0" | "26.1007.9446.0") {
+    if matches!(
+        package_version,
+        "26.1007.2314.0" | "26.1007.9446.0" | "26.1013.3656.0"
+    ) {
         // Removed from this build's strict partial feature schema. Keeping
         // unknown keys aborts Native bootstrap before a renderer exists.
         let object = features.as_object_mut().unwrap();
@@ -1696,6 +1701,7 @@ mod tests {
     fn current_feature_schema_removes_only_retired_flags_and_keeps_restrictions() {
         let legacy = restricted_features(AUDITED_PACKAGE_VERSION);
         let current = restricted_features("26.1007.2314.0");
+        assert_eq!(current, restricted_features("26.1013.3656.0"));
         assert_eq!(legacy["quickChat"], false);
         assert_eq!(legacy["computerUseNodeRepl"], false);
         assert!(current.get("quickChat").is_none());

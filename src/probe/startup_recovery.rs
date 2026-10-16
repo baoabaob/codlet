@@ -247,6 +247,27 @@ mod tests {
     }
 
     #[test]
+    fn production_recovery_prepares_core_when_no_external_plugin_needs_suspension() {
+        let directory = tempfile::tempdir().unwrap();
+        let registry = PluginRegistry::load(directory.path().join("registry.json")).unwrap();
+        let before = registry.clone();
+        let (normal, normal_hosts) = prepare_plugin_runtimes_filtered(registry, None).unwrap();
+        let (recovered, recovered_hosts) =
+            prepare_plugin_runtimes_filtered(before.clone(), Some("client_source_unavailable"))
+                .unwrap();
+        assert_eq!(
+            normal.logical_plugins().len(),
+            recovered.logical_plugins().len()
+        );
+        assert_eq!(normal_hosts.len(), recovered_hosts.len());
+        assert!(!recovered.logical_plugins().is_empty());
+        assert!(
+            !before.path().exists(),
+            "Startup recovery must not write preferences"
+        );
+    }
+
+    #[test]
     fn suspended_plugins_have_runtime_explanations_and_cannot_activate_without_restart() {
         let (_directory, registry, plugins) = fixture();
         let before = std::fs::read(registry.path()).unwrap();

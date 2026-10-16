@@ -59,8 +59,13 @@ function effectiveProviders(policy) {
   if (!configured || typeof configured !== 'object' || Object.keys(configured).length > 16) throw fail('backend_provider_unsupported');
   if ((policy.modelProvider ?? 'openai') !== 'openai' && !Object.hasOwn(configured, policy.modelProvider)) throw fail('backend_provider_unsupported');
   for (const [name, url] of Object.entries(configured)) {
-    if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== 'string') throw fail('backend_provider_unsupported');
-    routes.set(`model_providers.${name}.base_url`, url);
+    if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail('backend_provider_unsupported');
+    const authDefault = policy.providerAuthDefaults?.[name];
+    if (url === null && typeof authDefault === 'boolean') {
+      if (authDefault && ![null, 'chatgpt', 'apiKey'].includes(policy.accountType)) throw fail('backend_auth_mode_unsupported');
+      routes.set(`model_providers.${name}.base_url`, authDefault && policy.accountType === 'chatgpt' ? DEFAULT_CHATGPT : DEFAULT_OPENAI);
+    } else if (typeof url === 'string') routes.set(`model_providers.${name}.base_url`, url);
+    else throw fail('backend_provider_unsupported');
   }
   return routes;
 }
@@ -114,8 +119,15 @@ function installBackendSpawn(configuration, dependencies = {}) {
       const result = originalSpawn.call(this, next);
       owned.add(this); trustByProcess.set(this, additionalCaPem);
       providersByProcess.set(this, new Set(['openai', ...Object.keys(policy.providerBaseUrls ?? {})]));
-      accountByProcess.set(this, { route: reservations[0], explicit: policy.openaiBaseUrl != null,
-        current: effectiveProviders(policy).get('openai_base_url'), pending: null });
+      const authRoutes = [...providers.keys()].flatMap((setting,index) => setting === 'openai_base_url'
+        ? policy.openaiBaseUrl == null ? [reservations[index]] : []
+        : policy.providerAuthDefaults?.[setting.slice('model_providers.'.length,-'.base_url'.length)] === true ? [reservations[index]] : []);
+      const accountRoute = Object.freeze({
+        update: value => Promise.all(authRoutes.map(route => route.update(value))),
+        close: () => Promise.all(authRoutes.map(route => Promise.resolve(route.close()).catch(()=>{}))),
+      });
+      accountByProcess.set(this, { route: accountRoute, explicit: authRoutes.length === 0,
+        current: policy.accountType === 'chatgpt' ? DEFAULT_CHATGPT : DEFAULT_OPENAI, pending: null });
       prepared++;state.prepared=prepared;
       const ready = Promise.all(reservations.map(item => item.ready));
       ready.catch(() => { reason = 'route_unavailable'; }); pending.add(ready); ready.finally(() => pending.delete(ready)).catch(() => {});

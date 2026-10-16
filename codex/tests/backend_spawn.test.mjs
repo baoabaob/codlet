@@ -15,6 +15,29 @@ test('effective provider routing preserves ChatGPT/API-key defaults and custom r
   assert.deepEqual([...routes],[['openai_base_url','https://owned.example/v2'],['model_providers.custom.base_url','https://custom.example/v1']]);
 });
 
+test('a default custom provider uses its own auth rule rather than an explicit built-in endpoint',()=>{
+  const policy={modelProvider:'custom',accountType:'chatgpt',openaiBaseUrl:'https://builtin.example/v1',providerBaseUrls:{custom:null,keyOnly:null},providerAuthDefaults:{custom:true,keyOnly:false}};
+  assert.deepEqual([...effectiveProviders(policy)],[['openai_base_url','https://builtin.example/v1'],['model_providers.custom.base_url','https://chatgpt.com/backend-api/codex'],['model_providers.keyOnly.base_url','https://api.openai.com/v1']]);
+  assert.equal(effectiveProviders({...policy,accountType:'apiKey'}).get('model_providers.custom.base_url'),'https://api.openai.com/v1');
+  assert.throws(()=>effectiveProviders({...policy,providerAuthDefaults:{}}),{code:'backend_provider_unsupported'});
+  assert.throws(()=>effectiveProviders({...policy,accountType:'unknown'}),{code:'backend_auth_mode_unsupported'});
+});
+
+test('account changes update default custom routes while explicit provider endpoints stay fixed',async()=>{
+  const routes=[],prototype={spawn(){return 'started';}},file=path.resolve('codex.exe');
+  const source={reserveRoute({upstreamBaseUrl}){const route={baseUrl:`http://127.0.0.1:43210/${routes.length}`,upstreamBaseUrl,ready:Promise.resolve(),async update(value){route.updated=value;},close(){route.closed=true;}};routes.push(route);return route;}};
+  const policy={modelProvider:'custom',accountType:'chatgpt',openaiBaseUrl:'https://builtin.example/v1',providerBaseUrls:{custom:null,fixed:'https://fixed.example/v1'},providerAuthDefaults:{custom:true},contract:contract('model_providers.custom.base_url','model_providers.fixed.base_url')};
+  const hook=installBackendSpawn({source,runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000},{prototype,verify(){return{binarySha256:'verified'};},probe(){return policy;},prepare(plan){return{arguments:plan.arguments};}});
+  const child=new EventEmitter();
+  try{
+    prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});
+    assert.equal((await hook.ready()).available,true);assert.equal(hook.isProviderSupported(child,'custom'),true);
+    hook.updateAccountMode(child,'apiKey');await hook.pendingAccountUpdate(child);
+    assert.equal(routes[0].updated,undefined);assert.deepEqual(routes[1].updated,{upstreamBaseUrl:'https://api.openai.com/v1'});assert.equal(routes[2].updated,undefined);
+    child.emit('exit');assert(routes.every(route=>route.closed));
+  }finally{hook.close();}
+});
+
 test('last exact CLI config override preserves Desktop-owned local provider base', () => {
   const args=['app-server','--stdio','-c','openai_base_url="https://old.example/v1"','--config=openai_base_url="http://127.0.0.1:43210/v1"'];
   assert.equal(lastStringOverride(args,'openai_base_url'),'http://127.0.0.1:43210/v1');

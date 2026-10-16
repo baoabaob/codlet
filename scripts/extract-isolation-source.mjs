@@ -20,7 +20,7 @@ try{
     const entry=entries[name],size=entry.size,offset=Number(entry.offset);
     if(entry.unpacked||entry.link||!Number.isSafeInteger(size)||size<0||size>64*1024*1024||!Number.isSafeInteger(offset)||offset<0)throw Error('Unsupported main-process entry');
     const data=Buffer.alloc(size);if(fs.readSync(fd,data,0,size,8+headerSize+offset)!==size)throw Error('Truncated ASAR entry');
-    const relevant=/^(main-|build-flavor-).*\.js$/.test(name)||name==='preload.js'||extraEntries.includes(name)||['CODEX_ELECTRON_USER_DATA_PATH','CODEX_APP_SERVER_WS_URL','codex-ipc','requestSingleInstanceLock','CODEX_SQLITE_HOME','Starting app-server connection','initialize_handshake_result'].some(needle=>data.includes(needle));
+    const relevant=/^(main-|build-flavor-).*\.js$/.test(name)||name==='preload.js'||extraEntries.includes(name)||['CODEX_ELECTRON_USER_DATA_PATH','CODEX_APP_SERVER_WS_URL','BUILD_FLAVOR','CODEX_SPARKLE_ENABLED','codex-ipc','requestSingleInstanceLock','CODEX_SQLITE_HOME','Starting app-server connection','initialize_handshake_result'].some(needle=>data.includes(needle));
     if(!relevant)continue;
     fs.writeFileSync(path.join(destination,name),data,{flag:'wx'});
     manifest.files.push({name,bytes:size,sha256:createHash('sha256').update(data).digest('hex')});

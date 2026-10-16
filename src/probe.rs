@@ -1137,13 +1137,8 @@ fn prepare_plugin_runtimes_filtered(
             .enabled_plugins(&registry)
             .map_err(RendererError::from)?;
         let affected = startup_recovery::affected(&enabled);
-        if affected.is_empty() {
-            return Err(HostError::new(
-                "startup_recovery_unavailable",
-                "No incompatible launch plugins could be isolated",
-            )
-            .into());
-        }
+        // A Core-owned traffic source has no external provider to suspend.
+        // Its unavailable capabilities must not abort independent Core services.
         for id in &affected {
             eprintln!(
                 "startup-plugin-suspended: plugin-id={id}; reason={reason}; preference=preserved"

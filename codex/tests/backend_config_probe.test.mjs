@@ -29,3 +29,17 @@ test('runtime capability probes reject missing methods, malformed replies and ig
     assert.equal(result.error,undefined,mode);assert.equal(result.status,0,mode);assert.deepEqual(JSON.parse(result.stdout),{error},mode);
   }
 });
+
+test('declared response providers retain default-endpoint semantics and prove their route override',()=>{
+  const fixture=fileURLToPath(new URL('./fixtures/traffic/probe-app-server.cjs',import.meta.url));
+  for(const mode of ['default-auth','default-api']){
+    const environment={...process.env,CODLET_PROBE_FIXTURE:mode};
+    const result=spawnSync(process.execPath,['--eval',`(${runConfigProbe.toString()})()`],{input:JSON.stringify({executable:process.execPath,configArguments:[fixture],environment,cwd:process.cwd()}),env:environment,cwd:process.cwd(),windowsHide:true,encoding:'utf8',timeout:5000});
+    assert.equal(result.status,0);const policy=JSON.parse(result.stdout);
+    assert.equal(policy.error,undefined);assert.equal(policy.modelProvider,'custom');
+    assert.deepEqual(policy.providerBaseUrls,{custom:null});
+    assert.deepEqual(policy.providerAuthDefaults,{custom:mode==='default-auth'});
+    assert.deepEqual(policy.contract.providerOverrides,['openai_base_url','model_providers.custom.base_url']);
+    assert(!result.stdout.includes('never-project-this-secret'));
+  }
+});

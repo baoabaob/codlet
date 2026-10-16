@@ -4148,6 +4148,9 @@ var require_electron_plaintext = __commonJS({
             mismatch,
             bindingErrors: { ...bindingErrors },
             deferredBindings: [...roleReasons.values()].filter((reason) => reason === "initializing").length,
+            observedModules: moduleRegistry?.inspect?.().modules ?? null,
+            bindingCandidates: Object.fromEntries(["network", "fetch", "stdio", "connection"].map((role) => [role, [...observed.values()].flat().filter((candidate) => candidate.role === role).length])),
+            bindingReasons: Object.fromEntries(roleReasons),
             reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "contract_unavailable"),
             taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "contract_unavailable")
           };
@@ -4521,11 +4524,14 @@ var require_backend_config_probe = __commonJS({
         if (!object(plan) || typeof plan.executable !== "string" || typeof plan.cwd !== "string" || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256 || plan.configArguments.some((value) => typeof value !== "string")) throw fail2("backend_config_unavailable");
         const { config, accountType } = await read(plan, [], true);
         if (config.model_providers != null && !object(config.model_providers) || config.model_provider != null && typeof config.model_provider !== "string" || config.openai_base_url != null && typeof config.openai_base_url !== "string") throw fail2("backend_contract_unavailable");
-        const providers = {};
+        const providers = {}, providerAuthDefaults = {};
         for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
-          if (typeof provider?.base_url !== "string" || provider.wire_api !== "responses") continue;
+          if (provider?.wire_api !== "responses") continue;
+          const defaultEndpoint = provider.base_url == null && provider.auth == null && provider.gateway_oauth == null && provider.aws == null;
+          if (typeof provider.base_url !== "string" && !defaultEndpoint) continue;
           if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail2("backend_provider_unsupported");
-          providers[name] = provider.base_url;
+          providers[name] = defaultEndpoint ? null : provider.base_url;
+          if (defaultEndpoint) providerAuthDefaults[name] = provider.requires_openai_auth === true;
         }
         const settings = ["openai_base_url", ...Object.keys(providers).map((name) => \`model_providers.\${name}.base_url\`)];
         if (plan.recordedRouting !== true) {
@@ -4538,6 +4544,7 @@ var require_backend_config_probe = __commonJS({
           modelProvider: config.model_provider ?? "openai",
           providerBaseUrls: providers,
           openaiBaseUrl: config.openai_base_url ?? null,
+          ...Object.keys(providerAuthDefaults).length ? { providerAuthDefaults } : {},
           accountType: accountType == null || ["chatgpt", "apiKey"].includes(accountType) ? accountType : "unknown",
           contract: { api: 1, initialize: true, configRead: true, accountRead: true, routing: plan.recordedRouting === true ? "recorded" : "runtime", providerOverrides: settings }
         };
@@ -4645,8 +4652,13 @@ var require_backend_spawn = __commonJS({
       if (!configured || typeof configured !== "object" || Object.keys(configured).length > 16) throw fail2("backend_provider_unsupported");
       if ((policy.modelProvider ?? "openai") !== "openai" && !Object.hasOwn(configured, policy.modelProvider)) throw fail2("backend_provider_unsupported");
       for (const [name, url] of Object.entries(configured)) {
-        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== "string") throw fail2("backend_provider_unsupported");
-        routes.set(\`model_providers.\${name}.base_url\`, url);
+        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail2("backend_provider_unsupported");
+        const authDefault = policy.providerAuthDefaults?.[name];
+        if (url === null && typeof authDefault === "boolean") {
+          if (authDefault && ![null, "chatgpt", "apiKey"].includes(policy.accountType)) throw fail2("backend_auth_mode_unsupported");
+          routes.set(\`model_providers.\${name}.base_url\`, authDefault && policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI);
+        } else if (typeof url === "string") routes.set(\`model_providers.\${name}.base_url\`, url);
+        else throw fail2("backend_provider_unsupported");
       }
       return routes;
     }
@@ -4716,10 +4728,16 @@ var require_backend_spawn = __commonJS({
           owned.add(this);
           trustByProcess.set(this, additionalCaPem);
           providersByProcess.set(this, /* @__PURE__ */ new Set(["openai", ...Object.keys(policy.providerBaseUrls ?? {})]));
+          const authRoutes = [...providers.keys()].flatMap((setting, index) => setting === "openai_base_url" ? policy.openaiBaseUrl == null ? [reservations[index]] : [] : policy.providerAuthDefaults?.[setting.slice("model_providers.".length, -".base_url".length)] === true ? [reservations[index]] : []);
+          const accountRoute = Object.freeze({
+            update: (value) => Promise.all(authRoutes.map((route) => route.update(value))),
+            close: () => Promise.all(authRoutes.map((route) => Promise.resolve(route.close()).catch(() => {
+            })))
+          });
           accountByProcess.set(this, {
-            route: reservations[0],
-            explicit: policy.openaiBaseUrl != null,
-            current: effectiveProviders(policy).get("openai_base_url"),
+            route: accountRoute,
+            explicit: authRoutes.length === 0,
+            current: policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI,
             pending: null
           });
           prepared++;
@@ -4862,6 +4880,9 @@ var require_source_diagnostics = __commonJS({
           modules: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, desktop.modules?.[kind] === true])),
           bindingErrors: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, code(desktop.bindingErrors?.[kind])])),
           deferredBindings: Number.isSafeInteger(desktop.deferredBindings) ? desktop.deferredBindings : null,
+          observedModules: integer(desktop.observedModules),
+          bindingCandidates: Object.fromEntries(["network", "fetch", "stdio", "connection"].map((role) => [role, integer(desktop.bindingCandidates?.[role])])),
+          bindingReasons: Object.fromEntries(["network", "fetch", "stdio", "connection"].map((role) => [role, code(desktop.bindingReasons?.[role])])),
           mismatch: typeof desktop.mismatch?.name === "string" && /^[A-Za-z0-9_.-]{1,100}$/.test(desktop.mismatch.name) && /^[a-f0-9]{64}$/.test(desktop.mismatch.observedSha256) ? { name: desktop.mismatch.name, observedSha256: desktop.mismatch.observedSha256 } : null
         },
         backend: {
@@ -5023,8 +5044,23 @@ function installElectronTraffic(electron, configuration, context, dependencies =
     async ready() {
       readinessStartedUnixMs ??= Date.now();
       try {
-        readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5e3 : configuration.deadlineUnixMs;
         await source.ready;
+        if (readinessDeadlineUnixMs === null) {
+          if (installedBeforeReady) {
+            const startupDeadlineUnixMs = readinessStartedUnixMs + 8e3;
+            if (typeof electron.app.whenReady === "function") {
+              let timer;
+              try {
+                await Promise.race([electron.app.whenReady(), new Promise((_, reject) => {
+                  timer = setTimeout(() => reject(fail("client_source_startup_timeout")), Math.max(1, startupDeadlineUnixMs - Date.now()));
+                })]);
+              } finally {
+                clearTimeout(timer);
+              }
+            }
+            readinessDeadlineUnixMs = Math.min(Date.now() + 5e3, startupDeadlineUnixMs);
+          } else readinessDeadlineUnixMs = configuration.deadlineUnixMs;
+        }
         if (context?.modules && !installedBeforeReady && !restored) {
           try {
             await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.() });
@@ -8755,6 +8791,9 @@ var require_electron_plaintext = __commonJS({
             mismatch,
             bindingErrors: { ...bindingErrors },
             deferredBindings: [...roleReasons.values()].filter((reason) => reason === "initializing").length,
+            observedModules: moduleRegistry?.inspect?.().modules ?? null,
+            bindingCandidates: Object.fromEntries(["network", "fetch", "stdio", "connection"].map((role) => [role, [...observed.values()].flat().filter((candidate) => candidate.role === role).length])),
+            bindingReasons: Object.fromEntries(roleReasons),
             reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : "contract_unavailable"),
             taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : "contract_unavailable")
           };
@@ -9128,11 +9167,14 @@ var require_backend_config_probe = __commonJS({
         if (!object(plan) || typeof plan.executable !== "string" || typeof plan.cwd !== "string" || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256 || plan.configArguments.some((value) => typeof value !== "string")) throw fail2("backend_config_unavailable");
         const { config, accountType } = await read(plan, [], true);
         if (config.model_providers != null && !object(config.model_providers) || config.model_provider != null && typeof config.model_provider !== "string" || config.openai_base_url != null && typeof config.openai_base_url !== "string") throw fail2("backend_contract_unavailable");
-        const providers = {};
+        const providers = {}, providerAuthDefaults = {};
         for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
-          if (typeof provider?.base_url !== "string" || provider.wire_api !== "responses") continue;
+          if (provider?.wire_api !== "responses") continue;
+          const defaultEndpoint = provider.base_url == null && provider.auth == null && provider.gateway_oauth == null && provider.aws == null;
+          if (typeof provider.base_url !== "string" && !defaultEndpoint) continue;
           if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail2("backend_provider_unsupported");
-          providers[name] = provider.base_url;
+          providers[name] = defaultEndpoint ? null : provider.base_url;
+          if (defaultEndpoint) providerAuthDefaults[name] = provider.requires_openai_auth === true;
         }
         const settings = ["openai_base_url", ...Object.keys(providers).map((name) => \`model_providers.\${name}.base_url\`)];
         if (plan.recordedRouting !== true) {
@@ -9145,6 +9187,7 @@ var require_backend_config_probe = __commonJS({
           modelProvider: config.model_provider ?? "openai",
           providerBaseUrls: providers,
           openaiBaseUrl: config.openai_base_url ?? null,
+          ...Object.keys(providerAuthDefaults).length ? { providerAuthDefaults } : {},
           accountType: accountType == null || ["chatgpt", "apiKey"].includes(accountType) ? accountType : "unknown",
           contract: { api: 1, initialize: true, configRead: true, accountRead: true, routing: plan.recordedRouting === true ? "recorded" : "runtime", providerOverrides: settings }
         };
@@ -9252,8 +9295,13 @@ var require_backend_spawn = __commonJS({
       if (!configured || typeof configured !== "object" || Object.keys(configured).length > 16) throw fail2("backend_provider_unsupported");
       if ((policy.modelProvider ?? "openai") !== "openai" && !Object.hasOwn(configured, policy.modelProvider)) throw fail2("backend_provider_unsupported");
       for (const [name, url] of Object.entries(configured)) {
-        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || typeof url !== "string") throw fail2("backend_provider_unsupported");
-        routes.set(\`model_providers.\${name}.base_url\`, url);
+        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail2("backend_provider_unsupported");
+        const authDefault = policy.providerAuthDefaults?.[name];
+        if (url === null && typeof authDefault === "boolean") {
+          if (authDefault && ![null, "chatgpt", "apiKey"].includes(policy.accountType)) throw fail2("backend_auth_mode_unsupported");
+          routes.set(\`model_providers.\${name}.base_url\`, authDefault && policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI);
+        } else if (typeof url === "string") routes.set(\`model_providers.\${name}.base_url\`, url);
+        else throw fail2("backend_provider_unsupported");
       }
       return routes;
     }
@@ -9323,10 +9371,16 @@ var require_backend_spawn = __commonJS({
           owned.add(this);
           trustByProcess.set(this, additionalCaPem);
           providersByProcess.set(this, /* @__PURE__ */ new Set(["openai", ...Object.keys(policy.providerBaseUrls ?? {})]));
+          const authRoutes = [...providers.keys()].flatMap((setting, index) => setting === "openai_base_url" ? policy.openaiBaseUrl == null ? [reservations[index]] : [] : policy.providerAuthDefaults?.[setting.slice("model_providers.".length, -".base_url".length)] === true ? [reservations[index]] : []);
+          const accountRoute = Object.freeze({
+            update: (value) => Promise.all(authRoutes.map((route) => route.update(value))),
+            close: () => Promise.all(authRoutes.map((route) => Promise.resolve(route.close()).catch(() => {
+            })))
+          });
           accountByProcess.set(this, {
-            route: reservations[0],
-            explicit: policy.openaiBaseUrl != null,
-            current: effectiveProviders(policy).get("openai_base_url"),
+            route: accountRoute,
+            explicit: authRoutes.length === 0,
+            current: policy.accountType === "chatgpt" ? DEFAULT_CHATGPT : DEFAULT_OPENAI,
             pending: null
           });
           prepared++;
@@ -9469,6 +9523,9 @@ var require_source_diagnostics = __commonJS({
           modules: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, desktop.modules?.[kind] === true])),
           bindingErrors: Object.fromEntries(["bootstrap", "main", "src", "stdio", "connection"].map((kind) => [kind, code(desktop.bindingErrors?.[kind])])),
           deferredBindings: Number.isSafeInteger(desktop.deferredBindings) ? desktop.deferredBindings : null,
+          observedModules: integer(desktop.observedModules),
+          bindingCandidates: Object.fromEntries(["network", "fetch", "stdio", "connection"].map((role) => [role, integer(desktop.bindingCandidates?.[role])])),
+          bindingReasons: Object.fromEntries(["network", "fetch", "stdio", "connection"].map((role) => [role, code(desktop.bindingReasons?.[role])])),
           mismatch: typeof desktop.mismatch?.name === "string" && /^[A-Za-z0-9_.-]{1,100}$/.test(desktop.mismatch.name) && /^[a-f0-9]{64}$/.test(desktop.mismatch.observedSha256) ? { name: desktop.mismatch.name, observedSha256: desktop.mismatch.observedSha256 } : null
         },
         backend: {
@@ -9630,8 +9687,23 @@ function installElectronTraffic(electron, configuration, context, dependencies =
     async ready() {
       readinessStartedUnixMs ??= Date.now();
       try {
-        readinessDeadlineUnixMs ??= installedBeforeReady ? Date.now() + 5e3 : configuration.deadlineUnixMs;
         await source.ready;
+        if (readinessDeadlineUnixMs === null) {
+          if (installedBeforeReady) {
+            const startupDeadlineUnixMs = readinessStartedUnixMs + 8e3;
+            if (typeof electron.app.whenReady === "function") {
+              let timer;
+              try {
+                await Promise.race([electron.app.whenReady(), new Promise((_, reject) => {
+                  timer = setTimeout(() => reject(fail("client_source_startup_timeout")), Math.max(1, startupDeadlineUnixMs - Date.now()));
+                })]);
+              } finally {
+                clearTimeout(timer);
+              }
+            }
+            readinessDeadlineUnixMs = Math.min(Date.now() + 5e3, startupDeadlineUnixMs);
+          } else readinessDeadlineUnixMs = configuration.deadlineUnixMs;
+        }
         if (context?.modules && !installedBeforeReady && !restored) {
           try {
             await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.() });

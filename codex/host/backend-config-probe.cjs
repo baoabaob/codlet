@@ -84,11 +84,14 @@ function runConfigProbe() {
     if (config.model_providers != null && !object(config.model_providers)
       || config.model_provider != null && typeof config.model_provider !== 'string'
       || config.openai_base_url != null && typeof config.openai_base_url !== 'string') throw fail('backend_contract_unavailable');
-    const providers = {};
+    const providers = {}, providerAuthDefaults = {};
     for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
-      if (typeof provider?.base_url !== 'string' || provider.wire_api !== 'responses') continue;
+      if (provider?.wire_api !== 'responses') continue;
+      const defaultEndpoint = provider.base_url == null && provider.auth == null && provider.gateway_oauth == null && provider.aws == null;
+      if (typeof provider.base_url !== 'string' && !defaultEndpoint) continue;
       if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail('backend_provider_unsupported');
-      providers[name] = provider.base_url;
+      providers[name] = defaultEndpoint ? null : provider.base_url;
+      if (defaultEndpoint) providerAuthDefaults[name] = provider.requires_openai_auth === true;
     }
     const settings = ['openai_base_url', ...Object.keys(providers).map(name => `model_providers.${name}.base_url`)];
     // Recorded implementations already have routing evidence. A new file must
@@ -101,6 +104,7 @@ function runConfigProbe() {
         || observed.model_providers[name].wire_api !== 'responses')) throw fail('backend_routing_contract_unavailable');
     }
     return { modelProvider: config.model_provider ?? 'openai', providerBaseUrls: providers, openaiBaseUrl: config.openai_base_url ?? null,
+      ...(Object.keys(providerAuthDefaults).length ? { providerAuthDefaults } : {}),
       accountType: accountType == null || ['chatgpt', 'apiKey'].includes(accountType) ? accountType : 'unknown',
       contract: { api: 1, initialize: true, configRead: true, accountRead: true, routing: plan.recordedRouting === true ? 'recorded' : 'runtime', providerOverrides: settings } };
   })().catch(async error => {
