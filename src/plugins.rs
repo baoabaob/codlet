@@ -304,6 +304,7 @@ pub struct PluginRegistry {
     path: PathBuf,
     document: RegistryDocument,
     pending: BTreeMap<String, PluginPreference>,
+    pending_forget: std::collections::BTreeSet<String>,
     local_plugins: BTreeMap<String, LocalPluginRegistration>,
     pending_local: BTreeMap<String, LocalPluginEdit>,
     managed_plugins: BTreeMap<String, ManagedPluginRecord>,
@@ -723,6 +724,7 @@ impl PluginRegistry {
             managed_plugins: document.managed_plugins.clone(),
             document,
             pending: BTreeMap::new(),
+            pending_forget: std::collections::BTreeSet::new(),
             pending_local: BTreeMap::new(),
             pending_managed: BTreeMap::new(),
         })
@@ -887,6 +889,15 @@ impl PluginRegistry {
         Ok(())
     }
 
+    pub(crate) fn forget_plugin(&mut self, plugin_id: &str) -> Result<(), PluginRegistryError> {
+        self.validate_local_id(plugin_id)?;
+        self.stage_local(plugin_id, None);
+        self.stage_managed(plugin_id, None);
+        self.pending.remove(plugin_id);
+        self.pending_forget.insert(plugin_id.into());
+        Ok(())
+    }
+
     fn validate_local_id(&self, plugin_id: &str) -> Result<(), PluginRegistryError> {
         if !valid_plugin_id(plugin_id) {
             return Err(PluginRegistryError::PluginId(plugin_id.to_owned()));
@@ -973,6 +984,15 @@ impl PluginRegistry {
 
         let _lock = lock_registry(&self.path, REGISTRY_LOCK_TIMEOUT)?;
         let mut latest = RegistryDocument::read(&self.path)?;
+        for id in &self.pending_forget {
+            if latest.plugins.get(id) != self.document.plugins.get(id) {
+                return Err(self.local_error(
+                    id,
+                    io::ErrorKind::InvalidData,
+                    "plugin preferences changed during uninstall",
+                ));
+            }
+        }
         for (id, edit) in &self.pending_managed {
             if latest.managed_plugins.get(id) != edit.expected.as_ref() {
                 return Err(self.local_error(
@@ -1010,11 +1030,18 @@ impl PluginRegistry {
             }
         }
         if !self.pending.is_empty()
+            || !self.pending_forget.is_empty()
             || !self.pending_local.is_empty()
             || !self.pending_managed.is_empty()
             || latest.schema == 1
         {
             latest.plugins.extend(self.pending.clone());
+            for id in &self.pending_forget {
+                latest.plugins.remove(id);
+                if id == GUI_PLUGIN_ID {
+                    latest.plugins.remove(LEGACY_GUI_PLUGIN_ID);
+                }
+            }
             // Upgrade only an explicitly edited GUI preference, under the same
             // merge lock. Read-only inspection and unrelated writes preserve the
             // legacy key; a newer canonical assignment always takes precedence.
@@ -1053,6 +1080,7 @@ impl PluginRegistry {
         self.managed_plugins = latest.managed_plugins.clone();
         self.document = latest;
         self.pending.clear();
+        self.pending_forget.clear();
         self.pending_local.clear();
         self.pending_managed.clear();
         Ok(())

@@ -76,6 +76,8 @@ struct Journal {
     package: Package,
     previous_receipt: Option<Receipt>,
     committed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_reset: Option<crate::plugin_services::DataReset>,
 }
 struct Selection {
     package: Package,
@@ -477,6 +479,21 @@ fn receipt_path(registry: &Path, id: &str) -> Result<PathBuf> {
     let (_, transactions) = roots(registry)?;
     Ok(transactions.join(format!("{id}.receipt.json")))
 }
+pub(crate) fn forget_receipt(registry: &Path, id: &str) -> Result<()> {
+    if !crate::plugins::valid_plugin_id(id) {
+        return Err(error("Invalid plugin ID"));
+    }
+    let path = receipt_path(registry, id)?;
+    plain(&path)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let receipt: Receipt = read(&path)?;
+    if receipt.schema != 1 || receipt.source != "official-installer" || receipt.package.id != id {
+        return Err(error("Installer receipt identity changed"));
+    }
+    fs::remove_file(path).map_err(error)
+}
 fn old_script_package(registry: &Path, id: &str, target: &Path) -> Option<Package> {
     for filename in ["plugin-setup.json", "macos-setup.json"] {
         let value: Value = match read(&registry.parent()?.join(filename)) {
@@ -542,14 +559,16 @@ fn managed_gui_package(
         .current()
         .filter(|version| channel.accepts(&version.source))
         .ok_or_else(|| migration("The registered GUI has a different source"))?;
-    let expected = crate::github_distribution::managed_root(registry.path(), false)
+    let legacy = crate::github_distribution::managed_root(registry.path(), false)
         .map_err(error)?
         .join(id);
-    if current.package_path != expected
+    let installed = crate::installation_files::root(registry.path())?.join(id);
+    let expected = &current.package_path;
+    if (expected != &legacy && expected != &installed)
         || registry
             .local_plugins()
             .get(id)
-            .is_none_or(|registration| registration.path != expected)
+            .is_none_or(|registration| &registration.path != expected)
     {
         return Err(migration(
             "The registered GUI is outside its managed directory",
@@ -558,7 +577,7 @@ fn managed_gui_package(
     crate::managed_plugins::validate_current(registry, id)?;
     let mut files = BTreeSet::new();
     let mut directories = BTreeSet::new();
-    tree(&expected, "", &mut files, &mut directories)?;
+    tree(expected, "", &mut files, &mut directories)?;
     let files = files
         .into_iter()
         .map(|path| {
@@ -578,7 +597,7 @@ fn managed_gui_package(
         update_source: Some(channel.clone()),
     };
     valid(&previous)?;
-    verify(&expected, &previous)?;
+    verify(expected, &previous)?;
     Ok(previous)
 }
 
@@ -645,6 +664,13 @@ fn select_with_legacy(
         None
     } else if target.exists() {
         let mut proofs = Vec::new();
+        if registration
+            .as_ref()
+            .is_some_and(|registration| registration.path == target)
+            && let Some(previous) = &previous_managed_package
+        {
+            proofs.push(previous.clone());
+        }
         if let Some(receipt) = &previous_receipt
             && receipt.schema == 1
             && receipt.source == "official-installer"
@@ -829,6 +855,11 @@ fn install(registry: &PluginRegistry, selected: Selection, grants: Vec<Permissio
             return Err(error("Unrecovered installer transaction"));
         }
     }
+    let data_reset = if selected.registration.is_none() {
+        Some(crate::plugin_services::DataReset::plan(registry.path(), id).map_err(error)?)
+    } else {
+        None
+    };
     let mut journal = Journal {
         schema: 1,
         id: id.clone(),
@@ -842,6 +873,7 @@ fn install(registry: &PluginRegistry, selected: Selection, grants: Vec<Permissio
         package: selected.package,
         previous_receipt: selected.previous_receipt,
         committed: false,
+        data_reset,
     };
     write(&journal_path, &journal)?;
     let result = (|| {
@@ -859,6 +891,9 @@ fn install(registry: &PluginRegistry, selected: Selection, grants: Vec<Permissio
             out.sync_all().map_err(error)?;
         }
         verify(&ready, &journal.package)?;
+        if let Some(reset) = &journal.data_reset {
+            reset.begin(registry.path()).map_err(error)?;
+        }
         if let Some(old) = &journal.previous_package {
             verify(&selected.target, old)?;
             fs::rename(&selected.target, &backup).map_err(error)?;
@@ -866,7 +901,12 @@ fn install(registry: &PluginRegistry, selected: Selection, grants: Vec<Permissio
         }
         fs::rename(&ready, &selected.target).map_err(error)?;
         verify(&selected.target, &journal.package)?;
-        if let Some(previous) = &journal.previous_managed_package {
+        if let Some(previous) = &journal.previous_managed_package
+            && journal
+                .previous
+                .as_ref()
+                .is_some_and(|previous| previous.path != selected.target)
+        {
             verify(&journal.previous.as_ref().unwrap().path, previous)?;
         }
         let mut registry = PluginRegistry::load(registry.path()).map_err(error)?;
@@ -946,6 +986,10 @@ pub fn recover(registry_path: &Path) -> Result<()> {
 }
 fn recover_one(registry_path: &Path, journal_path: &Path, journal: Journal) -> Result<()> {
     if journal.schema != 1
+        || journal
+            .data_reset
+            .as_ref()
+            .is_some_and(|reset| !reset.belongs_to(&journal.id))
         || !IDS.contains(&journal.id.as_str())
         || journal.package.id != journal.id
     {
@@ -957,10 +1001,16 @@ fn recover_one(registry_path: &Path, journal_path: &Path, journal: Journal) -> R
         .previous
         .as_ref()
         .map(|registration| &registration.path);
-    let managed_target = packages.join("github").join(&journal.id);
+    let legacy_managed_target = packages.join("github").join(&journal.id);
+    let managed_target = journal
+        .previous
+        .as_ref()
+        .filter(|_| journal.previous_managed.is_some())
+        .map(|previous| previous.path.clone())
+        .unwrap_or_else(|| legacy_managed_target.clone());
     let valid_previous = if let Some(managed) = &journal.previous_managed {
         journal.id == "codlet-gui"
-            && previous_path == Some(&managed_target)
+            && (previous_path == Some(&legacy_managed_target) || previous_path == Some(&target))
             && managed.current().is_some_and(|version| {
                 version.package_path == managed_target
                     && journal
@@ -1019,6 +1069,9 @@ fn recover_one(registry_path: &Path, journal_path: &Path, journal: Journal) -> R
             return Err(error("Committed registration changed before cleanup"));
         }
         verify(&target, &journal.package)?;
+        if let Some(reset) = &journal.data_reset {
+            reset.commit(registry_path).map_err(error)?;
+        }
         if backup.exists() {
             verify_remaining(
                 &backup,
@@ -1029,7 +1082,9 @@ fn recover_one(registry_path: &Path, journal_path: &Path, journal: Journal) -> R
             )?;
             fs::remove_dir_all(&backup).map_err(error)?;
         }
-        if let Some(previous) = &journal.previous_managed_package {
+        if let Some(previous) = &journal.previous_managed_package
+            && managed_target != target
+        {
             plain(&managed_target)?;
             if managed_target.exists() {
                 if registry.local_plugins().values().any(|registration| {
@@ -1043,7 +1098,9 @@ fn recover_one(registry_path: &Path, journal_path: &Path, journal: Journal) -> R
             }
         }
     } else {
-        if let Some(previous) = &journal.previous_managed_package {
+        if let Some(previous) = &journal.previous_managed_package
+            && managed_target != target
+        {
             verify(&managed_target, previous)?;
         }
         if backup.exists() {
@@ -1064,6 +1121,9 @@ fn recover_one(registry_path: &Path, journal_path: &Path, journal: Journal) -> R
         } else if target.exists() {
             verify_remaining(&target, &journal.package)?;
             fs::remove_dir_all(&target).map_err(error)?;
+        }
+        if let Some(reset) = &journal.data_reset {
+            reset.rollback(registry_path).map_err(error)?;
         }
         registry.restore_managed(
             &journal.id,
@@ -1401,6 +1461,7 @@ mod tests {
                 package: selected.package.clone(),
                 previous_receipt: selected.previous_receipt,
                 committed: boundary >= 6,
+                data_reset: None,
             };
             let (_, tx) = roots(&f.registry).unwrap();
             let ready = tx.join(format!("{ID}.ready"));
@@ -1485,6 +1546,7 @@ mod tests {
             package: selected.package,
             previous_receipt: selected.previous_receipt,
             committed: false,
+            data_reset: None,
         };
         let (_, tx) = roots(&f.registry).unwrap();
         write(&tx.join(format!("{ID}.json")), &journal).unwrap();

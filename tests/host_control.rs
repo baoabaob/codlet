@@ -693,11 +693,14 @@ fn local_import_then_enable_and_remove_use_receipts_and_preserve_author_files() 
     assert!(!fixture.registry().is_enabled(id));
     assert!(fixture.hosts.observations().is_empty());
     assert!(events(&root).is_empty());
+    let installed = fixture.registry().local_plugins()[id].path.clone();
+    assert_ne!(installed, root);
+    assert!(installed.join("dist/host.js").exists());
     assert_eq!(
         fixture.broker.handle(ControlRequest::submit(&receipt)),
         imported
     );
-    let receipt = fixture.submit_request(import_request(&fixture, &root, true));
+    let receipt = fixture.submit(PluginControlAction::Enable, id);
     let enabled = fixture.wait(&receipt);
     assert!(enabled.is_success(), "{enabled:?}");
     assert!(fixture.registry().is_enabled(id));
@@ -707,7 +710,17 @@ fn local_import_then_enable_and_remove_use_receipts_and_preserve_author_files() 
         enabled
     );
     let running_import = fixture.submit_request(import_request(&fixture, &root, true));
-    assert_eq!(error_code(fixture.wait(&running_import)), "plugin_active");
+    assert_eq!(
+        error_code(fixture.wait(&running_import)),
+        "installation_choice_required"
+    );
+    assert_eq!(
+        events(&installed)
+            .iter()
+            .filter(|event| event["event"] == "active")
+            .count(),
+        1
+    );
     let receipt = fixture.submit(PluginControlAction::Remove, id);
     let removed = fixture.wait(&receipt);
     assert!(removed.is_success(), "{removed:?}");
@@ -716,7 +729,10 @@ fn local_import_then_enable_and_remove_use_receipts_and_preserve_author_files() 
         PluginControlAction::Remove
     );
     assert!(!fixture.registry().local_plugins().contains_key(id));
-    assert!(!fixture.registry().is_enabled(id));
+    assert!(!installed.exists());
+    let document: Value =
+        serde_json::from_slice(&std::fs::read(fixture.registry().path()).unwrap()).unwrap();
+    assert!(document["plugins"].get(id).is_none());
     assert!(matches!(
         fixture.observation(id).state,
         ExecutionState::Exited | ExecutionState::Failed
@@ -738,13 +754,13 @@ fn local_import_then_enable_and_remove_use_receipts_and_preserve_author_files() 
             .iter()
             .filter(|event| event["event"] == "active")
             .count(),
-        1
+        0
     );
     fixture.ping();
 }
 
 #[test]
-fn explicit_source_delete_waits_for_native_retirement_and_preserves_separate_data() {
+fn explicit_source_delete_waits_for_native_retirement_and_preserves_unrelated_files() {
     let mut fixture = Fixture::new();
     let id = "dev.delete-source";
     let gate = fixture.directory.path().join("allow-source-stop");
@@ -830,8 +846,17 @@ fn changed_import_and_failed_initial_activation_leave_no_running_authority() {
     assert_eq!(failed.action, PluginControlAction::Import);
     assert_eq!(failed.outcome, PluginControlOutcome::Degraded);
     assert!(!failed.desired_enabled);
-    assert!(fixture.registry().local_plugins().contains_key(id));
-    assert!(!fixture.registry().is_enabled(id));
+    assert!(!fixture.registry().local_plugins().contains_key(id));
+    assert!(
+        !fixture
+            .registry()
+            .path()
+            .parent()
+            .unwrap()
+            .join("packages")
+            .join(id)
+            .exists()
+    );
     assert!(matches!(
         fixture.observation(id).state,
         ExecutionState::Failed | ExecutionState::Exited
@@ -840,7 +865,7 @@ fn changed_import_and_failed_initial_activation_leave_no_running_authority() {
 }
 
 #[test]
-fn remove_requires_confirmation_for_dependents_and_disables_the_closure_atomically() {
+fn remove_disables_the_dependent_closure_without_a_second_confirmation() {
     let mut fixture = Fixture::new();
     let provider = "dev.remove-provider";
     let consumer = "dev.remove-consumer";
@@ -860,14 +885,11 @@ fn remove_requires_confirmation_for_dependents_and_disables_the_closure_atomical
             PluginControlOutcome::Applied
         );
     }
-    let refused = fixture.submit(PluginControlAction::Remove, provider);
-    assert_eq!(error_code(fixture.wait(&refused)), "dependency_conflict");
-    assert!(fixture.registry().is_enabled(provider) && fixture.registry().is_enabled(consumer));
     let receipt = fixture.submit_request(PluginControlRequest {
         action: PluginControlAction::Remove,
         plugin_id: provider.into(),
         permission: None,
-        cascade: true,
+        cascade: false,
         remove_source: None,
         local_import: None,
     });
@@ -875,7 +897,7 @@ fn remove_requires_confirmation_for_dependents_and_disables_the_closure_atomical
     assert_eq!(removed.outcome, PluginControlOutcome::Applied);
     assert_eq!(removed.affected_plugin_ids.len(), 2);
     let registry = fixture.registry();
-    assert!(!registry.is_enabled(provider) && !registry.is_enabled(consumer));
+    assert!(!registry.is_enabled(consumer));
     assert!(!registry.local_plugins().contains_key(provider));
     assert!(registry.local_plugins().contains_key(consumer));
     // Withdrawing a provider lease may retire its dependent as Failed; both

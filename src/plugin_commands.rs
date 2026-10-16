@@ -287,6 +287,7 @@ fn print_plugin_registry(registry: &PluginRegistry) -> Result<(), ProbeError> {
 
 #[derive(Default)]
 struct PluginTrustOptions {
+    mode: Option<crate::local_import::InstallMode>,
     client_permissions: bool,
     trusted: bool,
     enable: bool,
@@ -308,6 +309,10 @@ fn parse_plugin_trust_options(arguments: &[OsString]) -> Result<PluginTrustOptio
     while let Some(argument) = arguments.next() {
         if argument == OsStr::new("--trust") && !options.trusted {
             options.trusted = true;
+        } else if argument == OsStr::new("--update") && options.mode.is_none() {
+            options.mode = Some(crate::local_import::InstallMode::Update);
+        } else if argument == OsStr::new("--replace") && options.mode.is_none() {
+            options.mode = Some(crate::local_import::InstallMode::Replace);
         } else if argument == OsStr::new("--client-permissions") && !options.client_permissions {
             options.client_permissions = true;
         } else if argument == OsStr::new("--enable") && !options.enable {
@@ -426,6 +431,8 @@ fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(),
             );
         }
     }
+    let mut selection = candidate.request(options.grants, broker_policy, options.enable);
+    selection.mode = options.mode;
     crate::plugin_cli::manage(
         PluginControlRequest {
             action: PluginControlAction::Import,
@@ -433,7 +440,7 @@ fn add_local_plugin(directory: &Path, options: PluginTrustOptions) -> Result<(),
             permission: None,
             cascade: false,
             remove_source: None,
-            local_import: Some(candidate.request(options.grants, broker_policy, options.enable)),
+            local_import: Some(selection),
         },
         options.json,
     )?;

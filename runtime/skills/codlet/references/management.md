@@ -43,6 +43,8 @@ python3 "<cliScript>" plugin list --json
 plugin add <dir> --trust [--grant <permission> ...] [--enable] --json
 ```
 
+插件统一安装到当前实例的 `packages/<id>`。从文件夹导入会复制整个插件目录。相同 ID 已安装时，明确选择 `--update`（保留配置、数据和凭据）或 `--replace`（清空数据后安装）；已有用户选择时直接沿用。GUI 安装完成后提供默认勾选的“删除源文件”，点击完成时才执行，源目录发生变化则保留并显示原因。
+
 GitHub：可先 `plugin github discover` 查仓库，再列 Release。仅在版本和平台匹配且资产唯一可辨认时自行选择最新合适的构建 ZIP，否则让用户选择。GitHub 自动生成的 Source code ZIP 不适用。按实际数值 ID 准备：
 
 ```text
@@ -58,7 +60,7 @@ plugin github install <preview.path> --trust [--grant <permission> ...] [--enabl
 
 直接系统/Native 类别需要说明实际边界：Core 强制检查选定进程、raw CDP broker 和 main-world/full Node 准入；`ui.nativeDom` 是作者声明/源码审核，isolated renderer 共享 Native DOM，不能说它阻止未声明 DOM 操作。新后台计算优先 `host.mode:"sdk"`，无 ambient Node loader/process/Buffer；这仍是受信代码 API 边界，不是恶意代码安全沙箱。显式 `node` 需要 `host.raw`；旧省略 mode 的 `host.process` 是保留兼容路径，不自动改写授权。SDK 消费者不会继承 Core 实现的原始权限。
 
-外部依赖不会自动下载。先以 `context.codex` SDK 契约和当前能力探针判断是否由 Core 供应；不要为普通 v1 消费者安装旧 UI/Desktop Adapter。确实是外部 provider 才按用户选择安装/启用。相同外部 ID 已注册在别处时先展示旧路径，不用移除再添加掩盖冲突。
+外部依赖不会自动下载。先以 `context.codex` SDK 契约和当前能力探针判断是否由 Core 供应；不要为普通 v1 消费者安装旧 UI/Desktop Adapter。确实是外部 provider 才按用户选择安装/启用。同 ID 的不同来源也使用明确的更新或替换选择。
 
 ## 更新
 
@@ -92,9 +94,9 @@ plugin remove <id> [--cascade] [--delete-source] --json
 plugin revoke <id> <permission> --json
 ```
 
-卸载/停用前用当前 manifest 的 provides/requires（包括 host.requires、target/runtime scope）检查依赖，列出传递链上受影响插件的显示名和 ID。以 Core 的当前依赖校验结果为准，不使用文本名字猜绑定。有额外级联影响且用户未授权时先说明这些插件，确认后用 `--cascade`；Core 发现遗漏的影响时重新核对，不能绕过它。
+停用前用当前 manifest 的 provides/requires（包括 host.requires、target/runtime scope）检查依赖。额外级联停用按用户授权使用 `--cascade`。卸载会自动停用依赖者，只移除选定插件。
 
-默认 remove 取消普通目标插件登记并停止它，保留源文件和独立数据；`--cascade` 同时停用外部依赖链，保留依赖者登记和文件，不等于卸载整条链。`--delete-source` 只有用户明确要求删除目标源码/安装包时使用，不因此删除其它插件数据。GUI 可通过 CLI 移除或停用，此时管理页关闭，CLI/技能仍可恢复。Core-owned providers 不能作为普通插件停用或撤权；可以只移除保留的旧 Adapter 注册，默认保留旧文件/数据，Core SDK 消费者继续运行。不要把这种登记清理当作停用 Core，也不级联关闭 GUI。旧版本以实际 `bundled` 清单规则处理。
+`remove` 直接卸载并清除安装副本、配置、数据、缓存、系统凭据、授权和版本记录，无须再次确认。旧版直接登记在外部的源码目录仍由明确的 `--delete-source` 处理。GUI 也可卸载自身，管理页随之关闭。Core-owned providers 不能作为普通插件停用或撤权；移除保留的旧 Adapter 注册会清理该旧插件的数据，Core SDK 消费者继续运行。
 
 ## 回执与故障排查
 

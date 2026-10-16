@@ -1017,7 +1017,10 @@ pub fn inspect_prepared_package(
 ) -> Result<PreparedGitHubPackage> {
     let root = managed_root(registry_path, false)?;
     let in_staging = package_path.parent() == Some(root.join(".staging").as_path());
-    if !package_path.is_absolute() || (package_path.parent() != Some(root.as_path()) && !in_staging)
+    if !package_path.is_absolute()
+        || (package_path.parent() != Some(root.as_path())
+            && package_path.parent() != root.parent()
+            && !in_staging)
     {
         return Err(error(
             "github_package_unowned",
@@ -1227,6 +1230,7 @@ pub(crate) fn relocate_prepared_package(
     let prepared = inspect_prepared_package(registry, source)?;
     let root = managed_root(registry, false)?;
     if target != root.join(&prepared.manifest.id)
+        && target != root.parent().unwrap().join(&prepared.manifest.id)
         && target.parent() != Some(staging_root(registry)?.as_path())
     {
         return Err(error(
@@ -1262,13 +1266,7 @@ pub(crate) fn relocate_prepared_package(
     Ok(())
 }
 
-pub(crate) fn remove_prepared_package(registry: &Path, path: &Path) -> Result<()> {
-    inspect_prepared_package(registry, path)?;
-    crate::source_removal::remove_owned_directory(path)
-        .map_err(|e| error("github_cleanup_failed", e.to_string()))
-}
-
-fn check_regular(path: &Path, directory: bool) -> Result<std::fs::Metadata> {
+pub(crate) fn check_regular(path: &Path, directory: bool) -> Result<std::fs::Metadata> {
     let metadata = std::fs::symlink_metadata(path).map_err(io_error)?;
     let mut forbidden = metadata.file_type().is_symlink();
     #[cfg(windows)]

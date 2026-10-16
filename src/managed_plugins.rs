@@ -141,6 +141,7 @@ impl ManagedPreview {
             broker_policy,
             enable,
             managed: Some(self.operation),
+            mode: None,
         })
     }
 }
@@ -225,12 +226,6 @@ fn preview_checked(
     let record = registry.managed_plugins().get(id);
     let current = record.and_then(ManagedPluginRecord::current);
     match operation {
-        ManagedOperation::Install if registry.local_plugins().contains_key(id) => {
-            return Err(control_error(
-                "registration_conflict",
-                "This ID is already registered. Select an explicit managed update, or unregister it before trusting a different source.",
-            ));
-        }
         ManagedOperation::Update | ManagedOperation::Rollback => {
             let current = current
                 .filter(|current| {
@@ -349,6 +344,8 @@ pub fn stage(
     request: &LocalImportRequest,
 ) -> Result<(PluginRegistry, PluginCatalogEntry), PluginControlError> {
     request.validate()?;
+    request.validate_choice(registry, id)?;
+    crate::plugin_uninstall::ensure_installation_ready(registry, id)?;
     let operation = request.managed.ok_or_else(|| {
         control_error(
             "managed_preview_required",
@@ -518,6 +515,7 @@ pub(crate) fn at_installation_path(
         broker_policy: registration.broker_policy.clone(),
         enable: next.is_enabled(id),
         managed: Some(ManagedOperation::Update),
+        mode: None,
     };
     let entry = local_import::checked_entry(candidate, &request)?;
     Ok((next, entry))

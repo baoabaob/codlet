@@ -15,6 +15,8 @@ pub(super) struct PendingRevocation {
     source_removal: Option<crate::source_removal::SourceRemovalPlan>,
     source_worker: Option<std::sync::mpsc::Receiver<crate::source_removal::SourceRemovalResult>>,
     source_result: Option<crate::source_removal::SourceRemovalResult>,
+    uninstall_worker: Option<std::sync::mpsc::Receiver<Result<(), PluginControlError>>>,
+    uninstall_finished: bool,
     client_source_worker:
         Option<std::sync::mpsc::Receiver<Result<serde_json::Value, crate::plugin_host::HostError>>>,
 }
@@ -55,6 +57,8 @@ impl HostControl {
             let current = renderer.logical_plugins();
             if !registry.local_plugins().contains_key(id)
                 && !current.iter().any(|plugin| plugin.manifest.id == *id)
+                && !(request.action == PluginControlAction::Remove
+                    && crate::plugin_uninstall::pending(registry.path(), id)?)
             {
                 return Err(PluginControlError::new(
                     "plugin_not_found",
@@ -79,26 +83,25 @@ impl HostControl {
                 .map(|selection| crate::source_removal::prepare(&registry, id, selection))
                 .transpose()?;
             let affected = if removing {
-                if !request.cascade {
-                    plugin_lifecycle::validate_disable(
+                if !registry.local_plugins().contains_key(id) {
+                    plugin_lifecycle::dependent_closure(&current, id)
+                } else {
+                    plugin_lifecycle::disable_closure(
                         &current,
                         renderer.catalog_snapshot(),
                         &registry,
                         id,
                     )
-                    .map_err(lifecycle_error)?;
+                    .map_err(lifecycle_error)?
                 }
-                plugin_lifecycle::disable_closure(
-                    &current,
-                    renderer.catalog_snapshot(),
-                    &registry,
-                    id,
-                )
-                .map_err(lifecycle_error)?
             } else {
                 plugin_lifecycle::dependent_closure(&current, id)
             };
             self.prepare_authority_retirement(renderer)?;
+            if removing && let Err(error) = crate::plugin_uninstall::prepare(&registry, id) {
+                renderer.finish_package_management(registry, self.generations.clone());
+                return Err(error);
+            }
             let changed = if removing {
                 let changed = registry.local_plugins().contains_key(id) || registry.is_enabled(id);
                 let saved = (|| {
@@ -110,9 +113,7 @@ impl HostControl {
                         }
                         registry.set_enabled(affected_id, false)?;
                     }
-                    if registry.local_plugins().contains_key(id) {
-                        registry.remove_local(id)?;
-                    }
+                    registry.forget_plugin(id)?;
                     registry.save()
                 })();
                 if let Err(error) = saved {
@@ -236,6 +237,8 @@ impl HostControl {
             source_removal,
             source_worker: None,
             source_result: None,
+            uninstall_worker: None,
+            uninstall_finished: false,
             client_source_worker,
         }
     }
@@ -485,6 +488,37 @@ impl PendingRevocation {
         if let Ok(registry) = PluginRegistry::load(self.registry.path()) {
             self.registry = registry;
         }
+        if self.request.action == PluginControlAction::Remove && !self.uninstall_finished {
+            if let Some(worker) = &self.uninstall_worker {
+                match worker.try_recv() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => self.failures.push(failure(
+                        &self.request.plugin_id,
+                        "uninstall_cleanup",
+                        error.to_string(),
+                    )),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                    Err(_) => self.failures.push(failure(
+                        &self.request.plugin_id,
+                        "uninstall_cleanup",
+                        "Cleanup worker ended without a result",
+                    )),
+                }
+                self.uninstall_worker = None;
+                self.uninstall_finished = true;
+            } else if self.failures.is_empty() {
+                let registry = self.registry.path().to_owned();
+                let id = self.request.plugin_id.clone();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = sender.send(crate::plugin_uninstall::finish(&registry, &id));
+                });
+                self.uninstall_worker = Some(receiver);
+                return None;
+            } else {
+                self.uninstall_finished = true;
+            }
+        }
         if !self.failures.is_empty() && self.source_removal.take().is_some() {
             self.source_result =
                 Some(crate::source_removal::SourceRemovalResult::retirement_unconfirmed());
@@ -529,11 +563,15 @@ impl PendingRevocation {
             ));
         }
         let removing = self.request.action == PluginControlAction::Remove;
+        if removing && self.failures.is_empty() {
+            renderer.forget_uninstalled_package(&self.request.plugin_id);
+        }
         let reason = self
             .request
             .permission
             .map(|permission| format!("{} is revoked.", permission.as_str()))
             .unwrap_or_else(|| "The selected authorization record changed.".into());
+        let cleanup_complete = self.failures.is_empty();
         let report = PluginControlReport {
             action: self.request.action,
             plugin_id: self.request.plugin_id.clone(),
@@ -546,14 +584,18 @@ impl PendingRevocation {
             } else {
                 PluginControlOutcome::Degraded
             },
-            desired_enabled: self.registry.is_enabled(&self.request.plugin_id),
+            desired_enabled: !removing && self.registry.is_enabled(&self.request.plugin_id),
             affected_plugin_ids: self.affected.iter().cloned().collect(),
             generations: Vec::new(),
             target_failures: std::mem::take(&mut self.failures),
             message: Some(if let Some(result) = &self.source_result {
                 result.message.clone()
             } else if removing {
-                "Local registration removed and affected packages disabled. Author files are preserved.".into()
+                if cleanup_complete {
+                    "Plugin uninstalled and its data cleared.".into()
+                } else {
+                    "Plugin unregistered; uninstall cleanup is incomplete.".into()
+                }
             } else {
                 format!(
                     "{reason} Old managed authority is invalid; enabled preferences are retained, and source restoration was not attempted."

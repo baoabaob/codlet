@@ -271,6 +271,11 @@ impl PluginCatalog {
             self.entries.sort_by(|left, right| left.id.cmp(&right.id));
         }
     }
+    pub(crate) fn forget_local_entry(&mut self, id: &str) {
+        self.entries
+            .retain(|entry| entry.id != id || !matches!(entry.source, PluginSource::Local { .. }));
+        self.startup_suspensions.remove(id);
+    }
 
     pub fn enabled_plugins(
         &self,

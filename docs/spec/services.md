@@ -17,7 +17,7 @@ await context.services.storage.transaction({
 });
 ```
 
-A stale revision returns `storage_conflict`; read again before deciding a new write. `changes({afterCursor,limit?})` has bounded replay and returns `resetRequired` plus a snapshot when the requested history has expired. Missing keys are distinguished from stored null by `found`. Source ownership prevents an unrelated registration reusing the same plugin ID from inheriting its namespace. Storage survives normal reload/update; generation-owned task/event handles do not.
+A stale revision returns `storage_conflict`; read again before deciding a new write. `changes({afterCursor,limit?})` has bounded replay and returns `resetRequired` plus a snapshot when the requested history has expired. Missing keys are distinguished from stored null by `found`. Storage and credentials belong to the plugin installation. Reload and explicitly selected Update preserve them, including when the source directory changes. Replace and fresh installation start empty; uninstall removes configuration, data, cache and OS credentials. Generation-owned task/event handles do not survive replacement.
 
 Current storage bounds are 768 KiB serialized state, 128 KiB per value, 1,024 keys, 128 operations per transaction, 256 retained change records and pages of at most 100. Data/cache quotas are 64/256 MiB. Quotas constrain Core writes, not arbitrary trusted Host writes through a returned path.
 

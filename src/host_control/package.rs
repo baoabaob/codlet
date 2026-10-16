@@ -205,7 +205,7 @@ impl HostControl {
             .request
             .local_import
             .as_ref()
-            .is_some_and(|selection| selection.managed.is_some() && !selection.enable);
+            .is_some_and(|selection| !selection.enable);
         if job.request.action == PluginControlAction::Disable || managed_stop {
             if !job.request.cascade && !managed_stop {
                 plugin_lifecycle::validate_disable(
@@ -264,6 +264,7 @@ impl HostControl {
         }
 
         if job.request.action.starts_plugin()
+            && job.request.local_import.is_none()
             && let Some(plugin) = current.iter().find(|plugin| plugin.manifest.id == *id)
             && renderer.package_is_active(plugin)
         {
@@ -569,10 +570,19 @@ impl PendingControl {
     }
 
     fn start_snapshots(&mut self, hosts: &HostRuntime) {
+        let replacing = self
+            .job
+            .request
+            .local_import
+            .as_ref()
+            .is_some_and(|selection| {
+                selection.mode == Some(crate::local_import::InstallMode::Replace)
+            });
         self.phase = Phase::Snapshot;
         for observation in hosts.observations().into_iter().filter(|observation| {
             self.plan.affected.contains(&observation.plugin.manifest.id)
                 && observation.state == ExecutionState::Active
+                && !(replacing && observation.plugin.manifest.id == self.job.request.plugin_id)
         }) {
             let id = observation.plugin.manifest.id;
             match hosts.begin_snapshot(&id, observation.plugin.generation) {
@@ -1076,7 +1086,19 @@ impl PendingControl {
                         self.resume_previous(renderer, hosts);
                         continue;
                     }
-                    if let Err(error) = renderer.capture_package_state(&self.plan.affected) {
+                    let mut transfer = self.plan.affected.clone();
+                    if self
+                        .job
+                        .request
+                        .local_import
+                        .as_ref()
+                        .is_some_and(|selection| {
+                            selection.mode == Some(crate::local_import::InstallMode::Replace)
+                        })
+                    {
+                        transfer.remove(&self.job.request.plugin_id);
+                    }
+                    if let Err(error) = renderer.capture_package_state(&transfer) {
                         self.failure("snapshot", error.to_string());
                         self.resume_previous(renderer, hosts);
                         continue;
@@ -1407,6 +1429,17 @@ impl PendingControl {
         hosts: &HostRuntime,
         generations: &mut BTreeMap<String, u64>,
     ) -> Option<PluginControlReport> {
+        if self
+            .job
+            .request
+            .local_import
+            .as_ref()
+            .is_some_and(|selection| {
+                selection.mode == Some(crate::local_import::InstallMode::Replace)
+            })
+        {
+            renderer.reset_package_shape(&self.job.request.plugin_id);
+        }
         if let Some(core) = &mut self.core_update {
             core.guard.take();
         }
@@ -1566,12 +1599,20 @@ impl PendingControl {
             return Ok(());
         }
         let id = &self.job.request.plugin_id;
-        let (installation, registry, mut entry) = crate::managed_storage::Installation::publish(
-            &self.registry,
-            previous,
-            id,
-            self.job.request.activation_requested(),
-        )?;
+        let reset_data = self
+            .job
+            .request
+            .local_import
+            .as_ref()
+            .is_some_and(|selection| selection.resets_data(previous, id));
+        let (installation, registry, mut entry) =
+            crate::managed_storage::Installation::publish_with_reset(
+                &self.registry,
+                previous,
+                id,
+                self.job.request.activation_requested(),
+                reset_data,
+            )?;
         let generation = self
             .plan
             .entries
@@ -1634,6 +1675,7 @@ impl PendingControl {
                 && let Err(error) = installation.commit()
             {
                 self.failure("managed_cleanup", error.to_string());
+                outcome = PluginControlOutcome::Degraded;
             }
             // Disabled managed selections still commit their new catalog entry.
             if self.managed_previous.is_some() && !self.plan.entries.is_empty() {

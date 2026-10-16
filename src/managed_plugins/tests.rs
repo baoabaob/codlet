@@ -191,13 +191,10 @@ fn adoption_requires_installer_receipt_and_unchanged_files() {
         temp.path()
             .canonicalize()
             .unwrap()
-            .join("packages/github/dev.managed")
+            .join("packages/dev.managed")
     );
     assert!(installed.is_enabled("dev.managed"));
-    assert!(
-        !source.exists(),
-        "committed adoption retires the old seed package"
-    );
+    assert_eq!(inspect_local_plugin(&source).unwrap().manifest.version, "2");
     assert!(
         !receipts.join("dev.managed.receipt.json").exists(),
         "the obsolete installer receipt must be removed with its package"
@@ -255,28 +252,40 @@ fn changed_seed_directory_is_preserved_until_committed_cleanup_can_retry() {
     let (mut installation, installed, _) =
         crate::managed_storage::Installation::publish(&candidate, &registry, "dev.managed", true)
             .unwrap();
-    std::fs::write(source.join("entry.js"), "changed after publish").unwrap();
+    let backup =
+        std::fs::read_dir(crate::github_distribution::staging_root(registry.path()).unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("backup-")
+            })
+            .unwrap();
+    std::fs::write(backup.join("entry.js"), "changed after publish").unwrap();
     assert!(installation.commit().is_err());
     drop(installation);
-    assert!(source.exists());
+    assert!(backup.exists());
     assert!(receipt.exists());
     assert_eq!(
         installed.local_plugins()["dev.managed"].path,
-        home.join("packages/github/dev.managed")
+        home.join("packages/dev.managed")
     );
     let journal = home.join("packages/github/.transactions/dev.managed.json");
     assert!(journal.exists(), "a cleanup retry must remain journaled");
     let mut recovered = PluginRegistry::load(registry.path()).unwrap();
     crate::managed_storage::prepare_installations(&mut recovered).unwrap();
     assert!(
-        source.exists(),
+        backup.exists(),
         "a changed source must not be deleted on retry"
     );
     assert!(receipt.exists());
     assert!(journal.exists());
-    std::fs::write(source.join("entry.js"), original).unwrap();
+    std::fs::write(backup.join("entry.js"), original).unwrap();
     crate::managed_storage::prepare_installations(&mut recovered).unwrap();
-    assert!(!source.exists());
+    assert!(!backup.exists());
+    assert!(source.exists());
     assert!(!receipt.exists());
     assert!(!journal.exists());
 }
@@ -328,7 +337,7 @@ fn legacy_installations_migrate_to_plugin_ids_and_keep_only_the_current_package(
     std::fs::create_dir(&author).unwrap();
     std::fs::write(author.join("keep.txt"), "unrelated source").unwrap();
     crate::managed_storage::prepare_installations(&mut registry).unwrap();
-    let target = crate::github_distribution::managed_root(registry.path(), false)
+    let target = crate::installation_files::root(registry.path())
         .unwrap()
         .join("dev.managed");
     assert_eq!(registry.local_plugins()["dev.managed"].path, target);
@@ -365,7 +374,7 @@ fn migration_conflicts_preserve_the_working_registration_and_do_not_block_core()
     registry.set_enabled("dev.managed", true).unwrap();
     registry.save().unwrap();
     let before = std::fs::read(registry.path()).unwrap();
-    let occupied = crate::github_distribution::managed_root(registry.path(), false)
+    let occupied = crate::installation_files::root(registry.path())
         .unwrap()
         .join("dev.managed");
     std::fs::create_dir(&occupied).unwrap();
@@ -671,17 +680,27 @@ fn cross_repository_update_and_local_identity_replacement_require_new_trust() {
             .code,
         "managed_source_changed"
     );
+    let local = local_import::preview(&registry, &second.package_path).unwrap();
     assert_eq!(
-        local_import::preview(&registry, &second.package_path)
-            .unwrap_err()
-            .code,
-        "managed_preview_required"
+        local_import::stage(
+            &registry,
+            "dev.managed",
+            &local.request(vec![Permission::UiDom], BrokerPolicy::default(), false)
+        )
+        .unwrap_err()
+        .code,
+        "installation_choice_required"
     );
+    let managed = preview(&registry, &second.package_path, ManagedOperation::Install).unwrap();
     assert_eq!(
-        preview(&registry, &second.package_path, ManagedOperation::Install)
-            .unwrap_err()
-            .code,
-        "registration_conflict"
+        stage(
+            &registry,
+            "dev.managed",
+            &managed.request(vec![Permission::UiDom], BrokerPolicy::default(), false)
+        )
+        .unwrap_err()
+        .code,
+        "installation_choice_required"
     );
     let fresh = PluginRegistry::load(directory.path().join("other-config.json")).unwrap();
     let mut selection = preview(&fresh, &second.package_path, ManagedOperation::Install)
@@ -798,6 +817,7 @@ mod runtime {
         ControlBroker, ControlCompletion, ControlReport, ControlRequest, ControlStatus,
     };
     use crate::windows::process::{ChildProcess, launch_with_cdp_pipes};
+    use serde_json::Value;
     use std::ffi::OsString;
     use std::time::{Duration, Instant};
 
@@ -954,6 +974,149 @@ mod runtime {
     }
 
     #[test]
+    fn live_folder_install_update_replace_failure_and_uninstall_share_one_lifecycle() {
+        let mut fixture = Fixture::new();
+        fn folder(fixture: &Fixture, version: &str, source: &str) -> PathBuf {
+            let path = fixture._directory.path().join(format!("author-{version}"));
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("codlet.json"), json!({"schema":1,"id":"dev.managed","version":version,"host":{"entry":"host.cjs"},"permissions":["host.process"]}).to_string()).unwrap();
+            std::fs::write(path.join("host.cjs"), source).unwrap();
+            path
+        }
+        fn apply(
+            fixture: &mut Fixture,
+            source: &Path,
+            mode: Option<crate::local_import::InstallMode>,
+        ) -> PluginControlReport {
+            let preview = local_import::preview(&fixture.registry(), source).unwrap();
+            let mut selection =
+                preview.request(vec![Permission::HostProcess], BrokerPolicy::default(), true);
+            selection.mode = mode;
+            let receipt = fixture.submit(PluginControlRequest {
+                action: PluginControlAction::Import,
+                plugin_id: "dev.managed".into(),
+                permission: None,
+                cascade: false,
+                remove_source: None,
+                local_import: Some(selection),
+            });
+            let report = fixture.wait(&receipt);
+            match report.operation.unwrap().completion.unwrap() {
+                ControlCompletion::Report { report } => report,
+                error => panic!("{error:?}"),
+            }
+        }
+        let first = folder(
+            &fixture,
+            "1",
+            "module.exports={activate(){},deactivate(){},saveState(){return {schema:1,value:{note:'state'}}},restoreState(){}};",
+        );
+        let report = apply(&mut fixture, &first, None);
+        assert_eq!(report.outcome, PluginControlOutcome::Applied, "{report:?}");
+        let owner = crate::plugin_services::ServiceOwner {
+            plugin_id: "dev.managed".into(),
+            source_identity: "local:old-author".into(),
+        };
+        let services = crate::plugin_services::PluginServices::new(&fixture.registry_path).unwrap();
+        services
+            .invoke_storage(
+                &owner,
+                "transaction",
+                json!({"expectedRevision":0,"config":{"note":"kept"}}),
+            )
+            .unwrap();
+        let second = folder(
+            &fixture,
+            "2",
+            "module.exports={activate(){},deactivate(){},saveState(){return {schema:1,value:{note:'state'}}},restoreState(state){require('node:fs').writeFileSync(require('node:path').join(__dirname,'restored.txt'),JSON.stringify(state));}};",
+        );
+        let report = apply(
+            &mut fixture,
+            &second,
+            Some(crate::local_import::InstallMode::Update),
+        );
+        assert_eq!(report.outcome, PluginControlOutcome::Applied, "{report:?}");
+        let installed = fixture.registry().local_plugins()["dev.managed"]
+            .path
+            .clone();
+        assert!(installed.join("restored.txt").exists());
+        assert_eq!(
+            services
+                .invoke_storage(&owner, "snapshot", Value::Null)
+                .unwrap()["config"]["note"],
+            "kept"
+        );
+        let broken = folder(
+            &fixture,
+            "broken",
+            "module.exports={activate(){throw Error('candidate failed')},deactivate(){}};",
+        );
+        let report = apply(
+            &mut fixture,
+            &broken,
+            Some(crate::local_import::InstallMode::Replace),
+        );
+        assert_eq!(
+            report.outcome,
+            PluginControlOutcome::RolledBack,
+            "{report:?}"
+        );
+        assert_eq!(
+            services
+                .invoke_storage(&owner, "snapshot", Value::Null)
+                .unwrap()["config"]["note"],
+            "kept"
+        );
+        let third = folder(
+            &fixture,
+            "3",
+            "module.exports={activate(){},deactivate(){},restoreState(){throw Error('replace must start without transferred state')}};",
+        );
+        let report = apply(
+            &mut fixture,
+            &third,
+            Some(crate::local_import::InstallMode::Replace),
+        );
+        assert_eq!(report.outcome, PluginControlOutcome::Applied, "{report:?}");
+        assert_eq!(
+            services
+                .invoke_storage(&owner, "snapshot", Value::Null)
+                .unwrap()["revision"],
+            0
+        );
+        let receipt = fixture.submit(PluginControlRequest {
+            action: PluginControlAction::Remove,
+            plugin_id: "dev.managed".into(),
+            permission: None,
+            cascade: false,
+            remove_source: None,
+            local_import: None,
+        });
+        let response = fixture.wait(&receipt);
+        match response.operation.unwrap().completion.unwrap() {
+            ControlCompletion::Report { report } => {
+                assert_eq!(report.outcome, PluginControlOutcome::Applied, "{report:?}")
+            }
+            error => panic!("{error:?}"),
+        }
+        assert!(
+            !fixture
+                .registry()
+                .local_plugins()
+                .contains_key("dev.managed")
+        );
+        assert!(!installed.exists());
+        assert!(first.exists());
+        assert!(
+            !fixture
+                .renderer
+                .logical_plugins()
+                .iter()
+                .any(|plugin| plugin.manifest.id == "dev.managed")
+        );
+    }
+
+    #[test]
     fn running_managed_updates_replace_generations_at_the_same_id_directory_and_remove_old_packages()
      {
         let mut fixture = Fixture::new();
@@ -968,7 +1131,7 @@ mod runtime {
         assert_eq!(updated.generations[0].generation, 2);
         assert_eq!(
             fixture.registry().local_plugins()["dev.managed"].path,
-            crate::github_distribution::managed_root(fixture.registry().path(), false)
+            crate::installation_files::root(fixture.registry().path())
                 .unwrap()
                 .join("dev.managed")
         );
@@ -985,7 +1148,7 @@ mod runtime {
         assert!(stopped.generations.is_empty());
         assert_eq!(
             fixture.registry().local_plugins()["dev.managed"].path,
-            crate::github_distribution::managed_root(fixture.registry().path(), false)
+            crate::installation_files::root(fixture.registry().path())
                 .unwrap()
                 .join("dev.managed")
         );
@@ -1073,7 +1236,7 @@ mod runtime {
         let registry = fixture.registry();
         assert_eq!(
             registry.local_plugins()["dev.managed"].path,
-            crate::github_distribution::managed_root(registry.path(), false)
+            crate::installation_files::root(registry.path())
                 .unwrap()
                 .join("dev.managed")
         );

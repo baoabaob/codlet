@@ -189,7 +189,7 @@ impl RuntimeManageService {
             .clone();
         list["clientStatus"] = self.client_version_status(&list["plugins"]);
         if self.local_registry.is_some() {
-            list["localManagement"] = serde_json::json!({"available":true, "clientPermissions":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
+            list["localManagement"] = serde_json::json!({"available":true, "clientPermissions":true, "installationLifecycle":true, "watchEnabled":self.local_watch_enabled(), "folderPicker":cfg!(any(windows,target_os="macos"))});
             list["githubManagement"] = serde_json::json!({"available":true});
         }
         if let Some(path) = &self.local_registry
@@ -198,6 +198,10 @@ impl RuntimeManageService {
         {
             for plugin in plugins {
                 let id = plugin["id"].as_str().map(str::to_owned);
+                plugin["importCompletion"] = id
+                    .as_deref()
+                    .and_then(|id| crate::installation_files::pending_import(&registry, id))
+                    .unwrap_or(Value::Null);
                 plugin["updateSource"] = id
                     .as_deref()
                     .and_then(|id| {
@@ -675,6 +679,7 @@ impl RuntimeManageService {
         if matches!(
             method,
             "previewLocal"
+                | "completeImport"
                 | "permissions"
                 | "chooseLocalFolder"
                 | "folderSelection"
@@ -707,7 +712,26 @@ impl RuntimeManageService {
             }
             let registry = crate::plugins::PluginRegistry::load(path.as_ref())
                 .map_err(|error| RuntimeManageError::new("registry_error", error.to_string()))?;
-            let value = if method == "sourceRemovalPreview" || method == "openFolder" {
+            let value = if method == "completeImport" {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields, rename_all = "camelCase")]
+                struct Input {
+                    plugin_id: String,
+                    content_digest: String,
+                    #[serde(default)]
+                    delete_source: bool,
+                }
+                let input: Input = serde_json::from_value(params)
+                    .map_err(|e| RuntimeManageError::new("invalid_params", e.to_string()))?;
+                crate::installation_files::complete_import(
+                    &registry,
+                    &input.plugin_id,
+                    &input.content_digest,
+                    input.delete_source,
+                )
+                .map_err(|e| RuntimeManageError::new("import_completion_error", e.to_string()))?;
+                serde_json::json!({"completed":true,"pluginId":input.plugin_id})
+            } else if method == "sourceRemovalPreview" || method == "openFolder" {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields, rename_all = "camelCase")]
                 struct SourceInput {

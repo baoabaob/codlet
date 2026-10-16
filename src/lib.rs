@@ -29,6 +29,7 @@ pub use core_services::traffic::fixture::run as run_traffic_fixture;
 pub mod diagnostic_bundle;
 pub mod diagnostics;
 pub mod github_distribution;
+mod installation_files;
 pub mod local_import;
 pub mod local_plugins;
 #[cfg(target_os = "macos")]
@@ -44,6 +45,7 @@ mod plugin_lifecycle;
 pub mod plugin_permissions;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod plugin_services;
+mod plugin_uninstall;
 pub mod plugin_watch;
 pub mod plugins;
 pub mod renderer;

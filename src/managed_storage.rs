@@ -24,7 +24,13 @@ struct Journal {
     staged: PathBuf,
     ready: PathBuf,
     backup: Option<PathBuf>,
-    source: packages::GitHubSource,
+    source: Option<packages::GitHubSource>,
+    #[serde(default)]
+    data_reset: Option<crate::plugin_services::DataReset>,
+    #[serde(default)]
+    previous_tree: Option<String>,
+    #[serde(default)]
+    target_identity: Option<String>,
     previous_registration: Option<LocalPluginRegistration>,
     previous_managed: Option<ManagedPluginRecord>,
     previous_enabled: bool,
@@ -163,14 +169,30 @@ fn lock(registry: &Path, id: &str) -> Result<(PathBuf, std::fs::File)> {
     Ok((root.join(format!("{id}.json")), file))
 }
 impl Installation {
+    #[cfg(test)]
     pub(crate) fn publish(
         candidate: &PluginRegistry,
         previous: &PluginRegistry,
         id: &str,
         enable_after: bool,
     ) -> Result<(Self, PluginRegistry, PluginCatalogEntry)> {
+        Self::publish_with_reset(
+            candidate,
+            previous,
+            id,
+            enable_after,
+            !previous.local_plugins().contains_key(id),
+        )
+    }
+    pub(crate) fn publish_with_reset(
+        candidate: &PluginRegistry,
+        previous: &PluginRegistry,
+        id: &str,
+        enable_after: bool,
+        reset_data: bool,
+    ) -> Result<(Self, PluginRegistry, PluginCatalogEntry)> {
         let (installation, registry, entry) =
-            Self::publish_inner(candidate, previous, id, enable_after, true)?;
+            Self::publish_inner(candidate, previous, id, enable_after, true, reset_data)?;
         Ok((
             installation,
             registry,
@@ -183,6 +205,7 @@ impl Installation {
         id: &str,
         enable_after: bool,
         load_entry: bool,
+        reset_data: bool,
     ) -> Result<(Self, PluginRegistry, Option<PluginCatalogEntry>)> {
         let (journal_path, lock) = lock(candidate.path(), id)?;
         if journal_path.exists() {
@@ -190,16 +213,13 @@ impl Installation {
                 "An interrupted installation must be recovered before updating this plugin",
             ));
         }
-        let staged = candidate
-            .managed_plugins()
+        let staged = &candidate
+            .local_plugins()
             .get(id)
-            .and_then(ManagedPluginRecord::current)
-            .ok_or_else(|| issue("Managed selection missing"))?;
-        let checked = packages::inspect_prepared_package(candidate.path(), &staged.package_path)
-            .map_err(issue)?;
-        let target = packages::managed_root(candidate.path(), false)
-            .map_err(issue)?
-            .join(id);
+            .ok_or_else(|| issue("Installation selection missing"))?
+            .path;
+        let checked = crate::installation_files::inspect(candidate.path(), staged)?;
+        let target = crate::installation_files::root(candidate.path())?.join(id);
         if target.exists()
             && previous
                 .local_plugins()
@@ -210,11 +230,12 @@ impl Installation {
                 "The plugin ID directory is already owned by another source",
             ));
         }
-        if target.exists() {
-            managed_plugins::validate_current(previous, id)?;
-        }
-        let ready = packages::clone_prepared_package(candidate.path(), &staged.package_path)
-            .map_err(issue)?;
+        let previous_tree = if target.exists() {
+            Some(crate::installation_files::tree_digest(&target)?)
+        } else {
+            None
+        };
+        let ready = crate::installation_files::clone_package(candidate.path(), staged)?;
         let backup = if target.exists() {
             let temp = tempfile::Builder::new()
                 .prefix("backup-")
@@ -233,10 +254,20 @@ impl Installation {
                 schema: 1,
                 id: id.into(),
                 target,
-                staged: staged.package_path.clone(),
+                staged: staged.clone(),
                 ready: ready.package_path,
                 backup,
                 source: checked.source,
+                data_reset: if reset_data {
+                    Some(
+                        crate::plugin_services::DataReset::plan(candidate.path(), id)
+                            .map_err(issue)?,
+                    )
+                } else {
+                    None
+                },
+                previous_tree,
+                target_identity: None,
                 previous_registration: previous.local_plugins().get(id).cloned(),
                 previous_managed: previous.managed_plugins().get(id).cloned(),
                 previous_enabled: previous.is_enabled(id),
@@ -254,22 +285,32 @@ impl Installation {
         clear_registration_checkpoint(candidate, id)?;
         let result = (|| {
             let j = &installation.journal;
-            if let Some(backup) = &j.backup {
-                packages::relocate_prepared_package(candidate.path(), &j.target, backup)
-                    .map_err(issue)?;
+            if let Some(reset) = &j.data_reset {
+                reset.begin(candidate.path()).map_err(issue)?;
             }
-            packages::relocate_prepared_package(candidate.path(), &j.ready, &j.target)
+            if let Some(backup) = &j.backup {
+                crate::installation_files::relocate_previous(
+                    candidate.path(),
+                    id,
+                    &j.target,
+                    backup,
+                )
+                .map_err(issue)?;
+            }
+            crate::installation_files::relocate(candidate.path(), &j.ready, &j.target)
                 .map_err(issue)?;
             let (mut next, entry) = if load_entry {
-                let (next, entry) =
-                    managed_plugins::at_installation_path(candidate, id, &j.target)?;
+                let (next, entry) = crate::installation_files::at_path(candidate, id, &j.target)?;
                 (next, Some(entry))
             } else {
                 (
-                    managed_plugins::registration_at_path(candidate, id, &j.target)?,
+                    crate::installation_files::registration_at_path(candidate, id, &j.target)?,
                     None,
                 )
             };
+            installation.journal.target_identity = Some(crate::source_removal::directory_identity(
+                &installation.journal.target,
+            )?);
             installation
                 .journal
                 .allowed_registrations
@@ -330,25 +371,41 @@ impl Installation {
         let backup = j.backup.as_ref().filter(|path| path.exists());
         if let Some(path) = backup {
             self.check_previous(path)?;
-        } else if let Some(previous) = &j.previous_registration {
+        } else if let Some(previous) = &j.previous_registration
+            && previous.path.exists()
+            && !(j.backup.is_none() && previous.path == j.target)
+        {
             self.check_previous(&previous.path)?;
         }
         if j.target.exists()
-            && (backup.is_some()
+            && (j.backup.is_none()
+                || backup.is_some()
                 || j.previous_registration
                     .as_ref()
                     .is_none_or(|r| r.path != j.target))
         {
-            let package = packages::inspect_prepared_package(&self.registry_path, &j.target)
-                .map_err(issue)?;
-            if package.source != j.source || package.manifest.id != j.id {
-                return Err(issue("Installation content changed during recovery"));
+            if let Some(identity) = &j.target_identity {
+                crate::source_removal::remove_owned_directory_with_identity(&j.target, identity)?;
+            } else {
+                let package = crate::installation_files::inspect(&self.registry_path, &j.target)
+                    .map_err(issue)?;
+                if package.source != j.source || package.manifest.id != j.id {
+                    return Err(issue("Installation content changed during recovery"));
+                }
+                crate::installation_files::remove(&self.registry_path, &j.target).map_err(issue)?;
             }
-            packages::remove_prepared_package(&self.registry_path, &j.target).map_err(issue)?;
         }
         if let Some(backup) = backup {
-            packages::relocate_prepared_package(&self.registry_path, backup, &j.target)
-                .map_err(issue)?;
+            crate::installation_files::relocate_previous(
+                &self.registry_path,
+                &j.id,
+                backup,
+                &j.target,
+            )
+            .map_err(issue)?;
+        }
+        if let Some(reset) = &j.data_reset {
+            reset.rollback(&self.registry_path).map_err(issue)?;
         }
         registry.restore_managed(
             &j.id,
@@ -364,23 +421,27 @@ impl Installation {
         Ok(registry)
     }
     fn check_previous(&self, path: &Path) -> Result<()> {
+        if let Some(tree) = &self.journal.previous_tree {
+            if crate::installation_files::tree_digest(path)? != *tree {
+                return Err(issue("Previous installation changed during recovery"));
+            }
+            return Ok(());
+        }
         if self.journal.previous_managed.is_none() {
             let prior = self
                 .journal
                 .previous_registration
                 .as_ref()
                 .ok_or_else(|| issue("Previous registration missing"))?;
-            if prior.path != path {
-                return Err(issue("Previous installer source path changed"));
-            }
-            let mut view = PluginRegistry::load(&self.registry_path).map_err(issue)?;
-            view.restore_managed(&self.journal.id, Some(prior.clone()), None);
-            if !crate::plugin_cli::official_seed::verified_installer_source(&view, &self.journal.id)
+            if prior.path != path || crate::installation_files::is_owned(&self.registry_path, path)
             {
-                return Err(issue(
-                    "Previous installer package changed during installation",
-                ));
+                let package = crate::installation_files::inspect(&self.registry_path, path)?;
+                if package.manifest.id != self.journal.id {
+                    return Err(issue("Previous plugin ID changed"));
+                }
             }
+            // External author files were never moved. Restore their registration
+            // and data; activation rechecks the original authorization separately.
             return Ok(());
         }
         let old = self
@@ -405,6 +466,9 @@ impl Installation {
         Ok(())
     }
     fn clean_obsolete(&self) -> Result<()> {
+        if let Some(reset) = &self.journal.data_reset {
+            reset.commit(&self.registry_path).map_err(issue)?;
+        }
         let mut paths = vec![self.journal.staged.clone(), self.journal.ready.clone()];
         paths.extend(self.journal.backup.iter().cloned());
         paths.extend(
@@ -418,12 +482,24 @@ impl Installation {
             && let Some(previous) = &self.journal.previous_registration
         {
             let registry = PluginRegistry::load(&self.registry_path).map_err(issue)?;
-            crate::plugin_cli::official_seed::cleanup_adopted_source(
-                &registry,
-                &self.journal.id,
-                previous,
-            )
-            .map_err(issue)?;
+            if previous.path == self.journal.target {
+                crate::plugin_cli::official_seed::forget_receipt(registry.path(), &self.journal.id)
+                    .map_err(issue)?;
+            } else {
+                let mut view = registry.clone();
+                view.restore_managed(&self.journal.id, Some(previous.clone()), None);
+                if crate::plugin_cli::official_seed::verified_installer_source(
+                    &view,
+                    &self.journal.id,
+                ) {
+                    crate::plugin_cli::official_seed::cleanup_adopted_source(
+                        &registry,
+                        &self.journal.id,
+                        previous,
+                    )
+                    .map_err(issue)?;
+                }
+            }
         }
         Ok(())
     }
@@ -439,12 +515,16 @@ impl Installation {
             {
                 continue;
             }
-            let package =
-                packages::inspect_prepared_package(&self.registry_path, &path).map_err(issue)?;
-            if package.manifest.id != self.journal.id {
+            if self.journal.backup.as_ref() == Some(&path) {
+                self.check_previous(&path)?;
+            } else if crate::installation_files::inspect(&self.registry_path, &path)?
+                .manifest
+                .id
+                != self.journal.id
+            {
                 return Err(issue("Cleanup directory belongs to a different plugin"));
             }
-            packages::remove_prepared_package(&self.registry_path, &path).map_err(issue)?;
+            crate::installation_files::remove(&self.registry_path, &path).map_err(issue)?;
         }
         Ok(())
     }
@@ -452,6 +532,7 @@ impl Installation {
 
 /// Called by the exclusive Core owner before loading any optional plugins.
 pub(crate) fn prepare_installations(registry: &mut PluginRegistry) -> Result<()> {
+    crate::plugin_uninstall::recover(registry.path())?;
     let root = packages::managed_root(registry.path(), true).map_err(issue)?;
     let mut deferred = BTreeSet::new();
     for file in std::fs::read_dir(transaction_root(registry.path())?).map_err(issue)? {
@@ -466,8 +547,13 @@ pub(crate) fn prepare_installations(registry: &mut PluginRegistry) -> Result<()>
         let journal: Journal =
             serde_json::from_slice(&std::fs::read(file.path()).map_err(issue)?).map_err(issue)?;
         if journal.schema != 1
+            || journal
+                .data_reset
+                .as_ref()
+                .is_some_and(|reset| !reset.belongs_to(&journal.id))
             || !crate::plugins::valid_plugin_id(&journal.id)
-            || journal.target != root.join(&journal.id)
+            || (journal.target != root.join(&journal.id)
+                && journal.target != root.parent().unwrap().join(&journal.id))
             || journal.ready.parent() != Some(root.join(".staging").as_path())
             || journal
                 .backup
@@ -555,7 +641,7 @@ pub(crate) fn prepare_installations(registry: &mut PluginRegistry) -> Result<()>
         let Some(current) = record.current() else {
             continue;
         };
-        if current.package_path == root.join(&id) && record.history.len() == 1 {
+        if current.package_path == root.parent().unwrap().join(&id) && record.history.len() == 1 {
             continue;
         }
         if let Err(error) = managed_plugins::validate_current(registry, &id) {
@@ -574,6 +660,7 @@ pub(crate) fn prepare_installations(registry: &mut PluginRegistry) -> Result<()>
                 registry,
                 &id,
                 registry.is_enabled(&id),
+                false,
                 false,
             )?;
             if let Err(error) = installation.commit() {

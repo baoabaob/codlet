@@ -12,8 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod lifecycle;
 mod secrets;
 mod storage;
+
+pub(crate) use lifecycle::{DataReset, purge_plugin};
 
 pub use secrets::SecretValue;
 
@@ -162,9 +165,14 @@ impl ServiceRoot {
         let root_path = PathBuf::from(root_name);
         ensure_directory(&root_path)?;
         ensure_directory(&root_path.join("plugins"))?;
-        let scope_path = registry_path
-            .canonicalize()
-            .unwrap_or_else(|_| registry_path.to_path_buf());
+        // A temporarily unavailable or not-yet-created registry file must use
+        // the same canonical prefix as an existing file on Windows.
+        let fallback_scope = parent.canonicalize().map_err(storage_io)?.join(
+            registry_path
+                .file_name()
+                .ok_or_else(|| storage_io("Registry filename missing"))?,
+        );
+        let scope_path = registry_path.canonicalize().unwrap_or(fallback_scope);
         Ok(Self {
             path: Arc::new(root_path),
             scope_hash: Arc::new(hash_hex(&path_identity_bytes(&scope_path))),
@@ -175,27 +183,41 @@ impl ServiceRoot {
         owner.validate()?;
         let path = self.path.join("plugins").join(&owner.plugin_id);
         ensure_directory(&path)?;
-        let owner_hash = hash_hex(owner.source_identity.as_bytes());
         let _lock = lock_file(&path.join("owner.lock"))?;
         let owner_path = path.join("owner.json");
-        let expected = OwnerDocument {
-            schema: 1,
-            plugin_id: owner.plugin_id.clone(),
-            source_identity_hash: owner_hash.clone(),
-        };
-        match read_json::<OwnerDocument>(&owner_path, 16 * 1024)? {
-            None => atomic_json(&owner_path, &expected, 16 * 1024)?,
+        // The installation transaction decides whether data is kept or reset.
+        // Retain legacy hashes so an explicit update can still resolve existing
+        // OS credentials after the package moves into the installation directory.
+        let owner_hash = match read_json::<OwnerDocument>(&owner_path, 16 * 1024)? {
             Some(current)
-                if current.schema == expected.schema
-                    && current.plugin_id == expected.plugin_id
-                    && current.source_identity_hash == expected.source_identity_hash => {}
+                if current.schema == 1
+                    && current.plugin_id == owner.plugin_id
+                    && lifecycle::valid_hash(&current.source_identity_hash) =>
+            {
+                current.source_identity_hash
+            }
             Some(_) => {
                 return Err(ServiceError::new(
-                    "source_identity_changed",
-                    "this plugin ID already has data owned by another stable source identity",
+                    "storage_corrupt",
+                    "Invalid plugin data owner",
                 ));
             }
-        }
+            None => {
+                let mut nonce = [0_u8; 32];
+                secrets::fill_random(&mut nonce)?;
+                let hash = hash_hex(&nonce);
+                atomic_json(
+                    &owner_path,
+                    &OwnerDocument {
+                        schema: 1,
+                        plugin_id: owner.plugin_id.clone(),
+                        source_identity_hash: hash.clone(),
+                    },
+                    16 * 1024,
+                )?;
+                hash
+            }
+        };
         Ok(Namespace {
             path,
             credential_prefix: format!(

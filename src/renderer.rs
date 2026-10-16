@@ -2147,6 +2147,7 @@ fn invoke_builtin_host_endpoint(
                 | "submit"
                 | "operation"
                 | "previewLocal"
+                | "completeImport"
                 | "permissions"
                 | "chooseLocalFolder"
                 | "folderSelection"

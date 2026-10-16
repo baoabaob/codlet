@@ -252,7 +252,8 @@ fn offline_edit(
 }
 
 /// The safe-mode owner already holds the scope lease. Reuse offline validation
-/// and atomic saves, but never dispatch a plugin executor or delete source files.
+/// and atomic saves without dispatching a plugin executor. Uninstall also clears
+/// owned installation files and data.
 pub(crate) fn recover_in_safe_mode(
     path: &std::path::Path,
     request: &PluginControlRequest,
@@ -324,7 +325,21 @@ fn edit_registration(
     output: &mut CliOutput,
 ) -> Result<(), PluginCliError> {
     let mut registry = PluginRegistry::load(path)?;
+    let unfinished_uninstall = crate::plugin_uninstall::pending(path, &request.plugin_id)?;
+    if unfinished_uninstall {
+        crate::plugin_uninstall::finish(path, &request.plugin_id)?;
+        registry = PluginRegistry::load(path)?;
+    }
     let plugin_id = &request.plugin_id;
+    if unfinished_uninstall
+        && request.action == PluginControlAction::Remove
+        && !registry.local_plugins().contains_key(plugin_id)
+    {
+        output.registration = Some(
+            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":false,"applies":"immediate","directory":"removed","dataCleared":true}),
+        );
+        return Ok(());
+    }
     if crate::catalog::PluginCatalog::load(&registry)?.is_core(plugin_id) {
         let report = edit_legacy_adapter_registration(&mut registry, request)?;
         output.registration = Some(
@@ -337,14 +352,16 @@ fn edit_registration(
         PluginControlAction::Import | PluginControlAction::Update | PluginControlAction::Rollback
     ) {
         let selection = request.local_import.as_ref().expect("validated import");
-        if selection.managed.is_some() {
-            let (staged, _) = crate::managed_plugins::stage(&registry, plugin_id, selection)?;
-            let (mut installation, mut next, _) = crate::managed_storage::Installation::publish(
-                &staged,
-                &registry,
-                plugin_id,
-                selection.enable,
-            )?;
+        {
+            let (staged, _) = crate::local_import::stage(&registry, plugin_id, selection)?;
+            let (mut installation, mut next, _) =
+                crate::managed_storage::Installation::publish_with_reset(
+                    &staged,
+                    &registry,
+                    plugin_id,
+                    selection.enable,
+                    selection.resets_data(&registry, plugin_id),
+                )?;
             if let Err(error) = next
                 .set_enabled(plugin_id, selection.enable)
                 .and_then(|()| next.save())
@@ -358,13 +375,6 @@ fn edit_registration(
             );
             return Ok(());
         }
-        let (mut next, _) = crate::local_import::stage(&registry, plugin_id, selection)?;
-        next.set_enabled(plugin_id, selection.enable)?;
-        next.save()?;
-        output.registration = Some(
-            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":selection.enable,"applies":"next-codlet-launch","directory":"preserved"}),
-        );
-        return Ok(());
     }
     if matches!(
         request.action,
@@ -384,7 +394,7 @@ fn edit_registration(
             .map(|selection| crate::source_removal::prepare(&registry, plugin_id, selection))
             .transpose()?;
         let catalog = crate::catalog::PluginCatalog::load(&registry)?;
-        if !request.cascade {
+        if request.action == PluginControlAction::Disable && !request.cascade {
             crate::plugin_lifecycle::validate_disable(&[], &catalog, &registry, plugin_id)
                 .map_err(|error| PluginControlError::new(error.code(), error.to_string()))?;
         }
@@ -398,13 +408,20 @@ fn edit_registration(
             registry.set_enabled(id, false)?;
         }
         if request.action == PluginControlAction::Remove {
-            registry.remove_local(plugin_id)?;
+            crate::plugin_uninstall::prepare(&registry, plugin_id)?;
+            registry.forget_plugin(plugin_id)?;
         }
         registry.save()?;
+        if request.action == PluginControlAction::Remove {
+            crate::plugin_uninstall::finish(path, plugin_id)?;
+        }
         let source_result = source_removal.map(crate::source_removal::apply);
         output.registration = Some(
-            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":false,"affected_plugin_ids":affected,"applies":"next-codlet-launch","directory":"preserved"}),
+            serde_json::json!({"plugin_id":plugin_id,"action":request.action,"enabled":false,"affected_plugin_ids":affected,"applies":"next-codlet-launch","directory":if request.action == PluginControlAction::Remove { "removed" } else { "preserved" }}),
         );
+        if request.action == PluginControlAction::Remove {
+            output.registration.as_mut().unwrap()["dataCleared"] = serde_json::Value::Bool(true);
+        }
         if let Some(result) = source_result {
             let record = output.registration.as_mut().expect("registration result");
             record["directory"] = serde_json::Value::from(if result.status == "deleted" {
@@ -483,10 +500,12 @@ pub(crate) fn edit_legacy_adapter_registration(
         .as_ref()
         .map(|selection| crate::source_removal::prepare(registry, &request.plugin_id, selection))
         .transpose()?;
+    crate::plugin_uninstall::prepare(registry, &request.plugin_id)?;
     registry
-        .remove_local(&request.plugin_id)
+        .forget_plugin(&request.plugin_id)
         .and_then(|()| registry.save())
         .map_err(|error| PluginControlError::new("registry_error", error.to_string()))?;
+    crate::plugin_uninstall::finish(registry.path(), &request.plugin_id)?;
     if let Some(removal) = removal {
         let result = crate::source_removal::apply(removal);
         if result.failed() {
@@ -494,11 +513,14 @@ pub(crate) fn edit_legacy_adapter_registration(
         }
     }
     Ok(crate::plugin_control::PluginControlReport {
-        action: request.action, plugin_id: request.plugin_id.clone(),
+        action: request.action,
+        plugin_id: request.plugin_id.clone(),
         outcome: crate::plugin_control::PluginControlOutcome::Applied,
-        desired_enabled: false, affected_plugin_ids: vec![request.plugin_id.clone()],
-        generations: Vec::new(), target_failures: Vec::new(),
-        message: Some("Previous Adapter registration removed. Core capabilities, consumer enablement, plugin storage and managed history are preserved.".into()),
+        desired_enabled: false,
+        affected_plugin_ids: vec![request.plugin_id.clone()],
+        generations: Vec::new(),
+        target_failures: Vec::new(),
+        message: Some("Previous Adapter installation and data removed.".into()),
     })
 }
 

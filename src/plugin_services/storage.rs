@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn stable_source_keeps_directories_and_changed_source_is_refused() {
+    fn existing_installation_data_survives_a_source_path_change() {
         let (_root, storage, owner) = fixture();
         let directories = storage.invoke(&owner, "directories", Value::Null).unwrap();
         fs::write(
@@ -616,13 +616,11 @@ mod tests {
             plugin_id: owner.plugin_id,
             source_identity: "github:another/source".into(),
         };
-        assert_eq!(
-            storage
-                .invoke(&changed, "snapshot", Value::Null)
-                .unwrap_err()
-                .code,
-            "source_identity_changed"
-        );
+        let updated = storage
+            .invoke(&changed, "directories", Value::Null)
+            .unwrap();
+        assert_eq!(updated["dataPath"], directories["dataPath"]);
+        assert_eq!(updated["dataBytes"], 4);
     }
 
     #[test]

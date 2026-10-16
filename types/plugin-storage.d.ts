@@ -62,7 +62,7 @@ export interface PluginStorageChangesResult {
 }
 
 export interface PluginStorageDirectories {
-  /** Stable across reloads and updates for the same registered source identity. */
+  /** Stable across reloads and explicit updates; cleared by replace or uninstall. */
   readonly dataPath: string;
   readonly cachePath: string;
   readonly dataBytes: number;

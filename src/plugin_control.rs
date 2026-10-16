@@ -59,7 +59,11 @@ fn is_false(value: &bool) -> bool {
 
 impl PluginControlRequest {
     pub(crate) fn activation_requested(&self) -> bool {
-        self.action.starts_plugin()
+        (self.action.starts_plugin()
+            && self
+                .local_import
+                .as_ref()
+                .is_none_or(|selection| selection.enable))
             || matches!(
                 self.action,
                 PluginControlAction::Update | PluginControlAction::Rollback
@@ -123,7 +127,7 @@ impl PluginControlRequest {
                 }
                 PluginControlAction::Update => matches!(
                     selection.managed,
-                    Some(ManagedOperation::Update | ManagedOperation::Adopt)
+                    None | Some(ManagedOperation::Update | ManagedOperation::Adopt)
                 ),
                 PluginControlAction::Rollback => {
                     selection.managed == Some(ManagedOperation::Rollback)

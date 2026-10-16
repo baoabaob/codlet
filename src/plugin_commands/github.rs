@@ -208,6 +208,8 @@ fn apply(preview: ManagedPreview, options: PluginTrustOptions) -> Result<(), Pro
         ManagedOperation::Adopt => PluginControlAction::Update,
         ManagedOperation::Rollback => PluginControlAction::Rollback,
     };
+    let mut selection = preview.request(options.grants, broker_policy, options.enable);
+    selection.mode = options.mode;
     crate::plugin_cli::manage(
         PluginControlRequest {
             action,
@@ -215,7 +217,7 @@ fn apply(preview: ManagedPreview, options: PluginTrustOptions) -> Result<(), Pro
             permission: None,
             cascade: false,
             remove_source: None,
-            local_import: Some(preview.request(options.grants, broker_policy, options.enable)),
+            local_import: Some(selection),
         },
         options.json,
     )?;

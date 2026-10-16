@@ -135,11 +135,11 @@ export type PluginControlRequest =
   | { action: 'remove'; plugin_id: string; permission?: never; cascade?: boolean; local_import?: never; remove_source?: SourceRemovalRequest }
   | { action: 'revoke'; plugin_id: string; permission: PluginPermission; cascade?: false; local_import?: never }
   | { action: 'import'; plugin_id: string; local_import: LocalImportRequest & { managed?: 'install' }; permission?: never; cascade?: false }
-  | { action: 'update'; plugin_id: string; local_import: LocalImportRequest & { managed: 'update' | 'adopt' }; permission?: never; cascade?: false }
+  | { action: 'update'; plugin_id: string; local_import: LocalImportRequest & { managed?: 'update' | 'adopt' }; permission?: never; cascade?: false }
   | { action: 'rollback'; plugin_id: string; local_import: LocalImportRequest & { managed: 'rollback' }; permission?: never; cascade?: false };
 
 export interface LocalImportRequest {
-  /** Exact canonical directory returned by the preview. Local development paths remain author-owned; managed paths are Core-owned. */
+  /** Exact canonical directory returned by the preview. Folder imports are copied into the Core installation directory. */
   path: string;
   contentDigest: string;
   registrationDigest: string;
@@ -150,6 +150,8 @@ export interface LocalImportRequest {
   enable?: boolean;
   /** Core validates the package receipt; caller-supplied source metadata is never trusted. */
   managed?: 'install' | 'update' | 'adopt' | 'rollback';
+  /** Required when installing over an existing ID. Update preserves data; replace clears it. */
+  mode?: 'update' | 'replace';
 }
 
 export interface ImportCapability { name: string; api: number; scope: 'runtime' | 'target' | 'backend-session' | 'thread'; }
@@ -159,7 +161,7 @@ export interface LocalImportPreview {
   path: string;
   contentDigest: string;
   registrationDigest: string;
-  ownership: 'development-directory';
+  ownership: 'copied-installation';
   existingRegistration: LocalPluginRegistration | null;
   existingEnabled: boolean;
   manifest: {
@@ -257,7 +259,8 @@ export interface RuntimeManagePlugin {
   path: string | null;
   grants: PluginPermission[];
   brokerPolicy?: BrokerPolicy | null;
-  ownership?: 'bundled' | 'development-directory' | 'installer-seed' | 'core-managed-github';
+  ownership?: 'bundled' | 'development-directory' | 'copied-installation' | 'installer-seed' | 'core-managed-github';
+  importCompletion?: {path: string; contentDigest: string} | null;
   managedSource?: GitHubSource;
   managedVersionKey?: string;
   /** Independently verified update channel; not a downloaded package receipt. */
@@ -295,7 +298,7 @@ export interface RuntimeManageList {
   clientStatus?: ClientVersionStatus;
   plugins: RuntimeManagePlugin[]; sampledAtUnixMs?: number;
   deviceCompatibility?: DeviceCompatibility;
-  localManagement?: { available: true; clientPermissions?: boolean; watchEnabled: boolean; folderPicker: boolean };
+  localManagement?: { available: true; clientPermissions?: boolean; installationLifecycle?: boolean; watchEnabled: boolean; folderPicker: boolean };
   githubManagement?: { available: true };
   /** Core-owned runtime skill, suitable for a native skill prompt link. */
   runtimeSkill?: { available: false } | { available: true; name: 'codlet'; path: string };
@@ -315,6 +318,7 @@ export interface RuntimeManageMethods {
   submit: { params: RuntimeManageOperationInput; result: ControlReport };
   operation: { params: RuntimeManageOperationInput; result: ControlReport };
   previewLocal: { params: { path: string }; result: LocalImportPreview };
+  completeImport: { params: { pluginId: string; contentDigest: string; deleteSource: boolean }; result: { completed: true; pluginId: string } };
   permissions: { params: { pluginId: string }; result: PluginPermissionsReport };
   sourceRemovalPreview: { params: { pluginId: string }; result: SourceRemovalPreview };
   openFolder: { params: { pluginId: string }; result: { pluginId: string; opened: true } };

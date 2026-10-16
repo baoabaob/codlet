@@ -256,7 +256,7 @@ pub(crate) fn with_registered_directory<T>(
     action(&directory.path)
 }
 
-fn directory_identity(path: &Path) -> Result<String, PluginControlError> {
+pub(crate) fn directory_identity(path: &Path) -> Result<String, PluginControlError> {
     #[cfg(any(windows, target_os = "macos"))]
     {
         Ok(native::pin_directory(path, false)?.identity)
@@ -267,6 +267,35 @@ fn directory_identity(path: &Path) -> Result<String, PluginControlError> {
         Err(error(
             "source_removal_unsupported",
             "Source removal is available on Windows.",
+        ))
+    }
+}
+
+pub(crate) fn delete_import_source(
+    registry: &PluginRegistry,
+    path: &Path,
+    identity: &str,
+) -> Result<(), PluginControlError> {
+    protected_path(registry, "", path, false)?;
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let directory = native::pin_directory(path, true)?;
+        if directory.identity != identity {
+            return Err(error(
+                "source_directory_changed",
+                "Source directory changed after installation",
+            ));
+        }
+        directory
+            .remove()
+            .map_err(|e| error("source_removal_failed", e.to_string()))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = identity;
+        Err(error(
+            "source_removal_unsupported",
+            "Source removal is unsupported on this platform",
         ))
     }
 }
@@ -285,6 +314,32 @@ pub(crate) fn remove_owned_directory(path: &Path) -> Result<(), PluginControlErr
         std::fs::remove_dir_all(path).map_err(|e| error("source_removal_failed", e.to_string()))
     }
 }
+pub(crate) fn remove_owned_directory_with_identity(
+    path: &Path,
+    identity: &str,
+) -> Result<(), PluginControlError> {
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let directory = native::pin_directory(path, true)?;
+        if directory.identity != identity {
+            return Err(error(
+                "source_directory_changed",
+                "The installed directory was replaced after uninstall began; its replacement was preserved",
+            ));
+        }
+        directory
+            .remove()
+            .map_err(|e| error("source_removal_failed", e.to_string()))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (path, identity);
+        Err(error(
+            "source_removal_unsupported",
+            "Owned directory deletion is unavailable on this platform",
+        ))
+    }
+}
 
 fn is_managed(registry: &PluginRegistry, plugin_id: &str, path: &Path) -> bool {
     registry
@@ -292,6 +347,9 @@ fn is_managed(registry: &PluginRegistry, plugin_id: &str, path: &Path) -> bool {
         .get(plugin_id)
         .and_then(|record| record.current())
         .is_some_and(|version| version.package_path == path)
+        || crate::installation_files::is_owned(registry.path(), path)
+            && crate::installation_files::inspect(registry.path(), path)
+                .is_ok_and(|package| package.manifest.id == plugin_id)
 }
 
 fn protected_path(
@@ -323,10 +381,11 @@ fn protected_path(
     }
     if within(source, registry_parent) {
         let managed_parent = registry_parent.join("packages/github");
+        let installation_parent = registry_parent.join("packages");
         if !managed
-            || source
-                .parent()
-                .is_none_or(|parent| !same_path(parent, &managed_parent))
+            || source.parent().is_none_or(|parent| {
+                !same_path(parent, &managed_parent) && !same_path(parent, &installation_parent)
+            })
         {
             return Err(blocked());
         }

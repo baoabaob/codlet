@@ -224,6 +224,21 @@ impl PluginSecrets {
         Ok(document)
     }
 
+    pub(super) fn purge(&self, namespace: &Namespace) -> Result<()> {
+        let _lock = lock_file(&namespace.path.join("credentials.lock"))?;
+        for reference in self.read(namespace)?.credentials.keys() {
+            let key = target(namespace, reference);
+            self.backend.delete(&key)?;
+            if self.backend.get(&key)?.is_some() {
+                return Err(ServiceError::new(
+                    "credential_cleanup_incomplete",
+                    "System credential deletion was not confirmed",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn list(&self, namespace: &Namespace, input: ListInput) -> Result<Value> {
         let origin = input
             .origin
@@ -541,7 +556,7 @@ fn not_found() -> ServiceError {
 }
 
 #[cfg(windows)]
-fn fill_random(bytes: &mut [u8]) -> Result<()> {
+pub(super) fn fill_random(bytes: &mut [u8]) -> Result<()> {
     use windows_sys::Win32::Security::Cryptography::{
         BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
     };
@@ -564,7 +579,7 @@ fn fill_random(bytes: &mut [u8]) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn fill_random(bytes: &mut [u8]) -> Result<()> {
+pub(super) fn fill_random(bytes: &mut [u8]) -> Result<()> {
     use std::io::Read;
     std::fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(bytes))
@@ -577,7 +592,7 @@ fn fill_random(bytes: &mut [u8]) -> Result<()> {
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-fn fill_random(_bytes: &mut [u8]) -> Result<()> {
+pub(super) fn fill_random(_bytes: &mut [u8]) -> Result<()> {
     Err(ServiceError::new(
         "credential_unavailable",
         "system credential storage is unsupported on this platform",
@@ -673,12 +688,16 @@ impl SecretBackend for WindowsCredentialBackend {
 
     fn delete(&self, target: &str) -> Result<()> {
         use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError};
         use windows_sys::Win32::Security::Credentials::{CRED_TYPE_GENERIC, CredDeleteW};
         let target = std::ffi::OsStr::new(target)
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
         if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
+            if unsafe { GetLastError() } == ERROR_NOT_FOUND {
+                return Ok(());
+            }
             return Err(windows_credential_error());
         }
         Ok(())
@@ -830,10 +849,7 @@ impl SecretBackend for MacKeychainBackend {
 
     fn delete(&self, target: &str) -> Result<()> {
         let Some((_secret, item)) = self.find(target)? else {
-            return Err(ServiceError::new(
-                "credential_unavailable",
-                "system credential is unavailable",
-            ));
+            return Ok(());
         };
         let status = unsafe { macos_keychain::SecKeychainItemDelete(item) };
         unsafe { macos_keychain::CFRelease(item.cast()) };
@@ -1027,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_source_cannot_inherit_metadata_or_system_secret() {
+    fn explicit_update_can_keep_credentials_across_source_changes() {
         let (_root, secrets, owner, backend) = fixture();
         let created = secrets
             .invoke(
@@ -1044,9 +1060,9 @@ mod tests {
         assert_eq!(
             secrets
                 .resolve(&changed, reference, "https://api.example.test")
-                .unwrap_err()
-                .code,
-            "source_identity_changed"
+                .unwrap()
+                .as_str(),
+            "source-bound"
         );
         assert_eq!(backend.0.lock().unwrap().len(), 1);
     }
@@ -1075,6 +1091,97 @@ mod tests {
         ] {
             assert_eq!(normalize_origin(origin).unwrap_err().code, "invalid_params");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_and_uninstall_delete_system_credentials_and_rollback_restores_old_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = temp.path().join("config.json");
+        std::fs::write(&registry, "{}").unwrap();
+        let root = ServiceRoot::new(&registry).unwrap();
+        let secrets = PluginSecrets::system(root.clone());
+        let owner = ServiceOwner {
+            plugin_id: "dev.lifecycle-credentials".into(),
+            source_identity: "local:source".into(),
+        };
+        struct Cleanup(Vec<String>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let backend = system_backend();
+                for key in &self.0 {
+                    let _ = backend.delete(key);
+                }
+            }
+        }
+        let mut cleanup = Cleanup(vec![]);
+        let put = |text: &str| {
+            secrets.invoke(&owner, "put", json!({"expectedRevision":0,"origin":"https://lifecycle.invalid","secret":text})).unwrap()["credential"]["reference"].as_str().unwrap().to_owned()
+        };
+        let old = put("old-test-value");
+        let old_target = target(&root.namespace(&owner).unwrap(), &old);
+        cleanup.0.push(old_target.clone());
+        let reset = super::super::DataReset::plan(&registry, &owner.plugin_id).unwrap();
+        reset.begin(&registry).unwrap();
+        let candidate = put("candidate-test-value");
+        let candidate_target = target(&root.namespace(&owner).unwrap(), &candidate);
+        cleanup.0.push(candidate_target.clone());
+        assert_ne!(old_target, candidate_target);
+        reset.rollback(&registry).unwrap();
+        assert_eq!(
+            secrets
+                .resolve(&owner, &old, "https://lifecycle.invalid")
+                .unwrap()
+                .as_str(),
+            "old-test-value"
+        );
+        assert!(secrets.backend.get(&candidate_target).unwrap().is_none());
+        let reset = super::super::DataReset::plan(&registry, &owner.plugin_id).unwrap();
+        reset.begin(&registry).unwrap();
+        let fresh = put("fresh-test-value");
+        let fresh_target = target(&root.namespace(&owner).unwrap(), &fresh);
+        cleanup.0.push(fresh_target.clone());
+        assert_eq!(
+            ServiceRoot::new(&registry).unwrap().scope_hash,
+            root.scope_hash,
+            "Credential registry scope changed"
+        );
+        let backup_name = serde_json::to_value(&reset).unwrap()["backupName"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let backup_path = root.path.join(".retired").join(backup_name);
+        let backup_owner =
+            read_json::<super::super::OwnerDocument>(&backup_path.join("owner.json"), 16 * 1024)
+                .unwrap()
+                .unwrap();
+        let backup_namespace = Namespace {
+            path: backup_path,
+            credential_prefix: format!(
+                "Codlet/{}/{}/{}",
+                &root.scope_hash[..32],
+                owner.plugin_id,
+                backup_owner.source_identity_hash
+            ),
+        };
+        assert_eq!(
+            target(&backup_namespace, &old),
+            old_target,
+            "Credential data owner changed"
+        );
+        assert!(
+            secrets
+                .read(&backup_namespace)
+                .unwrap()
+                .credentials
+                .contains_key(&old),
+            "Previous credential metadata is missing"
+        );
+        reset.commit(&registry).unwrap();
+        assert!(secrets.backend.get(&old_target).unwrap().is_none());
+        super::super::purge_plugin(&registry, &owner.plugin_id).unwrap();
+        assert!(secrets.backend.get(&fresh_target).unwrap().is_none());
+        super::super::purge_plugin(&registry, &owner.plugin_id).unwrap();
     }
 
     #[cfg(windows)]

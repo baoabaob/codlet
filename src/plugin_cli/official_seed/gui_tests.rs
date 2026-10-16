@@ -91,7 +91,7 @@ impl Fixture {
         roots(&self.registry).unwrap().0.join(ID)
     }
     fn managed(&self) -> PathBuf {
-        roots(&self.registry).unwrap().0.join("github").join(ID)
+        roots(&self.registry).unwrap().0.join(ID)
     }
 }
 
@@ -119,7 +119,7 @@ fn bundled_gui_upgrades_verified_github_preserving_revocation_and_can_return_to_
     registration.path = f.target();
     assert_eq!(installed.local_plugins()[ID], registration);
     assert!(!installed.is_enabled(ID));
-    assert!(!f.managed().exists());
+    assert!(installed.managed_plugins().get(ID).is_none());
     assert!(verified_installer_source(&installed, ID));
     assert!(verified_update_channel(&installed, ID).is_some());
     let before = fs::read(&f.registry).unwrap();
@@ -128,7 +128,8 @@ fn bundled_gui_upgrades_verified_github_preserving_revocation_and_can_return_to_
     assert_eq!(fs::read(&f.registry).unwrap(), before);
     f.github("1.0.0", IDENTITY, ManagedOperation::Adopt);
     managed_plugins::validate_current(&f.registry(), ID).unwrap();
-    assert!(!f.target().exists());
+    assert!(f.target().exists());
+    assert!(!verified_installer_source(&f.registry(), ID));
 }
 
 #[test]
@@ -196,7 +197,7 @@ fn bundled_gui_refuses_foreign_identity_modified_source_and_stale_registration()
 
 #[test]
 fn bundled_gui_recovers_github_transition_at_every_durable_boundary() {
-    for boundary in 0..7 {
+    for boundary in 0..8 {
         let f = Fixture::new();
         f.github("0.1.9", IDENTITY, ManagedOperation::Install);
         f.bundle("1.0.0-rc.2");
@@ -213,13 +214,15 @@ fn bundled_gui_recovers_github_transition_at_every_durable_boundary() {
             next: next.clone(),
             previous_enabled: true,
             enabled: true,
-            previous_package: None,
+            previous_package: selected.previous_package,
             package: selected.package.clone(),
             previous_receipt: None,
-            committed: boundary >= 5,
+            committed: boundary >= 6,
+            data_reset: None,
         };
         let (_, tx) = roots(&f.registry).unwrap();
         let ready = tx.join(format!("{ID}.ready"));
+        let backup = tx.join(format!("{ID}.backup"));
         write(&tx.join(format!("{ID}.json")), &journal).unwrap();
         fs::create_dir(&ready).unwrap();
         if boundary == 0 {
@@ -230,15 +233,18 @@ fn bundled_gui_recovers_github_transition_at_every_durable_boundary() {
             }
         }
         if boundary >= 2 {
-            fs::rename(&ready, f.target()).unwrap();
+            fs::rename(f.target(), &backup).unwrap();
         }
         if boundary >= 3 {
+            fs::rename(&ready, f.target()).unwrap();
+        }
+        if boundary >= 4 {
             let mut registry = f.registry();
             registry.restore_managed(ID, None, None);
             registry.register_local(ID, next.clone()).unwrap();
             registry.save().unwrap();
         }
-        if boundary >= 4 {
+        if boundary >= 5 {
             write(
                 &receipt_path(&f.registry, ID).unwrap(),
                 &Receipt {
@@ -249,22 +255,22 @@ fn bundled_gui_recovers_github_transition_at_every_durable_boundary() {
             )
             .unwrap();
         }
-        if boundary == 6 {
-            fs::remove_file(f.managed().join("renderer.js")).unwrap();
+        if boundary == 7 {
+            fs::remove_file(backup.join("renderer.js")).unwrap();
         }
         recover(&f.registry).unwrap();
         recover(&f.registry).unwrap();
-        if boundary >= 5 {
+        if boundary >= 6 {
             assert_eq!(f.registry().local_plugins()[ID], next);
             assert!(verified_installer_source(&f.registry(), ID));
-            assert!(!f.managed().exists());
+            assert!(!backup.exists());
         } else {
             assert_eq!(
                 registration_digest(&f.registry(), ID),
                 registration_digest(&previous, ID)
             );
             managed_plugins::validate_current(&f.registry(), ID).unwrap();
-            assert!(!f.target().exists());
+            assert!(f.target().exists());
         }
         assert!(!tx.join(format!("{ID}.json")).exists());
         assert!(!ready.exists());

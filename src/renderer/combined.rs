@@ -362,6 +362,13 @@ impl RendererRuntime {
         }
         Ok(())
     }
+    pub(crate) fn reset_package_shape(&mut self, id: &str) {
+        self.entry_shapes.remove(id);
+    }
+    pub(crate) fn forget_uninstalled_package(&mut self, id: &str) {
+        self.entry_shapes.remove(id);
+        self.catalog.forget_local_entry(id);
+    }
 
     #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn set_client_source(

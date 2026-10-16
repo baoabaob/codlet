@@ -180,6 +180,13 @@ impl Fixture {
     fn config(&self) -> Value {
         serde_json::from_slice(&fs::read(self.config_path()).unwrap()).unwrap()
     }
+    fn installed(&self) -> PathBuf {
+        PathBuf::from(
+            self.config()["localPlugins"][PLUGIN_ID]["path"]
+                .as_str()
+                .unwrap(),
+        )
+    }
 
     fn register(&self) {
         successful(self.add(&self.plugin, &["--trust", "--grant", "ui.dom"]));
@@ -234,7 +241,14 @@ fn trusted_relative_directory_is_persisted_listed_and_preserves_old_preferences(
     assert_eq!(config["plugins"][PLUGIN_ID]["enabled"], false);
     assert_eq!(
         PathBuf::from(config["localPlugins"][PLUGIN_ID]["path"].as_str().unwrap()),
-        fixture.plugin.canonicalize().unwrap()
+        fixture
+            .config_path()
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("packages")
+            .join(PLUGIN_ID)
     );
     assert_eq!(
         config["localPlugins"][PLUGIN_ID]["grants"],
@@ -264,13 +278,23 @@ fn permission_changes_require_an_explicit_grant_update_without_reenabling() {
     successful(fixture.run(&["plugin", "disable", PLUGIN_ID]));
     let disabled = fs::read(fixture.config_path()).unwrap();
     fixture.write_manifest(PLUGIN_ID, &["ui.dom", "runtime.manage"]);
+    successful(fixture.run(&["plugin", "enable", PLUGIN_ID]));
+    successful(fixture.run(&["plugin", "disable", PLUGIN_ID]));
+    fs::copy(
+        fixture.plugin.join("codlet.json"),
+        fixture.installed().join("codlet.json"),
+    )
+    .unwrap();
     let denied = fixture.run(&["plugin", "enable", PLUGIN_ID]);
     assert!(!denied.status.success());
     assert!(!String::from_utf8_lossy(&denied.stdout).contains("plugin-state:"));
     assert_eq!(fs::read(fixture.config_path()).unwrap(), disabled);
     assert!(
         !fixture
-            .add(&fixture.plugin, &["--trust", "--grant", "ui.dom"])
+            .add(
+                &fixture.plugin,
+                &["--update", "--trust", "--grant", "ui.dom"]
+            )
             .status
             .success()
     );
@@ -278,7 +302,14 @@ fn permission_changes_require_an_explicit_grant_update_without_reenabling() {
 
     successful(fixture.add(
         &fixture.plugin,
-        &["--trust", "--grant", "ui.dom", "--grant", "runtime.manage"],
+        &[
+            "--update",
+            "--trust",
+            "--grant",
+            "ui.dom",
+            "--grant",
+            "runtime.manage",
+        ],
     ));
     let updated = fixture.config();
     assert_eq!(updated["plugins"][PLUGIN_ID]["enabled"], false);
@@ -296,7 +327,7 @@ fn broken_enabled_plugin_is_rejected_before_launch_and_can_be_disabled_and_remov
     let fixture = Fixture::new();
     fixture.register();
     successful(fixture.run(&["plugin", "enable", PLUGIN_ID]));
-    let source = fixture.plugin.join("dist/renderer.js");
+    let source = fixture.installed().join("dist/renderer.js");
     fs::remove_file(&source).unwrap();
     let before = fs::read(fixture.config_path()).unwrap();
     let error = prepare_renderer_runtime(PluginRegistry::load(fixture.config_path()).unwrap())
@@ -324,7 +355,7 @@ fn broken_enabled_plugin_is_rejected_before_launch_and_can_be_disabled_and_remov
     assert!(stdout.contains("plugin-validation: id=dev.test.local; state=failed"));
     successful(fixture.run(&["plugin", "remove", PLUGIN_ID]));
     assert!(fixture.config()["localPlugins"].get(PLUGIN_ID).is_none());
-    assert_eq!(fixture.config()["plugins"][PLUGIN_ID]["enabled"], false);
+    assert!(fixture.config()["plugins"].get(PLUGIN_ID).is_none());
     assert!(fixture.plugin.join("codlet.json").is_file());
     assert!(!source.exists());
     assert!(!fixture.marker.exists());
@@ -381,6 +412,11 @@ fn changing_a_registered_manifest_id_does_not_change_its_trusted_identity() {
     fixture.register();
     successful(fixture.run(&["plugin", "enable", PLUGIN_ID]));
     fixture.write_manifest("dev.test.renamed", &["ui.dom"]);
+    fs::copy(
+        fixture.plugin.join("codlet.json"),
+        fixture.installed().join("codlet.json"),
+    )
+    .unwrap();
     let before = fs::read(fixture.config_path()).unwrap();
     let error = prepare_renderer_runtime(PluginRegistry::load(fixture.config_path()).unwrap())
         .err()
@@ -480,7 +516,7 @@ fn scoped_host_grants_are_displayed_and_persisted_then_revoked_without_execution
     assert_eq!(result["action"], "import");
     assert_eq!(result["plugin_id"], PLUGIN_ID);
     assert_eq!(result["enabled"], false);
-    assert_eq!(result["directory"], "preserved");
+    assert_eq!(result["directory"], "installed");
     for prefix in [
         "requested-permissions:",
         "granted-permissions:",

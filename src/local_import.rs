@@ -28,6 +28,15 @@ pub struct LocalImportRequest {
     pub enable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed: Option<crate::managed_plugins::ManagedOperation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<InstallMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallMode {
+    Update,
+    Replace,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +56,38 @@ pub struct LocalImportPreview {
 }
 
 impl LocalImportRequest {
+    pub(crate) fn validate_choice(
+        &self,
+        registry: &PluginRegistry,
+        id: &str,
+    ) -> Result<(), PluginControlError> {
+        if registry.local_plugins().contains_key(id)
+            && self.mode.is_none()
+            && !matches!(
+                self.managed,
+                Some(
+                    crate::managed_plugins::ManagedOperation::Update
+                        | crate::managed_plugins::ManagedOperation::Adopt
+                        | crate::managed_plugins::ManagedOperation::Rollback
+                )
+            )
+        {
+            return Err(error(
+                "installation_choice_required",
+                "This plugin ID is installed. Choose Update to keep its data or Replace to clear its data.",
+            ));
+        }
+        if self.mode == Some(InstallMode::Update) && !registry.local_plugins().contains_key(id) {
+            return Err(error(
+                "plugin_not_found",
+                "The plugin to update is no longer installed.",
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn resets_data(&self, registry: &PluginRegistry, id: &str) -> bool {
+        !registry.local_plugins().contains_key(id) || self.mode == Some(InstallMode::Replace)
+    }
     pub fn validate(&self) -> Result<(), PluginControlError> {
         if !self.trusted {
             return Err(error(
@@ -105,6 +146,7 @@ impl LocalImportPreview {
             broker_policy,
             enable,
             managed: None,
+            mode: None,
         })
     }
 }
@@ -115,19 +157,9 @@ pub fn preview(
 ) -> Result<LocalImportPreview, PluginControlError> {
     let candidate =
         inspect_local_plugin(path).map_err(|e| error("local_plugin_invalid", e.to_string()))?;
-    if registry
-        .managed_plugins()
-        .get(&candidate.manifest.id)
-        .and_then(crate::managed_plugins::ManagedPluginRecord::current)
-        .is_some()
-    {
-        return Err(error(
-            "managed_preview_required",
-            "Use a managed update preview to change a managed registration or its grants.",
-        ));
-    }
     // A dry staged registration checks reserved IDs, source collisions and aliases.
     let mut dry = registry.clone();
+    dry.restore_managed(&candidate.manifest.id, None, None);
     dry.register_local(
         &candidate.manifest.id,
         LocalPluginRegistration {
@@ -145,14 +177,18 @@ pub fn preview(
         schema: 1,
         kind: "codlet.local-import-preview",
         path: candidate.root.clone(),
-        content_digest: digest(&(content_digest(&candidate), &metadata)),
+        content_digest: digest(&(
+            content_digest(&candidate),
+            &metadata,
+            crate::installation_files::tree_digest(&candidate.root)?,
+        )),
         registration_digest: registration_digest(registry, id),
         existing_registration: registry.local_plugins().get(id).cloned(),
         existing_enabled: registry.is_enabled(id),
         manifest: candidate.manifest,
         metadata,
         device_compatibility,
-        ownership: "development-directory",
+        ownership: "copied-installation",
     })
 }
 
@@ -167,38 +203,40 @@ pub(crate) fn stage(
         return crate::managed_plugins::stage(registry, id, request);
     }
     request.validate()?;
-    if registry
-        .managed_plugins()
-        .get(id)
-        .and_then(crate::managed_plugins::ManagedPluginRecord::current)
-        .is_some()
-    {
-        return Err(error(
-            "managed_preview_required",
-            "A managed registration requires a managed preview.",
-        ));
-    }
     if registration_digest(registry, id) != request.registration_digest {
         return Err(error(
             "import_registration_changed",
             "The registration or enabled preference changed after preview. Inspect the directory again.",
         ));
     }
+    request.validate_choice(registry, id)?;
+    crate::plugin_uninstall::ensure_installation_ready(registry, id)?;
     let candidate = inspect_local_plugin(&request.path)
         .map_err(|e| error("local_plugin_invalid", e.to_string()))?;
     let metadata = crate::github_distribution::read_metadata(&candidate.root)
         .map_err(|e| error("package_metadata_invalid", e.to_string()))?;
     crate::github_distribution::require_device_compatibility(metadata.as_ref())
         .map_err(|e| error("package_incompatible", e.to_string()))?;
+    let tree = crate::installation_files::tree_digest(&candidate.root)?;
     if candidate.manifest.id != id
         || candidate.root != request.path
-        || digest(&(content_digest(&candidate), &metadata)) != request.content_digest
+        || digest(&(content_digest(&candidate), &metadata, &tree)) != request.content_digest
     {
         return Err(error(
             "import_content_changed",
             "The directory, manifest or entry changed after preview. Inspect the directory again.",
         ));
     }
+    checked_entry(candidate, request)?;
+    let copied = crate::installation_files::prepare_folder(
+        registry.path(),
+        &request.path,
+        id,
+        &request.content_digest,
+        &tree,
+    )?;
+    let candidate =
+        inspect_local_plugin(&copied).map_err(|e| error("local_plugin_invalid", e.to_string()))?;
     let entry = checked_entry(candidate, request)?;
     let registration = entry
         .plugin
@@ -208,6 +246,7 @@ pub(crate) fn stage(
         .clone()
         .expect("explicit authorization");
     let mut next = registry.clone();
+    next.restore_managed(id, None, None);
     next.register_local(id, registration)
         .map_err(|e| error("registration_conflict", e.to_string()))?;
     next.set_enabled(id, false)
@@ -308,11 +347,11 @@ mod tests {
     }
 
     #[test]
-    fn preview_and_staging_do_not_execute_write_copy_or_delete_author_files() {
+    fn preview_does_not_execute_and_staging_copies_without_changing_author_files() {
         let (_directory, registry, root) = fixture();
         let before = std::fs::read(root.join("entry.js")).unwrap();
         let preview = preview(&registry, &root).unwrap();
-        assert_eq!(preview.ownership, "development-directory");
+        assert_eq!(preview.ownership, "copied-installation");
         assert!(preview.existing_registration.is_none());
         assert!(!registry.path().exists());
         let request = preview.request(vec![Permission::UiDom], BrokerPolicy::default(), true);
@@ -321,9 +360,13 @@ mod tests {
         assert!(!staged.is_enabled("dev.import"));
         assert_eq!(entry.plugin.unwrap().source.unwrap().as_bytes(), before);
         staged.save().unwrap();
-        assert_eq!(
+        assert_ne!(
             staged.local_plugins()["dev.import"].path,
             std::fs::canonicalize(&root).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(staged.local_plugins()["dev.import"].path.join("entry.js")).unwrap(),
+            before
         );
         assert_eq!(std::fs::read(root.join("entry.js")).unwrap(), before);
         assert_eq!(std::fs::read_dir(root).unwrap().count(), 2);
@@ -503,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn another_source_cannot_inherit_an_existing_identity_or_its_grants() {
+    fn another_source_requires_an_explicit_update_or_replace_choice() {
         let (directory, mut registry, root) = fixture();
         let other = directory.path().join("other author");
         std::fs::create_dir(&other).unwrap();
@@ -518,9 +561,11 @@ mod tests {
             )
             .unwrap();
         registry.save().unwrap();
+        let preview = preview(&registry, &root).unwrap();
+        let request = preview.request(vec![Permission::UiDom], BrokerPolicy::default(), false);
         assert_eq!(
-            preview(&registry, &root).unwrap_err().code,
-            "registration_conflict"
+            stage(&registry, "dev.import", &request).unwrap_err().code,
+            "installation_choice_required"
         );
     }
 
