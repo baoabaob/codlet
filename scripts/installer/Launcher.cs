@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -28,8 +29,8 @@ namespace Codlet.Setup {
                 if (quiet && (configure || (!check && !safeMode && File.Exists(Path.Combine(root, "portable.mode")) && !File.Exists(Path.Combine(data, "plugin-setup.json"))))) { Log("Interactive plugin selection is required; run without --quiet first."); return 87; }
                 int gate = ProcessGate.Check(root, !quiet, !configure, Log);
                 if (gate != 0 || check) return gate;
-                // Successful launches have no launcher window. Keep readiness
-                // monitoring and surface actionable failures after they occur.
+                // Show preparation progress when it is needed. Once Native is
+                // starting, its own window takes over.
                 int result = Start(data, configure, !quiet, safeMode);
                 if (result != 0 && result != 1223 && !quiet) {
                     string error = "启动未完成（代码 " + result + "）。请查看日志；不要重复启动多个实例。";
@@ -71,7 +72,7 @@ namespace Codlet.Setup {
         static int Start(string data, bool configure, bool interactive, bool safeMode) {
             // Recovery deliberately skips initialization, downloads and reading
             // plugin configuration; a broken plugin must not block this path.
-            if (safeMode) return Launch(data, true).Code;
+            if (safeMode) return Launch(data, true, interactive).Code;
             int initialized;
             do {
                 initialized = Initialize(data, configure);
@@ -81,7 +82,7 @@ namespace Codlet.Setup {
                 if (answer != DialogResult.Retry) return 1223;
             } while (true);
             if (initialized != 0 || configure) return initialized;
-            var result = Launch(data, false);
+            var result = Launch(data, false, interactive);
             if (result.Code == 0 && result.RendererUnavailable && interactive) {
                 MessageBox.Show("官方客户端已启动，但 Codlet 暂时无法连接界面，界面插件未加载。现有插件配置保持不变。\n\n请检查 Codlet 和插件更新。诊断日志：\n" + logFile + "\n" + coreLogFile,
                     "Codlet · 插件未加载", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -93,7 +94,7 @@ namespace Codlet.Setup {
             // An early Core exit may have left its desktop alive. Recheck the
             // ordinary process gate before trying another launch; never kill it.
             int gate = ProcessGate.Check(root, true, true, Log);
-            return gate == 0 ? Launch(data, true).Code : gate;
+            return gate == 0 ? Launch(data, true, interactive).Code : gate;
         }
 
         sealed class LaunchResult {
@@ -113,21 +114,32 @@ namespace Codlet.Setup {
             }
             return false;
         }
-        static LaunchResult Launch(string data, bool safeMode) {
+        static LaunchResult Launch(string data, bool safeMode, bool interactive) {
             // Core is a long-lived host. Its exit is not launch readiness.
             string coreLog = logFile + (safeMode ? ".safe" : "");
             coreLogFile = coreLog + ".core.log";
             Log("Core mode: " + (safeMode ? "safe" : "normal") + "; stdout/stderr: " + coreLog + ".core.log");
             using (var process = DetachedHost.Start(root, data, coreLog, safeMode)) {
             int pid = process.Id; long created = process.StartTime.ToUniversalTime().Ticks;
+            using (var progress = new StartupProgress(coreLogFile, pid, interactive)) {
             DateTime deadline = DateTime.UtcNow.AddMinutes(5);
+            DateTime nextStatus = DateTime.MinValue;
+            Task<Dictionary<string, object>> pendingStatus = null;
             while (DateTime.UtcNow < deadline) {
+                progress.Pump();
                 if (process.HasExited) {
                     int code = process.ExitCode;
                     Log("Core exited before readiness: " + code + " (0x" + code.ToString("X8") + ")");
                     return new LaunchResult { Code = 42, CoreExitCode = code, Exited = true };
                 }
-                var value = Status(data); object status, raw;
+                Dictionary<string, object> value = null;
+                if (pendingStatus == null && DateTime.UtcNow >= nextStatus)
+                    pendingStatus = Task.Run(() => Status(data));
+                if (pendingStatus != null && pendingStatus.IsCompleted) {
+                    if (!pendingStatus.IsFaulted && !pendingStatus.IsCanceled) value = pendingStatus.Result;
+                    pendingStatus = null; nextStatus = DateTime.UtcNow.AddMilliseconds(400);
+                }
+                object status, raw;
                 if (value != null && value.TryGetValue("status", out status) && (string)status == "running" && value.TryGetValue("snapshot", out raw)) {
                     var snapshot = raw as Dictionary<string, object>; object hostPid, state;
                     if (snapshot != null && snapshot.TryGetValue("host_pid", out hostPid) && Convert.ToInt32(hostPid) == pid && snapshot.TryGetValue("state", out state) && (string)state == "ready" && !process.HasExited && process.StartTime.ToUniversalTime().Ticks == created) {
@@ -136,10 +148,11 @@ namespace Codlet.Setup {
                         return new LaunchResult { RendererUnavailable = unavailable };
                     }
                 }
-                Thread.Sleep(400);
+                Thread.Sleep(100);
             }
             Log("Readiness timed out after 5 minutes. Core PID " + pid + " retained; do not start another instance before inspecting this log.");
             return new LaunchResult { Code = 42 };
+            }
             }
         }
     }

@@ -1,5 +1,5 @@
-//! Codlet's pinned JS executor. Runtime selection belongs to the distribution,
-//! never to a plugin manifest, PATH search or an ambient Node installation.
+//! Codlet's JS executor: a compatible runtime from the official Native client,
+//! or the distribution's pinned fallback. Plugins never select the executable.
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -38,6 +38,7 @@ const BOOTSTRAP: &str = concat!(
 const MAX_NODE_BYTES: u64 = 160 * 1024 * 1024;
 const MAX_LICENSE_BYTES: u64 = 2 * 1024 * 1024;
 
+mod native;
 mod provision;
 #[cfg(test)]
 mod tests;

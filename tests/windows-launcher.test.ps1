@@ -12,7 +12,7 @@ $data=Join-Path $app 'data'
 $gate=Join-Path $root 'ProcessGateFixture.cs'
 [IO.File]::WriteAllText($gate,'namespace Codlet.Setup { static class ProcessGate { public static int Check(string root,bool interactive,bool official,System.Action<string> log){return 0;} } }')
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
-& $compiler /nologo /platform:x64 /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll ('/out:'+(Join-Path $app 'Codlet-Launcher.exe')) $gate (Join-Path $repo 'scripts/installer/Launcher.cs') (Join-Path $repo 'scripts/installer/DetachedHost.cs')
+& $compiler /nologo /platform:x64 /target:winexe /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Core.dll /reference:System.Web.Extensions.dll ('/out:'+(Join-Path $app 'Codlet-Launcher.exe')) $gate (Join-Path $repo 'scripts/installer/Launcher.cs') (Join-Path $repo 'scripts/installer/DetachedHost.cs') (Join-Path $repo 'scripts/installer/StartupProgress.cs')
 if($LASTEXITCODE -ne 0){throw 'Production launcher compilation failed'}
 [IO.File]::WriteAllText((Join-Path $app 'portable.mode'),'fixture')
 [IO.File]::WriteAllText((Join-Path $data 'plugin-setup.json'),'{}')

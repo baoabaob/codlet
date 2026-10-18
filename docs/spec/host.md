@@ -28,7 +28,11 @@ hostile-code sandbox. See [permissions](permissions.md) for the enforced/review 
 
 ## Runtime and lifecycle
 
-Core selects the fixed Node runtime described by its runtime manifest, verifies its digest and controls bootstrap/flags/transport. It prepares a private cached copy from an exactly verified official-client runtime or the pinned download. It does not execute an arbitrary PATH or embedded client Node. Plugins do not supply arbitrary host commands. Native addons and runtime TypeScript stripping are disabled. Dangerous inherited Node/OpenSSL preload settings are removed; ordinary current-user JavaScript remains trusted native code.
+Core owns Node selection, bootstrap, flags and transport. It reuses the installed official client's Node when its version, platform, architecture and required Host APIs are compatible, independently of the client's version. The current supported release lines are Node 22.23.2+ and 24.21.0+ within their respective major versions. A bounded probe uses the same Host flags before the verified files are copied into a private, content-addressed cache. Windows resolves the registered official package; macOS verifies the official bundle and signing identity. Historical client profiles only preserve previously verified cache entries.
+
+If compatible local Node is unavailable, Core downloads the release pinned by its runtime manifest and verifies its digest. Plugins cannot select an executable or arbitrary host command, and Core does not search PATH for Node. Native addons and runtime TypeScript stripping are disabled. Dangerous inherited Node/OpenSSL preload settings are removed; ordinary current-user JavaScript remains trusted native code.
+
+The Windows launcher shows runtime preparation in a progress window. Downloads report actual received bytes and a percentage when the server supplies a total size; otherwise the indicator remains indeterminate. Connection, retry, verification and installation are separate stages. The window closes as the client starts, and its background button hides the window while preparation continues. Core also writes these stages to its launch log. Startup plugin update checks honor `checkPluginUpdatesOnStartup` before performing any update work.
 
 The bootstrap compiles the immutable main source at its original filename. Full Node
 mode preserves package-relative `__dirname`, `require` and resource lookup; its other

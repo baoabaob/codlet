@@ -99,6 +99,8 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-launcher.test.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+      - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-StartupProgress.ps1 -ArtifactsDirectory .codlet-artifacts/startup-progress-ci
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-Release.ps1
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
 

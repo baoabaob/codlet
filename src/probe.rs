@@ -871,7 +871,9 @@ fn start_codlet_runtime_with_connector_filtered(
     let (mut renderer, host_plugins) = prepare_plugin_runtimes_filtered(registry, suspension)?;
     renderer.enable_runtime_skill();
     host_control.seed_watch_sources(&renderer, &host_plugins);
+    crate::startup_progress::stage("runtime.checking");
     let js_runtime = Some(JsRuntime::discover()?);
+    crate::startup_progress::stage("runtime.ready");
     let plugin_services = crate::core_services::SharedCoreServices::new(renderer.registry_path())
         .map_err(|e| HostError::new(e.code, e.message))?;
     let source_requested = host_plugins.iter().any(|plugin| {
@@ -902,6 +904,7 @@ fn start_codlet_runtime_with_connector_filtered(
     if renderer.needs_renderer_targets() {
         renderer.set_status_publisher(status.clone());
     }
+    crate::startup_progress::stage("client.starting");
     let (connected, servers) = connect(
         Some(PreparedServices {
             status: status.clone(),

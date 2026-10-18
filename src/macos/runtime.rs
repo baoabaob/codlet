@@ -61,7 +61,9 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         let launch_provider = source_requested
             .then(|| crate::client_launch::select(&host_plugins).cloned())
             .transpose()?;
+        crate::startup_progress::stage("runtime.checking");
         let runtime = Some(JsRuntime::discover()?);
+        crate::startup_progress::stage("runtime.ready");
         let services = crate::core_services::SharedCoreServices::new(scope.path())?;
         let mut renderer = RendererRuntime::from_catalog(catalog, registry)?;
         renderer.enable_runtime_skill();
@@ -127,6 +129,7 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
         }
     }
     pipes.configure(&mut command)?;
+    crate::startup_progress::stage("client.starting");
     let mut child = OwnedChild::new(command.spawn()?);
     drop(command);
     let identity = super::identity::ProcessIdentity::inspect(child.id())?;

@@ -87,5 +87,6 @@ pub mod probe;
 mod runtime_skills;
 #[cfg(any(windows, target_os = "macos"))]
 pub(crate) mod runtime_update_owner;
+mod startup_progress;
 #[cfg(windows)]
 pub mod windows;

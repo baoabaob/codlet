@@ -9,7 +9,7 @@ $root=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 if(-not [IO.File]::Exists($compiler)){throw '.NET Framework 4.x x64 compiler is required'}
 $common=@('/nologo','/optimize+','/platform:x64','/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll','/reference:System.Core.dll')
-& $compiler @common /target:winexe /reference:System.Web.Extensions.dll ('/win32icon:'+(Join-Path $root 'assets/codlet/ico/codlet.ico')) ('/win32manifest:'+(Join-Path $source 'launcher.manifest')) ('/out:'+(Join-Path $output 'Codlet-Launcher.exe')) (Join-Path $source 'ProcessGate.cs') (Join-Path $source 'DetachedHost.cs') (Join-Path $source 'Launcher.cs')
+& $compiler @common /target:winexe /reference:System.Web.Extensions.dll ('/win32icon:'+(Join-Path $root 'assets/codlet/ico/codlet.ico')) ('/win32manifest:'+(Join-Path $source 'launcher.manifest')) ('/out:'+(Join-Path $output 'Codlet-Launcher.exe')) (Join-Path $source 'ProcessGate.cs') (Join-Path $source 'DetachedHost.cs') (Join-Path $source 'StartupProgress.cs') (Join-Path $source 'Launcher.cs')
 if($LASTEXITCODE -ne 0){throw 'Launcher compilation failed'}
 if($InstallerAssets){
   & $compiler @common /target:winexe ('/win32manifest:'+(Join-Path $source 'launcher.manifest')) ('/out:'+(Join-Path $output 'Codlet-Installer-Preflight.exe')) (Join-Path $source 'ProcessGate.cs') (Join-Path $source 'InstallerPreflight.cs') (Join-Path $source 'UserDataCleanup.cs') (Join-Path $source 'CleanupDialog.cs')

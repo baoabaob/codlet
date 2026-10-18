@@ -1,6 +1,6 @@
 //! Private, content-addressed Node provisioning for managed Core packages.
-//! Only Core-owned distribution pins and embedded official-client profiles
-//! can select bytes; plugin manifests, PATH, and ambient Node are ignored.
+//! Sources are the installed official client and Core-owned fallback pins.
+//! Plugin manifests, PATH, and ambient Node are ignored.
 
 use std::collections::BTreeSet;
 use std::error::Error as _;
@@ -301,6 +301,8 @@ fn cache_root() -> Result<PathBuf, HostError> {
     Ok(root)
 }
 
+// Historical pins keep already-cached runtimes usable. They do not restrict
+// discovery of Node from the currently installed Native client.
 pub(super) fn profiles() -> Result<Vec<ClientProfile>, HostError> {
     let parsed: ClientProfiles =
         serde_json::from_str(include_str!("../../runtime/client-node-profiles.json"))
@@ -390,23 +392,12 @@ fn ensure_managed(
             &profile.node_sha256,
             &profile.license_sha256,
         )? {
-            prune_obsolete(&root, target, pin);
-            return Ok(cached);
-        }
-        if let Some(source) = official_source(profile) {
-            let node = source.executable_path().to_owned();
-            let license = source.license_path().to_owned();
-            let cached = ensure_cache_with(
+            prune_obsolete(
                 &root,
                 target,
-                &profile.node_version,
-                &profile.node_sha256,
-                &profile.license_sha256,
-                move |prepared_node, prepared_license| {
-                    copy_pair(&node, &license, prepared_node, prepared_license)
-                },
-            )?;
-            prune_obsolete(&root, target, pin);
+                pin,
+                Some(cached.verified_executable_sha256()),
+            );
             return Ok(cached);
         }
     }
@@ -417,8 +408,47 @@ fn ensure_managed(
         &selected.executable_sha256,
         &selected.license_sha256,
     )? {
-        prune_obsolete(&root, target, pin);
+        prune_obsolete(
+            &root,
+            target,
+            pin,
+            Some(cached.verified_executable_sha256()),
+        );
         return Ok(cached);
+    }
+    if current_fallback_matches {
+        crate::startup_progress::stage("runtime.native");
+        if let Some(source) = official_source(target) {
+            let cached = ensure_cache_with(
+                &root,
+                target,
+                source.verified_node_version(),
+                source.verified_executable_sha256(),
+                source.verified_license_sha256(),
+                |prepared_node, prepared_license| {
+                    crate::startup_progress::runtime(
+                        "runtime.copying",
+                        Some(source.verified_node_version()),
+                        Some("native"),
+                        None,
+                        None,
+                    );
+                    copy_pair(
+                        source.executable_path(),
+                        source.license_path(),
+                        prepared_node,
+                        prepared_license,
+                    )
+                },
+            )?;
+            prune_obsolete(
+                &root,
+                target,
+                pin,
+                Some(cached.verified_executable_sha256()),
+            );
+            return Ok(cached);
+        }
     }
     // Old full packages remain usable without network while a managed update is
     // being prepared; slim packages have no bundled Node and use the fixed URL.
@@ -441,17 +471,24 @@ fn ensure_managed(
                 .parent()
                 .ok_or_else(|| invalid("Prepared Node LICENSE has no parent"))?
                 .join(&selected.archive);
+            crate::startup_progress::runtime("runtime.connecting", Some(release), None, None, None);
             download_exact_archive(
                 &url,
                 selected.mirror_url.as_deref(),
                 &archive,
                 &selected.archive_sha256,
             )?;
+            crate::startup_progress::runtime("runtime.extracting", Some(release), None, None, None);
             extract_exact(&archive, target, release, prepared_node, prepared_license)?;
             fs::remove_file(&archive).map_err(io_error)
         },
     )?;
-    prune_obsolete(&root, target, pin);
+    prune_obsolete(
+        &root,
+        target,
+        pin,
+        Some(cached.verified_executable_sha256()),
+    );
     Ok(cached)
 }
 
@@ -653,19 +690,32 @@ fn write_marker(
     file.sync_all().map_err(io_error)
 }
 
-fn prune_obsolete(root: &Path, target: DesktopTarget, pin: &RuntimePin) {
-    if let Err(error) = prune_obsolete_inner(root, target, pin) {
+fn prune_obsolete(root: &Path, target: DesktopTarget, pin: &RuntimePin, selected: Option<&str>) {
+    if let Err(error) = prune_obsolete_selected(root, target, pin, selected) {
         crate::runtime_log::error("js_runtime_cache_cleanup", &error.to_string());
     }
 }
 
+#[cfg(test)]
 pub(super) fn prune_obsolete_inner(
     root: &Path,
     target: DesktopTarget,
     pin: &RuntimePin,
 ) -> Result<(), HostError> {
+    prune_obsolete_selected(root, target, pin, None)
+}
+
+fn prune_obsolete_selected(
+    root: &Path,
+    target: DesktopTarget,
+    pin: &RuntimePin,
+    selected: Option<&str>,
+) -> Result<(), HostError> {
     let (fallback, _) = pin_for(pin, target)?;
     let mut keep = BTreeSet::from([fallback.executable_sha256.clone()]);
+    if let Some(digest) = selected {
+        keep.insert(digest.to_owned());
+    }
     for profile in profiles()?
         .iter()
         .filter(|profile| profile.enabled && profile.platform == target.node_platform())
@@ -984,48 +1034,39 @@ pub(super) fn copy_pair(
 }
 
 #[cfg(windows)]
-pub(super) fn official_source(profile: &ClientProfile) -> Option<JsRuntime> {
-    let ClientSource::WindowsPackage {
-        family,
-        full_name,
-        node_path,
-        license_path,
-    } = &profile.source
-    else {
-        return None;
-    };
-    if family != crate::windows::packages::CODEX_PACKAGE_FAMILY {
-        return None;
-    }
-    let packages = crate::windows::packages::find_current_user_packages(family).ok()?;
-    let package = packages
-        .into_iter()
-        .find(|package| &package.full_name == full_name)?;
-    let node = crate::windows::packages::resolve_package_executable(&package, Path::new(node_path))
-        .ok()?;
-    let license =
-        crate::windows::packages::resolve_package_executable(&package, Path::new(license_path))
-            .ok()?;
-    JsRuntime::checked_pair(
-        &node,
-        &license,
-        &profile.node_sha256,
-        &profile.license_sha256,
-        &profile.node_version,
-        None,
+pub(super) fn official_source(target: DesktopTarget) -> Option<JsRuntime> {
+    let package = crate::windows::packages::find_unique_current_user_package(
+        crate::windows::packages::CODEX_PACKAGE_FAMILY,
     )
-    .ok()
+    .ok()?;
+    let node = crate::windows::packages::resolve_package_executable(
+        &package,
+        Path::new("app/resources/cua_node/bin/node.exe"),
+    )
+    .ok()?;
+    let license = crate::windows::packages::resolve_package_executable(
+        &package,
+        Path::new("app/resources/cua_node/bin/LICENSE"),
+    )
+    .ok()?;
+    match super::native::checked_pair(&node, &license, target) {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            crate::runtime_log::info("js_runtime_native_unavailable", &error.to_string());
+            None
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn official_source(profile: &ClientProfile) -> Option<JsRuntime> {
+pub(super) fn official_source(_target: DesktopTarget) -> Option<JsRuntime> {
     let mut candidates = vec![PathBuf::from("/Applications/ChatGPT.app")];
     if let Some(home) = std::env::var_os("HOME") {
         candidates.push(PathBuf::from(home).join("Applications/ChatGPT.app"));
     }
     candidates
         .into_iter()
-        .find_map(|candidate| checked_mac_bundle(profile, &candidate).ok())
+        .find_map(|candidate| checked_mac_bundle(&candidate).ok())
 }
 
 #[cfg(target_os = "macos")]
@@ -1087,17 +1128,9 @@ fn codesign_identity(path: &Path) -> Result<String, HostError> {
 }
 
 #[cfg(target_os = "macos")]
-fn checked_mac_bundle(profile: &ClientProfile, app: &Path) -> Result<JsRuntime, HostError> {
-    let ClientSource::MacBundle {
-        bundle_id,
-        app_version,
-        team_id,
-        node_path,
-        license_path,
-    } = &profile.source
-    else {
-        return Err(invalid("Client Node profile is not a Mac bundle"));
-    };
+fn checked_mac_bundle(app: &Path) -> Result<JsRuntime, HostError> {
+    let bundle_id = "com.openai.codex";
+    let team_id = "2DC432GLL2";
     let app = app.canonicalize().map_err(io_error)?;
     plain(&app)?;
     if app.file_name().and_then(|name| name.to_str()) != Some("ChatGPT.app") {
@@ -1105,12 +1138,8 @@ fn checked_mac_bundle(profile: &ClientProfile, app: &Path) -> Result<JsRuntime, 
     }
     let info = app.join("Contents/Info.plist");
     plain(&info)?;
-    if plist_value(&info, "CFBundleIdentifier")? != *bundle_id
-        || plist_value(&info, "CFBundleShortVersionString")? != *app_version
-    {
-        return Err(invalid(
-            "Official Mac bundle ID or version differs from the embedded profile",
-        ));
+    if plist_value(&info, "CFBundleIdentifier")? != bundle_id {
+        return Err(invalid("Native bundle is not the official client"));
     }
     let app_signature = codesign_identity(&app)?;
     if !app_signature
@@ -1124,8 +1153,14 @@ fn checked_mac_bundle(profile: &ClientProfile, app: &Path) -> Result<JsRuntime, 
             "Official Mac bundle signature identity differs from the embedded profile",
         ));
     }
-    let node = app.join(node_path).canonicalize().map_err(io_error)?;
-    let license = app.join(license_path).canonicalize().map_err(io_error)?;
+    let node = app
+        .join("Contents/Resources/cua_node/bin/node")
+        .canonicalize()
+        .map_err(io_error)?;
+    let license = app
+        .join("Contents/Resources/cua_node/LICENSE")
+        .canonicalize()
+        .map_err(io_error)?;
     if !node.starts_with(&app) || !license.starts_with(&app) {
         return Err(invalid("Official Mac CUA Node escaped its verified bundle"));
     }
@@ -1140,31 +1175,20 @@ fn checked_mac_bundle(profile: &ClientProfile, app: &Path) -> Result<JsRuntime, 
             "Official Mac CUA Node signature differs from the embedded profile",
         ));
     }
-    JsRuntime::checked_pair(
-        &node,
-        &license,
-        &profile.node_sha256,
-        &profile.license_sha256,
-        &profile.node_version,
-        None,
-    )
+    super::native::checked_pair(&node, &license, DesktopTarget::MacOsArm64)
 }
 
 #[cfg(all(test, target_os = "macos"))]
 pub(super) fn official_mac_fixture(app: &Path, root: &Path) -> Result<JsRuntime, HostError> {
-    let profile = profiles()?
-        .into_iter()
-        .find(|profile| profile.platform == "darwin-arm64")
-        .ok_or_else(|| invalid("Embedded Mac CUA Node profile is missing"))?;
-    let source = checked_mac_bundle(&profile, app)?;
+    let source = checked_mac_bundle(app)?;
     let node = source.executable_path().to_owned();
     let license = source.license_path().to_owned();
     ensure_cache_with(
         root,
         DesktopTarget::MacOsArm64,
-        &profile.node_version,
-        &profile.node_sha256,
-        &profile.license_sha256,
+        source.verified_node_version(),
+        source.verified_executable_sha256(),
+        source.verified_license_sha256(),
         |prepared_node, prepared_license| {
             copy_pair(&node, &license, prepared_node, prepared_license)
         },
@@ -1175,6 +1199,15 @@ pub(super) fn official_mac_fixture(app: &Path, root: &Path) -> Result<JsRuntime,
 pub(super) enum DownloadSource {
     Official,
     CodletMirror,
+}
+
+impl DownloadSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Official => "nodejs.org",
+            Self::CodletMirror => "GitHub",
+        }
+    }
 }
 
 pub(super) fn download_exact_archive(
@@ -1200,6 +1233,13 @@ pub(super) fn download_exact_archive_with(
     let mut failures = Vec::new();
     for (source, url) in sources {
         let result = fetch(url, path, source).and_then(|()| {
+            crate::startup_progress::runtime(
+                "runtime.verifying",
+                None,
+                Some(source.label()),
+                None,
+                None,
+            );
             if sha256(&File::open(path).map_err(io_error)?)? == expected {
                 Ok(())
             } else {
@@ -1304,6 +1344,13 @@ async fn download_archive_async(
                     if path.exists() {
                         fs::remove_file(path).map_err(io_error)?;
                     }
+                    crate::startup_progress::runtime(
+                        "runtime.retrying",
+                        None,
+                        Some(source.label()),
+                        None,
+                        None,
+                    );
                     tokio::time::sleep(Duration::from_millis(500 * (attempt + 1))).await;
                 }
             }
@@ -1352,6 +1399,13 @@ async fn download_archive_attempt(
                 "Node download redirected outside the official HTTPS release source",
             ));
         }
+        crate::startup_progress::runtime(
+            "runtime.connecting",
+            None,
+            Some(source.label()),
+            Some(0),
+            None,
+        );
         let response = client
             .get(current.clone())
             .header("Accept", "application/octet-stream")
@@ -1386,6 +1440,15 @@ async fn download_archive_attempt(
         {
             return Err(invalid("Official Node archive exceeds its download limit"));
         }
+        let expected_bytes = response.content_length().filter(|bytes| *bytes > 0);
+        crate::startup_progress::runtime(
+            "runtime.downloading",
+            None,
+            Some(source.label()),
+            Some(0),
+            expected_bytes,
+        );
+        let mut last_progress = Instant::now();
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1410,7 +1473,24 @@ async fn download_archive_attempt(
                 return Err(invalid("Official Node archive exceeds its download limit"));
             }
             output.write_all(&chunk).map_err(io_error)?;
+            if last_progress.elapsed() >= Duration::from_millis(250) {
+                crate::startup_progress::runtime(
+                    "runtime.downloading",
+                    None,
+                    Some(source.label()),
+                    Some(total),
+                    expected_bytes,
+                );
+                last_progress = Instant::now();
+            }
         }
+        crate::startup_progress::runtime(
+            "runtime.downloading",
+            None,
+            Some(source.label()),
+            Some(total),
+            expected_bytes,
+        );
         output.sync_all().map_err(io_error)?;
         if total == 0 {
             return Err(invalid("Official Node archive was empty"));

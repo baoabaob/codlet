@@ -462,23 +462,18 @@ fn failed_mirror_download_clears_partial_bytes_before_official_backup() {
 
 #[cfg(windows)]
 #[test]
-#[ignore = "requires an installed exact-profile official Codex package"]
-fn installed_official_cua_node_can_be_verified_and_cached_without_execution() {
-    let profile = provision::profiles()
-        .unwrap()
-        .into_iter()
-        .find(|profile| profile.enabled && profile.platform == "win-x64")
-        .unwrap();
-    let source = provision::official_source(&profile)
-        .expect("exact-profile official CUA Node must be installed");
+#[ignore = "requires an installed official Native client with compatible Node"]
+fn installed_official_cua_node_is_reused_independently_of_the_client_version() {
+    let source = provision::official_source(DesktopTarget::WindowsX64)
+        .expect("installed official Native Node must satisfy the Host contract");
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("cache");
     let runtime = provision::ensure_cache_with(
         &root,
         DesktopTarget::WindowsX64,
-        &profile.node_version,
-        &profile.node_sha256,
-        &profile.license_sha256,
+        source.verified_node_version(),
+        source.verified_executable_sha256(),
+        source.verified_license_sha256(),
         |node, license| {
             provision::copy_pair(
                 source.executable_path(),
@@ -493,9 +488,9 @@ fn installed_official_cua_node_can_be_verified_and_cached_without_execution() {
     let again = provision::ensure_cache_with(
         &root,
         DesktopTarget::WindowsX64,
-        &profile.node_version,
-        &profile.node_sha256,
-        &profile.license_sha256,
+        source.verified_node_version(),
+        source.verified_executable_sha256(),
+        source.verified_license_sha256(),
         |_, _| panic!("exact CUA cache must be reused"),
     )
     .unwrap();

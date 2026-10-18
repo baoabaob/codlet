@@ -98,6 +98,12 @@ pub(crate) fn refresh(lease: &RegistryScopeGuard, client: &str) {
 }
 fn run(lease: &RegistryScopeGuard, client: &str) -> Result<(), String> {
     let path = lease.scope().path();
+    let preferences = crate::runtime_settings::RuntimeSettings::for_registry(path)
+        .cached()
+        .map_err(|error| error.to_string())?;
+    if !preferences.values.check_plugin_updates_on_startup {
+        return Ok(());
+    }
     let registry = PluginRegistry::load(path).map_err(|e| e.to_string())?;
     let selected = sources(&registry);
     if selected.is_empty() {
@@ -119,6 +125,7 @@ fn run(lease: &RegistryScopeGuard, client: &str) -> Result<(), String> {
         "plugin-startup-update: checking {} installed official channels before launching {client}",
         selected.len()
     );
+    crate::startup_progress::stage("plugins.checking");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -239,6 +246,43 @@ mod tests {
         assert_eq!(std::fs::read(author).unwrap(), source);
         assert!(!registry.is_enabled("codex.ui.adapter"));
         assert!(registry.managed_plugins().is_empty());
+    }
+
+    #[test]
+    fn disabled_startup_checks_skip_the_prelaunch_update_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = crate::plugin_update_source::fixture_seed(temp.path(), "codlet-gui");
+        let receipt = temp
+            .path()
+            .join(".official-seed-transactions/codlet-gui.receipt.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+        value["package"]
+            .as_object_mut()
+            .unwrap()
+            .remove("updateSource");
+        std::fs::write(&receipt, value.to_string()).unwrap();
+        assert_eq!(sources(&registry).len(), 1);
+        let scope =
+            crate::platform::control_pipe::RegistryScope::for_path(registry.path()).unwrap();
+        let lease = scope.acquire(Duration::from_secs(1)).unwrap();
+        let settings = crate::runtime_settings::RuntimeSettings::for_registry(registry.path());
+        let disabled = crate::runtime_settings::RuntimePreferences {
+            check_plugin_updates_on_startup: false,
+            ..Default::default()
+        };
+        settings.save(0, disabled).unwrap();
+        // An enabled check would fail locally before it could contact GitHub.
+        std::fs::create_dir(checkpoint_path(registry.path())).unwrap();
+        let before = std::fs::read(registry.path()).unwrap();
+        run(&lease, "new-client-version").unwrap();
+        assert_eq!(std::fs::read(registry.path()).unwrap(), before);
+        settings.save(1, Default::default()).unwrap();
+        assert!(
+            run(&lease, "new-client-version")
+                .unwrap_err()
+                .contains("Invalid startup checkpoint")
+        );
     }
 
     #[test]
