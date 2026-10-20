@@ -28,8 +28,21 @@ export function inspectNativeInput(native, input, root, register, diagnose) {
     return !ancestor || !input.contains(ancestor); // Rich code blocks can own nested editors.
   });
   if (!editables.length) return pending('editable');
-  if (editables.length !== 1) throw fail('Native editable input is ambiguous');
-  const editable = editables[0]; let chain;
+  if (editables.length > 16) throw fail('Native editable input exceeds the discovery limit');
+  if (editables.length === 1) return inspectNativeEditable(native, input, editables[0], root, register, diagnose);
+  // Native request cards can contain another independent editor inside the
+  // composer root. Match the controller's EditorProvider draft namespace before
+  // applying uniqueness; the first DOM editor is not necessarily the main input.
+  if (typeof native.draftKey !== 'function') throw fail('Native editable input is ambiguous');
+  const candidates = editables.map(editable => inspectNativeEditable(native, input, editable, root, register, diagnose))
+    .filter(value => value?.draft);
+  if (candidates.length !== 1) throw fail('Native editable input is ambiguous');
+  return candidates[0];
+}
+
+function inspectNativeEditable(native, input, editable, root, register, diagnose) {
+  const pending = (stage, counts = {}) => { diagnose?.({ stage, ...counts }); return null; };
+  let chain;
   // ProseMirror inserts its DOM outside React; prove the closest committed host.
   for (let element = editable, depth = 0; element && root.contains(element) && depth < 16; element = element.parentElement, depth++) {
     chain = currentElementAncestry(element, root); if (chain) break;

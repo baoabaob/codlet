@@ -7,8 +7,8 @@ const source = 'function missing(){throw Error("AppNavigationSignalBridge is mis
 test('navigation signal discovery identifies the original initializer without executing or relying on minified names', () => {
   assert.equal(navigationSignalExport(source), 'bridgeKey');
   assert.throws(() => navigationSignalExport(source.replace('prepareNavigation:missing', 'other:missing')), { code: 'workspace_navigation_unsupported' });
-  assert.throws(() => navigationSignalExport(source.replace('signal as bridgeKey', 'signal as bridgeKey,signal as duplicate')), { code: 'workspace_navigation_unsupported' });
-  assert.throws(() => navigationSignalExport(source + '"AppNavigationSignalBridge is missing"'), { code: 'workspace_navigation_unsupported' });
+  assert.equal(navigationSignalExport(source.replace('signal as bridgeKey', 'signal as bridgeKey,signal as duplicate')), 'bridgeKey');
+  assert.equal(navigationSignalExport(source + '"AppNavigationSignalBridge is missing"'), 'bridgeKey');
 });
 
 function fixture() {

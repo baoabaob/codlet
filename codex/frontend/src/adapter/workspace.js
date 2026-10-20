@@ -40,7 +40,7 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
   const shortcuts = createShortcuts({ document: doc, load: () => featureLoad('shortcuts', discovery.shortcuts), surface: () => surface, activity: () => activity, check, report, changed: () => schedule(false) });
   const navigation = createWorkspaceNavigation({document:doc,load:()=>featureLoad('navigation',discovery.navigation).then(value=>{
     features={...features,navigationInput:value.inputApi===1};schedule(false);return value;
-  }),host:()=>host,check,changed:(value,operationId)=>{
+  }),host:()=>host,check,onPrepared:()=>schedule(true),changed:(value,operationId)=>{
     if(value?.input){refreshConfirmedSurface(value.input,operationId);return;}
     publish(true);
   },metrics,...(navigationBinding?{readBinding:navigationBinding}:{})});
@@ -302,6 +302,33 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
       mountTranscript(container, options) { return own('transcript', null, () => { if (host?.auxiliary) throw workspaceError('workspace_transcript_unavailable', 'Auxiliary windows have no transcripts'); return transcripts.mount(container, options, ownerKey); }); },
       mountComposer(container, options) { return own('composer',16,()=>{if(host?.auxiliary)throw workspaceError('workspace_composer_unavailable','Auxiliary windows have no composers');return composers.mount(container,options,ownerKey,live);}); },
       createNavigation() { return own('navigation',1,()=>navigation.create(live)); },
+      async prepare(options = {}) {
+        live();
+        if (host?.auxiliary) throw workspaceError('workspace_feature_unavailable', 'Auxiliary windows have no workspace interfaces');
+        if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => key !== 'features'))
+          throw workspaceError('invalid_argument', 'Expected workspace preparation options');
+        const requested = options.features ?? ['navigation', 'transcript'];
+        const load = (name, feature = name) => {
+          if (typeof discovery[name] !== 'function') throw workspaceError('workspace_feature_unavailable', `Workspace ${name} has no interface loader`);
+          return featureLoad(feature, discovery[name]);
+        };
+        const loaders = { navigation: () => navigation.prepare(), transcript: () => load('transcript'),
+          composer: () => load('composer'), shortcuts: () => load('shortcuts'), action: () => load('action'), viewport: () => load('viewport', 'independentViewport') };
+        if (!Array.isArray(requested) || !requested.length || requested.length > 6 || new Set(requested).size !== requested.length ||
+            requested.some(name => typeof name !== 'string' || !Object.hasOwn(loaders, name)))
+          throw workspaceError('invalid_argument', 'Expected a nonempty list of workspace interface features');
+        const results = await Promise.all(requested.map(async name => {
+          try {
+            const value = await loaders[name](); live();
+            if (!value || typeof value !== 'object') throw workspaceError('workspace_feature_unavailable', `Workspace ${name} did not resolve an interface`);
+            return [name, Object.freeze({ available: true, diagnostic: null })];
+          }
+          catch (error) { live(); return [name, Object.freeze({ available: false, diagnostic: Object.freeze(errorValue(error)) })]; }
+        }));
+        live();
+        return Object.freeze({ api: 1, evidence: 'interface-contract', available: results.every(([, result]) => result.available),
+          features: Object.freeze(Object.fromEntries(results)), lifecycleVerified: false });
+      },
       captureLocation(options) { return own('location',4,()=>locations.capture(live,owner,options)); },
       acquireSelectionPresentation(options) { return own('selection',1,()=>selection.acquire(options,ownerKey,live)); },
       acquireComposerControl(options) { return own('composerControl',1,()=>composerControls.acquire(options,ownerKey,live)); },

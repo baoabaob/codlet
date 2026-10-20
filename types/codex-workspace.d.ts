@@ -67,6 +67,11 @@ export interface NavigationSession {
   focus?(options: { revision: number }): boolean;
   dispose(): void;
 }
+export type WorkspaceFeature = 'navigation' | 'transcript' | 'composer' | 'shortcuts' | 'action' | 'viewport';
+export interface WorkspacePreparation {
+  readonly api: 1; readonly evidence: 'interface-contract'; readonly available: boolean; readonly lifecycleVerified: false;
+  readonly features: Readonly<Partial<Record<WorkspaceFeature, Readonly<{ available: boolean; diagnostic: WorkspaceDiagnostic | null }>>>>;
+}
 export interface WorkspaceSession {
   api: 1; getSnapshot(): Readonly<WorkspaceSnapshot>; subscribe(listener: (snapshot: Readonly<WorkspaceSnapshot>) => unknown): () => void;
   getSurface(): Readonly<WorkspaceSurface>; resolveThreadReference(element: Element): { threadId: string; hostId: 'local' } | null;
@@ -82,6 +87,8 @@ export interface WorkspaceSession {
   registerShortcut(options: ShortcutOptions): ShortcutHandle; dispose(): void;
   registerAction(options: NativeActionOptions): NativeActionHandle;
   createNavigation(): NavigationSession;
+  /** Resolves interface dependencies without mounting UI, navigating, reading drafts or fetching conversation history. */
+  prepare(options?: { features?: WorkspaceFeature[] }): Promise<WorkspacePreparation>;
   captureLocation(options?: {restoreState?:WorkspaceLocationState}): WorkspaceLocationHandle;
   acquireSelectionPresentation(options: SelectionPresentationOptions): SelectionPresentationHandle;
   acquireComposerControl(options: {control:'permissions';threadId:string|null}): ComposerControlHandle;

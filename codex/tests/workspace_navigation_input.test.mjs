@@ -7,7 +7,7 @@ import { inspectNativeInput } from '../frontend/src/adapter/workspace-native-inp
 import { summarizeNavigationTestPoints } from './fixtures/workspace-acceptance/summarize-navigation-test-points.mjs';
 
 const require = createRequire(new URL('../frontend/package.json', import.meta.url)), { JSDOM } = require('jsdom');
-function setup(t, { cold = false, inputApi = 1, nativeEntry = true, metrics, onInputRead, onBindingRead } = {}) {
+function setup(t, { cold = false, inputApi = 1, nativeEntry = true, metrics, onInputRead, onBindingRead, onPrepared } = {}) {
   const dom = new JSDOM('<!doctype html><div id="root"><div data-codex-composer-root><div id="input" tabindex="0" contenteditable="true"></div></div></div>', { url: 'app://-/index.html' });
   const { window } = dom, { document } = window, editable = document.getElementById('input');
   const makeBinding = threadId => ({ threadId, hostId: 'local', clientThreadId: 'local:' + threadId,
@@ -22,12 +22,20 @@ function setup(t, { cold = false, inputApi = 1, nativeEntry = true, metrics, onI
     sendRequest(method, args) { return new Promise(resolve => requests.push({ method, args, resolve })); } };
   const provider = createWorkspaceNavigation({ document, load: async () => ({ manager, inputApi, openLocalThread: nativeEntry ? id => { nativeCalls.push(id); navigator.push('/local/' + id); } : undefined }), host: () => ({ navigator }),
     check() { if (!state.alive) throw Object.assign(Error('retired'), { code: 'workspace_retired' }); }, changed() {},
-    metrics, readBinding: checked => { onBindingRead?.(); if (checked !== undefined) checkedInputs.push(checked); return state.binding; },
+    metrics, onPrepared, readBinding: checked => { onBindingRead?.(); if (checked !== undefined) checkedInputs.push(checked); return state.binding; },
     readCurrentInput: () => { onInputRead?.(); return state.binding; } });
   const navigation = provider.create(() => {});
   t.after(() => { provider.dispose(); window.close(); });
   return { window, document, editable, state, calls, requests, navigator, provider, navigation, makeBinding, checkedInputs, nativeCalls };
 }
+
+test('preparation publishes after strict input inspection is available without navigating',async t=>{
+  let prepared=0;
+  const f=setup(t,{onPrepared(){prepared++;assert.equal(f.provider.currentInput(),f.state.binding);}});
+  await f.navigation.ready;await f.provider.prepare();
+  assert.equal(prepared,1);assert.equal(f.navigation.inputApi,1);
+  assert.deepEqual(f.nativeCalls,[]);assert.deepEqual(f.calls,[]);
+});
 
 test('strict navigation keeps Native objects private and explicit focus checks revision, route and the complete input pin', async t => {
   const f = setup(t); assert.equal(f.navigation.inputApi, 0); assert.equal(await f.navigation.ready, undefined); assert.equal(f.navigation.inputApi, 1);

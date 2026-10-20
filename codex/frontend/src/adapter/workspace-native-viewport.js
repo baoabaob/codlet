@@ -1,6 +1,6 @@
-import { parseExpressionAt } from 'acorn';
 import { componentSource, currentElementAncestry } from '../host-discovery.js';
 import { OWNED, nativeMainInput, nativeInputBinding, providersFor, wrapProviders, workspaceError } from './workspace-dom.js';
+import { workspaceSourceFunctions, workspaceExportName, workspaceModuleSyntax, workspaceLexicalReferences } from './workspace-source.js';
 
 const unavailable = message => workspaceError('workspace_viewport_unsupported', message);
 function visit(node, callback) {
@@ -12,34 +12,30 @@ function visit(node, callback) {
   }
 }
 function exportOf(source, local) {
-  const pattern = new RegExp('(?:\\{|,)\\s*' + local.replace(/\$/g, '\\$&') + '\\s+as\\s+([A-Za-z_$][\\w$]*)\\s*(?=,|\\})', 'g');
-  const values = [...source.slice(source.lastIndexOf('export')).matchAll(pattern)].map(match => match[1]);
-  if (values.length !== 1) throw unavailable('Native viewport state export is missing or ambiguous');
-  return values[0];
+  return workspaceExportName(source, local, 'workspace_viewport_unsupported', 'viewport state');
 }
 
 // Decode a bounded original declaration. Minified names never form the ABI,
 // source is never evaluated, and no lazy wrapper is called to guess its role.
-export function viewportSignalExports(source) {
+export function viewportSignalExports(source, { optional = false } = {}) {
   const candidates = new Map();
-  for (const match of source.matchAll(/window-resize/g)) {
-    const declarations = [...source.slice(0, match.index).matchAll(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(/g)], start = declarations.at(-1)?.index;
-    if (start == null || match.index - start > 32768) continue;
-    const ast = parseExpressionAt(source, start, { ecmaVersion: 'latest' }), text = source.slice(ast.start, ast.end);
-    if (ast.end <= match.index || text.length > 32768 || !['closeReason', '.stop()', 'animate'].every(marker => text.includes(marker))) continue;
-    candidates.set(start, ast);
+  for (const ast of workspaceSourceFunctions(source, 'window-resize')) {
+    const text = source.slice(ast.start, ast.end);
+    if (!['closeReason', '.stop()', 'animate'].every(marker => text.includes(marker))) continue;
+    candidates.set(ast.start, ast);
   }
+  if (!candidates.size && optional) return null;
   if (candidates.size !== 1) throw unavailable('Native content viewport action is missing or ambiguous');
-  const ast = [...candidates.values()][0], scope = ast.params[0]?.name, open = ast.params[1]?.name;
+  const ast = [...candidates.values()][0], resolve = workspaceLexicalReferences(ast), scope = resolve(ast.params[0]), open = resolve(ast.params[1]);
   const call = (node, method) => node.type === 'CallExpression' && node.callee.type === 'MemberExpression' &&
-    node.callee.object.name === scope && node.callee.property.name === method && node.arguments[0]?.type === 'Identifier';
+    resolve(node.callee.object) === scope && node.callee.property.name === method && node.arguments[0]?.type === 'Identifier';
   const flags = [], opened = new Set(), motions = new Set();
   visit(ast.body.body[0]?.consequent, node => { if (call(node, 'set')) flags.push(node.arguments[0].name); });
   visit(ast, node => {
-    if (call(node, 'set') && node.arguments[1]?.name === open) opened.add(node.arguments[0].name);
+    if (call(node, 'set') && resolve(node.arguments[1]) === open) opened.add(node.arguments[0].name);
     if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init && call(node.init, 'get')) {
       let stops = false;
-      visit(ast, child => { if (child.type === 'CallExpression' && child.callee.type === 'MemberExpression' && child.callee.object.name === node.id.name && child.callee.property.name === 'stop') stops = true; });
+      visit(ast, child => { if (child.type === 'CallExpression' && child.callee.type === 'MemberExpression' && resolve(child.callee.object) === resolve(node.id) && child.callee.property.name === 'stop') stops = true; });
       if (stops) motions.add(node.init.arguments[0].name);
     }
   });
@@ -49,29 +45,26 @@ export function viewportSignalExports(source) {
     open: exportOf(source, [...opened][0]), motion: exportOf(source, [...motions][0]) });
 }
 
-export function viewportPersistenceExport(source) {
+export function viewportPersistenceReference(source, { optional = false } = {}) {
   const candidates = [];
-  for (const match of source.matchAll(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(\{[^{}]{0,512}\}/g)) {
-    const header = match[0]; if (!['mainContentWidth', 'storageKey', 'widthMode'].every(key => header.includes(key))) continue;
-    const ast = parseExpressionAt(source, match.index, { ecmaVersion: 'latest' });
+  for (const ast of workspaceSourceFunctions(source, 'mainContentWidth')) {
     const properties = ast.params[0]?.properties ?? [], names = properties.map(value => value.key?.name);
     if (ast.end - ast.start > 4096 || ast.params.length !== 1 || names.length !== 4 || !['mainContentWidth', 'storageKey', 'width', 'widthMode'].every(key => names.includes(key))) continue;
     const expression = ast.body.body[0]?.expression, key = properties.find(value => value.key.name === 'storageKey')?.value.name;
     if (ast.body.body.length === 1 && expression?.type === 'CallExpression' && expression.callee.type === 'Identifier' && expression.arguments[0]?.name === key) candidates.push(expression.callee.name);
   }
+  if (!candidates.length && optional) return null;
   if (candidates.length !== 1) throw unavailable('Native viewport persistence action is missing or ambiguous');
-  const local = candidates[0], matches = [];
-  for (const match of source.slice(0, 262144).matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
-    if (match[0].length > 131072) throw unavailable('Native viewport persistence import exceeds its boundary');
-    if (!/^\.\/app-shared-[A-Za-z0-9_-]+\.js$/.test(match[2])) continue;
-    for (const spec of match[1].split(',')) {
-      const parsed = /^\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(spec);
-      if (parsed && (parsed[2] ?? parsed[1]) === local) matches.push(parsed[1]);
-    }
-  }
+  const local = candidates[0], syntax = workspaceModuleSyntax(source);
+  if (syntax.exports.some(value => value.local === local && !value.source)) return {
+    local, source: null, imported: workspaceExportName(source, local, 'workspace_viewport_unsupported', 'viewport persistence writer'),
+  };
+  const matches = syntax.imports.filter(value =>
+    value.local === local && /^\.\/[A-Za-z0-9_-]+\.js$/.test(value.source) && value.imported !== '*');
   if (matches.length !== 1) throw unavailable('Native viewport persistence import is missing or ambiguous');
   return matches[0];
 }
+export function viewportPersistenceExport(source) { return viewportPersistenceReference(source).imported; }
 
 export function nativeViewportContext(document, native, pins = new WeakMap()) {
   const root = document.getElementById('root'), input = nativeMainInput(document, native);

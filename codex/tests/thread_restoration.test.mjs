@@ -8,7 +8,7 @@ import { createThreadConfiguration } from '../frontend/src/desktop/thread-config
 import { createThreadReconfiguration } from '../frontend/src/desktop/thread-reconfiguration.js';
 import { createThreadRestoration } from '../frontend/src/desktop/thread-restoration.js';
 
-const core = process.env.CODLET_CORE_ROOT ?? fileURLToPath(new URL('../../codlet', import.meta.url));
+const core = process.env.CODLET_CORE_ROOT ?? fileURLToPath(new URL('../../', import.meta.url));
 const bootstrap = readFileSync(path.join(core, 'bundled/runtime/bootstrap.js'), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const target = { threadId: 'task', modelProvider: 'codlet_fixture', model: 'plugin-model' };

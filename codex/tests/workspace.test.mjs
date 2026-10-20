@@ -44,6 +44,39 @@ test('workspace tickets bind owner/generation, are single-use, and deactivation 
   assert.throws(() => session.getSnapshot(), { code: 'workspace_retired' });
 });
 
+test('workspace preparation reports each interface separately without mounting, navigating or reading history',async t=>{
+  const f=fixture(t),session=f.connect().session;let history=0,navigations=0;
+  f.discovery.navigation=async()=>({inputApi:0,openLocalThread(){navigations++;},manager:{}});
+  f.discovery.transcript=async()=>({manager:{loadBackgroundThreadHistoryPage(){history++;}},Content(){}});
+  f.discovery.shortcuts=async()=>{throw Object.assign(new Error('Shortcut role missing'),{code:'workspace_shortcuts_unavailable'});};
+  const result=plain(await session.prepare({features:['navigation','transcript','shortcuts','viewport']}));
+  assert.equal(result.evidence,'interface-contract');assert.equal(result.lifecycleVerified,false);assert.equal(result.available,false);
+  assert.equal(result.features.navigation.available,true);assert.equal(result.features.transcript.available,true);
+  assert.equal(result.features.shortcuts.available,false);assert.equal(result.features.shortcuts.diagnostic.code,'workspace_shortcuts_unavailable');
+  assert.equal(result.features.viewport.available,false);assert.equal(navigations,0);assert.equal(history,0);
+  assert.equal(f.document.querySelectorAll('[data-codlet-workspace-owned]').length,0);
+  await f.flush();assert.equal(session.getSnapshot().available,true,'an independent failed interface does not disable the existing surface');
+});
+
+test('workspace preparation validates options and rejects completion after consumer retirement',async t=>{
+  const f=fixture(t),owner=f.connect();let resolve;
+  for(const options of [null,{features:[]},{features:['transcript','transcript']},{features:['privateFactory']},{extra:true}])
+    await assert.rejects(owner.session.prepare(options),{code:'invalid_argument'});
+  f.discovery.transcript=()=>new Promise(done=>{resolve=done;});
+  const pending=owner.session.prepare({features:['transcript']});await tick();owner.ctx.retire();resolve({});
+  await assert.rejects(pending,{code:'workspace_retired'});
+  assert.equal(f.document.querySelectorAll('[data-codlet-workspace-owned]').length,0);
+});
+
+test('workspace preparation never initializes main-window modules in an auxiliary window',async t=>{
+  const f=fixture(t,{locate:()=>({auxiliary:true,navigator:f.navigator,rootNode:f.document.getElementById('root')})});
+  let loaded=0;
+  f.discovery.navigation=f.discovery.transcript=async()=>{loaded++;return {};};
+  const session=f.connect().session;
+  await assert.rejects(session.prepare(),{code:'workspace_feature_unavailable'});
+  assert.equal(loaded,0);
+});
+
 test('a failed composer control is a bounded workspace diagnostic and disposal restores passive publishing',async t=>{
   const f=fixture(t),input=f.document.querySelector('[data-codex-composer-root]'),button=f.document.createElement('button');button.dataset.composerNavigationTarget='permissions';input.append(button);
   const session=f.connect().session,lease=session.acquireComposerControl({control:'permissions',threadId:null});
@@ -695,7 +728,7 @@ test('native shortcut capture/clear/restore/search and programmatic conflicts re
 test('lazy keymap discovery parses the original bounded declaration after Native memoizes its initializer, without evaluating source', () => {
   const source = 'function renamedInitializer(){return renamedInitializer=lazy(()=>{query=create(scope,"codex-command-keymap-state");derived=signal(scope,({get})=>{let {data:value}=get(query);return value?{...value,primaryNumberShortcutTarget:void 0}:value;});})();}export{derived as differentlyNamedKeymap}';
   assert.equal(keymapExport({ anything: () => {} }, source), 'differentlyNamedKeymap');
-  assert.throws(() => keymapExport({}, source + '"codex-command-keymap-state"'), { code: 'workspace_shortcuts_unavailable' });
+  assert.equal(keymapExport({}, source + '"codex-command-keymap-state"'), 'differentlyNamedKeymap');
   assert.deepEqual(assetReferences('import("./local-conversation-thread-NEW_HASH.js");"./local-conversation-thread-NEW_HASH.js";', 'app://-/assets/app-initial-anotherHash.js', 'local-conversation-thread'), ['app://-/assets/local-conversation-thread-NEW_HASH.js']);
 });
 

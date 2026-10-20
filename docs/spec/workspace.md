@@ -37,6 +37,24 @@ interface WorkspaceSnapshot {
 
 `composerRebind` is a separate capability from `composer`. A supported profile prepares it asynchronously and publishes the change through `subscribe` before an input must be created. Consumers must wait for that flag; an unknown or unvalidated profile remains false. It does not become supported merely because a composer component was discovered. Reconnect and retirement cancel pending capability publication.
 
+`await workspace.prepare({features:['navigation','transcript']})` resolves the
+requested interface dependencies without mounting UI, navigating, reading drafts
+or loading conversation history. It returns
+`{api:1,evidence:'interface-contract',available,features,lifecycleVerified:false}`.
+Each feature has its own `available` and `diagnostic` result; one failure does not
+disable other features. Supported names are `navigation`, `transcript`,
+`composer`, `shortcuts`, `action` and `viewport`. The default is navigation plus
+transcript. Empty, duplicate and unknown feature names are rejected. Auxiliary
+windows reject preparation before initializing main-window modules. Retirement
+rejects pending completion. This is an additive API 1 method; consumers should
+feature-detect it when supporting older Core builds.
+
+Consumers keep their entry disabled while required interfaces are pending or
+failed, and check the navigation handle's `inputApi === 1` when strict input
+ownership is required. Shortcut failure can leave a pointer entry usable with
+its accelerator hidden. Preparation verifies interface contracts; it does not
+certify rendering, IME, attachment, permission or full lifecycle behavior.
+
 `getSurface()` synchronously returns `{available, main, content, scroller, composer, footer, header, rightPanel}`. Every role is either `null` or `{element:HTMLElement,rect:{x,y,width,height,top,right,bottom,left}}`. `main` is the main AppShell surface; `content` contains the native thread body and footer; `scroller` is the primary thread scroll container; `composer` is its composer root; `footer` contains that composer; `header` is the main titlebar; `rightPanel` is the native right resource panel. There is no fiber or provider data. Nodes and geometry are ephemeral: read them again after a snapshot change. An unopened optional panel is `null`. Ambiguous or unknown host structure reports a diagnostic and returns an unavailable surface, rather than selecting another pane.
 
 `resolveThreadReference(element)` synchronously returns `{threadId,hostId:'local'}` or `null`. It accepts an Element from this document, resolves a native sidebar thread row through bounded mounted ancestry, and rejects main content, plugin nodes, remote/cloud entries and ambiguous identities. It performs no navigation or history loading. The consumer owns pointer handling and dragging.

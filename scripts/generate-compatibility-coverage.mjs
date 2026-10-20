@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createCoverageCatalog } from './lib/compatibility-coverage.mjs';
+import { digest } from './lib/native-source-snapshot.mjs';
+const [output] = process.argv.slice(2);
+if (!path.isAbsolute(output ?? '')) throw Error('Pass an absolute coverage catalog output path');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), catalog = createCoverageCatalog(root);
+const bytes = JSON.stringify(catalog, null, 2) + '\n';
+fs.mkdirSync(path.dirname(output), { recursive: true });
+fs.writeFileSync(output, bytes);
+console.log(JSON.stringify({ output, entries: catalog.entries.length, sha256: digest(bytes), coreVersion: catalog.coreVersion }));

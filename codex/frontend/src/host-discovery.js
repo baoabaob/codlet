@@ -188,3 +188,18 @@ export function uniqueExport(module, predicate, role, optional = false) {
   if (values.length !== 1) throw fail('desktop_contract_drift', `A unique native ${role} is required (found ${values.length})`);
   return values[0];
 }
+export function uniqueModuleExport(modules, predicate, role, optional = false) {
+  const candidates = new Map();
+  for (const [url, namespace] of modules) for (const [name, value] of Object.entries(namespace)) {
+    if (!predicate(value)) continue;
+    const origins = candidates.get(value) ?? [];
+    origins.push({ module: url, export: name }); candidates.set(value, origins);
+  }
+  if (!candidates.size && optional) return undefined;
+  if (candidates.size !== 1) {
+    const error = fail('desktop_contract_drift', `A unique native ${role} is required (found ${candidates.size})`);
+    error.details = { role, candidates: [...candidates].map(([value, origins]) => ({ type: typeof value, origins })) };
+    throw error;
+  }
+  return candidates.keys().next().value;
+}

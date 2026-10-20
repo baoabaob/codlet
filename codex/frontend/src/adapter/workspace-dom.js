@@ -1,5 +1,5 @@
 import { componentSource, currentElementAncestry } from '../host-discovery.js';
-import { inspectNativeInput } from './workspace-native-input.js';
+import { inspectNativeInput, inspectNativeComposerScope } from './workspace-native-input.js';
 
 export const workspaceError = (code, message) => Object.assign(new Error(message), { code });
 export const OWNED = '[data-codlet-workspace-owned]';
@@ -153,8 +153,15 @@ export function nativeInputBinding(value, native) {
 export function nativeMainInput(document, native, diagnose) {
   const root = document.getElementById('root'); if (!root) return null;
   const inputs = [...root.querySelectorAll('[data-codex-composer-root]')].filter(input => !input.closest(OWNED + ',[data-app-shell-active-page="false"]'));
-  const candidates = [];
+  const candidates = [], currentRoute = native?.currentRoute?.();
   for (const input of inputs) {
+    if (currentRoute) {
+      const scope = inspectNativeComposerScope(native, currentElementAncestry(input, root) ?? []);
+      const route = scope?.getOwnValue?.(native.RouteScope);
+      // Retained Native pages keep valid editor/controllers while inactive.
+      // Only the route owned by the live navigation bridge is the main input.
+      if (!route || route.pathname !== currentRoute.pathname || (route.search ?? '') !== currentRoute.search) continue;
+    }
     const value = inspectNativeInput(native, input, root, undefined, diagnose); if (!value) continue;
     if (value.scope.value?.placement === 'main' || value.scope.value?.kind === 'new' && value.scope.value.entrypoint === 'home') candidates.push(value);
   }

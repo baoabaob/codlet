@@ -1,9 +1,11 @@
 import { parseExpressionAt } from 'acorn';
-import { loadedAsset, localConnection, uniqueExport, componentSource } from '../host-discovery.js';
+import { loadedAsset, localConnection, uniqueModuleExport, componentSource } from '../host-discovery.js';
 import { workspaceError } from './workspace-dom.js';
 import { createNativeComposerDriver } from './workspace-native-composer.js';
 import { createNativeNavigation, navigationSignalExport, nativeNavigationScope } from './workspace-native-navigation.js';
-import { createNativeViewportDriver, viewportSignalExports, viewportPersistenceExport } from './workspace-native-viewport.js';
+import { createNativeViewportDriver, viewportSignalExports, viewportPersistenceReference } from './workspace-native-viewport.js';
+import { keymapSourceExport, clearWorkspaceSourceCache } from './workspace-source.js';
+import { WORKSPACE_FUNCTION_ROLES, matchesWorkspaceFunction, workspaceInputProperties } from './workspace-role-contracts.js';
 
 export async function readWorkspaceAsset(url, signal) {
   const response = await fetch(url, { credentials: 'omit', signal });
@@ -22,43 +24,43 @@ export function assetReferences(source, parent, role) {
   const pattern = new RegExp('["\'`]((?:\\./)?' + role + '-[A-Za-z0-9_-]+\\.js)["\'`]', 'g');
   return [...new Set([...source.matchAll(pattern)].map(match => new URL(match[1], parent).href))].filter(url => /^app:\/\/-\/assets\/[A-Za-z0-9_-]+\.js$/.test(url));
 }
-function visit(node, fn) {
-  if (!node || typeof node !== 'object') return;
-  if (node.type) fn(node);
-  for (const [key, value] of Object.entries(node)) if (!['start', 'end'].includes(key)) {
-    if (Array.isArray(value)) value.forEach(item => visit(item, fn)); else if (value && typeof value === 'object') visit(value, fn);
+export function keymapExport(_initial, source, options) {
+  try { return keymapSourceExport(source, options); }
+  catch (error) {
+    if (error.code) throw error;
+    throw workspaceError('workspace_shortcuts_unavailable', 'Native shortcut source cannot be parsed');
   }
 }
-export function keymapExport(initial, source) {
-  // Rolldown replaces an initialized exported lazy function with a memoized
-  // wrapper. Inspect its original module declaration, never call the wrapper
-  // to guess a role and never parse the complete multi-megabyte module AST.
-  const marker = 'codex-command-keymap-state', markerAt = source.indexOf(marker);
-  if (markerAt < 0 || source.indexOf(marker, markerAt + marker.length) >= 0) throw workspaceError('workspace_shortcuts_unavailable', 'Native keymap query is missing or ambiguous');
-  const declarations = [...source.slice(0, markerAt).matchAll(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(/g)], start = declarations.at(-1)?.index;
-  if (start == null) throw workspaceError('workspace_shortcuts_unavailable', 'Native keymap declaration is unavailable');
-  const ast = parseExpressionAt(source, start, { ecmaVersion: 'latest' }), candidates = new Set();
-  if (ast.end <= markerAt || ast.end - ast.start > 32768) throw workspaceError('workspace_shortcuts_unavailable', 'Native keymap declaration exceeds the discovery boundary');
-  visit(ast, node => {
-    if (node.type !== 'AssignmentExpression' || node.left.type !== 'Identifier' || node.right.type !== 'CallExpression' || node.right.arguments.length !== 2) return;
-    const part = source.slice(node.right.start, node.right.end);
-    if (part.includes('primaryNumberShortcutTarget') && (part.includes('.data') || /\bdata\s*:/.test(part))) candidates.add(node.left.name);
-  });
-  if (candidates.size !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'Native keymap signal is missing or ambiguous');
-  const local = [...candidates][0], tail = source.slice(source.lastIndexOf('export'));
-  const pattern = new RegExp('(?:\\{|,)\\s*' + local.replace(/[$]/g, '\\$&') + '\\s+as\\s+([A-Za-z_$][\\w$]*)\\s*(?=,|\\})', 'g');
-  const aliases = [...tail.matchAll(pattern)].map(match => match[1]);
-  if (aliases.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'Native keymap export is missing or ambiguous');
-  return aliases[0];
+const inputProperties = new WeakMap();
+function workspaceFunction(native, name, optional = false) {
+  const contract = WORKSPACE_FUNCTION_ROLES[name];
+  return uniqueModuleExport(native.modules, value => {
+    const source = componentSource(value);
+    if (contract.arity != null && typeof value !== 'function' || !contract.markers.every(marker => source.includes(marker))) return false;
+    let properties = [];
+    if (contract.inputProperties) {
+      if (!inputProperties.has(value)) {
+        try { inputProperties.set(value, source.length <= 32768 ? workspaceInputProperties(parseExpressionAt(source, 0, { ecmaVersion: 'latest' })) : []); }
+        catch { inputProperties.set(value, []); }
+      }
+      properties = inputProperties.get(value);
+    }
+    return matchesWorkspaceFunction(source, value?.length, contract, properties);
+  }, contract.label, optional);
 }
-const markers = (value, list) => { const source = componentSource(value); return list.every(marker => source.includes(marker)); };
 
 // One cache per provider lifetime; lazy modules never initialize in pet windows.
 export function createWorkspaceDiscovery(baseNative, { load = url => import(url), read = readWorkspaceAsset, connect = localConnection } = {}) {
-  const controller = new AbortController(), sources = new Map(), modules = new Map();
-  let common, transcript, shortcuts, connection, threadModule, composer, primaryModule, composerParts, viewport;
+  const controller = new AbortController(), sources = new Map(), modules = new Map(), moduleNamespaces = new Map();
+  let common, transcript, shortcuts, connection, composer, composerParts, viewport;
   const source = url => { if (!sources.has(url)) sources.set(url, read(url, controller.signal)); return sources.get(url); };
-  const module = url => { if (!modules.has(url)) modules.set(url, load(url)); return modules.get(url); };
+  const module = url => {
+    if (!modules.has(url)) modules.set(url, Promise.resolve().then(() => load(url)).then(namespace => {
+      if (controller.signal.aborted) throw workspaceError('workspace_retired', 'Workspace discovery retired');
+      moduleNamespaces.set(url, namespace); return namespace;
+    }));
+    return modules.get(url);
+  };
   const existing = () => {
     connection ??= connect();
     if (connection.check) return connection.check();
@@ -71,8 +73,35 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     const native = await baseNative(), sharedUrl = loadedAsset('shared'), initialUrl = loadedAsset('initial');
     if (!native?.React || !native?.Client) throw workspaceError('workspace_host_pending', 'Native React is not ready');
     const [shared, initial] = await Promise.all([module(sharedUrl), module(initialUrl)]);
-    return { ...native, shared, initial, sharedUrl, initialUrl };
+    return { ...native, shared, initial, sharedUrl, initialUrl, modules: moduleNamespaces };
   })();
+  const sourceSelection = async (native, select, role) => {
+    const candidates = [];
+    for (const [url, namespace] of native.modules) {
+      const selection = select(await source(url), { optional: true });
+      if (selection == null) continue;
+      const names = typeof selection === 'string' ? [selection] : Object.values(selection);
+      const values = names.map(name => namespace[name]);
+      if (values.some(value => value === undefined)) throw workspaceError('workspace_host_pending', `Waiting for Native to initialize ${role}`);
+      if (!candidates.some(candidate => candidate.values.length === values.length && candidate.values.every((value, index) => value === values[index]))) candidates.push({ url, namespace, selection, values });
+    }
+    if (candidates.length !== 1) throw workspaceError('workspace_host_drift', `A unique Native ${role} source is required (found ${candidates.length})`);
+    return candidates[0];
+  };
+  const sourceReference = async (native, select, role) => {
+    const candidates = new Map();
+    for (const [url] of native.modules) {
+      const reference = select(await source(url), { optional: true });
+      if (!reference) continue;
+      const target = reference.source === null ? url : new URL(reference.source, url).href;
+      if (!/^app:\/\/-\/assets\/[A-Za-z0-9_-]+\.js$/.test(target)) throw workspaceError('workspace_host_drift', `Native ${role} module is outside the workspace`);
+      const namespace = await module(target), value = namespace[reference.imported];
+      if (typeof value !== 'function') throw workspaceError('workspace_host_pending', `Waiting for Native to initialize ${role}`);
+      candidates.set(value, { value, url: target, reference });
+    }
+    if (candidates.size !== 1) throw workspaceError('workspace_host_drift', `A unique Native ${role} source is required (found ${candidates.size})`);
+    return candidates.values().next().value;
+  };
   const api = {
     connection: existing,
     // Finding a component alone cannot establish live-main draft handoff or
@@ -80,26 +109,28 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     // A future reviewed profile can prepare its driver here, before any mount.
     composerCapabilities: async () => ({ rebind: false }),
     viewport: () => viewport ??= (async () => {
-      const native = await api.transcript(), graph = await source(native.initialUrl), roles = viewportSignalExports(graph);
-      const Shell = uniqueExport(native.initial, value => value?.RightPanelOutlet && value?.DetailPanelOutlet && value?.HeaderToolbar && value?.MainContentLayout, 'Native viewport namespace');
-      const signals = Object.fromEntries(Object.entries(roles).map(([role, key]) => [role, native.initial[key]]));
-      const writeAtom = native.shared[viewportPersistenceExport(graph)];
-      const useScope = uniqueExport(native.shared, value => markers(value, ['useContext', 'getOwnValue', 'queryClient', 'Missing query client']), 'scope facade hook');
+      const native = await api.transcript();
+      const selected = await sourceSelection(native, viewportSignalExports, 'viewport state');
+      const roles = selected.selection;
+      const Shell = uniqueModuleExport(native.modules, value => value && typeof value === 'object' &&
+        value.RightPanelOutlet && value.DetailPanelOutlet && value.HeaderToolbar && value.MainContentLayout, 'Native viewport namespace');
+      const signals = Object.fromEntries(Object.entries(roles).map(([role, key]) => [role, selected.namespace[key]]));
+      const writeAtom = (await sourceReference(native, viewportPersistenceReference, 'viewport persistence writer')).value;
+      const useScope = workspaceFunction(native, 'scopeFacade');
       return createNativeViewportDriver({ document: globalThis.document, native: { ...native, Shell, writeAtom, useScope, check: existing }, signals });
     })(),
     navigation: async () => {
       const native = await getCommon(), connection = existing();
-      const composerScope = uniqueExport(native.shared, value => value?.__scopeBrand === 'ComposerScope' && typeof value.id === 'symbol', 'composer scope');
-      const ThreadScope = uniqueExport(native.shared, value => value?.__scopeBrand === 'ThreadScope' && typeof value.id === 'symbol', 'thread scope');
-      const RouteScope = uniqueExport(native.shared, value => value?.__scopeBrand === 'RouteScope' && typeof value.id === 'symbol', 'route scope');
-      const signal = native.shared[navigationSignalExport(await source(native.sharedUrl))];
-      const dispatch = uniqueExport(native.initial, value => typeof value === 'function' && value.length === 7 && markers(value,
-        ['sidebarThreadLocationId', 'orbitPrewarmId', '`sidebar`', 'threadId:']), 'thread navigation action');
+      const composerScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'ComposerScope' && typeof value.id === 'symbol', 'composer scope');
+      const ThreadScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'ThreadScope' && typeof value.id === 'symbol', 'thread scope');
+      const RouteScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'RouteScope' && typeof value.id === 'symbol', 'route scope');
+      const selected = await sourceSelection(native, navigationSignalExport, 'navigation signal');
+      const signal = selected.namespace[selected.selection];
+      const dispatch = workspaceFunction(native, 'threadNavigation');
       const parts = { manager: connection.manager, composerScope, ThreadScope, RouteScope, inputApi: 1, check: () => existing() };
       // Native's EditorProvider key is the draft namespace, independent of a
       // particular ProseMirror controller. Optional for older navigation hosts.
-      parts.draftKey = uniqueExport(native.shared, value => typeof value === 'function' && value.length === 1 && markers(value,
-        ['gpt-draft:', 'draftThreadLocationId', 'library-preview:', 'widget-overlay:', 'clientThreadId']), 'composer draft identity', true);
+      parts.draftKey = workspaceFunction(native, 'draftIdentity', true);
       return { ...parts, ...createNativeNavigation(signal, existing, dispatch, () => nativeNavigationScope(existing())) };
     },
     action: async () => { const native=await getCommon();if(!native.RailButton||!native.RailTooltip)throw workspaceError('workspace_action_unavailable','Native toolbar button or tooltip is unavailable');return{...native,Button:native.RailButton,Tooltip:native.RailTooltip}; },
@@ -112,20 +143,18 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       if (wrappers.length !== 1 || implementations.length !== 1) throw workspaceError('workspace_transcript_unavailable', 'The native transcript entry contract changed');
       // The semantic wrapper runs Native's own initializer. Source is never evaluated.
       await module(wrappers[0].url);
-      const thread = await module(implementations[0].url);
-      threadModule=thread;
-      const Content = uniqueExport(thread, value => markers(value, ['trackReadState', 'retainActiveInterest', 'contentSearchOrchestrationId', 'enableMcpApps']), 'transcript content');
-      const Scope = uniqueExport(native.shared, value => markers(value, ['Missing parent scope', 'providedValue']), 'scope provider');
-      const composerScope = uniqueExport(native.shared, value => value?.__scopeBrand === 'ComposerScope' && typeof value.id === 'symbol', 'composer scope');
-      const composerValue = uniqueExport(native.shared, value => markers(value, ['routeKind', 'local-thread', 'client-local-thread', 'browserTabMentionConversationId']), 'composer scope value');
-      const ThreadScope=uniqueExport(native.shared,value=>value?.__scopeBrand==='ThreadScope','thread scope');
-      const RouteScope=uniqueExport(native.shared,value=>value?.__scopeBrand==='RouteScope','route scope');
-      const routeDescription=uniqueExport(native.shared,value=>typeof value==='function'&&value.length===1&&markers(value,['pathname','routeTemplate','local-thread','client-local-thread','routeKind','/extension/panel/new','new URLSearchParams']),'route description');
+      await module(implementations[0].url);
+      const Content = workspaceFunction(native, 'transcriptContent');
+      const Scope = workspaceFunction(native, 'scopeProvider');
+      const composerScope = uniqueModuleExport(native.modules, value => value?.__scopeBrand === 'ComposerScope' && typeof value.id === 'symbol', 'composer scope');
+      const composerValue = workspaceFunction(native, 'composerValue');
+      const ThreadScope=uniqueModuleExport(native.modules,value=>value?.__scopeBrand==='ThreadScope','thread scope');
+      const RouteScope=uniqueModuleExport(native.modules,value=>value?.__scopeBrand==='RouteScope','route scope');
+      const routeDescription=workspaceFunction(native,'routeDescription');
       const primaryUrls = assetReferences(graph, native.initialUrl, 'app-primary');
       if (primaryUrls.length !== 1) throw workspaceError('workspace_transcript_unavailable', 'A unique native thread subscription module is required');
-      const primary = await module(primaryUrls[0]);
-      primaryModule=primary;
-      const ThreadSubscription = uniqueExport(primary, value => markers(value, ['threadKey', 'cancelRelease', 'useSyncExternalStore', 'hostId', 'threadId']), 'thread subscription');
+      await module(primaryUrls[0]);
+      const ThreadSubscription = workspaceFunction(native, 'threadSubscription');
       const manager = existing().manager;
       for (const method of ['getConversation', 'loadBackgroundThreadHistoryPage', 'loadRemainingTurnItems', 'addConversationStateCallback'])
         if (typeof manager[method] !== 'function') throw workspaceError('workspace_transcript_unavailable', `Native transcript manager lacks ${method}`);
@@ -136,11 +165,10 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       // Native's thread footer uses these components directly. The outer Frame
       // adds scroll/layout and route work even with hideThreadContent. Finding
       // these parts does not enable rebind without a validated draft driver.
-      const Composer=uniqueExport(primaryModule,value=>markers(value,['useAsbDirect','runtime','account']),'composer component');
-      const ComposerSurface=uniqueExport(primaryModule,value=>markers(value,['isWorkHome','isCodexHome','cloneElement','surfacePlacement']),'composer surface');
-      const useScope=uniqueExport(native.shared,value=>markers(value,['useContext','getOwnValue','queryClient','Missing query client']),'scope facade hook');
-      const createEditor=uniqueExport(native.initial,value=>typeof value==='function'&&value.length===2&&markers(value,
-        ['codeBlockNodeViewRegistry','inlineMentionIconRegistry','setEnterBehavior','getLiteralMarkdownLinks','restoreMarkdownLinksAsTextLinks','restorePathLinksAsFileMentions']),'native editor factory');
+      const Composer=workspaceFunction(native,'composerComponent');
+      const ComposerSurface=workspaceFunction(native,'composerSurface');
+      const useScope=workspaceFunction(native,'scopeFacade');
+      const createEditor=workspaceFunction(native,'editorFactory');
       const parts={...native,Composer,ComposerSurface,useScope,createEditor,check:existing};
       // This factory still rejects without a reviewed Native lifecycle bridge.
       // It is private and does not change composerCapabilities or enable rebind.
@@ -150,7 +178,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     composer: () => composer ??= (async()=>{
       const native=await api.transcript();
       if(typeof native.manager.getStreamRole!=='function')throw workspaceError('workspace_composer_unavailable','Native stream identity is unavailable');
-      const Frame=uniqueExport(threadModule,value=>markers(value,['hideThreadContent','canInteract','shouldResume','threadAccess','hostMcpApps']),'composer frame');
+      const Frame=workspaceFunction(native,'composerFrame');
       return{...native,Frame,check:existing};
     })(),
     shortcuts: () => shortcuts ??= (async () => {
@@ -162,16 +190,16 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
       if (wrappers.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'The native shortcut settings entry changed');
       await module(wrappers[0].url);
       if (urls.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique native shortcut control module is required');
-      const primary = await module(urls[0]);
-      const Capture = uniqueExport(primary, value => markers(value, ['allowsBareModifiers', 'allowsSequences', 'captureAriaLabel', 'onStartCapture']), 'shortcut capture control');
-      const eventAccelerator = uniqueExport(primary, value => typeof value === 'function' && value.length === 1 && componentSource(value).length < 1024 &&
-        markers(value, ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'Command', '.join(']), 'keyboard event accelerator');
-      const Row = uniqueExport(native.shared, value => markers(value, ['labelSizing', 'controlSizing', 'description', 'control']), 'settings row');
-      const useCommand = uniqueExport(native.initial, value => markers(value, ['contextHandler', 'keyboardHandler', 'menuItem', 'useEffect']), 'command hook');
-      const dispatchKeyboard = uniqueExport(native.initial, value => typeof value === 'function' && value.length === 3 && markers(value, ['keyboard_shortcut']) && componentSource(value).length < 256, 'keyboard command dispatch');
-      const bindings = uniqueExport(native.initial, value => typeof value === 'function' && markers(value, ['keymapState', 'accelerator:', 'label:', 'macOS', 'chatgpt']) && componentSource(value).length < 2048, 'effective shortcut bindings');
-      const commands = uniqueExport(native.initial, value => Array.isArray(value) && value.some(command => command?.id === 'newTask') && value.some(command => command?.id === 'keyboardShortcuts'), 'command definitions');
-      const keymap = native.initial[keymapExport(native.initial, graph)], connection = existing();
+      await module(urls[0]);
+      const Capture = workspaceFunction(native, 'shortcutCapture');
+      const eventAccelerator = workspaceFunction(native, 'eventAccelerator');
+      const Row = workspaceFunction(native, 'settingsRow');
+      const useCommand = workspaceFunction(native, 'commandHook');
+      const dispatchKeyboard = workspaceFunction(native, 'keyboardDispatch');
+      const bindings = workspaceFunction(native, 'shortcutBindings');
+      const commands = uniqueModuleExport(native.modules, value => Array.isArray(value) && value.some(command => command?.id === 'newTask') && value.some(command => command?.id === 'keyboardShortcuts'), 'command definitions');
+      const selected = await sourceSelection(native, (source, options) => keymapExport(null, source, options), 'shortcut state');
+      const keymap = selected.namespace[selected.selection], connection = existing();
       if (keymap?.scope !== connection.node.token || typeof keymap.resolve !== 'function' || typeof connection.node.store?.get !== 'function') throw workspaceError('workspace_shortcuts_unavailable', 'Native shortcut keymap ownership or signal contract changed');
       // Current Native's unexported detector uses navigator.platform. Use the
       // actual client identity with explicit unsupported handling, never a fixed
@@ -185,7 +213,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
           return connection.node.store.get(keymap.resolve(connection.node, connection.chain));
         } };
     })(),
-    dispose() { controller.abort(); sources.clear(); modules.clear(); connection = null; common = transcript = shortcuts = composer = threadModule = primaryModule = composerParts = viewport = null; },
+    dispose() { controller.abort(); sources.clear(); modules.clear(); moduleNamespaces.clear(); clearWorkspaceSourceCache(); connection = null; common = transcript = shortcuts = composer = composerParts = viewport = null; },
   };
   return api;
 }

@@ -39,7 +39,16 @@ export async function buildCodex(root = resolve(base, '..')) {
   for (const directory of [...packages].sort()) {
     const pkg = JSON.parse(await readFile(resolve(directory, 'package.json'), 'utf8'));
     let license;
-    for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'license', 'license.md']) try { license = await readFile(resolve(directory, name), 'utf8'); break; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    for (const name of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE.BSD', 'license', 'license.md']) try { license = await readFile(resolve(directory, name), 'utf8'); break; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // Some BSD packages ship their complete notice only as a source header.
+    if (!license && pkg.license === 'BSD-2-Clause' && typeof pkg.main === 'string') {
+      const entry = resolve(directory, pkg.main);
+      if (!entry.startsWith(directory + '/')
+          && !entry.startsWith(directory + '\\')) throw Error('Package license entry escapes its directory');
+      const header = /^\s*\/\*([\s\S]*?)\*\//.exec(await readFile(entry, 'utf8'))?.[1];
+      if (header?.includes('Redistribution and use in source and binary forms') &&
+          header.includes('THIS SOFTWARE IS PROVIDED') && header.includes('Copyright')) license = header;
+    }
     if (!license) throw new Error(`Missing Codex implementation license: ${pkg.name}@${pkg.version}`);
     notices.push(`${pkg.name}@${pkg.version} (${pkg.license})\n\n${license.trim()}`);
   }

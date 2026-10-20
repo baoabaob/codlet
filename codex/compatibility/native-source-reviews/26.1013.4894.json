@@ -1,0 +1,222 @@
+{
+  "schema": 1,
+  "kind": "reviewed-native-source-changes",
+  "previousSnapshotSha256": "94a03d68e7877e900801a447e78a20496d746e9b475823d92757ca93398e03f4",
+  "currentSnapshotSha256": "c67f75276e5adbe47685fe654f0c9ac7aca85a5f34604d9b54f6285e867baf56",
+  "previousBuild": {
+    "packageFullName": "OpenAI.Codex_26.1007.9446.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1007.9446.0",
+    "appVersion": "26.1007.71326",
+    "buildNumber": "20398",
+    "identityEvidence": [
+      "../core-native/core-0d3170af-69f7-4ff3-8258-aa2f3416c46a/preflight.json",
+      "../core-native/core-0d3170af-69f7-4ff3-8258-aa2f3416c46a/native-working-source/manifest.json",
+      "../../scripts/audit-native-working-current.mjs"
+    ]
+  },
+  "currentBuild": {
+    "packageFullName": "OpenAI.Codex_26.1013.4894.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1013.4894.0",
+    "appVersion": "26.1013.40934",
+    "buildNumber": "20770",
+    "buildNumberSource": "package.json"
+  },
+  "decisions": [
+    {
+      "role": "composerValue",
+      "classification": "interface-change",
+      "observation": "The home composer object now forwards optional homeDraftKey from route state. Local-thread and client-local-thread branches keep the same argument/reference structure.",
+      "coreImpact": "Core passes Native composer values through and builds mounted thread scopes from /local/<threadId>. It must not synthesize a replacement home draft key. Local composer lifecycle still requires interaction acceptance.",
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "normalizedHash": "cbccde01af199258de5f698e3b54b3c63af6ad31eecafd492f6d58177dac5696",
+        "start": {
+          "line": 1141,
+          "column": 7545,
+          "offset": 5481060
+        },
+        "end": {
+          "line": 1141,
+          "column": 8803,
+          "offset": 5482318
+        },
+        "local": "O0r",
+        "exports": [
+          "$W"
+        ]
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "normalizedHash": "943342e4b737f2002aaad8c456a9a4b2529dfa5bb42e1bc4a350d07ff7bd2651",
+        "start": {
+          "line": 1765,
+          "column": 44192,
+          "offset": 2080201
+        },
+        "end": {
+          "line": 1765,
+          "column": 45478,
+          "offset": 2081487
+        },
+        "local": "MZt",
+        "exports": [
+          "lCr"
+        ]
+      },
+      "validation": {
+        "source": "reviewed",
+        "simulated": "separate-report",
+        "live": "not-inferred"
+      }
+    },
+    {
+      "role": "draftIdentity",
+      "classification": "behavior-change",
+      "observation": "A new home draft now prefers homeDraftKey, falling back to the previous GPT/home identity rule. The local branch still returns clientThreadId.",
+      "coreImpact": "The strict Native input reader uses the discovered draft identity function and compares its result with the EditorProvider key. It must retain that call instead of reconstructing keys. Local draft, attachment and IME ownership checks remain enforced.",
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "normalizedHash": "dca90be429dd4d35da82848bd4ae3e268007b5e290c322179e9e62890cdb8d45",
+        "start": {
+          "line": 1141,
+          "column": 6199,
+          "offset": 5479714
+        },
+        "end": {
+          "line": 1141,
+          "column": 6704,
+          "offset": 5480219
+        },
+        "local": "C0r",
+        "exports": [
+          "cG"
+        ]
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "normalizedHash": "4e8ce1a3f99b9bf4eb7cbb68d14b7a10dc4779d912e0954f880ab467913df773",
+        "start": {
+          "line": 1765,
+          "column": 42829,
+          "offset": 2078838
+        },
+        "end": {
+          "line": 1765,
+          "column": 43351,
+          "offset": 2079360
+        },
+        "local": "bb",
+        "exports": [
+          "_Cr"
+        ]
+      },
+      "validation": {
+        "source": "reviewed",
+        "simulated": "separate-report",
+        "live": "not-inferred"
+      }
+    },
+    {
+      "role": "routeDescription",
+      "classification": "behavior-change",
+      "observation": "The new /dots/thread/:threadId route gets a local host, /dots/:id is distinguished from client thread IDs, and the other-route result now includes orbitId. The ordinary local conversation branch retains routeKind, conversationId, hostId and search.",
+      "coreImpact": "Core obtains route values through the discovered Native function. Mounted transcripts and composers remain limited to validated /local/<threadId> identities; this review does not expand support to Dot routes.",
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "normalizedHash": "0209c7982d6f0ee1e76f6e05cde1e6e86bf75b0ca7dec52ab052e370ec2dca3b",
+        "start": {
+          "line": 569,
+          "column": 36087,
+          "offset": 5024286
+        },
+        "end": {
+          "line": 569,
+          "column": 37761,
+          "offset": 5025960
+        },
+        "local": "_Er",
+        "exports": [
+          "$4"
+        ]
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "normalizedHash": "eac3d20134f693bd7402ecc80a8afe071e772026a1b6b29ef5db21d7d2c7a2e7",
+        "start": {
+          "line": 1765,
+          "column": 30529,
+          "offset": 2066538
+        },
+        "end": {
+          "line": 1765,
+          "column": 32261,
+          "offset": 2068270
+        },
+        "local": "Zy",
+        "exports": [
+          "_wr"
+        ]
+      },
+      "validation": {
+        "source": "reviewed",
+        "simulated": "separate-report",
+        "live": "not-inferred"
+      }
+    },
+    {
+      "role": "editorFactory",
+      "classification": "interface-change",
+      "observation": "The internal helper result and editor constructor drop codeBlockNodeViewRegistry; constructor argument positions change. The exported factory still accepts two arguments and returns the editor controller.",
+      "coreImpact": "Core calls the two-argument factory and does not invoke its internal constructor or depend on codeBlockNodeViewRegistry. Rebinding remains disabled until its separate lifecycle contract is validated.",
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "normalizedHash": "2631d1e0cabb5029f319e0cc6e4a79a364e6324ac9ea9c1ad8e6ccb3b72c29fd",
+        "start": {
+          "line": 4120,
+          "column": 9502,
+          "offset": 10301505
+        },
+        "end": {
+          "line": 4120,
+          "column": 9940,
+          "offset": 10301943
+        },
+        "local": "OBc",
+        "exports": [
+          "Zp"
+        ]
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "normalizedHash": "12c15c2b937a1077ab1ba874f5da69a1637acc85953d6259129b5d6b2c3df485",
+        "start": {
+          "line": 5020,
+          "column": 9295,
+          "offset": 13132526
+        },
+        "end": {
+          "line": 5020,
+          "column": 9703,
+          "offset": 13132934
+        },
+        "local": "SUu",
+        "exports": [
+          "ih"
+        ]
+      },
+      "validation": {
+        "source": "reviewed",
+        "simulated": "separate-report",
+        "live": "not-inferred"
+      }
+    }
+  ]
+}

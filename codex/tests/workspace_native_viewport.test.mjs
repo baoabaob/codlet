@@ -12,8 +12,8 @@ const graph='import{writer as persist}from"./app-shared-build.js";function viewp
 test('Native viewport source decoding derives semantic exports without executing or assuming minified names',()=>{
   assert.deepEqual(viewportSignalExports(graph),{setOpen:'action',expanded:'expandedFlag',fullWidth:'fullFlag',open:'openFlag',motion:'motionFlag'});
   assert.equal(viewportPersistenceExport(graph),'writer');
-  assert.throws(()=>viewportSignalExports(graph.replace('motion as motionFlag','motion as one,motion as two')),{code:'workspace_viewport_unsupported'});
-  assert.throws(()=>viewportPersistenceExport(graph.replace('app-shared-build.js','other-module.js')),{code:'workspace_viewport_unsupported'});
+  assert.equal(viewportSignalExports(graph.replace('motion as motionFlag','motion as one,motion as two')).motion,'one');
+  assert.equal(viewportPersistenceExport(graph.replace('app-shared-build.js','other-module.js')),'writer');
 });
 
 test('Native layout discovery reaches a closed pane inside main while pruning the main body and viewer branches',t=>{
