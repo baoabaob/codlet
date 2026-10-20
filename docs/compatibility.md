@@ -10,6 +10,13 @@ Codlet follows the systems and architectures offered by the official desktop cli
 | macOS Intel | Not part of the currently selected official-client download target; no Universal/Intel package is produced. |
 | Linux | Deferred; no claim of support. |
 
+The 2026-10-20 review checked Native **26.1013.40934 / build 20770** on the current
+production update channel. Windows package 26.1013.4894.0 retained the previously
+reviewed source/Node hashes. macOS acceptance now includes this Native's signed
+CUA Node, Core resolver, DMG initialization and update/rollback checks. These are
+separate from the older full Desktop/model transport fixtures and from manual
+account/GUI acceptance; see the [rc.7 record](releases/1.0.0-rc.7/validation.md).
+
 The project's current platform scope is based on the official [Windows deployment](https://learn.chatgpt.com/docs/enterprise/windows-deployment) and [desktop app](https://learn.chatgpt.com/docs/app) documentation. Recheck official offerings before adding another release target.
 
 ## Client integration

@@ -4,6 +4,12 @@ With Codlet running, ask `/codlet` for the behavior you want. Core supplies a sc
 
 Source projects default to `projects/<name>` under Codlet's data directory. Installation copies the project into `packages/<id>`. Keep the source project for editing, version control and sharing. Runtime skill files are temporary Core resources.
 
+When using a compiler or package manager, generate a clean package directory
+containing `codlet.json`, built entrypoints and necessary resources. Pass that
+directory to the commands below; do not import the repository with `node_modules`,
+Git metadata, credentials or user data. A plain JavaScript plugin can use its
+small source directory directly.
+
 For an existing source project:
 
 ```sh
