@@ -16,7 +16,7 @@ namespace Codlet.Setup {
             "config.json", "config.json.lock", "config.json.preferences.json", "config.json.preferences.json.lock",
             "config.json.client-plugins.json", "config.json.compatibility-cache.json", "config.json.plugin-services",
             "packages", "js-runtimes", "runtime-skills", "logs", "launcher-logs", "installer-logs",
-            "plugin-setup.json", "plugin-setup.lock", "plugin-bundle-reviewed.txt", ".official-seed-transactions"
+            "plugin-setup.json", "plugin-setup.lock", "plugin-bundle-reviewed.txt", ".official-seed-transactions", ".plugin-update-cache"
         };
         internal readonly string Root;
         internal UserDataCleanup(string localAppData) { Root = Path.Combine(Path.GetFullPath(localAppData), "Codlet"); }

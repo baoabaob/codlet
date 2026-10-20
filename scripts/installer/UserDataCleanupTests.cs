@@ -31,7 +31,10 @@ namespace Codlet.Setup {
             string own = null, other = "Codlet/cleanup-fixture-" + Guid.NewGuid().ToString("N") + "/keep";
             try {
                 Directory.CreateDirectory(cleanup.Root);
-                foreach (string name in UserDataCleanup.Names.Where(x => x != "packages")) File.WriteAllText(Path.Combine(cleanup.Root, name), "fixture");
+                foreach (string name in UserDataCleanup.Names.Where(x => x != "packages" && x != ".plugin-update-cache")) File.WriteAllText(Path.Combine(cleanup.Root, name), "fixture");
+                string updateCache = Path.Combine(cleanup.Root, ".plugin-update-cache");
+                Directory.CreateDirectory(updateCache);
+                File.WriteAllText(Path.Combine(updateCache, "feed.json"), "{\"schema\":1}");
                 string config = Path.Combine(cleanup.Root, "config.json");
                 using (var file = File.OpenRead(config)) own = CredentialScope.Prefix(file.SafeFileHandle) + "test.plugin/" + new string('a',64) + "/fixture";
                 PutCredential(own); PutCredential(other);
@@ -51,6 +54,7 @@ namespace Codlet.Setup {
                 }
                 var retained = cleanup.Clean();
                 Assert(!File.Exists(config) && UserDataCleanup.Names.Where(x => x != "packages").All(x => !File.Exists(Path.Combine(cleanup.Root, x))), "known Codlet files removed");
+                Assert(!Directory.Exists(updateCache), "persistent plugin update metadata removed");
                 Assert(!HasCredential(own) && HasCredential(other), "only the exact Codlet credential scope removed");
                 Assert(File.ReadAllText(Path.Combine(output, "outside", "source.js")) == "external plugin source", "linked external source preserved");
                 Assert(File.Exists(Path.Combine(cleanup.Root, "my-notes.txt")) && retained.Any(x => x.EndsWith("my-notes.txt")), "unknown data retained and reported");
