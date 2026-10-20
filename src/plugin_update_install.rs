@@ -266,7 +266,102 @@ pub(crate) async fn prepare_latest(
     let current = PluginUpdateSource::load(&registry, id)
         .filter(|v| v.version_key == expected)
         .ok_or("The installed plugin changed. Check it again before updating.")?;
-    let link = GitHubLink::parse(&current.channel.repository_url).map_err(|e| e.to_string())?;
+    let repository =
+        crate::github_distribution::GitHubRepository::parse(&current.channel.repository_url)
+            .map_err(|e| e.to_string())?;
+    let manifest_url = current
+        .channel
+        .update_manifest
+        .as_ref()
+        .map(|source| source.manifest_url.clone())
+        .unwrap_or_else(|| crate::plugin_update_manifest::default_manifest_url(&repository));
+    let feed = match client
+        .plugin_update_manifest(path, &repository, &manifest_url, true)
+        .await
+    {
+        Ok(feed) => feed,
+        Err(error)
+            if current.channel.update_manifest.is_none()
+                && error.message == crate::github_distribution::MISSING_MANIFEST =>
+        {
+            // An explicit install request may still update a legacy package.
+            // Background/manual discovery never enters this REST API path.
+            return prepare_legacy_latest(client, path, id, expected, None).await;
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let trusted_key = current
+        .channel
+        .update_manifest
+        .as_ref()
+        .map(|source| source.public_key.as_str());
+    let Some(update) =
+        feed.manifest
+            .latest(id, &current.comparison_version, &repository, trusted_key)?
+    else {
+        return Ok(None);
+    };
+    if trusted_key.is_none() {
+        // The feed's self-declared key is advisory until a package from the
+        // previously pinned GitHub repository installs it. Never auto-enroll a
+        // remotely discovered signing key as a new trust anchor.
+        let preview = prepare_legacy_latest(client, path, id, expected, Some(&update.payload.tag))
+            .await?
+            .ok_or(
+                "The published update could not be verified against the installed repository.",
+            )?;
+        if preview.manifest.id != update.payload.id
+            || preview.manifest.version != update.payload.version
+            || preview.source.sha256 != update.payload.asset.sha256
+            || preview.source.asset_url != update.payload.asset.url
+            || preview
+                .source
+                .update_source
+                .as_ref()
+                .is_none_or(|source| source.public_key != update.public_key)
+        {
+            return Err("The GitHub-verified package does not match the publisher's signed update manifest.".into());
+        }
+        return Ok(Some(preview));
+    }
+    let package = client
+        .prepare_manifest_update(&repository, &current.channel, update, path)
+        .await
+        .map_err(|e| e.to_string())?;
+    if package.manifest.id != id
+        || !current.channel.accepts(&package.source)
+        || !crate::runtime_update::newer_version(
+            &package.manifest.version,
+            &current.manifest.version,
+        )
+        .map_err(|_| "The package version cannot be compared.")?
+    {
+        return Err(
+            "The downloaded package does not belong to this plugin or is not newer.".into(),
+        );
+    }
+    let registry = PluginRegistry::load(path).map_err(|e| e.to_string())?;
+    if PluginUpdateSource::load(&registry, id).is_none_or(|v| v.version_key != expected) {
+        return Err("The installed plugin changed. Check it again before updating.".into());
+    }
+    crate::managed_plugins::preview(&registry, &package.package_path, current.operation)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+async fn prepare_legacy_latest(
+    client: &GitHubClient,
+    path: &Path,
+    id: &str,
+    expected: &str,
+    selected_tag: Option<&str>,
+) -> Result<Option<ManagedPreview>, String> {
+    let registry = PluginRegistry::load(path).map_err(|e| e.to_string())?;
+    let current = PluginUpdateSource::load(&registry, id)
+        .filter(|v| v.version_key == expected)
+        .ok_or("The installed plugin changed. Check it again before updating.")?;
+    let mut link = GitHubLink::parse(&current.channel.repository_url).map_err(|e| e.to_string())?;
+    link.tag = selected_tag.map(str::to_owned);
     current.channel.verify_identity(client).await?;
     let current_tag = &current.comparison_version;
     if crate::runtime_update::newer_version(current_tag, current_tag).is_err() {

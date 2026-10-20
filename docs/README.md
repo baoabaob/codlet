@@ -22,6 +22,7 @@ Start with the maintained contracts below. Release evidence and historical resea
 | Specification | Scope |
 | --- | --- |
 | [Plugin format](spec/plugin-format.md) | Entries, manifests, metadata and source identity |
+| [Plugin updates](spec/plugin-updates.md) | Signed static feeds, publisher tooling, caching and migration |
 | [Host runtime](spec/host.md) | Managed Node execution, cleanup and development watching |
 | [RPC](spec/rpc.md) | Capabilities, scopes, generations, cancellation and limits |
 | [Permissions](spec/permissions.md) | Grants, path/origin scopes and the trust boundary |

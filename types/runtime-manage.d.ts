@@ -62,7 +62,7 @@ export interface RuntimeUpdateStatus {
 
 export interface RuntimePreferences {
   automaticUpdateChecks: boolean;
-  /** Checks registered GitHub release metadata once per runtime start, without installing. */
+  /** Checks static plugin update manifests at startup, using the persistent six-hour cache. */
   checkPluginUpdatesOnStartup: boolean;
   /** Controls whether literal plugin labels are shown in the management list. */
   showPluginTags: boolean;
@@ -83,7 +83,12 @@ export interface PluginUpdateStatus {
   phase: 'idle' | 'checking' | 'completed' | 'failed';
   checkedAt: number | null;
   error: string | null;
-  plugins: Record<string, { versionKey: string; status: 'unknown' | 'upToDate' | 'available' | 'failed'; releaseTag: string | null; releaseUrl: string | null; error: string | null }>;
+  plugins: Record<string, {
+    versionKey: string; status: 'unknown' | 'upToDate' | 'available' | 'failed';
+    releaseTag: string | null; releaseUrl: string | null; error: string | null;
+    /** Last successfully verified feed result; remains unchanged after a refresh failure. */
+    checkedAt?: number | null; nextCheckAt?: number | null; cached?: boolean;
+  }>;
 }
 export interface ClientVersionStatus {
   status: 'unknown' | 'matched' | 'unmatched' | 'requirements-unmet';
@@ -364,8 +369,22 @@ export interface PluginPermissionsReport {
 export interface PluginUpdateSource {
   kind: 'github'; repositoryUrl: string; repositoryId: number | null; ownerId: number | null;
   assetNameTemplate: string; ownership: 'installer-seed' | 'core-managed-github';
+  updateManifest?: PluginUpdateManifestSource;
   /** Binds installed content, source identity, registration and grants. */
   versionKey: string; operation: 'adopt' | 'update';
+}
+export interface PluginUpdateManifestSource {
+  schema: 1; manifestUrl: string; publicKey: string;
+}
+export interface SignedPluginUpdate {
+  payload: {
+    id: string; version: string; repositoryUrl: string; tag: string;
+    asset: {name: string; url: string; bytes: number; sha256: string};
+  };
+  publicKey: string; signature: string;
+}
+export interface PluginUpdateManifest {
+  schema: 1; kind: 'codlet-plugin-updates'; plugins: SignedPluginUpdate[];
 }
 export interface GitHubRepository { owner: string; name: string; url: string; }
 export interface GitHubReleaseAsset {
@@ -381,12 +400,15 @@ export interface GitHubReleaseCatalog {
 }
 export interface GitHubSource {
   repositoryUrl: string; owner: string; repository: string;
+  /** IDs are zero for a signed static-file update; no GitHub API IDs are invented. */
   releaseId: number; tag: string; assetId: number; assetName: string; assetUrl: string;
   assetSize: number; sha256: string; upstreamDigestVerified: boolean;
-  /** GitHub API identity, present for freshly prepared packages. Older receipts may omit it. */
+  /** GitHub identity verified at import; signed file updates retain these pinned IDs. */
   repositoryId?: number; ownerId?: number;
   /** Fresh Release publication time; present after successful GitHub package preparation when GitHub provides it. */
   releasePublishedAt?: string;
+  updateSource?: PluginUpdateManifestSource;
+  updateProof?: SignedPluginUpdate;
 }
 /** Author declarations. Missing values mean unknown, never a compatibility assertion. */
 export interface PackageMetadata {

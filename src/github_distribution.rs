@@ -15,7 +15,11 @@ use crate::plugins::PluginManifest;
 
 mod archive;
 mod marketplace;
+mod update_manifest;
 pub use marketplace::{MarketPage, MarketQuery};
+pub(crate) use update_manifest::CachedManifest;
+pub(crate) use update_manifest::MISSING_MANIFEST;
+pub(crate) use update_manifest::ManifestFetchError;
 
 pub const MAX_ARCHIVE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_EXTRACTED_BYTES: u64 = 64 * 1024 * 1024;
@@ -97,6 +101,12 @@ pub struct GitHubSource {
     pub owner_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_published_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_source: Option<crate::plugin_update_manifest::UpdateManifestSource>,
+    /// A static-file update has no GitHub API release/asset IDs. Its publisher
+    /// signature and the previously pinned repository/key provide provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_proof: Option<crate::plugin_update_manifest::SignedPluginUpdate>,
 }
 
 /// Optional publishing metadata, independent of the runtime's codlet.json schema.
@@ -210,7 +220,7 @@ pub struct PreparedGitHubPackage {
     pub metadata: Option<PackageMetadata>,
 }
 
-#[derive(Debug, Clone, Serialize, thiserror::Error)]
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 #[error("{message}")]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubDistributionError {
@@ -621,6 +631,85 @@ impl GitHubClient {
         )
     }
 
+    pub(crate) async fn prepare_manifest_update(
+        &self,
+        repository: &GitHubRepository,
+        channel: &crate::plugin_update_source::UpdateChannel,
+        update: &crate::plugin_update_manifest::SignedPluginUpdate,
+        registry_path: &Path,
+    ) -> Result<PreparedGitHubPackage> {
+        let trusted = channel.update_manifest.as_ref().ok_or_else(|| {
+            error(
+                "update_manifest_key_required",
+                "The installed plugin has no trusted update signing key.",
+            )
+        })?;
+        trusted
+            .validate(repository)
+            .map_err(|message| error("update_manifest_invalid", message))?;
+        update
+            .verify(repository, Some(&trusted.public_key))
+            .map_err(|message| error("update_manifest_invalid", message))?;
+        let payload = &update.payload;
+        let bytes = self
+            .plugin_update_archive(
+                Url::parse(&payload.asset.url)
+                    .map_err(|_| error("update_manifest_invalid", "Invalid archive URL."))?,
+                payload.asset.bytes,
+            )
+            .await?;
+        let release = GitHubRelease {
+            id: 0,
+            tag: payload.tag.clone(),
+            name: payload.version.clone(),
+            url: update.release_url(),
+            prerelease: payload
+                .version
+                .split('+')
+                .next()
+                .unwrap_or("")
+                .contains('-'),
+            published_at: None,
+            assets: Vec::new(),
+        };
+        let asset = GitHubAsset {
+            id: 0,
+            name: payload.asset.name.clone(),
+            size: payload.asset.bytes,
+            content_type: "application/zip".into(),
+            download_url: payload.asset.url.clone(),
+            digest: Some(format!("sha256:{}", payload.asset.sha256)),
+            download_count: None,
+        };
+        let identity =
+            channel
+                .repository_id
+                .zip(channel.owner_id)
+                .map(|(repository_id, owner_id)| RepositoryIdentity {
+                    repository_id,
+                    owner_id,
+                });
+        let package = prepare_package_bytes(
+            repository,
+            &release,
+            &asset,
+            &bytes,
+            registry_path,
+            identity,
+            Some(update.clone()),
+        )?;
+        if package.source.update_source.as_ref() != Some(trusted)
+            || package.manifest.id != payload.id
+            || package.manifest.version != payload.version
+        {
+            return Err(error(
+                "update_manifest_package_mismatch",
+                "The downloaded plugin does not match its signed update or installed update source.",
+            ));
+        }
+        Ok(package)
+    }
+
     async fn hydrate_release_assets(
         &self,
         repository: &GitHubRepository,
@@ -974,6 +1063,26 @@ fn prepare_bytes(
     registry_path: &Path,
     identity: Option<RepositoryIdentity>,
 ) -> Result<PreparedGitHubPackage> {
+    prepare_package_bytes(
+        repository,
+        release,
+        asset,
+        bytes,
+        registry_path,
+        identity,
+        None,
+    )
+}
+
+fn prepare_package_bytes(
+    repository: &GitHubRepository,
+    release: &GitHubRelease,
+    asset: &GitHubAsset,
+    bytes: &[u8],
+    registry_path: &Path,
+    identity: Option<RepositoryIdentity>,
+    update_proof: Option<crate::plugin_update_manifest::SignedPluginUpdate>,
+) -> Result<PreparedGitHubPackage> {
     if bytes.len() as u64 != asset.size {
         return Err(error(
             "github_size_mismatch",
@@ -1001,6 +1110,35 @@ fn prepare_bytes(
     let candidate = inspect_local_plugin(&package_path)
         .map_err(|e| error("github_package_invalid", e.to_string()))?;
     let metadata = read_metadata(&package_path)?;
+    let update_source =
+        crate::plugin_update_manifest::UpdateManifestSource::read(&package_path, repository)
+            .map_err(|message| error("update_manifest_invalid", message))?;
+    if let Some(proof) = &update_proof {
+        proof
+            .verify(
+                repository,
+                update_source
+                    .as_ref()
+                    .map(|source| source.public_key.as_str()),
+            )
+            .map_err(|message| error("update_manifest_invalid", message))?;
+        if update_source.is_none()
+            || proof.payload.id != candidate.manifest.id
+            || proof.payload.version != candidate.manifest.version
+            || proof.payload.asset.sha256 != sha256
+            || proof.payload.asset.bytes != bytes.len() as u64
+            || proof.payload.asset.url != asset.download_url
+            || proof.payload.asset.name != asset.name
+            || proof.payload.tag != release.tag
+            || release.id != 0
+            || asset.id != 0
+        {
+            return Err(error(
+                "update_manifest_package_mismatch",
+                "The downloaded plugin does not match its signed update manifest.",
+            ));
+        }
+    }
     let source = GitHubSource {
         repository_url: repository.url.clone(),
         owner: repository.owner.clone(),
@@ -1012,10 +1150,12 @@ fn prepare_bytes(
         asset_url: asset.download_url.clone(),
         asset_size: asset.size,
         sha256: sha256.clone(),
-        upstream_digest_verified: asset.digest.is_some(),
+        upstream_digest_verified: update_proof.is_none() && asset.digest.is_some(),
         repository_id: identity.map(|value| value.repository_id),
         owner_id: identity.map(|value| value.owner_id),
         release_published_at: release.published_at.clone(),
+        update_source,
+        update_proof,
     };
     let receipt = Receipt {
         schema: 2,
@@ -1102,6 +1242,27 @@ pub fn inspect_prepared_package(
     }
     let candidate = inspect_local_plugin(package_path)
         .map_err(|e| error("github_package_invalid", e.to_string()))?;
+    if let Some(proof) = &receipt.source.update_proof
+        && (proof.payload.id != candidate.manifest.id
+            || proof.payload.version != candidate.manifest.version)
+    {
+        return Err(error(
+            "update_manifest_package_mismatch",
+            "Installed plugin identity differs from its signed update.",
+        ));
+    }
+    if let Some(source) = &receipt.source.update_source {
+        let repository = GitHubRepository::parse(&receipt.source.repository_url)?;
+        let current =
+            crate::plugin_update_manifest::UpdateManifestSource::read(package_path, &repository)
+                .map_err(|message| error("update_manifest_invalid", message))?;
+        if current.as_ref() != Some(source) {
+            return Err(error(
+                "update_manifest_package_mismatch",
+                "Installed plugin update source differs from its receipt.",
+            ));
+        }
+    }
     if !in_staging
         && name != candidate.manifest.id
         && !name.starts_with(&format!("{}-", receipt.source.sha256))
@@ -1129,8 +1290,8 @@ fn validate_source(source: &GitHubSource) -> Result<()> {
         || asset.repository != repo
         || asset.tag.as_deref() != Some(source.tag.as_str())
         || asset.asset_name.as_deref() != Some(source.asset_name.as_str())
-        || source.release_id == 0
-        || source.asset_id == 0
+        || source.update_proof.is_none() && (source.release_id == 0 || source.asset_id == 0)
+        || source.update_proof.is_some() && (source.release_id != 0 || source.asset_id != 0)
         || source.asset_size == 0
         || source.asset_size > MAX_ARCHIVE_BYTES
         || source.repository_id.is_some() != source.owner_id.is_some()
@@ -1145,6 +1306,34 @@ fn validate_source(source: &GitHubSource) -> Result<()> {
             "github_package_unowned",
             "Invalid Core package source receipt.",
         ));
+    }
+    if let Some(update_source) = &source.update_source {
+        update_source
+            .validate(&repo)
+            .map_err(|message| error("update_manifest_invalid", message))?;
+    }
+    if let Some(proof) = &source.update_proof {
+        let key = source.update_source.as_ref().ok_or_else(|| {
+            error(
+                "update_manifest_invalid",
+                "Signed update receipt has no publisher key.",
+            )
+        })?;
+        proof
+            .verify(&repo, Some(&key.public_key))
+            .map_err(|message| error("update_manifest_invalid", message))?;
+        if proof.payload.asset.url != source.asset_url
+            || proof.payload.asset.name != source.asset_name
+            || proof.payload.asset.bytes != source.asset_size
+            || proof.payload.asset.sha256 != source.sha256
+            || proof.payload.tag != source.tag
+            || source.upstream_digest_verified
+        {
+            return Err(error(
+                "update_manifest_invalid",
+                "Signed update receipt does not match its archive.",
+            ));
+        }
     }
     Ok(())
 }

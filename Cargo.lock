@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "codlet"
-version = "1.0.0-rc.8"
+version = "1.0.0-rc.9"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -117,10 +117,12 @@ dependencies = [
  "futures-util",
  "http",
  "http-body-util",
+ "httpdate",
  "hyper",
  "hyper-util",
  "libc",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",

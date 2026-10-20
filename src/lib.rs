@@ -79,6 +79,7 @@ pub mod plugin_cli;
 #[cfg(any(windows, target_os = "macos"))]
 pub mod plugin_commands;
 mod plugin_update_install;
+pub mod plugin_update_manifest;
 mod plugin_update_source;
 mod plugin_updates;
 #[cfg(windows)]

@@ -64,6 +64,12 @@ plugin github install <preview.path> --trust [--grant <permission> ...] [--enabl
 
 ## 更新
 
+管理界面的检查更新读取插件的签名静态清单，成功结果缓存六小时并跨重启保留。
+手动刷新仍遵守一分钟最短间隔和服务端重试时间。刷新失败时看上次成功时间，
+不能把缓存结果说成刚检查成功。已有可信发布公钥的插件通过文件直链下载更新；
+没有公钥的旧安装首次迁移仍可能调用 GitHub API 核对原仓库身份。
+发布者尚未提供清单时，可使用下面的显式版本选择流程。
+
 本地开发：修改原源码项目并重新构建，再 `plugin preview <source-directory> --json` 和 `plugin add <source-directory> --update --trust [--grant <permission> ...] [--enable] --json`。沿用已确认的权限与启用状态；`reload` 仅重启安装副本，不读取原源码目录。`--replace` 会清空数据，不用于普通开发迭代。
 
 只将实际 GitHub 来源或已验证的 installer update channel 纳入 Release 更新；从 `plugin permissions` 的真实来源读取仓库，不能猜。旧 Core Adapter 注册不再参与常规启动更新或接管为外部分发。列出 Release 后准备同 ID 候选：

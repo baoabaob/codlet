@@ -31,6 +31,7 @@ pub(crate) fn official_channel(id: &str) -> Option<UpdateChannel> {
         repository_id: Some(entry.repository_id),
         owner_id: Some(entry.owner_id),
         asset_name_template: format!("{id}-{{version}}.zip"),
+        update_manifest: None,
     })
 }
 
@@ -52,6 +53,8 @@ pub struct UpdateChannel {
     pub repository_id: Option<u64>,
     pub owner_id: Option<u64>,
     pub asset_name_template: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_manifest: Option<crate::plugin_update_manifest::UpdateManifestSource>,
 }
 
 #[cfg(test)]
@@ -178,6 +181,9 @@ impl UpdateChannel {
         {
             return Err("Invalid update channel identity or asset template".into());
         }
+        if let Some(source) = &self.update_manifest {
+            source.validate(&repository)?;
+        }
         Ok(())
     }
     pub(crate) fn accepts(&self, source: &GitHubSource) -> bool {
@@ -188,6 +194,12 @@ impl UpdateChannel {
                 .repository_id
                 .is_none_or(|id| source.repository_id == Some(id))
             && self.owner_id.is_none_or(|id| source.owner_id == Some(id))
+            && source.update_proof.as_ref().is_none_or(|proof| {
+                self.update_manifest.as_ref().is_some_and(|trusted| {
+                    trusted.public_key == proof.public_key
+                        && source.update_source.as_ref() == Some(trusted)
+                })
+            })
     }
     pub(crate) async fn verify_identity(&self, client: &GitHubClient) -> Result<(), String> {
         client
@@ -229,6 +241,7 @@ impl PluginUpdateSource {
                     source.tag.strip_prefix('v').unwrap_or(&source.tag),
                     "{version}",
                 ),
+                update_manifest: source.update_source.clone(),
             };
             channel.validate(false).ok()?;
             return Some(Self {
@@ -237,8 +250,8 @@ impl PluginUpdateSource {
                 version_key: digest(&(registration_digest(registry, id), version)),
                 operation: ManagedOperation::Update,
                 manifest: version.manifest.clone(),
-                release_id: Some(source.release_id),
-                comparison_version: source.tag.strip_prefix('v').unwrap_or(&source.tag).into(),
+                release_id: (source.release_id != 0).then_some(source.release_id),
+                comparison_version: version.manifest.version.clone(),
             });
         }
         let (manifest, channel, proof) =

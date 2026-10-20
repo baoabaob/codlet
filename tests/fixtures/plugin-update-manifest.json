@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "kind": "codlet-plugin-updates",
+  "plugins": [
+    {
+      "payload": {
+        "id": "community.notes",
+        "version": "1.2.0",
+        "repositoryUrl": "https://github.com/example/plugins",
+        "tag": "v1.2.0",
+        "asset": {
+          "name": "community.notes-1.2.0.zip",
+          "url": "https://github.com/example/plugins/releases/download/v1.2.0/community.notes-1.2.0.zip",
+          "bytes": 100,
+          "sha256": "80f93e8c7d0e1e083e6aab0b073011d858d092951eb4bb2d595cd43173e04704"
+        }
+      },
+      "publicKey": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
+      "signature": "SDcsuKqIUqP8cUJg0uGjkGk8yJCxs8i02s/8EOfShC8hCJTDM/IPZ2+Asz27VPc9Or8KN0iVzklQDyTo+gTUBg=="
+    }
+  ]
+}

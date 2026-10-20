@@ -48,11 +48,19 @@ latest stable GUI. They verify the manifest, repository identity and upstream ar
 Read/download failures retry once; unfinished choices remain pending for the next launch.
 
 Normal launch uses verified local plugin packages immediately. Once the runtime is ready,
-`checkPluginUpdatesOnStartup` starts one background, read-only check of registered update
-channels. A failed check retains the local packages; the user can retry from plugin management.
+`checkPluginUpdatesOnStartup` starts one background check of registered static update
+manifests. Successful results persist for six hours across restarts; manual refresh still
+honors the minimum interval and server retry times. A failed refresh retains the last
+verified result and its timestamp. A failed check retains the local packages.
 Installing a discovered update uses the regular managed-install transaction, including
 permission and source checks. Safe mode skips background checks. Windows shows runtime
 preparation stages and actual download progress while Core is preparing the session.
+
+All newly published plugins follow the [signed update manifest contract](spec/plugin-updates.md).
+The ZIP carries `codlet-update.json`; each Release carries `codlet-updates.json`.
+The shared publisher tool generates the signature and archive identity. Installer bundles
+preserve the same per-plugin public key and feed address in their file-verified receipts.
+Fixture signing keys cannot enter a shipping distribution.
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, and asks the user to save and quit them. Its only actions are check again and cancel. Neither the installer nor the launcher's gate sends a close request. Restart Manager automatic shutdown is disabled. An unattended busy install fails explicitly.
 

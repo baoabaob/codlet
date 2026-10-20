@@ -1,4 +1,4 @@
-//! Read-only release discovery for registered GitHub packages. This never
+//! Read-only static-manifest discovery for registered plugin packages. This never
 //! downloads packages or mutates registrations, grants, or lifecycle receipts.
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -9,14 +9,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use crate::github_distribution::GitHubSource;
-use crate::github_distribution::{GitHubClient, GitHubLink, GitHubRepository, ReleaseCatalog};
+use crate::github_distribution::{
+    CachedManifest, GitHubClient, GitHubRepository, ManifestFetchError, ReleaseCatalog,
+};
+use crate::plugin_update_manifest::default_manifest_url;
 use crate::plugin_update_source::PluginUpdateSource;
 use crate::plugins::PluginRegistry;
 use crate::runtime_update::newer_version;
+use futures_util::StreamExt;
 use serde::Serialize;
 
 const MAX_PLUGINS: usize = 128;
-const MAX_REPOSITORIES: usize = 32;
 const MIN_CHECK_INTERVAL_MS: u64 = 60_000;
 
 #[derive(Clone, Debug, Serialize)]
@@ -27,6 +30,9 @@ pub(crate) struct PluginReleaseStatus {
     pub release_tag: Option<String>,
     pub release_url: Option<String>,
     pub error: Option<String>,
+    pub checked_at: Option<u64>,
+    pub next_check_at: Option<u64>,
+    pub cached: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,10 +100,9 @@ impl PluginUpdates {
         {
             let mut state = self.0.status.lock().unwrap_or_else(|e| e.into_inner());
             if state.phase == "checking"
-                || !force
-                    && state
-                        .checked_at
-                        .is_some_and(|last| now_ms().saturating_sub(last) < MIN_CHECK_INTERVAL_MS)
+                || state
+                    .checked_at
+                    .is_some_and(|last| now_ms().saturating_sub(last) < MIN_CHECK_INTERVAL_MS)
             {
                 drop(state);
                 return self.status();
@@ -114,12 +119,10 @@ impl PluginUpdates {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
                 runtime.block_on(async {
                     let client = GitHubClient::new().map_err(|e| e.to_string())?;
-                    let work = scan(registry.as_ref(), |link, channel| {
+                    let work = scan(registry.as_ref(), |repository, url| {
                         let client = client.clone();
-                        async move { tokio::time::timeout(Duration::from_secs(30), async {
-                            channel.verify_identity(&client).await?;
-                            client.list_releases(&link).await.map_err(|e| e.to_string())
-                        }).await.map_err(|_| "Plugin update check timed out".to_string())? }
+                        let path = registry.clone();
+                        async move { client.plugin_update_manifest(path.as_ref(), &repository, &url, force).await }
                     });
                     tokio::pin!(work);
                     let deadline = tokio::time::sleep(Duration::from_secs(120));
@@ -161,53 +164,88 @@ async fn scan<F, Fut>(
     mut fetch: F,
 ) -> Result<BTreeMap<String, PluginReleaseStatus>, String>
 where
-    F: FnMut(GitHubLink, crate::plugin_update_source::UpdateChannel) -> Fut,
-    Fut: Future<Output = Result<ReleaseCatalog, String>>,
+    F: FnMut(GitHubRepository, String) -> Fut,
+    Fut: Future<Output = Result<CachedManifest, ManifestFetchError>>,
 {
     let registry = PluginRegistry::load(registry_path).map_err(|e| e.to_string())?;
     let current = PluginUpdateSource::all(&registry);
     if current.len() > MAX_PLUGINS {
         return Err("Too many managed plugins to check together; check individual plugins".into());
     }
-    let mut repositories = BTreeMap::new();
-    let mut results = BTreeMap::new();
+    let mut feeds = BTreeMap::new();
+    let mut plugins = Vec::new();
     for (id, version) in current {
         let repository =
             GitHubRepository::parse(&version.channel.repository_url).map_err(|e| e.to_string())?;
-        let link = GitHubLink {
-            repository,
-            tag: None,
-            asset_name: None,
-            latest: false,
-        };
-        // Registry source, not a URL supplied by a renderer. No token or private
-        // repository credentials are collected by background discovery.
-        let key = crate::local_import::digest(&version.channel);
-        if !repositories.contains_key(&key) {
-            let result = if repositories.len() >= MAX_REPOSITORIES {
-                Err("Repository check limit reached; check this plugin manually".into())
-            } else {
-                fetch(link, version.channel.clone()).await
-            };
-            repositories.insert(key.clone(), result);
-        }
+        let url = version
+            .channel
+            .update_manifest
+            .as_ref()
+            .map(|source| source.manifest_url.clone())
+            .unwrap_or_else(|| default_manifest_url(&repository));
+        feeds
+            .entry(url.clone())
+            .or_insert_with(|| repository.clone());
+        plugins.push((id, version, repository, url));
+    }
+    // Monorepos share one feed even when their archive names or signing keys
+    // differ. Bound parallelism without the old 32-repository truncation.
+    let jobs = feeds
+        .into_iter()
+        .map(|(url, repository)| {
+            let future = fetch(repository, url.clone());
+            async move { (url, future.await) }
+        })
+        .collect::<Vec<_>>();
+    let fetched: BTreeMap<_, _> = futures_util::stream::iter(jobs)
+        .buffer_unordered(4)
+        .collect()
+        .await;
+    let mut results = BTreeMap::new();
+    for (id, version, repository, url) in plugins {
         let mut status = PluginReleaseStatus {
             version_key: version.version_key.clone(),
             status: "unknown",
             release_tag: None,
             release_url: None,
             error: None,
+            checked_at: None,
+            next_check_at: None,
+            cached: false,
         };
-        match &repositories[&key] {
-            Ok(catalog) => select_release_version(
-                &version.comparison_version,
-                version.release_id,
-                catalog,
-                &mut status,
-            ),
+        match &fetched[&url] {
+            Ok(feed) => {
+                status.checked_at = Some(feed.checked_at);
+                status.next_check_at = Some(feed.next_check_at);
+                status.cached = feed.cached;
+                status.error = feed.error.clone();
+                let key = version
+                    .channel
+                    .update_manifest
+                    .as_ref()
+                    .map(|source| source.public_key.as_str());
+                match feed
+                    .manifest
+                    .latest(&id, &version.comparison_version, &repository, key)
+                {
+                    Ok(Some(update)) => {
+                        status.status = "available";
+                        status.release_tag = Some(update.payload.tag.clone());
+                        status.release_url = Some(update.release_url());
+                    }
+                    Ok(None) => status.status = "upToDate",
+                    Err(error) => {
+                        status.status = "failed";
+                        status.error = Some(error);
+                        status.checked_at = None;
+                        status.cached = false;
+                    }
+                }
+            }
             Err(error) => {
                 status.status = "failed";
-                status.error = Some(error.chars().take(1000).collect());
+                status.error = Some(error.message.chars().take(1000).collect());
+                status.next_check_at = error.next_check_at;
             }
         }
         results.insert(id.clone(), status);
@@ -231,6 +269,7 @@ fn select_release(
         result,
     )
 }
+#[cfg(test)]
 fn select_release_version(
     current: &str,
     release_id: Option<u64>,
@@ -342,6 +381,9 @@ mod tests {
             release_tag: None,
             release_url: None,
             error: None,
+            checked_at: None,
+            next_check_at: None,
+            cached: false,
         };
         select_release(&source, releases, &mut result);
         result
@@ -377,6 +419,27 @@ mod tests {
         }
         registry.save().unwrap();
         path
+    }
+    fn manifest(repository: &GitHubRepository, ids: &[&str]) -> CachedManifest {
+        let entries = ids
+            .iter()
+            .map(|id| {
+                let mut payload = crate::plugin_update_manifest::tests::entry(id, "2.0.0").payload;
+                payload.repository_url = repository.url.clone();
+                payload.asset.url = format!(
+                    "{}/releases/download/v2.0.0/{}-2.0.0.zip",
+                    repository.url, id
+                );
+                crate::plugin_update_manifest::tests::sign(payload)
+            })
+            .collect();
+        CachedManifest {
+            manifest: crate::plugin_update_manifest::tests::feed(entries),
+            checked_at: 10,
+            next_check_at: 20,
+            cached: false,
+            error: None,
+        }
     }
     #[test]
     fn selects_highest_stable_tag_and_does_not_treat_build_or_older_releases_as_updates() {
@@ -428,11 +491,14 @@ mod tests {
         registry.save().unwrap();
         let before = std::fs::read(&path).unwrap();
         let mut calls = 0;
-        let results = scan(&path, |link, _| {
+        let results = scan(&path, |repository, url| {
             calls += 1;
-            assert_eq!(link.repository.url, "https://github.com/example/notes");
-            assert!(link.tag.is_none());
-            async { Ok(catalog(&[("v2.0.0", false)])) }
+            assert_eq!(repository.url, "https://github.com/example/notes");
+            assert_eq!(
+                url,
+                "https://github.com/example/notes/releases/latest/download/codlet-updates.json"
+            );
+            async move { Ok(manifest(&repository, &["notes.a", "notes.b"])) }
         })
         .await
         .unwrap();
@@ -462,13 +528,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let registry = crate::plugin_update_source::fixture_seed(root.path(), "dev.seed");
         let before = std::fs::read(registry.path()).unwrap();
-        let results = scan(registry.path(), |link, channel| async move {
-            assert_eq!(link.repository.url, "https://github.com/dev-owner/dev-repo");
-            assert_eq!(channel.repository_id, Some(42));
-            assert_eq!(channel.owner_id, Some(7));
-            let mut result = catalog(&[("v2.0.0", false)]);
-            result.repository = link.repository;
-            Ok(result)
+        let results = scan(registry.path(), |repository, url| async move {
+            assert_eq!(repository.url, "https://github.com/dev-owner/dev-repo");
+            assert_eq!(
+                url,
+                "https://github.com/dev-owner/dev-repo/releases/latest/download/codlet-updates.json"
+            );
+            Ok(manifest(&repository, &["dev.seed"]))
         })
         .await
         .unwrap();
@@ -498,6 +564,32 @@ mod tests {
             Some("GitHub rate limit")
         );
     }
+    #[tokio::test]
+    async fn community_plugins_share_feeds_and_stale_results_keep_their_original_check_time() {
+        let root = tempfile::tempdir().unwrap();
+        let ids: Vec<_> = (0..20)
+            .map(|index| format!("community.tool{index}"))
+            .collect();
+        let references: Vec<_> = ids.iter().map(String::as_str).collect();
+        let path = registered(root.path(), &references);
+        let mut calls = 0;
+        let results = scan(&path, |repository, _| {
+            calls += 1;
+            let mut previous = manifest(&repository, &references);
+            previous.cached = true;
+            previous.error = Some("Update source is temporarily unavailable.".into());
+            async move { Ok(previous) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(results.len(), 20);
+        assert!(results.values().all(|result| result.status == "available"
+            && result.cached
+            && result.checked_at == Some(10)
+            && result.error.is_some()));
+        assert!(results.keys().all(|id| id.starts_with("community.")));
+    }
     #[test]
     fn startup_preference_is_once_per_owner_and_manual_checks_still_work() {
         let root = tempfile::tempdir().unwrap();
@@ -516,10 +608,11 @@ mod tests {
         assert!(checked.plugins.is_empty());
         service.start(true);
         assert_eq!(service.check(false).checked_at, checked.checked_at);
-        // A deliberate retry must not return the minute-old cache, even when
-        // startup checks are disabled. It still joins an in-flight scan.
+        // Manual refresh never bypasses the minimum interval, including when
+        // persistent cache writes are unavailable.
         service.0.status.lock().unwrap().phase = "failed";
-        let retry = service.check(true);
-        assert_ne!(retry.phase, "failed");
+        assert_eq!(service.check(true).phase, "failed");
+        service.0.status.lock().unwrap().checked_at = Some(now_ms() - MIN_CHECK_INTERVAL_MS - 1);
+        assert_ne!(service.check(true).phase, "failed");
     }
 }

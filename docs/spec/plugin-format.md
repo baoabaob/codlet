@@ -69,3 +69,10 @@ For market indexing, a public GitHub Release may also upload a separate `codlet-
 ```
 
 The declaration must name exactly one uploaded ZIP asset in the same Release, with matching size and GitHub asset SHA-256 digest. Discovery uses it only as a publisher claim to identify which ZIP download count and author metadata to display. Missing, malformed or inconsistent declarations leave statistics/compatibility unknown. It does not authorize installation or bypass Core's full ZIP, manifest, dependency, permission and receipt checks during `githubPrepare` and management submit.
+
+New public releases must also follow the [signed update manifest
+contract](plugin-updates.md): include `codlet-update.json` in the ZIP and upload
+`codlet-updates.json` as a Release asset. These files provide the publisher key
+and direct-file update channel without changing the `codlet.json` execution
+schema. The existing `codlet-release.json` discovery declaration is not a
+substitute for the signed update feed.

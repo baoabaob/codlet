@@ -122,7 +122,7 @@ def stage_gui(bundle, resources, source_commit):
         raise ValueError("Bundled GUI requires a complete source commit")
     plain(bundle / "catalog.json")
     catalog = json.loads((bundle / "catalog.json").read_text(encoding="utf-8"))
-    if catalog.get("schema") != 1 or catalog.get("kind") != "codlet-official-plugin-bundle" or len(catalog.get("packages", [])) != 1:
+    if catalog.get("schema") != 1 or catalog.get("kind") != "codlet-official-plugin-bundle" or len(catalog.get("packages", [])) != 1 or catalog.get("fixture"):
         raise ValueError("Expected one GUI package")
     pkg = catalog["packages"][0]
     options_file = resources / "official-plugins.json"

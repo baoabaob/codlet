@@ -189,6 +189,18 @@ impl RuntimeSkills {
                 include_str!("../runtime/skills/codlet/scripts/codlet-cli.py"),
             ),
             (
+                "scripts/plugin-release.mjs",
+                include_str!("../scripts/plugin-release.mjs"),
+            ),
+            (
+                "docs/spec/plugin-updates.md",
+                include_str!("../docs/spec/plugin-updates.md"),
+            ),
+            (
+                "schemas/plugin-updates.schema.json",
+                include_str!("../schemas/plugin-updates.schema.json"),
+            ),
+            (
                 "types/renderer.d.ts",
                 include_str!("../types/renderer.d.ts"),
             ),

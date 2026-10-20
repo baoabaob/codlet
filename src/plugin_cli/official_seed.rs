@@ -43,6 +43,8 @@ struct Package {
 struct Catalog {
     schema: u32,
     kind: String,
+    #[serde(default)]
+    fixture: bool,
     packages: Vec<Package>,
 }
 #[derive(Deserialize)]
@@ -287,13 +289,14 @@ fn update_channel_from_catalog(
     String,
 )> {
     let package = verified_installer_package(registry, id)?;
-    let channel = if let Some(channel) = &package.update_source {
+    let mut channel = if let Some(channel) = &package.update_source {
         channel.clone()
     } else {
         // Compatibility for old receipts: use only the catalog shipped alongside
         // this Core executable, after checking its complete current payload too.
         let catalog: Catalog = read(catalog_path).ok()?;
-        if catalog.schema != 1 || catalog.kind != "codlet-official-plugin-bundle" {
+        if catalog.schema != 1 || catalog.kind != "codlet-official-plugin-bundle" || catalog.fixture
+        {
             return None;
         }
         let matches: Vec<_> = catalog.packages.iter().filter(|p| p.id == id).collect();
@@ -304,6 +307,17 @@ fn update_channel_from_catalog(
         verify(&catalog_path.parent()?.join("packages").join(id), current).ok()?;
         current.update_source.clone()?
     };
+    let repository =
+        crate::github_distribution::GitHubRepository::parse(&channel.repository_url).ok()?;
+    let installed_update_source = crate::plugin_update_manifest::UpdateManifestSource::read(
+        &registry.local_plugins().get(id)?.path,
+        &repository,
+    )
+    .ok()?;
+    if channel.update_manifest.is_some() && channel.update_manifest != installed_update_source {
+        return None;
+    }
+    channel.update_manifest = installed_update_source;
     channel.validate(true).ok()?;
     let manifest =
         crate::local_plugins::inspect_local_plugin(&registry.local_plugins().get(id)?.path)
@@ -611,7 +625,7 @@ fn select_with_legacy(
         return Err(error("Unknown official plugin"));
     }
     let catalog: Catalog = read(catalog_path)?;
-    if catalog.schema != 1 || catalog.kind != "codlet-official-plugin-bundle" {
+    if catalog.schema != 1 || catalog.kind != "codlet-official-plugin-bundle" || catalog.fixture {
         return Err(error("Invalid official plugin catalog"));
     }
     if catalog.packages.iter().filter(|p| p.id == id).count() != 1 {

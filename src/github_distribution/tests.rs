@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-fn zip_files(files: &[(&str, &[u8])]) -> Vec<u8> {
+pub(super) fn zip_files(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     for (name, content) in files {
         writer
@@ -595,14 +595,14 @@ fn hardlinked_prepared_files_are_rejected() {
     );
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     origin: Url,
-    requests: Arc<Mutex<Vec<String>>>,
+    pub(super) requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Fixture {
-    fn new(responses: Vec<Vec<u8>>) -> Self {
+    pub(super) fn new(responses: Vec<Vec<u8>>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let origin = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -658,7 +658,7 @@ impl Fixture {
             worker: Some(worker),
         }
     }
-    fn client(&self) -> GitHubClient {
+    pub(super) fn client(&self) -> GitHubClient {
         GitHubClient {
             client: GitHubClient::http_builder().no_proxy().build().unwrap(),
             fixture_origin: Some(self.origin.clone()),
@@ -674,7 +674,7 @@ impl Drop for Fixture {
         }
     }
 }
-fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+pub(super) fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
     let mut data = format!(
         "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n",
         body.len()

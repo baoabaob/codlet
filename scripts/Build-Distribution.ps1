@@ -64,7 +64,7 @@ if($GuiBundleDirectory){
   $bundleRoot=[IO.Path]::GetFullPath($GuiBundleDirectory)
   $bundleCatalog=Join-Path $bundleRoot 'catalog.json';Plain $bundleCatalog
   $bundle=[IO.File]::ReadAllText($bundleCatalog)|ConvertFrom-Json
-  if($bundle.schema -ne 1 -or $bundle.kind -ne 'codlet-official-plugin-bundle' -or @($bundle.packages).Count -ne 1){throw 'Expected one GUI package'}
+  if($bundle.schema -ne 1 -or $bundle.kind -ne 'codlet-official-plugin-bundle' -or @($bundle.packages).Count -ne 1 -or ($bundle.PSObject.Properties['fixture'] -and $bundle.fixture)){throw 'Expected one GUI package signed with the publisher key'}
   $guiPackage=$bundle.packages[0]
   $official=@($options.plugins|Where-Object{$_.id -ceq 'codlet-gui'})[0]
   if($guiPackage.id -cne 'codlet-gui' -or $guiPackage.version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or $guiPackage.updateSource.repositoryUrl -cne $official.repositoryUrl -or $guiPackage.updateSource.repositoryId -ne $official.repositoryId -or $guiPackage.updateSource.ownerId -ne $official.ownerId){throw 'GUI identity does not match the official channel'}

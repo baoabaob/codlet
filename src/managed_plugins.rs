@@ -246,6 +246,18 @@ fn preview_checked(
                     "A different repository cannot inherit this plugin ID or its trust. Unregister the current source and explicitly review a new installation.",
                 ));
             }
+            if operation == ManagedOperation::Update
+                && let Some(proof) = &prepared.source.update_proof
+                && current.source.update_source.as_ref().is_none_or(|trusted| {
+                    trusted.public_key != proof.public_key
+                        || prepared.source.update_source.as_ref() != Some(trusted)
+                })
+            {
+                return Err(control_error(
+                    "managed_source_changed",
+                    "The signed update does not match the installed publisher key and update source.",
+                ));
+            }
         }
         ManagedOperation::Adopt
             if !crate::plugin_cli::official_seed::verified_installer_source(registry, id) =>
