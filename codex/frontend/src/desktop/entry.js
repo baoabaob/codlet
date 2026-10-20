@@ -122,7 +122,8 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
             break;
         } catch (error) {
             if (!['desktop_scope_missing', 'desktop_host_pending', 'desktop_connection_not_ready'].includes(error.code) || Date.now() >= readyDeadline) throw error;
-            // Only a bounded activation wait. Nothing polls after ready/failed.
+            // A bounded activation wait; the owner retries transient readiness
+            // with backoff and retires every wait with this generation.
             await probeTick(signal, Math.min(50, readyDeadline - Date.now()));
         }
     }
@@ -856,7 +857,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     } catch (error) { dispose(); throw error; }
 }
 
-function startAdapter(context, probe = signal => probeDesktop(undefined, 30000, signal)) {
+function startAdapter(context, probe = (signal, timeout) => probeDesktop(undefined, timeout, signal), retryWait = probeTick) {
     let alive = true, inner, failure = null, settled = false;
     const controller = new AbortController(), waits = new Set();
     for (const capability of [CAPS.submit, CAPS.read, CAPS.write, CAPS.events]) context.rpc.unavailable(capability, 'Desktop adapter is waiting for the existing app-host services');
@@ -887,10 +888,27 @@ function startAdapter(context, probe = signal => probeDesktop(undefined, 30000, 
         return inner?.dispose();
     };
     context.onDeactivate(dispose);
-    const ready = Promise.resolve().then(() => probe(controller.signal)).then(connection => {
-        if (!alive) return;
-        inner = createAdapter(connection, context, { compatibilityProvided: true });
-        try { context.reportDiagnostic({ code: 'desktop_adapter_ready', message: 'Existing Desktop services passed interface and connection identity checks', level: 'info' }); } catch {}
+    const ready = Promise.resolve().then(async () => {
+        let attempt = 0, lastReported;
+        while (alive) {
+            try {
+                const connection = await probe(controller.signal, attempt === 0 ? 30000 : 0);
+                if (!alive) return;
+                inner = createAdapter(connection, context, { compatibilityProvided: true });
+                failure = null;
+                try { context.reportDiagnostic({ code: 'desktop_adapter_ready', message: 'Existing Desktop services passed interface and connection identity checks', level: 'info' }); } catch {}
+                return;
+            } catch (error) {
+                if (!alive) return;
+                if (!['desktop_scope_missing', 'desktop_host_pending', 'desktop_connection_not_ready', 'ui_host_pending'].includes(error.code)) throw error;
+                failure = { code: error.code, message: optionalText(error.message) ?? 'Waiting for the existing Desktop app-host services' };
+                if (lastReported !== error.code) {
+                    lastReported = error.code;
+                    try { context.reportDiagnostic({ ...failure, level: 'info' }); } catch {}
+                }
+                await retryWait(controller.signal, Math.min(1000 * 2 ** Math.min(attempt++, 4), 10000));
+            }
+        }
     }).catch(error => {
         if (!alive) return;
         failure = { code: error.code ?? 'desktop_initialization_failed', message: optionalText(error.message) ?? 'Desktop adapter initialization failed' };

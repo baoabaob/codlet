@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const { runConfigProbe } = createRequire(import.meta.url)('../host/backend-config-probe.cjs');
@@ -42,4 +42,29 @@ test('declared response providers retain default-endpoint semantics and prove th
     assert.deepEqual(policy.contract.providerOverrides,['openai_base_url','model_providers.custom.base_url']);
     assert(!result.stdout.includes('never-project-this-secret'));
   }
+});
+
+test('in-process async configuration probing yields the event loop and retires its own children', async () => {
+  const fixture=fileURLToPath(new URL('./fixtures/traffic/probe-app-server.cjs',import.meta.url)),children=[];
+  let ticked=false;
+  const work=runConfigProbe({executable:process.execPath,configArguments:[fixture],environment:process.env,cwd:process.cwd()},{
+    spawn(...args){const child=spawn(...args);children.push(child);return child;}
+  });
+  const tick=new Promise(resolve=>setImmediate(()=>{ticked=true;resolve();}));
+  await tick;
+  const policy=await work;
+  assert.equal(ticked,true);assert.equal(policy.accountType,'apiKey');
+  assert.equal(children.length,2);
+  assert(children.every(child=>child.exitCode!==null||child.signalCode!==null));
+});
+
+test('cancelling an async probe stops its owned child without publishing policy', async () => {
+  const fixture=fileURLToPath(new URL('./fixtures/traffic/probe-app-server.cjs',import.meta.url)),controller=new AbortController(),children=[];
+  const work=runConfigProbe({executable:process.execPath,configArguments:[fixture],environment:process.env,cwd:process.cwd()},{
+    signal:controller.signal,spawn(...args){const child=spawn(...args);children.push(child);return child;}
+  });
+  controller.abort();
+  await assert.rejects(work,{code:'backend_probe_cancelled'});
+  assert.equal(children.length,1);
+  assert(children.every(child=>child.exitCode!==null||child.signalCode!==null));
 });

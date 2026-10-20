@@ -97,6 +97,38 @@ pub(crate) fn fixture_seed(root: &std::path::Path, id: &str) -> PluginRegistry {
 mod tests {
     use super::*;
     #[test]
+    fn legacy_seed_channel_requires_verified_files_and_the_pinned_repository_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = fixture_seed(temp.path(), "codlet-gui");
+        let receipt = temp
+            .path()
+            .join(".official-seed-transactions/codlet-gui.receipt.json");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+        value["package"]
+            .as_object_mut()
+            .unwrap()
+            .remove("updateSource");
+        std::fs::write(&receipt, value.to_string()).unwrap();
+        let source = PluginUpdateSource::load(&registry, "codlet-gui").unwrap();
+        assert!(is_official_channel("codlet-gui", &source.channel));
+        assert_eq!(source.operation, ManagedOperation::Adopt);
+        assert!(!registry.is_enabled("codlet-gui"));
+        let mut changed = source.channel;
+        changed.owner_id = Some(1);
+        assert!(!is_official_channel("codlet-gui", &changed));
+        std::fs::write(
+            registry.local_plugins()["codlet-gui"]
+                .path
+                .join("author.js"),
+            "keep",
+        )
+        .unwrap();
+        assert!(PluginUpdateSource::load(&registry, "codlet-gui").is_none());
+        assert!(registry.managed_plugins().is_empty());
+    }
+
+    #[test]
     fn verified_seed_source_preserves_identity_without_inventing_a_github_receipt() {
         let temp = tempfile::tempdir().unwrap();
         let registry = fixture_seed(temp.path(), "dev.seed");

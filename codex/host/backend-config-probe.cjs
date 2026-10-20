@@ -1,11 +1,12 @@
 'use strict';
 // Serialized into the pinned Node helper. Only bounded routing metadata leaves
 // the helper; all child requests are read-only and use the selected executable.
-function runConfigProbe() {
-  const fs = require('node:fs'), { spawn } = require('node:child_process'), { randomBytes } = require('node:crypto');
+function runConfigProbe(input, dependencies = {}) {
+  const fs = require('node:fs'), spawn = dependencies.spawn ?? require('node:child_process').spawn, { randomBytes } = require('node:crypto');
   const fail = code => Object.assign(new Error(code), { code });
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const until = Date.now() + 3500;
+  const signal = dependencies.signal;
   let liveChild;
   async function stop(child) {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -21,6 +22,7 @@ function runConfigProbe() {
     if (child.exitCode === null && child.signalCode === null) throw fail('backend_probe_cleanup_failed');
   }
   async function read(plan, overrides, includeAccount) {
+    if (signal?.aborted) throw fail('backend_probe_cancelled');
     if (Date.now() >= until) throw fail('backend_config_timeout');
     const child = spawn(plan.executable, [...plan.configArguments, ...overrides,
       '-c', 'analytics.enabled=false', '-c', 'features.code_mode_host=false', '-c', 'features.remote_plugin=false',
@@ -29,10 +31,12 @@ function runConfigProbe() {
     try {
       return await new Promise((resolve, reject) => {
         let settled = false, buffer = '', count = 0, expected = 1, config;
+        const abort = () => finish(fail('backend_probe_cancelled'));
         const timer = setTimeout(() => finish(fail('backend_config_timeout')), Math.max(1, until - Date.now()));
+        signal?.addEventListener('abort', abort, { once: true });
         function finish(error, result) {
           if (settled) return;
-          settled = true; clearTimeout(timer); error ? reject(error) : resolve(result);
+          settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(result);
         }
         const send = message => child.stdin.write(JSON.stringify(message) + '\n');
         child.stderr.on('data', () => {});
@@ -73,10 +77,13 @@ function runConfigProbe() {
       });
     } finally { await stop(child); liveChild = null; }
   }
-  (async () => {
-    const bytes = fs.readFileSync(0);
-    if (bytes.length > 256 * 1024) throw fail('backend_config_unavailable');
-    const plan = JSON.parse(bytes);
+  const work = (async () => {
+    let plan = input;
+    if (plan === undefined) {
+      const bytes = fs.readFileSync(0);
+      if (bytes.length > 256 * 1024) throw fail('backend_config_unavailable');
+      plan = JSON.parse(bytes);
+    }
     if (!object(plan) || typeof plan.executable !== 'string' || typeof plan.cwd !== 'string'
       || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256
       || plan.configArguments.some(value => typeof value !== 'string')) throw fail('backend_config_unavailable');
@@ -110,7 +117,12 @@ function runConfigProbe() {
   })().catch(async error => {
     try { await stop(liveChild); } catch { return { error: 'backend_probe_cleanup_failed' }; }
     return { error: /^backend_[a-z_]+$/u.test(error?.code) ? error.code : 'backend_config_unavailable' };
-  }).then(value => {
+  });
+  if (input !== undefined) return work.then(value => {
+    if (value.error) throw fail(value.error);
+    return value;
+  });
+  work.then(value => {
     process.stdout.write(JSON.stringify(value), () => {
       if (!liveChild || liveChild.exitCode !== null || liveChild.signalCode !== null) process.exit(0);
     });

@@ -47,14 +47,12 @@ Packages built without a GUI bundle use `plugin github preview/install` to downl
 latest stable GUI. They verify the manifest, repository identity and upstream archive digest.
 Read/download failures retry once; unfinished choices remain pending for the next launch.
 
-Before the first normal launch of a changed Core/client version, Core checks installed
-official channels through the regular GitHub preparation and managed-install transactions.
-Verified installer packages can move to their pinned channel using the same permission and
-source checks. Successful checks are cached across ordinary launches. The network budget is
-30 seconds; failures retain the installed package and retry after a five-minute cooldown.
-Safe mode skips this maintenance. The `checkPluginUpdatesOnStartup` preference also
-controls this path. Windows shows runtime preparation stages and actual download
-progress while Core is preparing the session.
+Normal launch uses verified local plugin packages immediately. Once the runtime is ready,
+`checkPluginUpdatesOnStartup` starts one background, read-only check of registered update
+channels. A failed check retains the local packages; the user can retry from plugin management.
+Installing a discovered update uses the regular managed-install transaction, including
+permission and source checks. Safe mode skips background checks. Windows shows runtime
+preparation stages and actual download progress while Core is preparing the session.
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, and asks the user to save and quit them. Its only actions are check again and cancel. Neither the installer nor the launcher's gate sends a close request. Restart Manager automatic shutdown is disabled. An unattended busy install fails explicitly.
 

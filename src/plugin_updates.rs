@@ -116,8 +116,10 @@ impl PluginUpdates {
                     let client = GitHubClient::new().map_err(|e| e.to_string())?;
                     let work = scan(registry.as_ref(), |link, channel| {
                         let client = client.clone();
-                        async move { channel.verify_identity(&client).await?; tokio::time::timeout(Duration::from_secs(15), client.list_releases(&link)).await
-                            .map_err(|_| "Plugin update check timed out".to_string())?.map_err(|e| e.to_string()) }
+                        async move { tokio::time::timeout(Duration::from_secs(30), async {
+                            channel.verify_identity(&client).await?;
+                            client.list_releases(&link).await.map_err(|e| e.to_string())
+                        }).await.map_err(|_| "Plugin update check timed out".to_string())? }
                     });
                     tokio::pin!(work);
                     let deadline = tokio::time::sleep(Duration::from_secs(120));

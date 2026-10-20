@@ -814,11 +814,9 @@ fn start_connected_codex_with_traffic(
 }
 
 fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeError> {
-    let package = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)?;
     startup_recovery::attempt(|reason| {
         start_codlet_runtime_with_connector_filtered(
             options,
-            reason.is_none().then_some(package.full_name.as_str()),
             start_connected_codex_with_traffic,
             reason,
         )
@@ -830,18 +828,16 @@ fn start_codlet_runtime(options: LaunchOptions) -> Result<CodletRuntime, ProbeEr
 #[cfg(all(not(test), feature = "desktop-acceptance"))]
 fn start_codlet_runtime_with_connector(
     options: LaunchOptions,
-    refresh_client: Option<&str>,
     connect: impl FnOnce(
         Option<PreparedServices>,
         Option<&crate::traffic_owner::TrafficOwner>,
     ) -> Result<(ConnectedCodex, Option<HostServers>), ProbeError>,
 ) -> Result<CodletRuntime, ProbeError> {
-    start_codlet_runtime_with_connector_filtered(options, refresh_client, connect, None)
+    start_codlet_runtime_with_connector_filtered(options, connect, None)
 }
 
 fn start_codlet_runtime_with_connector_filtered(
     options: LaunchOptions,
-    refresh_client: Option<&str>,
     connect: impl FnOnce(
         Option<PreparedServices>,
         Option<&crate::traffic_owner::TrafficOwner>,
@@ -863,10 +859,6 @@ fn start_codlet_runtime_with_connector_filtered(
     let mut registry = PluginRegistry::load(scope.path())?;
     crate::managed_storage::prepare_installations(&mut registry)
         .map_err(crate::plugin_cli::PluginCliError::from)?;
-    if let Some(client) = refresh_client {
-        crate::plugin_startup_updates::refresh(&lease, client);
-        registry = PluginRegistry::load(scope.path())?;
-    }
     let mut host_control = HostControl::new(registry.path().to_owned());
     let (mut renderer, host_plugins) = prepare_plugin_runtimes_filtered(registry, suspension)?;
     renderer.enable_runtime_skill();

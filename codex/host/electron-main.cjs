@@ -20,6 +20,7 @@ function localBackends(context, ownsProcess, dependencies = {}) {
       const child = connection.connection?.proc;
       if (!child || connection.disposed || ownsProcess(child) || typeof child.spawnfile !== 'string'
         || !/^codex(?:\.exe)?$/i.test(require('node:path').basename(child.spawnfile))) continue;
+      if (dependencies.canRecover && !dependencies.canRecover(child)) continue;
       verify(child.spawnfile, process.platform);
       if (connection.getPendingRequestCount() !== 0 || connection.turnCwds?.pendingByStartId?.size
         || connection.turnCwds?.startedByTurnId?.size) throw fail('client_source_backend_busy');
@@ -29,9 +30,15 @@ function localBackends(context, ownsProcess, dependencies = {}) {
   return connections;
 }
 async function recoverLocalBackends(context, ownsProcess, dependencies) {
-  // Validate the entire selected local set before reconnecting any member.
+  // Probe without blocking Native, then revalidate every idle owner because
+  // a request or turn may have started while policy discovery was in flight.
+  if (dependencies?.prepareConnection) {
+    for (const connection of localBackends(context, ownsProcess, { ...dependencies, canRecover: undefined }))
+      await dependencies.prepareConnection(connection.connection);
+  }
   for (const connection of localBackends(context, ownsProcess, dependencies)) {
-    await connection.restart({intent: 'restart', killCodexProcess: false});
+    if (localBackends(context, ownsProcess, dependencies).has(connection))
+      await connection.restart({intent: 'restart', killCodexProcess: false});
   }
 }
 
@@ -118,16 +125,6 @@ function installElectronTraffic(electron, configuration, context, dependencies =
           readinessDeadlineUnixMs=Math.min(Date.now()+5000,startupDeadlineUnixMs);
         } else readinessDeadlineUnixMs=configuration.deadlineUnixMs;
       }
-      if(context?.modules&&!installedBeforeReady&&!restored) {
-        // A source learned after startup may need one local app-server reconnect;
-        // the desktop process and its native pages stay alive. Never interrupt
-        // an active turn or replay an outstanding native request.
-        try { await recover(context, backend.ownsProcess, {connections:desktop.connectionConstructors?.()}); }
-        catch (error) {
-          if (!['client_source_backend_busy','backend_identity_unavailable','backend_identity_changed'].includes(error?.code)) throw error;
-          recoveryReason = error.code;
-        }
-      }
       const readyOptions = { deadlineUnixMs: readinessDeadlineUnixMs };
       const backendReady = recoveryReason ? backend.inspect() : backend.ready(readyOptions).catch(error => {
         if (error?.code !== 'backend_route_timeout') throw error;
@@ -136,7 +133,18 @@ function installElectronTraffic(electron, configuration, context, dependencies =
         recoveryReason = error.code;
         return { ...backend.inspect(), available: false, reason: 'route_unavailable' };
       });
-      const [desktopState, backendState] = await Promise.all([desktop.ready(readyOptions), backendReady]);
+      const [desktopState, initialBackendState] = await Promise.all([desktop.ready(readyOptions), backendReady]);
+      let backendState = initialBackendState;
+      if (!restored && context?.modules && (backendState.policyReady || !installedBeforeReady) && desktopState.taskConfigurationAvailable) {
+        try {
+          await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.(),
+            canRecover: backend.canRecover, prepareConnection: backend.prepareConnection });
+          backendState = await backend.ready(readyOptions);
+        } catch (error) {
+          if (error?.code !== 'client_source_backend_busy' && !/^backend_[a-z_]+$/u.test(error?.code)) throw error;
+          recoveryReason = error.code;
+        }
+      }
       const activatedSources = [], unsupportedSources = [];
       if (desktopState.available) activatedSources.push({ id: 'desktop-main-http', operations: ['http.intercept'], protocols: ['http', 'sse'],
         coverage: ['desktop-main-fetch', 'desktop-main-upload-progress'] });
@@ -153,7 +161,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
       }catch(error){diagnose(false,error);throw error;}
     },
     inspect: status,
-    async close() { if(closed)return;closed=true;desktop.close(); backend.close(); if(!shared)source.close(); },
+    async close() { if(closed)return;closed=true;desktop.close(); await backend.close(); if(!shared)source.close(); },
   });
 }
 function validateSnapshot(value) {return !!value&&value.schema===1&&(value.recoveryReason===null||typeof value.recoveryReason==='string')

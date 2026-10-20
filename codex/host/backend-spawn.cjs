@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const childProcess = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { prepareBackendLaunch, verifyBackend, supportsBackendContract } = require('./backend-launch.cjs');
 const { runConfigProbe } = require('./backend-config-probe.cjs');
 const fail = code => Object.assign(new Error(code), { code });
@@ -70,37 +71,90 @@ function effectiveProviders(policy) {
   return routes;
 }
 
-// Intercept only a local app-server child whose actual contract passed. Node's spawn entry is
-// synchronous, so reserveRoute supplies a URL immediately and completes its
-// authenticated registration before launch readiness is reported.
+// Node's spawn entry must return its pipes immediately. Prepare unknown launch
+// policies asynchronously, let Native start unchanged, then admit a verified
+// idle reconnect through the normal connection owner.
 function installBackendSpawn(configuration, dependencies = {}) {
   const prototype = dependencies.prototype ?? childProcess.ChildProcess.prototype;
   const originalSpawn = prototype.spawn;
   const prepare = dependencies.prepare ?? prepareBackendLaunch;
   const verify = dependencies.verify ?? verifyBackend;
-  const probe = dependencies.probe ?? (plan => {
-    const result = childProcess.spawnSync(configuration.runtimeExecutable, ['--no-addons', '--no-global-search-paths', '--eval', `(${runConfigProbe.toString()})()`], {
-      input: JSON.stringify(plan), env: plan.environment, cwd: plan.cwd, windowsHide: true, encoding: 'utf8', maxBuffer: 256 * 1024, timeout: 4500,
-    });
-    if (result.error || result.status !== 0) throw fail('backend_config_unavailable');
-    let value; try { value = JSON.parse(result.stdout); } catch { throw fail('backend_config_unavailable'); }
-    if (value.error) throw fail(value.error); return value;
-  });
+  const controller = new AbortController();
+  let probing = false;
+  const probe = dependencies.probe ?? (plan => runConfigProbe(plan, {
+    signal: controller.signal,
+    spawn(...args) {
+      probing = true;
+      try { return childProcess.spawn(...args); } finally { probing = false; }
+    },
+  }));
   if (!configuration?.source?.reserveRoute || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail('invalid_launch_configuration');
   let closed = false, prepared = 0, declined = 0, reason = null;
   const state=dependencies.state??{owned:new WeakSet(),trust:new WeakMap(),accounts:new WeakMap(),providers:new WeakMap(),records:new Set(),pending:new Set(),prepared:0};
   const shared=!!dependencies.state;
   const active = new Set(), pending = state.pending, owned = state.owned, trustByProcess = state.trust, accountByProcess = state.accounts, providersByProcess = state.providers;
+  const launchPlans = state.launchPlans ??= new WeakMap();
+  const policies = new Map(), preparing = new Set(), childPlans = new WeakMap(), waitingChildren = new Set();
+  const canRecover = child => {
+    const entry = policies.get(childPlans.get(child));
+    return !closed && !!entry?.value && Date.now() - entry.checkedAt < 10000;
+  };
+  function preparePolicy(plan) {
+    // Keys never leave this generation; credentials/environment are not logged.
+    const environment = Object.entries(plan.environment).map(([name, value]) => [
+      process.platform === 'win32' ? name.toUpperCase() : name, value,
+    ]).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const key = createHash('sha256').update(JSON.stringify([
+      plan.executable, plan.binarySha256, plan.configArguments, plan.cwd, plan.recordedRouting, environment,
+    ])).digest('hex');
+    let entry = policies.get(key);
+    if (entry?.value && Date.now() - entry.checkedAt >= 10000) { policies.delete(key); entry = null; }
+    if (!entry) {
+      if (policies.size >= 32) throw fail('backend_config_unavailable');
+      entry = {}; policies.set(key, entry);
+      const result = probe(plan);
+      if (typeof result?.then !== 'function') { entry.value = result; entry.checkedAt = Date.now(); }
+      else {
+        const work = Promise.resolve(result).then(value => {
+          const providers = effectiveProviders(value);
+          if (!supportsBackendContract(value.contract, [...providers.keys()])) throw fail('backend_contract_unavailable');
+          for (const upstream of providers.values()) {
+            const url = new URL(upstream);
+            if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail('backend_provider_unsupported');
+          }
+          if (!closed) { entry.value = value; entry.checkedAt = Date.now(); }
+        }).catch(error => {
+          entry.error = error;
+          if (!closed) reason = /^backend_[a-z_]+$/u.test(error?.code) ? error.code : 'backend_config_unavailable';
+        }).finally(() => preparing.delete(work));
+        preparing.add(work);
+        entry.work = work;
+      }
+    }
+    if (entry.error) throw entry.error;
+    return { key, policy: entry.value, work: entry.work };
+  }
   prepared=state.prepared;
   function wrapped(options) {
     const args = options?.args, file = options?.file;
-    if (closed || !Array.isArray(args) || !args.includes('app-server') || typeof file !== 'string' || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
+    if (closed || probing || !Array.isArray(args) || !args.includes('app-server') || typeof file !== 'string' || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
     let reservations = [], dispatched = false;
     try {
       const identity = verify(file, process.platform);
       const actualArgs = args.slice(1), environment = environmentFromPairs(options.envPairs);
       const cwd = options.cwd ?? process.cwd();
-      const policy = probe({ executable: file, configArguments: configArguments(actualArgs), environment, cwd, recordedRouting: identity.recorded === true });
+      const plan = { executable: file, binarySha256: identity.binarySha256,
+        configArguments: configArguments(actualArgs), environment, cwd, recordedRouting: identity.recorded === true };
+      launchPlans.set(this, plan);
+      const preparedPolicy = preparePolicy(plan);
+      if (!preparedPolicy.policy) {
+        reason = 'backend_config_pending';
+        childPlans.set(this, preparedPolicy.key); waitingChildren.add(this);
+        this.once('exit', () => waitingChildren.delete(this));
+        dispatched = true;
+        return originalSpawn.call(this, options);
+      }
+      const policy = { ...preparedPolicy.policy };
       const directOpenaiBaseUrl = lastStringOverride(actualArgs, 'openai_base_url');
       if (directOpenaiBaseUrl !== undefined) policy.openaiBaseUrl = directOpenaiBaseUrl;
       const additionalCaPem = providerTrust(environment, cwd);
@@ -117,6 +171,8 @@ function installBackendSpawn(configuration, dependencies = {}) {
       const next = { ...options, args: [args[0], ...launch.arguments] };
       dispatched = true;
       const result = originalSpawn.call(this, next);
+      policies.delete(preparedPolicy.key);
+      reason = null;
       owned.add(this); trustByProcess.set(this, additionalCaPem);
       providersByProcess.set(this, new Set(['openai', ...Object.keys(policy.providerBaseUrls ?? {})]));
       const authRoutes = [...providers.keys()].flatMap((setting,index) => setting === 'openai_base_url'
@@ -148,7 +204,9 @@ function installBackendSpawn(configuration, dependencies = {}) {
   prototype.spawn = wrapped;
   return Object.freeze({
     async ready({ deadlineUnixMs = configuration.deadlineUnixMs } = {}) {
-      while (!prepared && !declined && !closed && Date.now() < deadlineUnixMs - 500) await new Promise(resolve => setTimeout(resolve, 20));
+      while (!closed && Date.now() < deadlineUnixMs - 500 &&
+        (preparing.size || !prepared && !declined && ![...waitingChildren].some(canRecover) && !reason))
+        await new Promise(resolve => setTimeout(resolve, 20));
       if (prepared && pending.size > 0) {
         const limit = deadlineUnixMs - 500 - Date.now();
         if (limit <= 0) throw fail('backend_route_timeout');
@@ -158,8 +216,35 @@ function installBackendSpawn(configuration, dependencies = {}) {
       }
       return this.inspect();
     },
-    close() { if (closed) return; closed = true; if (prototype.spawn === wrapped) prototype.spawn = originalSpawn; if(!shared)for (const release of active) release(); },
+    close() {
+      if (closed) return Promise.allSettled([...preparing]);
+      closed = true; controller.abort(); policies.clear(); waitingChildren.clear();
+      if (prototype.spawn === wrapped) prototype.spawn = originalSpawn;
+      if (!shared) for (const release of active) release();
+      return Promise.allSettled([...preparing]);
+    },
     ownsProcess: child => !closed && !!child && owned.has(child),
+    canRecover,
+    async prepareConnection(transport) {
+      const child = transport?.proc;
+      if (closed || !child || owned.has(child)) return;
+      let plan = launchPlans.get(child);
+      if (!plan) {
+        const options = transport.options, file = child.spawnfile;
+        if (typeof file !== 'string' || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file)) ||
+          !Array.isArray(child.spawnargs) || !options?.env || typeof options.env !== 'object' ||
+          Object.values(options.env).some(value => typeof value !== 'string')) return;
+        const identity = verify(file, process.platform);
+        plan = { executable: file, binarySha256: identity.binarySha256,
+          configArguments: configArguments(child.spawnargs.slice(1)), environment: options.env,
+          cwd: options.cwd ?? process.cwd(), recordedRouting: identity.recorded === true };
+        launchPlans.set(child, plan);
+      }
+      const preparedPolicy = preparePolicy(plan);
+      childPlans.set(child, preparedPolicy.key); waitingChildren.add(child);
+      child.once('exit', () => waitingChildren.delete(child));
+      if (preparedPolicy.work) await preparedPolicy.work;
+    },
     providerTrustForProcess: child => owned.has(child) ? trustByProcess.get(child) : undefined,
     isProviderSupported: (child, provider) => owned.has(child) && providersByProcess.get(child)?.has(provider) === true,
     pendingAccountUpdate: child => accountByProcess.get(child)?.pending ?? null,
@@ -177,6 +262,7 @@ function installBackendSpawn(configuration, dependencies = {}) {
       update.finally(() => { if (state.pending === update) state.pending = null; }).catch(() => {});
     },
     inspect: () => ({ installed: !closed, backendRootsPrepared: prepared, backendRootsDeclined: declined,
+      policyReady: [...waitingChildren].some(canRecover),
       available: state.records.size > 0 && !reason, reason: reason ?? (state.records.size ? null : 'child_unavailable') }),
   });
 }

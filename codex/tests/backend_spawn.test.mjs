@@ -111,3 +111,64 @@ test('settled owned routes stay ready even after the startup deadline passes',as
   try {assert.equal((await hook.ready()).available,true);}
   finally {hook.close();assert.equal(prototype.spawn,original);}
 });
+
+test('an asynchronous policy probe lets Native spawn immediately and routes only a prepared reconnect', async () => {
+  const dispatched=[],routes=[],prototype={spawn(options){dispatched.push(options);return 'started';}};
+  let complete,probes=0;
+  const hook=installBackendSpawn({source:{reserveRoute(){const route={baseUrl:'http://127.0.0.1:43210/ready/',ready:Promise.resolve(),close(){}};routes.push(route);return route;}},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify(){return {binarySha256:'verified'};},
+    probe(){probes++;return new Promise(resolve=>{complete=resolve;});},
+    prepare(plan){return {arguments:[...plan.arguments,'-c',`openai_base_url=${plan.providerRoutes.openai_base_url}`]};}
+  });
+  const file=path.resolve('codex.exe'),options={file,args:[file,'app-server'],envPairs:['OTHER=preserved']},first=new EventEmitter();
+  try {
+    assert.equal(prototype.spawn.call(first,options),'started');
+    assert.equal(dispatched[0],options);assert.equal(routes.length,0);
+    assert.equal(hook.canRecover(first),false);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(probes,1);
+    complete({accountType:'apiKey',contract:contract()});
+    assert.equal((await hook.ready()).policyReady,true);
+    assert.equal(hook.canRecover(first),true);
+    const next=new EventEmitter();
+    prototype.spawn.call(next,options);
+    assert.equal((await hook.ready()).available,true);
+    assert.equal(probes,1);assert.equal(routes.length,1);
+    assert.equal(dispatched[1].envPairs,options.envPairs);
+    assert.equal(dispatched[1].args.at(-1),'openai_base_url=http://127.0.0.1:43210/ready/');
+    assert.equal(hook.ownsProcess(first),false);assert.equal(hook.ownsProcess(next),true);
+  } finally {hook.close();}
+});
+
+test('closing a pending policy generation cannot publish routes or capture a later process', async () => {
+  const prototype={spawn(){return 'native';}},original=prototype.spawn;
+  let complete;
+  const hook=installBackendSpawn({source:{reserveRoute(){assert.fail('retired policy must not register routes');}},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify(){return {binarySha256:'verified'};},probe(){return new Promise(resolve=>{complete=resolve;});}
+  });
+  const file=path.resolve('codex.exe'),child=new EventEmitter();
+  prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});
+  hook.close();complete({accountType:'apiKey',contract:contract()});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(prototype.spawn,original);
+  assert.equal(hook.canRecover(child),false);
+  assert.equal(hook.inspect().available,false);
+});
+
+test('late Native connection preparation reuses a verified policy across environment key ordering', async () => {
+  const prototype={spawn(){return 'native';}},file=path.resolve('codex.exe');
+  let probes=0;
+  const hook=installBackendSpawn({source:{reserveRoute(){return {baseUrl:'http://127.0.0.1:43210/late/',ready:Promise.resolve(),close(){}};}},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify(){return {binarySha256:'verified'};},
+    async probe(){probes++;return {accountType:'apiKey',contract:contract()};},
+    prepare(plan){return {arguments:plan.arguments};}
+  });
+  const existing=Object.assign(new EventEmitter(),{spawnfile:file,spawnargs:[file,'app-server']});
+  try {
+    await hook.prepareConnection({proc:existing,options:{env:{SECOND:'two',FIRST:'one'},cwd:process.cwd()}});
+    assert.equal(hook.canRecover(existing),true);
+    const replacement=new EventEmitter();
+    prototype.spawn.call(replacement,{file,args:[file,'app-server'],envPairs:['FIRST=one','SECOND=two']});
+    assert.equal(probes,1);assert.equal(hook.ownsProcess(replacement),true);
+    assert.equal((await hook.ready()).available,true);
+  } finally {await hook.close();}
+});

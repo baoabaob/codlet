@@ -913,6 +913,35 @@ async fn older_release_without_a_declaration_keeps_total_unknown() {
 }
 
 #[tokio::test]
+async fn metadata_retries_one_truncated_response_and_keeps_the_original_origin() {
+    let fixture = Fixture::new(vec![
+        b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 4\r\n\r\na".to_vec(),
+        response("200 OK", "", b"[]"),
+    ]);
+    let result = fixture
+        .client()
+        .list_releases(&GitHubLink::parse("https://github.com/dev-owner/dev-repo").unwrap())
+        .await
+        .unwrap();
+    assert!(result.releases.is_empty());
+    let requests = fixture.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+}
+
+#[tokio::test]
+async fn metadata_does_not_retry_a_repository_or_permission_failure() {
+    let fixture = Fixture::new(vec![response("404 Not Found", "", b"")]);
+    let failure = fixture
+        .client()
+        .list_releases(&GitHubLink::parse("https://github.com/dev-owner/dev-repo").unwrap())
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, "github_not_found");
+    assert_eq!(fixture.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn a_stalled_connection_reports_a_timeout_instead_of_a_generic_send_error() {
     let fixture = Fixture::new(vec![vec![]]);
     let mut client = fixture.client();

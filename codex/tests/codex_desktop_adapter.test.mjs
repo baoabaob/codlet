@@ -371,6 +371,42 @@ test('retiring a pending initializer prevents late page patches; failed readines
     }
 });
 
+test('Desktop recovers after a startup timeout without reactivating the plugin', async () => {
+    const f = fixture(); f.dispose(); f.endpoints.clear();
+    const reported = []; f.context.reportDiagnostic = value => reported.push(value);
+    const start = vm.runInContext('startAdapter', f.scope);
+    let attempts = 0, retry;
+    const pending = start(f.context, async (_signal, timeout) => {
+        assert.equal(timeout, attempts === 0 ? 30000 : 0);
+        if (attempts++ === 0) throw Object.assign(new Error('still starting'), { code: 'desktop_connection_not_ready' });
+        return f.connection;
+    }, () => new Promise(resolve => { retry = resolve; }));
+    await tick();
+    assert.equal(pending.probe().initializing, true);
+    assert.equal(f.endpoints.has('codex.backend.read:threads.list'), false);
+    retry(); await tick();
+    assert.equal(pending.probe().available, true);
+    assert.equal(attempts, 2);
+    assert.ok(f.endpoints.has('codex.backend.read:threads.list'));
+    assert.deepEqual(reported.map(item => item.code), ['desktop_connection_not_ready', 'desktop_adapter_ready']);
+    pending.dispose();
+});
+
+test('retiring a Desktop readiness retry prevents another probe and publication', async () => {
+    const f = fixture(); f.dispose(); f.endpoints.clear();
+    const start = vm.runInContext('startAdapter', f.scope);
+    let attempts = 0, retry, signal;
+    const pending = start(f.context, async () => {
+        attempts++;
+        throw Object.assign(new Error('still starting'), { code: 'desktop_connection_not_ready' });
+    }, owner => { signal = owner; return new Promise(resolve => { retry = resolve; }); });
+    await tick();
+    pending.dispose(); assert.equal(signal.aborted, true); retry(); await tick();
+    assert.equal(attempts, 1);
+    assert.equal(f.postbox.postMessage, f.original);
+    assert.equal(f.endpoints.has('codex.backend.read:threads.list'), false);
+});
+
 test('probing a family descriptor never constructs a missing local manager or request client', async () => {
     const scope = vm.createContext({ module: { exports: {} }, location: { origin: 'app://-', pathname: '/index.html' }, electronBridge: { getSentryInitOptions: () => ({ appVersion: '26.903.61454', buildNumber: '8378' }), sendMessageFromView() {} } });
     vm.runInContext(source, scope);

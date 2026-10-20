@@ -263,7 +263,12 @@ fn network_error(e: reqwest::Error) -> GitHubDistributionError {
         "github_network",
         &format!("cause={reason} osCode={os_code:?}"),
     );
-    if e.is_timeout() {
+    if reason == "tls" {
+        error(
+            "github_tls",
+            "Could not establish a secure connection to GitHub. Check your proxy and system certificates, then try again.",
+        )
+    } else if e.is_timeout() {
         error(
             "github_timeout",
             "GitHub request timed out. Check the connection or proxy, then try again.",
@@ -701,7 +706,36 @@ impl GitHubClient {
         })
     }
 
-    async fn get(&self, mut url: Url, asset: bool, limit: u64) -> Result<Vec<u8>> {
+    async fn get(&self, url: Url, asset: bool, limit: u64) -> Result<Vec<u8>> {
+        if asset {
+            return self.get_once(url, true, limit).await;
+        }
+        // Only public metadata GETs are retried. Keep one total deadline across
+        // both attempts, all redirects and reading the response body.
+        tokio::time::timeout(API_TIMEOUT, async {
+            let first = self.get_once(url.clone(), false, limit).await;
+            if first.as_ref().err().is_some_and(|failure| {
+                matches!(
+                    failure.code.as_str(),
+                    "github_network" | "github_timeout" | "github_tls"
+                )
+            }) {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                self.get_once(url, false, limit).await
+            } else {
+                first
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(error(
+                "github_timeout",
+                "GitHub request timed out. Check the connection or proxy, then try again.",
+            ))
+        })
+    }
+
+    async fn get_once(&self, mut url: Url, asset: bool, limit: u64) -> Result<Vec<u8>> {
         for hop in 0..=5 {
             if !trusted_url(&url, asset) {
                 return Err(error(

@@ -39,6 +39,14 @@ test('pending requests or active turns reject recovery before any backend is rec
     assert.equal(f.calls.length,0);
   }
 });
+test('a request that starts during asynchronous policy preparation prevents reconnect',async()=>{
+  const f=fixture(),local=new f.Connection();f.connections.push(local);
+  await assert.rejects(recoverLocalBackends(f.context,()=>false,{
+    ...f.dependencies,canRecover:()=>true,
+    async prepareConnection(){await Promise.resolve();local.pending=1;}
+  }),{code:'client_source_backend_busy'});
+  assert.equal(f.calls.length,0);
+});
 test('runtime-discovered connections can recover an unlisted backend identity through normal launch probing',async()=>{
   const f=fixture(),local=new f.Connection();f.connections.push(local);
   await recoverLocalBackends(f.context,()=>false,{connections:[f.Connection],verify:()=>({recorded:false,binarySha256:'unlisted'})});
@@ -88,6 +96,24 @@ test('a pre-entry install stays a startup install after asynchronous readiness a
   const pending=entry.ready();f.resume();const result=await pending;
   assert.equal(result.installed,true);assert.equal(result.activatedSources.length,2);
   assert.equal(f.calls.includes('reconnect'),false);await entry.close();
+});
+test('a startup policy prepared in the background is handed to the verified idle recovery path',async()=>{
+  const f=entryFixture(true,false);
+  let available=false;
+  const prepared={available:false,policyReady:true,reason:'backend_config_pending'};
+  f.dependencies.installBackend=()=>({
+    ready:async()=>available?{available:true,reason:null}:prepared,inspect:()=>prepared,
+    ownsProcess:()=>available,canRecover:()=>true,prepareConnection:async()=>{},close(){}
+  });
+  f.dependencies.recover=async(_context,_owns,options)=>{
+    assert.equal(options.canRecover(),true);
+    assert.equal(typeof options.prepareConnection,'function');
+    available=true;f.calls.push('reconnect');
+  };
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();
+  const result=await entry.ready();
+  assert.deepEqual(result.activatedSources.map(source=>source.id),['desktop-main-http','owned-backend-provider']);
+  assert.deepEqual(f.calls,['reconnect']);await entry.close();
 });
 test('a busy late backend leaves the independent Desktop source available without interrupting the backend',async()=>{
   const f=entryFixture(false,false);

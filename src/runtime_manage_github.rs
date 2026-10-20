@@ -322,6 +322,7 @@ fn github_error(error: crate::github_distribution::GitHubDistributionError) -> R
         "invalid_market_query" => "invalid_params",
         "github_timeout" => "github_timeout",
         "github_network" => "github_network",
+        "github_tls" => "github_tls",
         "github_rate_limited" => "github_rate_limited",
         "github_not_found" => "github_not_found",
         "github_http_error" => "github_http_error",
