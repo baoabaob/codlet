@@ -46,12 +46,16 @@ successful checking therefore does not offer an upgrade to that public version.
 
 - Node 24.21.0: complete Core/Codex suite, **745 passed, 3 skipped**; complete GUI
   suite, **128 passed**. Later targeted recovery checks cover the final policy
-  cache key and idle reconnect behavior.
+  cache key and idle reconnect behavior: **29 passed**, including three repeated
+  cold boots of the packaged source with an owned synthetic client.
 - Rust `cargo test --locked --features test-fixtures`: **816 passed, 8 ignored**.
   The production library also passed all **555 tests**. A production CLI migration
   test was blocked by executable-identity checks against the already-running
   installed rc.7 Core; the isolated suite does not share its control namespace.
 - Frontend typecheck and strict Clippy for all targets with test fixtures passed.
+- Windows MSI structure checks, actual installer Chinese/English self-tests and
+  all **38 distribution payload hashes** passed. The self-tests verified the
+  embedded MSI digest and performed no installation.
 - Actual Native cold-start timing and account-dependent recovery have not been
   remeasured in this candidate. The running user session was retained. The full
   Windows desktop acceptance harness requires a disposable host because fresh
@@ -68,5 +72,15 @@ GUI source: `baoabaob/codlet-plugins@5ea5155928894e33b101ce9c4f9d249139306d7d`.
 Package: `codlet-gui-1.0.0-rc.4.zip`.
 SHA-256: `69f98dd20323b182ac8d1ef5416b70048c52755fb57308ec721d7186d438efa9`.
 
-Windows installer provenance and verification are recorded with the delivery
-package. This candidate has no new macOS package or public release.
+Core source: `baoabaob/codlet@e3460bf0cd654b13012aee3f1d90c76352b4dc0a`.
+
+| Package | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `Codlet-1.0.0-rc.8-windows-x64-setup.exe` | 8,482,304 | `a49470c52930f60e813ec53ee5ea9ffc66f2ad0becce4bc2211cc5c16636d28d` |
+| Internal MSI | 8,400,896 | `e80d222bb19fce630ad3d0c801f3ed2611a582ac90759dcaf5600b66bd3048b6` |
+
+The Core executable SHA-256 is
+`ef0c793d69b0861f4fe938928392c9dd2cf1284659780dbb63872ee3bb0102dd`.
+The installer is unsigned. Packages and verification receipts are under
+`.codlet-artifacts/startup-resilience-20261020/windows/`.
+This candidate has no new macOS package or public release.
