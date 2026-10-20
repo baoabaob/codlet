@@ -1,4 +1,4 @@
-// Fixed signed setup resource: install ordinary GitHub plugins, never embedded packages.
+// Fixed signed setup resource; Core verifies the optional package and owns its lifecycle.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -37,6 +37,9 @@ export function initialize(selected, {
   const catalog = read(path.join(appRoot, 'official-plugins.json'));
   if (catalog.schema !== 1 || catalog.kind !== 'codlet-plugin-download-options' || !Array.isArray(catalog.plugins)) throw Error('Invalid plugin download options');
   const packages = catalog.plugins;
+  if (catalog.bundledCatalog !== undefined && catalog.bundledCatalog !== 'optional-plugins/catalog.json') throw Error('Invalid bundled plugin catalog path');
+  const bundledCatalog = catalog.bundledCatalog && path.join(appRoot, catalog.bundledCatalog);
+  if (bundledCatalog) plain(bundledCatalog);
   if (new Set(packages.map(p => p.id)).size !== packages.length || packages.some(p => !allowed.includes(p.id) ||
       !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(p.repositoryUrl) ||
       !Number.isSafeInteger(p.repositoryId) || p.repositoryId <= 0 || !Number.isSafeInteger(p.ownerId) || p.ownerId <= 0 ||
@@ -71,7 +74,27 @@ export function initialize(selected, {
       if (!state.decided[id] || state.decided[id].result === 'pending') state.decided[id] = { selected: false, result: 'declined' };
       continue;
     }
-    if (listing.plugins.some(p => p.id === id)) {
+    const existing = listing.plugins.some(p => p.id === id);
+    if (bundledCatalog) {
+      let preview;
+      try { preview = invoke(['plugin', 'seed', 'preview', bundledCatalog, id, '--json']); }
+      catch (error) {
+        if (!existing || !/official_seed_source_changed/.test(error.message)) throw error;
+        state.decided[id] = { selected: true, result: 'existing', source: 'custom' }; save(); continue;
+      }
+      if (preview.outcome === 'current') {
+        state.decided[id] = { selected: true, result: 'existing', version: preview.version, source: preview.source }; save(); continue;
+      }
+      if (typeof preview.preview !== 'string' || !Array.isArray(preview.addedPermissions)) throw Error('Invalid bundled plugin preview');
+      const missing = preview.addedPermissions.filter(p => !pkg.permissions.includes(p) && !approvedPermissions.includes(p));
+      if (missing.length && (!interactivePermissions || process.platform !== 'darwin' || !approve(id, missing)))
+        throw Error(`安装 ${id} 需要明确批准新增权限：${missing.join(', ')}。`);
+      const args = ['plugin', 'seed', 'install', bundledCatalog, id, '--preview', preview.preview, '--json'];
+      for (const permission of preview.addedPermissions) args.push('--grant', permission);
+      const result = invoke(args);
+      state.decided[id] = { selected: true, result: 'installed', version: result.version, source: 'official-installer' }; save(); continue;
+    }
+    if (existing) {
       if (!state.decided[id] || state.decided[id].result === 'pending') state.decided[id] = { selected: true, result: 'existing' };
       continue;
     }

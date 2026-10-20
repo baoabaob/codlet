@@ -26,8 +26,7 @@ const fallbackLicense = path.join(fallback, 'LICENSE');
 assert.equal(checked(fallbackNode).sha256, runtime.executableSha256);
 assert.equal(checked(fallbackLicense).sha256, runtime.licenseSha256);
 if (reviewed) {
-  const profiles = JSON.parse(fs.readFileSync(path.join(app, 'Contents/Resources/runtime/client-node-profiles.json')));
-  const profile = profiles.profiles.find(value => value.platform === 'darwin-arm64');
+  const profile = JSON.parse(fs.readFileSync(new URL('./fixtures/native-macos.json', import.meta.url)));
   assert.equal(checked(path.join(reviewed, 'bin/node')).sha256, profile.nodeSha256);
   assert.equal(checked(path.join(reviewed, 'LICENSE')).sha256, profile.licenseSha256);
   assert.notEqual(profile.nodeSha256, runtime.executableSha256, 'the fixture must exercise a client Node distinct from the fallback pin');
@@ -80,8 +79,9 @@ async function scenario(mode) {
     const cache = path.join(state, 'prepared-node');
     fs.mkdirSync(cache);
     const preparedNode = path.join(cache, 'node'), preparedLicense = path.join(cache, 'LICENSE');
-    fs.copyFileSync(fallbackNode, preparedNode); fs.chmodSync(preparedNode, 0o755);
-    fs.copyFileSync(fallbackLicense, preparedLicense); fs.chmodSync(preparedLicense, 0o644);
+    const nativeCandidate = mode === 'managed' && reviewed;
+    fs.copyFileSync(nativeCandidate ? path.join(reviewed, 'bin/node') : fallbackNode, preparedNode); fs.chmodSync(preparedNode, 0o755);
+    fs.copyFileSync(nativeCandidate ? path.join(reviewed, 'LICENSE') : fallbackLicense, preparedLicense); fs.chmodSync(preparedLicense, 0o644);
     fs.copyFileSync(originalCore, identity); fs.chmodSync(identity, 0o755);
     const helperSource = mode === 'managed' && reviewed ? path.join(reviewed, 'bin/node')
       : currentPin.mode === 'managed' ? preparedNode

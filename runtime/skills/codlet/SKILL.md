@@ -11,8 +11,8 @@ description: Explain and operate Codlet desktop extensions. Use for Codlet quest
 
 - 了解 Codlet、快速开始、版本/安全模式/适配层问题：读 [使用说明](references/overview.md)
 - 查找、安装、启停、更新、卸载、权限和故障排查：读 [插件管理与 CLI](references/management.md)，使用其中的真实命令完成用户已经请求的操作
-- 创建或修改插件：读 [创建流程](references/creation.md)，沿用用户已有选择，只问缺少的关键信息；确认后按需读 [开发契约](references/plugin-api.md)
-- 只有选择使用官方组件和样式时，才读 [官方 UI 参考](references/official-ui.md) 和它链接的详细资料
+- 创建或修改插件：读 [创建流程](references/creation.md)，根据功能选取合理默认值，按需读 [开发契约](references/plugin-api.md)
+- 需要与客户端一致的控件时，读 [官方 UI 参考](references/official-ui.md) 和它链接的详细资料
 
 不必一次加载所有开发文档。询问用法或更新现有插件时，不要启动创建插件的需求问卷。
 
@@ -24,5 +24,6 @@ description: Explain and operate Codlet desktop extensions. Use for Codlet quest
 - 执行后读取结果、必要时复查列表或运行状态；遇到不确定提交只查询原 operation ID，不能重放安装/更新
 - 输出用户理解得了的结果、必要的下一步和未验证的限制，不倾倒内部字段；回答一般问题时引用本地事实，未知功能不要臆造
 - Core 提供本技能，无须启用 Codlet 管理界面。运行时目录由 Core 管理，不能用来存插件项目或持久数据
+- 源项目写入 `runtime.json.defaultPluginProjectsDirectory` 或用户指定的工作区；`defaultPluginsDirectory` 是安装副本目录。修改源码后重新构建并 `plugin add <source> --update`；`reload` 只重启已安装的副本
 - Core 1 提供统一 `context.codex` SDK，UI/Desktop Adapter 已内置；不要要求用户安装或升级同名旧插件。旧注册可能以 `legacyAdapterRegistrations` 保留，实际能力查看 `coreProviders` 和独立探针
 - 在线更新只以回执中的实际 `activation` 范围为准；模块生效、保留的常驻组件与下次启动生效项分别说明。不要用窗口或 PID 未变代替会话/流式请求连续性的证据

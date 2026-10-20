@@ -1,12 +1,12 @@
 # Distribution
 
-Installers contain Codlet with its internal Codex compatibility modules, license/attribution files and SDK types. Windows setup includes an optional matching GUI package. Node is prepared automatically in Codlet's private runtime cache: Core can reuse an exactly verified Node executable from a supported official client, or download and verify the pinned fallback. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
+Installers contain Codlet with its internal Codex compatibility modules, license/attribution files and SDK types. Windows setup and macOS DMG can include an optional matching GUI package. Node is prepared automatically in Codlet's private runtime cache: Core verifies the official client identity, checks Node's version, platform, APIs and Host flags, then copies and hashes that runtime; otherwise it downloads the pinned fallback. Client build numbers do not gate Node reuse. A system Node installation is not required. Install the official Codex client separately; its application, accounts and conversation databases are not redistributed.
 
 Reusing the official client means copying its verified executable and license into Codlet's own data directory. The original client can then update independently. This reduces installer and repeat-download size, not Node's memory use or the space occupied by the prepared runtime. The cache follows `CODLET_HOME`: installed builds reuse their normal data directory, while each portable installation keeps its own cache. First use needs network access when neither an approved official runtime nor a valid cached copy is available; subsequent use can reuse the verified cache offline.
 
 Fallback downloads first try the unchanged official archive mirrored in Codlet's `node-runtimes` dependency release, then the official Node.js URL. Both sources must match the same archive, executable and license hashes. When changing a Node pin, run the **Publish pinned Node.js runtimes** workflow before publishing installers; it verifies the original archives and never overwrites a same-name asset with different bytes. These dependency archives are kept out of ordinary Codlet release downloads.
 
-Version 1.0.0-rc.3 is the local Windows candidate. The stable updater continues to select published final releases; candidate packages must not replace existing release assets. Public publication remains subject to the [readiness checklist](release-readiness.md).
+Version **1.0.0-rc.7** is the current candidate for Windows x64 and macOS Apple Silicon. The stable updater continues to select published final releases; candidate packages must not replace existing release assets. See [release evidence](releases/1.0.0-rc.7/validation.md).
 
 `Publish-Release.ps1` requires `-WindowsSetup PATH` and validates the native EXE against its embedded MSI build receipt. The setup EXE is the only Windows installation download. Standalone MSI and portable distribution ZIPs remain internal build inputs and are rejected as public installation assets. `-WindowsOnly` prepares a Windows release without advertising unbuilt macOS artifacts; omitting it requires both Windows and macOS build evidence.
 
@@ -43,7 +43,7 @@ broker scopes survive the transition; only previewed new permissions can be gran
 Interrupted replacement rolls back before commit or finishes cleanup after commit. Ordinary
 launches do not reinstall a plugin the user removed. The GUI remains an ordinary plugin.
 
-Core-only portable packages and macOS use `plugin github preview/install` to download the
+Packages built without a GUI bundle use `plugin github preview/install` to download the
 latest stable GUI. They verify the manifest, repository identity and upstream archive digest.
 Read/download failures retry once; unfinished choices remain pending for the next launch.
 
@@ -52,7 +52,9 @@ official channels through the regular GitHub preparation and managed-install tra
 Verified installer packages can move to their pinned channel using the same permission and
 source checks. Successful checks are cached across ordinary launches. The network budget is
 30 seconds; failures retain the installed package and retry after a five-minute cooldown.
-Safe mode skips this maintenance.
+Safe mode skips this maintenance. The `checkPluginUpdatesOnStartup` preference also
+controls this path. Windows shows runtime preparation stages and actual download
+progress while Core is preparing the session.
 
 The shared native process gate runs before MSI validates or changes installation files. It identifies relevant installed clients, shows their identity, and asks the user to save and quit them. Its only actions are check again and cancel. Neither the installer nor the launcher's gate sends a close request. Restart Manager automatic shutdown is disabled. An unattended busy install fails explicitly.
 
@@ -120,7 +122,7 @@ python3 scripts/build-macos-distribution.py \
   --output /absolute/new/output
 ```
 
-The `Build macOS distribution` workflow accepts one full Core commit SHA. It checks out only Core, verifies the ARM64 runner, builds Core/Swift, tests Core-only initialization in an isolated Codlet home, mounts the DMG and uploads artifacts with Core provenance. Building Core does not check out or build the plugin repository. Pass `--verify-online-plugins` for additional real GitHub installation acceptance; this requires public API quota and is recorded separately as `pluginDownloadsVerified`. Plugin service availability does not gate a Core-only build.
+The `Build macOS distribution` workflow accepts a full Core commit SHA and an optional `gui_commit` from `codlet-plugins`. With the GUI selected it builds that independent revision and includes a hash-checked bundle; Core-only builds need no plugin checkout. The native ARM64 runner checks Swift, Rust, the current reviewed Native Node, signed update/rollback, mounted DMG initialization and provenance. For local bundled builds pass `--gui-bundle-directory` and `--gui-source-commit`. Pass `--verify-online-plugins` only for additional live GitHub installation acceptance; this requires public API quota and is recorded as `pluginDownloadsVerified`.
 
 Current Mac signing is ad-hoc integrity signing. Developer ID signing, notarization, and real Mac desktop acceptance are separate release gates. A successful mount/build alone does not satisfy them.
 

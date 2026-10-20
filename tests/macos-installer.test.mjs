@@ -1,18 +1,30 @@
-import test from 'node:test';
+import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {initialize} from '../scripts/macos/initialize.mjs';
 const root=path.resolve(import.meta.dirname,'..');
+const fixtures=[];
+afterEach(()=>{
+  const parent=path.resolve(root,'.codlet-artifacts/online-bootstrap/mac-fixtures');
+  for(const home of fixtures.splice(0)){
+    assert.equal(path.dirname(path.resolve(home)),parent);
+    assert.ok(!fs.lstatSync(home).isSymbolicLink());
+    fs.rmSync(home,{recursive:true});
+  }
+});
 function fixture(hooks={}) {
   const parent=path.join(root,'.codlet-artifacts/online-bootstrap/mac-fixtures');fs.mkdirSync(parent,{recursive:true});
   const home=fs.mkdtempSync(path.join(parent,'用户 case-')),appRoot=path.join(home,'app');fs.mkdirSync(appRoot);
+  fixtures.push(home);
   const catalog=JSON.parse(fs.readFileSync(path.join(root,'scripts/distribution/official-plugins.json')));
+  if(hooks.seed)catalog.bundledCatalog='optional-plugins/catalog.json';
   fs.writeFileSync(path.join(appRoot,'official-plugins.json'),JSON.stringify(catalog));
   const calls=[],registered=[];
   const invoke=args=>{
     calls.push(args);
     if(args[1]==='list')return {plugins:registered};
+    if(args[1]==='seed')return hooks.seed(args,registered);
     if(args[2]==='install'){
       hooks.install?.(args,registered);
       registered.push({id:path.basename(args[3]),source:'github',enabled:args.includes('--enable')});return {outcome:'applied'};
@@ -83,4 +95,34 @@ test('old persisted adapter download decisions remain on disk without becoming d
  f.run(['codex.ui.adapter','codex.desktop.adapter']);assert.equal(f.calls.length,0);
  assert.deepEqual(f.state().decided['codex.ui.adapter'],legacy.decided['codex.ui.adapter']);
  assert.deepEqual(f.state().decided['codex.desktop.adapter'],legacy.decided['codex.desktop.adapter']);
+});
+test('bundled GUI uses Core preview and transaction without a release download',()=>{
+ const f=fixture({seed:(args,registered)=>{
+  if(args[2]==='preview')return {preview:'reviewed-token',addedPermissions:['ui.dom','runtime.manage']};
+  assert.deepEqual(args.slice(0,3),['plugin','seed','install']);
+  assert.equal(args[args.indexOf('--preview')+1],'reviewed-token');
+  assert.ok(args.includes('runtime.manage'));
+  registered.push({id:'codlet-gui',enabled:true});return {version:'1.0.0-rc.3'};
+ }});
+ f.run(['codlet-gui']);assert.equal(f.registered[0].enabled,true);
+ assert.equal(f.state().decided['codlet-gui'].source,'official-installer');
+ assert.ok(!f.calls.some(args=>args[1]==='github'));
+});
+test('bundled GUI respects a current newer version and a custom disabled installation',()=>{
+ for(const custom of [false,true]){
+  const f=fixture({seed:args=>{assert.equal(args[2],'preview');if(custom)throw Error('official_seed_source_changed');return {outcome:'current',version:'9.0.0',source:'github'};}});
+  f.registered.push({id:'codlet-gui',enabled:false});f.run(['codlet-gui']);
+  assert.equal(f.registered[0].enabled,false);assert.equal(f.state().decided['codlet-gui'].result,'existing');
+  assert.ok(!f.calls.some(args=>args[2]==='install'));
+ }
+});
+test('bundled GUI checks added permissions and does not retry an uncertain transaction',()=>{
+ let installed=false;
+ const f=fixture({seed:(args,registered)=>{
+  if(args[2]==='preview')return installed?{outcome:'current',version:'1.0.0'}:{preview:'token',addedPermissions:['core.events']};
+  installed=true;registered.push({id:'codlet-gui'});throw Error('result lost');
+ }});
+ assert.throws(()=>f.run(['codlet-gui']),/明确批准/);
+ assert.throws(()=>f.run(['codlet-gui'],{approvedPermissions:['core.events']}),/result lost/);
+ f.run(['codlet-gui']);assert.equal(f.calls.filter(args=>args[2]==='install').length,1);
 });

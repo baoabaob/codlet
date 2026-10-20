@@ -116,7 +116,54 @@ def stage_legacy_bridge(app, node_directory, destination):
     return destination
 
 
-def stage_payload(executable, node_directory, output, core_commit):
+def stage_gui(bundle, resources, source_commit):
+    """Copy only the reviewed GUI inventory; Core owns install/update decisions."""
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit or ""):
+        raise ValueError("Bundled GUI requires a complete source commit")
+    plain(bundle / "catalog.json")
+    catalog = json.loads((bundle / "catalog.json").read_text(encoding="utf-8"))
+    if catalog.get("schema") != 1 or catalog.get("kind") != "codlet-official-plugin-bundle" or len(catalog.get("packages", [])) != 1:
+        raise ValueError("Expected one GUI package")
+    pkg = catalog["packages"][0]
+    options_file = resources / "official-plugins.json"
+    options = json.loads(options_file.read_text(encoding="utf-8"))
+    official = next(p for p in options["plugins"] if p["id"] == "codlet-gui")
+    channel = pkg.get("updateSource", {})
+    if pkg.get("id") != "codlet-gui" or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", pkg.get("version", "")) or any(channel.get(key) != official[key] for key in ("repositoryUrl", "repositoryId", "ownerId")):
+        raise ValueError("GUI identity does not match the official channel")
+    if sorted(pkg.get("permissions", [])) != sorted(official["permissions"]):
+        raise ValueError("Unexpected GUI permissions")
+    files = pkg.get("files", [])
+    if not 1 <= len(files) <= 512:
+        raise ValueError("Invalid GUI package bounds")
+    names, total = set(), 0
+    package = bundle / "packages/codlet-gui"
+    for file in files:
+        name, size = file.get("path", ""), file.get("bytes")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", name) or any(p in (".", "..") for p in name.split("/")) or name.lower() in names or type(size) is not int or not 0 <= size <= 16 * 1024 * 1024:
+            raise ValueError("Invalid GUI file record")
+        names.add(name.lower())
+        source = package / name
+        plain(source)
+        if source.stat().st_size != size or digest(source) != file.get("sha256"):
+            raise ValueError(f"GUI file mismatch: {name}")
+        total += size
+    if total > 64 * 1024 * 1024 or "codlet.json" not in names:
+        raise ValueError("Invalid GUI package bounds")
+    manifest = json.loads((package / "codlet.json").read_text(encoding="utf-8"))
+    if any(manifest.get(key) != pkg[key] for key in ("id", "version", "permissions")) or "host" in manifest or manifest.get("renderer", {}).get("world") != "isolated":
+        raise ValueError("GUI manifest does not match its catalog")
+    for file in files:
+        target = resources / "optional-plugins/packages/codlet-gui" / file["path"]
+        copy(package / file["path"], target)
+        target.chmod(0o644)
+    (resources / "optional-plugins/catalog.json").write_text(json.dumps({"schema": 1, "kind": "codlet-official-plugin-bundle", "sourceCommit": source_commit, "packages": [pkg]}, indent=2) + "\n", encoding="utf-8")
+    options["bundledCatalog"] = "optional-plugins/catalog.json"
+    options_file.write_text(json.dumps(options, indent=2) + "\n", encoding="utf-8")
+    return {"version": pkg["version"], "sourceCommit": source_commit}
+
+
+def stage_payload(executable, node_directory, output, core_commit, gui_bundle=None, gui_commit=None):
     """Validate and assemble only declared payloads; also used by portable tests."""
     for value in (executable, node_directory, output):
         plain(value)
@@ -177,13 +224,19 @@ def stage_payload(executable, node_directory, output, core_commit):
     }
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
     (app / "Contents/MacOS").mkdir()
-    return app, version, {
+    manifest = {
         "schema": 1, "kind": "codlet-macos-distribution", "version": version,
         "platform": "darwin-arm64", "sourceCommit": core_commit,
         "pluginDelivery": "github-latest", "appleDeveloperSigned": False,
         "notarized": False, "signature": "ad-hoc app seal; managed Node verified outside the bundle",
         "license": license_expression, "licenseFiles": [f"Contents/Resources/licenses/{name}" for name in [*license_names, "NOTICE", "THIRD_PARTY_UI_LICENSES.txt", "THIRD_PARTY_RUST_LICENSES.txt"]],
     }
+    if gui_bundle is not None:
+        manifest["gui"] = stage_gui(gui_bundle, resources, gui_commit)
+        manifest["pluginDelivery"] = "installer-bundle"
+    elif gui_commit:
+        raise ValueError("GUI source commit requires a bundle directory")
+    return app, version, manifest
 
 
 def build(args):
@@ -197,7 +250,8 @@ def build(args):
     with tempfile.TemporaryDirectory(prefix=".macos-package-", dir=output.parent) as temporary:
         temporary = Path(temporary)
         volume = temporary / "volume"
-        app, version, manifest = stage_payload(Path(args.executable).absolute(), Path(args.node_directory).absolute(), volume, args.source_commit)
+        app, version, manifest = stage_payload(Path(args.executable).absolute(), Path(args.node_directory).absolute(), volume, args.source_commit,
+                                              Path(args.gui_bundle_directory).absolute() if args.gui_bundle_directory else None, args.gui_source_commit)
         run("xcrun", "swiftc", "-swift-version", "5", "-O", "-target", "arm64-apple-macos13.0", "-framework", "AppKit", ROOT / "scripts/macos/Launcher.swift", "-o", app / "Contents/MacOS/Codlet")
         icons = temporary / "Codlet.iconset"
         icons.mkdir()
@@ -216,9 +270,8 @@ def build(args):
         run(fallback_node, "--version")
         reviewed_client_node = Path(args.reviewed_client_node_directory).absolute() if args.reviewed_client_node_directory else None
         if reviewed_client_node is not None:
-            profiles = json.loads((ROOT / "runtime/client-node-profiles.json").read_text(encoding="utf-8"))
-            candidates = [entry for entry in profiles["profiles"] if entry["platform"] == "darwin-arm64"]
-            if len(candidates) != 1 or digest(reviewed_client_node / "bin/node") != candidates[0]["nodeSha256"] or digest(reviewed_client_node / "LICENSE") != candidates[0]["licenseSha256"]:
+            fixture = json.loads((ROOT / "tests/fixtures/native-macos.json").read_text(encoding="utf-8"))
+            if digest(reviewed_client_node / "bin/node") != fixture["nodeSha256"] or digest(reviewed_client_node / "LICENSE") != fixture["licenseSha256"]:
                 raise ValueError("Native-reviewed client Node copy differs from the fixed profile")
             run("codesign", "--verify", "--strict", reviewed_client_node / "bin/node")
         update_zip = temporary / f"Codlet-{version}-darwin-arm64-update.zip"
@@ -231,6 +284,7 @@ def build(args):
         update_environment = {**os.environ, "CODLET_MAC_UPDATE_APP": str(app), "CODLET_MAC_UPDATE_ZIP": str(update_zip),
                               "CODLET_MAC_LEGACY_APP": str(bridge_app), "CODLET_MAC_LEGACY_ZIP": str(bridge_zip),
                               "CODLET_HOME": str(temporary / "runtime-acceptance-home")}
+        run("node", ROOT / "scripts/check-dev-storage.mjs")
         subprocess.run(["cargo", "test", "--locked", "--target", "aarch64-apple-darwin", "--lib", "macos_signed_bundle_update_archive", "--", "--nocapture"],
                        cwd=ROOT, env=update_environment, check=True, timeout=900)
         native = [fallback_node, ROOT / "tests/runtime_update_macos.native.mjs", app, version, bridge_app, Path(args.node_directory).absolute()]
@@ -241,7 +295,7 @@ def build(args):
         (volume / "开始使用.txt").write_text(
             f"Codlet {version} · macOS Apple Silicon\n\n"
             "1. 将 Codlet 拖入 Applications，再从应用程序打开。\n"
-            "2. 首次打开可选择下载 Codlet GUI 及创建桌面快捷入口。界面与桌面 SDK 已包含在 Core 中。\n"
+            "2. 首次打开可选择安装 Codlet GUI 及创建桌面快捷入口。界面与桌面 SDK 已包含在 Core 中。\n"
             "3. 如果 Codex 正在运行，请完成并保存任务后自行退出，再点击“重新检查”继续。\n\n"
             "本包没有 Apple Developer ID 签名或公证。Gatekeeper 可能阻止首次打开。\n"
             "确认下载来源和 SHA-256 后，可使用 macOS 系统设置中的隐私与安全性页\n"
@@ -267,11 +321,13 @@ def build(args):
             # Validate the shipped initializer with the real native Core using
             # disposable Codlet data. This does not launch the official client.
             environment = {**os.environ, "CODLET_HOME": str(temporary / "runtime-acceptance-home")}
-            selected = ALLOWED if args.verify_online_plugins else []
+            selected = ALLOWED if args.gui_bundle_directory or args.verify_online_plugins else []
             subprocess.run([str(installed / "Contents/Resources/codlet"), "__codlet_initialize_plugins", *selected], env=environment, check=True, timeout=180)
             listing = subprocess.run([str(installed / "Contents/Resources/codlet"), "plugin", "list", "--json"], env=environment, check=True, timeout=30, capture_output=True, text=True, encoding="utf-8")
             if {entry["id"] for entry in json.loads(listing.stdout)["plugins"]} != set(selected):
                 raise ValueError("Mounted package failed real Core plugin initialization")
+            if selected and not all(entry["enabled"] for entry in json.loads(listing.stdout)["plugins"]):
+                raise ValueError("Fresh selected GUI must be enabled")
             manifest["nativePackagingChecks"] = ["arm64-host", "launcher-smoke", "codesign-ad-hoc-integrity", "signed-update-zip-stage", "native-app-update-swap-rollback", "dmg-verify", "mounted-launcher-smoke", "mounted-real-core-initialization"]
             manifest["pluginDownloadsVerified"] = args.verify_online_plugins
             if reviewed_client_node is not None:
@@ -296,4 +352,6 @@ if __name__ == "__main__":
     for option in ("executable", "node-directory", "output", "source-commit"):
         parser.add_argument("--" + option, required=True)
     parser.add_argument("--reviewed-client-node-directory")
+    parser.add_argument("--gui-bundle-directory")
+    parser.add_argument("--gui-source-commit")
     build(parser.parse_args())

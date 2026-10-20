@@ -1,6 +1,6 @@
 # Known issues and current limits
 
-This page records current behavior for **1.0.0-rc.2**. Candidate evidence and
+This page records current behavior for **1.0.0-rc.7**. Candidate evidence and
 remaining desktop acceptance are listed in [release readiness](release-readiness.md).
 
 ## Client capability discovery
@@ -11,9 +11,9 @@ independent Desktop provider and dependent plugins. rc.2 adds protocol/configura
 probes, structural source discovery, entry-frame capture and per-capability recovery.
 See the [compatibility contract](spec/client-compatibility.md).
 
-The bootstrap correction changes resident code and takes effect after a new start.
-The complete production-desktop restart remains a separate acceptance step from
-the real-backend and inspector tests in the [candidate record](releases/1.0.0-rc.2/validation.md).
+Bootstrap corrections change resident code and take effect after a new start.
+The [current candidate record](releases/1.0.0-rc.7/validation.md) distinguishes
+fresh checks from earlier desktop evidence.
 
 ## Unified Core and compatible online updates
 
@@ -120,9 +120,9 @@ clean-device installer/upgrade/uninstall and signed-client functional acceptance
 The native Windows harness requires a disposable VM/host: a separate profile
 does not isolate Windows sandbox accounts or firewall changes.
 
-Windows ARM64 and macOS desktop/installer acceptance are deferred by the
-maintainer for this preparation round. Native builds and controlled transport
-tests are narrower evidence.
+Windows ARM64 has no device acceptance. macOS has native build, DMG mount,
+initializer and controlled update checks; manual desktop/account/IME acceptance
+remains separate from those tests.
 Linux remains outside the current implementation scope.
 See [compatibility](compatibility.md).
 
@@ -132,7 +132,7 @@ The current Windows builder emits unsigned installers; the Mac builder provides
 ad-hoc bundle integrity only. A stable version label does not change these facts.
 
 Old Core Preview releases have been removed. Existing installed Windows users
-must use the new setup EXE when 0.2.0 is published. New Core migrates only its
+must use the new setup EXE to install the current candidate. New Core migrates only its
 known built-in Preview channel files to the stable managed-runtime channel;
 custom update sources retain their configuration.
 

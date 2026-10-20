@@ -63,7 +63,9 @@ jobs:
           workspaces: core -> target
       - name: Build native traffic acceptance engine
         working-directory: core
-        run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
+        run: |
+          node scripts/check-dev-storage.mjs
+          cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
       - name: Stage the source-reviewed official client
         run: |
           curl --fail --location --retry 2 --output "$RUNNER_TEMP/ChatGPT-26.917.62051.zip" \

@@ -1,4 +1,15 @@
 fn main() {
+    for path in [
+        "bundled/runtime/ui.js",
+        "runtime/core-modules/client-source.cjs",
+        "runtime/sdk-source-parser.cjs",
+    ] {
+        println!("cargo:rerun-if-changed={path}");
+        assert!(
+            std::path::Path::new(path).is_file(),
+            "Missing generated runtime {path}. Run npm ci --prefix frontend && node frontend/build.mjs before Cargo."
+        );
+    }
     println!("cargo:rerun-if-changed=native/windows-restart-bridge.c");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

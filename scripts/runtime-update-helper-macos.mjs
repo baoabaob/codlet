@@ -112,7 +112,15 @@ function verifyPrepared(plan) {
   const profileFile = path.join(plan.stagedRoot, 'Codlet.app/Contents/Resources/runtime/client-node-profiles.json');
   const profiles = JSON.parse(read(profileFile, 65536));
   const client = profiles.schema === 1 && Array.isArray(profiles.profiles) && profiles.profiles.some(p => p.enabled === true && p.platform === 'darwin-arm64' && p.nodeSha256 === plan.preparedNode.sha256 && p.licenseSha256 === plan.preparedLicense.sha256);
-  if (!fallback && !client) throw fail('plan_invalid', 'Prepared Node does not match the signed candidate fallback or enabled client profile.');
+  // Core may now admit a signed Native Node by its runtime contract rather
+  // than a client-build pin. Reuse only the exact checked runtime executing
+  // this helper, and only when the signed candidate keeps the same fallback
+  // contract. Both snapshots are hash-bound to the Core-owned install plan;
+  // a different candidate contract still requires its own pin/profile.
+  const currentNative = runtimeMode(plan.currentRuntime) === 'managed'
+    && ['version', 'executableSha256', 'licenseSha256'].every(key => plan.currentRuntime[key] === plan.newRuntime[key])
+    && plan.preparedNode.sha256 === plan.helperNode.sha256;
+  if (!fallback && !client && !currentNative) throw fail('plan_invalid', 'Prepared Node does not match the signed candidate contract or the verified current runtime.');
 }
 async function codesign(root) {
   await exec('/usr/bin/codesign', ['--verify', '--strict', path.join(root, 'Codlet.app')], { timeout: 30000, maxBuffer: 1024 * 1024 });

@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { buildClientBridge } from './build-client-bridge.mjs';
 import { buildCodex } from './build-codex.mjs';
+// Host bundles consume this pinned parser. Generate it in the same build so a
+// clean checkout never depends on a previously committed compiler output.
+await import('../scripts/build-sdk-source-parser.mjs');
 const base = dirname(fileURLToPath(import.meta.url));
 const root = resolve(base, '..'), out = resolve(base, '.build');
 const officialRequire = createRequire(resolve(base, 'node_modules/@openai/apps-sdk-ui/package.json'));
@@ -142,6 +145,6 @@ artifacts.set(resolve(root,'docs/THIRD_PARTY_UI_LICENSES.txt'),licenseText);
 const runtimePath=resolve(root,'bundled/runtime/ui.js');
 artifacts.set(runtimePath,artifacts.get(runtimePath)+'\n/*\n'+licenseText.replaceAll('*/','* /')+'*/\n');
 // Compile and validate every output before replacing any checked-in bundle.
-for(const [path,contents] of artifacts)await writeFile(path,contents);
+for(const [path,contents] of artifacts){await mkdir(dirname(path),{recursive:true});await writeFile(path,contents);}
 await buildCodex(root);
 console.log('Built Core UI SDK, Codex implementations, Host traffic runtime and examples; consumers build independently.');

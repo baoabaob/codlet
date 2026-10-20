@@ -7,6 +7,10 @@ on:
         description: Full 40-character Core commit SHA to build
         required: true
         type: string
+      gui_commit:
+        description: Optional full codlet-plugins commit for the bundled GUI
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -36,6 +40,20 @@ jobs:
           test "$(uname -m)" = arm64
           [[ "$CORE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CORE_COMMIT"
+      - uses: actions/checkout@v4
+        if: ${{ inputs.gui_commit != '' }}
+        with:
+          repository: baoabaob/codlet-plugins
+          path: plugins
+          ref: ${{ inputs.gui_commit }}
+          persist-credentials: false
+      - name: Verify and build optional GUI from its own source
+        if: ${{ inputs.gui_commit != '' }}
+        env:
+          GUI_COMMIT: ${{ inputs.gui_commit }}
+        run: |
+          [[ "$GUI_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C ../plugins rev-parse HEAD)" = "$GUI_COMMIT"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -70,26 +88,43 @@ jobs:
           # Standard-library and build-host notices can differ between GNU
           # Windows and Apple toolchains. Ship this build's actual attribution.
           python3 scripts/collect-rust-licenses.py
+      - name: Build optional GUI package
+        if: ${{ inputs.gui_commit != '' }}
+        run: |
+          npm ci --prefix ../plugins/frontend
+          node ../plugins/frontend/build.mjs
+          node ../plugins/scripts/package.mjs --output ../core/.codlet-artifacts/gui-bundle
+      - name: Read the reviewed Native fixture identity
+        id: native
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          fixture = json.loads(Path('tests/fixtures/native-macos.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('version=' + fixture['source']['appVersion'] + '\n')
+              output.write('sha256=' + fixture['archiveSha256'] + '\n')
+          PY
       - name: Cache one reviewed official Apple Silicon client fixture
         uses: actions/cache@v4
         with:
-          path: core/.codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip
-          key: official-mac-client-26.917.62051-ca4a4443f41e9fc5
+          path: core/.codlet-artifacts/official-mac/client.zip
+          key: official-mac-client-${{ steps.native.outputs.sha256 }}
       - name: Download and verify the reviewed official client archive
         run: |
-          archive=.codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip
+          archive=.codlet-artifacts/official-mac/client.zip
           mkdir -p "$(dirname "$archive")"
           if [ ! -f "$archive" ]; then
             curl --fail --location --retry 3 --connect-timeout 15 \
               --output "$archive.part" \
-              https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.917.62051.zip
+              "$(python3 -c 'import json; print(json.load(open("tests/fixtures/native-macos.json"))["archiveUrl"])')"
             mv "$archive.part" "$archive"
           fi
-          echo "ca4a4443f41e9fc5762eeda60254ff57cc8b9ef7b990c31ae58bddfbb9d0b6b3  $archive" | shasum -a 256 -c -
+          echo "${{ steps.native.outputs.sha256 }}  $archive" | shasum -a 256 -c -
       - name: Validate official independent CUA Node without launching its GUI
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 tests/verify_mac_client_node.py \
-            --archive .codlet-artifacts/official-mac/ChatGPT-darwin-arm64-26.917.62051.zip \
+            --archive .codlet-artifacts/official-mac/client.zip \
             --export-runtime .codlet-artifacts/official-mac/validated-cua-node
       - name: Run native Core and packaging contract tests
         run: |
@@ -102,13 +137,19 @@ jobs:
       - name: Assemble app and distribution disk image
         env:
           NODE_VERSION: ${{ steps.runtime.outputs.node_version }}
+          GUI_COMMIT: ${{ inputs.gui_commit }}
         run: |
           codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+          gui_args=()
+          if [ -n "$GUI_COMMIT" ]; then
+            gui_args=(--gui-bundle-directory .codlet-artifacts/gui-bundle --gui-source-commit "$GUI_COMMIT")
+          fi
           python3 scripts/build-macos-distribution.py \
             --executable "$codlet_target_root/aarch64-apple-darwin/release/codlet" \
             --node-directory "$codlet_target_root/aarch64-apple-darwin/release/runtime/node-v$NODE_VERSION-darwin-arm64" \
             --reviewed-client-node-directory .codlet-artifacts/official-mac/validated-cua-node \
             --source-commit "$(git rev-parse HEAD)" \
+            "${gui_args[@]}" \
             --output .codlet-artifacts/distribution-macos/package
       - name: Upload native distribution and provenance
         uses: actions/upload-artifact@v4

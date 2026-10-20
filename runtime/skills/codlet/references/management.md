@@ -64,6 +64,8 @@ plugin github install <preview.path> --trust [--grant <permission> ...] [--enabl
 
 ## 更新
 
+本地开发：修改原源码项目并重新构建，再 `plugin preview <source-directory> --json` 和 `plugin add <source-directory> --update --trust [--grant <permission> ...] [--enable] --json`。沿用已确认的权限与启用状态；`reload` 仅重启安装副本，不读取原源码目录。`--replace` 会清空数据，不用于普通开发迭代。
+
 只将实际 GitHub 来源或已验证的 installer update channel 纳入 Release 更新；从 `plugin permissions` 的真实来源读取仓库，不能猜。旧 Core Adapter 注册不再参与常规启动更新或接管为外部分发。列出 Release 后准备同 ID 候选：
 
 ```text

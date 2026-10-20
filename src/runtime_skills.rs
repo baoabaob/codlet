@@ -290,7 +290,7 @@ impl RuntimeSkills {
         } else {
             ("scripts/codlet-cli.ps1", "powershell")
         };
-        let metadata = json!({"schema":1,"runtimeVersion":env!("CARGO_PKG_VERSION"),"environment":if lab{"test-client"}else{"desktop"},"cliCommands":if lab{vec!["plugin"]}else{vec!["plugin","doctor","status","diagnostics"]},"defaultPluginsDirectory":parent.join("packages"),"registry":registry,"cliExecutable":executable,"cliPrefix":prefix,"cliLocalAppData":if lab{parent.parent()}else{None},"cliScript":skill.join(script),"cliInterpreter":interpreter,"typesDirectory":skill.join("types"),"docsDirectory":skill.join("docs")});
+        let metadata = json!({"schema":1,"runtimeVersion":env!("CARGO_PKG_VERSION"),"environment":if lab{"test-client"}else{"desktop"},"cliCommands":if lab{vec!["plugin"]}else{vec!["plugin","doctor","status","diagnostics"]},"defaultPluginsDirectory":parent.join("packages"),"defaultPluginProjectsDirectory":parent.join("projects"),"registry":registry,"cliExecutable":executable,"cliPrefix":prefix,"cliLocalAppData":if lab{parent.parent()}else{None},"cliScript":skill.join(script),"cliInterpreter":interpreter,"typesDirectory":skill.join("types"),"docsDirectory":skill.join("docs")});
         std::fs::write(
             staging.path().join("runtime.json"),
             serde_json::to_vec_pretty(&metadata).unwrap(),
@@ -568,6 +568,11 @@ mod tests {
             data["defaultPluginsDirectory"],
             json!(root.parent().unwrap().join("packages"))
         );
+        assert_eq!(
+            data["defaultPluginProjectsDirectory"],
+            json!(root.parent().unwrap().join("projects"))
+        );
+        assert!(!root.parent().unwrap().join("projects").exists());
         assert!(root.join("codlet/types/renderer.d.ts").is_file());
         assert_eq!(
             skill.descriptor()["path"],

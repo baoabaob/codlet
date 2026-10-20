@@ -10,7 +10,7 @@ the optional GUI lives in [codlet-plugins](https://github.com/baoabaob/codlet-pl
 | Component | Owns | Does not own |
 | --- | --- | --- |
 | Core | Session transport, Codex compatibility modules, semantic SDK, registry, permissions, capability graph, operation receipts and bounded resources | Business layouts or arbitrary plugin state |
-| Host | A pinned, supervised Node process per ordinary plugin generation; background/OS work | Automatic rollback of arbitrary OS/network/page side effects |
+| Host | A verified, supervised Node process per ordinary plugin generation; background/OS work | Automatic rollback of arbitrary OS/network/page side effects |
 | Renderer | Plugin code in an isolated or explicitly permitted main world, SDK and target-scoped lifecycle | A separate OS process or a universal security sandbox |
 | Internal Codex modules | Reviewed client-build mappings, navigation, native objects and backend semantics behind `context.codex` | Separate user installation or consumer inheritance of internal grants |
 | GUI | An optional consumer of public management APIs | A privileged built-in management path unavailable to other plugins |
@@ -24,6 +24,8 @@ in Core's replaceable source module. See the [traffic contract](spec/traffic.md)
 The Core-provided `/codlet` skill owns a reviewed skill-registration bridge and its
 generated resources. It is present without the GUI, never submits a model task
 by itself, and does not modify permanent personal/project skill directories.
+Its metadata separates authoring projects from managed installation copies. CLI,
+GUI and AI-assisted workflows all use Core's existing package transactions.
 
 ## One plugin system
 
@@ -123,9 +125,20 @@ page injection capabilities are not removed to make a memory measurement pass.
 - `examples/`: runnable examples and deliberately synthetic protocol fixtures.
 - `tests/`, `scripts/`: regression fixtures, development and distribution tooling.
 
-Generated bundles remain tracked because a normal Rust build embeds them. Local
-profiles, binary packages, heaps, account data and temporary experiments are
-ignored and never form a clean build prerequisite. Git keeps earlier designs;
+Generated bundles are rebuilt from source and the npm lockfile before Rust embeds
+them. One frontend build generates the parser, SDK, client bridge and update
+modules; Git tracks their sources and attribution rather than duplicate outputs.
+Local profiles, binary packages, heaps, account data and temporary experiments
+are ignored and never form a clean build prerequisite. Git keeps earlier designs;
 current documentation is organized by contract. Dated research is indexed in
 [history](history/README.md), release evidence in [releases](releases/README.md),
 and repository responsibilities in [repository-layout](repository-layout.md).
+
+The prelaunch bridge remains eager: later plugins need access to modules loaded
+before the application entrypoint. Skipping Node/bridge setup based only on the
+currently enabled plugin list would break that contract. Ordinary UI plugins use
+Renderer and Core services without an extra per-plugin Host process.
+
+Both installers can carry an optional GUI bundle from its separately recorded
+source commit. They call the same Core seed preview/install transaction, which
+preserves newer/custom installs, disabled preferences, revoked grants and data.

@@ -5,3 +5,15 @@
 Thumbs.db
 __pycache__/
 *.pyc
+
+# Rebuilt from pinned frontend dependencies before Rust compilation.
+/bundled/runtime/ui.js
+/bundled/runtime/page.js
+/codex/bundled/codex-ui-adapter/dist/renderer.js
+/codex/bundled/codex-desktop-adapter/renderer.js
+/codex/bundled/codex-desktop-adapter/host.cjs
+/runtime/core-modules/
+/runtime/*-bundle.cjs
+/runtime/sdk-source-parser.cjs
+/examples/ui-controls/renderer.js
+/examples/desktop-m3-m4/renderer.js

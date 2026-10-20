@@ -12,8 +12,10 @@ export MACOSX_DEPLOYMENT_TARGET=13.0
 TMPDIR=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
 export TMPDIR
 codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+node scripts/check-dev-storage.mjs --target-dir "$codlet_target_root"
 python3 scripts/install-js-runtime.py --platform darwin-arm64 --destination "$codlet_target_root/aarch64-apple-darwin/debug"
 python3 scripts/install-js-runtime.py --platform darwin-arm64 --destination "$codlet_target_root/aarch64-apple-darwin/debug/deps"
 cargo clippy --locked --target aarch64-apple-darwin --all-targets --all-features -- -D warnings
+node scripts/check-dev-storage.mjs --target-dir "$codlet_target_root"
 cargo test --locked --target aarch64-apple-darwin --all-targets --all-features -- --test-threads=2
 echo 'Native Core tests passed; follow the macOS guide for actual client and visual acceptance'

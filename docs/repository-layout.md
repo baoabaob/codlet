@@ -10,7 +10,7 @@ Core 1 owns the Codex integration. The UI and Desktop Adapter repositories are n
 | [codlet-gui](https://github.com/baoabaob/codlet-gui) | Generated GUI source snapshot and release metadata | GUI distribution destination; edit its source in `codlet-plugins` |
 | [codlet-ui-adapter](https://github.com/baoabaob/codlet-ui-adapter), [codlet-desktop-adapter](https://github.com/baoabaob/codlet-desktop-adapter) | Historical source snapshots, tags and Release assets for older Core installations | Retired from the v1 build and publisher plan; retain downloads and history |
 
-The two Adapter distribution repositories can become read-only archives after the replacement Core release is available. This local reorganization does not change their remote archive state, visibility, tags or Releases. The **1.0.0-rc.1** candidate is still unpublished. Existing installations may still refer to old download URLs, so removing the repositories or assets is not part of retirement.
+The two Adapter distribution repositories can become read-only archives after the replacement Core release is available. Existing installations may still refer to old download URLs; retain those assets. Current package and publication status is recorded in [release readiness](release-readiness.md).
 
 ## Directory map
 
@@ -20,7 +20,7 @@ Within Core:
 - `runtime/` and `frontend/src/`: Host runtime, Core component entrypoints and public renderer SDK.
 - `codex/`: the single maintained Codex UI/Desktop implementation, client profiles, Native drivers and contract tests.
 - `types/`: public TypeScript declarations. There is no second public declaration tree under `codex/`.
-- `bundled/` and `codex/bundled/`: generated inputs embedded by Rust. Historical Adapter IDs and folder names here are compatibility identities, not separately installed plugin products.
+- `bundled/runtime/`: hand-maintained renderer runtime sources plus ignored UI/page bundles. `codex/bundled/` keeps compatibility manifests; renderer/Host bundles are generated and ignored. `runtime/core-modules/` is generated from these same sources for updates. Run `node frontend/build.mjs` before Rust; do not maintain a second copy of generated code.
 - `tests/` and `scripts/`: Core regression and delivery tools; `codex/scripts/` contains the migrated Native diagnostics.
 - `docs/spec/`: current contracts; `docs/releases/<version>/`: immutable release identity and validation records; `docs/history/`: dated research and retired Adapter records.
 

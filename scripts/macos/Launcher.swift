@@ -88,7 +88,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
             label.font = .systemFont(ofSize: size); label.frame = NSRect(x: 28, y: y, width: 504, height: height); view.addSubview(label); return label
         }
         _ = label("按你的方式设置 Codlet", 373, 30, 24)
-        _ = label(firstSetup ? "从 GitHub 下载所选插件的最新发布版。全部取消可仅使用 Core。\n安装后也可以通过菜单栏重新选择。" : "勾选希望下载的插件，已有插件与启停偏好保持不变。\n更新已有插件请使用 GUI 或 CLI；取消勾选不会删除插件。", 317, 48, 14)
+        _ = label(firstSetup ? "安装所选插件。全部取消可仅使用 Core。\n安装后也可以通过菜单栏重新选择。" : "勾选希望安装的插件，已有插件与启停偏好保持不变。\n更新已有插件请使用 GUI 或 CLI；取消勾选不会删除插件。", 317, 48, 14)
         func checkbox(_ text: String, _ y: CGFloat, _ checked: Bool) -> NSButton {
             let box = NSButton(checkboxWithTitle: text, target: self, action: #selector(syncDependencies))
             box.frame = NSRect(x: 28, y: y, width: 504, height: 30); box.state = checked ? .on : .off; view.addSubview(box); return box
@@ -137,7 +137,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
                 try? log.close()
                 DispatchQueue.main.async { self?.setupFinished(process.terminationStatus) }
             }
-            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在从 GitHub 下载并校验所选插件，请稍候…"
+            setup = process; startButton.isEnabled = false; setupLabel.stringValue = "正在准备运行环境并安装所选插件，请稍候…"
             try process.run()
         } catch { setup = nil; startButton.isEnabled = true; _ = alert("无法初始化 Codlet", error.localizedDescription) }
     }

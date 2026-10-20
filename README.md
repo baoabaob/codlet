@@ -1,10 +1,10 @@
 # Codlet
 
-Codlet is an extension runtime for Codex Desktop. It launches a managed desktop session and loads trusted JavaScript plugins with shared lifecycle, permissions, RPC, and management APIs.
+Codlet is a lightweight plugin loader for Codex Desktop. Describe a customization to AI, build it as a plugin, and share it. Codlet launches the installed official client without rewriting its application files, and gives trusted JavaScript plugins lifecycle, permissions, RPC, and management APIs.
 
 Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. Core includes the Codex UI and Desktop compatibility modules and exposes them through `context.codex`. The management GUI remains an optional plugin maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). Separate Adapter installation is no longer required.
 
-The current candidate is **1.0.0-rc.2**. It uses runtime capability checks for client integration and fixes entry-module observation during startup. The [candidate record](docs/releases/1.0.0-rc.2/validation.md) identifies checks and remaining acceptance. The [implementation contract](docs/releases/1.0.0-rc.1/implementation.md) describes the unified SDK, permissions and migration; [online updates](docs/core-online-update.md) distinguishes active modules from resident components that take effect on the next launch. Windows x64 is the primary test platform; macOS Apple Silicon has a native build and installer path. See [platform evidence](docs/compatibility.md) and [known limitations](docs/known-issues.md).
+The current candidate is **1.0.0-rc.7**. It includes copied plugin installs, explicit updates, compatible Native Node reuse, and matching optional GUI packages on Windows x64 and macOS Apple Silicon. The [candidate record](docs/releases/1.0.0-rc.7/validation.md) identifies package provenance, checks and remaining acceptance. Core owns client capability probes and adaptation; plugins use the public SDK. See [platform evidence](docs/compatibility.md), [online updates](docs/core-online-update.md) and [known limitations](docs/known-issues.md).
 
 ## Use Codlet
 
@@ -25,6 +25,8 @@ Use the same executable and `CODLET_HOME` as the running Core. The default data 
 
 While Core runs, the `/codlet` skill can explain Codlet, manage plugins through the CLI, or guide plugin creation. It is provided at runtime and does not install itself into user or project skill directories.
 
+For example: “Use /codlet to make a plugin that adds a focus toggle to this client.” The skill chooses a name and source directory, explains the necessary permissions, and implements the requested behavior. Source projects stay separate from installed copies; editing and rebuilding a project is followed by an explicit update. See [creating and iterating on a plugin](docs/plugin-development.md).
+
 ## Write a plugin
 
 A plugin directory contains `codlet.json`, built JavaScript entrypoints, and optional resources. Renderer and Host entrypoints export CommonJS `activate(context)` and `deactivate()` functions. Combined entries share one lifecycle generation.
@@ -40,6 +42,7 @@ Start with the [plugin format](docs/spec/plugin-format.md), [Host contract](docs
 ```sh
 npm ci --prefix frontend
 node frontend/build.mjs
+node scripts/check-dev-storage.mjs
 cargo build --locked --bin codlet
 ```
 

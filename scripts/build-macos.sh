@@ -7,6 +7,8 @@ fi
 codlet_source_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$codlet_source_root"
 export MACOSX_DEPLOYMENT_TARGET=13.0
+codlet_target_root=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+node scripts/check-dev-storage.mjs --target-dir "$codlet_target_root"
 codlet_profile=${1:-debug}
 case "$codlet_profile" in
   debug) cargo build --locked --target aarch64-apple-darwin --bin codlet --no-default-features ;;

@@ -8,6 +8,7 @@ Start with the maintained contracts below. Release evidence and historical resea
 | --- | --- |
 | [Repository ownership](repository-layout.md) | Core, ordinary plugins, generated GUI distribution and retired Adapter repositories |
 | [Architecture](architecture.md) | Core-owned Codex integration and ordinary plugin execution |
+| [Create a plugin](plugin-development.md) | AI-assisted creation, source projects, copied installs, updates and sharing |
 | [Development](development.md) | Reproducible builds, checks and isolated desktop testing |
 | [Distribution](distribution.md) | Windows and macOS packaging and installation |
 | [Release readiness](release-readiness.md) | Current candidate scope and outstanding acceptance |

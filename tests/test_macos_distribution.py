@@ -58,6 +58,49 @@ class PackagingTests(unittest.TestCase):
     def stage(self):
         return builder.stage_payload(self.binary, self.runtime, self.directory / "output", "a" * 40)
 
+    def gui_bundle(self):
+        official = json.loads((self.source / "scripts/distribution/official-plugins.json").read_text())["plugins"][0]
+        manifest = {"schema": 1, "id": "codlet-gui", "version": "1.0.0-rc.3", "renderer": {"entry": "renderer.js", "world": "isolated"}, "permissions": official["permissions"]}
+        package = self.plugins / "packages/codlet-gui"
+        self.write(package / "codlet.json", json.dumps(manifest))
+        self.write(package / "renderer.js", "module.exports={activate(){},deactivate(){}};")
+        files = [{"path": p.name, "bytes": p.stat().st_size, "sha256": self.hash(p)} for p in sorted(package.iterdir())]
+        pkg = {"id": manifest["id"], "version": manifest["version"], "permissions": manifest["permissions"], "updateSource": {key: official[key] for key in ("repositoryUrl", "repositoryId", "ownerId")}, "files": files}
+        catalog = {"schema": 1, "kind": "codlet-official-plugin-bundle", "packages": [pkg]}
+        self.write(self.plugins / "catalog.json", json.dumps(catalog))
+        return catalog
+
+    def test_optional_gui_is_inventory_checked_and_has_its_own_provenance(self):
+        self.gui_bundle()
+        app, _, manifest = builder.stage_payload(self.binary, self.runtime, self.directory / "output", "a" * 40, self.plugins, "b" * 40)
+        self.assertEqual(manifest["pluginDelivery"], "installer-bundle")
+        self.assertEqual(manifest["gui"], {"version": "1.0.0-rc.3", "sourceCommit": "b" * 40})
+        resources = app / "Contents/Resources"
+        self.assertEqual(json.loads((resources / "official-plugins.json").read_text())["bundledCatalog"], "optional-plugins/catalog.json")
+        self.assertTrue((resources / "optional-plugins/packages/codlet-gui/renderer.js").is_file())
+
+    def test_gui_tampering_source_substitution_and_traversal_are_rejected(self):
+        for change in ("bytes", "identity", "path", "duplicate", "permission"):
+            with self.subTest(change=change):
+                catalog = self.gui_bundle()
+                pkg = catalog["packages"][0]
+                if change == "bytes":
+                    self.write(self.plugins / "packages/codlet-gui/renderer.js", "changed")
+                elif change == "identity":
+                    pkg["updateSource"]["ownerId"] += 1
+                elif change == "path":
+                    pkg["files"][0]["path"] = "../outside"
+                elif change == "duplicate":
+                    pkg["files"].append(pkg["files"][0])
+                else:
+                    pkg["permissions"].append("host.raw")
+                self.write(self.plugins / "catalog.json", json.dumps(catalog))
+                resources = self.directory / change
+                self.write(resources / "official-plugins.json", (self.source / "scripts/distribution/official-plugins.json").read_bytes())
+                with self.assertRaises(ValueError):
+                    builder.stage_gui(self.plugins, resources, "b" * 40)
+                self.assertFalse((resources / "optional-plugins").exists())
+
     def test_managed_bundle_has_provenance_licenses_and_no_embedded_node(self):
         app, version, manifest = self.stage()
         self.assertEqual(version, "0.2.0")

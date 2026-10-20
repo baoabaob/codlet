@@ -13,7 +13,6 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-ARCHIVE_SHA256 = "ca4a4443f41e9fc5762eeda60254ff57cc8b9ef7b990c31ae58bddfbb9d0b6b3"
 
 
 def digest(file):
@@ -33,24 +32,16 @@ def main(archive, export_runtime):
     if (platform.system(), platform.machine()) != ("Darwin", "arm64"):
         raise ValueError("This acceptance must execute on native Apple Silicon")
     archive = archive.resolve(strict=True)
-    if digest(archive) != ARCHIVE_SHA256:
+    profile = json.loads((ROOT / "tests/fixtures/native-macos.json").read_text())
+    if digest(archive) != profile["archiveSha256"]:
         raise ValueError("Official Mac fixture ZIP differs from the reviewed build")
-    profiles = json.loads((ROOT / "runtime/client-node-profiles.json").read_text())
-    candidates = [p for p in profiles["profiles"] if p["platform"] == "darwin-arm64"]
-    if len(candidates) != 1:
-        raise ValueError("Expected one reviewed Apple Silicon client Node profile")
-    profile = candidates[0]
     source = profile["source"]
-    if (source["kind"], source["bundleId"], source["appVersion"], source["teamId"], profile["nodeVersion"]) != (
-        "macBundle", "com.openai.codex", "26.917.62051", "2DC432GLL2", "24.21.0"
-    ):
-        raise ValueError("Official Mac client profile changed without a reviewed native fixture")
     with tempfile.TemporaryDirectory(prefix="codlet-reviewed-client-node-") as temporary:
         temporary = Path(temporary)
         run("/usr/bin/ditto", "-x", "-k", archive, temporary)
         app = temporary / "ChatGPT.app"
         info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-        if info["CFBundleIdentifier"] != source["bundleId"] or info["CFBundleShortVersionString"] != source["appVersion"]:
+        if info["CFBundleIdentifier"] != source["bundleId"] or info["CFBundleShortVersionString"] != source["appVersion"] or info["CFBundleVersion"] != source["build"]:
             raise ValueError("Extracted official app identity does not match its reviewed profile")
         node = app / source["nodePath"]
         license_file = app / source["licensePath"]
@@ -59,7 +50,8 @@ def main(archive, export_runtime):
         if digest(node) != profile["nodeSha256"] or digest(license_file) != profile["licenseSha256"]:
             raise ValueError("Official client Node files differ from the reviewed hashes")
         for target in (app, node):
-            run("/usr/bin/codesign", "--verify", "--strict", target)
+            run("/usr/bin/codesign", "--verify", "--strict", "--test-requirement",
+                '=anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2"', target)
         signature = run("/usr/bin/codesign", "-dv", "--verbose=4", node)
         if f"TeamIdentifier={source['teamId']}" not in signature.stderr:
             raise ValueError("CUA Node does not have the reviewed OpenAI signing team")
@@ -68,6 +60,7 @@ def main(archive, export_runtime):
         clean = {key: value for key, value in os.environ.items()
                  if not key.upper().startswith(("NODE_", "OPENSSL_", "DYLD_")) and key.upper() != "ELECTRON_RUN_AS_NODE"}
         print(run(node, ROOT / "tests/mac_client_node.native.mjs", ROOT, env=clean).stdout.strip())
+        run("node", ROOT / "scripts/check-dev-storage.mjs", env=clean)
         print(run("cargo", "build", "--locked", "--features", "test-fixtures", "--bin", "codlet-traffic-fixture", env=clean).stdout.strip())
         print(run(node, "--test", ROOT / "tests/host_bootstrap.test.mjs",
                   ROOT / "tests/host_capability_bootstrap.test.mjs",
@@ -77,6 +70,7 @@ def main(archive, export_runtime):
                   ROOT / "codex/tests/desktop_launch_bundle.test.mjs", env=clean).stdout.strip())
         native = {**clean, "CODLET_TEST_REVIEWED_MAC_APP": str(app),
                   "CODLET_HOME": str(temporary / "resolver-acceptance-home"), "CARGO_INCREMENTAL": "0"}
+        run("node", ROOT / "scripts/check-dev-storage.mjs", env=clean)
         print(run("cargo", "test", "--locked", "--target", "aarch64-apple-darwin", "--lib",
                   "verified_mac_client_node_bundle", "--", "--ignored", "--nocapture",
                   env=native, timeout=900).stdout.strip())

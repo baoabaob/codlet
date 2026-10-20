@@ -5,7 +5,7 @@
 最小的界面插件：
 
 ```json
-{"schema":1,"id":"dev.my-plugin","name":"用户确认的名字","version":"0.1.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"]}
+{"schema":1,"id":"dev.my-plugin","name":"我的插件","version":"0.1.0","renderer":{"entry":"renderer.js","world":"isolated"},"permissions":["ui.dom"]}
 ```
 
 ```js
@@ -47,7 +47,7 @@ module.exports = {
 | cdp.raw | 使用底层浏览器调试接口，作用面很广，优先考虑适配层 |
 | runtime.manage | 管理其他 Codlet 插件及权限，仅管理功能才需要 |
 
-安装流程：`plugin preview <directory> --json`；确认后 `plugin add <directory> --trust --grant <permission> ...`，只有同意启用时加 `--enable`。目录放在 packages 下面不会自动加载，必须通过 Core 注册，不要直接编辑 config.json。源目录编辑后用 `plugin reload <id> --json`，停用用 `plugin disable <id> --json`。不确定的结果通过 `plugin operation <receipt> --json` 查询。
+安装流程：`plugin preview <source-directory> --json`；按已授权范围 `plugin add <source-directory> --trust --grant <permission> ...`，要求启用时加 `--enable`。Core 将插件复制到 packages；源码保留在独立项目目录。修改源码后先构建，再用 `plugin add <source-directory> --update --trust --grant <permission> ... [--enable] --json` 更新安装副本，保留原启停状态和授权策略。`plugin reload <id> --json` 只重启安装副本。停用用 `plugin disable <id> --json`；不确定的结果通过 `plugin operation <receipt> --json` 查询。
 
 客户端能力优先使用 `context.codex`，完整接口见 `types/codex.d.ts` 与 `docs/spec/codex.md`。保留精确 requires 声明，Core 内部如何使用主世界/CDP 不会自动转授给消费者。当前本地回调/Native DOM 句柄需要主世界的功能仍明确声明 `ui.mainWorld`，不要仅删权限字段就声称隔离。
 

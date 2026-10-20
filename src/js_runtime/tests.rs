@@ -635,10 +635,15 @@ fn verified_mac_client_node_bundle() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap().join("cache");
     let runtime = provision::official_mac_fixture(&app, &root).unwrap();
-    assert_eq!(runtime.verified_node_version(), "24.21.0");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/native-macos.json")).unwrap();
+    assert_eq!(
+        runtime.verified_node_version(),
+        fixture["nodeVersion"].as_str().unwrap()
+    );
     assert_eq!(
         runtime.verified_executable_sha256(),
-        "185e384f0784005202c0ad19c569f6764c6109f1c9903a36417578d28322f68a"
+        fixture["nodeSha256"].as_str().unwrap()
     );
     assert_eq!(
         runtime.verified_license_sha256(),

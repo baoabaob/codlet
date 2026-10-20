@@ -1,0 +1,16 @@
+{
+  "archiveUrl": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.1013.40934.zip",
+  "archiveSha256": "14389c9e9bd7871a31e380089f8bc54e07c627050f676ecdaa567b26929f7a1b",
+  "nodeVersion": "24.21.0",
+  "nodeSha256": "5cdbcfcbbae201df8af79027fed814f4b379c55a00f4a20c9bcafb3d2f7cf47f",
+  "licenseSha256": "5888dbb9a1d2b18f2c3e6c5f6af1b39de658372b402a0577b002777f14c62ace",
+  "source": {
+    "kind": "macBundle",
+    "bundleId": "com.openai.codex",
+    "appVersion": "26.1013.40934",
+    "build": "20770",
+    "teamId": "2DC432GLL2",
+    "nodePath": "Contents/Resources/cua_node/bin/node",
+    "licensePath": "Contents/Resources/cua_node/LICENSE"
+  }
+}

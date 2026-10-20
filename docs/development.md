@@ -2,12 +2,15 @@
 
 Use Rust from `rust-toolchain.toml`, the npm lockfile in `frontend/`, and the platform-specific Node pins in `runtime/node-runtime.json`. Build the generic SDK before Rust because Core embeds its output. Official plugins are a separate repository and are not needed to compile Core.
 
+Generated JavaScript bundles are ignored by Git. A clean checkout requires `npm ci --prefix frontend` and `node frontend/build.mjs`; the latter also generates the pinned source parser and online-update modules. Rust reports this prerequisite when generated inputs are absent. Source files and third-party license notices remain tracked.
+
 ## Windows
 
 ```powershell
 npm ci --prefix frontend
 node frontend/build.mjs
 npm run typecheck --prefix frontend
+node scripts/check-dev-storage.mjs
 cargo build --locked --bin codlet
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Install-JsRuntime.ps1 -Destination target/debug
 ```
@@ -22,6 +25,8 @@ target directory configured outside `CARGO_TARGET_DIR`.
 ## macOS Apple Silicon
 
 ```sh
+npm ci --prefix frontend
+node frontend/build.mjs
 sh scripts/build-macos.sh
 sh scripts/test-macos.sh
 ```

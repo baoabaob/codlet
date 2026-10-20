@@ -45,10 +45,14 @@ jobs:
           ./scripts/Install-JsRuntime.ps1 -Destination ./target/debug
           ./scripts/Install-JsRuntime.ps1 -Destination ./target/debug/deps
       - run: cargo fmt --all -- --check
+      - run: node scripts/check-dev-storage.mjs
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: node scripts/check-dev-storage.mjs
       - run: cargo test --locked --all-targets --all-features -- --test-threads=2
       - name: Test the real Core catalog and legacy registration migration
-        run: cargo test --locked --no-default-features --features ipc-test-isolation --test core_sdk_migration -- --test-threads=2
+        run: |
+          node scripts/check-dev-storage.mjs
+          cargo test --locked --no-default-features --features ipc-test-isolation --test core_sdk_migration -- --test-threads=2
 
   windows-ui:
     name: Windows UI
@@ -67,6 +71,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - run: node scripts/check-dev-storage.mjs
       - run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
       - run: npm run typecheck --prefix frontend
       - run: node --test --test-concurrency=2 tests/*.test.mjs
@@ -109,6 +114,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: node frontend/build.mjs
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy
@@ -119,13 +131,7 @@ jobs:
       - run: swiftc -typecheck scripts/macos/Launcher.swift
       - name: Test all native Core targets and features on Apple silicon
         run: sh scripts/test-macos.sh
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.21.0'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci --prefix frontend
-      - run: node frontend/build.mjs
+      - run: node scripts/check-dev-storage.mjs
       - run: cargo build --locked --features test-fixtures --bin codlet-traffic-fixture
       - name: Test native HTTP, SSE, WS, WSS and plugin contracts
         run: node --test --test-concurrency=2 tests/native_traffic.test.mjs tests/host_traffic.test.mjs tests/plaintext_source.test.mjs tests/traffic_interceptors.test.mjs tests/traffic_profiles.test.mjs tests/traffic_wire.test.mjs tests/client_bridge.test.mjs
