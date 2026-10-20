@@ -6,7 +6,7 @@ Reusing the official client means copying its verified executable and license in
 
 Fallback downloads first try the unchanged official archive mirrored in Codlet's `node-runtimes` dependency release, then the official Node.js URL. Both sources must match the same archive, executable and license hashes. When changing a Node pin, run the **Publish pinned Node.js runtimes** workflow before publishing installers; it verifies the original archives and never overwrites a same-name asset with different bytes. These dependency archives are kept out of ordinary Codlet release downloads.
 
-The current Windows x64 candidate is [**1.0.0-rc.9**](releases/1.0.0-rc.9/validation.md).
+The current Windows x64 candidate is [**1.0.0-rc.10**](releases/1.0.0-rc.10/validation.md).
 The latest macOS Apple Silicon package remains [**1.0.0-rc.7**](releases/1.0.0-rc.7/validation.md).
 The stable updater continues to select published final releases; candidate packages must not replace existing release assets.
 

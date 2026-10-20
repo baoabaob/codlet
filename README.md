@@ -4,7 +4,7 @@ Codlet is a lightweight plugin loader for Codex Desktop. Describe a customizatio
 
 Core, CLI, the public SDK, the runtime `/codlet` skill, and distribution tools live here. Core includes the Codex UI and Desktop compatibility modules and exposes them through `context.codex`. The management GUI remains an optional plugin maintained in [codlet-plugins](https://github.com/baoabaob/codlet-plugins). Separate Adapter installation is no longer required.
 
-The current Windows candidate is **1.0.0-rc.9**, with signed static plugin update manifests, persistent update caching, and shared publishing rules for all plugins. The [candidate record](docs/releases/1.0.0-rc.9/validation.md) identifies its checks and package provenance. The latest macOS package remains [1.0.0-rc.7](docs/releases/1.0.0-rc.7/validation.md). Core owns client capability probes and adaptation; plugins use the public SDK. See [platform evidence](docs/compatibility.md), [online updates](docs/core-online-update.md) and [known limitations](docs/known-issues.md).
+The current Windows candidate is **1.0.0-rc.10**, with Native source analysis, workspace adaptation and evidence-level compatibility reporting. The [candidate record](docs/releases/1.0.0-rc.10/validation.md) identifies its checks, remaining interaction acceptance and package provenance. It retains rc.9's signed plugin update manifests and publishing rules. The latest macOS package remains [1.0.0-rc.7](docs/releases/1.0.0-rc.7/validation.md). Core owns client capability probes and adaptation; plugins use the public SDK. See [platform evidence](docs/compatibility.md), [online updates](docs/core-online-update.md) and [known limitations](docs/known-issues.md).
 
 ## Use Codlet
 

@@ -1,0 +1,252 @@
+{
+  "schema": 1,
+  "passed": true,
+  "coreVersion": "1.0.0-rc.10",
+  "sources": {
+    "core": "20140eea07eefc188f5f221eb61b246b94dfa5d2",
+    "split": "5e185a49f9695a8940cd6c4c210db3f7eed6a91b",
+    "functionalConsumer": "9312b844b04abe58556a3d293e9c1e8dc99d5b14",
+    "bundledGui": "518227467a11931bc1177ea5fe9799d66483a967"
+  },
+  "filesVerified": 39,
+  "packages": {
+    "setup": {
+      "path": "windows/Codlet-1.0.0-rc.10-windows-x64-setup.exe",
+      "bytes": 8588800,
+      "sha256": "9e488f14f792c77a1ad4faf5821bd8ef9c21b35d1577e4c723eea273d262f734"
+    },
+    "msi": {
+      "path": "windows/Codlet-1.0.0-rc.10-windows-x64.msi",
+      "bytes": 8507392,
+      "sha256": "18ebc1f325372e5edb4e499b33091a2a20133c9e48d772bae66b1936121f0410"
+    },
+    "core": {
+      "path": "windows/portable/codlet.exe",
+      "bytes": 25261056,
+      "sha256": "2fcfaebd154e460719ab481302efdfc1f989de2160d8a926954d84204b258d9a"
+    },
+    "split": {
+      "path": "delivery/dev.split-workbench-1.0.0-rc.2.zip",
+      "bytes": 159064,
+      "sha256": "13915b5b1cc34a987973790f544333af2abbca3a23a83de6ec54b21621e3969a"
+    },
+    "functional": {
+      "path": "delivery/functional/compatibility.acceptance-1.0.0-rc.2.zip",
+      "bytes": 28842,
+      "sha256": "642c3fb0a9c548d7709c53e828a324c07c479aea79908b14c5ad890fbfa06439"
+    }
+  },
+  "previousRc9Unchanged": true,
+  "bundledGui": {
+    "version": "1.0.0-rc.5",
+    "signatureVerified": true
+  },
+  "native": {
+    "packageFullName": "OpenAI.Codex_26.1013.4894.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1013.4894.0",
+    "appVersion": "26.1013.40934",
+    "buildNumber": "20770",
+    "buildNumberSource": "package.json"
+  },
+  "source": {
+    "workspaceChecks": 27,
+    "mainRoles": 4,
+    "locatedRoles": 28,
+    "mappedBindings": 34479,
+    "previousSnapshotSha256": "94a03d68e7877e900801a447e78a20496d746e9b475823d92757ca93398e03f4",
+    "currentSnapshotSha256": "c67f75276e5adbe47685fe654f0c9ac7aca85a5f34604d9b54f6285e867baf56",
+    "classifications": {
+      "mechanical-rename": 5,
+      "module-relocation": 3,
+      "unresolved": 16,
+      "interface-change": 2,
+      "behavior-change": 2
+    }
+  },
+  "readonly": {
+    "candidateSha256": "6d7e548574842a28d2ef8645cb775eae728eb6b1c0967c4d308ecc392bbea34f",
+    "residentCoreVersion": "1.0.0-rc.8",
+    "checks": [
+      {
+        "elapsedMs": 421.5,
+        "evidence": "live-readonly",
+        "id": "native-components",
+        "kind": "interface-present",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 1.0999999940395355,
+        "evidence": "live-readonly",
+        "id": "mounted-router",
+        "kind": "readable",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 1.199999988079071,
+        "evidence": "live-readonly",
+        "id": "existing-connection",
+        "kind": "available",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 727.2000000029802,
+        "evidence": "live-readonly",
+        "id": "navigation",
+        "kind": "available",
+        "status": "passed"
+      },
+      {
+        "composerKind": "local",
+        "composing": false,
+        "controllerHasDraftMethods": true,
+        "draftIdentityConfirmed": true,
+        "evidence": "live-readonly",
+        "id": "local-input-binding",
+        "kind": "available",
+        "local": true,
+        "routeMatchesInput": true,
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 7.700000002980232,
+        "evidence": "live-readonly",
+        "id": "input-ownership",
+        "kind": "available",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 3.700000002980232,
+        "evidence": "live-readonly",
+        "id": "workspace-surface",
+        "kind": "readable",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 92.09999999403954,
+        "evidence": "live-readonly",
+        "id": "transcript",
+        "kind": "interface-present",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 9.700000002980232,
+        "evidence": "live-readonly",
+        "id": "composer",
+        "kind": "interface-present",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 42.599999994039536,
+        "evidence": "live-readonly",
+        "id": "direct-editor",
+        "kind": "interface-present",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 218,
+        "evidence": "live-readonly",
+        "id": "shortcuts",
+        "kind": "interface-present",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 0,
+        "evidence": "live-readonly",
+        "id": "shortcut-state",
+        "kind": "readable",
+        "status": "passed"
+      },
+      {
+        "elapsedMs": 62.400000005960464,
+        "evidence": "live-readonly",
+        "id": "viewport",
+        "kind": "interface-present",
+        "status": "passed"
+      }
+    ],
+    "focusUnchanged": true,
+    "connectionRetained": true,
+    "rootsMounted": 0,
+    "draftsRead": 0,
+    "messagesSent": 0,
+    "fullLifecycle": "not-verified"
+  },
+  "functional": {
+    "version": "1.0.0-rc.2",
+    "residentCoreVersion": "1.0.0-rc.8",
+    "coverage": {
+      "counts": {
+        "interface-verified": 0,
+        "not-verified": 201,
+        "operation-verified": 2,
+        "read-verified": 12,
+        "unavailable": 4
+      },
+      "total": 219,
+      "unmappedChecks": []
+    }
+  },
+  "tests": {
+    "coreNode": {
+      "passed": 776,
+      "failed": 0,
+      "skipped": 5
+    },
+    "split": {
+      "passed": 150,
+      "failed": 0,
+      "skipped": 0
+    },
+    "gui": {
+      "passed": 135,
+      "failed": 0,
+      "skipped": 0
+    },
+    "rust": {
+      "passed": 828,
+      "failed": 0,
+      "ignored": 8
+    }
+  },
+  "typecheck": "passed",
+  "acceptance": {
+    "msi-structure": {
+      "passed": true,
+      "installationPerformed": false
+    },
+    "setup-self-test-chinese": {
+      "passed": true,
+      "installationPerformed": false
+    },
+    "setup-self-test-english": {
+      "passed": true,
+      "installationPerformed": false
+    }
+  },
+  "pluginZipVerification": [
+    {
+      "id": "dev.split-workbench",
+      "verifiedFiles": 31,
+      "passed": true
+    },
+    {
+      "id": "compatibility.acceptance",
+      "verifiedFiles": 9,
+      "passed": true
+    }
+  ],
+  "cleanup": {
+    "ownedProcessesRemaining": 0,
+    "temporaryProbeRemoved": true,
+    "worktreeRemoved": true,
+    "dailyCorePidUnchanged": true,
+    "dailyNativePidUnchanged": true
+  },
+  "limits": [
+    "Candidate Core rc.10 is packaged; resident Core rc.8 was not replaced or restarted.",
+    "The read-only candidate probe evaluates Core definitions against existing Native interfaces; it does not install Core rc.10.",
+    "Full split lifecycle, physical IME and attachments on build 20770 need disposable-VM interaction acceptance.",
+    "Source matches do not prove Native traffic hooks are attached. The resident report records both hooks unavailable.",
+    "Five Node tests and eight Rust tests were skipped/ignored; no macOS/Linux acceptance was performed."
+  ]
+}

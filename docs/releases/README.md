@@ -2,6 +2,7 @@
 
 | Candidate | Record |
 | --- | --- |
+| 1.0.0-rc.10 | [Native source analysis, workspace adaptation and coverage evidence](1.0.0-rc.10/validation.md) |
 | 1.0.0-rc.9 | [Signed static plugin updates and publishing contract](1.0.0-rc.9/validation.md) |
 | 1.0.0-rc.8 | [Startup recovery and background update checks](1.0.0-rc.8/validation.md) |
 | 1.0.0-rc.7 | [Repository review, skill workflow and Windows/macOS delivery](1.0.0-rc.7/validation.md) |

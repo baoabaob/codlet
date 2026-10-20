@@ -15,6 +15,7 @@ Start with the maintained contracts below. Release evidence and historical resea
 | [Online Core updates](core-online-update.md) | Update admission, state transfer, receipts and resident components |
 | [Troubleshooting](troubleshooting.md) | CLI recovery, safe mode, logs and diagnostics |
 | [Compatibility](compatibility.md) | Platform matrix and client-build evidence |
+| [Native source adaptation](native-source-adaptation.md) | Preserved sources, binding-aware diffs, interface mapping, patch proposals and evidence levels |
 | [Known issues](known-issues.md) | Accepted limits, incomplete features and practical workarounds |
 
 ## SDK contracts

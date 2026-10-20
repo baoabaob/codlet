@@ -1,0 +1,1264 @@
+{
+  "schema": 1,
+  "previous": {
+    "packageFullName": "OpenAI.Codex_26.1007.9446.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1007.9446.0",
+    "appVersion": "26.1007.71326",
+    "buildNumber": "20398",
+    "identityEvidence": [
+      "../core-native/core-0d3170af-69f7-4ff3-8258-aa2f3416c46a/preflight.json",
+      "../core-native/core-0d3170af-69f7-4ff3-8258-aa2f3416c46a/native-working-source/manifest.json",
+      "../../scripts/audit-native-working-current.mjs"
+    ]
+  },
+  "current": {
+    "packageFullName": "OpenAI.Codex_26.1013.4894.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1013.4894.0",
+    "appVersion": "26.1013.40934",
+    "buildNumber": "20770",
+    "buildNumberSource": "package.json"
+  },
+  "roles": [
+    {
+      "role": "appScope",
+      "capabilities": [
+        "navigation",
+        "shortcuts"
+      ],
+      "classification": "mechanical-rename",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "X",
+        "exports": [
+          "H0t"
+        ],
+        "start": {
+          "line": 422,
+          "column": 66932,
+          "offset": 2081755
+        },
+        "end": {
+          "line": 422,
+          "column": 66946,
+          "offset": 2081769
+        },
+        "normalizedHash": "391348fcd95704b659d52c4521a96ef268996bd27aac524966ab0f87b7a94795"
+      },
+      "current": {
+        "file": "webview/assets/app-shared-bbfeca5e5737.js",
+        "sha256": "a6579611db8acf9c9908e2a29e70a88687eaa1d8f8dbcdc258de58f286051e9d",
+        "local": "YZ",
+        "exports": [
+          "Cot"
+        ],
+        "start": {
+          "line": 323,
+          "column": 67148,
+          "offset": 1791074
+        },
+        "end": {
+          "line": 323,
+          "column": 67163,
+          "offset": 1791089
+        },
+        "normalizedHash": "391348fcd95704b659d52c4521a96ef268996bd27aac524966ab0f87b7a94795"
+      }
+    },
+    {
+      "role": "threadScope",
+      "capabilities": [
+        "navigationInput",
+        "transcript",
+        "composer",
+        "viewport"
+      ],
+      "classification": "module-relocation",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "pY",
+        "exports": [
+          "UTt"
+        ],
+        "start": {
+          "line": 507,
+          "column": 24480,
+          "offset": 3643792
+        },
+        "end": {
+          "line": 507,
+          "column": 24548,
+          "offset": 3643860
+        },
+        "normalizedHash": "ade8756eb9efa8ea519339ab69f6965ef97397d7e594260c17fe78aabcbc7548"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "Py",
+        "exports": [
+          "Iwr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 27657,
+          "offset": 2063666
+        },
+        "end": {
+          "line": 1765,
+          "column": 27725,
+          "offset": 2063734
+        },
+        "normalizedHash": "ade8756eb9efa8ea519339ab69f6965ef97397d7e594260c17fe78aabcbc7548"
+      }
+    },
+    {
+      "role": "routeScope",
+      "capabilities": [
+        "navigationInput",
+        "transcript",
+        "composer",
+        "viewport"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "g1",
+        "exports": [
+          "Q4"
+        ],
+        "start": {
+          "line": 569,
+          "column": 37980,
+          "offset": 5026179
+        },
+        "end": {
+          "line": 569,
+          "column": 38032,
+          "offset": 5026231
+        },
+        "normalizedHash": "aa125469b94d19eecf6ba0870c0fc4074977f09b973495c6252611af45cacf6a"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "Qy",
+        "exports": [
+          "gwr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 32474,
+          "offset": 2068483
+        },
+        "end": {
+          "line": 1765,
+          "column": 32525,
+          "offset": 2068534
+        },
+        "normalizedHash": "aa125469b94d19eecf6ba0870c0fc4074977f09b973495c6252611af45cacf6a"
+      }
+    },
+    {
+      "role": "composerScope",
+      "capabilities": [
+        "navigationInput",
+        "transcript",
+        "composer"
+      ],
+      "classification": "module-relocation",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "A0r",
+        "exports": [
+          "QW"
+        ],
+        "start": {
+          "line": 1141,
+          "column": 8957,
+          "offset": 5482472
+        },
+        "end": {
+          "line": 1141,
+          "column": 9121,
+          "offset": 5482636
+        },
+        "normalizedHash": "b080102ccc722f51bbbffb208cc1b7cd3ffc095497e5fcf3fcca12bac9e821ce"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "xb",
+        "exports": [
+          "sCr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 45628,
+          "offset": 2081637
+        },
+        "end": {
+          "line": 1765,
+          "column": 45790,
+          "offset": 2081799
+        },
+        "normalizedHash": "b080102ccc722f51bbbffb208cc1b7cd3ffc095497e5fcf3fcca12bac9e821ce"
+      }
+    },
+    {
+      "role": "scopeProvider",
+      "capabilities": [
+        "transcript",
+        "composer"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The body changed without a declared signature change. Behavioral impact and compiler-only changes need source review."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "ult",
+        "exports": [
+          "Van"
+        ],
+        "start": {
+          "line": 294,
+          "column": 139415,
+          "offset": 1708045
+        },
+        "end": {
+          "line": 294,
+          "column": 142187,
+          "offset": 1710817
+        },
+        "normalizedHash": "47a2469708bd0504d1a211d41e372a6d5fe336699f5cec3cce532096003cb8fc"
+      },
+      "current": {
+        "file": "webview/assets/app-shared-bbfeca5e5737.js",
+        "sha256": "a6579611db8acf9c9908e2a29e70a88687eaa1d8f8dbcdc258de58f286051e9d",
+        "local": "OXe",
+        "exports": [
+          "Hxt"
+        ],
+        "start": {
+          "line": 195,
+          "column": 137174,
+          "offset": 1414995
+        },
+        "end": {
+          "line": 195,
+          "column": 139952,
+          "offset": 1417773
+        },
+        "normalizedHash": "08b3a6773fe495f66973ca06ceaa3b54df31343391229f529cf7e774e4b8dec1"
+      }
+    },
+    {
+      "role": "scopeFacade",
+      "capabilities": [
+        "composer",
+        "viewport"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "hA",
+        "exports": [
+          "Fan"
+        ],
+        "start": {
+          "line": 294,
+          "column": 146557,
+          "offset": 1715187
+        },
+        "end": {
+          "line": 294,
+          "column": 147456,
+          "offset": 1716086
+        },
+        "normalizedHash": "889453924a9ada3a7f7aa7e540693b90e4e73daa3745593e2248ae3f793bc00a"
+      },
+      "current": {
+        "file": "webview/assets/app-shared-bbfeca5e5737.js",
+        "sha256": "a6579611db8acf9c9908e2a29e70a88687eaa1d8f8dbcdc258de58f286051e9d",
+        "local": "HXe",
+        "exports": [
+          "Ixt"
+        ],
+        "start": {
+          "line": 195,
+          "column": 144308,
+          "offset": 1422129
+        },
+        "end": {
+          "line": 195,
+          "column": 145204,
+          "offset": 1423025
+        },
+        "normalizedHash": "889453924a9ada3a7f7aa7e540693b90e4e73daa3745593e2248ae3f793bc00a"
+      }
+    },
+    {
+      "role": "composerValue",
+      "capabilities": [
+        "transcript",
+        "composer"
+      ],
+      "classification": "interface-change",
+      "reasons": [
+        "The body changed without a declared signature change. Behavioral impact and compiler-only changes need source review.",
+        "The home composer object now forwards optional homeDraftKey from route state. Local-thread and client-local-thread branches keep the same argument/reference structure."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "O0r",
+        "exports": [
+          "$W"
+        ],
+        "start": {
+          "line": 1141,
+          "column": 7545,
+          "offset": 5481060
+        },
+        "end": {
+          "line": 1141,
+          "column": 8803,
+          "offset": 5482318
+        },
+        "normalizedHash": "cbccde01af199258de5f698e3b54b3c63af6ad31eecafd492f6d58177dac5696"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "MZt",
+        "exports": [
+          "lCr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 44192,
+          "offset": 2080201
+        },
+        "end": {
+          "line": 1765,
+          "column": 45478,
+          "offset": 2081487
+        },
+        "normalizedHash": "943342e4b737f2002aaad8c456a9a4b2529dfa5bb42e1bc4a350d07ff7bd2651"
+      }
+    },
+    {
+      "role": "routeDescription",
+      "capabilities": [
+        "transcript",
+        "composer",
+        "viewport"
+      ],
+      "classification": "behavior-change",
+      "reasons": [
+        "The body changed without a declared signature change. Behavioral impact and compiler-only changes need source review.",
+        "The new /dots/thread/:threadId route gets a local host, /dots/:id is distinguished from client thread IDs, and the other-route result now includes orbitId. The ordinary local conversation branch retains routeKind, conversationId, hostId and search."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "_Er",
+        "exports": [
+          "$4"
+        ],
+        "start": {
+          "line": 569,
+          "column": 36087,
+          "offset": 5024286
+        },
+        "end": {
+          "line": 569,
+          "column": 37761,
+          "offset": 5025960
+        },
+        "normalizedHash": "0209c7982d6f0ee1e76f6e05cde1e6e86bf75b0ca7dec52ab052e370ec2dca3b"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "Zy",
+        "exports": [
+          "_wr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 30529,
+          "offset": 2066538
+        },
+        "end": {
+          "line": 1765,
+          "column": 32261,
+          "offset": 2068270
+        },
+        "normalizedHash": "eac3d20134f693bd7402ecc80a8afe071e772026a1b6b29ef5db21d7d2c7a2e7"
+      }
+    },
+    {
+      "role": "draftIdentity",
+      "capabilities": [
+        "navigationInput",
+        "composer"
+      ],
+      "classification": "behavior-change",
+      "reasons": [
+        "The body changed without a declared signature change. Behavioral impact and compiler-only changes need source review.",
+        "A new home draft now prefers homeDraftKey, falling back to the previous GPT/home identity rule. The local branch still returns clientThreadId."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "C0r",
+        "exports": [
+          "cG"
+        ],
+        "start": {
+          "line": 1141,
+          "column": 6199,
+          "offset": 5479714
+        },
+        "end": {
+          "line": 1141,
+          "column": 6704,
+          "offset": 5480219
+        },
+        "normalizedHash": "dca90be429dd4d35da82848bd4ae3e268007b5e290c322179e9e62890cdb8d45"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "bb",
+        "exports": [
+          "_Cr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 42829,
+          "offset": 2078838
+        },
+        "end": {
+          "line": 1765,
+          "column": 43351,
+          "offset": 2079360
+        },
+        "normalizedHash": "4e8ce1a3f99b9bf4eb7cbb68d14b7a10dc4779d912e0954f880ab467913df773"
+      }
+    },
+    {
+      "role": "threadNavigation",
+      "capabilities": [
+        "navigation",
+        "navigationInput",
+        "locationRestore"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "kF",
+        "exports": [
+          "_dn"
+        ],
+        "start": {
+          "line": 1627,
+          "column": 22535,
+          "offset": 2829761
+        },
+        "end": {
+          "line": 1627,
+          "column": 23158,
+          "offset": 2830384
+        },
+        "normalizedHash": "0ec2d47e395e424a45304cdc65741f5ade3deefc59ad59b8f413021983d452cf"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "tV",
+        "exports": [
+          "_yn"
+        ],
+        "start": {
+          "line": 2517,
+          "column": 22565,
+          "offset": 5408999
+        },
+        "end": {
+          "line": 2517,
+          "column": 23191,
+          "offset": 5409625
+        },
+        "normalizedHash": "0ec2d47e395e424a45304cdc65741f5ade3deefc59ad59b8f413021983d452cf"
+      }
+    },
+    {
+      "role": "transcriptContent",
+      "capabilities": [
+        "transcript"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/local-conversation-thread-6999d2419a30.js",
+        "sha256": "5a20f524f3aac5a200e76fd48d6e1b21f1766993dcf2ec0db89e24625d6c3ac9",
+        "local": "WA",
+        "exports": [
+          "n"
+        ],
+        "start": {
+          "line": 8,
+          "column": 268331,
+          "offset": 330957
+        },
+        "end": {
+          "line": 8,
+          "column": 269605,
+          "offset": 332231
+        },
+        "normalizedHash": "11c8a1277475aca8bc24391c2816d43bc19725908c76ca5b165a169b37d0e2c2"
+      }
+    },
+    {
+      "role": "threadSubscription",
+      "capabilities": [
+        "transcript"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/app-primary-fe8a450b3b04.js",
+        "sha256": "2a05e25229bd7a38c12c55d90f82fb07087e80b4e16070116b215484498478f2",
+        "local": "$gt",
+        "exports": [
+          "Zs"
+        ],
+        "start": {
+          "line": 67,
+          "column": 140694,
+          "offset": 1527812
+        },
+        "end": {
+          "line": 67,
+          "column": 141328,
+          "offset": 1528446
+        },
+        "normalizedHash": "48947efc6f69dd1935a93e98facd8553d43851374f8c66136654434ff1c371a5"
+      }
+    },
+    {
+      "role": "composerComponent",
+      "capabilities": [
+        "composer"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/app-primary-fe8a450b3b04.js",
+        "sha256": "2a05e25229bd7a38c12c55d90f82fb07087e80b4e16070116b215484498478f2",
+        "local": "MZ",
+        "exports": [
+          "Kc"
+        ],
+        "start": {
+          "line": 67,
+          "column": 38308,
+          "offset": 1425426
+        },
+        "end": {
+          "line": 67,
+          "column": 38590,
+          "offset": 1425708
+        },
+        "normalizedHash": "bb569bdad867c487c281f3fc7340f7f1e211f6942b3c6bb5a8849da8012776c3"
+      }
+    },
+    {
+      "role": "composerSurface",
+      "capabilities": [
+        "composer"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/app-primary-fe8a450b3b04.js",
+        "sha256": "2a05e25229bd7a38c12c55d90f82fb07087e80b4e16070116b215484498478f2",
+        "local": "uH",
+        "exports": [
+          "Af"
+        ],
+        "start": {
+          "line": 14,
+          "column": 7035,
+          "offset": 633004
+        },
+        "end": {
+          "line": 14,
+          "column": 8486,
+          "offset": 634455
+        },
+        "normalizedHash": "fa4c791182fae245d352986fdaa3299b579d3199f7bb7737f9ba4009d18e92d6"
+      }
+    },
+    {
+      "role": "editorFactory",
+      "capabilities": [
+        "composer"
+      ],
+      "classification": "interface-change",
+      "reasons": [
+        "The body changed without a declared signature change. Behavioral impact and compiler-only changes need source review.",
+        "The internal helper result and editor constructor drop codeBlockNodeViewRegistry; constructor argument positions change. The exported factory still accepts two arguments and returns the editor controller."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "OBc",
+        "exports": [
+          "Zp"
+        ],
+        "start": {
+          "line": 4120,
+          "column": 9502,
+          "offset": 10301505
+        },
+        "end": {
+          "line": 4120,
+          "column": 9940,
+          "offset": 10301943
+        },
+        "normalizedHash": "2631d1e0cabb5029f319e0cc6e4a79a364e6324ac9ea9c1ad8e6ccb3b72c29fd"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "SUu",
+        "exports": [
+          "ih"
+        ],
+        "start": {
+          "line": 5020,
+          "column": 9295,
+          "offset": 13132526
+        },
+        "end": {
+          "line": 5020,
+          "column": 9703,
+          "offset": 13132934
+        },
+        "normalizedHash": "12c15c2b937a1077ab1ba874f5da69a1637acc85953d6259129b5d6b2c3df485"
+      }
+    },
+    {
+      "role": "composerFrame",
+      "capabilities": [
+        "composer"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/local-conversation-thread-6999d2419a30.js",
+        "sha256": "5a20f524f3aac5a200e76fd48d6e1b21f1766993dcf2ec0db89e24625d6c3ac9",
+        "local": "UA",
+        "exports": [
+          "t"
+        ],
+        "start": {
+          "line": 8,
+          "column": 265800,
+          "offset": 328426
+        },
+        "end": {
+          "line": 8,
+          "column": 268331,
+          "offset": 330957
+        },
+        "normalizedHash": "7a7ac7d97d5f789881a9b2af81582296f28dd9d4a2de465c435fe7b71a2dcbe3"
+      }
+    },
+    {
+      "role": "shortcutCapture",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/app-primary-fe8a450b3b04.js",
+        "sha256": "2a05e25229bd7a38c12c55d90f82fb07087e80b4e16070116b215484498478f2",
+        "local": "gGe",
+        "exports": [
+          "u_"
+        ],
+        "start": {
+          "line": 7,
+          "column": 53247,
+          "offset": 211720
+        },
+        "end": {
+          "line": 7,
+          "column": 61080,
+          "offset": 219553
+        },
+        "normalizedHash": "17b0ffe9b3fd0f43a99f3f94330e0808d00799af8e86f5f19e4d625e05dca4d2"
+      }
+    },
+    {
+      "role": "eventAccelerator",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The baseline has no unique located responsibility; missing source is not evidence of a removed API."
+      ],
+      "previous": null,
+      "current": {
+        "file": "webview/assets/app-primary-fe8a450b3b04.js",
+        "sha256": "2a05e25229bd7a38c12c55d90f82fb07087e80b4e16070116b215484498478f2",
+        "local": "oGe",
+        "exports": [
+          "m_"
+        ],
+        "start": {
+          "line": 7,
+          "column": 51221,
+          "offset": 209694
+        },
+        "end": {
+          "line": 7,
+          "column": 51418,
+          "offset": 209891
+        },
+        "normalizedHash": "d15d7061c77f61d1bf4e5a06b539c742895e4593728959e0076f2c77b271ca0d"
+      }
+    },
+    {
+      "role": "settingsRow",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "XBi",
+        "exports": [
+          "_S"
+        ],
+        "start": {
+          "line": 1292,
+          "column": 99103,
+          "offset": 6844776
+        },
+        "end": {
+          "line": 1292,
+          "column": 102154,
+          "offset": 6847827
+        },
+        "normalizedHash": "eddf3f3a4c1a6a7fea2e841d3f1b54a23cc02f0e8bd6dc6b2b4d7461b25e3efd"
+      },
+      "current": {
+        "file": "webview/assets/app-shared-bbfeca5e5737.js",
+        "sha256": "a6579611db8acf9c9908e2a29e70a88687eaa1d8f8dbcdc258de58f286051e9d",
+        "local": "FMn",
+        "exports": [
+          "tw"
+        ],
+        "start": {
+          "line": 404,
+          "column": 152744,
+          "offset": 4469032
+        },
+        "end": {
+          "line": 404,
+          "column": 155774,
+          "offset": 4472062
+        },
+        "normalizedHash": "eddf3f3a4c1a6a7fea2e841d3f1b54a23cc02f0e8bd6dc6b2b4d7461b25e3efd"
+      }
+    },
+    {
+      "role": "commandHook",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "xw",
+        "exports": [
+          "IBn"
+        ],
+        "start": {
+          "line": 1522,
+          "column": 90645,
+          "offset": 1501129
+        },
+        "end": {
+          "line": 1522,
+          "column": 91492,
+          "offset": 1501976
+        },
+        "normalizedHash": "07fd19f74f883800f2ec8b9b439cc24803485705005a87b4c4a6df84bace7b00"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "uj",
+        "exports": [
+          "w$n"
+        ],
+        "start": {
+          "line": 2412,
+          "column": 4483,
+          "offset": 3929895
+        },
+        "end": {
+          "line": 2412,
+          "column": 5328,
+          "offset": 3930740
+        },
+        "normalizedHash": "07fd19f74f883800f2ec8b9b439cc24803485705005a87b4c4a6df84bace7b00"
+      }
+    },
+    {
+      "role": "keyboardDispatch",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "mechanical-rename",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "Jqt",
+        "exports": [
+          "VBn"
+        ],
+        "start": {
+          "line": 1522,
+          "column": 87657,
+          "offset": 1498141
+        },
+        "end": {
+          "line": 1522,
+          "column": 87715,
+          "offset": 1498199
+        },
+        "normalizedHash": "13ce76cb4f9932617c3e31385d34fd835329bb959db3ac2fd0a1ff1ac959049f"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "nbr",
+        "exports": [
+          "k$n"
+        ],
+        "start": {
+          "line": 2412,
+          "column": 1695,
+          "offset": 3927107
+        },
+        "end": {
+          "line": 2412,
+          "column": 1753,
+          "offset": 3927165
+        },
+        "normalizedHash": "13ce76cb4f9932617c3e31385d34fd835329bb959db3ac2fd0a1ff1ac959049f"
+      }
+    },
+    {
+      "role": "shortcutBindings",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "s8n",
+        "exports": [
+          "amn"
+        ],
+        "start": {
+          "line": 1625,
+          "column": 83205,
+          "offset": 2752509
+        },
+        "end": {
+          "line": 1625,
+          "column": 83469,
+          "offset": 2752773
+        },
+        "normalizedHash": "cebd861f7f3da42dac34be68297897136e6d42cf00283fa67be9da993449240e"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "JBi",
+        "exports": [
+          "uSn"
+        ],
+        "start": {
+          "line": 2515,
+          "column": 83412,
+          "offset": 5330548
+        },
+        "end": {
+          "line": 2515,
+          "column": 83676,
+          "offset": 5330812
+        },
+        "normalizedHash": "cebd861f7f3da42dac34be68297897136e6d42cf00283fa67be9da993449240e"
+      }
+    },
+    {
+      "role": "viewportSetOpen",
+      "capabilities": [
+        "viewport"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "tC",
+        "exports": [
+          "yGn"
+        ],
+        "start": {
+          "line": 1521,
+          "column": 154003,
+          "offset": 1371668
+        },
+        "end": {
+          "line": 1521,
+          "column": 154295,
+          "offset": 1371960
+        },
+        "normalizedHash": "b0dc989d264b053593f77ba9adaf1b68e3047f2e0e903e40ad86375e232fbf92"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "Bk",
+        "exports": [
+          "B3n"
+        ],
+        "start": {
+          "line": 2409,
+          "column": 92284,
+          "offset": 3786276
+        },
+        "end": {
+          "line": 2409,
+          "column": 92575,
+          "offset": 3786567
+        },
+        "normalizedHash": "b0dc989d264b053593f77ba9adaf1b68e3047f2e0e903e40ad86375e232fbf92"
+      }
+    },
+    {
+      "role": "viewportPersistence",
+      "capabilities": [
+        "viewport"
+      ],
+      "classification": "mechanical-rename",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "RPt",
+        "exports": [
+          "gqn"
+        ],
+        "start": {
+          "line": 1521,
+          "column": 95662,
+          "offset": 1313327
+        },
+        "end": {
+          "line": 1521,
+          "column": 95747,
+          "offset": 1313412
+        },
+        "normalizedHash": "4ce70b16312bb893eb97be35335fc2e6ee5cf044b6f47bee1d756f2b164f2c20"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "JYt",
+        "exports": [
+          "uwr"
+        ],
+        "start": {
+          "line": 1765,
+          "column": 34034,
+          "offset": 2070043
+        },
+        "end": {
+          "line": 1765,
+          "column": 34119,
+          "offset": 2070128
+        },
+        "normalizedHash": "4ce70b16312bb893eb97be35335fc2e6ee5cf044b6f47bee1d756f2b164f2c20"
+      }
+    },
+    {
+      "role": "navigationSignal",
+      "capabilities": [
+        "navigation",
+        "navigationInput",
+        "locationRestore"
+      ],
+      "classification": "module-relocation",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-shared-30671c57ec82.js",
+        "sha256": "392b023063a3569a2efc47a019accb2d1e72295b1bfec2cbb81fc37e1515580a",
+        "local": "TF",
+        "exports": [
+          "j0t"
+        ],
+        "start": {
+          "line": 422,
+          "column": 67609,
+          "offset": 2082432
+        },
+        "end": {
+          "line": 422,
+          "column": 67618,
+          "offset": 2082441
+        },
+        "normalizedHash": "353e311a1f080102a47287054591d4dab32b582ebcb63fd6c8c81628d29776e7"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "eh",
+        "exports": [
+          "sIr"
+        ],
+        "start": {
+          "line": 1620,
+          "column": 9183,
+          "offset": 1613368
+        },
+        "end": {
+          "line": 1620,
+          "column": 9192,
+          "offset": 1613377
+        },
+        "normalizedHash": "353e311a1f080102a47287054591d4dab32b582ebcb63fd6c8c81628d29776e7"
+      }
+    },
+    {
+      "role": "shortcutQuery",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "mechanical-rename",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "d8n",
+        "exports": [
+          "nmn"
+        ],
+        "start": {
+          "line": 1625,
+          "column": 84131,
+          "offset": 2753435
+        },
+        "end": {
+          "line": 1625,
+          "column": 84202,
+          "offset": 2753506
+        },
+        "normalizedHash": "2342ad9cf114e0d7422ea358f5c58b23fde3f985b17ecdc3c08d158610cca6c3"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "QBi",
+        "exports": [
+          "sSn"
+        ],
+        "start": {
+          "line": 2515,
+          "column": 84337,
+          "offset": 5331473
+        },
+        "end": {
+          "line": 2515,
+          "column": 84408,
+          "offset": 5331544
+        },
+        "normalizedHash": "2342ad9cf114e0d7422ea358f5c58b23fde3f985b17ecdc3c08d158610cca6c3"
+      }
+    },
+    {
+      "role": "shortcutState",
+      "capabilities": [
+        "shortcuts"
+      ],
+      "classification": "mechanical-rename",
+      "reasons": [
+        "Binding-normalized syntax and corresponding external references match; live behavior is separately verified."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "f8n",
+        "exports": [
+          "tmn"
+        ],
+        "start": {
+          "line": 1625,
+          "column": 84282,
+          "offset": 2753586
+        },
+        "end": {
+          "line": 1625,
+          "column": 84385,
+          "offset": 2753689
+        },
+        "normalizedHash": "fc6b90308dc2488d885aa2ff4bf779592c09d19a997ce98ad65f15f849bd5a4f"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "$Bi",
+        "exports": [
+          "oSn"
+        ],
+        "start": {
+          "line": 2515,
+          "column": 84488,
+          "offset": 5331624
+        },
+        "end": {
+          "line": 2515,
+          "column": 84590,
+          "offset": 5331726
+        },
+        "normalizedHash": "fc6b90308dc2488d885aa2ff4bf779592c09d19a997ce98ad65f15f849bd5a4f"
+      }
+    },
+    {
+      "role": "viewportShell",
+      "capabilities": [
+        "viewport"
+      ],
+      "classification": "unresolved",
+      "reasons": [
+        "The local AST is preserved, but one or more external binding relationships remain unresolved."
+      ],
+      "previous": {
+        "file": "webview/assets/app-initial-102e45562729.js",
+        "sha256": "c59b2a0be6c13496b30ebda167925cdccab26799cae350c62d2b37afe3589b57",
+        "local": "PG",
+        "exports": [
+          "iNt"
+        ],
+        "start": {
+          "line": 1699,
+          "column": 131715,
+          "offset": 4799467
+        },
+        "end": {
+          "line": 1699,
+          "column": 132627,
+          "offset": 4800379
+        },
+        "normalizedHash": "e1c94dbe92fc70e70872db2b82688ec963c5128e717886da59fe25c9cb65286e"
+      },
+      "current": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "local": "AJ",
+        "exports": [
+          "YHt"
+        ],
+        "start": {
+          "line": 2578,
+          "column": 131834,
+          "offset": 7270737
+        },
+        "end": {
+          "line": 2578,
+          "column": 132747,
+          "offset": 7271650
+        },
+        "normalizedHash": "e1c94dbe92fc70e70872db2b82688ec963c5128e717886da59fe25c9cb65286e"
+      }
+    }
+  ]
+}
