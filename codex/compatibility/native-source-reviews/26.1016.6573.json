@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "kind": "reviewed-native-source-changes",
+  "previousSnapshotSha256": "c67f75276e5adbe47685fe654f0c9ac7aca85a5f34604d9b54f6285e867baf56",
+  "currentSnapshotSha256": "8fbe4b059ddc65371d29e4b7b859d33209efd64a30342d01f799182bf6e84d52",
+  "previousBuild": {
+    "packageFullName": "OpenAI.Codex_26.1013.4894.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1013.4894.0",
+    "appVersion": "26.1013.40934",
+    "buildNumber": "20770",
+    "buildNumberSource": "package.json"
+  },
+  "currentBuild": {
+    "packageFullName": "OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1016.6573.0",
+    "appVersion": "26.1016.51333",
+    "buildNumber": "21161",
+    "buildNumberSource": "package.json"
+  },
+  "decisions": [
+    {
+      "role": "shortcutQuery",
+      "classification": "interface-change",
+      "observation": "The keyed three-argument query factory became a two-argument options factory. Its queryKey refers to the array [\"vscode\", \"codex-command-keymap-state\"], and queryFn retains the request signal.",
+      "coreImpact": "Resolve the key array by lexical binding and recognize the reviewed options factory; preserve scope equality and query-to-derived ownership.",
+      "previous": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "normalizedHash": "2342ad9cf114e0d7422ea358f5c58b23fde3f985b17ecdc3c08d158610cca6c3",
+        "start": {
+          "line": 2515,
+          "column": 84337,
+          "offset": 5331473
+        },
+        "end": {
+          "line": 2515,
+          "column": 84408,
+          "offset": 5331544
+        },
+        "local": "QBi",
+        "exports": [
+          "sSn"
+        ]
+      },
+      "current": {
+        "file": "webview/assets/app-initial-2b6b8063022d.js",
+        "sha256": "6cb0ab2a8d03a47f95c4df668aa8e5a3004e42614a7d596cb239442344f1a497",
+        "normalizedHash": "4571b607406bf19462dd9e72651cfe45d5d6a859fa222ec05d2578bfaef09ef2",
+        "start": {
+          "line": 2517,
+          "column": 90042,
+          "offset": 5413482
+        },
+        "end": {
+          "line": 2517,
+          "column": 90190,
+          "offset": 5413630
+        },
+        "local": "OGi",
+        "exports": [
+          "gTn"
+        ]
+      },
+      "validation": {
+        "source": "reviewed",
+        "simulated": "workspace_source_contracts.test.mjs",
+        "live": "not-inferred"
+      }
+    },
+    {
+      "role": "shortcutState",
+      "classification": "behavior-change",
+      "observation": "The derived getter now returns the query data directly. The previous conditional primaryNumberShortcutTarget rewrite is absent.",
+      "coreImpact": "Read Native's current derived state rather than reconstructing it. Recognize direct returned data while retaining getter/query identity and ambiguity rejection.",
+      "previous": {
+        "file": "webview/assets/app-initial-5851df3f6cb1.js",
+        "sha256": "c70d95da34ba7e5962a559dbf68d0102d10b4b47b877f5d9933629bb5a1f3a10",
+        "normalizedHash": "fc6b90308dc2488d885aa2ff4bf779592c09d19a997ce98ad65f15f849bd5a4f",
+        "start": {
+          "line": 2515,
+          "column": 84488,
+          "offset": 5331624
+        },
+        "end": {
+          "line": 2515,
+          "column": 84590,
+          "offset": 5331726
+        },
+        "local": "$Bi",
+        "exports": [
+          "oSn"
+        ]
+      },
+      "current": {
+        "file": "webview/assets/app-initial-2b6b8063022d.js",
+        "sha256": "6cb0ab2a8d03a47f95c4df668aa8e5a3004e42614a7d596cb239442344f1a497",
+        "normalizedHash": "bdd426b5c0040798cb211276d5e08152f5bab3865e591fc7ec66d9752a7f0007",
+        "start": {
+          "line": 2517,
+          "column": 90270,
+          "offset": 5413710
+        },
+        "end": {
+          "line": 2517,
+          "column": 90315,
+          "offset": 5413755
+        },
+        "local": "kGi",
+        "exports": [
+          "hTn"
+        ]
+      },
+      "validation": {
+        "source": "reviewed",
+        "simulated": "workspace_source_contracts.test.mjs",
+        "live": "not-inferred"
+      }
+    }
+  ]
+}

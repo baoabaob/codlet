@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "version": "1.0.0-rc.12",
+  "sourceCommit": "860aa33963b980ceafc089e669169eacffd0104f",
+  "coreSha256": "83f862104256cc27f423ed1cc54a11c1b0c68ca6ad8961996497f4d9496a82f6",
+  "native": {
+    "packageFullName": "OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1016.6573.0",
+    "appVersion": "26.1016.51333",
+    "buildNumber": "21161",
+    "buildNumberSource": "package.json",
+    "archiveSha256": "6f56542b508eea5b6e4d03e852dcd90afc2578aac7125baa3f25ebe85ebc7e25",
+    "archiveBytes": 625947151
+  },
+  "host": {
+    "coreVersion": "1.0.0-rc.8",
+    "corePid": 29200,
+    "nativePid": 34124,
+    "nativePackage": "OpenAI.Codex_26.1013.4894.0_x64__2p2nqsd0c76g0",
+    "installed": false,
+    "restarted": false
+  },
+  "sourceChecks": [
+    {
+      "build": "20770",
+      "passed": true,
+      "checks": 27
+    },
+    {
+      "build": "21161",
+      "passed": true,
+      "checks": 27
+    }
+  ],
+  "tests": {
+    "sourceAndUpdate": {
+      "passed": 26,
+      "failed": 0
+    },
+    "coreFrontend": {
+      "passed": 409,
+      "failed": 0,
+      "skipped": 2
+    },
+    "rustOfficialUpdate": {
+      "passed": 1,
+      "failed": 0
+    }
+  },
+  "installerSelfTest": {
+    "passed": true,
+    "installationPerformed": false,
+    "nativeUi": true,
+    "payloadHashVerified": true,
+    "scopeAndFeatures": true,
+    "upgradeMaintenanceDowngrade": true,
+    "msiProgressAndCancellation": true,
+    "version": "1.0.0-rc.12"
+  },
+  "online": {
+    "baseVersion": "1.0.0-rc.8",
+    "residentSha256": "653a9977d4b4135d2afc0782280f500e76638c425d939afdd77104a8f2a3d264",
+    "eligible": true,
+    "assetName": "codlet-online-1.0.0-rc.12-win-x64-653a9977d4b4135d.zip",
+    "module": "core-ui-provider",
+    "actualNativeActivation": "not-run",
+    "residentBridge": "requires-complete-upgrade",
+    "publishedChannelResult": "runtime_update_not_published"
+  },
+  "release": {
+    "localValidation": true,
+    "published": false,
+    "assets": [
+      {
+        "name": "Codlet-1.0.0-rc.12-windows-x64-setup.exe",
+        "file": "Codlet-1.0.0-rc.12-windows-x64-setup.exe",
+        "kind": "windows-setup",
+        "bytes": 8651264,
+        "sha256": "103e10b819e50e4094f6622fec2a5c72c91722d6dbcfc799b34c83773a8c33ed"
+      },
+      {
+        "name": "codlet-online-1.0.0-rc.12-win-x64-653a9977d4b4135d.zip",
+        "file": "codlet-online-1.0.0-rc.12-win-x64-653a9977d4b4135d.zip",
+        "kind": "runtime-update-windows-online",
+        "bytes": 9644160,
+        "sha256": "9adc0713ba181cee082b47bf181e24cef1a19ac666e9c2a460544a676f7b772d"
+      },
+      {
+        "name": "codlet-runtime-1.0.0-rc.12-win-x64-portable.zip",
+        "file": "codlet-runtime-1.0.0-rc.12-win-x64-portable.zip",
+        "kind": "runtime-update-windows-portable",
+        "bytes": 9580765,
+        "sha256": "673bfa3668b20983b28d2892d698b1a266de5e59bd02800cf7cf7d207d0aa892"
+      },
+      {
+        "name": "codlet-update-managed.json",
+        "file": "codlet-update-managed.json",
+        "kind": "runtime-channel-manifest",
+        "bytes": 561,
+        "sha256": "442de5ac68dca06fe7502d3a88b410dcf239a00852604e2e69e79c8fa04e176d"
+      },
+      {
+        "name": "codlet-update-managed-v2.json",
+        "file": "codlet-update-managed-v2.json",
+        "kind": "runtime-channel-manifest-v2",
+        "bytes": 1078,
+        "sha256": "ccac0e22b61d936a4059dd82d03e5303f96f1bd4c599b2272b76e78f94a2ed64"
+      },
+      {
+        "name": "SHA256SUMS.txt",
+        "file": "SHA256SUMS.txt",
+        "kind": "sha256-summary",
+        "bytes": 531,
+        "sha256": "b1d32cc25f0279f225c4f4dc7d5d841658d91cf10c62813ede5bb8aeb0251129"
+      }
+    ]
+  },
+  "cleanup": {
+    "archiveCopiesCreated": 0,
+    "serverPid": 32324,
+    "sourceCapturedFrom": "staged host Store package",
+    "shutdown": "QMP system_powerdown",
+    "ownedProcessesExited": true,
+    "interruptedReadOnlyTask": "inspect-native-archive-1",
+    "time": "2026-10-21T10:10:15.4253079Z",
+    "schema": 1,
+    "vmPid": 7028,
+    "nativeHostRestarted": false
+  }
+}
