@@ -157,10 +157,11 @@ The host's Windows Hypervisor Platform feature was disabled. [QEMU documents tha
 feature as a prerequisite](https://www.qemu.org/docs/master/system/whpx.html) for
 its supported WHPX configuration. Software emulation
 and the available single-processor WHPX configuration showed excessive or unstable
-latency. Enabling the Windows component requires an administrator confirmation;
-the prepared host script uses `-NoRestart`. Whether Windows requires a later
-restart must be read from that operation's result. The daily Native process is not
-part of this VM lifecycle.
+latency. After the user approved the administrator prompt, the host component was
+enabled with `-NoRestart` at 2026-10-21 06:19 UTC. Windows returned
+`RestartNeeded: true`; the host was not restarted. The result is retained in
+`reports/hypervisor-platform-enable.json` in the lab. Hardware-accelerated
+interaction acceptance remains pending until the user restarts the host.
 
 The cleanup boot subsequently entered Windows update servicing. Further
 interaction runs must wait for servicing to finish and for the supported

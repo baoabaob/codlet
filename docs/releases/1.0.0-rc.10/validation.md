@@ -55,6 +55,14 @@ attachment acceptance on build 20770 remain unverified. The desktop harness
 requires a disposable Windows VM. Source matching of network/stdio/connection
 roles also does not prove that live traffic hooks are attached.
 
+A disposable Windows VM was subsequently installed. Four interaction attempts
+stopped in executable-signature preflight or the Native launch bridge; no
+interaction check passed from those attempts. The host's Windows Hypervisor
+Platform was enabled with user approval, and Windows requires a host restart
+before hardware-accelerated acceptance can continue. The selected runtime,
+different Store registration, timing reports and remaining cases are recorded in
+the [VM evidence](../../native-source-adaptation.md#disposable-windows-vm-evidence).
+
 The installed functional consumer was updated to rc.2 and its read-only run
 completed on the resident rc.8. Its report shows **2 operation verifications
 (RPC request/provide), 12 read verifications, 4 unavailable capabilities and
