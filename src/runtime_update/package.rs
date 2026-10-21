@@ -187,7 +187,9 @@ pub(super) fn restore_staged(
     let manifest: RuntimePackageManifest =
         serde_json::from_slice(&read_file(&saved.directory.join(MANIFEST), MANIFEST_LIMIT)?)
             .map_err(|e| error("runtime_update_staged_invalid", e.to_string()))?;
-    if manifest.version != saved.candidate.version || profile.is_some_and(|p| p != manifest.profile)
+    if manifest.version != saved.candidate.version
+        || profile.is_some_and(|p| p != manifest.profile)
+        || saved.candidate.online_only && manifest.online.is_none()
     {
         return Err(error(
             "runtime_update_staged_invalid",
@@ -632,6 +634,22 @@ pub(super) fn inspect_installation(
     verify_payload(root, &manifest, false)?;
     Ok(manifest)
 }
+pub(super) fn resident_fingerprint(
+    root: &Path,
+    profile: RuntimePayloadProfile,
+) -> Result<Option<String>> {
+    if profile == RuntimePayloadProfile::MacApp {
+        return Ok(None);
+    }
+    canonical_directory(root)?;
+    let runtime = pin_at(root)?;
+    let mut digest = Sha256::new();
+    for relative in expected_paths(profile, &runtime, false)? {
+        let file = file_record(&root.join(&relative), &relative)?;
+        digest.update(format!("{}\0{}\0{}\n", file.path, file.bytes, file.sha256));
+    }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
 pub(super) fn stage_archive(
     archive: &Path,
     selected: &super::source::Candidate,
@@ -648,6 +666,7 @@ pub(super) fn stage_archive(
     if manifest.version != selected.public.version
         || manifest.platform != selected.public.platform
         || manifest.profile != selected.profile
+        || selected.public.online_only && manifest.online.is_none()
     {
         return Err(error(
             "runtime_update_manifest_invalid",

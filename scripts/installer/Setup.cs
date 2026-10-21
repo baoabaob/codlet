@@ -46,9 +46,13 @@ namespace Codlet.Setup {
         public readonly Window Window;
         readonly bool preview, chinese;
         readonly Dictionary<string, string> folders = new Dictionary<string, string>();
-        readonly Dictionary<string, string> existing = new Dictionary<string, string>();
+        readonly Dictionary<string, InstalledProduct> existing = new Dictionary<string, InstalledProduct>();
         readonly Dictionary<string, string[]> words = new Dictionary<string, string[]> {
             {"title", new[]{"Codlet 安装器", "Codlet Installer"}},
+            {"upgradeTitle", new[]{"更新 Codlet", "Update Codlet"}}, {"maintainTitle", new[]{"维护 Codlet", "Maintain Codlet"}},
+            {"update", new[]{"更新", "Update"}}, {"repair", new[]{"修复", "Repair"}},
+            {"downgrade", new[]{"已安装 {0}。请选择相同或更新版本的安装包。", "Version {0} is installed. Choose an installer for the same or a newer version."}},
+            {"multiple", new[]{"检测到多个 Codlet 安装。请先在 Windows 的已安装应用中处理重复安装。", "Multiple Codlet installations were found. Resolve the duplicate installations in Windows Installed apps first."}},
             {"close", new[]{"关闭安装器", "Close installer"}}, {"version", new[]{"版本", "Version"}},
             {"scope", new[]{"安装范围", "Install for"}}, {"admin", new[]{"需要管理员权限", "Administrator permission required"}},
             {"user", new[]{"仅当前用户", "Just me"}}, {"machine", new[]{"所有用户（全局）", "Everyone on this computer"}},
@@ -76,7 +80,7 @@ namespace Codlet.Setup {
             {"preview", new[]{"这是界面预览，没有执行安装。", "This is a preview; no installation was performed."}}
         };
         string scope = "user", phase = "setup", logPath;
-        bool syncing, closed, gateBusy, cancelPending; MsiSession session;
+        bool syncing, closed, gateBusy, cancelPending, conflictingProducts; MsiSession session;
         List<RunningApplication> running = new List<RunningApplication>();
         public SetupWindow(bool isPreview, bool english) {
             preview = isPreview; chinese = !english && UsesChinese(CultureInfo.CurrentUICulture);
@@ -91,12 +95,15 @@ namespace Codlet.Setup {
             folders["user"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Codlet");
             folders["machine"] = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Codlet");
             if (!preview) {
-                ReadExisting("user", RegistryHive.CurrentUser); ReadExisting("machine", RegistryHive.LocalMachine);
+                foreach (var product in InstalledProducts.Read()) {
+                    if (existing.ContainsKey(product.Scope)) { conflictingProducts = true; continue; }
+                    existing[product.Scope] = product; folders[product.Scope] = product.Folder;
+                }
                 if (!existing.ContainsKey("user") && existing.ContainsKey("machine")) scope = "machine";
             }
             syncing = true; Control<RadioButton>(scope == "user" ? "UserScope" : "MachineScope").IsChecked = true; syncing = false;
             Control<TextBox>("InstallPath").Text = folders[scope];
-            if (!preview) ReadChoices();
+            ReadChoices(); RefreshInstallationPresentation();
             Control<Button>("CloseButton").Click += delegate { CloseOrCancel(); };
             Control<Button>("SecondaryButton").Click += delegate { Secondary(); };
             Control<Button>("PrimaryButton").Click += async delegate { await Primary(); };
@@ -140,29 +147,31 @@ namespace Codlet.Setup {
                 Control<Image>("BrandIcon").Source = bitmap;
             }
         }
-        void ReadExisting(string context, RegistryHive hive) {
-            using (var root = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64))
-            using (var key = root.OpenSubKey(@"Software\Codlet\Preview\Installer")) {
-                string folder = key == null ? null : key.GetValue("InstallFolder") as string;
-                if (!String.IsNullOrEmpty(folder) && File.Exists(Path.Combine(folder, "codlet.exe"))) { folders[context] = folder; existing[context] = folder; }
-            }
-        }
         void ReadChoices() {
             if (!existing.ContainsKey(scope)) return;
-            using (var root = RegistryKey.OpenBaseKey(scope == "user" ? RegistryHive.CurrentUser : RegistryHive.LocalMachine, RegistryView.Registry64))
-            using (var key = root.OpenSubKey(@"Software\Codlet\Preview\Installer"))
-            using (var plugins = key == null ? null : key.OpenSubKey("Plugins")) {
-                if (key == null) return;
-                Control<CheckBox>("StartMenuChoice").IsChecked = key.GetValue("Shortcuts") != null;
-                Control<CheckBox>("DesktopChoice").IsChecked = key.GetValue("DesktopShortcut") != null;
-                foreach (var pair in new[]{new[]{"GuiChoice", "codlet-gui"}})
-                    Control<CheckBox>(pair[0]).IsChecked = plugins != null && Convert.ToInt32(plugins.GetValue(pair[1], 0)) == 1;
+            foreach (var pair in new[]{new[]{"StartMenuChoice", "StartMenu"}, new[]{"DesktopChoice", "DesktopShortcut"}, new[]{"PathChoice", "CliPath"}, new[]{"GuiChoice", "GUI"}}) {
+                bool selected;
+                if (existing[scope].Features.TryGetValue(pair[1], out selected)) Control<CheckBox>(pair[0]).IsChecked = selected;
             }
+        }
+        InstallRelation Relation { get { return existing.ContainsKey(scope) ? existing[scope].RelationTo(SetupBuild.MsiVersion) : InstallRelation.Fresh; } }
+        string PrimaryLabel { get { return T(Relation == InstallRelation.Upgrade ? "update" : Relation == InstallRelation.Maintenance ? "repair" : "install"); } }
+        void RefreshInstallationPresentation() {
+            var relation = Relation;
+            string title = T(relation == InstallRelation.Upgrade ? "upgradeTitle" : relation == InstallRelation.Maintenance ? "maintainTitle" : "title");
+            Window.Title = title; Control<TextBlock>("InstallerTitle").Text = title;
+            string versions = existing.ContainsKey(scope) && relation != InstallRelation.Maintenance ? existing[scope].Version + " → " + SetupBuild.Version : SetupBuild.Version;
+            Control<TextBlock>("VersionLabel").Text = versions;
+            System.Windows.Automation.AutomationProperties.SetName(Control<TextBlock>("VersionLabel"), T("version") + " " + versions);
+            bool fresh = existing.Count == 0;
+            Control<RadioButton>("UserScope").IsEnabled = fresh; Control<RadioButton>("MachineScope").IsEnabled = fresh;
+            Control<TextBox>("InstallPath").IsReadOnly = !fresh; Control<Button>("BrowseButton").IsEnabled = fresh;
+            if (phase == "setup") Control<Button>("PrimaryButton").Content = PrimaryLabel;
         }
         void ChangeScope(string next) {
             if (syncing || scope == next) return;
             folders[scope] = Control<TextBox>("InstallPath").Text;
-            scope = next; Control<TextBox>("InstallPath").Text = folders[scope]; Validate();
+            scope = next; Control<TextBox>("InstallPath").Text = folders[scope]; ReadChoices(); RefreshInstallationPresentation(); Validate();
         }
         void NormalizeDisplayedPath() {
             try { Control<TextBox>("InstallPath").Text = NormalizePath(Control<TextBox>("InstallPath").Text); } catch { }
@@ -181,23 +190,26 @@ namespace Codlet.Setup {
             bool valid = true; string message = "";
             try { NormalizePath(Control<TextBox>("InstallPath").Text); } catch { valid = false; message = T("invalid"); }
             if (existing.ContainsKey(scope == "user" ? "machine" : "user")) { valid = false; message = T("switch"); }
+            if (conflictingProducts || existing.Count > 1) { valid = false; message = T("multiple"); }
+            if (Relation == InstallRelation.Downgrade) { valid = false; message = String.Format(T("downgrade"), existing[scope].Version); }
             Notice(message); Control<TextBlock>("AdminNote").Visibility = scope == "machine" ? Visibility.Visible : Visibility.Collapsed;
             if (phase == "setup") Control<Button>("PrimaryButton").IsEnabled = valid;
             return valid;
         }
         bool Checked(string name) { return Control<CheckBox>(name).IsChecked == true; }
-        internal static string Properties(string scope, string folder, IEnumerable<string> selected) {
+        internal static string Properties(string scope, string folder, IEnumerable<string> selected, bool repair = false) {
             string[] allowed = {"Core", "StartMenu", "DesktopShortcut", "CliPath", "GUI"};
             var choices = new HashSet<string>(selected);
             if ((scope != "user" && scope != "machine") || !choices.Contains("Core") || choices.Any(x => !allowed.Contains(x))) throw new ArgumentException("Invalid install selection");
             folder = NormalizePath(folder);
             string remove = String.Join(",", allowed.Where(x => !choices.Contains(x)));
-            return "ALLUSERS=2 MSIINSTALLPERUSER=" + (scope == "user" ? "1" : "\"\"") + " REBOOT=ReallySuppress INSTALLFOLDER=\"" + folder + "\" ADDLOCAL=" + String.Join(",", allowed.Where(choices.Contains)) + (remove.Length == 0 ? "" : " REMOVE=" + remove);
+            return "ALLUSERS=2 MSIINSTALLPERUSER=" + (scope == "user" ? "1" : "\"\"") + " REBOOT=ReallySuppress INSTALLFOLDER=\"" + folder + "\" ADDLOCAL=" + String.Join(",", allowed.Where(choices.Contains)) + (remove.Length == 0 ? "" : " REMOVE=" + remove) + (repair ? " REINSTALL=" + String.Join(",", allowed.Where(choices.Contains)) + " REINSTALLMODE=vamus" : "");
         }
         string SelectedProperties() {
             var features = new List<string> {"Core"};
             foreach (var pair in new[]{new[]{"StartMenuChoice", "StartMenu"}, new[]{"DesktopChoice", "DesktopShortcut"}, new[]{"PathChoice", "CliPath"}, new[]{"GuiChoice", "GUI"}}) if (Checked(pair[0])) features.Add(pair[1]);
-            return Properties(scope, folders[scope], features);
+            bool repair = Relation == InstallRelation.Maintenance && String.Equals(existing[scope].ProductCode, SetupBuild.ProductCode, StringComparison.OrdinalIgnoreCase);
+            return Properties(scope, folders[scope], features, repair);
         }
         void Status(string name, string heading, string message, string primary) {
             phase = name; Control<StackPanel>("SetupView").Visibility = Visibility.Collapsed; Control<StackPanel>("StatusView").Visibility = Visibility.Visible;
@@ -208,7 +220,7 @@ namespace Codlet.Setup {
         }
         void RestoreSetup() {
             phase = "setup"; Control<StackPanel>("SetupView").Visibility = Visibility.Visible; Control<StackPanel>("StatusView").Visibility = Visibility.Collapsed;
-            Control<Button>("PrimaryButton").Content = T("install"); Control<Button>("SecondaryButton").Content = T("cancel");
+            RefreshInstallationPresentation(); Control<Button>("SecondaryButton").Content = T("cancel");
             Control<Button>("PrimaryButton").Visibility = Visibility.Visible; Control<Button>("SecondaryButton").Visibility = Visibility.Visible; Validate();
         }
         async Task Primary() {
@@ -276,12 +288,15 @@ namespace Codlet.Setup {
             Control<ProgressBar>("Progress").Visibility = Visibility.Visible; Control<ProgressBar>("Progress").IsIndeterminate = true;
             Control<Button>("PrimaryButton").Visibility = Visibility.Collapsed; Control<Button>("SecondaryButton").Content = T("cancel");
             if (preview) { await Task.Delay(500); Complete(0, null); return; }
-            string directory = null; uint result = 1603; string failure = null;
+            string directory = null; uint result = 1603; string failure = null; InstallTiming timing = null;
             try {
-                directory = Path.Combine(Path.GetTempPath(), "Codlet-Setup-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
-                string payload = await Task.Run(() => ExtractPayload(directory));
                 string logs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Codlet", "installer-logs"); Directory.CreateDirectory(logs);
                 logPath = Path.Combine(logs, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + ".log");
+                timing = new InstallTiming(logPath + ".timing.jsonl");
+                directory = Path.Combine(Path.GetTempPath(), "Codlet-Setup-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
+                timing.Write("start", "extract-and-verify-payload", null);
+                string payload = await Task.Run(() => ExtractPayload(directory));
+                timing.Write("end", "extract-and-verify-payload", 0);
                 DateTime last = DateTime.MinValue;
                 session = new MsiSession((value, action) => {
                     if (DateTime.UtcNow - last < TimeSpan.FromMilliseconds(80)) return; last = DateTime.UtcNow;
@@ -291,7 +306,7 @@ namespace Codlet.Setup {
                         string key = action == "InstallFiles" ? "files" : action == "CreateShortcuts" ? "shortcuts" : action == "WriteEnvironmentStrings" ? "environment" : action == "InstallFinalize" ? "register" : "prepare";
                         Control<TextBlock>("ProgressText").Text = T(key);
                     }));
-                });
+                }, timing.Write);
                 session.CancelRequested = cancelPending;
                 IntPtr owner = new WindowInteropHelper(Window).Handle;
                 result = await Task.Run(() => session.Run(payload, properties, logPath, owner)); failure = session.LastError;
@@ -300,6 +315,7 @@ namespace Codlet.Setup {
                 // Delete only our two known files and empty, uniquely owned folder.
                 if (directory != null) try { File.Delete(Path.Combine(directory, "Codlet.msi")); Directory.Delete(directory, false); } catch (IOException) { } catch (UnauthorizedAccessException) { }
                 session = null;
+                if (timing != null) { timing.Write("end", "setup", result); timing.Dispose(); }
             }
             Complete(result, failure);
         }
@@ -345,6 +361,7 @@ namespace Codlet.Setup {
             Capture(Path.Combine(output, "installer-machine.png"));
             ApplyTheme(true);
             Capture(Path.Combine(output, "installer-dark.png"));
+            VerifyUpgradeStates(output);
             Status("gate", T("running"), T("save"), T("recheck"));
             Control<Button>("SecondaryButton").Content = T("cancel");
             Control<TextBox>("ProcessList").Text = "Codex  ·  PID 1234 (fixture)";
@@ -352,8 +369,33 @@ namespace Codlet.Setup {
             if ((string)Control<Button>("PrimaryButton").Content != T("recheck") || (string)Control<Button>("SecondaryButton").Content != T("cancel")) throw new Exception("Process gate must offer only check/cancel");
             Capture(Path.Combine(output, "installer-running.png"));
             var payload = ExtractPayload(output); File.Delete(payload);
-            File.WriteAllText(Path.Combine(output, "report.json"), "{\"passed\":true,\"installationPerformed\":false,\"nativeUi\":true,\"payloadHashVerified\":true,\"scopeAndFeatures\":true,\"msiProgressAndCancellation\":true,\"version\":\"" + SetupBuild.Version + "\"}", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(output, "report.json"), "{\"passed\":true,\"installationPerformed\":false,\"nativeUi\":true,\"payloadHashVerified\":true,\"scopeAndFeatures\":true,\"upgradeMaintenanceDowngrade\":true,\"msiProgressAndCancellation\":true,\"version\":\"" + SetupBuild.Version + "\"}", new UTF8Encoding(false));
             Window.Close();
+        }
+        void VerifyUpgradeStates(string output) {
+            scope = "user";
+            var product = new InstalledProduct { ProductCode = SetupBuild.ProductCode, Version = "fixture-old", MsiVersion = "0.0.0", Scope = scope, Folder = Path.Combine(Path.GetTempPath(), "Codlet Existing Fixture") };
+            foreach (string name in InstalledProducts.FeatureNames) product.Features[name] = name == "Core" || name == "GUI" || name == "DesktopShortcut";
+            existing[scope] = product; folders[scope] = product.Folder;
+            Control<TextBox>("InstallPath").Text = product.Folder;
+            ReadChoices(); RefreshInstallationPresentation(); Validate();
+            if (Relation != InstallRelation.Upgrade || (string)Control<Button>("PrimaryButton").Content != T("update") || !Control<TextBlock>("VersionLabel").Text.Contains("fixture-old → ")) throw new Exception("Upgrade identity presentation failed");
+            if (!Control<TextBox>("InstallPath").IsReadOnly || Control<Button>("BrowseButton").IsEnabled || Control<RadioButton>("MachineScope").IsEnabled || Control<RadioButton>("UserScope").IsEnabled) throw new Exception("An upgrade must retain directory and scope");
+            if (Checked("StartMenuChoice") || Checked("PathChoice") || !Checked("GuiChoice") || !Checked("DesktopChoice")) throw new Exception("Installed feature choices were not retained");
+            if (SelectedProperties().Contains("REINSTALL=")) throw new Exception("Major upgrade must not use maintenance properties");
+            ApplyTheme(false); Capture(Path.Combine(output, "installer-upgrade.png"));
+            product.MsiVersion = SetupBuild.MsiVersion; product.Version = SetupBuild.Version;
+            RefreshInstallationPresentation(); Validate();
+            string repair = SelectedProperties();
+            if (Relation != InstallRelation.Maintenance || (string)Control<Button>("PrimaryButton").Content != T("repair") || !repair.Contains("REINSTALL=Core,DesktopShortcut,GUI REINSTALLMODE=vamus") || !repair.Contains("REMOVE=StartMenu,CliPath")) throw new Exception("Maintenance must repair only the selected features");
+            Capture(Path.Combine(output, "installer-maintenance.png"));
+            product.MsiVersion = "99.0.0"; product.Version = "fixture-newer";
+            RefreshInstallationPresentation(); Validate();
+            if (Relation != InstallRelation.Downgrade || Control<Button>("PrimaryButton").IsEnabled || !Control<TextBlock>("ValidationNote").Text.Contains("fixture-newer")) throw new Exception("Downgrade must be blocked before installation");
+            Capture(Path.Combine(output, "installer-downgrade.png"));
+            product.MsiVersion = "0.0.0"; conflictingProducts = true; Validate();
+            if (Control<Button>("PrimaryButton").IsEnabled) throw new Exception("Conflicting registrations must be blocked");
+            conflictingProducts = false; existing.Clear(); RefreshInstallationPresentation(); Validate();
         }
     }
     static class SetupExtensions { public static T As<T>(this object value) { return (T)value; } }

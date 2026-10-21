@@ -38,6 +38,8 @@ pub(super) struct ChannelArtifact {
     pub sha256: String,
     pub url: Option<String>,
     pub asset_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resident_sha256: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub(super) struct Candidate {
@@ -48,6 +50,7 @@ pub(super) struct Candidate {
 }
 pub(super) struct UpdateClient {
     client: reqwest::Client,
+    pub(super) resident_sha256: Option<String>,
     #[cfg(test)]
     pub fixture_origin: Option<Url>,
 }
@@ -63,6 +66,7 @@ impl UpdateClient {
             .map_err(|e| error("runtime_update_network", e.without_url().to_string()))?;
         Ok(Self {
             client,
+            resident_sha256: None,
             #[cfg(test)]
             fixture_origin: None,
         })
@@ -104,7 +108,12 @@ impl UpdateClient {
                         None,
                     )
                     .await?;
-                let artifact = select_artifact(&manifest, channel, selected_profile)?;
+                let artifact = select_artifact(
+                    &manifest,
+                    channel,
+                    selected_profile,
+                    self.resident_sha256.as_deref(),
+                )?;
                 if !newer(&manifest.version, CURRENT_VERSION)? {
                     return Ok(None);
                 }
@@ -183,7 +192,12 @@ impl UpdateClient {
                         "Release tag and update manifest version differ.",
                     ));
                 }
-                let artifact = select_artifact(&manifest, channel, selected_profile)?;
+                let artifact = select_artifact(
+                    &manifest,
+                    channel,
+                    selected_profile,
+                    self.resident_sha256.as_deref(),
+                )?;
                 if !newer(&manifest.version, CURRENT_VERSION)? {
                     return Ok(None);
                 }
@@ -658,11 +672,12 @@ fn select_artifact(
     manifest: &ChannelManifest,
     channel: &RuntimeUpdateChannel,
     profile: RuntimePayloadProfile,
+    resident_sha256: Option<&str>,
 ) -> Result<ChannelArtifact> {
-    if manifest.schema != 1
+    if !matches!(manifest.schema, 1 | 2)
         || manifest.kind != "codlet-runtime-channel"
         || manifest.channel != channel.channel
-        || manifest.artifacts.len() > 8
+        || manifest.artifacts.len() > if manifest.schema == 1 { 8 } else { 32 }
     {
         return Err(error(
             "runtime_update_manifest_invalid",
@@ -676,27 +691,48 @@ fn select_artifact(
             "A stable channel cannot offer a prerelease.",
         ));
     }
-    let mut matched = manifest
+    let mut identities = BTreeSet::new();
+    for artifact in &manifest.artifacts {
+        if artifact.bytes == 0
+            || artifact.bytes > MAX_DOWNLOAD_BYTES
+            || !package::valid_sha(&artifact.sha256)
+            || artifact.resident_sha256.as_ref().is_some_and(|base| {
+                manifest.schema != 2
+                    || !package::valid_sha(base)
+                    || artifact.profile == RuntimePayloadProfile::MacApp
+            })
+            || !identities.insert((
+                artifact.platform.clone(),
+                format!("{:?}", artifact.profile),
+                artifact.resident_sha256.clone(),
+            ))
+        {
+            return Err(error(
+                "runtime_update_manifest_invalid",
+                "Ambiguous or invalid runtime asset identity, size or digest.",
+            ));
+        }
+    }
+    let matched = manifest
         .artifacts
         .iter()
-        .filter(|a| a.platform == PLATFORM && a.profile == profile);
-    let artifact = matched.next().ok_or_else(|| {
+        .filter(|a| a.platform == PLATFORM && a.profile == profile)
+        .collect::<Vec<_>>();
+    let full = matched
+        .iter()
+        .find(|artifact| artifact.resident_sha256.is_none());
+    let online = resident_sha256.and_then(|base| {
+        matched
+            .iter()
+            .find(|artifact| artifact.resident_sha256.as_deref() == Some(base))
+    });
+    let artifact = online.or(full).ok_or_else(|| {
         error(
             "runtime_update_platform_unavailable",
             "This release has no package for this runtime profile/platform.",
         )
     })?;
-    if matched.next().is_some()
-        || artifact.bytes == 0
-        || artifact.bytes > MAX_DOWNLOAD_BYTES
-        || !package::valid_sha(&artifact.sha256)
-    {
-        return Err(error(
-            "runtime_update_manifest_invalid",
-            "Ambiguous or invalid runtime asset size/digest.",
-        ));
-    }
-    Ok(artifact.clone())
+    Ok((*artifact).clone())
 }
 fn candidate(
     version: String,
@@ -714,6 +750,7 @@ fn candidate(
     );
     Ok(Candidate {
         public: RuntimeUpdateCandidate {
+            online_only: artifact.resident_sha256.is_some(),
             id,
             version,
             platform: artifact.platform,
@@ -725,6 +762,128 @@ fn candidate(
         url,
         origins,
     })
+}
+
+#[cfg(test)]
+mod release_selection_tests {
+    use super::*;
+    fn artifact(base: Option<&str>) -> ChannelArtifact {
+        ChannelArtifact {
+            platform: PLATFORM.into(),
+            profile: RuntimePayloadProfile::Portable,
+            bytes: 100,
+            sha256: "a".repeat(64),
+            url: Some("https://example.test/update.zip".into()),
+            asset_name: None,
+            resident_sha256: base.map(str::to_owned),
+        }
+    }
+    fn channel() -> RuntimeUpdateChannel {
+        RuntimeUpdateChannel {
+            schema: 1,
+            channel: "preview".into(),
+            check_interval_seconds: 900,
+            source: None,
+        }
+    }
+    #[test]
+    fn targeted_catalog_selects_exact_resident_or_the_complete_package() {
+        let base = "b".repeat(64);
+        let manifest = ChannelManifest {
+            schema: 2,
+            kind: "codlet-runtime-channel".into(),
+            channel: "preview".into(),
+            version: "9.0.0-rc.1".into(),
+            artifacts: vec![artifact(None), artifact(Some(&base))],
+        };
+        assert_eq!(
+            select_artifact(
+                &manifest,
+                &channel(),
+                RuntimePayloadProfile::Portable,
+                Some(&base)
+            )
+            .unwrap()
+            .resident_sha256,
+            Some(base.clone())
+        );
+        assert!(
+            select_artifact(
+                &manifest,
+                &channel(),
+                RuntimePayloadProfile::Portable,
+                Some(&"c".repeat(64))
+            )
+            .unwrap()
+            .resident_sha256
+            .is_none()
+        );
+        assert!(
+            select_artifact(&manifest, &channel(), RuntimePayloadProfile::Portable, None)
+                .unwrap()
+                .resident_sha256
+                .is_none()
+        );
+        let selected = candidate(
+            manifest.version.clone(),
+            artifact(Some(&base)),
+            Url::parse("https://example.test/update.zip").unwrap(),
+            BTreeSet::new(),
+            None,
+        )
+        .unwrap();
+        assert!(selected.public.online_only);
+    }
+    #[test]
+    fn targeted_catalog_rejects_ambiguous_unknown_and_legacy_overrides() {
+        let base = "b".repeat(64);
+        let mut manifest = ChannelManifest {
+            schema: 2,
+            kind: "codlet-runtime-channel".into(),
+            channel: "preview".into(),
+            version: "9.0.0".into(),
+            artifacts: vec![artifact(Some(&base)), artifact(Some(&base))],
+        };
+        assert!(
+            select_artifact(
+                &manifest,
+                &channel(),
+                RuntimePayloadProfile::Portable,
+                Some(&base)
+            )
+            .is_err()
+        );
+        manifest.artifacts.pop();
+        assert!(
+            select_artifact(
+                &manifest,
+                &channel(),
+                RuntimePayloadProfile::Portable,
+                Some(&"c".repeat(64))
+            )
+            .is_err()
+        );
+        manifest.schema = 1;
+        assert!(
+            select_artifact(
+                &manifest,
+                &channel(),
+                RuntimePayloadProfile::Portable,
+                Some(&base)
+            )
+            .is_err()
+        );
+        manifest.schema = 2;
+        manifest.artifacts[0].resident_sha256 = Some("not-a-hash".into());
+        assert!(
+            select_artifact(&manifest, &channel(), RuntimePayloadProfile::Portable, None).is_err()
+        );
+        manifest.schema = 3;
+        manifest.artifacts = vec![artifact(None)];
+        assert!(
+            select_artifact(&manifest, &channel(), RuntimePayloadProfile::Portable, None).is_err()
+        );
+    }
 }
 #[derive(Deserialize)]
 struct GitHubRelease {

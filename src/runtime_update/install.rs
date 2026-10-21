@@ -120,6 +120,18 @@ pub(super) fn prepare_install_plan_with_official(
     restart: &RuntimeRestartContext,
     official_update: bool,
 ) -> Result<RuntimeInstallRequest> {
+    if staged.candidate.online_only {
+        return Err(error(
+            "core_update_online_only",
+            "This package can only update compatible live components.",
+        ));
+    }
+    if install_root.join("msi-install.json").exists() {
+        return Err(error(
+            "core_update_installer_owned",
+            "Use the Codlet setup executable to upgrade this installation.",
+        ));
+    }
     #[cfg(target_os = "macos")]
     if restart.profile == RuntimePayloadProfile::MacApp {
         return mac::prepare(install_root, state_root, staged, restart, official_update);

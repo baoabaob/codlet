@@ -178,6 +178,7 @@ fn online_install_fixture(include_modules: bool) {
         manifest,
         manifest_sha256: sha(&manifest_bytes),
         candidate: RuntimeUpdateCandidate {
+            online_only: false,
             id: "a".repeat(64),
             version: "1.0.1".into(),
             platform: PLATFORM.into(),
@@ -707,6 +708,7 @@ fn zip_payload(
 fn candidate(bytes: &[u8], profile: RuntimePayloadProfile) -> source::Candidate {
     source::Candidate {
         public: RuntimeUpdateCandidate {
+            online_only: false,
             id: sha(bytes),
             version: "9.0.0".into(),
             platform: PLATFORM.into(),
@@ -801,19 +803,26 @@ fn only_the_exact_built_in_preview_sources_move_to_stable() {
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
     assert_eq!(
         selected_asset(read_channel(root.path()).unwrap()),
-        "codlet-update-managed.json"
+        "codlet-update-managed-v2.json"
     );
     channel.check_interval_seconds = 901;
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
     let migrated = read_channel(root.path()).unwrap();
     assert_eq!(migrated.check_interval_seconds, 901);
     assert_eq!(migrated.channel, "stable");
-    assert_eq!(selected_asset(migrated), "codlet-update-managed.json");
+    assert_eq!(selected_asset(migrated), "codlet-update-managed-v2.json");
     if let Some(RuntimeUpdateSource::Github { manifest_asset, .. }) = &mut channel.source {
         *manifest_asset = "codlet-update-managed.json".into();
     }
     std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
     assert_eq!(read_channel(root.path()).unwrap().channel, "stable");
+    channel.channel = "stable".into();
+    std::fs::write(&path, serde_json::to_vec(&channel).unwrap()).unwrap();
+    assert_eq!(
+        selected_asset(read_channel(root.path()).unwrap()),
+        "codlet-update-managed-v2.json"
+    );
+    channel.channel = "preview".into();
     if let Some(RuntimeUpdateSource::Github { manifest_asset, .. }) = &mut channel.source {
         *manifest_asset = "codlet-update.json".into();
     }
@@ -1706,6 +1715,25 @@ fn install_plan_binds_current_identity_and_only_the_two_owner_configuration_pins
             .any(|p| p["pid"] == std::process::id())
     );
     assert!(!request.handoff_ack_path.exists());
+    let mut online_only = staged.clone();
+    online_only.candidate.online_only = true;
+    assert_eq!(
+        install::prepare_install_plan(&install_root, &state_root, &online_only, &restart)
+            .unwrap_err()
+            .code,
+        "core_update_online_only"
+    );
+    std::fs::write(install_root.join("msi-install.json"), b"{}").unwrap();
+    assert_eq!(
+        install::prepare_install_plan(&install_root, &state_root, &staged, &restart)
+            .unwrap_err()
+            .code,
+        "core_update_installer_owned"
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&config).unwrap()).unwrap(),
+        original
+    );
 }
 
 #[cfg(windows)]

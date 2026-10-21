@@ -351,6 +351,7 @@ impl Authority {
         }
         let selected = super::source::Candidate {
             public: RuntimeUpdateCandidate {
+                online_only: false,
                 id: value.id.clone(),
                 version: value.version.clone(),
                 platform: super::PLATFORM.into(),

@@ -75,7 +75,7 @@ fn modules_for_fixture(stamp: &str) -> BTreeMap<String, String> {
 
 #[test]
 fn core_update_uses_the_actual_foreground_coordinator_for_apply_and_defer() {
-    for scenario in ["applied", "nextStart", "failed"] {
+    for scenario in ["applied", "nextStart", "onlineBlocked", "failed"] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--ignored",
@@ -101,12 +101,12 @@ fn foreground_child() {
     let scenario = std::env::var("CODLET_FOREGROUND_CHILD").unwrap();
     assert!(matches!(
         scenario.as_str(),
-        "applied" | "nextStart" | "failed"
+        "applied" | "nextStart" | "onlineBlocked" | "failed"
     ));
     run_foreground(&scenario);
 }
 fn run_foreground(scenario: &str) {
-    let with_state = scenario != "nextStart";
+    let with_state = !matches!(scenario, "nextStart" | "onlineBlocked");
     let fails_both_generations = scenario == "failed";
     let directory = tempfile::tempdir().unwrap();
     let install = directory.path().join("install");
@@ -270,6 +270,7 @@ fn run_foreground(scenario: &str) {
             manifest,
             manifest_sha256: digest(&bytes),
             candidate: RuntimeUpdateCandidate {
+                online_only: scenario != "nextStart",
                 id: "c".repeat(64),
                 version: "1.0.1".into(),
                 platform: PLATFORM.into(),
@@ -439,8 +440,18 @@ fn run_foreground(scenario: &str) {
             candidate_modules
         );
     } else {
-        assert_eq!(status.phase, RuntimeUpdatePhase::Deferred, "{status:?}");
-        assert_eq!(status.activation.as_ref().unwrap().mode, "nextStart");
+        if scenario == "onlineBlocked" {
+            assert_eq!(status.phase, RuntimeUpdatePhase::Failed, "{status:?}");
+            assert_eq!(
+                status.error.as_ref().unwrap().code,
+                "core_update_online_only"
+            );
+            assert!(status.activation.is_none());
+            assert!(!state_root.join("runtime-update-next-start.json").exists());
+        } else {
+            assert_eq!(status.phase, RuntimeUpdatePhase::Deferred, "{status:?}");
+            assert_eq!(status.activation.as_ref().unwrap().mode, "nextStart");
+        }
         assert!(
             host_events
                 .iter()

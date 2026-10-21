@@ -67,10 +67,11 @@ const rtfText=value=>value.replaceAll('\\','\\\\').replaceAll('{','\\{').replace
 const license='{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs20 '+rtfText('Codlet\n\nCore and official plugins are licensed under Apache-2.0. Installation can be per-user or all-users; plugin data remains per-user. Optional plugins are initialized on first launch; uninstall retains data by default and offers optional, scoped Codlet data cleanup. See NOTICE and THIRD_PARTY_NOTICES.txt for attribution. The JavaScript runtime LICENSE is stored with its verified private cache after preparation.\n\n')+rtfText(licenseText)+'}';
 await writeFile(resolve(build,'notice.rtf'),license);
 const source=`<?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="*" Name="Codlet ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"><Product Id="${guid('product:'+app)}" Name="Codlet ${xml(app)}" Manufacturer="Codlet" Language="2052" Codepage="936" Version="${msiVersion}" UpgradeCode="941c0f18-d41f-46e9-a3d1-a9562d75bf76">
 <Package InstallerVersion="500" Compressed="yes" InstallPrivileges="elevated" Platform="x64" SummaryCodepage="936" Description="Codlet"/>
 <Property Id="ALLUSERS" Value="2" Secure="yes"/><Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes"/>
 <Property Id="INSTALLFOLDER" Secure="yes"/>
+<SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" Sequence="execute">1</SetProperty>
 <Property Id="PRIORUSERFOLDER"><RegistrySearch Id="PriorUserInstallFolder" Root="HKCU" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="raw" Win64="yes"/></Property>
 <Property Id="PRIORMACHINEFOLDER"><RegistrySearch Id="PriorMachineInstallFolder" Root="HKLM" Key="Software\\Codlet\\Preview\\Installer" Name="InstallFolder" Type="raw" Win64="yes"/></Property>
 <SetProperty Id="INSTALLFOLDER" Value="[PRIORUSERFOLDER]" After="AppSearch" Sequence="both">NOT INSTALLFOLDER AND PRIORUSERFOLDER AND (NOT ALLUSERS OR (ALLUSERS=2 AND MSIINSTALLPERUSER=1))</SetProperty>

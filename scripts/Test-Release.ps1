@@ -7,9 +7,10 @@ $utf8 = [Text.UTF8Encoding]::new($false)
 $coreRoot = Split-Path -Parent $PSScriptRoot
 $releaseScript = Join-Path $PSScriptRoot 'Publish-Release.ps1'
 $versionMatch = [regex]::Match([IO.File]::ReadAllText((Join-Path $coreRoot 'Cargo.toml')), '(?m)^version\s*=\s*"([^"]+)"')
-if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -notmatch '^\d+\.\d+\.\d+$') { throw 'Test fixture expects a stable package version.' }
+if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -notmatch '^\d+\.\d+\.\d+(?:-rc\.\d+)?$') { throw 'Test fixture expects a final or release-candidate version.' }
 $version = $versionMatch.Groups[1].Value
 . $releaseScript
+$fixtureChannel = if ($version.Contains('-')) { 'preview' } else { 'stable' }
 $root = Join-Path ($env:SystemDrive.TrimEnd('\') + '\') ('cpr-' + [Guid]::NewGuid().ToString('N'))
 if (Test-Path -LiteralPath $root) { throw 'Generated fixture directory already exists.' }
 [IO.Directory]::CreateDirectory($root) | Out-Null
@@ -153,7 +154,7 @@ function Assert-OfflineTagCreation {
     if (-not $rejected) { throw 'A failed tag creation with no resulting ref was not rejected.' }
 }
 
-function Assert-OfflineDraftPublishRecovery {
+function Assert-OfflineDraftPublishRecovery([bool]$Prerelease = $false) {
     $commit = 'c' * 40
     $script:mockTagState = $null
     $script:mockTagCreateCount = 0
@@ -163,7 +164,7 @@ function Assert-OfflineDraftPublishRecovery {
     $loaded = [pscustomobject]@{
         Plan = [pscustomobject]@{
             repository = 'owner/repo'; tag = 'v0.0.1'; sourceCommit = $commit
-            releaseName = 'Codlet Release Fixture'; assets = @()
+            releaseName = 'Codlet Release Fixture'; assets = @(); prerelease = $Prerelease
         }
         Notes = 'synthetic immutable notes'
         Root = 'unused'
@@ -180,7 +181,7 @@ function Assert-OfflineDraftPublishRecovery {
         throw 'PrepareDraft retry did not resume the exact draft without recreating its tag.'
     }
     $published = Invoke-PublishAction $loaded $true
-    if ($published.draft -or $published.prerelease -ne $false -or $script:mockRelease.draft -or $script:mockTagState -ne $commit) {
+    if ($published.draft -or $published.prerelease -ne $Prerelease -or $script:mockRelease.draft -or $script:mockTagState -ne $commit) {
         throw 'The prepared exact-tag draft could not transition to a stable publish.'
     }
 }
@@ -188,6 +189,7 @@ function Assert-OfflineDraftPublishRecovery {
 try {
     Assert-OfflineTagCreation
     Assert-OfflineDraftPublishRecovery
+    Assert-OfflineDraftPublishRecovery $true
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $win = Join-Path $root 'windows'
@@ -341,7 +343,7 @@ try {
     Write-Json $macManifestPath $macManifest
 
     $arguments = @(
-        '-Action', 'Plan', '-Repository', 'baoabaob/codlet',
+        '-Action', 'Plan', '-Repository', 'baoabaob/codlet', '-Channel', $fixtureChannel,
         '-WindowsPortableDirectory', $portable, '-WindowsPortableZip', $portableZip,
         '-WindowsMsi', $msiPath, '-WindowsMsiManifest', $msiManifestPath,
         '-WindowsSetup', $setupPath,
@@ -362,6 +364,7 @@ try {
         "codlet-runtime-$version-win-x64-portable.zip",
         "Codlet-$version-darwin-arm64-update.zip",
         'codlet-update-managed.json',
+        'codlet-update-managed-v2.json',
         'SHA256SUMS.txt'
     )
     if ($TestLegacyBridge) { $expectedAssets += 'codlet-update.json' }
@@ -391,15 +394,15 @@ try {
     }
     if ($releaseNotes -match 'Windows x64 MSI|Windows x64 portable ZIP|releases/download/[^)]+\.msi') { throw 'Release notes still advertise a separate Windows installation package.' }
     if ($releaseNotes -match '(?m)^\| Asset \|' -or $releaseNotes -match '(?m)^\| ``[^|]+`` \|') { throw 'Release notes duplicate the per-asset hash table instead of directing readers to SHA256SUMS.txt.' }
-    $channel = [IO.File]::ReadAllText((Join-Path $outputDirectory 'codlet-update-managed.json')) | ConvertFrom-Json
+    $fixtureManifest = [IO.File]::ReadAllText((Join-Path $outputDirectory 'codlet-update-managed.json')) | ConvertFrom-Json
     if ($TestLegacyBridge -and (Hash-File (Join-Path $outputDirectory 'codlet-update.json')) -ne (Hash-File (Join-Path $outputDirectory 'codlet-update-managed.json'))) { throw 'Bridge channels disagree about the update payloads.' }
-    if ($plan.version -ne $version -or $plan.prerelease -ne $false -or $channel.channel -ne 'stable' -or $channel.version -ne $version -or $channel.artifacts.Count -ne 2) { throw 'Versioned Preview channel contract is incorrect.' }
-    foreach ($artifact in $channel.artifacts) {
+    if ($plan.version -ne $version -or $plan.prerelease -ne $version.Contains('-') -or $fixtureManifest.channel -ne $fixtureChannel -or $fixtureManifest.version -ne $version -or $fixtureManifest.artifacts.Count -ne 2) { throw 'Versioned Preview channel contract is incorrect.' }
+    foreach ($artifact in $fixtureManifest.artifacts) {
         $asset = @($plan.assets | Where-Object { $_.name -eq $artifact.assetName })
         if ($asset.Count -ne 1 -or $asset[0].bytes -ne $artifact.bytes -or $asset[0].sha256 -ne $artifact.sha256) { throw 'Updater manifest does not match the release asset inventory.' }
     }
-    $portableChannel = @($channel.artifacts | Where-Object { $_.platform -eq 'win-x64' -and $_.profile -eq 'portable' })
-    $macChannel = @($channel.artifacts | Where-Object { $_.platform -eq 'darwin-arm64' -and $_.profile -eq 'macApp' })
+    $portableChannel = @($fixtureManifest.artifacts | Where-Object { $_.platform -eq 'win-x64' -and $_.profile -eq 'portable' })
+    $macChannel = @($fixtureManifest.artifacts | Where-Object { $_.platform -eq 'darwin-arm64' -and $_.profile -eq 'macApp' })
     if ($portableChannel.Count -ne 1 -or $macChannel.Count -ne 1) { throw 'Updater platforms/profiles are not the expected Core contract.' }
     foreach ($action in @('PrepareDraft', 'Publish')) {
         $dryResult = & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript -Action $action -PlanPath $planPath
@@ -421,13 +424,27 @@ try {
     }
     $validationPath = Join-Path $outputDirectory $plan.verificationInputs.macos.file
     if(-not $TestLegacyBridge){
+        $onlineBase=Join-Path $root 'online-base'
+        [IO.Directory]::CreateDirectory((Join-Path $onlineBase 'runtime'))|Out-Null
+        $baseExe=Join-Path $onlineBase 'codlet.exe'
+        [IO.File]::Copy((Join-Path $portable 'codlet.exe'),$baseExe)
+        $baseStream=[IO.File]::Open($baseExe,[IO.FileMode]::Append)
+        try{foreach($name in @('client-bridge-bundle.cjs','client-bridge-bootstrap.cjs')){$bytes=[IO.File]::ReadAllBytes((Join-Path $coreRoot ('runtime/'+$name)));$baseStream.Write($bytes,0,$bytes.Length)}}finally{$baseStream.Dispose()}
+        [IO.File]::Copy((Join-Path $portable 'runtime/node-runtime.json'),(Join-Path $onlineBase 'runtime/node-runtime.json'))
+        Write-Json (Join-Path $onlineBase 'distribution-manifest.json') @{schema=1;kind='codlet-portable-distribution';version='0.0.1';platform='win-x64';sourceCommit=$coreCommit;files=@('codlet.exe','runtime/node-runtime.json'|ForEach-Object{File-Record (Join-Path $onlineBase $_) $_})}
         $windowsOutput=$outputDirectory+'-windows-only'
-        $windowsArguments=@('-Action','Plan','-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-WindowsSetup',$setupPath,'-OutputDirectory',$windowsOutput)
+        $windowsArguments=@('-Action','Plan','-Channel',$fixtureChannel,'-WindowsOnly','-WindowsPortableDirectory',$portable,'-WindowsMsi',$msiPath,'-WindowsMsiManifest',$msiManifestPath,'-WindowsSetup',$setupPath,'-WindowsOnlineBaseDirectories',$onlineBase,'-OnlineModuleIds','core-ui-provider','-OutputDirectory',$windowsOutput)
         $windowsReport=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript @windowsArguments
         if($LASTEXITCODE -ne 0){throw 'Windows-only Preview fixture failed'}
         $windowsReport=($windowsReport -join "`n")|ConvertFrom-Json
         if($windowsReport.updaterPlatforms.Count -ne 1 -or $windowsReport.externalWrites){throw 'Windows-only release advertises an unbuilt platform'}
         $windowsPlan=Join-Path $windowsOutput 'release-plan.json'
+        $onlineCatalog=[IO.File]::ReadAllText((Join-Path $windowsOutput 'codlet-update-managed-v2.json'))|ConvertFrom-Json
+        $targeted=@($onlineCatalog.artifacts|Where-Object {$_.PSObject.Properties['residentSha256']})
+        if($targeted.Count -ne 1 -or @($onlineCatalog.artifacts).Count -ne 2){throw 'Windows release did not include complete and targeted online assets'}
+        $wrongIdentityRejected=$false
+        try{Assert-WindowsUpdateZip (Join-Path $windowsOutput $targeted[0].assetName) $version -ResidentSha256 ('0'*64)}catch{if($_ -notmatch 'resident files differ'){throw};$wrongIdentityRejected=$true}
+        if(-not $wrongIdentityRejected){throw 'Online catalog accepted a payload for a different resident'}
         foreach($action in @('PrepareDraft','Publish')){
             $dryResult=& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $releaseScript -Action $action -PlanPath $windowsPlan
             if($LASTEXITCODE -ne 0 -or (($dryResult -join "`n")|ConvertFrom-Json).externalWrites){throw 'Windows-only release plan cannot be safely validated'}
@@ -471,7 +488,8 @@ try {
             'draft preparation tag creation is exact-commit, idempotent, retryable after interruption, and refuses conflicting refs',
             'synthetic draft creation interruption recovers through PrepareDraft and Publish without remote network access',
             'release notes explain package choices, preview improvements, checksums, and the precise macOS signing status',
-            'stable plan is a final release and plan-only draft/publish actions make no external writes',
+            'final and preview metadata retain their channel and draft/publish actions make no external writes without Apply',
+            'a release includes complete and exact-resident online packages; mismatched resident selectors are refused',
             'distribution manifests and the native setup receipt remain local verification inputs',
             'changed local-only verification manifest is refused',
             'changed same-version local asset is refused'

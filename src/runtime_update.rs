@@ -113,6 +113,11 @@ pub struct RuntimeUpdateCandidate {
     pub size: u64,
     pub sha256: String,
     pub release_url: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub online_only: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -334,13 +339,23 @@ impl RuntimeUpdateService {
                         return;
                     }
                 };
-                let client = match source::UpdateClient::new(&channel) {
+                let mut client = match source::UpdateClient::new(&channel) {
                     Ok(client) => client,
                     Err(e) => {
                         fail_state(&worker_shared, e);
                         return;
                     }
                 };
+                // Freeze the selector at owner startup; installation still
+                // rechecks every resident file before any live takeover.
+                client.resident_sha256 = package::resident_fingerprint(
+                    &install_root,
+                    restart
+                        .as_ref()
+                        .map_or(RuntimePayloadProfile::Portable, |r| r.profile),
+                )
+                .ok()
+                .flatten();
                 let mut next =
                     (configured && automatic_checks).then_some(std::time::Instant::now());
                 let mut failures = 0u32;
@@ -808,7 +823,8 @@ fn restore_deferred(state: &mut State, root: &Path) {
     let Ok(intent) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return;
     };
-    if intent["schema"] == 1
+    if !staged.candidate.online_only
+        && intent["schema"] == 1
         && intent["kind"] == "codlet-deferred-runtime-update"
         && intent["candidateId"] == staged.candidate.id
         && intent["manifestSha256"] == staged.manifest_sha256
@@ -1061,6 +1077,15 @@ async fn run_command(
             if online_only {
                 return Err(error("core_fixture_online_required", next_start_reason));
             }
+            if staged.candidate.online_only {
+                return Err(error("core_update_online_only", next_start_reason));
+            }
+            if install_root.join("msi-install.json").exists() {
+                return Err(error(
+                    "core_update_installer_owned",
+                    "Use the Codlet setup executable to upgrade this installation.",
+                ));
+            }
             let restart = restart.ok_or_else(|| error("core_update_next_start_required","This update changes resident Core files or its bootstrap; activate it on the next start."))?;
             if !official && !restart_now {
                 package::atomic_json(
@@ -1298,20 +1323,19 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
         ));
     }
     // Existing portable installs retain their channel file during Core updates.
-    // Move only the two historical built-in sources to the first stable channel;
+    // Move only the two historical built-in sources to the stable v2 catalog;
     // custom repositories and manifests keep their explicitly chosen channel.
-    if channel.channel == "preview"
-        && let Some(RuntimeUpdateSource::Github {
-            repository_url,
-            manifest_asset,
-        }) = &mut channel.source
+    if let Some(RuntimeUpdateSource::Github {
+        repository_url,
+        manifest_asset,
+    }) = &mut channel.source
         && repository_url == "https://github.com/baoabaob/codlet"
         && matches!(
             manifest_asset.as_str(),
             "codlet-update.json" | "codlet-update-managed.json"
         )
     {
-        *manifest_asset = "codlet-update-managed.json".into();
+        *manifest_asset = "codlet-update-managed-v2.json".into();
         channel.channel = "stable".into();
     }
     Ok(channel)

@@ -651,6 +651,7 @@ mod tests {
             },
             manifest_sha256: "a".repeat(64),
             candidate: super::super::RuntimeUpdateCandidate {
+                online_only: false,
                 id: "a".repeat(64),
                 version: "1.0.1".into(),
                 platform: super::super::PLATFORM.into(),

@@ -7,6 +7,7 @@ param(
   [string]$GuiBundleDirectory,
   [ValidatePattern('^[0-9a-fA-F]{40}$')][string]$GuiSourceCommit,
   [switch]$Zip,
+  [ValidateSet('stable','preview')][string]$UpdateChannel,
   [switch]$BundleNodeForTests
 )
 Set-StrictMode -Version Latest
@@ -46,7 +47,9 @@ Copy-Payload $CodletExecutable 'codlet.exe'
 [IO.Directory]::CreateDirectory((Join-Path $stage 'runtime'))|Out-Null
 $pin|Add-Member -NotePropertyName mode -NotePropertyValue $pinMode -Force
 [IO.File]::WriteAllText((Join-Path $stage 'runtime/node-runtime.json'),($pin|ConvertTo-Json -Depth 12)+"`n",$utf8)
-Copy-Payload (Join-Path $root 'runtime/update-channel.json') 'runtime/update-channel.json'
+$channel=[IO.File]::ReadAllText((Join-Path $root 'runtime/update-channel.json'))|ConvertFrom-Json
+if($UpdateChannel){$channel.channel=$UpdateChannel}
+[IO.File]::WriteAllText((Join-Path $stage 'runtime/update-channel.json'),($channel|ConvertTo-Json -Depth 8)+"`n",$utf8)
 if($BundleNodeForTests){
   $nodeRelative='runtime/node-v'+$pin.version+'-win-x64'
   Copy-Payload (Join-Path $NodeDirectory 'node.exe') ($nodeRelative+'/node.exe')

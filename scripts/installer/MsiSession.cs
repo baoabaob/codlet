@@ -20,10 +20,11 @@ namespace Codlet.Setup {
         public volatile bool CancelRequested;
         public string LastError;
         readonly Action<double, string> report;
+        readonly Action<string, string, uint?> timing;
         long total, ticks, actionTicks; bool backwards, actionProgress;
         string action = "prepare";
         Handler handler;
-        public MsiSession(Action<double, string> progress) { report = progress; }
+        public MsiSession(Action<double, string> progress, Action<string, string, uint?> recordTiming = null) { report = progress; timing = recordTiming; }
         static string Field(uint record, uint index) {
             uint size = 4096; var text = new StringBuilder((int)size + 1);
             uint result = MsiRecordGetString(record, index, text, ref size);
@@ -41,6 +42,7 @@ namespace Codlet.Setup {
                 if (type == 0x05000000 || type == 0x19000000) { LastError = "FilesInUse"; return 2; }
                 if (type == 0x08000000) {
                     action = Field(record, 1);
+                    if (timing != null) timing("action", action, null);
                     report(total > 0 ? Percent() : -1, action);
                 }
                 if (type == 0x0a000000) {
@@ -68,7 +70,12 @@ namespace Codlet.Setup {
             if (enabled != 0) { MsiSetInternalUI(oldLevel, ref owner); return enabled; }
             uint installed = MsiSetExternalUIRecord(handler, 0x3fff | (1u << 25), IntPtr.Zero, out previous);
             if (installed != 0) { MsiEnableLog(0, null, 0); MsiSetInternalUI(oldLevel, ref owner); return installed; }
-            try { return MsiInstallProduct(package, properties); }
+            try {
+                if (timing != null) timing("start", "msi-transaction", null);
+                uint result = MsiInstallProduct(package, properties);
+                if (timing != null) timing("end", "msi-transaction", result);
+                return result;
+            }
             finally {
                 MsiSetExternalUIRecord(null, 0, IntPtr.Zero, out previous);
                 MsiEnableLog(0, null, 0); MsiSetInternalUI(oldLevel, ref owner);

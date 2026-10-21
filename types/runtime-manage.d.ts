@@ -50,7 +50,7 @@ export interface RuntimeUpdateStatus {
   channel: string;
   lastCheckedAt: number | null;
   nextCheckAt: number | null;
-  candidate: { id: string; version: string; platform: string; size: number; sha256: string; releaseUrl: string | null } | null;
+  candidate: { id: string; version: string; platform: string; size: number; sha256: string; releaseUrl: string | null; /** Never falls back to replacing resident files. */ onlineOnly?: boolean } | null;
   downloadedBytes: number;
   totalBytes: number;
   installAvailable: boolean;

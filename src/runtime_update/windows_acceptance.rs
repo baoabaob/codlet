@@ -96,6 +96,7 @@ fn managed_cross_layer_child() {
     let digest = sha(&zip_bytes);
     let selected = source::Candidate {
         public: RuntimeUpdateCandidate {
+            online_only: false,
             id: digest.clone(),
             version: manifest.version.clone(),
             platform: PLATFORM.into(),
