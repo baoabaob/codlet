@@ -168,6 +168,16 @@ interaction runs must wait for servicing to finish and for the supported
 hypervisor configuration to be available. VM start scripts now reject WHPX when
 the host feature is disabled or its recorded installation still requires a restart.
 
+The guest's full execution state was saved while servicing was in progress and
+successfully restored in a paused VM. Its state stream, virtual disk and firmware
+hashes remained unchanged after that check. Both the VM and local fixture server
+have exited. After the host restart, `tools/resume-vm.ps1` in the lab validates
+those files, restores the original TCG configuration and resumes the guest.
+Finish guest servicing and the queued temporary-file cleanup before shutting it
+down and starting with `tools/start-vm.ps1 -Accelerator whpx`. Cleanup preserves
+session JSONL and database files. The local `reports/acceptance-status.json` and
+`reports/vm-saved-state.json` retain the checkpoint and remaining steps.
+
 The acceptance tools now record per-file signature results, permit explicit
 bounded signature/startup budgets for slow disposable hosts, and emit startup
 phase timing without private configuration. Production startup budgets are
