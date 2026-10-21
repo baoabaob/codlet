@@ -1,6 +1,7 @@
 import { parse, parseExpressionAt, tokenizer } from 'acorn';
 import { analyze } from 'eslint-scope';
 import { workspaceError } from './workspace-dom.js';
+import { keymapQueryKind } from './workspace-keymap-query.js';
 
 const syntaxCache = new Map(), MAX_DECLARATION = 32768, MAX_MODULE_INTERFACE = 512 * 1024;
 const text = node => node?.type === 'Literal' ? node.value :
@@ -169,8 +170,11 @@ export function keymapSourceExport(source, { optional = false } = {}) {
   const code = 'workspace_shortcuts_unavailable', matches = new Map();
   for (const ast of workspaceSourceFunctions(source, 'codex-command-keymap-state')) {
     const resolve = workspaceLexicalReferences(ast), values = assignments(ast);
-    const queries = values.filter(value => value.right.type === 'CallExpression' && [2, 3].includes(value.right.arguments.length) &&
-      text(value.right.arguments[1]) === 'codex-command-keymap-state' && value.right.arguments[0]?.type === 'Identifier');
+    const lookup = identifier => {
+      const matches = values.filter(value => resolve(value.left) === resolve(identifier));
+      return matches.length === 1 ? matches[0].right : null;
+    };
+    const queries = values.map(value => ({ ...value, kind: keymapQueryKind(value.right, lookup) })).filter(value => value.kind);
     for (const derived of values) {
       const call = derived.right, callback = call.arguments?.[1];
       if (call.type !== 'CallExpression' || call.arguments.length !== 2 || !functionNode(callback)) continue;
@@ -179,8 +183,7 @@ export function keymapSourceExport(source, { optional = false } = {}) {
       if (!getter) continue;
       let stateProperty = false;
       visitWorkspaceSource(callback.body, node => { if (['Property', 'MemberExpression'].includes(node.type) && key(node) === 'primaryNumberShortcutTarget') stateProperty = true; }, true);
-      if (!stateProperty) continue;
-      for (const query of queries) if (resolve(query.right.arguments[0]) === resolve(call.arguments[0]) &&
+      for (const query of queries) if ((query.kind === 'options' || stateProperty) && resolve(query.right.arguments[0]) === resolve(call.arguments[0]) &&
         queryDataReturns(callback, resolve(getter), resolve(query.left), resolve)) {
         matches.set(`${query.start}:${derived.start}`, derived.left.name);
       }

@@ -150,7 +150,7 @@ impl OfficialUpdateOwner {
         let script = include_str!("../official_update_bridge.js")
             .replace(
                 "__CODLET_PROFILES__",
-                include_str!("../../compatibility/client-profiles.json"),
+                include_str!("../../compatibility/official-update-profiles.json"),
             )
             .replace("__CODLET_ACTION__", &action.to_string());
         for session in self.sessions.values().filter(|s| s.is_live()) {

@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "builds": [
+    {
+      "appVersion": "26.915.31945",
+      "buildNumber": "9922",
+      "entry": "app://-/assets/index-399eac8299b8.js",
+      "module": "app://-/assets/app-initial-6c4523b43a11.js",
+      "exports": {
+        "scope": "Bpn",
+        "services": "L9"
+      },
+      "officialUpdates": {
+        "stateSelector": "s7"
+      }
+    },
+    {
+      "appVersion": "26.917.51856",
+      "buildNumber": "10492",
+      "entry": "app://-/assets/index-aa24a76f5d14.js",
+      "module": "app://-/assets/app-initial-78d977413c37.js",
+      "scopeModule": "app://-/assets/app-shared-4d3eb8fed85c.js",
+      "exports": {
+        "scope": "ZI",
+        "services": "Tnt"
+      },
+      "officialUpdates": {
+        "stateSelector": "Ket"
+      }
+    },
+    {
+      "appVersion": "26.917.61114",
+      "buildNumber": "10640",
+      "entry": "app://-/assets/index-f1fb589dc48d.js",
+      "module": "app://-/assets/app-initial-e1f6333a805b.js",
+      "scopeModule": "app://-/assets/app-shared-6d89d53e1c60.js",
+      "exports": {
+        "scope": "ZI",
+        "services": "Tnt"
+      },
+      "officialUpdates": {
+        "stateSelector": "Ket"
+      }
+    },
+    {
+      "appVersion": "26.917.62051",
+      "buildNumber": "10789",
+      "entry": "app://-/assets/index-88e5ba1e2117.js",
+      "module": "app://-/assets/app-initial-37097744327a.js",
+      "scopeModule": "app://-/assets/app-shared-70a4f71efb70.js",
+      "exports": {
+        "scope": "ZI",
+        "services": "pnt"
+      },
+      "officialUpdates": {
+        "stateSelector": "Pet"
+      }
+    },
+    {
+      "appVersion": "26.917.62051",
+      "buildNumber": "10789",
+      "entry": "app://-/assets/index-897000035213.js",
+      "module": "app://-/assets/app-initial-8f0e46979798.js",
+      "scopeModule": "app://-/assets/app-shared-baf181f346ac.js",
+      "exports": {
+        "scope": "ZI",
+        "services": "pnt"
+      },
+      "officialUpdates": {
+        "stateSelector": "Pet"
+      }
+    },
+    {
+      "appVersion": "26.1013.40934",
+      "buildNumber": "20770",
+      "entry": "app://-/assets/index-a092859c3d97.js",
+      "module": "app://-/assets/app-initial-5851df3f6cb1.js",
+      "scopeModule": "app://-/assets/app-shared-bbfeca5e5737.js",
+      "servicesModule": "app://-/assets/app-shared-bbfeca5e5737.js",
+      "exports": {
+        "scope": "Cot",
+        "services": "Kat"
+      },
+      "officialUpdates": {
+        "stateSelector": "ZCn"
+      }
+    },
+    {
+      "appVersion": "26.1016.51333",
+      "buildNumber": "21161",
+      "entry": "app://-/assets/index-acd6a37721a9.js",
+      "module": "app://-/assets/app-initial-2b6b8063022d.js",
+      "scopeModule": "app://-/assets/app-shared-9cc135f1bdc1.js",
+      "servicesModule": "app://-/assets/app-shared-9cc135f1bdc1.js",
+      "exports": {
+        "scope": "Qst",
+        "services": "ist"
+      },
+      "officialUpdates": {
+        "stateSelector": "gDn"
+      }
+    }
+  ]
+}

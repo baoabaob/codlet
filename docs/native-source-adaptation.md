@@ -63,6 +63,7 @@ dependencies first. Capture both packages while their files are still available:
 node scripts/native-source-snapshot.mjs --archive ABSOLUTE_APP_ASAR --package-full-name PACKAGE_FULL_NAME --output NEW_SNAPSHOT
 node scripts/native-source-index.mjs --snapshot SNAPSHOT --output NEW_INDEX_JSON
 node scripts/native-workspace-analysis.mjs INDEX_JSON NEW_ANALYSIS_JSON
+node scripts/native-official-update-analysis.mjs INDEX_JSON NEW_UPDATE_ANALYSIS_JSON
 node scripts/native-source-diff.mjs OLD_ANALYSIS_JSON NEW_ANALYSIS_JSON NEW_COMPARISON_DIRECTORY
 node scripts/native-source-extract.mjs NEW_ANALYSIS_JSON all NEW_EXCERPT_DIRECTORY
 node scripts/verify-native-workspace-source.mjs NEW_ANALYSIS_JSON NEW_VERIFICATION_JSON
@@ -74,6 +75,14 @@ records the missing archive and modules instead of claiming a complete package.
 Indexing defaults to workspace entry modules and their static dependency closure.
 `--root MODULE` selects other roots; `--all` indexes all captured JavaScript.
 Neither indexing nor source extraction executes Native modules.
+
+The update analysis follows AppScope → initial update state → state atom →
+`isUpdateReady` selector and resolves the exported service used by Native's
+`appUpdates.installUpdate()` callers. It emits a profile only when every identity
+is unique and the source hashes still match. Review generated profiles before
+adding them to `compatibility/official-update-profiles.json`. The update bridge
+uses this separate catalog because update-service compatibility does not establish
+compatibility for the other client interfaces.
 
 The diff accepts `--core ABSOLUTE_DISCOVERY_JS` to propose lookup edits after the
 shared module-pool helper has been installed. The proposal retains predicates
@@ -120,6 +129,32 @@ unchanged; this review does not add Dot-route or composer-rebind support.
 Unmapped external dependencies remain explicit in the diff.
 
 ## Coverage evidence
+
+### Build 21161
+
+Package `26.1016.6573.0` contains app `26.1016.51333`, build `21161`. The official
+update service is exported by the shared renderer module in both builds 20770 and
+21161. Core's update bridge now supports a separate service module and has exact
+profiles for both builds, retaining the app/build/entry and AppScope checks.
+
+The new keymap query uses an options factory with the key
+`["vscode", "codex-command-keymap-state"]`. Its derived signal returns the query's
+`data` directly; the previous conditional `primaryNumberShortcutTarget` rewrite
+is absent. Discovery follows the query-key binding, matching scope, getter and
+returned data. Offline analysis and runtime discovery share the query-shape
+contract. Duplicate keys, unrelated data and shadowed bindings remain rejected.
+
+All 28 workspace roles are located in the new snapshot, and the 27 Core source
+checks pass against both builds. These are source checks, not live interaction
+results. The captured build comparison retains unresolved dependency changes.
+The current installation's update check reports no published Core release;
+locally generated packages do not change that result. The keymap module can be
+packaged online, while the resident official-update bridge requires a complete
+Core upgrade.
+
+Evidence is retained in `.codlet-artifacts/native-update-workflow-20261021-2`.
+The new snapshot was read from the already staged, signed Store package without
+launching it.
 
 The functional consumer's generated inventory contains 219 public operations and
 Native scenarios. `generate-compatibility-coverage.mjs OUTPUT_JSON` derives it

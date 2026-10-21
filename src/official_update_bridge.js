@@ -8,6 +8,8 @@
   const profile = matchesByEntry.length === 1 ? matchesByEntry[0] : null;
   if (window !== window.top || location.origin !== 'app://-' || location.pathname !== '/index.html' || !profile?.officialUpdates) return {available:false,reason:'profile'};
   const module = await import(profile.module), scopeModule = profile.scopeModule ? await import(profile.scopeModule) : module;
+  const servicesModule = !profile.servicesModule || profile.servicesModule === profile.module ? module :
+    profile.servicesModule === profile.scopeModule ? scopeModule : await import(profile.servicesModule);
   const token = scopeModule[profile.exports.scope];
   const root = document.getElementById('root'), key = root && Object.keys(root).find(k => k.startsWith('__reactContainer$'));
   const container = key && root[key], pending = [container?.stateNode?.current ?? container], seen = new Set();
@@ -28,7 +30,7 @@
     if (value && typeof value.isUpdateReady === 'boolean' && ['idle','checking','downloading','ready','installing'].includes(value.lifecycleState) && 'downloadProgressPercent' in value && 'installProgressPercent' in value && 'relaunchNotice' in value && typeof value.supportsAutoInstallWhenIdle === 'boolean') matches.push(value);
     return value;
   });
-  const services = module[profile.exports.services];
+  const services = servicesModule[profile.exports.services];
   if (matches.length !== 1 || typeof services?.appUpdates?.installUpdate !== 'function') return {available:false,reason:'state'};
   const value = matches[0];
   const result = {available:true,phase:value.lifecycleState,isUpdateReady:value.isUpdateReady};

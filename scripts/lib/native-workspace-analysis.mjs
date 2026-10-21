@@ -3,6 +3,7 @@ import path from 'node:path';
 import { digest } from './native-source-snapshot.mjs';
 import { resolveModulePath, parseSourceModel } from './native-source-index.mjs';
 import { WORKSPACE_FUNCTION_ROLES, matchesWorkspaceFunction, workspaceInputProperties } from '../../codex/frontend/src/adapter/workspace-role-contracts.js';
+import { keymapQueryKind } from '../../codex/frontend/src/adapter/workspace-keymap-query.js';
 
 const scopeRoles = {
   appScope: { brand: 'AppScope', parent: null, capabilities: ['navigation', 'shortcuts'] },
@@ -110,14 +111,26 @@ export function workspaceSourceAnalysis(index) {
   add('navigationSignal', navPairs.map(pair => pair.signal), { label: 'navigation signal', capabilities: ['navigation', 'navigationInput', 'locationRestore'] },
     { defaults: unique(navPairs.map(pair => pair.fallback)).map(evidence) });
 
-  const queries = records.filter(item => item.record.value?.type === 'CallExpression' &&
-    [2, 3].includes(item.record.value.arguments.length) && item.record.value.arguments[1]?.literal === 'codex-command-keymap-state');
+  const queryKinds = new Map();
+  const queries = records.filter(item => {
+    if (item.record.value?.type !== 'CallExpression' || ![2, 3].includes(item.record.value.arguments.length) ||
+      !(item.record.value.arguments[1]?.literal === 'codex-command-keymap-state' || item.record.properties.includes('queryKey'))) return false;
+    const expression = parseSourceModel(code(item)).ast.body[0]?.expression;
+    const kind = keymapQueryKind(expression, identifier => {
+      const references = item.record.dependencies.filter(dependency => dependency.name === identifier.name);
+      if (references.length !== 1) return null;
+      const candidates = byBinding.get(resolve(item.module, references[0].binding));
+      return candidates?.length === 1 ? parseSourceModel(code(candidates[0])).ast.body[0]?.expression : null;
+    });
+    if (kind) queryKinds.set(item.key, kind);
+    return !!kind;
+  });
   const queryPairs = [];
   for (const derived of records) {
     const value = derived.record.value;
-    if (value?.type !== 'CallExpression' || value.arguments.length !== 2 || !derived.record.exportNames.length ||
-        !code(derived).includes('primaryNumberShortcutTarget')) continue;
+    if (value?.type !== 'CallExpression' || value.arguments.length !== 2 || !derived.record.exportNames.length) continue;
     for (const query of queries) {
+      if (queryKinds.get(query.key) === 'keyed' ? !code(derived).includes('primaryNumberShortcutTarget') : !derived.record.properties.includes('data')) continue;
       if (!same(derived, value.arguments[0], query, query.record.value.arguments[0])) continue;
       const reads = derived.record.calls.filter(call => call.callee?.parameter?.path?.length === 1 &&
         call.callee.parameter.path[0] === 'get' && call.arguments.length === 1 && call.arguments[0]?.binding &&

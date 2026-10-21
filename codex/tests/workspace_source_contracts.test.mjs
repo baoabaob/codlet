@@ -40,6 +40,19 @@ test('two real query-to-state candidates are rejected even if their text or expo
   missing(duplicate);
 });
 
+test('query-options keymaps retain lexical query-key and returned-data ownership', () => {
+  const source = 'var key,query,state;function init(){return init=lazy(()=>{key=["vscode","codex-command-keymap-state"];' +
+    'query=make(app,()=>({queryKey:key,queryFn:({signal})=>fetchKeymap(signal),enabled:true}));' +
+    'state=derived(app,({get:read})=>{let {data:value}=read(query);return value});})()}export{state as keymap};';
+  assert.equal(keymapSourceExport(source), 'keymap');
+  missing(source.replace('return value', 'return unrelated'));
+  missing(source.replace('read(query)', 'read(unrelatedQuery)'));
+  missing(source.replace('queryKey:key', 'queryKey:unrelatedKey'));
+  missing(source.replace('()=>({queryKey:key', '(key)=>({queryKey:key'));
+  missing(source.replace('"vscode"', '"unreviewed"'));
+  missing(source.replace('query=make', 'key=["other"];query=make'));
+});
+
 test('module syntax ignores string/comment decoys and records actual imports and export aliases', () => {
   const source = 'const text="export{wrong as alias}";/* import {wrong} from "./fake.js"; */' +
     'import {remote as local} from "./moved.js";function f(){return `export{alsoWrong as alias}`;}export{local as alias,local as second};';
