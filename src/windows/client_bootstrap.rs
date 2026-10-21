@@ -437,6 +437,8 @@ fn debug_owned(
     let mut attached = false;
     let mut debug_process: Option<OwnedHandle> = None;
     let mut threads = BTreeMap::<u32, OwnedHandle>::new();
+    #[cfg(feature = "desktop-acceptance")]
+    let mut observed_events = 0_u32;
     let result = (|| {
         if unsafe { DebugActiveProcess(pid) } == 0 {
             return Err(win32("bootstrap_debugger_denied"));
@@ -455,6 +457,13 @@ fn debug_owned(
         let mut loaded_base = None;
         loop {
             if Instant::now() >= deadline {
+                #[cfg(feature = "desktop-acceptance")]
+                eprintln!(
+                    "acceptance-startup: phase=debugger.timeout; events={observed_events}; initial_break={initial_break}; applied={}; expected={}; image_loaded={}",
+                    applied.len(),
+                    module.patches.len(),
+                    loaded_base.is_some()
+                );
                 return Err(fail("bootstrap_timeout"));
             }
             match commands.try_recv() {
@@ -481,6 +490,10 @@ fn debug_owned(
                 return Err(win32("bootstrap_debugger_failed"));
             }
             let mut disposition = 0x00010002;
+            #[cfg(feature = "desktop-acceptance")]
+            {
+                observed_events += 1;
+            }
             let mut complete = false;
             let outcome = (|| {
                 if event.dwProcessId != pid {
@@ -549,6 +562,13 @@ fn debug_owned(
                     let identity = file_identity(file);
                     unsafe { CloseHandle(file) };
                     if identity.ok() == Some(module.identity) {
+                        #[cfg(feature = "desktop-acceptance")]
+                        eprintln!(
+                            "acceptance-startup: phase=image.matched; events={observed_events}; remaining_ms={}",
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .as_millis()
+                        );
                         if !applied.is_empty() {
                             return Err(fail("bootstrap_image_ambiguous"));
                         }

@@ -8,6 +8,20 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+fn startup_timeout() -> Duration {
+    // The non-release acceptance binary can measure slow disposable hosts
+    // without changing the installed launcher's bounded startup contract.
+    #[cfg(all(windows, feature = "desktop-acceptance"))]
+    if let Some(milliseconds) = std::env::var("CODLET_ACCEPTANCE_STARTUP_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (15_000..=180_000).contains(value))
+    {
+        return Duration::from_millis(milliseconds);
+    }
+    Duration::from_secs(15)
+}
+
 pub(crate) struct TrafficOwner {
     traffic: Traffic,
     directory: tempfile::TempDir,
@@ -121,7 +135,7 @@ impl TrafficOwner {
         provider: Option<&crate::plugins::LoadedPlugin>,
         owned_fixture_routes: bool,
     ) -> Result<(), HostError> {
-        let configuration = json!({"source":self.descriptor["source"],"runtimeExecutable":runtime.executable_path(),"deadlineUnixMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64+15000});
+        let configuration = json!({"source":self.descriptor["source"],"runtimeExecutable":runtime.executable_path(),"deadlineUnixMs":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64+startup_timeout().as_millis() as u64});
         let selected=provider.and_then(|provider|match crate::client_launch::source_snapshot(provider,registry,runtime,self.directory.path()){
             Ok(source)=>Some(json!({"owner":provider.manifest.id,"generation":provider.generation,"code":source["code"],"configuration":configuration})),
             Err(error)=>{crate::runtime_log::error("client_source_unavailable",&format!("{}: {}",provider.manifest.id,error.code));None}
@@ -178,6 +192,13 @@ impl TrafficOwner {
             .startup_deadline
             .get()
             .unwrap_or_else(|| Instant::now() + Duration::from_secs(10));
+        #[cfg(feature = "desktop-acceptance")]
+        eprintln!(
+            "acceptance-startup: phase=client.resumed; remaining_ms={}",
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+        );
         #[cfg(windows)]
         if let Some(bootstrap) = self.bootstrap.borrow().as_ref() {
             bootstrap
@@ -236,15 +257,29 @@ impl TrafficOwner {
     ) -> Result<(), crate::windows::process::ProcessError> {
         let run = || -> Result<(), HostError> {
             self.check_alive()?;
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + startup_timeout();
             self.startup_deadline.set(Some(deadline));
             if let Some(bridge) = self.bridge_bootstrap.borrow().as_ref() {
                 if let Some(plan) = bridge.before_resume(child.pid, executable, deadline)? {
+                    #[cfg(feature = "desktop-acceptance")]
+                    eprintln!(
+                        "acceptance-startup: phase=plan.ready; remaining_ms={}",
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis()
+                    );
                     *self.bootstrap.borrow_mut() = Some(
                         crate::windows::client_bootstrap::BootstrapSession::arm(
                             child, executable, plan, deadline,
                         )
                         .map_err(|e| failure(e.code))?,
+                    );
+                    #[cfg(feature = "desktop-acceptance")]
+                    eprintln!(
+                        "acceptance-startup: phase=debugger.armed; remaining_ms={}",
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis()
                     );
                 }
                 return Ok(());

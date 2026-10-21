@@ -19,6 +19,9 @@ for(const key of ['root','clientApp','testBinary']) {
 }
 acceptanceGuiPath(config);
 if(!/^\d+\.\d+\.\d+\.\d+$/.test(config.packageVersion)) throw Error('packageVersion must have four numeric components');
+const signatureTimeoutMs=config.signatureTimeoutMs??20000;
+if(!Number.isSafeInteger(signatureTimeoutMs)||signatureTimeoutMs<20000||signatureTimeoutMs>180000)throw Error('signatureTimeoutMs must be 20000..180000');
+if(config.startupTimeoutMs!=null&&(!Number.isSafeInteger(config.startupTimeoutMs)||config.startupTimeoutMs<15000||config.startupTimeoutMs>180000))throw Error('startupTimeoutMs must be 15000..180000');
 const root=path.resolve(config.root);
 const allowed=/^(SYSTEMROOT|WINDIR|SYSTEMDRIVE|COMSPEC|PATH|PATHEXT|OS|PROCESSOR_ARCHITECTURE|PROCESSOR_ARCHITEW6432|PROCESSOR_IDENTIFIER|PROCESSOR_LEVEL|PROCESSOR_REVISION|NUMBER_OF_PROCESSORS|USERNAME|USERDOMAIN|USERDNSDOMAIN|PROGRAMFILES|PROGRAMFILES\(X86\)|PROGRAMW6432|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|COMMONPROGRAMW6432)$/i;
 const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>allowed.test(k)));
@@ -31,6 +34,7 @@ env.CODEX_ELECTRON_PRIMARY_RUNTIME_UPDATE_MODE='manual';
 env.SHELL='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 env.PSModulePath='C:/Windows/System32/WindowsPowerShell/v1.0/Modules';
 env.CODLET_ACCEPTANCE_ROOT=root;
+if(config.startupTimeoutMs!=null)env.CODLET_ACCEPTANCE_STARTUP_TIMEOUT_MS=String(config.startupTimeoutMs);
 env.CODLET_ACCEPTANCE_SHELL_ENV='1';
 if(config.stalePackageSelection===true)env.CODLET_ACCEPTANCE_STALE_PACKAGE='1';
 if(config.manual===true) {
@@ -58,9 +62,16 @@ env.CODLET_ACCEPTANCE_EXE=path.join(config.clientApp,'ChatGPT.exe');
 const backendNames=['codex.exe','codex-command-runner.exe','codex-code-mode-host.exe',
   'codex-windows-sandbox-setup.exe','codex-windows-sandbox-service.exe'];
 const backendFiles=backendNames.map(name=>path.join(config.clientApp,'resources',name));
+const signatures=[];
 for(const executable of [env.CODLET_ACCEPTANCE_EXE,...backendFiles]) {
   if(!fs.statSync(executable).isFile())throw Error('The selected backend installation is incomplete: '+path.basename(executable));
-  execFileSync(env.SHELL,['-NoLogo','-NoProfile','-NonInteractive','-Command',"$s=Get-AuthenticodeSignature -LiteralPath $env:CODLET_SIGNATURE_FILE; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'OpenAI'){exit 1}"],{env:{...env,CODLET_SIGNATURE_FILE:executable},windowsHide:true,timeout:20000});
+  const started=Date.now(),record={file:path.basename(executable),status:'checking',timeoutMs:signatureTimeoutMs};
+  signatures.push(record);fs.writeFileSync(path.join(root,'signatures.json'),JSON.stringify(signatures,null,2));
+  try {
+    execFileSync(env.SHELL,['-NoLogo','-NoProfile','-NonInteractive','-Command',"$s=Get-AuthenticodeSignature -LiteralPath $env:CODLET_SIGNATURE_FILE; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'OpenAI'){exit 1}"],{env:{...env,CODLET_SIGNATURE_FILE:executable},windowsHide:true,timeout:signatureTimeoutMs});
+    record.status='verified';
+  } catch(error) {record.status='failed';record.errorCode=error.code??null;record.exit=error.status??null;throw error;}
+  finally {record.durationMs=Date.now()-started;fs.writeFileSync(path.join(root,'signatures.json'),JSON.stringify(signatures,null,2));}
 }
 // Some WindowsApps CLI images cannot be executed directly by an unpackaged
 // coordinator. Stage the already verified executable in this fresh test root.

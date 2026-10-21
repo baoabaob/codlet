@@ -94,6 +94,15 @@ does not acquire package identity. It is not a production launcher setting.
 
 Additional opt-in controls support Core integration acceptance without changing production:
 
+- `signatureTimeoutMs` allows 20,000–180,000 ms per signature check (default
+  20,000). Slow disposable hosts can use a larger bound; every executable still
+  requires a valid OpenAI signature. `signatures.json` records each file's result
+  and elapsed time, including a failure before Core starts.
+- `startupTimeoutMs` allows 15,000–180,000 ms for the before-resume image checks
+  and launch handshake in the acceptance build. Record an override with the run:
+  such a run does not establish production startup timing. The installed launcher
+  keeps its 15-second budget. Acceptance diagnostics record remaining time and
+  debugger event progress without including private launch configuration.
 - `localApiKeyFixture: true` writes a synthetic file-only API key and runs a
   bounded loopback HTTP/SSE fixture. Desktop test requests and model replies use
   fixed strings; it never copies a real account. By default the endpoint rejects

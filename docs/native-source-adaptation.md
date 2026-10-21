@@ -135,3 +135,37 @@ indices, analyses, original and reviewed comparisons, source checks, read-only
 Native observations, test logs and delivery packages. Native source is not
 redistributed in the repository. The release validation records the final
 package hashes and the distinction between the resident Core and the candidate.
+
+## Disposable Windows VM evidence
+
+The 2026-10-21 lab is retained at
+`D:/codlet-vm-lab/native-adaptation-20261021`. It contains an activated Windows
+Enterprise Evaluation VM, the original signed build 20770 runtime, fixture
+packages, guarded task scripts and per-attempt reports. The Store installed
+`OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0`; the attempted interaction runs
+explicitly selected the reviewed 26.1013 runtime in that registered package-family
+context. These runs do not validate the newer Store build or an MSIX update.
+
+All six selected executables passed OpenAI signature verification, and the ASAR
+hash matches the source snapshot. The ordinary desktop user token was verified.
+Four attempts stopped in preflight or the launch bridge before the interaction
+probe began. In one measured run, signature checks took 24 and 36 seconds for the
+two slowest files. No split-entry, multi-pane, draft, attachment or IME operation
+is counted as passed from these attempts.
+
+The host's Windows Hypervisor Platform feature was disabled. [QEMU documents that
+feature as a prerequisite](https://www.qemu.org/docs/master/system/whpx.html) for
+its supported WHPX configuration. Software emulation
+and the available single-processor WHPX configuration showed excessive or unstable
+latency. Enabling the Windows component requires an administrator confirmation;
+the prepared host script uses `-NoRestart`. Whether Windows requires a later
+restart must be read from that operation's result. The daily Native process is not
+part of this VM lifecycle.
+
+The acceptance tools now record per-file signature results, permit explicit
+bounded signature/startup budgets for slow disposable hosts, and emit startup
+phase timing without private configuration. Production startup budgets are
+unchanged. The local lab's limited-token launcher captures a real child exit code,
+and its report writer serializes plain log strings instead of PowerShell's
+filesystem metadata. An extended-budget run must record that setting and cannot
+establish production startup performance.
