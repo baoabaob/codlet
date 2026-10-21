@@ -374,6 +374,7 @@ namespace Codlet.Setup {
         }
         void VerifyUpgradeStates(string output) {
             scope = "user";
+            syncing = true; Control<RadioButton>("UserScope").IsChecked = true; syncing = false;
             var product = new InstalledProduct { ProductCode = SetupBuild.ProductCode, Version = "fixture-old", MsiVersion = "0.0.0", Scope = scope, Folder = Path.Combine(Path.GetTempPath(), "Codlet Existing Fixture") };
             foreach (string name in InstalledProducts.FeatureNames) product.Features[name] = name == "Core" || name == "GUI" || name == "DesktopShortcut";
             existing[scope] = product; folders[scope] = product.Folder;
@@ -381,6 +382,7 @@ namespace Codlet.Setup {
             ReadChoices(); RefreshInstallationPresentation(); Validate();
             if (Relation != InstallRelation.Upgrade || (string)Control<Button>("PrimaryButton").Content != T("update") || !Control<TextBlock>("VersionLabel").Text.Contains("fixture-old → ")) throw new Exception("Upgrade identity presentation failed");
             if (!Control<TextBox>("InstallPath").IsReadOnly || Control<Button>("BrowseButton").IsEnabled || Control<RadioButton>("MachineScope").IsEnabled || Control<RadioButton>("UserScope").IsEnabled) throw new Exception("An upgrade must retain directory and scope");
+            if (Control<RadioButton>("UserScope").IsChecked != true) throw new Exception("Upgrade preview shows the wrong retained scope");
             if (Checked("StartMenuChoice") || Checked("PathChoice") || !Checked("GuiChoice") || !Checked("DesktopChoice")) throw new Exception("Installed feature choices were not retained");
             if (SelectedProperties().Contains("REINSTALL=")) throw new Exception("Major upgrade must not use maintenance properties");
             ApplyTheme(false); Capture(Path.Combine(output, "installer-upgrade.png"));

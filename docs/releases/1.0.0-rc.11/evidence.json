@@ -1,0 +1,323 @@
+{
+  "schema": 1,
+  "version": "1.0.0-rc.11",
+  "builtFrom": "2675a00a49180a0a0bb66884985665da2df19f67",
+  "publicReleasePublished": false,
+  "coreSha256": "df1e379562e079af76e2096c17ae6e97cbc9cc84622cccccf2a22f618245c375",
+  "hotUpdate": {
+    "baseVersion": "1.0.0-rc.8",
+    "residentSha256": "653a9977d4b4135d2afc0782280f500e76638c425d939afdd77104a8f2a3d264",
+    "staticCompatible": true,
+    "actualNativeActivationPerformed": false,
+    "components": [
+      "client-source",
+      "core-ui-provider"
+    ],
+    "reason": "The resident rc.8 uses the published schema 1 source. The local candidate was not activated in the daily session; a complete upgrade enables the new catalog selection."
+  },
+  "tests": {
+    "rustRuntimeUpdate": {
+      "passed": 30,
+      "ignoredEntrypoints": 4
+    },
+    "actualCompleteZipReplacementAndRollback": {
+      "passed": 1
+    },
+    "nodeOnlinePackagingAndTiming": {
+      "passed": 5
+    },
+    "offlineReleasePublisher": "passed",
+    "nativeSetupUi": "passed",
+    "finalMsiCases": 9
+  },
+  "installer": {
+    "environment": "Windows 11 Enterprise Evaluation, QEMU TCG 4 vCPU / 5 GiB",
+    "schedule": "afterInstallInitialize",
+    "payloadPreparationMs": 1036,
+    "machinePathRestored": true,
+    "cases": [
+      {
+        "id": "cancel-upgrade",
+        "passed": true,
+        "exitCode": 1602,
+        "totalMs": 47940,
+        "userDataPreserved": true,
+        "executableSha256": "2fcfaebd154e460719ab481302efdfc1f989de2160d8a926954d84204b258d9a",
+        "installed": [
+          {
+            "ProductCode": "{FCF13CEA-EC78-4F87-B029-94EA53082D6F}",
+            "Version": "1.0.0-rc.10",
+            "MsiVersion": "1.0.510",
+            "Scope": "user",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\App",
+            "Features": {
+              "Core": true,
+              "StartMenu": true,
+              "DesktopShortcut": false,
+              "CliPath": false,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "6c90b81ae46732d711aa4c6a6220c3db3cead45232ce2efef0e2c2e78a0ea120",
+          "timing.jsonl": "481a223b8c15c6a948482af72cd268a77683e20a097802df19d8c71148de4d89",
+          "result.json": "a7cc3f01322eb208c16bc41370b513324aaa6f7552e29108db5b3b7c2241fc15"
+        }
+      },
+      {
+        "id": "failed-upgrade",
+        "passed": true,
+        "exitCode": 1603,
+        "totalMs": 80727,
+        "userDataPreserved": true,
+        "executableSha256": "2fcfaebd154e460719ab481302efdfc1f989de2160d8a926954d84204b258d9a",
+        "installed": [
+          {
+            "ProductCode": "{FCF13CEA-EC78-4F87-B029-94EA53082D6F}",
+            "Version": "1.0.0-rc.10",
+            "MsiVersion": "1.0.510",
+            "Scope": "user",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\App",
+            "Features": {
+              "Core": true,
+              "StartMenu": true,
+              "DesktopShortcut": false,
+              "CliPath": false,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": true,
+        "evidenceHashes": {
+          "msi.log": "565102eba162026472230c88d93ebad66fdea4acc4b924a063f0dc829995d10f",
+          "timing.jsonl": "290b24a4d27c9dde1518588d968e261ac184ac4d5e6923dbadb9b172d522fa9c",
+          "result.json": "7b884d57739075e1722aca7104c0326c6c050e4339f32099cddca6e7f80677a4"
+        }
+      },
+      {
+        "id": "upgrade-rc11",
+        "passed": true,
+        "exitCode": 0,
+        "totalMs": 66596,
+        "userDataPreserved": true,
+        "executableSha256": "df1e379562e079af76e2096c17ae6e97cbc9cc84622cccccf2a22f618245c375",
+        "installed": [
+          {
+            "ProductCode": "{04E67EE6-EAB4-5EAA-AC22-BD1C297CB494}",
+            "Version": "1.0.0-rc.11",
+            "MsiVersion": "1.0.511",
+            "Scope": "user",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\App",
+            "Features": {
+              "Core": true,
+              "StartMenu": true,
+              "DesktopShortcut": false,
+              "CliPath": false,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "edf3e8041b4a0b65289c186b3d766232e7823dd4240b8ed245b3e46c7d8b7aa2",
+          "timing.jsonl": "d2bf24f0b26b78da26a1fff7d068a6d5b8100129301a75aa11b6e2959368eb87",
+          "result.json": "a394ffd1a8330c0afd33a017460d301e655e3a63dbd79566dbadc2dfe80a20cc"
+        }
+      },
+      {
+        "id": "same-version-repair",
+        "passed": true,
+        "exitCode": 0,
+        "totalMs": 41545,
+        "userDataPreserved": true,
+        "executableSha256": "df1e379562e079af76e2096c17ae6e97cbc9cc84622cccccf2a22f618245c375",
+        "installed": [
+          {
+            "ProductCode": "{04E67EE6-EAB4-5EAA-AC22-BD1C297CB494}",
+            "Version": "1.0.0-rc.11",
+            "MsiVersion": "1.0.511",
+            "Scope": "user",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\App",
+            "Features": {
+              "Core": true,
+              "StartMenu": true,
+              "DesktopShortcut": false,
+              "CliPath": false,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "cdb81a5590aeead55e5102d026000512e6dfb815c32d1a96b7b880ad0eeb380c",
+          "timing.jsonl": "e2d3f87a84dc20ebf0c8d564855362eb9b7db7353d0dad19ddc54985d960b965",
+          "result.json": "a394ffd1a8330c0afd33a017460d301e655e3a63dbd79566dbadc2dfe80a20cc"
+        }
+      },
+      {
+        "id": "downgrade-blocked",
+        "passed": true,
+        "exitCode": 1603,
+        "totalMs": 28155,
+        "userDataPreserved": true,
+        "executableSha256": "df1e379562e079af76e2096c17ae6e97cbc9cc84622cccccf2a22f618245c375",
+        "installed": [
+          {
+            "ProductCode": "{04E67EE6-EAB4-5EAA-AC22-BD1C297CB494}",
+            "Version": "1.0.0-rc.11",
+            "MsiVersion": "1.0.511",
+            "Scope": "user",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\App",
+            "Features": {
+              "Core": true,
+              "StartMenu": true,
+              "DesktopShortcut": false,
+              "CliPath": false,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "666a57b2217261a8855c06adb9ab3d07814e7cc147a5aa6330c22925aa1c995c",
+          "timing.jsonl": "006a98ed98feb5f3ae7e288ba1540e4dfd2d8a39dd400f6fff94eeab0b19b90c",
+          "result.json": "ba9555eb3b95c7e9d657469aecaf196be544df70772b687f24efed36025cfb8c"
+        }
+      },
+      {
+        "id": "uninstall-user",
+        "passed": true,
+        "exitCode": 0,
+        "totalMs": 44856,
+        "userDataPreserved": true,
+        "executableSha256": null,
+        "installed": [],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "6e84fa897df0aebedd546c3296af0da50bab7565cddca5b495338e59dc5823c7",
+          "timing.jsonl": "72f0baf73dca5466a2b35f6b36a35002ad324f62267bec18824c6bb7ff7bb4df",
+          "result.json": "ce2a932b6938fe4163b050338d46bb5679ed70c559d3df00153233d5a8c0bfbc"
+        }
+      },
+      {
+        "id": "install-machine",
+        "passed": true,
+        "exitCode": 0,
+        "totalMs": 34328,
+        "userDataPreserved": true,
+        "executableSha256": "df1e379562e079af76e2096c17ae6e97cbc9cc84622cccccf2a22f618245c375",
+        "installed": [
+          {
+            "ProductCode": "{04E67EE6-EAB4-5EAA-AC22-BD1C297CB494}",
+            "Version": "1.0.0-rc.11",
+            "MsiVersion": "1.0.511",
+            "Scope": "machine",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\MachineApp",
+            "Features": {
+              "Core": true,
+              "StartMenu": false,
+              "DesktopShortcut": false,
+              "CliPath": true,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "111f60872ad444426c63bac565c30fc223e414de775f9ad4d592b8c6fc738050",
+          "timing.jsonl": "1e7d4a570d81e1adbd61f2c2f33a9d1f937f10628ecac34baa8584a877b47e48",
+          "result.json": "91a5285690b22f9062e88a13f82df430dc0f54826b5269618ed0f64370faa926"
+        }
+      },
+      {
+        "id": "repair-machine",
+        "passed": true,
+        "exitCode": 0,
+        "totalMs": 62523,
+        "userDataPreserved": true,
+        "executableSha256": "df1e379562e079af76e2096c17ae6e97cbc9cc84622cccccf2a22f618245c375",
+        "installed": [
+          {
+            "ProductCode": "{04E67EE6-EAB4-5EAA-AC22-BD1C297CB494}",
+            "Version": "1.0.0-rc.11",
+            "MsiVersion": "1.0.511",
+            "Scope": "machine",
+            "Folder": "C:\\CodletLab\\installer-benchmark\\MachineApp",
+            "Features": {
+              "Core": true,
+              "StartMenu": false,
+              "DesktopShortcut": false,
+              "CliPath": true,
+              "GUI": true
+            }
+          }
+        ],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "d6998b1417cb9baca875be13b8a407df6d6aca79a10110cab4b2d3afd692f781",
+          "timing.jsonl": "9552f56775edf02bbdb2ea012637994ca7b18b638fb68605af55b840e68b9af2",
+          "result.json": "91a5285690b22f9062e88a13f82df430dc0f54826b5269618ed0f64370faa926"
+        }
+      },
+      {
+        "id": "uninstall-machine",
+        "passed": true,
+        "exitCode": 0,
+        "totalMs": 35092,
+        "userDataPreserved": true,
+        "executableSha256": null,
+        "installed": [],
+        "failureAfterFileWritesVerified": null,
+        "evidenceHashes": {
+          "msi.log": "5c5a43dba6bba6faf613b416421dae3ad647940060a5562e6f2c2b81d0471857",
+          "timing.jsonl": "1bd66f55e77075ee092f20c589fe44fcddf1b76c61d0465d578a48887b715683",
+          "result.json": "ce2a932b6938fe4163b050338d46bb5679ed70c559d3df00153233d5a8c0bfbc"
+        }
+      }
+    ]
+  },
+  "componentAudit": {
+    "stableCommonComponents": 46,
+    "changedCommonComponents": [],
+    "unchangedHashedFiles": 26,
+    "unchangedHashedBytes": 986508,
+    "unversionedFiles": 39,
+    "lateRemovalEnabled": false,
+    "crossVersionComponentReuseEnabled": false
+  },
+  "assets": [
+    {
+      "name": "Codlet-1.0.0-rc.11-windows-x64-setup.exe",
+      "bytes": 8651264,
+      "sha256": "3e37c56d37145f7ecd384b08dac1c35ab8e73711b645d4f6e023168400287643"
+    },
+    {
+      "name": "codlet-online-1.0.0-rc.11-win-x64-653a9977d4b4135d.zip",
+      "bytes": 9643796,
+      "sha256": "e95515de1e04acd2ca5ae0fc6dd92e93714ad0aabd33332e2e04d5b5c36271bd"
+    },
+    {
+      "name": "codlet-runtime-1.0.0-rc.11-win-x64-portable.zip",
+      "bytes": 9579828,
+      "sha256": "cf89b5854eba27201e85133e0cd9575b8028dd736bca46fc014fb87c4e5170dc"
+    },
+    {
+      "name": "codlet-update-managed.json",
+      "bytes": 561,
+      "sha256": "823a104b2934280a3f3ca6beafca1026bca650d9ad58471335f2dbf7d329cf02"
+    },
+    {
+      "name": "codlet-update-managed-v2.json",
+      "bytes": 1078,
+      "sha256": "229464f134e03689fc0eb2f4d441c3652e425ffb21c75a2ab0685ffda340d3be"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "bytes": 531,
+      "sha256": "f0809df370ccbf4719f9838002daf214c910df088ea513b653468f30a11b4f07"
+    }
+  ],
+  "evidenceDirectory": "X:/codlet/.codlet-artifacts/core-update-delivery-20261021"
+}
