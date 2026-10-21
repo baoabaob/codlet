@@ -1,0 +1,174 @@
+{
+  "schema": 1,
+  "coreVersion": "1.0.0-rc.13",
+  "coreSourceCommit": "67da46836ade94727f19b4c79226443eb05b455b",
+  "splitVersion": "1.0.0-rc.3",
+  "splitSourceCommit": "570fcfd",
+  "createdAt": "2026-10-21T14:06:13.139Z",
+  "checks": {
+    "coreFrontend": {
+      "passed": 422,
+      "skipped": 2,
+      "failed": 0
+    },
+    "split": {
+      "passed": 153,
+      "failed": 0
+    },
+    "typecheck": "passed",
+    "sourceAndRelease": {
+      "passed": 16,
+      "failed": 0
+    },
+    "nativeDesktop": [
+      {
+        "build": 20770,
+        "checks": 15,
+        "passed": true
+      },
+      {
+        "build": 21161,
+        "checks": 15,
+        "passed": true
+      }
+    ],
+    "consumerStress": {
+      "scenarios": 18,
+      "passed": 18,
+      "scope": "real consumer with controlled SDK; excludes Native paint and OS input latency"
+    },
+    "setup": {
+      "passed": true,
+      "installationPerformed": false,
+      "nativeUi": true,
+      "payloadHashVerified": true,
+      "scopeAndFeatures": true,
+      "upgradeMaintenanceDowngrade": true,
+      "msiProgressAndCancellation": true,
+      "version": "1.0.0-rc.13"
+    },
+    "draft": {
+      "action": "PrepareDraft",
+      "tag": "v1.0.0-rc.13",
+      "repository": "baoabaob/codlet",
+      "prerelease": true,
+      "assets": 6,
+      "externalWrites": false,
+      "applyRequired": true
+    },
+    "publish": {
+      "action": "Publish",
+      "tag": "v1.0.0-rc.13",
+      "repository": "baoabaob/codlet",
+      "prerelease": true,
+      "assets": 6,
+      "externalWrites": false,
+      "applyRequired": true
+    }
+  },
+  "coreBuild": {
+    "schema": 1,
+    "kind": "codlet-windows-release-build",
+    "version": "1.0.0-rc.13",
+    "sourceCommit": "67da46836ade94727f19b4c79226443eb05b455b",
+    "builtCore": true,
+    "coreSha256": "d0f4a264f49a97c90e6fa955f842f99a7c4abe529fe8d2045940de155a6ddc7e",
+    "msi": "X:\\codlet\\.codlet-artifacts\\split-runtime-health-20261021\\windows-2\\Codlet-1.0.0-rc.13-windows-x64.msi",
+    "setup": "X:\\codlet\\.codlet-artifacts\\split-runtime-health-20261021\\windows-2\\Codlet-1.0.0-rc.13-windows-x64-setup.exe",
+    "releasePlan": "X:\\codlet\\.codlet-artifacts\\split-runtime-health-20261021\\windows-2\\release\\release-plan.json",
+    "published": false
+  },
+  "assets": [
+    {
+      "name": "Codlet-1.0.0-rc.13-windows-x64-setup.exe",
+      "file": "Codlet-1.0.0-rc.13-windows-x64-setup.exe",
+      "kind": "windows-setup",
+      "bytes": 8745472,
+      "sha256": "9ac4e157db44215a47a4a828ffba74fb3d2b937483fc533a82e96eaa495dadd3"
+    },
+    {
+      "name": "codlet-online-1.0.0-rc.13-win-x64-ae243e5fe3be941a.zip",
+      "file": "codlet-online-1.0.0-rc.13-win-x64-ae243e5fe3be941a.zip",
+      "kind": "runtime-update-windows-online",
+      "bytes": 9892279,
+      "sha256": "4f0bc6e6363af695793a7d6d29002cd1fc6da4f987f744f3a7ff87c63b70345b"
+    },
+    {
+      "name": "codlet-runtime-1.0.0-rc.13-win-x64-portable.zip",
+      "file": "codlet-runtime-1.0.0-rc.13-win-x64-portable.zip",
+      "kind": "runtime-update-windows-portable",
+      "bytes": 9675067,
+      "sha256": "b424a458a5382d4f195d47949a83b8dead23d0a402eb6482db6144945bc193cd"
+    },
+    {
+      "name": "codlet-update-managed.json",
+      "file": "codlet-update-managed.json",
+      "kind": "runtime-channel-manifest",
+      "bytes": 561,
+      "sha256": "95c4b66ece47414f14ec8f5821cba52b8f616c75025519f036c34893f51f08f6"
+    },
+    {
+      "name": "codlet-update-managed-v2.json",
+      "file": "codlet-update-managed-v2.json",
+      "kind": "runtime-channel-manifest-v2",
+      "bytes": 1078,
+      "sha256": "5b6c2799d784cf9ad32d0612b6cf7a20c1375b8ec53c83b9224e19f16355bd71"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "file": "SHA256SUMS.txt",
+      "kind": "sha256-summary",
+      "bytes": 531,
+      "sha256": "f80b735cadf066e9683e64adfd81952822e9dcc09d9e8dee5c0b908422febc7c"
+    }
+  ],
+  "splitPackage": {
+    "path": ".codlet-artifacts/split-runtime-health-20261021/codlet-split-workbench-1.0.0-rc.3.zip",
+    "bytes": 160965,
+    "sha256": "adb39e45418b63c1fe4b74e66d8b781b0db5f2b6e5c8a210ed4d59a4e277294f",
+    "rendererSha256": "32f9a6ad57e5654038d5e5c38b982384e1cedfc492867300ea278e1d8a63ca6f"
+  },
+  "host": {
+    "status": {
+      "schema_version": 1,
+      "status": "not_running",
+      "snapshot": null,
+      "error": null
+    },
+    "installedCoreVersion": "1.0.0-rc.12",
+    "nativeBuild": 21161,
+    "splitRegistration": {
+      "version": "1.0.0-rc.3",
+      "enabled": false,
+      "path": "X:/codlet-split-workbench",
+      "validationError": null
+    },
+    "copyImport": {
+      "control": null,
+      "error": {
+        "code": "managed_storage",
+        "message": "managed_storage: The plugin ID directory is already owned by another source"
+      },
+      "offline": null,
+      "operation_id": null,
+      "outcome": "failed",
+      "schema_version": 1
+    }
+  },
+  "acceptance": {
+    "installedCoreUpgrade": false,
+    "livePluginActivation": false,
+    "liveInteraction": false,
+    "liveNativeLatency": false,
+    "published": false
+  },
+  "cleanup": {
+    "ownedProcessesRemaining": 0,
+    "generatedHelperCopiesRemoved": 2,
+    "storage": {
+      "targetGiB": 6.02,
+      "artifactsGiB": 3.28,
+      "freeGiB": 87.33
+    }
+  }
+}
