@@ -14,7 +14,7 @@ Build from a committed checkout with the pinned toolchain and a verified GUI bun
   -OnlineModuleIds core-ui-provider
 ```
 
-The command compiles Core once, packages the MSI and native setup, and prepares a local release plan. A prebuilt `-CodletExecutable` is optional and must report the committed package version. `build-result.json` records the source revision and executable digest. The release directory includes the setup, complete runtime ZIP, each statically compatible base-specific online ZIP, schema 1 and schema 2 catalogs, and checksums. Incompatible bases appear with their reason in `release-plan.json`; they produce no online asset. Online packages currently preserve resident files for validation, so their ZIP size is not a binary delta.
+The command compiles Core once, packages the MSI and native setup, and prepares a local release plan. `build-result.json` records the source revision and executable digest. The release directory includes the setup, complete runtime ZIP, each statically compatible base-specific online ZIP, schema 1 and schema 2 catalogs, and checksums. Incompatible bases appear with their reason in `release-plan.json`; they produce no online asset. Online packages currently preserve resident files for validation, so their ZIP size is not a binary delta.
 
 `Publish-Release.ps1 -Action PrepareDraft -PlanPath <plan>` and `-Action Publish` validate locally by default. External writes require `-Apply`. Preview versions retain their prerelease flag. A schema 1 client continues to receive complete packages; installing the new Core once enables schema 2 selection. An MSI-owned installation can activate compatible JavaScript online, but complete file replacement remains owned by Windows Installer.
 

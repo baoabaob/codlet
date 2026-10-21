@@ -5,7 +5,6 @@ param(
   [Parameter(Mandatory=$true)][string]$GuiBundleDirectory,
   [Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$GuiSourceCommit,
   [string]$ToolchainRoot,
-  [string]$CodletExecutable,
   [ValidateSet('stable','preview')][string]$Channel='preview',
   [string[]]$OnlineBaseDirectories=@(),
   [string[]]$OnlineModuleIds
@@ -23,18 +22,13 @@ if($LASTEXITCODE -ne 0){throw 'Commit the build sources before creating release 
 $version=[regex]::Match([IO.File]::ReadAllText((Join-Path $root 'Cargo.toml')),'(?m)^version = "([^"]+)"').Groups[1].Value
 if($Channel -eq 'stable' -and $version.Contains('-')){throw 'Stable builds require a final version'}
 [IO.Directory]::CreateDirectory($output)|Out-Null
-$built=$false
-if(-not $CodletExecutable){
-  $arguments=@{Release=$true};if($ToolchainRoot){$arguments.ToolchainRoot=$ToolchainRoot}
-  & (Join-Path $PSScriptRoot 'Build-Core.ps1') @arguments
-  if($LASTEXITCODE -ne 0){throw 'Core build failed'}
-  $metadata=& cargo metadata --locked --format-version 1 --no-deps --manifest-path (Join-Path $root 'Cargo.toml')
-  if($LASTEXITCODE -ne 0){throw 'Cannot resolve the compiled Core directory'}
-  $CodletExecutable=Join-Path (($metadata|ConvertFrom-Json).target_directory) 'release/codlet.exe'
-  $built=$true
-}
-$executableVersion=(& $CodletExecutable --version | Out-String).Trim()
-if($LASTEXITCODE -ne 0 -or $executableVersion -ne ('codlet '+$version)){throw 'Core executable version differs from the committed release sources'}
+$arguments=@{Release=$true};if($ToolchainRoot){$arguments.ToolchainRoot=$ToolchainRoot}
+& (Join-Path $PSScriptRoot 'Build-Core.ps1') @arguments
+if($LASTEXITCODE -ne 0){throw 'Core build failed'}
+$metadata=& cargo metadata --locked --format-version 1 --no-deps --manifest-path (Join-Path $root 'Cargo.toml')
+if($LASTEXITCODE -ne 0){throw 'Cannot resolve the compiled Core directory'}
+$CodletExecutable=Join-Path (($metadata|ConvertFrom-Json).target_directory) 'release/codlet.exe'
+$built=$true
 $portable=Join-Path $output 'portable'
 & (Join-Path $PSScriptRoot 'Build-Distribution.ps1') -CodletExecutable $CodletExecutable -OutputDirectory $portable -SourceCommit $sourceCommit -GuiBundleDirectory $GuiBundleDirectory -GuiSourceCommit $GuiSourceCommit -UpdateChannel $Channel|Out-Null
 $msi=Join-Path $output ('Codlet-'+$version+'-windows-x64.msi')
