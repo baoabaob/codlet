@@ -162,6 +162,11 @@ the prepared host script uses `-NoRestart`. Whether Windows requires a later
 restart must be read from that operation's result. The daily Native process is not
 part of this VM lifecycle.
 
+The cleanup boot subsequently entered Windows update servicing. Further
+interaction runs must wait for servicing to finish and for the supported
+hypervisor configuration to be available. VM start scripts now reject WHPX when
+the host feature is disabled or its recorded installation still requires a restart.
+
 The acceptance tools now record per-file signature results, permit explicit
 bounded signature/startup budgets for slow disposable hosts, and emit startup
 phase timing without private configuration. Production startup budgets are
