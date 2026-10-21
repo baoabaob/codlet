@@ -1,4 +1,6 @@
 import {loadedAsset,localConnection,hostFibers} from '../host-discovery.js';
+import {awaitNativeInitialization} from '../adapter/native-readiness.js';
+const pending=message=>Object.assign(new Error(message),{code:'desktop_host_pending'});
 
 function mountedWorkingScope(connection){
   const {node}=connection;
@@ -6,7 +8,7 @@ function mountedWorkingScope(connection){
     const value=hook.memoizedState?.current;
     if(value?.scope===node.token&&value.node===node&&value.chain?.get(node.token.id)===node&&typeof value.get==='function'&&typeof value.watch==='function')return value;
   }
-  throw Error('Native Working AppScope facade is not mounted');
+  throw pending('Native Working AppScope facade is not mounted');
 }
 
 // Reviewed against Native 26.1007.2314 original assets: f9n resolves response,
@@ -19,9 +21,16 @@ export const WORKING_PROFILE=Object.freeze({
 // Source hashes, exact export bindings and preserved response/input/owned-work/
 // publication semantics: docs/native-working-26.1007.9446.0.json. Availability
 // still requires the actual mounted Native scope; platform acceptance is separate.
+// Builds 20770 and 21161: docs/native-desktop-20261021.md and its hashed reports.
 export const WORKING_PROFILES=Object.freeze([WORKING_PROFILE,Object.freeze({
   initial:'app-initial-102e45562729.js',shared:'app-shared-30671c57ec82.js',
   response:'vfn',pending:'nfn',publishing:'AW'
+}),Object.freeze({
+  initial:'app-initial-5851df3f6cb1.js',shared:'app-shared-bbfeca5e5737.js',
+  response:'Sbn',pending:'nbn',publishing:'oZ'
+}),Object.freeze({
+  initial:'app-initial-2b6b8063022d.js',shared:'app-shared-9cc135f1bdc1.js',
+  response:'NCn',pending:'pCn',publishing:'JQ'
 })]);
 
 export function nativeWorkingState(response,pending,publishing){
@@ -40,6 +49,7 @@ export async function loadNativeWorking({load=url=>import(url),connect=localConn
   if(!profile)throw Error('Native Working profile is not reviewed');
   const [initial]=await Promise.all([load(initialUrl),load(sharedUrl)]),connection=connect(),facade=scope(connection);
   const roles={response:initial[profile.response],pending:initial[profile.pending],publishing:initial[profile.publishing]};
+  if(Object.values(roles).some(role=>role===undefined))throw pending('Native Working selector initialization is pending');
   for(const role of Object.values(roles))if(!role||role.scope!==connection.node.token||typeof role.read!=='function')throw Error('Native Working selector is unavailable');
   if(!facade||facade.node!==connection.node||facade.scope!==connection.node.token||typeof facade.get!=='function'||typeof facade.watch!=='function')throw Error('Native Working AppScope facade is unavailable');
   const check=()=>{connection.check?.();if(asset('initial')!==initialUrl||asset('shared')!==sharedUrl||Object.entries(roles).some(([name,role])=>initial[profile[name]]!==role))throw Error('Native Working profile changed');};
@@ -52,12 +62,13 @@ export async function loadNativeWorking({load=url=>import(url),connect=localConn
 
 export function createNativeWorking({load=()=>loadNativeWorking(),changed}={}){
   let driver,preparing,disposed=false;
+  const controller=new AbortController();
   const values=new Map(),subscriptions=new Map();
   function set(id,value,notify=true){const normalized=typeof value==='boolean'?value:null,previous=values.get(id)??null;values.set(id,normalized);if(notify&&previous!==normalized)changed?.(id);}
   async function prepare(){
     if(disposed)return;
     if(driver)return;
-    if(!preparing)preparing=Promise.resolve().then(load).then(value=>{if(!disposed)driver=value;else value.dispose?.();}).catch(()=>{}).finally(()=>{preparing=null;});
+    if(!preparing)preparing=awaitNativeInitialization(async()=>{const value=await load();if(disposed){value.dispose?.();controller.signal.throwIfAborted();}return value;},{signal:controller.signal}).then(value=>{driver=value;}).catch(()=>{}).finally(()=>{preparing=null;});
     await preparing;
   }
   function read(id,thread){
@@ -72,5 +83,5 @@ export function createNativeWorking({load=()=>loadNativeWorking(),changed}={}){
       return values.get(id)??null;
     }catch{subscriptions.get(id)?.();subscriptions.delete(id);values.set(id,null);return null;}
   }
-  return{prepare,read,available:()=>disposed?false:driver?true:null,remove(id){subscriptions.get(id)?.();subscriptions.delete(id);values.delete(id);},dispose(){disposed=true;for(const release of subscriptions.values())release?.();subscriptions.clear();values.clear();driver?.dispose?.();}};
+  return{prepare,read,available:()=>disposed?false:driver?true:null,remove(id){subscriptions.get(id)?.();subscriptions.delete(id);values.delete(id);},dispose(){disposed=true;controller.abort();for(const release of subscriptions.values())release?.();subscriptions.clear();values.clear();driver?.dispose?.();}};
 }

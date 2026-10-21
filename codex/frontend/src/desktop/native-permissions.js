@@ -1,4 +1,5 @@
-import {loadedAsset,uniqueExport,componentSource} from '../host-discovery.js';
+import {loadedAsset,uniqueModuleExport,componentSource} from '../host-discovery.js';
+import {NATIVE_PERMISSION_FUNCTIONS,matchesNativePermissionSource} from './permission-contracts.js';
 import {nativeMainInput,nativeInputBinding,workspaceError} from '../adapter/workspace-dom.js';
 import {currentPermissionCache,currentWindowsRequirement} from '../adapter/native-permission-cache.js';
 import {OWNED} from '../adapter/workspace-dom.js';
@@ -8,20 +9,13 @@ const modes=['read-only','auto','granular','guardian-approvals','full-access','c
 const labels={'read-only':['composer.permissionsDropdown.readOnly','Read only'],auto:['composer.permissionsDropdown.default.approvalOptionLabel','Ask for approval'],granular:['composer.permissionsDropdown.granular','Granular permissions'],
   'guardian-approvals':['composer.permissionsDropdown.guardianApproval.optionLabel','Approve for me'],'full-access':['composer.permissionsDropdown.fullAccess.optionLabel','Full access'],custom:['composer.permissionsDropdown.custom.optionLabel','Custom (config.toml)']};
 
-export async function loadNativePermissions({document,manager,load=url=>import(url)}) {
-  const [shared,initial]=await Promise.all([load(loadedAsset('shared')),load(loadedAsset('initial'))]);
-  const match=(value,markers)=>typeof value==='function'&&markers.every(marker=>componentSource(value).includes(marker));
-  const brand=name=>uniqueExport(shared,value=>value?.__scopeBrand===name&&typeof value.id==='symbol',name);
+export async function loadNativePermissions({document,manager,load=url=>import(url),asset=loadedAsset}) {
+  const urls=[asset('shared'),asset('initial')],modules=new Map(await Promise.all(urls.map(async url=>[url,await load(url)])));
+  const brand=name=>uniqueModuleExport(modules,value=>value?.__scopeBrand===name&&typeof value.id==='symbol',name);
   const native={composerScope:brand('ComposerScope'),ThreadScope:brand('ThreadScope'),RouteScope:brand('RouteScope')};
-  const reduce=uniqueExport(initial,value=>match(value,['availableAgentModes','canShowCustom','configNonFullAccessMode','hasAuthoritativeGuardianApprovalDefault','showGuardianOption']),'Native permission option reducer');
-  const convert=uniqueExport(shared,value=>value?.length===3&&match(value,['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write']),'Native permission converter');
-  const toSettings=uniqueExport(shared,value=>value?.length===1&&match(value,['activePermissionProfile','sandboxPolicy','permissions:']),'Native permission wire settings');
-  const modeFromPolicy=uniqueExport(shared,value=>value?.length===1&&match(value,['approvalPolicy','sandboxPolicy','custom','??'])&&componentSource(value).length<180,'Native canonical permission mode');
-  const profileMode=uniqueExport(initial,value=>value?.length===2&&match(value,[':read-only',':workspace',':danger-full-access']),'Native built-in permission profile');
-  const defaultMode=uniqueExport(initial,value=>value?.length===1&&match(value,['isProjectless','requirements','granular','auto'])&&componentSource(value).length<256,'Native default workspace mode');
-  const windowsMode=uniqueExport(initial,value=>value?.length===1&&match(value,['defaultWorkspaceWriteMode','isWindowsSandboxRequired','read-only'])&&componentSource(value).length<180,'Native Windows default permission mode');
-  const cyberModel=uniqueExport(initial,value=>value?.length===1&&match(value,['toLowerCase','cyber','daybreak'])&&componentSource(value).length<180,'Native model confirmation classification');
-  return createNativePermissionReader({document,manager,native,reduce,convert,toSettings,modeFromPolicy,profileMode,defaultMode,windowsMode,cyberModel});
+  const functions=Object.fromEntries(Object.entries(NATIVE_PERMISSION_FUNCTIONS).map(([name,contract])=>[name,
+    uniqueModuleExport(modules,value=>typeof value==='function'&&matchesNativePermissionSource(componentSource(value),value.length,contract),'Native '+contract.label)]));
+  return createNativePermissionReader({document,manager,native,...functions});
 }
 
 export function createNativePermissionReader({document,manager,native,reduce,convert,toSettings,modeFromPolicy,profileMode,defaultMode,windowsMode,cyberModel}) {

@@ -24,13 +24,13 @@ export function createWorkspaceSelection({document,surface,snapshot,check,change
     let field=saved.get(name);
     if(!field){field={...current,applied:value};saved.set(name,field);}
     else if(current.value!==field.applied||current.priority!=='important')Object.assign(field,current);
-    field.applied=value;node.style.setProperty(name,value,'important');
+    field.applied=value;if(current.value!==value||current.priority!=='important')node.style.setProperty(name,value,'important');
   }
   function attribute(node,name,value) {
     const saved=entry(node).attributes,current=node.getAttribute(name);let field=saved.get(name);
     if(!field){field={value:current,applied:value};saved.set(name,field);}
     else if(current!==field.applied)field.value=current;
-    field.applied=value;node.setAttribute(name,value);
+    field.applied=value;if(current!==value)node.setAttribute(name,value);
   }
   function restoreNode(node,saved) {
     for(const [name,field] of saved.styles)if(node.style.getPropertyValue(name)===field.applied&&node.style.getPropertyPriority(name)==='important')
@@ -80,9 +80,10 @@ export function createWorkspaceSelection({document,surface,snapshot,check,change
     if(record.label.parentElement!==header)header.append(record.label);
     if(record.label.textContent!==record.options.emptyLabel)record.label.textContent=record.options.emptyLabel;
     const headerRect=header.getBoundingClientRect(),titleRect=title?.getBoundingClientRect();
-    record.label.style.left=Math.max(8,titleRect?titleRect.left-headerRect.left:16)+'px';
-    record.label.style.top=(titleRect?titleRect.top-headerRect.top+titleRect.height/2:headerRect.height/2)+'px';
-    record.label.style.maxWidth=Math.max(0,titleRect?.width||headerRect.width-32)+'px';
+    const geometry={left:Math.max(8,titleRect?titleRect.left-headerRect.left:16)+'px',
+      top:(titleRect?titleRect.top-headerRect.top+titleRect.height/2:headerRect.height/2)+'px',
+      maxWidth:Math.max(0,titleRect?.width||headerRect.width-32)+'px'};
+    for(const [key,value] of Object.entries(geometry))if(record.label.style[key]!==value)record.label.style[key]=value;
   }
   function acquire(value,owner,live) {
     check();live();if(disposed)throw workspaceError('workspace_retired','Selection presentation provider retired');

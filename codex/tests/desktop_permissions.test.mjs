@@ -2,6 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createPermissions} from '../frontend/src/desktop/permissions.js';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+
+test('cold permission exports recover before publishing options and late readers retire cleanly',async()=>{
+  const f=fixture();let calls=0;
+  const options={manager:f.manager,client:f.client,check(){},selection:()=>({threadId:'thread-a'}),emit(){}};
+  const recovering=createPermissions({...options,load:async()=>{
+    if(++calls===1)throw Object.assign(new Error('A unique Native scope is required (found 0)'),{code:'desktop_contract_drift'});
+    return f.native;
+  }});
+  assert.equal((await recovering.get({threadId:'thread-a'})).phase,'ready');assert.equal(calls,2);recovering.dispose();
+  let release,disposed=0,subscribed=0;
+  const retiring=createPermissions({...options,load:()=>new Promise(resolve=>{release=resolve;})});
+  const read=retiring.get({threadId:'thread-a'});await tick();retiring.dispose();
+  release({...f.native,subscribe(){subscribed++;},dispose(){disposed++;}});
+  await assert.rejects(read,{code:'adapter_deactivated'});assert.equal(disposed,1);assert.equal(subscribed,0);f.api.dispose();
+});
 function fixture(){
   let current='thread-a',mode='auto',resolveUpdate;const listeners=new Set(),events=[],calls=[],errors=[],requests=new Map();
   const threads=new Map([['thread-a',{resumeState:'resumed',latestThreadSettings:{approvalPolicy:'on-request',sandboxPolicy:{type:'workspaceWrite'}}}],['thread-b',{resumeState:'resumed',latestThreadSettings:{approvalPolicy:'never',sandboxPolicy:{type:'dangerFullAccess'}}}]]);

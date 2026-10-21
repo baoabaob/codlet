@@ -1,3 +1,4 @@
+import {awaitNativeInitialization,memoizeNativeLoad} from '../adapter/native-readiness.js';
 const fail = (code, message) => Object.assign(new Error(message), {code});
 const policyFields = ['approvalPolicy', 'approvalsReviewer', 'sandboxPolicy', 'permissions', 'runtimeWorkspaceRoots'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -17,16 +18,21 @@ export function validatePermissionState(state) {
 // Registrations hold authenticated identities only. The one current snapshot is
 // disposable; every submission rereads Native canonical settings at dispatch.
 export function createPermissions({manager, client, check, selection, load, emit}) {
-  let driver, preparing, alive = true, revision = 0, current, releaseNative;
+  let driver, alive = true, revision = 0, current, releaseNative;
+  const controller=new AbortController();
   const owners = new Map(), registered = new Map(), pending = new Set(), dispatches = new Set();
   const nativeStamp = id => { const thread=manager.getConversation(id),settings=thread?.latestThreadSettings;return [...policyFields.map(key=>settings?.[key]),settings?.activePermissionProfile,settings?.model,thread?.latestModel]; };
-  const ensure = () => preparing ??= Promise.resolve().then(load).then(value => {
+  const ensure = memoizeNativeLoad(() => awaitNativeInitialization(async()=>{
+    const value=await load();
+    if(!alive){value?.dispose?.();controller.signal.throwIfAborted();}
+    return value;
+  },{signal:controller.signal}).then(value => {
     if (!alive) throw fail('adapter_deactivated', 'Permission provider retired');
     if (!value || typeof value.read !== 'function' || typeof value.convert !== 'function' ||
         typeof value.canonical !== 'function' || value.sendPathVerified !== true)
       throw fail('permissions_unsupported', 'Authoritative Native permission mapping and submission semantics are required');
     driver = value; releaseNative=value.subscribe?.(id=>changed(id)); return value;
-  });
+  }));
   function validate(args, update = false) {
     if (!args || typeof args !== 'object' || Array.isArray(args) ||
         Object.keys(args).some(key => !(update ? ['threadId', 'hostId', 'selection', 'expectedRevision', 'confirmed'] : ['threadId', 'hostId']).includes(key)) ||
@@ -170,7 +176,7 @@ export function createPermissions({manager, client, check, selection, load, emit
     current = null;
   }
   return {get, update, changed, observe, register, intercept, captureState, restoreState, dispose() {
-    alive = false; for (const record of [...owners.values()]) record.dispose();
+    alive = false; controller.abort(); for (const record of [...owners.values()]) record.dispose();
     registered.clear(); pending.clear(); current = null; releaseNative?.(); driver?.dispose?.();
   }};
 }

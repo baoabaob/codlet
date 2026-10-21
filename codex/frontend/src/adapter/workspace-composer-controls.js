@@ -2,6 +2,7 @@ import {OWNED,workspaceError} from './workspace-dom.js';
 
 export function createComposerControls({document,surface,check,isConfirmed,changed}) {
   let record,disposed=false;
+  const attribute=(node,name,value)=>{if(node.getAttribute(name)!==value)node.setAttribute(name,value);};
   const restoreNode=(native,journal)=>{
     if(native.style.getPropertyValue('display')==='none'&&native.style.getPropertyPriority('display')==='important')
       journal.display?native.style.setProperty('display',journal.display,journal.priority):native.style.removeProperty('display');
@@ -10,7 +11,8 @@ export function createComposerControls({document,surface,check,isConfirmed,chang
   };
   const restore=()=>{if(record?.native)restoreNode(record.native,record.journal);if(record){record.native=null;record.journal=null;}};
   const mask=native=>{
-    native.style.setProperty('display','none','important');native.setAttribute('inert','');native.setAttribute('aria-hidden','true');
+    if(native.style.getPropertyValue('display')!=='none'||native.style.getPropertyPriority('display')!=='important')native.style.setProperty('display','none','important');
+    attribute(native,'inert','');attribute(native,'aria-hidden','true');
   };
   const journal=native=>({display:native.style.getPropertyValue('display'),priority:native.style.getPropertyPriority('display'),inert:native.getAttribute('inert'),'aria-hidden':native.getAttribute('aria-hidden')});
   function options(value){
@@ -25,13 +27,13 @@ export function createComposerControls({document,surface,check,isConfirmed,chang
     const input=surface()?.composer;
     const candidates=input?[...input.querySelectorAll('[data-composer-navigation-target="permissions"]')].filter(node=>!node.closest(OWNED)):[];
     if(candidates.length>1){
-      record.container.setAttribute('inert','');
+      attribute(record.container,'inert','');
       for(const native of candidates){if(native!==record.native&&!record.blocked.has(native))record.blocked.set(native,journal(native));mask(native);}
       record.failed=true;throw workspaceError('workspace_control_unsupported','Native permission trigger is ambiguous');
     }
     if(record.failed)throw workspaceError('workspace_control_unsupported','Native permission trigger ownership failed; release the control lease');
     const native=candidates[0];
-    if(!native?.isConnected){record.container.setAttribute('inert','');record.container.remove();if(record.native&&!record.native.isConnected)restore();return;}
+    if(!native?.isConnected){attribute(record.container,'inert','');record.container.remove();if(record.native&&!record.native.isConnected)restore();return;}
     if(native!==record.native){
       restore();record.native=native;record.journal=journal(native);
     }else{
@@ -44,8 +46,8 @@ export function createComposerControls({document,surface,check,isConfirmed,chang
     if(record.container.parentElement!==native.parentElement||record.container.nextSibling!==native)native.before(record.container);
     mask(native);
     const confirmed=record.threadId!==null&&isConfirmed(record.threadId);
-    if(confirmed)record.container.removeAttribute('inert');else record.container.setAttribute('inert','');
-    record.container.setAttribute('aria-disabled',String(!confirmed));
+    if(confirmed)record.container.removeAttribute('inert');else attribute(record.container,'inert','');
+    attribute(record.container,'aria-disabled',String(!confirmed));
   }
   function acquire(value,owner,live){
     check();live();if(disposed)throw workspaceError('workspace_retired','Composer control provider retired');

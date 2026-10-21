@@ -1,6 +1,7 @@
 import { createThreadOpener } from '../desktop/thread-navigation.js';
 import { nativeInputBinding, nativeMainInput, workspaceError } from './workspace-dom.js';
 import { sameNativeInput } from './workspace-native-input.js';
+import { nativeInitializationPending } from './native-readiness.js';
 
 export function createWorkspaceNavigation({document,load,host,check,changed,onPrepared,readBinding,readCurrentInput,metrics}) {
   const sessions=new Set(),guards=new Set();let native,prepared,current,sequence=0,observer,frame,microtask=false,queueEpoch=0,disposed=false;
@@ -65,7 +66,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
   }
   function observe(){if(observer)return;observer=new document.defaultView.MutationObserver(schedule);observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-codex-composer-root','data-app-shell-active-page','disabled','contenteditable']});}
   function finish(op,code,message){if(op.settled)return;op.settled=true;if(current===op)stop();op.session.operations.delete(op);clearTimeout(op.timer);op.removeAbort?.();const error=workspaceError(code,message);op.controller.abort(error);if(!op.didExecute)op.rejectExecuted(error);op.rejectCommitted(error);metrics?.end('navigation.finished',op.started,op.measurement);}
-  function ensure(){return prepared??=Promise.resolve().then(load).then(value=>{if(disposed)throw workspaceError('workspace_retired','Navigation provider retired');if(value.inputApi===1&&typeof value.openLocalThread!=='function')throw workspaceError('workspace_navigation_unsupported','Strict navigation requires the Native local task entry');native=value;onPrepared?.();return value;});}
+  function ensure(){return prepared??=Promise.resolve().then(load).then(value=>{if(disposed)throw workspaceError('workspace_retired','Navigation provider retired');if(value.inputApi===1&&typeof value.openLocalThread!=='function')throw workspaceError('workspace_navigation_unsupported','Strict navigation requires the Native local task entry');native=value;onPrepared?.();return value;}).catch(error=>{if(nativeInitializationPending(error)||error?.name==='AbortError')prepared=undefined;throw error;});}
   function create(live){
     const session={alive:true,operations:new Set(),latest:null};sessions.add(session);track();
     const valid=()=>{check();live();if(!session.alive)throw workspaceError('workspace_retired','Navigation session retired');};

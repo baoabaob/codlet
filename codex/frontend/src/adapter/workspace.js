@@ -12,6 +12,8 @@ import { createWorkspaceLocations } from './workspace-location.js';
 import { createWorkspaceSelection } from './workspace-selection.js';
 import { createWorkspaceViewports } from './workspace-viewport.js';
 import { createComposerControls } from './workspace-composer-controls.js';
+import { awaitNativeInitialization } from './native-readiness.js';
+import { createWorkspaceTaskQueue } from './workspace-task-queue.js';
 
 export const WORKSPACE_CAPABILITY = Object.freeze({ name: 'codex.ui.workspace', api: 1, scope: 'target' });
 export const WORKSPACE_SYMBOL = 'codlet.codex.ui.workspace.v1';
@@ -33,7 +35,9 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
   let surfaceRevision = 0, publishedSurfaceRevision = -1, geometryDirty = true;
   const check = () => { if (!alive) throw workspaceError('workspace_retired', 'Workspace provider retired'); };
   const discovery = suppliedDiscovery ?? createWorkspaceDiscovery(baseNative);
-  const featureLoad = (role, load) => Promise.resolve().then(load).then(value => { check(); features = { ...features, [role]: true }; schedule(false); return value; }, error => {
+  let preparationController=new AbortController();
+  const featureLoad = (role, load) => awaitNativeInitialization(load,{signal:preparationController.signal}).then(value => { check(); features = { ...features, [role]: true }; schedule(false); return value; }, error => {
+    if(!alive||error?.name==='AbortError')throw error;
     features = { ...features, [role]: false }; diagnostic = errorValue(error); report(error); schedule(false); throw error;
   });
   const transcripts = createTranscripts({ document: doc, load: () => featureLoad('transcript', discovery.transcript), surface: () => surface, check, report, isolate:transcriptIsolation, metrics });
@@ -86,6 +90,7 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
   }
   let previousGeometry = '';
   let microtaskSequence = 0;
+  const hiddenTasks=createWorkspaceTaskQueue();
   function refreshGeometry(operationId) {
     const started=metrics?.start();
     geometryDirty = false;
@@ -190,12 +195,11 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
     structural ||= scan;
     geometryDirty ||= scan;
     if (frame == null) {
-      // Current UIKit can display a native window while its backing Chromium
-      // document reports hidden. Its rAF/timers are throttled. Batch committed
-      // events in a microtask there; visible web documents batch by frame.
+      // One initial microtask handles startup promptly; continuing hidden
+      // commits yield to tasks instead of starving native input.
       if (doc.visibilityState === 'hidden') {
         const token = --microtaskSequence; frame = token;
-        queueMicrotask(() => { if (frame === token) reconcile(); });
+        hiddenTasks.post(() => { if (frame === token) reconcile(); });
       } else frame = requestFrame(reconcile);
     }
   }
@@ -234,6 +238,8 @@ export function createWorkspace(context, { locate, baseNative, discovery: suppli
   }
   const onResize = () => { geometryDirty = true; schedule(false); };
   function stopObserving() {
+    hiddenTasks.clear();
+    preparationController.abort();preparationController=new AbortController();
     observer?.disconnect(); resize?.disconnect(); styleObserver?.disconnect();unmotion?.();motion=unmotion=null;observer = resize = styleObserver = null; unroute?.(); unroute = null;
     observedNodes.clear(); geometryDirty = true;
     composerFeatureEpoch++; composerFeatures = undefined;

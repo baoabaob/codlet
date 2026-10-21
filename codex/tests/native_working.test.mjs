@@ -48,6 +48,14 @@ test('current reviewed asset pair retains individual Native scope validation and
  f.initial[profile.publishing]={scope:{},read(){}};await assert.rejects(loadNativeWorking(f.options),/unavailable/);
 });
 
+for(const profile of WORKING_PROFILES.slice(2))test(`Working state uses the reviewed selectors for ${profile.initial}`,async()=>{
+  const f=fixture(profile);f.states.set('current',{response:'loading',pending:null,publishing:false});
+  const driver=await loadNativeWorking(f.options);assert.equal(driver.read('current'),true);
+  f.states.get('current').pending={kind:'approval',blocking:true};assert.equal(driver.read('current'),false);
+  f.states.get('current').publishing=true;assert.equal(driver.read('current'),true);
+  await assert.rejects(loadNativeWorking({...f.options,asset:role=>role==='shared'?'app://-/assets/unreviewed.js':f.options.asset(role)}),/not reviewed/);
+});
+
 test('cached summaries and events carry nullable working independently from their legacy runtimeStatus',async()=>{
   const f=fixture(),threads=new Map([['parent',{id:'parent',resumeState:'resumed',threadRuntimeStatus:{type:'idle'},requests:[]}],['child',{id:'child',resumeState:'resumed',threadRuntimeStatus:{type:'active',activeFlags:['waitingOnUserInput']},requests:[{completed:false}]}]]),events=[];
   f.states.set('parent',{response:'idle',pending:null,publishing:false});f.states.set('child',{response:'loading',pending:{kind:'input',blocking:true},publishing:false});
