@@ -261,6 +261,21 @@ export function createSurfaceControl() {
             child=parent;
           }
         }
+        // Native portals the message rail beside its scroller, rather than
+        // inside the conversation body. Its preview can use another portal.
+        const railHost=surface.scroller?.parentElement;
+        for(const list of railHost?.querySelectorAll('[data-thread-user-message-navigation-rail-list]')??[]){
+          const rail=list.closest('nav');
+          if(!rail || rail.parentElement!==railHost || rail.closest(OWNED))continue;
+          suppress(rail,true,true);
+          for(const trigger of [rail,...rail.querySelectorAll('[aria-describedby],[aria-controls]')]){
+            const references=[trigger.getAttribute('aria-describedby'),trigger.getAttribute('aria-controls')].filter(Boolean).join(' ').split(/\s+/);
+            for(const id of references){
+              const popup=rail.ownerDocument.getElementById(id);
+              if(popup && !popup.closest(OWNED) && (popup.matches('[role="tooltip"]') || popup.querySelector('[data-thread-user-message-navigation-tooltip-preview]')))suppress(popup,true,true);
+            }
+          }
+        }
       }
       suppress(surface.header, lease.options.hideHeader, false);
       suppress(surface.footer, lease.options.hideComposer, !lease.options.composerEnabled);

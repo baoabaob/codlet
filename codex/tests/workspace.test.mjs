@@ -192,6 +192,18 @@ test('body leases contain explicitly visible Native rails and preserve independe
   const next=session.acquireSurface({hideBody:true});body.style.opacity='.8';next.dispose();assert.equal(body.style.opacity,'0.8');
 });
 
+test('body leases suppress the Native message rail sibling and its linked external preview',async t=>{
+  const f=fixture(t),scroller=f.document.querySelector('.thread-scroll-container'),rail=f.document.createElement('nav');
+  rail.innerHTML='<div data-thread-user-message-navigation-rail-list aria-describedby="native-rail-preview"><button>Message</button></div>';
+  scroller.parentElement.append(rail);
+  const preview=f.document.createElement('div');preview.id='native-rail-preview';preview.setAttribute('role','tooltip');preview.innerHTML='<div data-thread-user-message-navigation-tooltip-preview>Preview</div>';f.document.body.append(preview);
+  const session=f.connect().session,lease=session.acquireSurface({hideBody:true});
+  for(const node of [rail,preview]){assert.equal(node.style.visibility,'hidden');assert.equal(node.style.opacity,'0');assert.equal(node.hasAttribute('inert'),true);}
+  assert.equal(f.document.querySelector('aside').hasAttribute('inert'),false);
+  assert.equal(f.document.querySelector('footer').style.opacity,'');
+  lease.dispose();for(const node of [rail,preview]){assert.equal(node.style.visibility,'');assert.equal(node.style.opacity,'');assert.equal(node.hasAttribute('inert'),false);assert.equal(node.isConnected,true);}
+});
+
 test('a cached footer activation inside a stable scroller updates the public composer and its lease', async t => {
   const f = fixture(t), scroller = f.document.querySelector('.thread-scroll-container'), oldFooter = scroller.querySelector('footer');
   oldFooter.dataset.appShellActivePage = 'true';

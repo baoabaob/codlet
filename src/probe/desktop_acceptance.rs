@@ -182,6 +182,13 @@ pub(super) fn isolated_full_runtime() {
         .unwrap_or(35);
     assert!((35..=900).contains(&duration));
     let probe_script = std::env::var_os("CODLET_ACCEPTANCE_PROBE").map(PathBuf::from);
+    let window_bounds = std::env::var("CODLET_ACCEPTANCE_WINDOW_BOUNDS")
+        .ok()
+        .map(|value| serde_json::from_str::<Value>(&value).expect("acceptance window bounds"));
+    if let Some(bounds) = &window_bounds {
+        assert!((640..=2560).contains(&bounds["width"].as_u64().expect("window width")));
+        assert!((480..=1600).contains(&bounds["height"].as_u64().expect("window height")));
+    }
     let worker = std::thread::spawn(move || {
         let result = (|| -> Result<Value, String> {
             let started = Instant::now();
@@ -211,6 +218,24 @@ pub(super) fn isolated_full_runtime() {
                             .and_then(|r| r.result)
                             .is_some_and(|r| r["result"]["value"] == true)
                         {
+                            if let Some(bounds) = &window_bounds {
+                                let resized = client
+                                    .request(
+                                        "Emulation.setDeviceMetricsOverride",
+                                        Some(json!({"width":bounds["width"],"height":bounds["height"],"deviceScaleFactor":1,"mobile":false})),
+                                        Some(&target.session_id),
+                                        Duration::from_secs(5),
+                                    )
+                                    .map_err(|error| error.to_string())?;
+                                if resized.error.is_some() {
+                                    return Err("Native acceptance viewport resize failed".into());
+                                }
+                                std::fs::write(
+                                    root.join("viewport.json"),
+                                    json!({"method":"Emulation.setDeviceMetricsOverride","bounds":bounds}).to_string(),
+                                )
+                                .map_err(|error| error.to_string())?;
+                            }
                             sid = Some(target.session_id.clone());
                             break;
                         }

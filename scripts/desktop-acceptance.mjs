@@ -67,6 +67,11 @@ if(config.durationSeconds!=null) {
 if(config.fixtureResponseDelayMs!=null&&(!Number.isSafeInteger(config.fixtureResponseDelayMs)||config.fixtureResponseDelayMs<0||config.fixtureResponseDelayMs>5000))throw Error('fixtureResponseDelayMs must be 0..5000');
 if(config.fixtureResponseText!=null&&(typeof config.fixtureResponseText!=='string'||Buffer.byteLength(config.fixtureResponseText)>65536))throw Error('fixtureResponseText must be a string of at most 65536 bytes');
 if(config.foreground===true)env.CODLET_ACCEPTANCE_FOREGROUND='1';
+if(config.windowBounds!=null){
+  const value=config.windowBounds;
+  if(!value||Object.keys(value).sort().join(',')!=='height,width'||!Number.isInteger(value.width)||!Number.isInteger(value.height)||value.width<640||value.width>2560||value.height<480||value.height>1600)throw Error('windowBounds must contain bounded integer width and height');
+  env.CODLET_ACCEPTANCE_WINDOW_BOUNDS=JSON.stringify(value);
+}
 if(config.rawLaunch===true) env.CODLET_ACCEPTANCE_RAW='1';
 env.CODLET_ACCEPTANCE_PACKAGE_VERSION=config.packageVersion;
 env.CODLET_ACCEPTANCE_EXE=path.join(config.clientApp,'ChatGPT.exe');
