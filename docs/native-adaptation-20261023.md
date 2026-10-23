@@ -51,7 +51,7 @@ workspace verification and binding comparison under
 The intermediate Store version has its own [Desktop report](native-desktop-21421.json)
 and [update mapping](native-official-update-21421.json).
 Source analysis executes no Native module. Desktop operations are recorded
-separately in the release validation report.
+separately in the [rc.14 release validation report](releases/1.0.0-rc.14/validation.md).
 
 This release also integrates the startup, backend-policy preparation,
 event-delivery and plugin readiness corrections verified in the

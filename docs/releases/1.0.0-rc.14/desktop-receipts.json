@@ -1,0 +1,533 @@
+{
+  "schema": 1,
+  "coreVersion": "1.0.0-rc.14",
+  "sourceCommit": "b0bd54be27b1b227239b09e17445650241e78e48",
+  "nativePackage": "26.1016.8622.0",
+  "reports": [
+    {
+      "id": "rc14-installer-20261023",
+      "available": true,
+      "reportSha256": "cf77a1548cb0d80815dacd06a8edfeb47714e055d7c14f48c0a8953926ba30a0",
+      "scriptSha256": "bb23389b0db645d8fc5f72983de9e45d63643ea78fd03fa50a92d52605ceee15",
+      "time": "2026-10-23T05:17:47.0905153Z",
+      "exit": 0,
+      "passed": true,
+      "installerCases": [
+        {
+          "id": "reset-owned-baseline",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "clean-user-rc13",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "cancel-upgrade",
+          "passed": true,
+          "exit": 1602,
+          "userDataPreserved": true
+        },
+        {
+          "id": "upgrade-rc14",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "repair-user",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "downgrade-blocked",
+          "passed": true,
+          "exit": 1603,
+          "userDataPreserved": true
+        },
+        {
+          "id": "uninstall-user",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "install-machine",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "repair-machine",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "uninstall-machine",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        },
+        {
+          "id": "final-user-rc14",
+          "passed": true,
+          "exit": 0,
+          "userDataPreserved": true
+        }
+      ],
+      "machinePathRestored": true
+    },
+    {
+      "id": "rc14-production-retry-b-20261023",
+      "available": true,
+      "reportSha256": "8115f1c26220b7259772e6c296867796f9cf400f946b5c392f3b4844db79bdcf",
+      "scriptSha256": "d79923167413c4fec3ac236ab0dac76a18c7e73ddb2093154d6a2a37edc65a46",
+      "time": "2026-10-23T05:54:12.4594117Z",
+      "exit": 0,
+      "passed": true,
+      "launcher": {
+        "exit": 0,
+        "elevated": false,
+        "error": null
+      },
+      "remainingProcesses": [],
+      "production": {
+        "ready": true,
+        "quitRequested": true,
+        "errors": [],
+        "finalSample": {
+          "elapsedMs": 45481,
+          "entries": 1,
+          "nav": true,
+          "ready": "complete",
+          "splitButton": true,
+          "textLength": 251,
+          "url": "app://-/index.html"
+        }
+      },
+      "runtimeEvents": [
+        "official-update: native restart bridge loaded into the owned client",
+        "official-update: {\"available\":true,\"restartPreserved\":true,\"phase\":\"idle\",\"isUpdateReady\":false,\"combinedPhase\":\"idle\",\"error\":null}"
+      ]
+    },
+    {
+      "id": "rc14-functional-20261023",
+      "available": true,
+      "reportSha256": "36a5af6aa25d7d22ab74b2a1cfe0bff6a3cb82bf68cf0bb79607056408f3cbb3",
+      "scriptSha256": "ccc9bdef34d39ab686ebfe3518a6122c7c140b27079895036f85787773a997d6",
+      "time": "2026-10-23T05:58:05.4488850Z",
+      "exit": 0,
+      "passed": true,
+      "launcher": {
+        "exit": 0,
+        "elevated": false,
+        "error": null
+      },
+      "normalShutdown": true,
+      "pluginErrorCount": 0,
+      "nativeStillRunning": false,
+      "lifecycle": {
+        "passed": true
+      },
+      "functional": {
+        "phase": "complete",
+        "checks": [
+          {
+            "id": "renderer-host-rpc",
+            "status": "passed"
+          },
+          {
+            "id": "renderer-storage-and-cross-world-events",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.compatibility",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.threads.list",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.models.list",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.skills.list",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.providers.list",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.snapshot",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.surface",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.prepare",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.navigation",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.transcript",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.composer",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.shortcuts",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.viewport",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.action",
+            "status": "passed"
+          },
+          {
+            "id": "composer.action-click-and-cleanup",
+            "status": "passed"
+          },
+          {
+            "id": "native.page-toolbar-and-ui-controls",
+            "status": "passed"
+          },
+          {
+            "id": "native.editable-draft",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.task-open-read-and-configuration",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.turn-start-stream-events-and-history",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.turn-steer-and-interrupt",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.approvals-query",
+            "status": "passed"
+          }
+        ],
+        "splitEntry": {
+          "closed": true,
+          "entryEnabled": true,
+          "finishedAt": "2026-10-23T05:57:54.066Z",
+          "inputSource": "DOM click in the owned Native renderer",
+          "opened": true,
+          "panes": 0,
+          "phase": "complete",
+          "startedAt": "2026-10-23T05:57:53.518Z"
+        },
+        "host": {
+          "phase": "complete",
+          "checks": [
+            {
+              "id": "host.system",
+              "status": "passed"
+            },
+            {
+              "id": "storage.transaction-and-conflict",
+              "status": "passed"
+            },
+            {
+              "id": "events.replay-and-close",
+              "status": "passed"
+            },
+            {
+              "id": "tasks.progress-idempotency-and-cancellation",
+              "status": "passed"
+            },
+            {
+              "id": "files.atomic-read-watch-and-cleanup",
+              "status": "passed"
+            },
+            {
+              "id": "processes.streaming-and-receipts",
+              "status": "passed"
+            },
+            {
+              "id": "network.direct-profile-fetch-and-credentials",
+              "status": "passed"
+            },
+            {
+              "id": "traffic.channel-http-sse-and-websocket",
+              "status": "passed"
+            },
+            {
+              "id": "traffic.interception-own-source",
+              "status": "passed"
+            },
+            {
+              "id": "management.read-and-resources",
+              "status": "passed"
+            },
+            {
+              "id": "native.source.desktop-main-http",
+              "status": "passed"
+            },
+            {
+              "id": "native.source.owned-backend-provider",
+              "status": "passed"
+            }
+          ]
+        },
+        "skill": {
+          "error": null,
+          "status": "ready"
+        },
+        "error": null
+      },
+      "runtimeEvents": [
+        "official-update: native restart bridge loaded into the owned client",
+        "official-update: {\"available\":true,\"restartPreserved\":true,\"phase\":\"idle\",\"isUpdateReady\":false,\"combinedPhase\":\"idle\",\"error\":null}"
+      ]
+    },
+    {
+      "id": "rc14-backend-restart-retry-20261023",
+      "available": true,
+      "reportSha256": "31682f7d7ebf843e0b4eaafbf22ccbe0777093a1e333ff65ff32560f176176ea",
+      "scriptSha256": "91cde2f7890a343084f1097e6cfc646ef63a7997a43a4d610f7c652236f83047",
+      "time": "2026-10-23T06:08:38.6328547Z",
+      "exit": 0,
+      "passed": true,
+      "launcher": {
+        "exit": 0,
+        "elevated": false,
+        "error": null
+      },
+      "normalShutdown": true,
+      "pluginErrorCount": 0,
+      "nativeStillRunning": false,
+      "lifecycle": {
+        "passed": true
+      },
+      "functional": {
+        "phase": "complete",
+        "checks": [
+          {
+            "id": "renderer-host-rpc",
+            "status": "passed"
+          },
+          {
+            "id": "renderer-storage-and-cross-world-events",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.compatibility",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.threads.list",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.models.list",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.skills.list",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.providers.list",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.snapshot",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.surface",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.prepare",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.navigation",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.transcript",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.composer",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.shortcuts",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.viewport",
+            "status": "passed"
+          },
+          {
+            "id": "workspace.interface.action",
+            "status": "passed"
+          },
+          {
+            "id": "composer.action-click-and-cleanup",
+            "status": "passed"
+          },
+          {
+            "id": "native.page-toolbar-and-ui-controls",
+            "status": "passed"
+          },
+          {
+            "id": "native.editable-draft",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.task-open-read-and-configuration",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.turn-start-stream-events-and-history",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.turn-steer-and-interrupt",
+            "status": "passed"
+          },
+          {
+            "id": "desktop.approvals-query",
+            "status": "passed"
+          }
+        ],
+        "splitEntry": {
+          "closed": true,
+          "entryEnabled": true,
+          "finishedAt": "2026-10-23T06:08:27.170Z",
+          "inputSource": "DOM click in the owned Native renderer",
+          "opened": true,
+          "panes": 0,
+          "phase": "complete",
+          "startedAt": "2026-10-23T06:08:26.659Z"
+        },
+        "host": {
+          "phase": "complete",
+          "checks": [
+            {
+              "id": "host.system",
+              "status": "passed"
+            },
+            {
+              "id": "storage.transaction-and-conflict",
+              "status": "passed"
+            },
+            {
+              "id": "events.replay-and-close",
+              "status": "passed"
+            },
+            {
+              "id": "tasks.progress-idempotency-and-cancellation",
+              "status": "passed"
+            },
+            {
+              "id": "files.atomic-read-watch-and-cleanup",
+              "status": "passed"
+            },
+            {
+              "id": "processes.streaming-and-receipts",
+              "status": "passed"
+            },
+            {
+              "id": "network.direct-profile-fetch-and-credentials",
+              "status": "passed"
+            },
+            {
+              "id": "traffic.channel-http-sse-and-websocket",
+              "status": "passed"
+            },
+            {
+              "id": "traffic.interception-own-source",
+              "status": "passed"
+            },
+            {
+              "id": "management.read-and-resources",
+              "status": "passed"
+            },
+            {
+              "id": "native.source.desktop-main-http",
+              "status": "passed"
+            },
+            {
+              "id": "native.source.owned-backend-provider",
+              "status": "passed"
+            }
+          ]
+        },
+        "skill": {
+          "error": null,
+          "status": "ready"
+        },
+        "error": null
+      },
+      "backendRestart": {
+        "completedAt": "2026-10-23T06:08:15.823Z",
+        "phase": "read-after-restart",
+        "requestedAt": "2026-10-23T06:08:13.448Z",
+        "threadId": "01a1675f-b884-7b50-8bbb-0ea3722f9804"
+      },
+      "nativeRestartLogEvidence": [
+        {
+          "matches": 1,
+          "path": "C:\\CodletLab\\runs\\core-functional-20261023-003\\home\\AppData\\Local\\Codex\\Logs\\2026\\10\\23\\codex-desktop-366ff917-68e7-4733-92f7-b82bfa28807d-4892-t0-i1-060731-0.log"
+        }
+      ],
+      "runtimeEvents": [
+        "official-update: native restart bridge loaded into the owned client",
+        "official-update: {\"available\":true,\"restartPreserved\":true,\"phase\":\"idle\",\"isUpdateReady\":false,\"combinedPhase\":\"idle\",\"error\":null}"
+      ]
+    }
+  ],
+  "priorAttempt": {
+    "id": "rc14-backend-restart-20261023",
+    "reportSha256": "a3fe45bf5e3e0ab347161726e2fea6f6ae48af5a17a73df876bf3d88070f1ee5",
+    "passed": false,
+    "exit": 1,
+    "backendRestart": {
+      "completedAt": "2026-10-23T06:01:42.050Z",
+      "phase": "read-after-restart",
+      "requestedAt": "2026-10-23T06:01:39.442Z",
+      "threadId": "01a16759-b757-7651-95f1-9b210f38a12a"
+    },
+    "failedHostChecks": [
+      {
+        "error": {
+          "code": "test_failed",
+          "message": "Process stream duplicated or lost data"
+        },
+        "id": "processes.streaming-and-receipts",
+        "milliseconds": 686,
+        "status": "failed"
+      }
+    ],
+    "correction": "The fixture now drains stdout and stderr until both read calls report EOF before checking the completed worker and expected output. Core bytes are unchanged."
+  }
+}
