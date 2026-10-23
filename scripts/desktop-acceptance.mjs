@@ -65,6 +65,7 @@ if(config.durationSeconds!=null) {
   env.CODLET_ACCEPTANCE_DURATION=String(config.durationSeconds);
 }
 if(config.fixtureResponseDelayMs!=null&&(!Number.isSafeInteger(config.fixtureResponseDelayMs)||config.fixtureResponseDelayMs<0||config.fixtureResponseDelayMs>5000))throw Error('fixtureResponseDelayMs must be 0..5000');
+if(config.fixtureResponseText!=null&&(typeof config.fixtureResponseText!=='string'||Buffer.byteLength(config.fixtureResponseText)>65536))throw Error('fixtureResponseText must be a string of at most 65536 bytes');
 if(config.foreground===true)env.CODLET_ACCEPTANCE_FOREGROUND='1';
 if(config.rawLaunch===true) env.CODLET_ACCEPTANCE_RAW='1';
 env.CODLET_ACCEPTANCE_PACKAGE_VERSION=config.packageVersion;
@@ -99,7 +100,7 @@ if(config.localApiKeyFixture===true) {
   env.NO_PROXY='127.0.0.1,localhost,::1';
   let turns=0;
   function modelEvents(){
-    turns++;const id='fixture-'+turns,text='codlet-original-response';
+    turns++;const id='fixture-'+turns,text=config.fixtureResponseText??'codlet-original-response';
     const item={id:'msg-'+turns,type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text,annotations:[]}]};
     return [{type:'response.created',response:{id,status:'in_progress',output:[]}},
       {type:'response.output_item.added',output_index:0,item:{...item,status:'in_progress',content:[]}},

@@ -178,6 +178,20 @@ test('surface leases compose, rebind after navigation and precisely restore attr
   assert.equal(a.getSnapshot().threadId, 'thread-b');
 });
 
+test('body leases contain explicitly visible Native rails and preserve independently visible resources',async t=>{
+  const f=fixture(t),body=f.document.getElementById('body'),session=f.connect().session;
+  body.style.opacity='.6';body.innerHTML='<div style="visibility:visible;position:fixed">Native prompt rail and hover preview</div>';
+  const footer=f.document.querySelector('footer'),panel=f.document.querySelector('aside'),preview=body.firstElementChild;
+  const lease=session.acquireSurface({hideBody:true});
+  assert.equal(f.window.getComputedStyle(preview).visibility,'visible');
+  assert.equal(body.style.opacity,'0');assert.equal(body.style.getPropertyPriority('opacity'),'important');
+  assert.equal(body.hasAttribute('inert'),true);assert.equal(preview.isConnected,true);
+  assert.equal(footer.style.opacity,'');assert.equal(panel.style.opacity,'');
+  lease.dispose();assert.equal(body.style.opacity,'0.6');assert.equal(body.style.getPropertyPriority('opacity'),'');
+  assert.equal(body.hasAttribute('inert'),false);
+  const next=session.acquireSurface({hideBody:true});body.style.opacity='.8';next.dispose();assert.equal(body.style.opacity,'0.8');
+});
+
 test('a cached footer activation inside a stable scroller updates the public composer and its lease', async t => {
   const f = fixture(t), scroller = f.document.querySelector('.thread-scroll-container'), oldFooter = scroller.querySelector('footer');
   oldFooter.dataset.appShellActivePage = 'true';
@@ -635,6 +649,19 @@ test('native actions wait for a missing activity toolbar, reuse their root after
   toolbar.append(button);await f.flush();await action.ready;const control=f.document.querySelector('[data-codlet-workspace-action="late-action"]');assert.ok(control);assert.equal(N.roots(),1);
   button.remove();await f.flush();toolbar.append(button);await f.flush();assert.equal(f.document.querySelector('[data-codlet-workspace-action="late-action"]'),control);assert.equal(f.document.querySelectorAll('[data-codlet-workspace-action="late-action"]').length,1);assert.equal(N.roots(),1);
   button.remove();await f.flush();const pending=owner.session.registerAction({id:'cancelled-action',label:'Cancelled action',icon:{paths:['M0 0 H24 V24 H0 Z']},onInvoke(){}});await tick();pending.dispose();await assert.rejects(pending.ready,{code:'workspace_retired'});toolbar.append(button);await f.flush();assert.equal(f.document.querySelector('[data-codlet-workspace-action="cancelled-action"]'),null);assert.equal(N.roots(),1);
+});
+
+test('a workspace action reflects its own state without inheriting the activity filter color',async t=>{
+  const f=fixture(t),N=native(f),owner=f.connect(),activity=f.document.getElementById('activity');
+  activity.dataset.color='info';activity.setAttribute('aria-pressed','true');
+  N.Button=({color,selected,...props})=>N.React.createElement('button',{...props,'data-color':color,'data-selected':String(selected)});
+  N.Tooltip=({children})=>children;f.discovery.action=async()=>N;
+  const action=owner.session.registerAction({id:'independent-action',label:'Independent',icon:{paths:['M0 0 H24 V24 H0 Z']},onInvoke(){}});await action.ready;
+  const control=f.document.querySelector('[data-codlet-workspace-action]');
+  assert.equal(control.dataset.color,'secondary');assert.equal(control.dataset.selected,'false');
+  action.update({pressed:true});await f.flush();
+  assert.equal(control.dataset.color,'secondary');assert.equal(control.dataset.selected,'true');
+  assert.equal(activity.dataset.color,'info');assert.equal(activity.getAttribute('aria-pressed'),'true');
 });
 
 test('Native removal of only an owned action span restores its placement without creating another root',async t=>{

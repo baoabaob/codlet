@@ -77,7 +77,9 @@ export function createTranscripts({ document, load, surface, check, report, isol
     // retirement before a consumer attaches a catch creates no unhandled error.
     ready.catch(() => {});
     const wrapper = document.createElement('div'); wrapper.dataset.codletWorkspaceOwned = owned;
-    wrapper.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;position:relative;';
+    // Keep Native fixed-position descendants inside this viewport and stop a
+    // consumer's draggable-region declaration from escaping through them.
+    wrapper.style.cssText = 'display:flex;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;position:relative;contain:layout paint;-webkit-app-region:initial;';
     container.append(wrapper); record.wrapper = wrapper; records.add(record); containers.add(container);
     let scroll, settled = false, readyObserver;
     const fail = error => { if (record.disposed) return; state(record, 'error', error); report(error); if (!settled) { settled = true; rejectReady(error); } };

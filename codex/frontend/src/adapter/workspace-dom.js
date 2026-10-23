@@ -224,9 +224,10 @@ export function surfaceOptions(options, previous = optionDefaults) {
 // compose in one pass; a later unrelated page patch keeps its own value.
 export function createSurfaceControl() {
   const leases = new Set(), journal = new Map();
-  const read = (node, key) => key === 'visibility' ? [node.style.getPropertyValue(key), node.style.getPropertyPriority(key)] : node.getAttribute(key);
+  const isStyle = key => key === 'visibility' || key === 'opacity';
+  const read = (node, key) => isStyle(key) ? [node.style.getPropertyValue(key), node.style.getPropertyPriority(key)] : node.getAttribute(key);
   const write = (node, key, value) => {
-    if (key === 'visibility') { if (value[0]) node.style.setProperty(key, ...value); else node.style.removeProperty(key); }
+    if (isStyle(key)) { if (value[0]) node.style.setProperty(key, ...value); else node.style.removeProperty(key); }
     else if (value == null) node.removeAttribute(key); else node.setAttribute(key, value);
   };
   const equal = (a, b) => Array.isArray(a) ? a[0] === b?.[0] && a[1] === b?.[1] : a === b;
@@ -235,7 +236,13 @@ export function createSurfaceControl() {
     function suppress(node, hidden, disabled) {
       if (!node || !hidden && !disabled) return;
       const fields = desired.get(node) ?? new Map(); desired.set(node, fields);
-      if (hidden) fields.set('visibility', ['hidden', 'important']);
+      if (hidden) {
+        fields.set('visibility', ['hidden', 'important']);
+        // Native prompt rails and hover previews can explicitly restore their
+        // own visibility. Suppress the whole painted subtree without removing
+        // its layout, editor state or scroll measurements.
+        fields.set('opacity', ['0', 'important']);
+      }
       if (hidden || disabled) { fields.set('inert', ''); fields.set('aria-hidden', 'true'); }
     }
     if (surface?.composer) for (const lease of leases) {

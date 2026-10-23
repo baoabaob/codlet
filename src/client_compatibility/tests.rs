@@ -19,6 +19,40 @@ fn published_catalog_is_valid_and_can_advance_without_changing_the_baseline() {
 }
 
 #[test]
+fn native_21477_acceptance_is_included_in_the_offline_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = State::load(&temp.path().join("cache.json"));
+    let active = json!([
+        {"id":"codex.desktop.adapter","version":"0.2.17","active":true},
+        {"id":"codex.ui.adapter","version":"0.1.12","active":true}
+    ]);
+    let value = status(
+        &state,
+        "26.1016.8622.0",
+        "windows-x86_64",
+        "1.0.0-rc.14",
+        &active,
+    );
+    assert_eq!(value["status"], "matched");
+    assert!(
+        value["adaptedVersions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("26.1016.8622.0"))
+    );
+    assert_eq!(
+        status(
+            &state,
+            "26.1016.8622.0",
+            "windows-x86_64",
+            "1.0.0-rc.13",
+            &active
+        )["status"],
+        "requirements-unmet"
+    );
+}
+
+#[test]
 fn public_management_observes_cached_records_and_changed_adapter_state_without_mutations() {
     use crate::runtime_control::ControlBroker;
     use crate::runtime_manage::RuntimeManageService;
