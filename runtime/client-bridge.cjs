@@ -12,11 +12,11 @@ const MAX_FRAME = 2 * 1024 * 1024;
 const fail = code => Object.assign(new Error(code), { code });
 const label = value => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(value);
 const codeOf = error => /^[a-z_]{1,80}$/.test(error?.code) ? error.code : 'client_bridge_operation_failed';
-async function bounded(operation, code) {
+async function bounded(operation, code, timeoutMs = 10000) {
   let timer;
   try {
     return await Promise.race([Promise.resolve().then(operation), new Promise((_, reject) => {
-      timer = setTimeout(() => reject(fail(code)), 10000);
+      timer = setTimeout(() => reject(fail(code)), timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
@@ -53,9 +53,9 @@ function observeModules(root, key, dependencies = {}) {
   const roots = [...new Set([path.resolve(root), realpathSync(root)])];
   const prototype = dependencies.prototype ?? Module.prototype;
   const original = prototype._compile;
-  const records = new Map(), subscribers = new Set(), instances = new Set();
+  const records = new Map(), subscribers = new Set(), instances = new Set(), observedInstances = new WeakSet();
   const finalized=new FinalizationRegistry(ref=>instances.delete(ref));
-  let closed = false;
+  let closed = false, instanceDrops = 0;
   const inScope = filename => typeof filename === 'string' && roots.some(root => {
     const relative = path.relative(root, filename);
     return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
@@ -69,7 +69,11 @@ function observeModules(root, key, dependencies = {}) {
       for (const callback of subscribers) { try {callback(record);}catch{/* Plugin observation must not abort native module loading. */} }
     },
     list: () => [...records.values()],
-    instance(value) { if(!closed&&value&&typeof value==='object'&&instances.size<8192){const ref=new WeakRef(value);instances.add(ref);finalized.register(value,ref);} },
+    instance(value) {
+      if(closed||!value||typeof value!=='object'||observedInstances.has(value))return;
+      if(instances.size>=8192){instanceDrops++;return;}
+      observedInstances.add(value);const ref=new WeakRef(value);instances.add(ref);finalized.register(value,ref);
+    },
     instances(Constructor) { const result=[];for(const ref of instances){const value=ref.deref();if(!value)instances.delete(ref);else if(typeof Constructor==='function'&&value instanceof Constructor)result.push(value);}return result; },
     subscribe(callback) {
       if (closed || typeof callback !== 'function') throw fail('client_bridge_closed');
@@ -78,7 +82,7 @@ function observeModules(root, key, dependencies = {}) {
       let live = true;
       return () => { if (live) { live = false; subscribers.delete(callback); } };
     },
-    inspect: () => ({ modules: records.size, subscribers: subscribers.size }),
+    inspect: () => ({ modules: records.size, subscribers: subscribers.size, instanceReferences:instances.size,instanceDrops }),
     close() {
       if (closed) return;
       closed = true; subscribers.clear(); records.clear();instances.clear();
@@ -442,7 +446,9 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       active = { ...selection, configuration, runtime, activation: null };
     },
     async ready() { await listening; if (active) {
-      let activation;try{activation=await bounded(() => active.runtime.ready(), 'client_bridge_activation_timeout');}catch(error){sourceError=codeOf(error);activation={installed:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:'hook_unavailable'}]};}
+      // Initial Native module loading has its own bounded readiness phase.
+      // Hot replacement operations retain the ordinary ten-second budget.
+      let activation;try{activation=await bounded(() => active.runtime.ready(), 'client_bridge_activation_timeout', 40000);}catch(error){sourceError=codeOf(error);activation={installed:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:'hook_unavailable'}]};}
       if(!activation?.installed){sourceError??='client_bridge_source_unavailable';await closeActive();lastActivation=activation;}else {active.activation=activation;sourceError=null;}
     } return status(); },
     inspect: status,

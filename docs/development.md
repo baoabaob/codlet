@@ -67,6 +67,14 @@ Use the generated `Start-TestClient.cmd`, `Stop-TestClient.cmd`, `Test-Plugins.p
 
 For actual acceptance, use a normal release build, record the official package/frontend identity, and test start/stop, runtime skill, GUI/CLI management, dependencies, permission revocation, reload, safe mode, and update restart. Traffic acceptance must additionally distinguish fixture sockets, the official AppServer, and the actual desktop path.
 
+For instrumented Windows VM tests, build `codlet-desktop-acceptance` with
+`cargo build --locked --profile acceptance --no-default-features --features desktop-acceptance --bin codlet-desktop-acceptance`.
+This separate test profile uses optimization level 3 and retains debug assertions.
+It prevents unoptimized image hashing from consuming Native's startup deadline.
+Keep the pinned Node runtime beside that executable. Record the profile and
+binary hash with the observations; the instrumented binary is not a delivery
+package and does not replace the normal release-launcher check.
+
 ## Repository layout and generated files
 
 See [repository ownership](repository-layout.md) for the three source repositories and generated distribution targets. `frontend/build.mjs` regenerates the embedded SDK bundles, Codex modules and UI attribution. Core's root frontend lockfile owns these builds; `codex/frontend/package.json` only delegates commands and preserves ESM. Do not edit generated bundles by hand. Versioned compatibility profiles and repeatable tests belong in Git; local account data, logs, heap snapshots, downloaded runtimes, and temporary reports belong outside tracked source.

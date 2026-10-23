@@ -1,9 +1,39 @@
 //! Opt-in real desktop acceptance. This never runs in the normal test suite or
 //! ships in Core. The coordinator provides an isolated profile and owned backend.
 use super::*;
+#[cfg(not(test))]
 use base64::Engine;
 use serde_json::json;
+use std::os::windows::io::AsRawHandle;
 
+fn stop_acceptance_at_deadline(
+    process: &std::os::windows::io::OwnedHandle,
+    completion: &std::sync::mpsc::Receiver<()>,
+    timeout: Duration,
+    root: &std::path::Path,
+) -> bool {
+    let reason = match completion.recv_timeout(timeout) {
+        Ok(()) => return false,
+        Err(reason) => reason,
+    };
+    // SAFETY: the caller retained the newly launched test process handle.
+    let terminated = unsafe {
+        windows_sys::Win32::System::Threading::TerminateProcess(process.as_raw_handle(), 124)
+    } != 0;
+    let error = (!terminated).then(std::io::Error::last_os_error);
+    let receipt = json!({
+        "timedOut":matches!(reason, std::sync::mpsc::RecvTimeoutError::Timeout),
+        "normalShutdown":false,"exitCode":124,"terminationRequested":terminated,
+        "terminationError":error.map(|error|error.to_string())
+    });
+    // A report-writing failure must not prevent cleanup of the owned child.
+    if let Err(error) = std::fs::write(root.join("watchdog.json"), receipt.to_string()) {
+        eprintln!("acceptance deadline report: {error}");
+    }
+    true
+}
+
+#[cfg(not(test))]
 pub(super) fn isolated_full_runtime() {
     let creator_package = crate::windows::package_launch::package_full_name(unsafe {
         windows_sys::Win32::System::Threading::GetCurrentProcess()
@@ -150,7 +180,7 @@ pub(super) fn isolated_full_runtime() {
         .ok()
         .map(|value| value.parse::<u64>().expect("acceptance duration"))
         .unwrap_or(35);
-    assert!((35..=180).contains(&duration));
+    assert!((35..=900).contains(&duration));
     let probe_script = std::env::var_os("CODLET_ACCEPTANCE_PROBE").map(PathBuf::from);
     let worker = std::thread::spawn(move || {
         let result = (|| -> Result<Value, String> {
@@ -161,6 +191,9 @@ pub(super) fn isolated_full_runtime() {
             let mut focused = false;
             while started.elapsed() < Duration::from_secs(duration) {
                 std::thread::sleep(Duration::from_secs(2));
+                if root.join("finish.json").is_file() {
+                    break;
+                }
                 let snapshot = status.snapshot();
                 std::fs::write(
                     root.join("status.json"),
@@ -264,15 +297,25 @@ pub(super) fn isolated_full_runtime() {
         .unwrap();
         result
     });
-    // Run the actual production event loop while the independent observer checks
-    // its state. A deadline closes only our CDP connection, retiring the owned child.
+    // Production intentionally retains a living Native client after renderer
+    // discovery fails. Closing CDP alone cannot end that degraded event loop.
+    // This disposable acceptance scope retains the exact child handle so its
+    // deadline can stop only the test client and record an explicit failure.
     let deadline_client = runtime.client.clone();
+    let deadline_process = runtime
+        .process
+        .owned_handle()
+        .try_clone()
+        .expect("retain owned acceptance client");
+    let watchdog_root = report_root.clone();
     let (done, deadline) = std::sync::mpsc::channel();
     let watchdog = std::thread::spawn(move || {
-        if deadline
-            .recv_timeout(Duration::from_secs(duration + 30))
-            .is_err()
-        {
+        if stop_acceptance_at_deadline(
+            &deadline_process,
+            &deadline,
+            Duration::from_secs(duration + 30),
+            &watchdog_root,
+        ) {
             let _ = deadline_client.shutdown();
         }
     });
@@ -283,13 +326,27 @@ pub(super) fn isolated_full_runtime() {
         "owned-client-exit-after-loop: {final_exit:?}; wait-ms={}",
         exit_started.elapsed().as_millis()
     );
-    let observed = worker
-        .join()
-        .expect("observer thread")
-        .expect("rendered client observation");
+    let observed = worker.join().expect("observer thread");
     let _ = done.send(());
     watchdog.join().unwrap();
     println!("full-runtime-exit: {outcome:?}");
+    let normal_shutdown = outcome.is_ok()
+        && matches!(&final_exit, Ok(Some(0)))
+        && !report_root.join("watchdog.json").exists();
+    let observed = observed.unwrap_or_else(|error| {
+        std::fs::write(
+            report_root.join("verdict.json"),
+            serde_json::to_vec_pretty(&json!({
+                "rendered":false,"normalShutdown":normal_shutdown,
+                "observerError":error,"exit":format!("{final_exit:?}"),
+                "watchdogExpired":report_root.join("watchdog.json").exists(),
+                "msixUpdateAccepted":false,"signedInSessionAccepted":false
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        panic!("rendered client observation: {error}");
+    });
     let rendered = observed["samples"].as_array().is_some_and(|samples| {
         samples.iter().any(|sample| {
             sample["dom"]["result"]["value"]
@@ -316,15 +373,96 @@ pub(super) fn isolated_full_runtime() {
                 .count()
         });
     std::fs::write(report_root.join("verdict.json"), serde_json::to_vec_pretty(&json!({
-        "rendered":rendered,"pluginErrorCount":plugin_errors,"normalShutdown":outcome.is_ok(),
+        "rendered":rendered,"pluginErrorCount":plugin_errors,"normalShutdown":normal_shutdown,
         "exit":format!("{final_exit:?}"),"msixUpdateAccepted":false,"signedInSessionAccepted":false
     })).unwrap()).unwrap();
     assert!(rendered, "no rendered client UI");
     assert!(outcome.is_ok(), "normal shutdown failed: {outcome:?}");
+    assert!(
+        normal_shutdown,
+        "owned client exit was not successful: {final_exit:?}"
+    );
     assert!(
         observed["snapshot"]["renderer"]["targets"]
             .as_array()
             .is_some_and(|targets| !targets.is_empty()),
         "no renderer target"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::io::BorrowedHandle;
+    use std::os::windows::process::CommandExt;
+
+    struct Fixture(std::process::Child);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn fixture() -> Fixture {
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        Fixture(
+            std::process::Command::new(shell)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 60",
+                ])
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    #[test]
+    fn deadline_stops_only_retained_test_process() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = fixture();
+        let mut unrelated = fixture();
+        // SAFETY: owned retains this handle until the fixture is dropped.
+        let handle = unsafe { BorrowedHandle::borrow_raw(owned.0.as_raw_handle()) }
+            .try_clone_to_owned()
+            .unwrap();
+        let (_complete, deadline) = std::sync::mpsc::channel();
+        assert!(stop_acceptance_at_deadline(
+            &handle,
+            &deadline,
+            Duration::from_millis(25),
+            root.path()
+        ));
+        assert_eq!(owned.0.wait().unwrap().code(), Some(124));
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+        let receipt: Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("watchdog.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipt["timedOut"], true);
+        assert_eq!(receipt["terminationRequested"], true);
+    }
+
+    #[test]
+    fn completed_acceptance_does_not_stop_the_client() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = fixture();
+        // SAFETY: owned retains this handle until the fixture is dropped.
+        let handle = unsafe { BorrowedHandle::borrow_raw(owned.0.as_raw_handle()) }
+            .try_clone_to_owned()
+            .unwrap();
+        let (complete, deadline) = std::sync::mpsc::channel();
+        complete.send(()).unwrap();
+        assert!(!stop_acceptance_at_deadline(
+            &handle,
+            &deadline,
+            Duration::from_millis(25),
+            root.path()
+        ));
+        assert!(owned.0.try_wait().unwrap().is_none());
+        assert!(!root.path().join("watchdog.json").exists());
+    }
 }

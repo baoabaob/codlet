@@ -1,6 +1,6 @@
 [package]
 name = "codlet"
-version = "1.0.0-rc.13"
+version = "1.0.0-rc.14"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
@@ -16,6 +16,15 @@ incremental = false
 # Assertion failures still report their source location. Opt into full-debug
 # below when an entire symbolic stack or variable inspection is needed.
 debug = false
+strip = "symbols"
+
+# Real desktop acceptance needs production-level optimization for image hashing
+# while retaining the test-only assertions and feature gates. Never package it.
+[profile.acceptance]
+inherits = "dev"
+opt-level = 3
+debug = false
+debug-assertions = true
 strip = "symbols"
 
 # Opt in only when inspecting variables in a native debugger.

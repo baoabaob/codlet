@@ -1,13 +1,16 @@
 'use strict';
-// Serialized into the pinned Node helper. Only bounded routing metadata leaves
-// the helper; all child requests are read-only and use the selected executable.
+// Serialized into the metadata worker. Only bounded routing metadata leaves
+// the worker; all protocol requests are read-only and use the selected executable.
+// App Server initialization writes SQLite state, so probes own a disposable state
+// directory while preserving the actual configuration and account context.
 function runConfigProbe(input, dependencies = {}) {
   const fs = require('node:fs'), spawn = dependencies.spawn ?? require('node:child_process').spawn, { randomBytes } = require('node:crypto');
+  const path = require('node:path'), os = require('node:os');
   const fail = code => Object.assign(new Error(code), { code });
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const until = Date.now() + 3500;
+  const started = Date.now(), until = dependencies.deadlineUnixMs ?? started + 3500;
   const signal = dependencies.signal;
-  let liveChild;
+  let liveChild, probeDiagnostic = null, stateRoot;
   async function stop(child) {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     const exited = new Promise(resolve => child.once('exit', resolve));
@@ -24,25 +27,30 @@ function runConfigProbe(input, dependencies = {}) {
   async function read(plan, overrides, includeAccount) {
     if (signal?.aborted) throw fail('backend_probe_cancelled');
     if (Date.now() >= until) throw fail('backend_config_timeout');
-    const child = spawn(plan.executable, [...plan.configArguments, ...overrides,
+    const environment = Object.fromEntries(Object.entries(plan.environment).filter(([name]) => name.toUpperCase() !== 'CODEX_SQLITE_HOME'));
+    environment.CODEX_SQLITE_HOME = stateRoot;
+    const child = spawn(plan.executable, [...plan.configArguments, ...overrides, '-c', `sqlite_home=${JSON.stringify(stateRoot)}`,
       '-c', 'analytics.enabled=false', '-c', 'features.code_mode_host=false', '-c', 'features.remote_plugin=false',
-      'app-server', '--stdio'], { env: plan.environment, cwd: plan.cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      'app-server', '--stdio'], { env: environment, cwd: plan.cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     liveChild = child;
     try {
       return await new Promise((resolve, reject) => {
         let settled = false, buffer = '', count = 0, expected = 1, config;
         const abort = () => finish(fail('backend_probe_cancelled'));
-        const timer = setTimeout(() => finish(fail('backend_config_timeout')), Math.max(1, until - Date.now()));
+        const timer = setTimeout(() => finish(fail('backend_config_timeout'),undefined,{outcome:'timeout'}), Math.max(1, until - Date.now()));
         signal?.addEventListener('abort', abort, { once: true });
-        function finish(error, result) {
+        function finish(error, result, detail = {}) {
           if (settled) return;
+          if(error)probeDiagnostic={phase:expected===1?'initialize':expected===2?'config':'account',outcome:detail.outcome??'reply_error',
+            exitCode:Number.isInteger(detail.exitCode)?detail.exitCode:null,
+            systemCode:typeof detail.systemCode==='string'&&/^[A-Z_0-9]{1,40}$/.test(detail.systemCode)?detail.systemCode:null};
           settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(result);
         }
         const send = message => child.stdin.write(JSON.stringify(message) + '\n');
         child.stderr.on('data', () => {});
-        child.on('error', () => finish(fail('backend_config_unavailable')));
-        child.stdin.on('error', () => finish(fail('backend_config_unavailable')));
-        child.once('exit', () => finish(fail('backend_config_unavailable')));
+        child.on('error', error => finish(fail('backend_config_unavailable'),undefined,{outcome:'spawn_error',systemCode:error.code}));
+        child.stdin.on('error', error => finish(fail('backend_config_unavailable'),undefined,{outcome:'stdin_error',systemCode:error.code}));
+        child.once('exit', code => finish(fail('backend_config_unavailable'),undefined,{outcome:'child_exit',exitCode:code}));
         child.stdout.on('data', chunk => {
           if (settled) return;
           count += chunk.length;
@@ -78,6 +86,7 @@ function runConfigProbe(input, dependencies = {}) {
     } finally { await stop(child); liveChild = null; }
   }
   const work = (async () => {
+    if (!Number.isSafeInteger(until) || until > started + 30000) throw fail('backend_config_unavailable');
     let plan = input;
     if (plan === undefined) {
       const bytes = fs.readFileSync(0);
@@ -87,6 +96,7 @@ function runConfigProbe(input, dependencies = {}) {
     if (!object(plan) || typeof plan.executable !== 'string' || typeof plan.cwd !== 'string'
       || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256
       || plan.configArguments.some(value => typeof value !== 'string')) throw fail('backend_config_unavailable');
+    stateRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'codlet-config-probe-'));
     const { config, accountType } = await read(plan, [], true);
     if (config.model_providers != null && !object(config.model_providers)
       || config.model_provider != null && typeof config.model_provider !== 'string'
@@ -117,9 +127,25 @@ function runConfigProbe(input, dependencies = {}) {
   })().catch(async error => {
     try { await stop(liveChild); } catch { return { error: 'backend_probe_cleanup_failed' }; }
     return { error: /^backend_[a-z_]+$/u.test(error?.code) ? error.code : 'backend_config_unavailable' };
+  }).then(value => {
+    if (stateRoot) {
+      try {
+        if (liveChild && liveChild.exitCode === null && liveChild.signalCode === null) throw fail('backend_probe_cleanup_failed');
+        const inspect = directory => {
+          if (fs.lstatSync(directory).isSymbolicLink() || fs.realpathSync(directory) !== directory) throw fail('backend_probe_cleanup_failed');
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            if (entry.isSymbolicLink()) throw fail('backend_probe_cleanup_failed');
+            if (entry.isDirectory()) inspect(path.join(directory, entry.name));
+          }
+        };
+        inspect(stateRoot);
+        fs.rmSync(stateRoot, { recursive: true });
+      } catch { return { error: 'backend_probe_cleanup_failed' }; }
+    }
+    return value;
   });
   if (input !== undefined) return work.then(value => {
-    if (value.error) throw fail(value.error);
+    if (value.error) throw Object.assign(fail(value.error),{probeDiagnostic:probeDiagnostic??{phase:'setup',outcome:'validation',exitCode:null,systemCode:null}});
     return value;
   });
   work.then(value => {
@@ -128,4 +154,47 @@ function runConfigProbe(input, dependencies = {}) {
     });
   });
 }
-module.exports = { runConfigProbe };
+function runConfigProbeInWorker(plan, { signal, deadlineUnixMs } = {}) {
+  const { Worker } = require('node:worker_threads');
+  const fail = code => Object.assign(new Error(code), { code });
+  if (signal?.aborted) return Promise.reject(fail('backend_probe_cancelled'));
+  // Native can synchronously provision runtimes during startup. The probe's
+  // timers, pipe reads and child retirement must continue independently of that
+  // event loop. The worker publishes a result only after its children retire.
+  const source = `const { parentPort, workerData } = require('node:worker_threads');
+    const controller = new AbortController();
+    parentPort.on('message', value => { if (value === 'cancel') controller.abort(); });
+    (${runConfigProbe.toString()})(workerData.plan, {signal: controller.signal, deadlineUnixMs: workerData.deadlineUnixMs})
+      .then(value => parentPort.postMessage({value}), error => parentPort.postMessage({
+        error: /^backend_[a-z_]+$/.test(error?.code) ? error.code : 'backend_config_unavailable',
+        probeDiagnostic: error?.probeDiagnostic ?? null
+      })).finally(() => parentPort.close());`;
+  return new Promise((resolve, reject) => {
+    let worker;
+    try { worker = new Worker(source, { eval: true, execArgv: [], workerData: { plan, deadlineUnixMs }, name: 'codlet-config-probe' }); }
+    catch { reject(fail('backend_config_unavailable')); return; }
+    let result, failed = false, retiring = false;
+    const cancel = () => worker.postMessage('cancel');
+    signal?.addEventListener('abort', cancel, { once: true });
+    worker.on('message', value => {
+      result = value;
+      // The receipt follows child retirement and directory cleanup. Explicitly
+      // retire this owned worker instead of waiting for embedding-owned handles.
+      // A failed child cleanup must retain its owner until it actually exits.
+      if (value.error !== 'backend_probe_cleanup_failed') {
+        retiring = true;
+        worker.terminate().catch(() => { failed = true; });
+      }
+    });
+    worker.once('error', () => { failed = true; });
+    worker.once('exit', code => {
+      signal?.removeEventListener('abort', cancel);
+      if (failed || code !== 0 && !(retiring && code === 1) || !result) reject(fail('backend_config_unavailable'));
+      else if (result.error) reject(Object.assign(fail(result.error), { probeDiagnostic: result.probeDiagnostic }));
+      else if (signal?.aborted) reject(fail('backend_probe_cancelled'));
+      else resolve(result.value);
+    });
+    if (signal?.aborted) cancel();
+  });
+}
+module.exports = { runConfigProbe, runConfigProbeInWorker };

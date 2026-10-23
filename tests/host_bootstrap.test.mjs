@@ -87,14 +87,22 @@ test('Core global hold delivers more than the snapshot queue bound of events wit
     fixture.initialize({provides:[capability]});const subscribe=await fixture.next();
     fixture.send({type:'response',id:subscribe.id,ok:true,result:{subscriptionId:1}});assert.equal((await fixture.next()).result.ready,true);
     fixture.send({type:'request',id:2,method:'host.corePause',params:{operationId:'events-hold'}});assert.equal((await fixture.next()).result.held,true);
-    for(let batch=0;batch<32;batch++){
-      fixture.send(...Array.from({length:3},()=>({type:'notification',method:'cdp.event',params:{subscriptionId:1,event:{method:'Fixture.event'}}})));
-      await new Promise(resolve=>setTimeout(resolve,5));
-    }
+    // Pipe reads may coalesce even individually paced writes under CPU load.
+    fixture.send(...Array.from({length:96},()=>({type:'notification',method:'cdp.event',params:{subscriptionId:1,event:{method:'Fixture.event'}}})));
     fixture.send({type:'request',id:3,method:'capability.invoke',params:{capability,method:'inspect',params:null,caller:{pluginId:'caller',generation:1,targetId:'',documentEpoch:0},remainingMs:2000,scope:{kind:'runtime'},admitted:true}});
     const observed=await fixture.next();assert.equal(observed.type,'response','controlled callback writes never reach Core');assert.equal(observed.result.seen,96);
     assert.equal(fixture.child.exitCode,null);fixture.send({type:'request',id:4,method:'host.coreResume',params:{operationId:'events-hold'}});assert.equal((await fixture.next()).result.resumed,true);
     fixture.send({type:'request',id:5,method:'shutdown',params:null});assert.equal((await fixture.next()).ok,true);
+  }
+});
+
+test('genuinely stalled event callbacks retain the concurrent-handler bound',async t=>{
+  for(const mode of [undefined,'sdk']){
+    const fixture=await host(t,`module.exports={async activate(context){await context.cdp.subscribe({scope:'all'},()=>new Promise(()=>{}));},deactivate(){}};`,undefined,mode);
+    fixture.initialize();const subscribe=await fixture.next();
+    fixture.send({type:'response',id:subscribe.id,ok:true,result:{subscriptionId:1}});assert.equal((await fixture.next()).result.ready,true);
+    fixture.send(...Array.from({length:5},()=>({type:'notification',method:'cdp.event',params:{subscriptionId:1,event:{method:'Fixture.event'}}})));
+    assert.equal((await fixture.exited)[0],1);assert.match(fixture.stderr(),/not keeping up with the bounded stream/);
   }
 });
 

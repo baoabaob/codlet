@@ -57,6 +57,14 @@ Desktop main-process hooks and local backend provider routing are separate integ
 
 Core establishes a generic client bridge before entry independently of provider enablement. It consumes only the exact `--inspect-brk=127.0.0.1:0` argument and verifies the paused owned PID, physical executable identity, browser process type and pre-ready state. Ambient Node options, preloads, externally selected executables, fixed ports and additional flags are rejected. The bootstrap closes and confirms closure of the inspector endpoint. Subsequent source operations use a distinct authenticated process-bound transport, epoch guards and queryable operation receipts; no inspector remains open.
 
+First startup gives the source up to 40 seconds to become ready after the
+transport is connected; Core observes that one operation within a 45-second
+receipt deadline. The internal Codex source reserves up to 35 seconds for app
+and module readiness, including up to 30 seconds after app readiness. This covers
+Native loading its main modules after cold runtime preparation. Hot replacement
+retains its ten-second operation bound. A lost reply is recovered by querying
+the original operation ID, without replaying initialization.
+
 Any Host providing `codlet.client.launch@1/runtime` may export `clientSource({features, signal})`. Core obtains its bounded bundle from the same immutable entry and current full registration in a temporary executor. `host.process` and `cdp.raw` authorize this entry; it does not need `traffic.intercept`. Raw CDP remains privileged main-process access. Enable, reload, update, rollback, disable and revoke coordinate the client source with the ordinary package receipt. Preflight precedes old hook disposal; failures restore the old source when cleanup and current trust permit it. Uncertain operations query their original receipt and are never replayed. A private-source compatibility failure suspends the affected closure while retaining the bridge for recovery.
 
 When that Host's effective capabilities contain only this one launch provider and no requirements, it is a Native-only launch entry. Core retains its source, trust checks and plugin identity but does not create an idle ordinary Host process or wait for ordinary Host readiness before activating its renderer. The reserved launch capability is never exported through service RPC. A Host with additional capabilities or requirements keeps the ordinary Host lifecycle as well as the optional launch phase.

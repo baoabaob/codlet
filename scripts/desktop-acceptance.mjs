@@ -3,12 +3,18 @@ import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
 import {createRequire} from 'node:module';
-import {spawn,execFileSync} from 'node:child_process';
+import {spawn,execFile,execFileSync} from 'node:child_process';
+import {promisify} from 'node:util';
 import {setTimeout as delay} from 'node:timers/promises';
 import {acceptanceGuiPath,prepareAcceptancePlugins} from './desktop-acceptance-plugins.mjs';
+import {auditAcceptanceLifecycle,settleAcceptanceLifecycle} from './desktop-acceptance-lifecycle.mjs';
 // Run from an unpackaged creator; Core establishes the required package context.
 // No package is installed or updated. Use reviewed binaries and a fresh directory.
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const lifecycleCycles=config.lifecycleCycles??1;
+if(!Number.isSafeInteger(lifecycleCycles)||lifecycleCycles<1||lifecycleCycles>100)throw Error('lifecycleCycles must be 1..100');
+const lifecycleReadyPhase=config.lifecycleReadyPhase??'complete';
+if(!['complete','ready'].includes(lifecycleReadyPhase))throw Error('lifecycleReadyPhase must be complete or ready');
 // A fresh CODEX_HOME isolates files, but elevated Windows sandbox setup also
 // changes machine-wide accounts and firewall rules. Require a disposable host.
 if(process.platform==='win32'&&config.disposableWindowsHost!==true) {
@@ -34,6 +40,10 @@ env.CODEX_ELECTRON_PRIMARY_RUNTIME_UPDATE_MODE='manual';
 env.SHELL='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
 env.PSModulePath='C:/Windows/System32/WindowsPowerShell/v1.0/Modules';
 env.CODLET_ACCEPTANCE_ROOT=root;
+if(config.helperExitDelayMs!=null){
+  if(!Number.isSafeInteger(config.helperExitDelayMs)||config.helperExitDelayMs<0||config.helperExitDelayMs>5000)throw Error('helperExitDelayMs must be 0..5000');
+  env.CODLET_ACCEPTANCE_HELPER_EXIT_DELAY_MS=String(config.helperExitDelayMs);
+}
 if(config.startupTimeoutMs!=null)env.CODLET_ACCEPTANCE_STARTUP_TIMEOUT_MS=String(config.startupTimeoutMs);
 env.CODLET_ACCEPTANCE_SHELL_ENV='1';
 if(config.stalePackageSelection===true)env.CODLET_ACCEPTANCE_STALE_PACKAGE='1';
@@ -51,7 +61,7 @@ if(config.probeScript!=null) {
   env.CODLET_ACCEPTANCE_PROBE=config.probeScript;
 }
 if(config.durationSeconds!=null) {
-  if(!Number.isSafeInteger(config.durationSeconds)||config.durationSeconds<35||config.durationSeconds>180) throw Error('durationSeconds must be 35..180');
+  if(!Number.isSafeInteger(config.durationSeconds)||config.durationSeconds<35||config.durationSeconds>900) throw Error('durationSeconds must be 35..900');
   env.CODLET_ACCEPTANCE_DURATION=String(config.durationSeconds);
 }
 if(config.fixtureResponseDelayMs!=null&&(!Number.isSafeInteger(config.fixtureResponseDelayMs)||config.fixtureResponseDelayMs<0||config.fixtureResponseDelayMs>5000))throw Error('fixtureResponseDelayMs must be 0..5000');
@@ -86,6 +96,7 @@ env.PATH=backendDirectory+path.delimiter+(env.PATH??env.Path??'');
 let fixtureServer,fixtureWebSockets;
 let fixtureConfig='';
 if(config.localApiKeyFixture===true) {
+  env.NO_PROXY='127.0.0.1,localhost,::1';
   let turns=0;
   function modelEvents(){
     turns++;const id='fixture-'+turns,text='codlet-original-response';
@@ -98,7 +109,8 @@ if(config.localApiKeyFixture===true) {
   }
   fixtureServer=http.createServer(async (request,response)=>{
     const chunks=[];let bytes=0;
-    for await(const chunk of request){bytes+=chunk.length;if(bytes>4*1024*1024){response.writeHead(413).end();return;}chunks.push(chunk);}
+    try{for await(const chunk of request){bytes+=chunk.length;if(bytes>4*1024*1024){response.writeHead(413).end();return;}chunks.push(chunk);}}
+    catch{response.destroy();return;}
     const body=Buffer.concat(chunks).toString('utf8');
     fs.appendFileSync(path.join(root,'fixture.jsonl'),JSON.stringify({path:request.url,method:request.method,
       requestModified:request.headers['x-codlet-acceptance']==='modified',bodyModified:body.includes('codlet-modified-request'),modelModified:body.includes('"model":"codlet-intercepted-model"'),contextAdded:body.includes('Synthetic functional test context'),submitPrefixRemoved:!body.includes('[FUNCTIONAL]')})+'\n');
@@ -111,6 +123,7 @@ if(config.localApiKeyFixture===true) {
     response.writeHead(request.url?.endsWith('/models')?200:404,{'content-type':'application/json'});
     response.end(JSON.stringify(request.url?.endsWith('/models')?{object:'list',data:[{id:'gpt-5.4',object:'model',owned_by:'codlet-acceptance'}]}:{error:{message:'Unsupported acceptance endpoint'}}));
   });
+  fixtureServer.on('connection',socket=>socket.on('error',()=>{}));
   if(config.fixtureWebSocket===true){
     const {WebSocketServer}=createRequire(new URL('../frontend/package.json',import.meta.url))('ws');
     fixtureWebSockets=new WebSocketServer({noServer:true,maxPayload:4*1024*1024});
@@ -133,7 +146,7 @@ if(config.localApiKeyFixture===true) {
   fixtureConfig=`openai_base_url=${JSON.stringify(url)}\n`;
   fs.writeFileSync(path.join(env.CODEX_HOME,'auth.json'),JSON.stringify({OPENAI_API_KEY:'codlet-offline-acceptance'}));
 }
-fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),fixtureConfig+'cli_auth_credentials_store="file"\nsandbox_mode="read-only"\napproval_policy="never"\nmodel="gpt-5.4"\n[features]\nplugins=false\nremote_models=false\nremote_plugin=false\ncode_mode_host=false\nresponses_websockets='+String(config.fixtureWebSocket===true)+'\nresponses_websockets_v2='+String(config.fixtureWebSocket===true)+'\n[analytics]\nenabled=false\n[mcp_servers.codex_app]\nenabled=false\ncommand=""\n');
+fs.writeFileSync(path.join(env.CODEX_HOME,'config.toml'),fixtureConfig+'cli_auth_credentials_store="file"\nsandbox_mode="read-only"\napproval_policy="never"\nmodel="gpt-5.4"\n[features]\nplugins=false\nremote_models=false\nremote_plugin=false\ncode_mode_host=false\nresponses_websockets='+String(config.fixtureWebSocket===true)+'\nresponses_websockets_v2='+String(config.fixtureWebSocket===true)+'\n[analytics]\nenabled=false\n[mcp_servers.codex_app]\nenabled=false\ncommand=""\n[windows]\nsandbox="unelevated"\n');
 // UI/Desktop/launch providers are intrinsic Core modules, never registrations.
 const registry=prepareAcceptancePlugins(config,{root,baseUrl:env.OPENAI_BASE_URL});
 fs.writeFileSync(path.join(env.CODLET_HOME,'config.json'),JSON.stringify(registry,null,2));
@@ -179,26 +192,24 @@ try {
   fs.writeFileSync(entry,`@echo off\r\ncmd.exe /d /c exit 7\r\n"${config.testBinary.replaceAll('%','%%')}"\r\nexit /b %errorlevel%\r\n`);
   child=spawn(env.COMSPEC||env.ComSpec||'C:/Windows/System32/cmd.exe',['/d','/s','/c',`"${entry}"`],{env,cwd:root,windowsHide:true,windowsVerbatimArguments:true,stdio:['ignore',fs.openSync(path.join(root,'core.out.log'),'w'),fs.openSync(path.join(root,'core.err.log'),'w')]});
   let auditing=false;
-  const lifecycle=config.lifecyclePlugin&&setInterval(()=>{
+  const lifecycle=config.lifecyclePlugin&&setInterval(async()=>{
     if(auditing)return;
     let result;try{const probes=JSON.parse(fs.readFileSync(path.join(root,'probe.json'),'utf8'));result=probes.at(-1)?.result?.response?.result?.value;}catch{return;}
-    if(result?.phase!=='complete')return;
+    if(result?.phase!==lifecycleReadyPhase)return;
     auditing=true;clearInterval(lifecycle);
-    const audit={pluginId:config.lifecyclePlugin,commands:[],passed:false};
     try{
-      fs.writeFileSync(path.join(root,'functional-report.json'),JSON.stringify(result,null,2));
+      fs.writeFileSync(path.join(root,lifecycleReadyPhase==='complete'?'functional-report.json':'readiness-report.json'),JSON.stringify(result,null,2));
       const pluginRoot=registry.localPlugins[config.lifecyclePlugin].path,fixturePath=path.join(pluginRoot,'fixture.json'),fixture=JSON.parse(fs.readFileSync(fixturePath,'utf8'));
       fixture.autorun=false;fs.writeFileSync(fixturePath,JSON.stringify(fixture));
-      for(const action of ['reload','disable','enable']){
-        const receipt=JSON.parse(execFileSync(config.testBinary,['plugin',action,config.lifecyclePlugin,'--json'],{env,cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,maxBuffer:4*1024*1024}));
-        if(receipt.outcome!=='completed'||receipt.control?.operation?.completion?.report?.outcome!=='applied'||receipt.control.operation.completion.report.target_failures.length)throw Error('Fixture lifecycle did not apply: '+action);
-        const cleanup=JSON.parse(fs.readFileSync(path.join(pluginRoot,'cleanup.json'),'utf8'));
-        if(!cleanup.retired)throw Error('Fixture did not record cleanup');
-        audit.commands.push({action,receipt,cleanup});
-      }
-      audit.passed=true;
-    }catch(error){audit.error=String(error);}
-    fs.writeFileSync(path.join(root,'lifecycle.json'),JSON.stringify(audit,null,2));
+      const audit=await auditAcceptanceLifecycle({pluginId:config.lifecyclePlugin,cycles:lifecycleCycles,
+        execute:async action=>JSON.parse((await promisify(execFile)(config.testBinary,['plugin',action,config.lifecyclePlugin,'--json'],{env,cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,maxBuffer:4*1024*1024})).stdout),
+        readCleanup:()=>JSON.parse(fs.readFileSync(path.join(pluginRoot,'cleanup.json'),'utf8')),
+        save:audit=>fs.writeFileSync(path.join(root,'lifecycle.json'),JSON.stringify(audit,null,2))});
+      if(config.completeAfterLifecycle===true&&lifecycleReadyPhase==='ready')await settleAcceptanceLifecycle(audit,{
+        readProbe:()=>{const probe=JSON.parse(fs.readFileSync(path.join(root,'probe.json'),'utf8')).at(-1);return{elapsedMs:probe?.elapsedMs,value:probe?.result?.response?.result?.value};},
+        save:audit=>fs.writeFileSync(path.join(root,'lifecycle.json'),JSON.stringify(audit,null,2))});
+      if(config.completeAfterLifecycle===true)fs.writeFileSync(path.join(root,'finish.json'),JSON.stringify({reason:'lifecycle-complete',passed:audit.passed}));
+    }catch(error){fs.writeFileSync(path.join(root,'lifecycle.json'),JSON.stringify({pluginId:config.lifecyclePlugin,passed:false,error:String(error)},null,2));}
   },500);
   const exit=await new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});
   if(lifecycle)clearInterval(lifecycle);

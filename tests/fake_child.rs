@@ -1228,6 +1228,22 @@ fn target_discovery_retries_one_non_match_then_uses_the_exact_second_round() {
 }
 
 #[test]
+fn vanished_target_does_not_end_discovery_or_drop_existing_sessions() {
+    let (child, client, events) = launch("target-vanished-before-attach", &[]);
+    let (mut targets, initial) = discover_targets(client.clone(), events, DEADLINE);
+    assert_eq!(initial.len(), 1);
+    let created = pump_until_new_target(&mut targets);
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].target_id(), "live");
+    assert!(targets.contains_target("main"));
+    assert!(!targets.contains_target("vanished"));
+    assert_eq!(targets.session_count(), 2);
+    client.request("Fake.finish", None, None, DEADLINE).unwrap();
+    client.shutdown().unwrap();
+    assert_eq!(child.wait(DEADLINE).unwrap(), Some(0));
+}
+
+#[test]
 fn target_controller_bootstraps_existing_and_new_browser_windows_once() {
     let (child, client, events) = launch("target-lifecycle", &[]);
     let (mut targets, initial) = discover_targets(client.clone(), events, DEADLINE);

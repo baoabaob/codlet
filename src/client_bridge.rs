@@ -710,21 +710,38 @@ impl ClientSourceRuntime {
         &self,
         provider: Option<&LoadedPlugin>,
     ) -> Result<bool, HostError> {
-        let mut result = match self
-            .request(json!({"op":"ready","operationId":"startup-ready","expectedEpoch":0}))
-        {
-            Ok(result) => result,
-            Err(error) if error.code == "client_bridge_uncertain" => {
-                // Query the original receipt; never replay uncertain readiness.
-                self.request(json!({"op":"status","operationId":"startup-ready"}))?
-            }
+        let until = Instant::now() + Duration::from_secs(45);
+        let mut observed = match self.request_until(
+            json!({"op":"ready","operationId":"startup-ready","expectedEpoch":0}),
+            until,
+        ) {
+            Ok(result) => Some(result),
+            Err(error) if error.code == "client_bridge_uncertain" => None,
             Err(error) => return Err(error),
         };
-        let until = Instant::now() + Duration::from_secs(3);
-        while result["pending"] == true && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(25));
-            result = self.request(json!({"op":"status","operationId":"startup-ready"}))?;
-        }
+        let result = loop {
+            if let Some(result) = observed.take()
+                && result["pending"] != true
+                && result["unknown"] != true
+            {
+                break result;
+            }
+            let remaining = until.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(error("client_bridge_uncertain"));
+            }
+            // Native can synchronously provision its first-run runtime after
+            // accepting readiness. Query that receipt through transient pauses;
+            // never replay the initializer or discard its still-owned lease.
+            std::thread::sleep(remaining.min(Duration::from_millis(25)));
+            observed = match self
+                .request_until(json!({"op":"status","operationId":"startup-ready"}), until)
+            {
+                Ok(result) => Some(result),
+                Err(error) if error.code == "client_bridge_uncertain" => None,
+                Err(error) => return Err(error),
+            };
+        };
         if result["outcome"] != "applied" || result["epoch"] != 0 {
             return Err(error("client_bridge_protocol"));
         }
@@ -945,16 +962,25 @@ impl ClientSourceRuntime {
             Ok(Value::Null)
         }
     }
-    fn request(&self, mut command: Value) -> Result<Value, HostError> {
+    fn request(&self, command: Value) -> Result<Value, HostError> {
+        self.request_until(command, Instant::now() + Duration::from_secs(16))
+    }
+    fn request_until(&self, mut command: Value, deadline: Instant) -> Result<Value, HostError> {
+        let remaining = |limit: Duration| {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                Err(error("client_bridge_uncertain"))
+            } else {
+                Ok(remaining.min(limit))
+            }
+        };
         command["token"] = json!(self.0.endpoint.token);
         let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.0.endpoint.port);
-        let mut stream = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2))
-            .map_err(|_| error("client_bridge_disconnected"))?;
+        let mut stream =
+            TcpStream::connect_timeout(&address.into(), remaining(Duration::from_secs(2))?)
+                .map_err(|_| error("client_bridge_disconnected"))?;
         stream
-            .set_read_timeout(Some(Duration::from_secs(12)))
-            .map_err(|_| error("client_bridge_disconnected"))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
+            .set_write_timeout(Some(remaining(Duration::from_secs(2))?))
             .map_err(|_| error("client_bridge_disconnected"))?;
         let mut bytes =
             serde_json::to_vec(&command).map_err(|_| error("client_bridge_protocol"))?;
@@ -966,10 +992,21 @@ impl ClientSourceRuntime {
             .write_all(&bytes)
             .map_err(|_| error("client_bridge_uncertain"))?;
         let mut reply = Vec::new();
-        stream
-            .take(65537)
-            .read_to_end(&mut reply)
-            .map_err(|_| error("client_bridge_uncertain"))?;
+        let mut stream = stream.take(65537);
+        let mut buffer = [0; 4096];
+        loop {
+            stream
+                .get_ref()
+                .set_read_timeout(Some(remaining(Duration::from_secs(12))?))
+                .map_err(|_| error("client_bridge_disconnected"))?;
+            let count = stream
+                .read(&mut buffer)
+                .map_err(|_| error("client_bridge_uncertain"))?;
+            if count == 0 {
+                break;
+            }
+            reply.extend_from_slice(&buffer[..count]);
+        }
         let result: Value =
             serde_json::from_slice(&reply).map_err(|_| error("client_bridge_uncertain"))?;
         if result["ok"] != true {

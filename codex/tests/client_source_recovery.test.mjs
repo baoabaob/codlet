@@ -102,7 +102,7 @@ test('a startup policy prepared in the background is handed to the verified idle
   let available=false;
   const prepared={available:false,policyReady:true,reason:'backend_config_pending'};
   f.dependencies.installBackend=()=>({
-    ready:async()=>available?{available:true,reason:null}:prepared,inspect:()=>prepared,
+    ready:async()=>available?{available:true,reason:null}:prepared,inspect:()=>available?{available:true,reason:null}:prepared,
     ownsProcess:()=>available,canRecover:()=>true,prepareConnection:async()=>{},close(){}
   });
   f.dependencies.recover=async(_context,_owns,options)=>{
@@ -114,6 +114,83 @@ test('a startup policy prepared in the background is handed to the verified idle
   const result=await entry.ready();
   assert.deepEqual(result.activatedSources.map(source=>source.id),['desktop-main-http','owned-backend-provider']);
   assert.deepEqual(f.calls,['reconnect']);await entry.close();
+});
+test('backend readiness is refreshed after delayed Desktop modules before idle admission',async()=>{
+  const f=entryFixture(true,false);let available=false,policyReady=false;
+  const inspect=()=>({available,policyReady,reason:available?null:'backend_config_pending'});
+  f.dependencies.installBackend=()=>({ready:async()=>inspect(),inspect,ownsProcess:()=>available,canRecover:()=>policyReady,prepareConnection:async()=>{},close(){}});
+  f.dependencies.installDesktop=()=>({ready:async()=>{await Promise.resolve();policyReady=true;return{available:true,taskConfigurationAvailable:true};},inspect:()=>({available:true,taskConfigurationAvailable:true}),close(){}});
+  f.dependencies.recover=async()=>{assert.equal(policyReady,true);available=true;f.calls.push('reconnect');};
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();
+  assert.deepEqual((await entry.ready()).activatedSources.map(source=>source.id),['desktop-main-http','owned-backend-provider']);
+  assert.deepEqual(f.calls,['reconnect']);await entry.close();
+});
+test('startup idle recovery can refresh an expired policy without reconnecting initialization requests',async()=>{
+  const f=entryFixture(true,false);let available=false,policyReady=false;
+  const inspect=()=>({available,policyReady,reason:available?null:'backend_config_pending'});
+  f.dependencies.installBackend=()=>({ready:async()=>inspect(),inspect,ownsProcess:()=>available,canRecover:()=>policyReady,prepareConnection:async()=>{policyReady=true;},close(){}});
+  f.dependencies.recover=async(_context,_owns,options)=>{assert.equal(options.canRecover(),false);await options.prepareConnection();assert.equal(options.canRecover(),true);available=true;f.calls.push('reconnect');};
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();
+  assert((await entry.ready()).activatedSources.some(source=>source.id==='owned-backend-provider'));
+  assert.deepEqual(f.calls,['reconnect']);await entry.close();
+});
+test('policy preparation that exhausts readiness cannot start a late Native reconnect',async t=>{
+  const f=fixture(),connection=new f.Connection();f.connections.push(connection);
+  let now=100000;t.mock.method(Date,'now',()=>now);
+  await assert.rejects(recoverLocalBackends(f.context,()=>false,{...f.dependencies,deadlineUnixMs:102000,canRecover:()=>true,
+    async prepareConnection(){now=102000;}}),{code:'backend_config_timeout'});
+  assert.equal(f.calls.length,0);
+});
+test('task bindings that become ready during backend probing are observed before admission',async()=>{
+  const f=entryFixture(true,false);let available=false,taskReady=false;
+  const desktop=()=>({available:true,taskConfigurationAvailable:taskReady});
+  const backend=()=>({available,policyReady:true,reason:available?null:'backend_config_pending'});
+  f.dependencies.installDesktop=()=>({ready:async()=>desktop(),inspect:desktop,close(){}});
+  f.dependencies.installBackend=()=>({ready:async()=>{await Promise.resolve();taskReady=true;return backend();},inspect:backend,ownsProcess:()=>available,canRecover:()=>true,prepareConnection:async()=>{},close(){}});
+  f.dependencies.recover=async()=>{available=true;f.calls.push('reconnect');};
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();
+  assert((await entry.ready()).activatedSources.some(source=>source.id==='owned-backend-provider'));
+  assert.deepEqual(f.calls,['reconnect']);await entry.close();
+});
+test('startup admission waits for a late Native connection to initialize and become idle',async t=>{
+  const f=entryFixture(true,false),connections=[];let available=false;
+  class Connection{}
+  f.context.modules.instances=()=>connections;
+  const desktop={available:true,taskConfigurationAvailable:true};
+  f.dependencies.installDesktop=()=>({ready:async()=>desktop,inspect:()=>desktop,connectionConstructors:()=>[Connection],close(){}});
+  const inspect=()=>({available,reason:available?null:'backend_config_pending'});
+  f.dependencies.installBackend=()=>({ready:async()=>inspect(),inspect,ownsProcess:()=>false,close(){}});
+  f.dependencies.recover=async()=>{
+    assert.equal(connections.length,1);assert.equal(connections[0].initialized,true);assert.equal(connections[0].getPendingRequestCount(),0);
+    f.calls.push('reconnect');available=true;
+  };
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);t.after(()=>entry.close());f.resume();
+  const pending=entry.ready();
+  await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(f.calls,[]);
+  const connection=new Connection();connection.connection={proc:{spawnfile:path.resolve('codex.exe')}};connection.initialized=false;connection.pending=1;connection.getPendingRequestCount=()=>connection.pending;
+  connections.push(connection);
+  await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(f.calls,[]);connection.initialized=true;
+  await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(f.calls,[]);connection.pending=0;
+  assert((await pending).activatedSources.some(source=>source.id==='owned-backend-provider'));assert.deepEqual(f.calls,['reconnect']);
+});
+test('closing startup admission cancels its connection wait without a reconnect',async()=>{
+  const f=entryFixture(true,false);f.context.modules.instances=()=>[];
+  const desktop={available:true,taskConfigurationAvailable:true};
+  f.dependencies.installDesktop=()=>({ready:async()=>desktop,inspect:()=>desktop,connectionConstructors:()=>[class Connection{}],close(){}});
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);f.resume();const pending=entry.ready();
+  await new Promise(resolve=>setTimeout(resolve,30));await entry.close();await pending;
+  assert.equal(f.calls.includes('reconnect'),false);
+});
+test('a missing startup connection cannot outlive the original readiness deadline',async t=>{
+  let now=100000;t.mock.method(Date,'now',()=>now);
+  const f=entryFixture(true,false);f.context.modules.instances=()=>[];
+  const desktop={available:true,taskConfigurationAvailable:true};
+  f.dependencies.installDesktop=()=>({ready:async()=>desktop,inspect:()=>desktop,connectionConstructors:()=>[class Connection{}],close(){}});
+  f.dependencies.recover=recoverLocalBackends;
+  const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);t.after(()=>entry.close());f.resume();const pending=entry.ready();
+  await new Promise(resolve=>setTimeout(resolve,30));now+=40000;
+  assert.deepEqual((await pending).activatedSources.map(source=>source.id),['desktop-main-http']);
+  assert.equal(entry.inspect().recovery.reason,'backend_config_timeout');
 });
 test('a busy late backend leaves the independent Desktop source available without interrupting the backend',async()=>{
   const f=entryFixture(false,false);
@@ -128,9 +205,10 @@ test('a busy late backend leaves the independent Desktop source available withou
 test('an expired pre-entry deadline is armed again when startup readiness begins',async()=>{
   const f=entryFixture(true,false);
   f.configuration.deadlineUnixMs=Date.now()-1;
+  let desktopState={available:false};
   f.dependencies.installDesktop=()=>({
-    ready:async options=>({available:options?.deadlineUnixMs>Date.now(),taskConfigurationAvailable:false}),
-    inspect:()=>({available:false}),close(){}
+    ready:async options=>(desktopState={available:options?.deadlineUnixMs>Date.now(),taskConfigurationAvailable:false}),
+    inspect:()=>desktopState,close(){}
   });
   const entry=installElectronTraffic(f.electron,f.configuration,f.context,f.dependencies);
   f.resume();
@@ -151,7 +229,9 @@ test('module discovery waits for Electron readiness without spending its budget 
   const pending=entry.ready();f.resume();await Promise.resolve();
   assert.equal(observedDeadline,undefined);
   now+=3500;resolveApp();assert.equal((await pending).installed,true);
-  assert.equal(observedDeadline,108000);assert.equal(f.calls.includes('reconnect'),false);await entry.close();
+  assert.equal(observedDeadline,133500);
+  now+=1000;await entry.ready();assert.equal(observedDeadline,133500,'Repeated observation cannot renew startup readiness');
+  assert.equal(f.calls.includes('reconnect'),false);await entry.close();
 });
 
 test('a startup backend route timeout does not discard verified Desktop coverage',async()=>{

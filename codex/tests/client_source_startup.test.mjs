@@ -16,12 +16,12 @@ function status(endpoint,command={op:'status'}) {
     const socket=net.createConnection({host:endpoint.host,port:endpoint.port});let data='';
     socket.on('connect',()=>socket.write(JSON.stringify({...command,token:endpoint.token})+'\n'));
     socket.on('data',bytes=>data+=bytes);socket.on('error',reject);
-    socket.on('end',()=>{try{resolve(JSON.parse(data));}catch(error){reject(error);}});
+    socket.on('end',()=>{if(!data){reject(Object.assign(Error('Readiness reply socket retired'),{code:'fixture_empty_reply'}));return;}try{resolve(JSON.parse(data));}catch(error){reject(error);}});
   });
 }
 
-test('the packaged source activates on repeated cold boots after the pre-entry budget expires',
-  {skip:!process.env.CODLET_CORE_ROOT,timeout:20000},async t=>{
+test('the packaged source activates across cold boots and delayed native module loading',
+  {skip:!process.env.CODLET_CORE_ROOT,timeout:45000},async t=>{
   const core=process.env.CODLET_CORE_ROOT;
   const {attach}=require(path.join(core,'runtime','client-bridge-bootstrap.cjs'));
   const bridge=await readFile(path.join(core,'runtime','client-bridge-bundle.cjs'),'utf8');
@@ -38,7 +38,7 @@ test('the packaged source activates on repeated cold boots after the pre-entry b
     await writeFile(path.join(root,'preload.cjs'),'process.type="browser";');
     await writeFile(path.join(root,'bootstrap-CZlEGA2m.js'),bootstrap);
     await writeFile(path.join(root,'main-C_jM0dPl.js'),main);
-    await writeFile(path.join(root,'entry.cjs'),`const bootstrap=require('./bootstrap-CZlEGA2m.js'),main=require('./main-C_jM0dPl.js');const initialization=setInterval(()=>{if(!require('node:inspector').url()){clearInterval(initialization);bootstrap.initialize();main.initialize();globalThis.nativeReady=true;}},10);setInterval(()=>{},1000);`);
+    await writeFile(path.join(root,'entry.cjs'),`const mark=phase=>require('node:fs').writeFileSync(require('node:path').join(__dirname,'native-state.json'),JSON.stringify({phase,inspector:!!require('node:inspector').url(),modules:Object.keys(require.cache).map(file=>require('node:path').basename(file))}));mark('entered');const initialization=setInterval(()=>{if(!require('node:inspector').url()){clearInterval(initialization);mark('resumed');setTimeout(()=>{require('./bootstrap-CZlEGA2m.js').initialize();require('./main-C_jM0dPl.js').initialize();globalThis.nativeReady=true;mark('initialized');},${cycle===2?12000:0});}},10);setInterval(()=>{},1000);`);
     const child=spawn(process.execPath,['--inspect-brk=127.0.0.1:0','--require',path.join(root,'preload.cjs'),path.join(root,'entry.cjs')],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
     child.stdout.on('error',()=>{});child.stderr.on('error',()=>{});
     let cleaned=false;
@@ -64,8 +64,17 @@ test('the packaged source activates on repeated cold boots after the pre-entry b
       }};`;
       const result=await attach({inspectorUrl,expectedPid:child.pid,executable:process.execPath,traffic:{},selection:{owner:'codex.desktop.adapter',generation:1,code,configuration:{source:{}}}},bridge);
       assert.equal(result.exactChildVerified,true);assert.equal(result.activation.installed,false);
-      const completed=(await status(result.bridge,{op:'ready',operationId:'startup-ready',expectedEpoch:0})).result;
-      assert.equal(completed.outcome,'applied');assert.equal(completed.activation.installed,true,JSON.stringify(completed));
+      let receipt;
+      try{receipt=await status(result.bridge,{op:'ready',operationId:'startup-ready',expectedEpoch:0});}
+      catch(error){if(error.code!=='fixture_empty_reply')throw error;}
+      const deadline=Date.now()+30000;
+      while(!receipt||receipt.result.pending||receipt.result.unknown){
+        assert.ok(Date.now()<deadline,'Original startup receipt did not settle');
+        await new Promise(resolve=>setTimeout(resolve,25));
+        receipt=await status(result.bridge,{op:'status',operationId:'startup-ready'});
+      }
+      const completed=receipt.result;
+      assert.equal(completed.outcome,'applied');assert.equal(completed.activation.installed,true,JSON.stringify({completed,native:await readFile(path.join(root,'native-state.json'),'utf8')}));
       assert.deepEqual(completed.activation.activatedSources.map(source=>source.id),['desktop-main-http']);
       const observed=(await status(result.bridge)).result;
       assert.equal(observed.owner,'codex.desktop.adapter');assert.equal(observed.generation,1);assert.equal(observed.pid,child.pid);

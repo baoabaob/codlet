@@ -427,12 +427,27 @@ impl TargetController {
             if self.sessions.contains_key(&observation.target_id) {
                 continue;
             }
-            let session = TargetSession::attach(
+            let session = match TargetSession::attach(
                 self.client.clone(),
                 observation.target_id.clone(),
                 expires_at,
                 self.deadline,
-            )?;
+            ) {
+                Ok(session) => session,
+                Err(TargetError::Client(ClientError::Remote {
+                    method,
+                    error_code: -32602,
+                    message,
+                    ..
+                })) if method == "Target.attachToTarget"
+                    && message == "No target with given id found" =>
+                {
+                    // A queued creation event can outlive its window during
+                    // normal quit. No session was created; keep other targets.
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             self.sessions
                 .insert(observation.target_id.clone(), session.clone());
             attached.push(session);

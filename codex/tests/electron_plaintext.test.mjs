@@ -121,6 +121,46 @@ test('a temporarily unavailable reviewed lexical binding is retried without invo
   finally{hook.close();}
 });
 
+test('verified incoming messages observe an existing connection without replaying its constructor',()=>{
+  const code='let created=0;class mB {constructor(){created++;this.connection={};}routeIncomingMessage(message){return message;}}module.exports={mB,created:()=>created};';
+  const native=compile('src-DCNiwad_.js',code),connection=new native.mB(),observed=[];
+  const record={name:'src-DCNiwad_.js',hash:hash(code),evaluate:()=>native.mB};
+  let observationError=false;
+  const moduleRegistry={subscribe(callback){callback(record);return()=>{};},instance(value){if(observationError)throw Error('observer unavailable');observed.push(value);}};
+  const original=native.mB.prototype.routeIncomingMessage;
+  const hook=installDesktopPlaintext({app:{isReady:()=>true}},{source:{interceptHttp(){}},moduleRegistry,deadlineUnixMs:Date.now()+1000},{expectedHashes:{[record.name]:record.hash}});
+  try{
+    const message={id:1,result:{}};
+    assert.equal(connection.routeIncomingMessage(message),message);
+    assert.deepEqual(observed,[connection]);assert.equal(native.created(),1);
+    observationError=true;assert.equal(connection.routeIncomingMessage(message),message);
+    observationError=false;hook.close();connection.routeIncomingMessage(message);
+    assert.equal(observed.length,1);assert.equal(native.mB.prototype.routeIncomingMessage,original);
+  }finally{hook.close();}
+});
+
+for(const outcome of ['ready','failed','retired','changed'])test('Native restart preflight preserves its owner: '+outcome,async()=>{
+  const code='class mB {constructor(){this.connection={proc:{}};this.calls=[];}routeIncomingMessage(value){return value;}async restart(options){this.calls.push(options);return "restarted";}}module.exports={mB};';
+  const native=compile('src-DCNiwad_.js',code),connection=new native.mB();let complete,failPreparation;
+  const record={name:'src-DCNiwad_.js',hash:hash(code),evaluate:()=>native.mB};
+  const original=native.mB.prototype.restart;
+  const hook=installDesktopPlaintext({app:{isReady:()=>true}},{source:{interceptHttp(){}},moduleRegistry:{subscribe(callback){callback(record);return()=>{};}},deadlineUnixMs:Date.now()+1000,
+    prepareBackendRestart(transport){assert.equal(transport,connection.connection);return new Promise((resolve,reject)=>{complete=resolve;failPreparation=reject;});}
+  },{expectedHashes:{[record.name]:record.hash}});
+  try{
+    const options={intent:'restart',killCodexProcess:false},pending=connection.restart(options);
+    assert.deepEqual(connection.calls,[]);
+    if(outcome==='failed'){
+      const rejected=assert.rejects(pending,{code:'backend_config_unavailable'});failPreparation(Object.assign(Error(),{code:'backend_config_unavailable'}));await rejected;
+    }else if(outcome==='retired'||outcome==='changed'){
+      const rejected=assert.rejects(pending,{code:outcome==='retired'?'backend_owner_closed':'backend_connection_changed'});
+      if(outcome==='retired')hook.close();else connection.connection={proc:{}};
+      complete();await rejected;
+    }else{complete();assert.equal(await pending,'restarted');assert.deepEqual(connection.calls,[options]);}
+    if(outcome!=='ready')assert.deepEqual(connection.calls,[]);
+  }finally{hook.close();assert.equal(native.mB.prototype.restart,original);}
+});
+
 test('split stdio and connection modules require both hashes and restore their own hooks',async()=>{
   const stdio='class $s { constructor(proc){this.proc=proc;this.sent=[];} send(message){this.sent.push(JSON.parse(message));} };module.exports={Stdio:$s,original:$s.prototype.send};';
   const connection='class Yh { constructor(proc){this.connection={proc};} routeIncomingMessage(message){return message;} };module.exports={Connection:Yh,original:Yh.prototype.routeIncomingMessage};';

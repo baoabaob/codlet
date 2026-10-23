@@ -85,6 +85,20 @@ test('captured module bindings remain available after readiness and subscription
   compile('second.cjs',code);assert.equal(count,1);assert.equal(registry.inspect().modules,2);
 });
 
+test('repeated observations and inherited constructors retain one weak reference per native object',async t=>{
+  const f=await fixture(t),registry=globalThis[Symbol.for(`codlet.client.modules.${TOKEN}`)];
+  const filename=path.join(f.directory,'inherited.cjs'),native=new Module(filename);
+  native.filename=filename;native.paths=Module._nodeModulePaths(f.directory);
+  native._compile('class Base {constructor(){this.base=true;}value(){return this.base;}} class Derived extends Base {constructor(){super();}} module.exports={Base,Derived};',filename);
+  const object=new native.exports.Derived();
+  for(let index=0;index<9000;index++)registry.instance(object);
+  for(const Constructor of [native.exports.Base,native.exports.Derived]){
+    const instances=registry.instances(Constructor);assert.equal(instances.length,1);assert.equal(instances[0],object);
+  }
+  assert.equal(registry.inspect().instanceReferences,1);
+  assert.equal(registry.inspect().instanceDrops,0);
+});
+
 test('the module observer follows an aliased app root without observing neighboring modules',async t=>{
   const directory=await mkdtemp(path.join(tmpdir(),'codlet-client-alias-'));
   const actual=path.join(await realpath(directory),'app'),alias=path.join(directory,'alias');
@@ -122,7 +136,7 @@ test('initial readiness runs over the authenticated transport and its receipt do
   assert.equal(first.outcome,'applied');assert.equal(first.activation.installed,true);assert.equal(first.epoch,0);
   assert.deepEqual(repeated,first);assert.equal(first.owner,'dev.adapter');
 });
-test('Core establishes its recovery transport before entry without an adapter and closes the temporary inspector',async t=>{
+for(const closeDelay of [50,1800])test(closeDelay===50?'Core establishes its recovery transport before entry without an adapter and closes the temporary inspector':'delayed inspector retirement stays within the bootstrap deadline',async t=>{
   const {attach}=require('../runtime/client-bridge-bootstrap.cjs');
   const root=await mkdtemp(path.join(tmpdir(),'codlet-owned-bridge-'));
   await mkdir(path.join(root,'node_modules','electron'),{recursive:true});
@@ -134,7 +148,10 @@ test('Core establishes its recovery transport before entry without an adapter an
   child.stdout.on('error',()=>{});child.stderr.on('error',()=>{});
   t.after(async()=>{child.kill();await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));assert.equal(path.dirname(path.resolve(root)),path.resolve(tmpdir()));await rm(root,{recursive:true});});
   const inspectorUrl=await new Promise((resolve,reject)=>{let text='';const timer=setTimeout(()=>reject(Error('owned_inspector_timeout')),5000);child.stderr.on('data',bytes=>{text+=bytes;const match=text.match(/ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]{36}/);if(match){clearTimeout(timer);resolve(match[0]);}});child.once('error',reject);});
-  const code=await readFile(new URL('../runtime/client-bridge-bundle.cjs',import.meta.url),'utf8');
+  let code=await readFile(new URL('../runtime/client-bridge-bundle.cjs',import.meta.url),'utf8');
+  const closeTimer='require("node:inspector").close(), 50)';
+  assert.equal(code.split(closeTimer).length,2,'one inspector retirement timer in the owned fixture');
+  code=code.replace(closeTimer,`require("node:inspector").close(), ${closeDelay})`);
   let result;
   try{result=await attach({inspectorUrl,expectedPid:child.pid,executable:process.execPath,traffic:{}},code);}catch(error){error.message='bootstrap: '+error.message;throw error;}
   assert.equal(result.exactChildVerified,true);assert.equal(result.bridge.pid,child.pid);assert.equal(result.activation.installed,false);

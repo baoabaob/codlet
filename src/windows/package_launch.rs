@@ -452,13 +452,55 @@ pub(crate) fn create_in_package(
     // EOF aborts the helper's uncommitted suspended child. Neither side keeps a
     // permanent broker or publishes a general-purpose package launcher endpoint.
     drop(channel);
-    if unsafe { WaitForSingleObject(raw(&helper), 3000) } != WAIT_OBJECT_0 {
+    let committed = result.is_ok();
+    let grace = if committed {
+        // Native is already resumed. Do not consume its startup budget waiting
+        // for a broker whose authenticated handoff has finished.
+        Duration::from_millis(250)
+    } else {
+        Duration::from_secs(3)
+    };
+    retire_helper(&helper, committed, grace)?;
+    result
+}
+
+fn retire_helper(
+    helper: &OwnedHandle,
+    committed: bool,
+    grace: Duration,
+) -> Result<(), ProcessError> {
+    let wait =
+        unsafe { WaitForSingleObject(raw(helper), grace.as_millis().min(u32::MAX as u128) as u32) };
+    if wait == WAIT_OBJECT_0 {
+        return Ok(());
+    }
+    if wait != WAIT_TIMEOUT {
+        return Err(win32("WaitForSingleObject(owned package helper)"));
+    }
+    if !committed {
+        // Before commitment the helper may still own an unreported suspended
+        // child. Let its protocol deadline retire that child; never orphan it.
         return Err(failure(
             "owned package helper retirement was not confirmed; launch was not retried",
         ));
     }
-    result
+    // The authenticated commit transferred the exact client to this process.
+    // A stalled helper exit must not discard that successful handoff. Retire
+    // only the retained helper handle, then confirm it is gone before returning.
+    if unsafe { TerminateProcess(raw(helper), 1) } == 0
+        && unsafe { WaitForSingleObject(raw(helper), 0) } != WAIT_OBJECT_0
+    {
+        return Err(win32("TerminateProcess(committed package helper)"));
+    }
+    if unsafe { WaitForSingleObject(raw(helper), 2000) } != WAIT_OBJECT_0 {
+        return Err(failure(
+            "committed package helper retirement was not confirmed",
+        ));
+    }
+    eprintln!("client-package-helper: committed helper retired after its exit grace period");
+    Ok(())
 }
+
 pub(crate) fn run_helper(name: &OsStr) -> Result<(), ProcessError> {
     if !name.to_string_lossy().starts_with(PREFIX) {
         return Err(failure("invalid package helper endpoint"));
@@ -561,6 +603,15 @@ pub(crate) fn run_helper(name: &OsStr) -> Result<(), ProcessError> {
         }
         send(&channel, &Reply::Committed, deadline)?;
         child.armed = false;
+        #[cfg(feature = "desktop-acceptance")]
+        if let Some(delay) = environment
+            .entries_os()
+            .iter()
+            .find(|(key, _)| key == OsStr::new("CODLET_ACCEPTANCE_HELPER_EXIT_DELAY_MS"))
+            .and_then(|(_, value)| value.to_str()?.parse::<u64>().ok())
+        {
+            std::thread::sleep(Duration::from_millis(delay.min(5000)));
+        }
         Ok(())
     })();
     if let Err(error) = &result {
@@ -573,4 +624,58 @@ pub(crate) fn run_helper(name: &OsStr) -> Result<(), ProcessError> {
         );
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::io::{AsRawHandle, BorrowedHandle};
+    use std::os::windows::process::CommandExt;
+
+    struct Fixture(std::process::Child);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn fixture() -> Fixture {
+        Fixture(
+            std::process::Command::new(
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                    .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            )
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap(),
+        )
+    }
+    #[test]
+    fn committed_helper_retirement_preserves_the_client() {
+        let mut helper = fixture();
+        let mut client = fixture();
+        // SAFETY: helper owns the borrowed process handle through this test.
+        let handle = unsafe { BorrowedHandle::borrow_raw(helper.0.as_raw_handle()) }
+            .try_clone_to_owned()
+            .unwrap();
+        retire_helper(&handle, true, Duration::from_millis(20)).unwrap();
+        assert_eq!(helper.0.wait().unwrap().code(), Some(1));
+        assert!(client.0.try_wait().unwrap().is_none());
+    }
+    #[test]
+    fn uncommitted_helper_is_not_killed_before_it_can_abort_its_child() {
+        let mut helper = fixture();
+        // SAFETY: helper owns the borrowed process handle through this test.
+        let handle = unsafe { BorrowedHandle::borrow_raw(helper.0.as_raw_handle()) }
+            .try_clone_to_owned()
+            .unwrap();
+        assert!(retire_helper(&handle, false, Duration::from_millis(20)).is_err());
+        assert!(helper.0.try_wait().unwrap().is_none());
+    }
 }

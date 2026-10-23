@@ -1,5 +1,13 @@
 'use strict';
 const { createInterface } = require('node:readline');
+if(process.env.CODLET_PROBE_FIXTURE_RECEIPT)require('node:fs').appendFileSync(process.env.CODLET_PROBE_FIXTURE_RECEIPT,JSON.stringify({pid:process.pid,stateRoot:process.env.CODEX_SQLITE_HOME})+'\n');
+if(process.env.CODLET_PROBE_FIXTURE?.startsWith('isolated-state')) {
+  const fs=require('node:fs'),path=require('node:path');
+  const home=process.env.CODEX_SQLITE_HOME;
+  if(!home||home===process.env.CODEX_HOME)process.exit(31);
+  fs.writeFileSync(path.join(home,'probe-state'),'temporary');
+  if(process.env.CODLET_PROBE_FIXTURE==='isolated-state-failure')process.exit(1);
+}
 const config = {model_provider:'openai',openai_base_url:'https://fixture.example/v1',
   model_providers:{custom:{wire_api:'responses',base_url:'https://custom.example/v1',http_headers:{authorization:'never-project-this-secret'}}}};
 if(['default-auth','default-api'].includes(process.env.CODLET_PROBE_FIXTURE)){
@@ -16,6 +24,7 @@ for(let i=2;i<process.argv.length;i++) {
 (async () => { for await (const line of createInterface({ input: process.stdin })) {
   let message; try { message = JSON.parse(line); } catch { continue; }
   if(message.method==='config/write'||message.method==='config/value/write'||message.method==='thread/start'||message.method==='turn/start')process.exit(23);
+  if(message.id===1&&process.env.CODLET_PROBE_FIXTURE==='slow-initialize')await new Promise(resolve=>setTimeout(resolve,4000));
   if (message.id === 1) process.stdout.write(JSON.stringify({ id: 1, result: { userAgent: 'fixture-999.0.0' } }) + '\n');
   if (message.id === 2) process.stdout.write(JSON.stringify(process.env.CODLET_PROBE_FIXTURE==='missing-config'
     ?{id:2,error:{code:-32601,message:'Method not found'}}:{ id: 2, result: {config} }) + '\n');

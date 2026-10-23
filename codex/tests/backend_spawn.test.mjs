@@ -140,6 +140,39 @@ test('an asynchronous policy probe lets Native spawn immediately and routes only
   } finally {hook.close();}
 });
 
+test('an owned backend restart prepares fresh policy before replacing its live process',async()=>{
+  const prototype={spawn(){return 'started';}},routes=[],file=path.resolve('codex.exe');let probes=0,complete;
+  const policy={accountType:'apiKey',contract:contract()};
+  const hook=installBackendSpawn({source:{reserveRoute(){const route={baseUrl:'http://127.0.0.1:43210/ready/',ready:Promise.resolve(),close(){route.closed=true;}};routes.push(route);return route;}},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify:()=>({binarySha256:'verified'}),probe:()=>++probes===1?policy:new Promise(resolve=>{complete=resolve;}),prepare:plan=>({arguments:plan.arguments})
+  });
+  const options={file,args:[file,'app-server'],envPairs:[]},first=new EventEmitter();
+  try{
+    prototype.spawn.call(first,options);assert.equal(hook.ownsProcess(first),true);
+    const pending=hook.prepareConnection({proc:first},{forRestart:true});
+    assert.equal(probes,2);assert.equal(routes[0].closed,undefined);assert.equal(hook.ownsProcess(first),true);
+    complete(policy);await pending;
+    const next=new EventEmitter();prototype.spawn.call(next,options);
+    assert.equal(probes,2);assert.equal(hook.ownsProcess(next),true);assert.equal(routes.length,2);
+  }finally{await hook.close();}
+});
+
+test('a failed restart leaves its owner alive and a later explicit retry probes again',async()=>{
+  const prototype={spawn(){}},file=path.resolve('codex.exe');let probes=0;
+  const hook=installBackendSpawn({source:{reserveRoute:()=>({baseUrl:'http://127.0.0.1:43210/ready/',ready:Promise.resolve(),close(){}})},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify:()=>({binarySha256:'verified'}),probe:()=>++probes===2?Promise.reject(Object.assign(Error(),{code:'backend_config_unavailable'})):{accountType:'apiKey',contract:contract()},prepare:plan=>({arguments:plan.arguments})
+  });
+  const child=new EventEmitter();
+  try{
+    prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});
+    await assert.rejects(hook.prepareConnection({proc:child},{forRestart:true}),{code:'backend_config_unavailable'});
+    assert.equal(hook.ownsProcess(child),true);
+    await hook.prepareConnection({proc:child},{forRestart:true});assert.equal(probes,3);
+    const replacement=new EventEmitter();prototype.spawn.call(replacement,{file,args:[file,'app-server'],envPairs:[]});
+    assert.equal(probes,3);assert.equal(hook.ownsProcess(replacement),true);assert.equal((await hook.ready()).available,true);
+  }finally{await hook.close();}
+});
+
 test('closing a pending policy generation cannot publish routes or capture a later process', async () => {
   const prototype={spawn(){return 'native';}},original=prototype.spawn;
   let complete;

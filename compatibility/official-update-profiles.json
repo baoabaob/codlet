@@ -99,6 +99,21 @@
       "officialUpdates": {
         "stateSelector": "gDn"
       }
+    },
+    {
+      "appVersion": "26.1016.62342",
+      "buildNumber": "21477",
+      "entry": "app://-/assets/index-525daf5f2209.js",
+      "module": "app://-/assets/app-initial-ad16eaadf81f.js",
+      "scopeModule": "app://-/assets/app-shared-2feb3d4c6fcc.js",
+      "servicesModule": "app://-/assets/app-shared-2feb3d4c6fcc.js",
+      "exports": {
+        "scope": "Qst",
+        "services": "ist"
+      },
+      "officialUpdates": {
+        "stateSelector": "gDn"
+      }
     }
   ]
 }

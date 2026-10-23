@@ -107,6 +107,14 @@ impl Fixture {
         Self::new_with_options(suspended, lease_delay_ms, false)
     }
     fn new_with_options(suspended: bool, lease_delay_ms: u64, initial_source: bool) -> Self {
+        Self::new_with_reply_stall(suspended, lease_delay_ms, initial_source, 0)
+    }
+    fn new_with_reply_stall(
+        suspended: bool,
+        lease_delay_ms: u64,
+        initial_source: bool,
+        ready_stall_ms: u64,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let registry_path = directory.path().join("state/config.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
@@ -180,12 +188,17 @@ impl Fixture {
         .unwrap();
         let peer_file = directory.path().join("peer.cjs");
         std::fs::write(&peer_file, format!(r#"
-          process.type='browser';let ready=false;
-          const socket=require('node:net').Socket.prototype,write=socket.write;
+          process.type='browser';let ready=false,replyStalled=false;
+          const socket=require('node:net').Socket.prototype,write=socket.write,end=socket.end;
           socket.write=function(bytes,...args){{
             let value;try{{value=JSON.parse(bytes);}}catch{{}}
             if(value?.result?.leased===true&&{lease_delay_ms}>0){{setTimeout(()=>write.call(this,bytes,...args),{lease_delay_ms});return true;}}
             return write.call(this,bytes,...args);
+          }};
+          socket.end=function(bytes,...args){{
+            let value;try{{value=JSON.parse(bytes);}}catch{{}}
+            if(value?.result?.outcome==='applied'&&value.result.epoch===0&&{ready_stall_ms}>0&&!replyStalled){{replyStalled=true;require('node:fs').writeFileSync(require('node:path').join(__dirname,'startup-stall.marker'),'applied');const until=Date.now()+{ready_stall_ms};while(Date.now()<until){{}}}}
+            return end.call(this,bytes,...args);
           }};
           const bridge=require('./bridge.cjs').startClientBridge({{app:{{isReady:()=>ready,getAppPath:()=>__dirname}}}},{{token:'a'.repeat(48)}});
           if({initial_source}){{
@@ -310,6 +323,50 @@ impl Drop for Fixture {
         let _ = self.peer.terminate();
         let _ = self.peer.wait(Duration::from_secs(2));
     }
+}
+
+#[test]
+fn startup_ready_recovers_the_original_receipt_after_a_slow_native_main_loop() {
+    let fixture = Fixture::new_with_reply_stall(false, 0, false, 35_000);
+    let pid = fixture.peer.pid();
+    let result = fixture.source.complete_startup(None);
+    assert!(
+        fixture
+            .directory
+            .path()
+            .join("startup-stall.marker")
+            .is_file()
+    );
+    assert!(!result.unwrap());
+    let receipt = fixture
+        .source
+        .request(json!({"op":"status","operationId":"startup-ready"}))
+        .unwrap();
+    assert_eq!(receipt["outcome"], "applied");
+    assert_eq!(receipt["pid"], pid);
+    assert_eq!(receipt["epoch"], 0);
+}
+
+#[test]
+fn bridge_request_honors_the_total_deadline_while_native_is_stalled() {
+    let fixture = Fixture::new_with_reply_stall(false, 0, false, 35_000);
+    let started = Instant::now();
+    let failure = fixture
+        .source
+        .request_until(
+            json!({"op":"ready","operationId":"bounded-startup","expectedEpoch":0}),
+            started + Duration::from_millis(200),
+        )
+        .unwrap_err();
+    assert_eq!(failure.code, "client_bridge_uncertain");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(
+        fixture
+            .directory
+            .path()
+            .join("startup-stall.marker")
+            .is_file()
+    );
 }
 
 #[test]

@@ -606,17 +606,31 @@ if (!entry || !snapshot || !path.isAbsolute(entry) || !path.isAbsolute(snapshot)
   || !process.execArgv.includes('--no-addons') || !process.execArgv.includes('--no-experimental-strip-types')) {
   fatal(error('executor_configuration', 'use Codlet to run a plugin with the managed JS executor'));
 } else {
+  let drainingInput = false;
+  function drainInput() {
+    try {
+      const newline = partial.indexOf(10);
+      if (newline < 0) {
+        if (partial.length > MAX_FRAME) throw error('protocol_error', 'Core frame exceeds its limit');
+        drainingInput = false;
+        process.stdin.resume();
+        return;
+      }
+      if (newline < 1 || newline > MAX_FRAME) throw error('protocol_error', 'invalid Core frame size');
+      const line = new TextDecoder('utf-8', { fatal: true }).decode(partial.subarray(0, newline));
+      partial = partial.subarray(newline + 1);
+      handle(JSON.parse(line));
+      // Let completed callbacks and their rejection handlers settle between
+      // frames. Pipe coalescing must not turn fast callbacks into four active
+      // handlers before any of them has run. Pausing input bounds the backlog.
+      setImmediate(drainInput);
+    } catch (failure) { fatal(failure); }
+  }
   process.stdin.on('data', chunk => {
     try {
       partial = Buffer.concat([partial, chunk]);
-      let newline;
-      while ((newline = partial.indexOf(10)) >= 0) {
-        if (newline < 1 || newline > MAX_FRAME) throw error('protocol_error', 'invalid Core frame size');
-        const line = new TextDecoder('utf-8', { fatal: true }).decode(partial.subarray(0, newline));
-        partial = partial.subarray(newline + 1);
-        handle(JSON.parse(line));
-      }
-      if (partial.length > MAX_FRAME) throw error('protocol_error', 'Core frame exceeds its limit');
+      process.stdin.pause();
+      if (!drainingInput) { drainingInput = true; setImmediate(drainInput); }
     } catch (failure) { fatal(failure); }
   });
   process.stdin.on('end', () => { state = 'stopping'; retire(); process.exit(0); });

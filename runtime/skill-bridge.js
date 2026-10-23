@@ -67,10 +67,20 @@ function installCodletSkill(config) {
     if(globalThis[key]===state)delete globalThis[key];
   };
   void(async()=>{
-    const deadline=Date.now()+30000;
+    const fastDiscoveryUntil=Date.now()+30000;
     // Reuse the mounted local request client. Hashed resources, minified export
     // names and frontend/backend versions are not part of the skills RPC ABI.
-    while(state.alive&&!state.client){const client=findClient();if(client?.getAppServerVersion?.())state.client=client;else{if(Date.now()>deadline)throw Error('The local App Server is not ready for the Codlet skill');await delay(100);}}
+    while(state.alive&&!state.client){
+      const client=findClient();
+      if(client?.getAppServerVersion?.())state.client=client;
+      else{
+        // First-run setup can outlast the initial discovery window. Retain an
+        // owned, slower wait so a later ready connection can still register.
+        const slow=Date.now()>=fastDiscoveryUntil;
+        if(slow)state.status='waiting';
+        await delay(slow?1000:100);
+      }
+    }
     if(!state.alive)return;
     const client=state.client;if(typeof client.sendRequest!=='function'||typeof client.setAppServerVersion!=='function')throw Error('The native skill connection changed');
     state.original=client.sendRequest;state.versionSetter=client.setAppServerVersion;

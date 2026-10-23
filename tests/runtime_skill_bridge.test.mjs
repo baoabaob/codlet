@@ -19,7 +19,7 @@ function fixture(t,{mounted=true,ambiguous=false,version='future-backend',origin
   const fiber={memoizedProps:{value:chain}},root={__reactContainer$test:fiber};
   let attached=mounted;
   const document={scripts:[{src:'app://-/assets/index-new-hash.js'}],readyState:'complete',getElementById:()=>attached?root:null};
-  const context=vm.createContext({setTimeout,clearTimeout,Map,Set,Symbol,location:{origin,pathname:'/index.html'},document,
+  const context=vm.createContext({setTimeout,clearTimeout,Date,Map,Set,Symbol,location:{origin,pathname:'/index.html'},document,
     electronBridge:{getSentryInitOptions:()=>({appVersion:'unlisted-frontend',buildNumber:'future'})}});
   const config={marker:'test.skill',binding:'skillBinding',root:'/runtime',skillPath:'/runtime/codlet/SKILL.md'};
   const state=()=>vm.runInContext('globalThis[Symbol.for("test.skill")]',context);
@@ -49,6 +49,29 @@ test('cold documents wait for mounted services; disposal cancels the pending wai
   f.mount();await new Promise(r=>setTimeout(r,130));await settle();assert.equal(f.state().status,'ready');
   const waiting=fixture(t,{mounted:false});await settle();const old=waiting.state();assert.equal(old.delays.size,1);
   await old.dispose([]);await settle();assert.equal(old.delays.size,0);assert.equal(waiting.state(),undefined);
+});
+test('a backend that becomes ready after 30 seconds still installs the skill bridge',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:0});
+  const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+  const f=fixture(t,{version:null});
+  t.mock.timers.tick(31000);await flush();
+  assert.equal(f.state().status,'waiting');assert.equal(f.client.sendRequest,f.original);
+  assert.equal(f.coreCalls.includes('failed'),false);assert.equal(f.state().delays.size,1);
+  f.client.getAppServerVersion=()=> 'late-backend';
+  t.mock.timers.tick(1000);await flush();
+  assert.equal(f.state().status,'ready');assert.equal(f.state().delays.size,0);
+  assert.equal(f.calls.filter(call=>call.method==='skills/extraRoots/set').length,1);
+  await f.state().dispose([]);
+});
+test('retirement cancels slow discovery and cannot patch a later ready client',async t=>{
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:0});
+  const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+  const f=fixture(t,{version:null});
+  t.mock.timers.tick(31000);await flush();const old=f.state();
+  assert.equal(old.status,'waiting');await old.dispose([]);
+  f.client.getAppServerVersion=()=> 'late-backend';t.mock.timers.tick(60000);await flush();
+  assert.equal(old.delays.size,0);assert.equal(f.state(),undefined);
+  assert.equal(f.client.sendRequest,f.original);assert.equal(f.calls.length,0);
 });
 test('ambiguous connections fail without patching either client',async t=>{
   const f=fixture(t,{ambiguous:true});await settle();assert.equal(f.state().status,'failed');assert.match(f.state().error,/ambiguous/);

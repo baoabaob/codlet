@@ -4,7 +4,7 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { prepareBackendLaunch, verifyBackend, supportsBackendContract } = require('./backend-launch.cjs');
-const { runConfigProbe } = require('./backend-config-probe.cjs');
+const { runConfigProbeInWorker } = require('./backend-config-probe.cjs');
 const fail = code => Object.assign(new Error(code), { code });
 const closeRoute = route => { try { Promise.resolve(route.close()).catch(() => {}); } catch {} };
 const DEFAULT_OPENAI = 'https://api.openai.com/v1';
@@ -80,16 +80,13 @@ function installBackendSpawn(configuration, dependencies = {}) {
   const prepare = dependencies.prepare ?? prepareBackendLaunch;
   const verify = dependencies.verify ?? verifyBackend;
   const controller = new AbortController();
-  let probing = false;
-  const probe = dependencies.probe ?? (plan => runConfigProbe(plan, {
+  let startupDeadlineUnixMs = configuration?.startupReadiness === true ? Date.now() + 35000 : null;
+  const probe = dependencies.probe ?? (plan => runConfigProbeInWorker(plan, {
     signal: controller.signal,
-    spawn(...args) {
-      probing = true;
-      try { return childProcess.spawn(...args); } finally { probing = false; }
-    },
+    ...(startupDeadlineUnixMs > Date.now() ? {deadlineUnixMs:Math.min(startupDeadlineUnixMs,Date.now()+30000)} : {}),
   }));
   if (!configuration?.source?.reserveRoute || !Number.isSafeInteger(configuration.deadlineUnixMs)) throw fail('invalid_launch_configuration');
-  let closed = false, prepared = 0, declined = 0, reason = null;
+  let closed = false, prepared = 0, declined = 0, reason = null, probeDiagnostic = null;
   const state=dependencies.state??{owned:new WeakSet(),trust:new WeakMap(),accounts:new WeakMap(),providers:new WeakMap(),records:new Set(),pending:new Set(),prepared:0};
   const shared=!!dependencies.state;
   const active = new Set(), pending = state.pending, owned = state.owned, trustByProcess = state.trust, accountByProcess = state.accounts, providersByProcess = state.providers;
@@ -99,7 +96,7 @@ function installBackendSpawn(configuration, dependencies = {}) {
     const entry = policies.get(childPlans.get(child));
     return !closed && !!entry?.value && Date.now() - entry.checkedAt < 10000;
   };
-  function preparePolicy(plan) {
+  function preparePolicy(plan, { retryFailed = false } = {}) {
     // Keys never leave this generation; credentials/environment are not logged.
     const environment = Object.entries(plan.environment).map(([name, value]) => [
       process.platform === 'win32' ? name.toUpperCase() : name, value,
@@ -108,6 +105,7 @@ function installBackendSpawn(configuration, dependencies = {}) {
       plan.executable, plan.binarySha256, plan.configArguments, plan.cwd, plan.recordedRouting, environment,
     ])).digest('hex');
     let entry = policies.get(key);
+    if(entry?.error&&retryFailed){policies.delete(key);entry=null;}
     if (entry?.value && Date.now() - entry.checkedAt >= 10000) { policies.delete(key); entry = null; }
     if (!entry) {
       if (policies.size >= 32) throw fail('backend_config_unavailable');
@@ -122,9 +120,10 @@ function installBackendSpawn(configuration, dependencies = {}) {
             const url = new URL(upstream);
             if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw fail('backend_provider_unsupported');
           }
-          if (!closed) { entry.value = value; entry.checkedAt = Date.now(); }
+          if (!closed) { entry.value = value; entry.checkedAt = Date.now(); probeDiagnostic = null; }
         }).catch(error => {
           entry.error = error;
+          if (!closed) probeDiagnostic = error.probeDiagnostic ?? null;
           if (!closed) reason = /^backend_[a-z_]+$/u.test(error?.code) ? error.code : 'backend_config_unavailable';
         }).finally(() => preparing.delete(work));
         preparing.add(work);
@@ -137,7 +136,7 @@ function installBackendSpawn(configuration, dependencies = {}) {
   prepared=state.prepared;
   function wrapped(options) {
     const args = options?.args, file = options?.file;
-    if (closed || probing || !Array.isArray(args) || !args.includes('app-server') || typeof file !== 'string' || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
+    if (closed || !Array.isArray(args) || !args.includes('app-server') || typeof file !== 'string' || !path.isAbsolute(file) || !/^codex(?:\.exe)?$/iu.test(path.basename(file))) return originalSpawn.call(this, options);
     let reservations = [], dispatched = false;
     try {
       const identity = verify(file, process.platform);
@@ -204,6 +203,7 @@ function installBackendSpawn(configuration, dependencies = {}) {
   prototype.spawn = wrapped;
   return Object.freeze({
     async ready({ deadlineUnixMs = configuration.deadlineUnixMs } = {}) {
+      if(startupDeadlineUnixMs!==null)startupDeadlineUnixMs=Math.min(startupDeadlineUnixMs,deadlineUnixMs);
       while (!closed && Date.now() < deadlineUnixMs - 500 &&
         (preparing.size || !prepared && !declined && ![...waitingChildren].some(canRecover) && !reason))
         await new Promise(resolve => setTimeout(resolve, 20));
@@ -225,9 +225,9 @@ function installBackendSpawn(configuration, dependencies = {}) {
     },
     ownsProcess: child => !closed && !!child && owned.has(child),
     canRecover,
-    async prepareConnection(transport) {
+    async prepareConnection(transport, { forRestart = false } = {}) {
       const child = transport?.proc;
-      if (closed || !child || owned.has(child)) return;
+      if (closed || !child || owned.has(child) && !forRestart) return;
       let plan = launchPlans.get(child);
       if (!plan) {
         const options = transport.options, file = child.spawnfile;
@@ -240,10 +240,14 @@ function installBackendSpawn(configuration, dependencies = {}) {
           cwd: options.cwd ?? process.cwd(), recordedRouting: identity.recorded === true };
         launchPlans.set(child, plan);
       }
-      const preparedPolicy = preparePolicy(plan);
-      childPlans.set(child, preparedPolicy.key); waitingChildren.add(child);
-      child.once('exit', () => waitingChildren.delete(child));
+      const preparedPolicy = preparePolicy(plan, { retryFailed: forRestart });
+      childPlans.set(child, preparedPolicy.key);
+      if(!waitingChildren.has(child)){waitingChildren.add(child);child.once('exit', () => waitingChildren.delete(child));}
       if (preparedPolicy.work) await preparedPolicy.work;
+      if(closed)throw fail('backend_owner_closed');
+      const entry=policies.get(preparedPolicy.key);
+      if(entry?.error)throw entry.error;
+      if(!entry?.value)throw fail('backend_config_unavailable');
     },
     providerTrustForProcess: child => owned.has(child) ? trustByProcess.get(child) : undefined,
     isProviderSupported: (child, provider) => owned.has(child) && providersByProcess.get(child)?.has(provider) === true,
@@ -261,7 +265,7 @@ function installBackendSpawn(configuration, dependencies = {}) {
       state.pending = update;
       update.finally(() => { if (state.pending === update) state.pending = null; }).catch(() => {});
     },
-    inspect: () => ({ installed: !closed, backendRootsPrepared: prepared, backendRootsDeclined: declined,
+    inspect: () => ({ installed: !closed, backendRootsPrepared: prepared, backendRootsDeclined: declined, probeDiagnostic,policyPending:preparing.size,
       policyReady: [...waitingChildren].some(canRecover),
       available: state.records.size > 0 && !reason, reason: reason ?? (state.records.size ? null : 'child_unavailable') }),
   });

@@ -6,7 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub(crate) mod client_versions;
-#[cfg(all(feature = "desktop-acceptance", not(test)))]
+#[cfg(feature = "desktop-acceptance")]
 mod desktop_acceptance;
 mod package_refresh;
 mod runtime_update_owner;
@@ -1087,14 +1087,37 @@ fn discover_runtime_targets(
     events: CdpEventStream,
     deadline: Duration,
 ) -> (Option<TargetController>, Vec<TargetSession>) {
-    match TargetController::discover(client, events, deadline) {
-        Ok((targets, sessions)) => (Some(targets), sessions),
-        Err(error) => {
-            eprintln!("renderer-executor: state=unavailable; error={error}");
-            renderer.record_executor_unavailable(&error.to_string());
-            (None, Vec::new())
+    let mut first_events = Some(events);
+    for attempt in 1..=3 {
+        let events = first_events
+            .take()
+            .unwrap_or_else(|| client.subscribe_events(None));
+        match TargetController::discover(client.clone(), events, deadline) {
+            Ok((targets, sessions)) => return (Some(targets), sessions),
+            Err(error)
+                if attempt < 3
+                    && client.closed_reason().is_none()
+                    && retryable_initial_discovery(&error) =>
+            {
+                // Native can serve the pipe before its browser target registry
+                // is ready or has a main window. Repeat only discovery;
+                // attach/evaluation failures may already have changed a target.
+                eprintln!("renderer-executor: state=waiting; attempt={attempt}; error={error}");
+            }
+            Err(error) => {
+                eprintln!("renderer-executor: state=unavailable; error={error}");
+                renderer.record_executor_unavailable(&error.to_string());
+                return (None, Vec::new());
+            }
         }
     }
+    unreachable!("the final discovery attempt always returns")
+}
+
+fn retryable_initial_discovery(error: &TargetError) -> bool {
+    matches!(error, TargetError::MainTargetNotFound { .. })
+        || matches!(error, TargetError::Client(crate::cdp::ClientError::RequestTimedOut { method, .. })
+            if matches!(method.as_str(), "Target.setDiscoverTargets" | "Target.getTargets"))
 }
 
 /// Validate configured plugins and build the renderer manager before any Codex
@@ -1810,6 +1833,104 @@ mod tests {
         );
         assert_eq!(std::fs::read(path).ok(), before);
         client.shutdown().unwrap();
+    }
+
+    #[test]
+    fn initial_discovery_only_retries_readiness_requests() {
+        use crate::cdp::ClientError;
+        for method in ["Target.setDiscoverTargets", "Target.getTargets"] {
+            assert!(retryable_initial_discovery(&TargetError::Client(
+                ClientError::RequestTimedOut {
+                    id: 1,
+                    method: method.into()
+                }
+            )));
+        }
+        for method in ["Target.attachToTarget", "Runtime.evaluate"] {
+            assert!(!retryable_initial_discovery(&TargetError::Client(
+                ClientError::RequestTimedOut {
+                    id: 1,
+                    method: method.into()
+                }
+            )));
+        }
+        assert!(!retryable_initial_discovery(
+            &TargetError::InvalidGetTargets("schema changed".into())
+        ));
+        assert!(retryable_initial_discovery(
+            &TargetError::MainTargetNotFound {
+                attempts: 1,
+                elapsed_ms: 15000,
+                observations: Vec::new(),
+            }
+        ));
+    }
+
+    #[test]
+    fn initial_discovery_recovers_after_an_unanswered_target_query() {
+        for scenario in ["target-initial-query-timeout", "target-initial-empty-query"] {
+            let directory = tempfile::tempdir().unwrap();
+            let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+            let mut renderer = RendererRuntime::bundled(registry).unwrap();
+            let executable = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("codlet-fake-child.exe");
+            let (child, pipes) = crate::windows::process::launch_with_cdp_pipes(
+                &executable,
+                &[OsString::from(format!("--scenario={scenario}"))],
+                true,
+            )
+            .unwrap();
+            let (client, events) = CdpClient::spawn(pipes).unwrap();
+            let (targets, sessions) = discover_runtime_targets(
+                &mut renderer,
+                client.clone(),
+                events,
+                Duration::from_millis(500),
+            );
+            assert!(targets.is_some());
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].target_id(), "main");
+            client.shutdown().unwrap();
+            assert_eq!(child.wait(Duration::from_secs(5)).unwrap(), Some(0));
+        }
+    }
+
+    #[test]
+    fn initial_discovery_stops_after_three_unanswered_queries() {
+        for scenario in ["target-discovery-timeouts", "target-empty-queries"] {
+            let directory = tempfile::tempdir().unwrap();
+            let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+            let mut renderer = RendererRuntime::bundled(registry).unwrap();
+            let executable = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("codlet-fake-child.exe");
+            let (child, pipes) = crate::windows::process::launch_with_cdp_pipes(
+                &executable,
+                &[OsString::from(format!("--scenario={scenario}"))],
+                true,
+            )
+            .unwrap();
+            let (client, events) = CdpClient::spawn(pipes).unwrap();
+            let (targets, sessions) = discover_runtime_targets(
+                &mut renderer,
+                client.clone(),
+                events,
+                Duration::from_millis(500),
+            );
+            assert!(targets.is_none());
+            assert!(sessions.is_empty());
+            client.shutdown().unwrap();
+            assert_eq!(child.wait(Duration::from_secs(5)).unwrap(), Some(0));
+        }
     }
 
     #[test]

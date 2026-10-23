@@ -133,7 +133,7 @@ function routedThreadMessage(message, reserve, isProviderSupported = () => true)
 // Scope final ApplicationNetwork calls to the reviewed performDesktopFetch
 // classes, after their auth, workspace policy and cancellation decisions.
 function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendProcess = () => false, isProviderSupported = () => true,
-  providerTrustForProcess = () => undefined,
+  providerTrustForProcess = () => undefined, prepareBackendRestart,
   pendingAccountUpdate = () => null, updateAccountMode = () => {}, moduleRegistry, state, onlineUpdates }, { expectedHashes = HASHES } = {}) {
   if ((!moduleRegistry && app.isReady()) || !source?.interceptHttp) throw fail('desktop_bootstrap_too_late');
   const scope = state?.scope??new AsyncLocalStorage();
@@ -145,7 +145,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   const bindingErrors = Object.create(null);
   const restores = [];
   const observed = new Map(), roleBindings = new Map(), roleReasons = new Map(), driftedRoles = new Set();
-  const wrappedMethods={network:['fetch','request'],fetch:['performDesktopFetch'],stdio:['send'],connection:['routeIncomingMessage']};
+  const wrappedMethods={network:['fetch','request'],fetch:['performDesktopFetch'],stdio:['send'],connection:['routeIncomingMessage',...(typeof prepareBackendRestart==='function'?['restart']:[])]};
   const taskRoutes = state?.taskRoutes??new Set(), routesByProcess = state?.routesByProcess??new WeakMap(), sendQueues = state?.sendQueues??new WeakMap();
   const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();
   function reserve(url, proc) {
@@ -203,12 +203,32 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     if (connectionInstalled || typeof Connection !== 'function' || typeof Connection.prototype.routeIncomingMessage !== 'function') { if (!connectionInstalled) taskReason = 'hook_unavailable'; return; }
     const original = Connection.prototype.routeIncomingMessage;
     Connection.prototype.routeIncomingMessage = function(message, ...rest) {
-      if (!closed && roleLive('connection',Connection) && message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc)) updateAccountMode(this.connection.proc, message.params?.authMode);
+      if (!closed && roleLive('connection',Connection)) {
+        // A connection can predate constructor observation. Its verified native
+        // method provides the live receiver without constructing or replaying it.
+        try { if(this instanceof Connection)moduleRegistry?.instance?.(this); } catch { /* Observation cannot interrupt a native message. */ }
+        if(message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc))updateAccountMode(this.connection.proc, message.params?.authMode);
+      }
       return original.call(this, message, ...rest);
     };
     connectionInstalled = true;
     const wrapped=Connection.prototype.routeIncomingMessage;
     restores.push(() => { if(Connection.prototype.routeIncomingMessage===wrapped)Connection.prototype.routeIncomingMessage = original; });
+    const originalRestart=Connection.prototype.restart;
+    if(typeof originalRestart==='function'&&typeof prepareBackendRestart==='function') {
+      const restart=async function(...args) {
+        if(closed||!roleLive('connection',Connection))return originalRestart.apply(this,args);
+        const transport=this.connection;
+        // Prepare before Native closes its current child, so the replacement
+        // spawn can acquire routes synchronously with its original launch plan.
+        await prepareBackendRestart(transport);
+        if(closed)throw fail('backend_owner_closed');
+        if(!roleLive('connection',Connection)||this.connection!==transport)throw fail('backend_connection_changed');
+        return originalRestart.apply(this,args);
+      };
+      Connection.prototype.restart=restart;
+      restores.push(()=>{if(Connection.prototype.restart===restart)Connection.prototype.restart=originalRestart;});
+    }
   }
   function hookNetwork(Network) {
     if (typeof Network !== 'function' || typeof Network.prototype.fetch !== 'function' || typeof Network.prototype.request !== 'function') { desktopReason = 'hook_unavailable'; return; }
@@ -436,6 +456,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       mismatch,
       bindingErrors:{...bindingErrors},deferredBindings:[...roleReasons.values()].filter(reason=>reason==='initializing').length,
       observedModules:moduleRegistry?.inspect?.().modules??null,
+      observedInstanceReferences:moduleRegistry?.inspect?.().instanceReferences??null,observedInstanceDrops:moduleRegistry?.inspect?.().instanceDrops??null,
+      observedModuleInventory:moduleRegistry?.list?.().slice(0,64).map(record=>({name:record.name,hash:record.hash,classes:record.classes?.length??null}))??[],
       bindingCandidates:Object.fromEntries(['network','fetch','stdio','connection'].map(role=>[role,[...observed.values()].flat().filter(candidate=>candidate.role===role).length])),
       bindingReasons:Object.fromEntries(roleReasons),
       reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : 'contract_unavailable'),

@@ -58,8 +58,102 @@ pub fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), FakeChildErr
         "future-response" => scenario_future_response(&mut input, &mut output),
         "first-issued-id" => scenario_first_issued_id(&mut input, &mut output),
         "target-delayed" => scenario_target_delayed(&mut input, &mut output),
+        "target-initial-query-timeout" => {
+            let mut reader = RequestReader::new(&mut input);
+            enable_target_discovery(&mut reader, &mut output)?;
+            // Leave the first read unanswered. The next startup attempt must
+            // establish a fresh discovery subscription on the same connection.
+            expect_method(reader.next()?, "Target.getTargets", None)?;
+            establish_target_session_with_rounds(
+                &mut reader,
+                &mut output,
+                [json!([
+                    {"targetId":"main","type":"page","url":"app://-/index.html","title":"Codex","attached":false}
+                ])],
+            )
+        }
+        scenario @ ("target-initial-empty-query" | "target-empty-queries") => {
+            let mut reader = RequestReader::new(&mut input);
+            let mut discoveries = 0;
+            while let Some(request) = reader.next_or_eof()? {
+                if request["method"] == "Target.setDiscoverTargets" {
+                    discoveries += 1;
+                    if discoveries > 3 {
+                        return Err(FakeChildError::InvalidRequest(
+                            "too many discovery attempts".into(),
+                        ));
+                    }
+                    let id = expect_method(request, "Target.setDiscoverTargets", None)?;
+                    write_json_frame(&mut output, &json!({"id":id,"result":{}}))?;
+                } else {
+                    let id = expect_method(request, "Target.getTargets", None)?;
+                    let ready = scenario == "target-initial-empty-query" && discoveries == 2;
+                    let targets = if ready {
+                        json!([{"targetId":"main","type":"page","url":"app://-/index.html"}])
+                    } else {
+                        json!([])
+                    };
+                    write_json_frame(
+                        &mut output,
+                        &json!({"id":id,"result":{"targetInfos":targets}}),
+                    )?;
+                    if ready {
+                        establish_named_target_session(&mut reader, &mut output, "main")?;
+                        break;
+                    }
+                }
+            }
+            if scenario == "target-empty-queries" && discoveries != 3 {
+                return Err(FakeChildError::InvalidRequest(
+                    "discovery stopped before three attempts".into(),
+                ));
+            }
+            Ok(())
+        }
+        "target-discovery-timeouts" => {
+            let mut reader = RequestReader::new(&mut input);
+            for _ in 0..3 {
+                enable_target_discovery(&mut reader, &mut output)?;
+                expect_method(reader.next()?, "Target.getTargets", None)?;
+            }
+            if reader.next_or_eof()?.is_some() {
+                return Err(FakeChildError::InvalidArgument(
+                    "discovery exceeded three attempts".into(),
+                ));
+            }
+            Ok(())
+        }
         "target-never" => scenario_target_never_matches(&mut input, &mut output),
         "target-lifecycle" => scenario_target_lifecycle(&mut input, &mut output),
+        "target-vanished-before-attach" => {
+            let mut reader = RequestReader::new(&mut input);
+            establish_target_session(&mut reader, &mut output)?;
+            write_json_frame(
+                &mut output,
+                &json!({"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"vanished","type":"page","url":"app://-/index.html"}}}),
+            )?;
+            let request = reader.next()?;
+            if request.pointer("/params/targetId") != Some(&json!("vanished")) {
+                return Err(FakeChildError::InvalidRequest(
+                    "wrong vanished target".into(),
+                ));
+            }
+            let id = expect_method(request, "Target.attachToTarget", None)?;
+            write_json_frame(
+                &mut output,
+                &json!({"id":id,"error":{"code":-32602,"message":"No target with given id found"}}),
+            )?;
+            write_json_frame(
+                &mut output,
+                &json!({"method":"Target.targetDestroyed","params":{"targetId":"vanished"}}),
+            )?;
+            write_json_frame(
+                &mut output,
+                &json!({"method":"Target.targetCreated","params":{"targetInfo":{"targetId":"live","type":"page","url":"app://-/index.html"}}}),
+            )?;
+            establish_named_target_session(&mut reader, &mut output, "live")?;
+            expect_root_command(&mut reader, &mut output, "Fake.finish")
+        }
         mode @ ("renderer-runtime" | "renderer-status-context" | "renderer-subframe-context") => {
             scenario_renderer_runtime(&mut input, &mut output, mode)
         }
