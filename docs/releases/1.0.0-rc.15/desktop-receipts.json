@@ -1,0 +1,241 @@
+{
+  "schema": 1,
+  "date": "2026-10-23",
+  "platform": "windows-x86_64",
+  "coreSourceCommit": "2970d1b5fa8bd47356d0cf8db0cbe04998be5d7d",
+  "splitRuntimeSourceCommit": "af7f4da03ab11dea060ad86e5c640d42d7f59546",
+  "coreAcceptanceSha256": "02fa58116372181f98c3dde71a8a2c142eb5edf24a14416fcf22baba361d69eb",
+  "coreReleaseSha256": "488933675632f5880741e07ea8e29654561150fb4278cd0c79d9a2ed67eb7f5c",
+  "fixtureSha256": "c7ed320172809a28561c772c9511efbbdf33ba049b01f274cff178d3475b5782",
+  "method": {
+    "threads": 3,
+    "firstThreadTurns": 12,
+    "attachments": "One synthetic PNG pasted through Native, with node and URL retention checks",
+    "reorderInput": "DOM PointerEvents",
+    "caption": "Read-only WM_NCHITTEST; 2 means HTCAPTION",
+    "viewport": "Candidate used Emulation.setDeviceMetricsOverride at 1804 × 1153; the physical window remained 1088 × 602"
+  },
+  "limits": [
+    "No physical mouse window-drag or IME acceptance",
+    "No live Core update with a draft in this run",
+    "No new performance or macOS acceptance",
+    "The old blank-body and attachment-loss symptoms were not independently reproduced; subtree removal and scroll rebound were reproduced"
+  ],
+  "cases": [
+    {
+      "variant": "baseline",
+      "reportId": "split-ui-baseline-v3-ten-20261023",
+      "reportSha256": "46697fcdf321300cce75540163aad38f7d82b98fe6d09e99a25805b9c30c4223",
+      "guestTaskExit": 0,
+      "core": "1.0.0-rc.14",
+      "split": "1.0.0-rc.4",
+      "nativeVersion": "26.1016.8622.0",
+      "verdict": {
+        "exit": "Ok(Some(0))",
+        "msixUpdateAccepted": false,
+        "normalShutdown": true,
+        "pluginErrorCount": 0,
+        "rendered": true,
+        "signedInSessionAccepted": false
+      },
+      "rendererViewport": null,
+      "passed": false,
+      "phase": "complete",
+      "errors": [],
+      "ownedProcessesRemaining": 0,
+      "nativeScrollStable": true,
+      "scroll": [
+        {
+          "label": "pane-1",
+          "stable": true,
+          "steps": 12
+        },
+        {
+          "label": "pane-1.05",
+          "stable": false,
+          "steps": 12
+        },
+        {
+          "label": "pane-0.8",
+          "stable": false,
+          "steps": 12
+        }
+      ],
+      "reorderCycles": 8,
+      "removedPaneSubtrees": 8,
+      "retention": {
+        "bodyNodesPreserved": true,
+        "draftPreserved": true,
+        "imagesPreserved": true,
+        "inputPreserved": true
+      },
+      "exitInputPreserved": true,
+      "counterDelta": {
+        "navigation.open": 0,
+        "transcript.dispose": 0,
+        "transcript.mount": 0
+      },
+      "nativePermission": {
+        "visible": false
+      },
+      "empty": null,
+      "captionHitTests": {
+        "complete": [
+          2,
+          2,
+          2
+        ],
+        "reordering": [
+          2,
+          2,
+          2
+        ],
+        "preparing": [
+          2,
+          2,
+          2
+        ],
+        "window-check": [
+          2,
+          2,
+          2
+        ]
+      }
+    },
+    {
+      "variant": "candidate",
+      "reportId": "split-ui-candidate-v6-20261023",
+      "reportSha256": "af7b9da9c77040154651f60e2f15d1783c9d57b7405594cdfd4ddb14decf65f6",
+      "guestTaskExit": 0,
+      "core": "1.0.0-rc.15",
+      "split": "1.0.0-rc.5",
+      "nativeVersion": "26.1016.8622.0",
+      "verdict": {
+        "exit": "Ok(Some(0))",
+        "msixUpdateAccepted": false,
+        "normalShutdown": true,
+        "pluginErrorCount": 0,
+        "rendered": true,
+        "signedInSessionAccepted": false
+      },
+      "rendererViewport": {
+        "bounds": {
+          "height": 1153,
+          "width": 1804
+        },
+        "method": "Emulation.setDeviceMetricsOverride"
+      },
+      "passed": true,
+      "phase": "complete",
+      "errors": [],
+      "ownedProcessesRemaining": 0,
+      "nativeScrollStable": true,
+      "scroll": [
+        {
+          "label": "pane-1",
+          "stable": true,
+          "steps": 12
+        },
+        {
+          "label": "pane-1.05",
+          "stable": true,
+          "steps": 12
+        },
+        {
+          "label": "pane-0.8",
+          "stable": true,
+          "steps": 12
+        }
+      ],
+      "reorderCycles": 8,
+      "removedPaneSubtrees": 0,
+      "retention": {
+        "bodyNodesPreserved": true,
+        "draftPreserved": true,
+        "imagesPreserved": true,
+        "inputPreserved": true
+      },
+      "exitInputPreserved": true,
+      "counterDelta": {
+        "navigation.open": 0,
+        "transcript.dispose": 0,
+        "transcript.mount": 0
+      },
+      "nativePermission": {
+        "closed": true,
+        "disabled": false,
+        "expanded": "true",
+        "menus": [
+          {
+            "classes": "no-drag z-50 m-px flex select-none flex-col overflow-y-auto bg-surface-elevated-secondary/90 text-default ring-(--color-border-overlay) ring-(length:--dropdown-overlay-ring-width) shadow-(--shadow-dropdown-overlay) backdrop-blur-sm rounded-2xl p-[var(--app-menu-gutter,var(--spacing))]",
+            "items": 4,
+            "owned": false,
+            "role": "menu"
+          }
+        ],
+        "sameControl": true,
+        "state": "open",
+        "visible": true
+      },
+      "empty": {
+        "rails": [
+          {
+            "painted": false
+          }
+        ],
+        "previews": [
+          {
+            "painted": false
+          }
+        ]
+      },
+      "captionHitTests": {
+        "preparing": [
+          2,
+          2,
+          2
+        ],
+        "window-check": [
+          2,
+          2,
+          2
+        ],
+        "seeding": [
+          2,
+          2,
+          2
+        ],
+        "zoom-1": [
+          2,
+          2,
+          2
+        ],
+        "reordering": [
+          2,
+          2,
+          2
+        ],
+        "zoom-1.05": [
+          2,
+          2,
+          2
+        ],
+        "zoom-0.8": [
+          2,
+          2,
+          2
+        ],
+        "empty-check": [
+          2,
+          2,
+          2
+        ],
+        "complete": [
+          2,
+          2,
+          2
+        ]
+      }
+    }
+  ]
+}
