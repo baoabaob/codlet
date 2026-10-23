@@ -21,8 +21,8 @@ export const WORKING_PROFILE=Object.freeze({
 // Source hashes, exact export bindings and preserved response/input/owned-work/
 // publication semantics: docs/native-working-26.1007.9446.0.json. Availability
 // still requires the actual mounted Native scope; platform acceptance is separate.
-// Builds 20770/21161: docs/native-desktop-20261021.md. Build 21477:
-// docs/native-desktop-21477.json records the same selectors and AppScope binding.
+// Builds 20770/21161: docs/native-desktop-20261021.md. Builds 21421/21477:
+// their docs/native-desktop-<build>.json reports verify selectors and AppScope.
 export const WORKING_PROFILES=Object.freeze([WORKING_PROFILE,Object.freeze({
   initial:'app-initial-102e45562729.js',shared:'app-shared-30671c57ec82.js',
   response:'vfn',pending:'nfn',publishing:'AW'
@@ -31,6 +31,9 @@ export const WORKING_PROFILES=Object.freeze([WORKING_PROFILE,Object.freeze({
   response:'Sbn',pending:'nbn',publishing:'oZ'
 }),Object.freeze({
   initial:'app-initial-2b6b8063022d.js',shared:'app-shared-9cc135f1bdc1.js',
+  response:'NCn',pending:'pCn',publishing:'JQ'
+}),Object.freeze({
+  initial:'app-initial-83973da15da9.js',shared:'app-shared-efae91d19fbd.js',
   response:'NCn',pending:'pCn',publishing:'JQ'
 }),Object.freeze({
   initial:'app-initial-ad16eaadf81f.js',shared:'app-shared-2feb3d4c6fcc.js',

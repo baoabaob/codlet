@@ -101,6 +101,21 @@
       }
     },
     {
+      "appVersion": "26.1016.61520",
+      "buildNumber": "21421",
+      "entry": "app://-/assets/index-114b01fbb27e.js",
+      "module": "app://-/assets/app-initial-83973da15da9.js",
+      "scopeModule": "app://-/assets/app-shared-efae91d19fbd.js",
+      "servicesModule": "app://-/assets/app-shared-efae91d19fbd.js",
+      "exports": {
+        "scope": "Qst",
+        "services": "ist"
+      },
+      "officialUpdates": {
+        "stateSelector": "gDn"
+      }
+    },
+    {
       "appVersion": "26.1016.62342",
       "buildNumber": "21477",
       "entry": "app://-/assets/index-525daf5f2209.js",

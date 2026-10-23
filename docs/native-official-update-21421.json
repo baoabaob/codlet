@@ -1,0 +1,178 @@
+{
+  "schema": 1,
+  "kind": "native-official-update-source-analysis",
+  "identity": {
+    "packageFullName": "OpenAI.Codex_26.1016.8120.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1016.8120.0",
+    "appVersion": "26.1016.61520",
+    "buildNumber": "21421",
+    "buildNumberSource": "package.json"
+  },
+  "snapshotSha256": "78183a58c903d19ccb766ef2e3499575666a2f10978f20147374c081f811284a",
+  "status": "located",
+  "counts": {
+    "scopes": 1,
+    "defaults": 1,
+    "atoms": 1,
+    "selectors": 1,
+    "services": 1,
+    "entries": 1
+  },
+  "evidence": {
+    "scopes": [
+      {
+        "file": "webview/assets/app-shared-efae91d19fbd.js",
+        "sha256": "f3d9baa29fa49cbe6a0894ece757a4d5f88d99bdc4bf855bb8444e12e99158ca",
+        "binding": "s1:v6877",
+        "exports": [
+          "Qst"
+        ],
+        "start": {
+          "line": 323,
+          "column": 61469,
+          "offset": 1789574
+        },
+        "end": {
+          "line": 323,
+          "column": 61484,
+          "offset": 1789589
+        },
+        "normalizedHash": "391348fcd95704b659d52c4521a96ef268996bd27aac524966ab0f87b7a94795"
+      }
+    ],
+    "defaults": [
+      {
+        "file": "webview/assets/app-initial-83973da15da9.js",
+        "sha256": "1fb9718e75ae6b4adc0dfd030028d570846d098892e774564db5efe491ce4691",
+        "binding": "s1:v17234",
+        "exports": [],
+        "start": {
+          "line": 2504,
+          "column": 47958,
+          "offset": 5129014
+        },
+        "end": {
+          "line": 2504,
+          "column": 48136,
+          "offset": 5129192
+        },
+        "normalizedHash": "b74d02fdf8a352d5a601048139a2204bbf2c70aad6a6abf0262d754db27687a2"
+      }
+    ],
+    "atoms": [
+      {
+        "file": "webview/assets/app-initial-83973da15da9.js",
+        "sha256": "1fb9718e75ae6b4adc0dfd030028d570846d098892e774564db5efe491ce4691",
+        "binding": "s1:v17235",
+        "exports": [],
+        "start": {
+          "line": 2504,
+          "column": 48140,
+          "offset": 5129196
+        },
+        "end": {
+          "line": 2504,
+          "column": 48149,
+          "offset": 5129205
+        },
+        "normalizedHash": "353e311a1f080102a47287054591d4dab32b582ebcb63fd6c8c81628d29776e7"
+      }
+    ],
+    "selectors": [
+      {
+        "file": "webview/assets/app-initial-83973da15da9.js",
+        "sha256": "1fb9718e75ae6b4adc0dfd030028d570846d098892e774564db5efe491ce4691",
+        "binding": "s1:v17238",
+        "exports": [
+          "gDn"
+        ],
+        "start": {
+          "line": 2504,
+          "column": 48221,
+          "offset": 5129277
+        },
+        "end": {
+          "line": 2504,
+          "column": 48256,
+          "offset": 5129312
+        },
+        "normalizedHash": "d3b6fd9fd5c2caed31bf1af6f03f4948ccd5141bb3ae4d8543ad499ab1685794"
+      }
+    ],
+    "services": [
+      {
+        "file": "webview/assets/app-shared-efae91d19fbd.js",
+        "sha256": "f3d9baa29fa49cbe6a0894ece757a4d5f88d99bdc4bf855bb8444e12e99158ca",
+        "binding": "s1:v7244",
+        "exports": [
+          "ist"
+        ],
+        "start": {
+          "line": 323,
+          "column": 111399,
+          "offset": 1839504
+        },
+        "end": {
+          "line": 323,
+          "column": 111400,
+          "offset": 1839505
+        },
+        "normalizedHash": "5dca9e25f26e3468b6b428a0d73ebf3228e4b36bc2b711047bf27464b49cdb09"
+      }
+    ],
+    "installCalls": [
+      {
+        "file": "webview/assets/app-initial-83973da15da9.js",
+        "sha256": "1fb9718e75ae6b4adc0dfd030028d570846d098892e774564db5efe491ce4691",
+        "at": {
+          "line": 2504,
+          "column": 48783,
+          "offset": 5129839
+        },
+        "service": "webview/assets/app-shared-efae91d19fbd.js#s1:v7244"
+      },
+      {
+        "file": "webview/assets/app-initial-83973da15da9.js",
+        "sha256": "1fb9718e75ae6b4adc0dfd030028d570846d098892e774564db5efe491ce4691",
+        "at": {
+          "line": 4820,
+          "column": 210171,
+          "offset": 10557839
+        },
+        "service": "webview/assets/app-shared-efae91d19fbd.js#s1:v7244"
+      },
+      {
+        "file": "webview/assets/app-initial-83973da15da9.js",
+        "sha256": "1fb9718e75ae6b4adc0dfd030028d570846d098892e774564db5efe491ce4691",
+        "at": {
+          "line": 4820,
+          "column": 211770,
+          "offset": 10559438
+        },
+        "service": "webview/assets/app-shared-efae91d19fbd.js#s1:v7244"
+      }
+    ],
+    "entries": [
+      {
+        "path": "webview/assets/index-114b01fbb27e.js",
+        "bytes": 828,
+        "sha256": "66c7ff86ed45db84cefb2bab4a4bb9d0d915f42a73bf50ae98ed7c029543cb35"
+      }
+    ]
+  },
+  "profile": {
+    "appVersion": "26.1016.61520",
+    "buildNumber": "21421",
+    "entry": "app://-/assets/index-114b01fbb27e.js",
+    "module": "app://-/assets/app-initial-83973da15da9.js",
+    "scopeModule": "app://-/assets/app-shared-efae91d19fbd.js",
+    "servicesModule": "app://-/assets/app-shared-efae91d19fbd.js",
+    "exports": {
+      "scope": "Qst",
+      "services": "ist"
+    },
+    "officialUpdates": {
+      "stateSelector": "gDn"
+    }
+  }
+}

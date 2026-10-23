@@ -5,7 +5,7 @@ tests. File hashes identify the evidence; capability contracts decide whether an
 interface is usable. The [compatibility contract](spec/client-compatibility.md)
 remains the runtime boundary.
 
-The current build 21477 mapping and exact package hashes are recorded in
+The current build 21421/21477 mappings and exact package hashes are recorded in
 [the 2026-10-23 adaptation](native-adaptation-20261023.md).
 
 ## Implementation plan for the 2026-10-21 update
