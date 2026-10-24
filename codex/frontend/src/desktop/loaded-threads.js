@@ -1,3 +1,4 @@
+import { threadIdentity } from './thread-identity.js';
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const text = (value, max) => typeof value === 'string' ? value.slice(0, max) : null;
 
@@ -13,7 +14,7 @@ export function loadedThreadSummary(thread, working = null) {
   // Native's runtime status is authoritative. The live tail is a constant-time
   // fallback on older profiles; never walk canonical history on a token delta.
   const running = status?.type != null ? status.type === 'active' : thread.turns?.at(-1)?.status === 'inProgress';
-  return Object.freeze({ id: thread.id, title: text(thread.title ?? thread.displayTitle, 8192), cwd: text(thread.cwd, 8192), hostId: 'local',
+  return Object.freeze({ id: thread.id, title: text(thread.title ?? thread.displayTitle, 8192), cwd: text(thread.cwd, 8192), hostId: 'local', ...threadIdentity(thread),
     runtimeStatus: attention ? 'attention' : running ? 'running' : thread.resumeState === 'resumed' ? 'idle' : 'loading',
     working: typeof working === 'boolean' ? working : null });
 }
@@ -22,7 +23,7 @@ export function createLoadedThreads(manager, emit, instance, working = {read:()=
   const summaries = new Map(), pages = new Map();
   let initialized = false, pageSequence = 0;
   const supported = typeof manager.getCachedConversations === 'function';
-  const same = (a, b) => a === b || a && b && a.id === b.id && a.title === b.title && a.cwd === b.cwd && a.runtimeStatus === b.runtimeStatus && a.working === b.working;
+  const same = (a, b) => a === b || a && b && a.id === b.id && a.title === b.title && a.cwd === b.cwd && a.runtimeStatus === b.runtimeStatus && a.working === b.working && a.isSubagent === b.isSubagent && a.parentThreadId === b.parentThreadId;
   const project = thread => {const summary=loadedThreadSummary(thread);return summary?loadedThreadSummary(thread,working.read(summary.id,thread)):null;};
   function refresh(threadId, notify = true) {
     if (!supported || typeof threadId !== 'string') return;

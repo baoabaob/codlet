@@ -3,6 +3,7 @@ import { createThreadConfiguration } from './thread-configuration.js';
 import { createThreadReconfiguration } from './thread-reconfiguration.js';
 import { createThreadRestoration } from './thread-restoration.js';
 import { createLoadedThreads } from './loaded-threads.js';
+import { threadIdentity } from './thread-identity.js';
 import { createNativeWorking } from './native-working.js';
 import { createThreadOpener } from './thread-navigation.js';
 import { reviewedNavigator } from '../native-navigation.js';
@@ -196,7 +197,7 @@ function turnDto(turn) {
 }
 function threadDto(thread) {
     obj(thread);
-    return { id: identity(thread.id, 'thread id'), title: optionalText(thread.name ?? thread.title ?? thread.preview), cwd: optionalText(thread.cwd), provider: optionalText(thread.modelProvider, 256), createdAt: Number.isFinite(thread.createdAt) ? thread.createdAt : null, updatedAt: Number.isFinite(thread.updatedAt) ? thread.updatedAt : null, turns: Array.isArray(thread.turns) ? thread.turns.map(turnDto) : [] };
+    return { id: identity(thread.id, 'thread id'), ...threadIdentity(thread), title: optionalText(thread.name ?? thread.title ?? thread.preview), cwd: optionalText(thread.cwd), provider: optionalText(thread.modelProvider, 256), createdAt: Number.isFinite(thread.createdAt) ? thread.createdAt : null, updatedAt: Number.isFinite(thread.updatedAt) ? thread.updatedAt : null, turns: Array.isArray(thread.turns) ? thread.turns.map(turnDto) : [] };
 }
 
 function permissionsDto(params) {

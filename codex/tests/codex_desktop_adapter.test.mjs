@@ -64,7 +64,7 @@ test('threads.loaded is registered on Desktop Read and returns bounded summaries
     assert.ok(f.endpoints.has('codex.backend.read:threads.loaded'));
     const initial = await f.api.readEvents({ limit: 100 });
     const page = await f.api.read('threads.loaded', { limit: 1 });
-    assert.deepEqual(plain(page), { threads: [{ id: 'thread-a', title: 'Cached task', cwd: 'X:/fixture', hostId: 'local', runtimeStatus: 'idle', working:null }], cursor: null });
+    assert.deepEqual(plain(page), { threads: [{ id: 'thread-a', title: 'Cached task', cwd: 'X:/fixture', hostId: 'local', isSubagent:false, parentThreadId:null, runtimeStatus: 'idle', working:null }], cursor: null });
     assert.equal(f.requestCalls.length, 0);
     f.thread.threadRuntimeStatus = { type: 'active', activeFlags: ['waitingOnUserInput'] };
     f.callbacks.get('conversation')('thread-a');

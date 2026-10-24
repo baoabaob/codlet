@@ -122,6 +122,6 @@ export interface IndependentViewportHandle {
 export interface WorkspaceOwner { world: 'main'; pluginId: string; generation: number; onDeactivate(dispose: () => void): () => void }
 export interface WorkspaceApi { api: 1; connect(context: WorkspaceOwner, ticket: string): WorkspaceSession }
 export interface WorkspaceApiDescriptor { api: 1; symbol: 'codlet.codex.ui.workspace.v1'; ticket: string }
-export interface LoadedThreadSummary { id: string; title: string | null; cwd: string | null; hostId: 'local'; runtimeStatus: 'running' | 'attention' | 'idle' | 'loading'; /** Native work state including owned child work/publication; null on unsupported or unready mapping. */ working: boolean | null }
+export interface LoadedThreadSummary { id: string; title: string | null; cwd: string | null; hostId: 'local'; /** Child agent tasks share the cache but have no independent main input. */ isSubagent: boolean; parentThreadId: string | null; runtimeStatus: 'running' | 'attention' | 'idle' | 'loading'; /** Native work state including owned child work/publication; null on unsupported or unready mapping. */ working: boolean | null }
 export interface LoadedThreadQuery { limit?: number; cursor?: string; threadId?: string }
 export interface LoadedThreadPage { threads: LoadedThreadSummary[]; cursor: string | null }

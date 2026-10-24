@@ -1,9 +1,11 @@
 import { createThreadOpener } from '../desktop/thread-navigation.js';
+import { threadIdentity } from '../desktop/thread-identity.js';
 import { nativeInputBinding, nativeMainInput, workspaceError } from './workspace-dom.js';
 import { sameNativeInput } from './workspace-native-input.js';
 import { nativeInitializationPending } from './native-readiness.js';
 
 export function createWorkspaceNavigation({document,load,host,check,changed,onPrepared,readBinding,readCurrentInput,metrics}) {
+  const validateTarget=thread=>{if(threadIdentity(thread).isSubagent)throw workspaceError('workspace_thread_not_selectable','A subagent task has no independent Native main input');};
   const sessions=new Set(),guards=new Set();let native,prepared,current,sequence=0,observer,frame,microtask=false,queueEpoch=0,disposed=false;
   let tracking=false,restoringLocation=false,composing=new WeakMap(),compositionRoots=new WeakMap();
   function compositionStart(event){
@@ -71,7 +73,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
     const session={alive:true,operations:new Set(),latest:null};sessions.add(session);track();
     const valid=()=>{check();live();if(!session.alive)throw workspaceError('workspace_retired','Navigation session retired');};
     const ready=ensure().then(()=>undefined);ready.catch(()=>{});
-    const makeOpener=op=>createThreadOpener({manager:{getConversation:id=>native.manager.getConversation(id)},selection:()=>{
+    const makeOpener=op=>createThreadOpener({manager:{getConversation:id=>native.manager.getConversation(id)},validateTarget,selection:()=>{
       valid();native.check?.();const match=/^\/local\/([\w-]+)\/?$/.exec(host().navigator.location.pathname),threadId=match?.[1]??null,thread=native.manager.getConversation(threadId);
       return{threadId,resumeState:thread?.resumeState==='resumed'?'resumed':'loading',streamRole:native.manager.getStreamRole?.(threadId)?.role??'none'};
     },navigation:()=>{const navigator=host().navigator;return{stamp:()=>JSON.stringify(navigator.location),open(id){
@@ -93,6 +95,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
           if(!options||typeof options!=='object'||Array.isArray(options)||Object.keys(options).some(key=>key!=='signal'))throw workspaceError('invalid_argument','Invalid navigation options');
           signal=options.signal;
           if(signal!=null&&(typeof signal.aborted!=='boolean'||typeof signal.addEventListener!=='function'||typeof signal.removeEventListener!=='function'))throw workspaceError('invalid_argument','Invalid navigation signal');
+          if(!signal?.aborted&&native)validateTarget(native.manager.getConversation(args.threadId));
           const checked=!signal?.aborted&&native?composition(measurement):undefined; // Before supersession, routing or any possible focus change.
           before=!signal?.aborted&&native?.inputApi===1?binding(checked,measurement):null;
         }catch(error){metrics?.end('navigation.preflight.failed',measurement?.started,measurement);throw error;}

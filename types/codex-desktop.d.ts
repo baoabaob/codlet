@@ -39,6 +39,8 @@ export interface Item {
 export interface Turn { id: string; status: string; items: Item[]; error: string | null }
 export interface Thread {
   id: string;
+  isSubagent: boolean;
+  parentThreadId: string | null;
   title: string | null;
   cwd: string | null;
   provider: string | null;

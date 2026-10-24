@@ -26,8 +26,30 @@ function setup(t, { cold = false, inputApi = 1, nativeEntry = true, metrics, onI
     readCurrentInput: () => { onInputRead?.(); return state.binding; } });
   const navigation = provider.create(() => {});
   t.after(() => { provider.dispose(); window.close(); });
-  return { window, document, editable, state, calls, requests, navigator, provider, navigation, makeBinding, checkedInputs, nativeCalls };
+  return { window, document, editable, state, calls, requests, manager, navigator, provider, navigation, makeBinding, checkedInputs, nativeCalls };
 }
+
+test('a cached child task is rejected before focus, routing or retirement of the previous pending selection',async t=>{
+  const f=setup(t,{cold:true});await f.navigation.ready;f.editable.focus();
+  const previous=f.navigation.open({threadId:'fixture-cold'}),get=f.manager.getConversation;
+  f.manager.getConversation=id=>id==='fixture-child'?{id,hostId:'local',source:{subAgent:{thread_spawn:{parent_thread_id:'fixture-a'}}}}:get(id);
+  let settled=false;previous.committed.then(()=>settled=true,()=>settled=true);
+  assert.throws(()=>f.navigation.open({threadId:'fixture-child'}),{code:'workspace_thread_not_selectable'});
+  await Promise.resolve();assert.equal(settled,false);assert.deepEqual(f.calls,[]);assert.equal(f.document.activeElement,f.editable);
+  f.requests[0].resolve({thread:{id:'fixture-cold'}});await previous.committed;
+  assert.deepEqual(f.nativeCalls,['fixture-cold']);
+});
+
+test('a cold child task is rejected after metadata validation without navigating or replacing the current input',async t=>{
+  const f=setup(t,{cold:true});await f.navigation.ready;const binding=f.state.binding;
+  const operation=f.navigation.open({threadId:'fixture-child'});
+  f.requests[0].resolve({thread:{id:'fixture-child',parentThreadId:'fixture-a'}});
+  await assert.rejects(operation.executed,{code:'workspace_thread_not_selectable'});
+  await assert.rejects(operation.committed,{code:'workspace_thread_not_selectable'});
+  assert.deepEqual(f.calls,[]);assert.equal(f.state.binding,binding);assert.equal(f.navigator.location.pathname,'/local/fixture-a');
+  const next=f.navigation.open({threadId:'fixture-root'});f.requests[1].resolve({thread:{id:'fixture-root',title:null,threadSource:'agent_created_thread'}});
+  await next.committed;assert.deepEqual(f.nativeCalls,['fixture-root']);
+});
 
 test('preparation publishes after strict input inspection is available without navigating',async t=>{
   let prepared=0;

@@ -95,7 +95,9 @@ Loaded-task activity is `working: boolean | null`. Waiting while execution is
 idle is not working; publication and concurrent owned work use the reviewed
 Native mapping. Unknown mappings retain unknown state and must not be converted
 to false or used to remove existing task members. Loaded summaries paginate
-without a total count cap. No operation opens another App Server connection.
+without a total count cap. Summaries and thread reads expose `isSubagent` and
+`parentThreadId`; workspace consumers exclude child agent tasks from independent
+input selection. No operation opens another App Server connection.
 
 ## Host namespace
 
