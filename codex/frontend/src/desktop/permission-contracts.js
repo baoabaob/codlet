@@ -2,7 +2,7 @@ import {parseExpressionAt} from 'acorn';
 
 export const NATIVE_PERMISSION_FUNCTIONS = Object.freeze({
   reduce: { label: 'permission option reducer', markers: ['availableAgentModes','canShowCustom','configNonFullAccessMode','hasAuthoritativeGuardianApprovalDefault','showGuardianOption'] },
-  convert: { label: 'permission converter', arity: 3, markers: ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'] },
+  convert: { label: 'permission converter', arities: [3,4], markers: ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'] },
   toSettings: { label: 'permission wire settings', arity: 1, markers: ['activePermissionProfile','sandboxPolicy','permissions:'] },
   modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'], maxLength: 180 },
   profileMode: { label: 'built-in permission profile', arity: 2, markers: [':read-only',':workspace',':danger-full-access'] },
@@ -30,6 +30,7 @@ function modelClassification(source) {
 
 export function matchesNativePermissionSource(source, arity, contract) {
   return (contract.arity == null || arity === contract.arity) &&
+    (!contract.arities || contract.arities.includes(arity)) &&
     (contract.maxLength == null || source.length < contract.maxLength) && contract.markers.every(marker => source.includes(marker)) &&
     (!contract.modelClassification||modelClassification(source));
 }

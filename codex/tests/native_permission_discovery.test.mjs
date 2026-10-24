@@ -32,3 +32,10 @@ test('the broader permission warning classifier is distinguished from the daybre
   assert.equal(matchesNativePermissionSource(normal.toString(),1,contract),true);
   assert.equal(matchesNativePermissionSource(narrow.toString(),1,contract),false);
 });
+
+test('permission conversion accepts the optional profile argument and rejects other arity drift',async()=>{
+  const f=fixture();
+  f.initial.convert=function convert(mode,roots,config,profile){return ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'];};
+  const reader=await loadNativePermissions(f.options);reader.dispose();
+  for(const arity of [0,1,2,5])assert.equal(matchesNativePermissionSource(f.initial.convert.toString(),arity,NATIVE_PERMISSION_FUNCTIONS.convert),false);
+});

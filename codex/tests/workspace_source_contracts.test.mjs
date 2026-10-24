@@ -53,6 +53,25 @@ test('query-options keymaps retain lexical query-key and returned-data ownership
   missing(source.replace('query=make', 'key=["other"];query=make'));
 });
 
+test('keymap query keys may initialize separately while shadowing and competing writes remain rejected',()=>{
+  const source='var key,query,state;function initKey(){key=["vscode","codex-command-keymap-state"]}' +
+    'function initState(){initKey();query=make(app,()=>({queryKey:key,queryFn:({signal})=>fetchKeymap(signal)}));state=derived(app,({get:read})=>{let {data:value}=read(query);return value})}export{state as keymap};';
+  assert.equal(keymapSourceExport(source),'keymap');
+  assert.equal(keymapSourceExport(source+'function other(){return ['+Array(150).fill('otherkeyname').join(',')+']}'),'keymap');
+  missing(source.replace('function initState()','function initState(key)'));
+  missing(source+'function overwrite(){key=["unrelated"]}');
+  missing(source.replace('read(query)','read(unrelated)'));
+});
+
+test('local navigation delegates must forward the complete argument list without extra actions',()=>{
+  const contract=WORKSPACE_FUNCTION_ROLES.threadNavigation;
+  const source='function renamed(owner,...args){return owner.get(nav).navigateToLocalConversation(...args)}';
+  assert.equal(matchesWorkspaceFunction(source,1,contract),true);
+  assert.equal(matchesWorkspaceFunction(source,2,contract),true);
+  for(const changed of [source.replace('function renamed','async function renamed'),source.replace('return owner','owner.set(other);return owner'),source.replace('...args)}','"other") }'),source.replace('owner.get(nav)','foreign.get(nav)')])
+    assert.equal(matchesWorkspaceFunction(changed,1,contract),false);
+});
+
 test('module syntax ignores string/comment decoys and records actual imports and export aliases', () => {
   const source = 'const text="export{wrong as alias}";/* import {wrong} from "./fake.js"; */' +
     'import {remote as local} from "./moved.js";function f(){return `export{alsoWrong as alias}`;}export{local as alias,local as second};';

@@ -82,11 +82,12 @@ export function workspaceModuleSyntax(source) {
   syntaxCache.set(source, result); return result;
 }
 
-export function workspaceSourceFunctions(source, marker) {
+export function workspaceSourceFunctions(source, marker, {identifier=false}={}) {
   if (!source.includes(marker)) return [];
   const syntax = workspaceModuleSyntax(source), found = new Map();
   let count = 0;
   for (let at = source.indexOf(marker); at >= 0; at = source.indexOf(marker, at + marker.length)) {
+    if(identifier&&(/[A-Za-z0-9_$]/.test(source[at-1]??'')||/[A-Za-z0-9_$]/.test(source[at+marker.length]??'')))continue;
     if (++count > 128) throw workspaceError('workspace_host_drift', 'Native source marker exceeds its search boundary');
     let low = 0, high = syntax.functions.length;
     while (low < high) { const middle = (low + high) >>> 1; if (syntax.functions[middle] < at) low = middle + 1; else high = middle; }
@@ -168,9 +169,29 @@ function queryDataReturns(callback, get, query, resolve) {
 
 export function keymapSourceExport(source, { optional = false } = {}) {
   const code = 'workspace_shortcuts_unavailable', matches = new Map();
-  for (const ast of workspaceSourceFunctions(source, 'codex-command-keymap-state')) {
+  const roots=new Map(workspaceSourceFunctions(source,'codex-command-keymap-state').map(ast=>[ast.start,ast]));
+  const keys=new Set();
+  for(const ast of roots.values()){
+    const resolve=workspaceLexicalReferences(ast);
+    for(const value of assignments(ast))if(typeof resolve(value.left)==='string'&&value.right.type==='ArrayExpression'&&value.right.elements.length===2&&text(value.right.elements[0])==='vscode'&&text(value.right.elements[1])==='codex-command-keymap-state')keys.add(value.left.name);
+  }
+  if(keys.size>16)throw workspaceError(code,'Native keymap keys exceed the discovery boundary');
+  // Native can initialize the module-level query key separately from its query
+  // and derived state. Collect only bounded functions that reference that key.
+  for(const name of keys)for(const ast of workspaceSourceFunctions(source,name,{identifier:true}))roots.set(ast.start,ast);
+  const definitions=new Map();
+  for(const ast of roots.values()){
+    const resolve=workspaceLexicalReferences(ast);
+    for(const value of assignments(ast)){
+      const id=resolve(value.left);if(typeof id!=='string'||!keys.has(value.left.name))continue;
+      if(!definitions.has(id))definitions.set(id,new Map());definitions.get(id).set(value.start,value.right);
+    }
+  }
+  for (const ast of roots.values()) {
     const resolve = workspaceLexicalReferences(ast), values = assignments(ast);
     const lookup = identifier => {
+      const external=definitions.get(resolve(identifier));
+      if(external)return external.size===1?[...external.values()][0]:null;
       const matches = values.filter(value => resolve(value.left) === resolve(identifier));
       return matches.length === 1 ? matches[0].right : null;
     };

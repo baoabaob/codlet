@@ -19,13 +19,14 @@ test('Working uses Native loading, blocking input and publication rather than ru
 
 function fixture(profile=WORKING_PROFILE){
   const token={},node={token},families={response:{scope:token,read(){}},pending:{scope:token,read(){}},publishing:{scope:token,read(){}}};
-  const initial=Object.fromEntries(Object.entries(families).map(([name,value])=>[profile[name],value])),states=new Map(),watchers=new Map();let reads=0,checks=0;
+  const initial=Object.fromEntries(Object.entries(families).map(([name,value])=>[profile[name],value])),extra=profile.publishingModule?{[profile.publishing]:families.publishing}:null,states=new Map(),watchers=new Map();let reads=0,checks=0;
+  if(extra)delete initial[profile.publishing];
   const get=(family,args)=>{reads++;const state=states.get(args.conversationId);return state?.[Object.keys(families).find(name=>families[name]===family)];};
   const facade={scope:token,node,get,watch(fn){let id;const track=(family,args)=>{id=args.conversationId;return get(family,args);};fn({get:track});watchers.set(id,fn);return()=>watchers.delete(id);}};
   const connection={node,check(){checks++;}};
-  const options={asset:role=>`app://-/assets/${profile[role]}`,load:async url=>url.includes('app-initial')?initial:{},connect:()=>connection,scope:()=>facade};
+  const options={asset:role=>`app://-/assets/${profile[role]}`,load:async url=>url===`app://-/assets/${profile.publishingModule}`?extra:url.includes('app-initial')?initial:{},connect:()=>connection,scope:()=>facade};
   const notify=id=>watchers.get(id)?.({get});
-  return{families,initial,states,watchers,notify,options,stats:()=>({reads,checks})};
+  return{families,initial,extra,states,watchers,notify,options,stats:()=>({reads,checks})};
 }
 
 test('reviewed Native selectors and AppScope work without any mounted row or document',async()=>{
@@ -54,6 +55,15 @@ for(const profile of WORKING_PROFILES.slice(2))test(`Working state uses the revi
   f.states.get('current').pending={kind:'approval',blocking:true};assert.equal(driver.read('current'),false);
   f.states.get('current').publishing=true;assert.equal(driver.read('current'),true);
   await assert.rejects(loadNativeWorking({...f.options,asset:role=>role==='shared'?'app://-/assets/unreviewed.js':f.options.asset(role)}),/not reviewed/);
+});
+
+test('a relocated publication selector must retain the same Native AppScope and namespace identity',async()=>{
+  const profile=WORKING_PROFILES.find(value=>value.publishingModule),f=fixture(profile);assert.ok(f.extra);
+  f.states.set('published',{response:'idle',pending:null,publishing:true});
+  const driver=await loadNativeWorking(f.options);assert.equal(driver.read('published'),true);
+  f.extra[profile.publishing]={scope:{},read(){}};
+  assert.throws(()=>driver.read('published'),/profile changed/);
+  await assert.rejects(loadNativeWorking(f.options),/unavailable/);
 });
 
 test('cached summaries and events carry nullable working independently from their legacy runtimeStatus',async()=>{

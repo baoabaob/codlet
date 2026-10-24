@@ -38,6 +38,9 @@ export const WORKING_PROFILES=Object.freeze([WORKING_PROFILE,Object.freeze({
 }),Object.freeze({
   initial:'app-initial-ad16eaadf81f.js',shared:'app-shared-2feb3d4c6fcc.js',
   response:'NCn',pending:'pCn',publishing:'JQ'
+}),Object.freeze({
+  initial:'app-initial-438d1df57f70.js',shared:'app-shared-955d52676f9c.js',
+  response:'hRn',pending:'pRt',publishing:'_E',publishingModule:'app-primary-844e405f2b90.js'
 })]);
 
 export function nativeWorkingState(response,pending,publishing){
@@ -54,12 +57,13 @@ export async function loadNativeWorking({load=url=>import(url),connect=localConn
   const initialUrl=asset('initial'),sharedUrl=asset('shared');
   const profile=WORKING_PROFILES.find(value=>initialUrl===`app://-/assets/${value.initial}`&&sharedUrl===`app://-/assets/${value.shared}`);
   if(!profile)throw Error('Native Working profile is not reviewed');
-  const [initial]=await Promise.all([load(initialUrl),load(sharedUrl)]),connection=connect(),facade=scope(connection);
-  const roles={response:initial[profile.response],pending:initial[profile.pending],publishing:initial[profile.publishing]};
+  const [initial,,extra]=await Promise.all([load(initialUrl),load(sharedUrl),profile.publishingModule?load(`app://-/assets/${profile.publishingModule}`):null]),connection=connect(),facade=scope(connection);
+  const namespaces={response:initial,pending:initial,publishing:extra??initial};
+  const roles=Object.fromEntries(Object.entries(namespaces).map(([name,namespace])=>[name,namespace[profile[name]]]));
   if(Object.values(roles).some(role=>role===undefined))throw pending('Native Working selector initialization is pending');
   for(const role of Object.values(roles))if(!role||role.scope!==connection.node.token||typeof role.read!=='function')throw Error('Native Working selector is unavailable');
   if(!facade||facade.node!==connection.node||facade.scope!==connection.node.token||typeof facade.get!=='function'||typeof facade.watch!=='function')throw Error('Native Working AppScope facade is unavailable');
-  const check=()=>{connection.check?.();if(asset('initial')!==initialUrl||asset('shared')!==sharedUrl||Object.entries(roles).some(([name,role])=>initial[profile[name]]!==role))throw Error('Native Working profile changed');};
+  const check=()=>{connection.check?.();if(asset('initial')!==initialUrl||asset('shared')!==sharedUrl||Object.entries(roles).some(([name,role])=>namespaces[name][profile[name]]!==role))throw Error('Native Working profile changed');};
   const read=(id,get)=>{
     const key={hostId:'local',conversationId:id};
     return nativeWorkingState(get(roles.response,key),get(roles.pending,key),get(roles.publishing,key));

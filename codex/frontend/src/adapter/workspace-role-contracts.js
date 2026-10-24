@@ -1,3 +1,5 @@
+import {parseExpressionAt} from 'acorn';
+
 // Semantic responsibilities shared by the offline source audit and live Core
 // discovery. Neither bundle hashes nor minified binding/export names are ABI.
 export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
@@ -6,7 +8,10 @@ export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
   composerValue: { label: 'composer scope value', markers: ['routeKind', 'local-thread', 'client-local-thread', 'browserTabMentionConversationId'], capabilities: ['transcript', 'composer'] },
   routeDescription: { label: 'route description', arity: 1, markers: ['pathname', 'routeTemplate', 'local-thread', 'client-local-thread', 'routeKind', '/extension/panel/new', 'new URLSearchParams'], capabilities: ['transcript', 'composer', 'viewport'] },
   draftIdentity: { label: 'composer draft identity', arity: 1, markers: ['gpt-draft:', 'draftThreadLocationId', 'library-preview:', 'widget-overlay:', 'clientThreadId'], capabilities: ['navigationInput', 'composer'] },
-  threadNavigation: { label: 'thread navigation action', arity: 7, markers: ['sidebarThreadLocationId', 'orbitPrewarmId', '`sidebar`', 'threadId:'], capabilities: ['navigation', 'navigationInput', 'locationRestore'] },
+  threadNavigation: { label: 'thread navigation action', markers: [], variants: [
+    {arity:7,markers:['sidebarThreadLocationId','orbitPrewarmId','`sidebar`','threadId:']},
+    {markers:['navigateToLocalConversation'],maxBytes:256,localNavigationDelegate:true},
+  ], capabilities: ['navigation', 'navigationInput', 'locationRestore'] },
   transcriptContent: { label: 'transcript content', markers: ['trackReadState', 'retainActiveInterest', 'contentSearchOrchestrationId'],
     inputProperties: ['conversationId', 'hostId', 'isReadOnly', 'trackReadState', 'retainActiveInterest', 'contentSearchOrchestrationId'], capabilities: ['transcript'] },
   threadSubscription: { label: 'thread subscription', markers: ['threadKey', 'cancelRelease', 'useSyncExternalStore', 'hostId', 'threadId'], capabilities: ['transcript'] },
@@ -26,9 +31,26 @@ export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
 });
 
 export function matchesWorkspaceFunction(source, arity, contract, inputProperties = []) {
+  if(contract.variants)return contract.variants.some(value=>matchesWorkspaceFunction(source,arity,value,inputProperties));
   return (!contract.arity && contract.arity !== 0 || arity === contract.arity) &&
     (!contract.maxBytes || source.length < contract.maxBytes) && contract.markers.every(marker => source.includes(marker)) &&
+    (!contract.localNavigationDelegate || isNativeLocalNavigationDelegate(source)) &&
     (!contract.inputProperties || contract.inputProperties.every(name => inputProperties.includes(name)));
+}
+
+// The current action forwards its remaining arguments to the mounted bridge.
+// Reject delegates that add work, rewrite arguments or call another method.
+export function isNativeLocalNavigationDelegate(source){
+  try{
+    if(typeof source!=='string'||source.length>256)return false;
+    const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),[scope,rest]=fn.params??[],body=fn.body?.body;
+    if(fn.async||fn.generator||fn.params.length!==2||scope?.type!=='Identifier'||rest?.type!=='RestElement'||rest.argument.type!=='Identifier'||body?.length!==1||body[0].type!=='ReturnStatement')return false;
+    const call=body[0].argument,member=call?.callee,get=member?.object,getter=get?.callee;
+    return call?.type==='CallExpression'&&member?.type==='MemberExpression'&&!member.computed&&member.property.name==='navigateToLocalConversation'&&
+      call.arguments.length===1&&call.arguments[0].type==='SpreadElement'&&call.arguments[0].argument.type==='Identifier'&&call.arguments[0].argument.name===rest.argument.name&&
+      get?.type==='CallExpression'&&get.arguments.length===1&&get.arguments[0].type==='Identifier'&&
+      getter?.type==='MemberExpression'&&!getter.computed&&getter.object.type==='Identifier'&&getter.object.name===scope.name&&getter.property.name==='get';
+  }catch{return false;}
 }
 
 // Only the function's own parameter and direct destructuring declarations count.

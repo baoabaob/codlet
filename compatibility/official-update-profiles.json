@@ -129,6 +129,21 @@
       "officialUpdates": {
         "stateSelector": "gDn"
       }
+    },
+    {
+      "appVersion": "26.1021.31345",
+      "buildNumber": "21828",
+      "entry": "app://-/assets/index-340508751504.js",
+      "module": "app://-/assets/app-initial-438d1df57f70.js",
+      "scopeModule": "app://-/assets/app-shared-955d52676f9c.js",
+      "servicesModule": "app://-/assets/app-shared-955d52676f9c.js",
+      "exports": {
+        "scope": "Bst",
+        "services": "Qot"
+      },
+      "officialUpdates": {
+        "stateSelector": "sHt"
+      }
     }
   ]
 }

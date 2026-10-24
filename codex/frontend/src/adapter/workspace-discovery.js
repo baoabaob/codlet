@@ -37,7 +37,7 @@ function workspaceFunction(native, name, optional = false) {
   const contract = WORKSPACE_FUNCTION_ROLES[name];
   return uniqueModuleExport(native.modules, value => {
     const source = componentSource(value);
-    if (contract.arity != null && typeof value !== 'function' || !contract.markers.every(marker => source.includes(marker))) return false;
+    if ((contract.arity != null || contract.variants) && typeof value !== 'function' || !contract.markers.every(marker => source.includes(marker))) return false;
     let properties = [];
     if (contract.inputProperties) {
       if (!inputProperties.has(value)) {

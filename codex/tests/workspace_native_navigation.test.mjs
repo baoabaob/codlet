@@ -63,3 +63,14 @@ test('opaque page restoration uses the current semantic bridge and retains Nativ
   f.bridge.navigate = () => false;
   assert.throws(() => entry.restoreLocation(location), { code: 'workspace_location_restore_unavailable' });
 });
+
+test('the current Native delegate uses its mounted local bridge without the retired location-key action',()=>{
+  const f=fixture();
+  function delegate(owner,...args){return owner.get(nativeSignal).navigateToLocalConversation(...args);}
+  const entry=createNativeNavigation(f.signal,()=>f.connection,delegate,()=>assert.fail('retired sidebar dispatcher required'));
+  entry.openLocalThread('b');assert.deepEqual(f.calls,[['initial','b']]);
+  f.bridge={...f.bridge,navigateToLocalConversation(id){f.calls.push(['current',id]);return true;}};
+  entry.openLocalThread('c');assert.deepEqual(f.calls.at(-1),['current','c']);
+  f.bridge.navigateToLocalConversation=()=>false;
+  assert.throws(()=>entry.openLocalThread('d'),{code:'workspace_navigation_unavailable'});
+});
