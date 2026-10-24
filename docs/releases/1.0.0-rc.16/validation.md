@@ -29,3 +29,15 @@ The release executable SHA-256 is
 The published rc.14 and rc.15 resident distributions pass online package eligibility
 for `core-ui-provider` and `core-desktop-provider`. A live activation is a separate
 runtime preflight and receipt. Windows packages remain unsigned.
+
+A live update attempt downloaded the matching rc.15-resident online package, then
+stopped at `core_admission_writes_unsettled`. The transaction retained the previous
+Core module generations and resumed admission. Core rc.15 remained active; this
+attempt is not recorded as successful online activation. Split rc.6 was active
+from the registered development directory. Its attempted copied import hit an
+existing source-ownership conflict and rolled back; the registered development
+path was retained. Both temporary diagnostic/updater plugins were uninstalled.
+
+All seven public release assets were downloaded without authentication and
+matched the release plan's byte lengths and SHA-256 values. The tag resolves to
+the source commit above.
