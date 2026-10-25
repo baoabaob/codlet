@@ -25,6 +25,21 @@ export function assetReferences(source, parent, role) {
   const pattern = new RegExp('["\'`]((?:\\./)?' + role + '-[A-Za-z0-9_-]+\\.js)["\'`]', 'g');
   return [...new Set([...source.matchAll(pattern)].map(match => new URL(match[1], parent).href))].filter(url => /^app:\/\/-\/assets\/[A-Za-z0-9_-]+\.js$/.test(url));
 }
+export async function shortcutSettingsReferences(graph, parent, read, entryUrls = () =>
+  Array.from(document.querySelectorAll('script[type="module"][src]'), node => node.src)) {
+  const direct = assetReferences(graph, parent, 'keyboard-shortcuts-settings');
+  if (direct.length) return direct;
+  // New Native builds keep settings dependencies in their lazy route graph.
+  // Follow only the current document's entry and its unique main/settings edges;
+  // reading these modules does not run their initializers.
+  const entries = [...new Set(entryUrls().filter(url => /^app:\/\/-\/assets\/index-[A-Za-z0-9_-]+\.js$/.test(url)))];
+  if (entries.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique loaded Native entry is required');
+  const mains = assetReferences(await read(entries[0]), entries[0], 'app-main');
+  if (mains.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique Native main settings graph is required');
+  const routes = assetReferences(await read(mains[0]), mains[0], 'settings-lazy-routes');
+  if (routes.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'A unique Native settings route graph is required');
+  return assetReferences(await read(routes[0]), routes[0], 'keyboard-shortcuts-settings');
+}
 export function keymapExport(_initial, source, options) {
   try { return keymapSourceExport(source, options); }
   catch (error) {
@@ -186,7 +201,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     }),
     shortcuts: () => cached('shortcuts',async () => {
       const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'app-primary');
-      const settingsUrls = assetReferences(graph, native.initialUrl, 'keyboard-shortcuts-settings');
+      const settingsUrls = await shortcutSettingsReferences(graph, native.initialUrl, source);
       if (!settingsUrls.length || settingsUrls.length > 4) throw workspaceError('workspace_shortcuts_unavailable', 'Native shortcut settings entries are unavailable');
       const settings = await Promise.all(settingsUrls.map(async url => ({ url, source: await source(url) })));
       const wrappers = settings.filter(value => value.source.includes('KeyboardShortcutsSettings') && !value.source.includes('settings.keyboardShortcuts.resetAllConfirm'));

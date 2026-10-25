@@ -25,6 +25,9 @@ The new Native source requires these additional adaptations:
   contract is checked before adapting the existing plugin-facing props. Sidebar
   groups and page headers are discovered in the referenced primary module. The
   new-conversation hook recognizes Native's current draft/navigation contract.
+- Shortcut settings moved out of the initial asset's dependency list. Discovery
+  follows the current Native entry to its main/settings route graph before loading
+  the verified settings wrapper.
 
 Core rc.17 also separates Native traffic from the Core update ledger and removes
 the renderer update queue for Native requests. Core receipt exhaustion or an
