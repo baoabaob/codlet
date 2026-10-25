@@ -99,13 +99,14 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   return Object.freeze({
     handoffVersion: 1,
     snapshot() {
+      if(desktop.canSuspend?.()===false)throw fail('core_update_source_busy');
       const state=context?.resources.get('backendState');
       if(!state||!context.resources.get('desktopState'))throw fail('core_update_next_start_required');
       return {schema:1,recoveryReason,activatedSources:lastActivation?.activatedSources?.map(source=>source.id)??[],backends:[...state.records].map(record=>({pid:record.child.pid??null,
         routes:record.reservations.map(route=>route.baseUrl)})),taskRoutes:context.resources.get('desktopState').taskRoutes.size};
     },
     suspend() {
-      if(closed||suspended||!shared||typeof desktop.suspend!=='function')return false;
+      if(closed||suspended||!shared||typeof desktop.suspend!=='function'||desktop.canSuspend?.()===false)return false;
       desktop.suspend();backend.close();suspended=true;return true;
     },
     restore(snapshot) {

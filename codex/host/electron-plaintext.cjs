@@ -148,6 +148,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   const observed = new Map(), roleBindings = new Map(), roleReasons = new Map(), driftedRoles = new Set();
   const wrappedMethods={network:['fetch','request'],fetch:['performDesktopFetch'],stdio:['send'],connection:['routeIncomingMessage',...(typeof prepareBackendRestart==='function'?['restart']:[])]};
   const taskRoutes = state?.taskRoutes??new Set(), routesByProcess = state?.routesByProcess??new WeakMap(), sendQueues = state?.sendQueues??new WeakMap();
+  const pendingSends = state?.pendingSends ?? new Set();
+  if (state) state.pendingSends = pendingSends;
   function reserve(url, proc) {
     let routes = routesByProcess.get(proc);
     if (!routes) {
@@ -167,15 +169,12 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     const original = Stdio.prototype.send;
     Stdio.prototype.send = function(message) {
       if (closed || !roleLive('stdio',Stdio) || !ownsBackendProcess(this.proc) || typeof message !== 'string') return original.call(this, message);
-      const waits = []; let routed;
+      const previous = sendQueues.get(this), waits = []; let routed, account;
       try { routed = routedThreadMessage(message, url => { const route = reserve(url, this.proc); waits.push(route.ready); return route.baseUrl; },
-        provider => isProviderSupported(this.proc, provider)); }
+        provider => isProviderSupported(this.proc, provider)); account = pendingAccountUpdate(this.proc); }
       // Route preparation has not dispatched anything. A Core failure must leave
       // Native's provider choice and its own validation in charge.
-      catch { return original.call(this, message); }
-      let account;
-      try { account = pendingAccountUpdate(this.proc); } catch { return original.call(this, message); }
-      const previous = sendQueues.get(this);
+      catch { routed = message; account = null; waits.length = 0; }
       if (!waits.length && !account && !previous) return original.call(this,routed);
       const prepared = Promise.all([...waits,...(account?[account]:[])]).then(()=>routed,()=>message);
       // Accepted Native sends survive hook retirement. Only preparation can
@@ -183,7 +182,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       const operation = Promise.resolve(previous).catch(()=>{}).then(()=>prepared)
         .then(next=>original.call(this,next)).catch(error=>this.onerror?.(error));
       sendQueues.set(this, operation);
-      operation.finally(() => { if (sendQueues.get(this) === operation) sendQueues.delete(this); }).catch(() => {});
+      pendingSends.add(operation);
+      operation.finally(() => { pendingSends.delete(operation); if (sendQueues.get(this) === operation) sendQueues.delete(this); }).catch(() => {});
     };
     stdioInstalled = true;
     const wrapped=Stdio.prototype.send;
@@ -463,6 +463,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : 'contract_unavailable'),
       taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : 'contract_unavailable') }); },
     connectionConstructors:()=>roleBindings.has('connection')?[roleBindings.get('connection').Constructor]:[],
+    canSuspend: () => pendingSends.size === 0,
     suspend() { if (closed) return; closed = true; observed.clear();roleBindings.clear(); for (const restore of restores.splice(0).reverse()) restore(); },
     close() { this.suspend(); if(!state){for (const route of taskRoutes) closeRoute(route); taskRoutes.clear();scope.disable();} },
   });

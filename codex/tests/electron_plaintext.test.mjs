@@ -64,8 +64,10 @@ test('Stdio preparation failure falls through once and accepted sends survive so
   const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source,ownsBackendProcess:value=>value===proc,deadlineUnixMs:Date.now()+1000},{expectedHashes:{'application-network-startup-YSC7OAs0.js':hash(code)}});
   try {
     const {Gs}=compile('application-network-startup-YSC7OAs0.js',code),native=new Gs(proc),message=JSON.stringify({id:1,method:'thread/start',params:{config:{'model_providers.custom.base_url':'https://provider.example/v1'}}});
-    native.send(message);native.send('second');hook.close();rejectRoute(Error('Core route unavailable'));
-    await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(native.sent,[message,'second']);
+    const unsupported=JSON.stringify({id:2,method:'thread/start',params:{config:{'model_providers.bad.name.base_url':'https://provider.example/v1'}}});
+    native.send(message);native.send(unsupported);native.send('third');assert.equal(hook.canSuspend(),false);
+    assert.deepEqual(native.sent,[]);hook.close();rejectRoute(Error('Core route unavailable'));
+    await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(native.sent,[message,unsupported,'third']);assert.equal(hook.canSuspend(),true);
   } finally {hook.close();}
 });
 test('an unavailable Core HTTP source falls through only before Native has dispatched',async()=>{

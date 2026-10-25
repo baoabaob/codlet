@@ -14,15 +14,16 @@ test('Core source snapshots restore using the same owned backends and never reco
   const child={pid:42},route={baseUrl:'http://127.0.0.1:44001/existing'};
   const resources=new Map([['plaintextSource',{ready:Promise.resolve()}],['backendState',{records:new Set([{child,reservations:[route]}])}],['desktopState',{taskRoutes:new Set([route])}]]);
   const context={resources,modules:{list:()=>[]}};
-  let recoveries=0,routeClosed=0,sourceClosed=0;
+  let recoveries=0,routeClosed=0,sourceClosed=0,preparing=false,suspensions=0;
   resources.get('plaintextSource').close=()=>sourceClosed++;
   const dependencies={recover:async()=>recoveries++,diagnose(){},
     installBackend:()=>({ownsProcess:value=>value===child,inspect:()=>({available:true}),ready:async()=>({available:true}),close(){}}),
-    installDesktop:()=>({inspect:()=>({available:true,taskConfigurationAvailable:true}),ready:async()=>({available:true,taskConfigurationAvailable:true}),suspend(){},close(){}})};
+    installDesktop:()=>({inspect:()=>({available:true,taskConfigurationAvailable:true}),ready:async()=>({available:true,taskConfigurationAvailable:true}),canSuspend:()=>!preparing,suspend(){suspensions++;},close(){}})};
   route.close=()=>routeClosed++;
   const electron={app:{isReady:()=>true}},configuration={source:{},deadlineUnixMs:Date.now()+5000};
   const old=installElectronTraffic(electron,configuration,context,dependencies);await old.ready();
-  const saved=old.snapshot();assert.deepEqual(saved.backends,[{pid:42,routes:[route.baseUrl]}]);
+  preparing=true;assert.throws(()=>old.snapshot(),{code:'core_update_source_busy'});assert.equal(old.suspend(),false);assert.equal(suspensions,0);
+  preparing=false;const saved=old.snapshot();assert.deepEqual(saved.backends,[{pid:42,routes:[route.baseUrl]}]);
   assert.equal(old.suspend(),true);
   const next=installElectronTraffic(electron,configuration,context,dependencies);next.restore(saved);await next.ready();
   assert.equal(next.confirmTakeover(),true);await old.close();

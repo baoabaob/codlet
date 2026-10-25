@@ -56,6 +56,11 @@ Complete portable and macApp installation requests stage incompatible updates wi
 
 The write ledger records explicit Core/plugin writes only. Cancelled or failed Core operations without a determinate result stay `unknown`, including after late replies, and an unsettled drain defers the Core update. Native HTTP requests, backend sends and renderer messages do not enter that ledger or wait for Core admission. A stalled or failed Core handoff keeps Native forwarding through the current plugin hooks, or its original transport while hooks retire. Native errors and cancellation belong to Native. Core source preparation failures may fall through only before dispatch; an upstream request that has already started is never replayed. Response bodies and task routes survive source retirement.
 
+If an accepted backend send is waiting for Core route preparation, subsequent
+sends retain their original order even when preparation falls back to Native.
+Source snapshot/suspension defers the Core handoff until this preparation settles;
+it does not pause new Native calls or create Native write receipts.
+
 ## Verification and remaining acceptance
 
 `tests/client_bridge_online.test.mjs` runs actual sockets and three owned Node processes: a synthetic Native bridge plus old and new Core lease clients. It verifies a continuously numbered stream, state restoration, single application of accepted Core/plugin writes, their admission pause across source takeover, lease ownership transfer, stale epochs, rollback, cancellation and late responses. `tests/client_bridge.test.mjs` verifies that 300 Native failures leave no receipts and a full, held Core ledger cannot block Native operations. `codex/tests/native_ingress.test.mjs` checks immediate forwarding during unknown handoffs and retirement, while `codex/tests/electron_plaintext.test.mjs` checks original errors, preparation failure and dispatch without Core admission. `tests/codex_source_online.test.mjs` verifies that source retirement retains backend identities and task provider routes.
