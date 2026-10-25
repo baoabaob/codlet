@@ -475,12 +475,16 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     function interceptSubmit(message, ...rest) {
         if (!alive || message?.type !== 'mcp-request' || message.hostId !== 'local' || message.request?.method !== 'turn/start') return dispatchNative.call(this, message, ...rest);
         const submission = submissions.get(message.request.params?.clientUserMessageId);
-        if (submission?.signal?.aborted || pendingSubmits.size >= 16) {
-            client.onError(message.request.id, fail('submission_rejected', submission?.signal?.aborted ? 'Codlet submission was cancelled before dispatch' : 'Codlet has 16 pending submission interceptors'));
+        if (submission?.signal?.aborted) {
+            client.onError(message.request.id, fail('submission_rejected', 'Codlet submission was cancelled before dispatch'));
             return;
         }
         const selected = orderedHooks().filter(hook => hook.enabled);
         if (selected.length === 0) return dispatchNative.call(this, message, ...rest);
+        if (pendingSubmits.size >= 16) {
+            client.onError(message.request.id, fail('submission_rejected', 'Codlet has 16 pending submission interceptors'));
+            return;
+        }
         const receiver = this;
         const pending = { hooks: selected, controller: new AbortController() };
         pendingSubmits.add(pending);

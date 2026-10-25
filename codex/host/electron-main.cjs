@@ -91,7 +91,7 @@ function installElectronTraffic(electron, configuration, context, dependencies =
       providerTrustForProcess: backend.providerTrustForProcess,
       prepareBackendRestart: transport => backend.prepareConnection(transport, { forRestart: true }),
       pendingAccountUpdate: backend.pendingAccountUpdate, updateAccountMode: backend.updateAccountMode, moduleRegistry:context?.modules,
-      state:context?.resources.get('desktopState'), onlineUpdates:context?.onlineUpdates });
+      state:context?.resources.get('desktopState') });
   }
   try { attachHooks();
   } catch (error) { desktop?.close(); backend?.close(); if(!shared)source.close(); throw error; }

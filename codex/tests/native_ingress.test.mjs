@@ -4,88 +4,67 @@ import {attachNativeIngress} from '../frontend/src/desktop/native-ingress.js';
 const symbol=Symbol.for('codlet.core.native-ingress.v1');
 function fixture(){
   const global={},sent=[],errors=[],client={requestPromises:new Map(),onError(id,error){errors.push({id,error});this.requestPromises.delete(id);}};
-  const postbox={postMessage(message){sent.push({owner:'native',message});}},original=postbox.postMessage;
-  const attach=owner=>attachNativeIngress({global,postbox,client,dispatch(message){sent.push({owner,message});}});
+  const postbox={postMessage(...args){sent.push({owner:'native',receiver:this,args,message:args[0]});return args[1];}},original=postbox.postMessage;
+  const attach=owner=>attachNativeIngress({global,postbox,client,dispatch(...args){sent.push({owner,receiver:this,args,message:args[0]});return args[1];}});
   const owner=attach('old'),api=global[symbol];
-  const request=(id,extra={})=>{client.requestPromises.set(id,{});return{type:'mcp-request',hostId:'local',request:{id,method:'turn/start',params:{threadId:'fixture',input:[{type:'text',text:'synthetic'}]}},...extra};};
+  const request=id=>{client.requestPromises.set(id,{});return{type:'mcp-request',hostId:'local',request:{id,method:'turn/start',params:{threadId:'fixture'}}};};
   return{global,sent,errors,client,postbox,original,attach,owner,api,request};
 }
-test('held ingress survives old provider retirement and enters only the acknowledged current owner once',()=>{
-  const f=fixture(),accepted=f.request('accepted');f.postbox.postMessage(accepted);
-  assert.equal(Object.isFrozen(f.api),true);assert.equal(f.api.api,1);
-  assert.equal(f.api.pause('update-1').held,true);const wrapper=f.postbox.postMessage;
-  const queued=f.request('queued');f.postbox.postMessage(queued);queued.request.params.input[0].text='later mutation';
-  f.owner.detach();assert.equal(f.postbox.postMessage,wrapper);assert.equal(f.global[symbol],f.api);
-  const gap=f.request('during-gap');f.postbox.postMessage(gap);
-  assert.equal(f.api.resume('update-1',{outcome:'applied'}).code,'core_ingress_unsupported');assert.equal(f.sent.length,1);
-  const next=f.attach('new');assert.equal(f.global[symbol],f.api);assert.equal(f.postbox.postMessage,wrapper);
-  assert.equal(f.api.resume('update-1',{outcome:'applied'}).resumed,true);
-  assert.deepEqual(f.sent.map(value=>[value.owner,value.message.request.id]),[['old','accepted'],['new','queued'],['new','during-gap']]);
-  assert.equal(f.sent[1].message.request.params.input[0].text,'synthetic');
-  assert.equal(f.api.resume('update-1',{outcome:'applied'}).code,'core_ingress_stale');assert.equal(f.sent.length,3);
-  assert.throws(()=>f.owner.coreDispatch(()=>{}),{code:'desktop_patch_drift'});next.detach();assert.equal(f.postbox.postMessage,f.original);assert.equal(f.global[symbol],undefined);
+test('Native calls keep their receiver, arguments and result through Core update, retirement and rollback',()=>{
+  const f=fixture();f.postbox.postMessage(f.request('before'));
+  assert.equal(Object.isFrozen(f.api),true);assert.equal(f.api.pause('update').held,true);
+  const wrapper=f.postbox.postMessage,receiver={},result=Promise.resolve('native'),message=f.request('held');
+  assert.equal(wrapper.call(receiver,message,result),result);
+  assert.equal(f.sent[1].receiver,receiver);assert.equal(f.sent[1].message,message);assert.deepEqual(f.sent[1].args,[message,result]);
+  f.owner.detach();wrapper.call(receiver,f.request('gap'));
+  assert.equal(f.api.resume('update',{outcome:'applied'}).code,'core_ingress_unsupported');
+  const candidate=f.attach('candidate');wrapper(f.request('candidate'));candidate.detach();
+  const rollback=f.attach('rollback');
+  assert.equal(f.api.resume('update',{outcome:'rolledBack'}).resumed,true);
+  assert.equal(f.sent.length,4);f.postbox.postMessage(f.request('after'));
+  assert.deepEqual(f.sent.map(value=>value.owner),['old','old','native','candidate','rollback']);
+  assert.throws(()=>f.owner.coreDispatch(()=>{}),{code:'desktop_patch_drift'});
+  rollback.detach();assert.equal(f.postbox.postMessage,f.original);assert.equal(f.global[symbol],undefined);
 });
-test('responses and already admitted Core Native dispatch remain live while ordinary Native request ingress is held',()=>{
-  const f=fixture();f.api.pause('drain');f.postbox.postMessage(f.request('new-write'));
-  f.postbox.postMessage({type:'mcp-response',hostId:'local',response:{id:'already-sent',result:{ok:true}}});
-  f.owner.coreDispatch(()=>f.postbox.postMessage(f.request('accepted-sdk-descendant')));
-  assert.deepEqual(f.sent.map(value=>value.message.request?.id??value.message.response.id),['already-sent','accepted-sdk-descendant']);
-  assert.throws(()=>f.owner.coreDispatch(()=>{throw Error('synthetic');}),/synthetic/);
-  f.postbox.postMessage(f.request('after-exception'));assert.equal(f.sent.length,2);
-  f.api.resume('drain',{outcome:'rolledBack'});assert.deepEqual(f.sent.slice(2).map(value=>value.message.request.id),['new-write','after-exception']);f.owner.detach();
+test('unknown or stalled Core handoffs never queue, expire, clone or reject Native traffic',()=>{
+  const f=fixture();f.api.pause('stalled');
+  for(let i=0;i<300;i++)f.postbox.postMessage(f.request(`request-${i}`));
+  const cyclic=f.request('native-owned');cyclic.self=cyclic;cyclic.expiresAtMs=0;
+  f.postbox.postMessage(cyclic);f.postbox.postMessage(cyclic);f.postbox.postMessage();
+  assert.equal(f.sent.length,303);assert.equal(f.sent[300].message,cyclic);assert.deepEqual(f.sent[302].args,[]);assert.deepEqual(f.errors,[]);
+  assert.equal(f.api.pause('other').code,'core_ingress_busy');assert.equal(f.api.resume('stalled',{outcome:'unknown'}).ok,false);
+  f.postbox.postMessage(f.request('after-unknown'));assert.equal(f.sent.length,304);
+  f.api.resume('stalled',{outcome:'rolledBack'});assert.equal(f.sent.length,304);f.owner.detach();
 });
-test('unknown outcomes, wrong operations, cancellation, expiry, and drift never silently replay a write',()=>{
-  const f=fixture();f.api.pause('operation');f.postbox.postMessage(f.request('cancelled'));f.client.requestPromises.delete('cancelled');
-  f.postbox.postMessage(f.request('expired',{expiresAtMs:Date.now()+50}));
-  f.postbox.postMessage(f.request('live'));
-  assert.equal(f.api.pause('other').code,'core_ingress_busy');assert.equal(f.api.resume('other',{outcome:'applied'}).code,'core_ingress_stale');
-  assert.equal(f.api.resume('operation',{outcome:'unknown'}).ok,false);assert.equal(f.sent.length,0);
-  const oldNow=Date.now;Date.now=()=>oldNow()+100;
-  try{assert.equal(f.api.resume('operation',{outcome:'rolledBack'}).ok,true);}finally{Date.now=oldNow;}
-  assert.deepEqual(f.sent.map(value=>value.message.request.id),['live']);assert.equal(f.errors[0].id,'expired');assert.equal(f.errors[0].error.code,'core_ingress_expired');
-  f.api.pause('drift');f.postbox.postMessage=f.original;
-  assert.equal(f.api.resume('drift',{outcome:'applied'}).code,'core_ingress_unsupported');assert.throws(()=>f.owner.detach(),{code:'desktop_patch_drift'});
+test('Native synchronous errors retain their identity during a held handoff',()=>{
+  const error=Error('native failure'),global={},postbox={postMessage(){throw error;}},client={requestPromises:new Map(),onError(){assert.fail('Core must not replace a Native error');}};
+  const original=postbox.postMessage,owner=attachNativeIngress({global,postbox,client,dispatch:original});global[symbol].pause('handoff');
+  assert.throws(()=>postbox.postMessage({}),value=>value===error);
+  assert.throws(()=>owner.coreDispatch(()=>postbox.postMessage({})),value=>value===error);
+  assert.throws(()=>owner.coreDispatch(()=>{throw error;}),value=>value===error);
+  assert.throws(()=>postbox.postMessage({}),value=>value===error);
+  global[symbol].resume('handoff',{outcome:'applied'});owner.detach();
 });
-test('queue bounds reject excess Native calls through their own request lifecycle without sending them',()=>{
-  const f=fixture();f.api.pause('bounded');
-  for(let i=0;i<65;i++)f.postbox.postMessage(f.request(`request-${i}`));
-  assert.equal(f.errors.length,1);assert.equal(f.errors[0].id,'request-64');assert.equal(f.errors[0].error.code,'core_ingress_limit');assert.equal(f.sent.length,0);
-  f.api.resume('bounded',{outcome:'rolledBack'});assert.equal(f.sent.length,64);f.owner.detach();
+test('new Native documents forward while the Core SDK admission lease is held',()=>{
+  const global={[Symbol.for('codlet.core.renderer-admission.v1')]:{api:1,operationId:'future-document'}},sent=[],client={requestPromises:new Map(),onError(){}};
+  const postbox={postMessage(message){sent.push(message);}},message={type:'mcp-request',hostId:'local',request:{id:'new',method:'turn/start'}};
+  const owner=attachNativeIngress({global,postbox,client,dispatch:postbox.postMessage});
+  postbox.postMessage(message);assert.deepEqual(sent,[message]);owner.detach();postbox.postMessage(message);assert.equal(sent.length,2);
 });
-test('candidate retirement preserves the held queue for rollback and a changed Native connection cannot take it over',()=>{
-  const f=fixture();f.api.pause('rollback');f.postbox.postMessage(f.request('held'));f.owner.detach();
-  assert.throws(()=>attachNativeIngress({global:f.global,postbox:f.postbox,client:{requestPromises:new Map(),onError(){}},dispatch(){}}),{code:'core_ingress_conflict'});
-  const candidate=f.attach('candidate');candidate.detach();assert.equal(f.sent.length,0);
-  const rollback=f.attach('rollback');f.api.resume('rollback',{outcome:'rolledBack'});assert.deepEqual(f.sent.map(value=>value.owner),['rollback']);rollback.detach();
-});
-test('an old queued request cannot replay into or reject a new Native pending record reusing its identity',()=>{
-  const f=fixture();f.api.pause('epoch');f.postbox.postMessage(f.request('reused'));f.client.requestPromises.delete('reused');
-  const newPending={newGeneration:true};f.client.requestPromises.set('reused',newPending);
-  f.api.resume('epoch',{outcome:'rolledBack'});assert.equal(f.sent.length,0);assert.equal(f.errors.length,0);assert.equal(f.client.requestPromises.get('reused'),newPending);f.owner.detach();
+test('takeover releases only undispatched, still-current requests from an older queue once',()=>{
+  const f=fixture();f.api.pause('legacy');f.owner.detach();
+  const state=f.global[Symbol.for('codlet.core.native-ingress.owner.v1')];
+  const current=f.request('current'),cancelled=f.request('cancelled'),reused=f.request('reused');
+  const entry=message=>({message,receiver:f.postbox,rest:[],pending:f.client.requestPromises.get(message.request.id),expires:Date.now()+10000});
+  state.queue=[entry(current),entry(cancelled),entry(reused)];state.bytes=100;
+  f.client.requestPromises.delete('cancelled');f.client.requestPromises.set('reused',{});
+  const next=f.attach('new');assert.deepEqual(f.sent.map(value=>value.message),[current]);assert.equal(state.queue,undefined);
+  f.api.resume('legacy',{outcome:'applied'});assert.equal(f.sent.length,1);assert.deepEqual(f.errors,[]);next.detach();
 });
 test('stable wrapper and API release the retired dispatch lexical environment after takeover', {skip:typeof globalThis.gc!=='function'},async()=>{
-  const global={},postbox={postMessage(){}},client={requestPromises:new Map(),onError(){}};
-  let weak;
-  (()=>{
-    const generation={privateOldProvider:true};weak=new WeakRef(generation);
-    const owner=attachNativeIngress({global,postbox,client,dispatch(){return generation;}});
-    global[symbol].pause('gc');owner.detach();
-  })();
+  const global={},postbox={postMessage(){}},client={requestPromises:new Map(),onError(){}};let weak;
+  (()=>{const generation={privateOldProvider:true};weak=new WeakRef(generation);const owner=attachNativeIngress({global,postbox,client,dispatch(){return generation;}});global[symbol].pause('gc');owner.detach();})();
   const next=attachNativeIngress({global,postbox,client,dispatch(){}}),stable=postbox.postMessage,api=global[symbol];
-  // WeakRef targets are kept alive to the end of the current job. Collect only
-  // across event-loop turns, without retaining the old owner or deref result.
   for(let i=0;i<8;i++){await new Promise(resolve=>setImmediate(resolve));globalThis.gc();}
-  assert.equal(weak.deref(),undefined);assert.equal(postbox.postMessage,stable);assert.equal(global[symbol],api);
-  api.resume('gc',{outcome:'applied'});next.detach();
-});
-test('new Native documents inherit the private Core SDK transaction hold before their first request',()=>{
-  const global={[Symbol.for('codlet.core.renderer-admission.v1')]:{api:1,operationId:'future-document'}},sent=[],client={requestPromises:new Map(),onError(){}};
-  const postbox={postMessage(message){sent.push(message);}};
-  const owner=attachNativeIngress({global,postbox,client,dispatch(message){sent.push(message);}});
-  client.requestPromises.set('new-document-request',{});
-  postbox.postMessage({type:'mcp-request',hostId:'local',request:{id:'new-document-request',method:'turn/start',params:{threadId:'synthetic'}}});
-  assert.equal(sent.length,0);owner.detach();assert.equal(global[symbol].resume('other',{outcome:'applied'}).ok,false);assert.equal(sent.length,0);
-  const next=attachNativeIngress({global,postbox,client,dispatch(message){sent.push(message);}});
-  global[Symbol.for('codlet.core.renderer-admission.v1')].operationId=null;
-  global[symbol].resume('future-document',{outcome:'rolledBack'});assert.equal(sent.length,1);next.detach();
+  assert.equal(weak.deref(),undefined);assert.equal(postbox.postMessage,stable);assert.equal(global[symbol],api);api.resume('gc',{outcome:'applied'});next.detach();
 });

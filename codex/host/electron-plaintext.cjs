@@ -51,6 +51,7 @@ const PROFILES = Object.freeze({
 });
 const HASHES = Object.freeze(Object.fromEntries(Object.entries(PROFILES).map(([name, profile]) => [name, profile.hash])));
 const fail = code => Object.assign(new Error(code), { code });
+const unavailableSource = error => ['invalid_source','peer_closed','traffic_connect_timeout','traffic_backpressure','resource_limit','host_stopping'].includes(error?.code);
 const closeRoute = route => { try { Promise.resolve(route.close()).catch(() => {}); } catch {} };
 function headers(value) {
   if (Array.isArray(value)) return value.flatMap(([name, item]) => (Array.isArray(item) ? item : [item]).map(part => [name, String(part)]));
@@ -134,7 +135,7 @@ function routedThreadMessage(message, reserve, isProviderSupported = () => true)
 // classes, after their auth, workspace policy and cancellation decisions.
 function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendProcess = () => false, isProviderSupported = () => true,
   providerTrustForProcess = () => undefined, prepareBackendRestart,
-  pendingAccountUpdate = () => null, updateAccountMode = () => {}, moduleRegistry, state, onlineUpdates }, { expectedHashes = HASHES } = {}) {
+  pendingAccountUpdate = () => null, updateAccountMode = () => {}, moduleRegistry, state }, { expectedHashes = HASHES } = {}) {
   if ((!moduleRegistry && app.isReady()) || !source?.interceptHttp) throw fail('desktop_bootstrap_too_late');
   const scope = state?.scope??new AsyncLocalStorage();
   if(state&&!state.scope)state.scope=scope;
@@ -147,7 +148,6 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   const observed = new Map(), roleBindings = new Map(), roleReasons = new Map(), driftedRoles = new Set();
   const wrappedMethods={network:['fetch','request'],fetch:['performDesktopFetch'],stdio:['send'],connection:['routeIncomingMessage',...(typeof prepareBackendRestart==='function'?['restart']:[])]};
   const taskRoutes = state?.taskRoutes??new Set(), routesByProcess = state?.routesByProcess??new WeakMap(), sendQueues = state?.sendQueues??new WeakMap();
-  const tracked = (method, operation) => onlineUpdates ? onlineUpdates.run(method, operation) : operation();
   function reserve(url, proc) {
     let routes = routesByProcess.get(proc);
     if (!routes) {
@@ -162,36 +162,26 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     routes.set(url, route); taskRoutes.add(route);
     return route;
   }
-  function failOutbound(connection, message) {
-    let id; try { id = JSON.parse(message).id; } catch {}
-    if (typeof id === 'string' || typeof id === 'number') queueMicrotask(() => connection.onmessage?.({ type: 'message',
-      data: JSON.stringify({ id, error: { code: -32000, message: 'Provider route unavailable' } }) }));
-    else connection.onerror?.(fail('backend_route_unavailable'));
-  }
   function hookStdio(Stdio) {
     if (stdioInstalled || typeof Stdio !== 'function' || typeof Stdio.prototype.send !== 'function') { if (!stdioInstalled) taskReason = 'hook_unavailable'; return; }
     const original = Stdio.prototype.send;
     Stdio.prototype.send = function(message) {
       if (closed || !roleLive('stdio',Stdio) || !ownsBackendProcess(this.proc) || typeof message !== 'string') return original.call(this, message);
-      if(onlineUpdates&&!onlineUpdates.accepting()) {
-        onlineUpdates.whenAccepting().then(()=>Stdio.prototype.send.call(this,message)).catch(()=>failOutbound(this,message));return;
-      }
       const waits = []; let routed;
       try { routed = routedThreadMessage(message, url => { const route = reserve(url, this.proc); waits.push(route.ready); return route.baseUrl; },
         provider => isProviderSupported(this.proc, provider)); }
-      catch { failOutbound(this, message); return; }
-      const account = pendingAccountUpdate(this.proc);
+      // Route preparation has not dispatched anything. A Core failure must leave
+      // Native's provider choice and its own validation in charge.
+      catch { return original.call(this, message); }
+      let account;
+      try { account = pendingAccountUpdate(this.proc); } catch { return original.call(this, message); }
       const previous = sendQueues.get(this);
-      const dispatch=()=>tracked('backend.send',()=>original.call(this,routed));
-      if (!waits.length && !account && !previous) {
-        if(!onlineUpdates)return original.call(this,routed);
-        dispatch().catch(()=>failOutbound(this,message));return;
-      }
-      const operation = tracked('backend.send',async()=>{
-        await (previous??Promise.resolve());await Promise.all([...waits,...(account?[account]:[])]);
-        if (!closed && ownsBackendProcess(this.proc)) return original.call(this,routed);
-        throw Object.assign(fail('core_write_owner_closed'),{outcome:'not_applied'});
-      }).catch(() => failOutbound(this, message));
+      if (!waits.length && !account && !previous) return original.call(this,routed);
+      const prepared = Promise.all([...waits,...(account?[account]:[])]).then(()=>routed,()=>message);
+      // Accepted Native sends survive hook retirement. Only preparation can
+      // fall back; an actual Native send is never retried after an error.
+      const operation = Promise.resolve(previous).catch(()=>{}).then(()=>prepared)
+        .then(next=>original.call(this,next)).catch(error=>this.onerror?.(error));
       sendQueues.set(this, operation);
       operation.finally(() => { if (sendQueues.get(this) === operation) sendQueues.delete(this); }).catch(() => {});
     };
@@ -207,7 +197,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
         // A connection can predate constructor observation. Its verified native
         // method provides the live receiver without constructing or replaying it.
         try { if(this instanceof Connection)moduleRegistry?.instance?.(this); } catch { /* Observation cannot interrupt a native message. */ }
-        if(message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc))updateAccountMode(this.connection.proc, message.params?.authMode);
+        try { if(message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc))updateAccountMode(this.connection.proc, message.params?.authMode); }
+        catch { /* Core observation must not interrupt Native notification delivery. */ }
       }
       return original.call(this, message, ...rest);
     };
@@ -221,9 +212,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
         const transport=this.connection;
         // Prepare before Native closes its current child, so the replacement
         // spawn can acquire routes synchronously with its original launch plan.
-        await prepareBackendRestart(transport);
-        if(closed)throw fail('backend_owner_closed');
-        if(!roleLive('connection',Connection)||this.connection!==transport)throw fail('backend_connection_changed');
+        try { await prepareBackendRestart(transport); }
+        catch { /* Native must still perform its requested restart. */ }
         return originalRestart.apply(this,args);
       };
       Connection.prototype.restart=restart;
@@ -272,20 +262,24 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     }
     Network.prototype.fetch = async function(input, init = {}) {
       if (closed || !roleLive('network',Network) || !scope.getStore()) return originalFetch.call(this, input, init);
-      if(onlineUpdates&&!onlineUpdates.accepting()) {
-        await onlineUpdates.whenAccepting(init.signal);
-        return Network.prototype.fetch.call(this,input,init);
-      }
       const url = asUrl(input); this.assertAllowed(url);
       const signal = init.signal;
       const current = { url, method: init.method ?? 'GET', headers: headers(init.headers), body: requestBody(init.body) };
-      const result = await tracked('desktop.fetch',()=>source.interceptHttp(current, { signal, forward: async (next, control) => {
+      let dispatched = false, nativeError;
+      let result;
+      try { result = await source.interceptHttp(current, { signal, forward: async (next, control) => {
         const body = await bytes(next.body, control.signal);
         const omit = next.credentialMode === 'omit' || !sameOrigin(url, next.url);
-        return nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, { redirect: init.redirect ?? 'follow',
+        dispatched = true;
+        try { return await nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, { redirect: init.redirect ?? 'follow',
           credentials: omit ? 'omit' : init.credentials, cache: init.cache, referrerPolicy: init.referrerPolicy,
           priority: init.priority, ...(init.credentials === 'same-origin' && !omit ? { origin: new URL(url).origin } : {}) }, control.signal);
-      } }));
+        } catch (error) { nativeError = error; throw error; }
+      } }); } catch (error) {
+        if (nativeError !== undefined) throw nativeError;
+        if (!dispatched && unavailableSource(error)) return originalFetch.call(this,input,init);
+        throw error;
+      }
       return response(result, current.method);
     };
     Network.prototype.request = function(options) {
@@ -300,22 +294,28 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       proxy.end = function(body) {
         if (ended) throw fail('desktop_request_already_ended'); ended = true;
         const send = async () => {
-          if(onlineUpdates&&!onlineUpdates.accepting()) {
-            await onlineUpdates.whenAccepting(controller.signal);
-            if(closed) {
-              const next=network.request(options);next.once('error',error=>proxy.emit('error',error));next.once('response',output=>proxy.emit('response',output));
-              controller.signal.addEventListener('abort',()=>next.abort(),{once:true});liveRequest=next;next.end(body);return;
-            }
-          }
           const current = { url: options.url, method: options.method ?? 'GET', headers: headers(options.headers), body: requestBody(body) };
-          const result = await tracked('desktop.request',()=>source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {
+          let dispatched = false, nativeError, result;
+          try { result = await source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {
             const forwardBody = await bytes(next.body, control.signal);
             const omit = next.credentialMode === 'omit' || !sameOrigin(options.url, next.url);
-            return nativeForward(network, { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers }, { ...options, redirect: options.redirect ?? 'follow',
+            dispatched = true;
+            try { return await nativeForward(network, { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers }, { ...options, redirect: options.redirect ?? 'follow',
               credentials: omit ? 'omit' : options.credentials,
               useSessionCookies: !omit && options.useSessionCookies === true }, control.signal,
             request => { liveRequest = request; upload = request.getUploadProgress?.() ?? upload; });
-          } }));
+            } catch (error) { nativeError = error; throw error; }
+          } }); } catch (error) {
+            if (nativeError !== undefined) throw nativeError;
+            if (dispatched || !unavailableSource(error)) throw error;
+            // Source failure before any upstream call: Native still owns this
+            // request. Once dispatched, an uncertain result can never replay it.
+            controller.signal.throwIfAborted();
+            liveRequest = originalRequest.call(network, options);
+            liveRequest.once('error', error => proxy.emit('error', error));
+            liveRequest.once('response', output => proxy.emit('response', output));
+            liveRequest.end(body);return;
+          }
           if (bodyless(result.status, current.method)) await result.body?.cancel?.();
           const output = Readable.from(bodyless(result.status, current.method) ? [] : result.body ?? []);
           output.statusCode = result.status; output.statusMessage = ''; output.headers = headerObject(result.headers);

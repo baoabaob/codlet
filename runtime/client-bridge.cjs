@@ -198,12 +198,10 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     result: id => writes.result(id),
     receipts: () => writes.receipts(),
     whenAccepting: signal => writes.whenAccepting(signal),
-    async run(method, operation) {
-      let value;
-      const result = await writes.executeGenerated({operationId:'native.'+randomUUID(),expectedEpoch:epoch,method,params:null},async (_params, metadata) => {value=await operation(metadata);return null;});
-      if(result.outcome!=='applied')throw Object.assign(fail(result.error??'core_write_unknown'),{outcome:result.outcome,operationId:result.operationId});
-      return value;
-    },
+    // Compatibility with older Desktop sources. Native owns these operations,
+    // including their cancellation and retry decisions; only explicit Core
+    // writes belong in the update ledger. Preserve the operation's exact result.
+    run(_method, operation) { return operation(); },
   })});
   async function closeActive() {
     if (!active) return;

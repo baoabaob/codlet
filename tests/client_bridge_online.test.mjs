@@ -60,7 +60,7 @@ async function nativeFixture(t,{ownedFixtureRoutes=false}={}) {
   stream.listen(0,'127.0.0.1',async()=>{const endpoint=await bridge.endpoint();process.send({endpoint,streamPort:stream.address().port,pid:process.pid});});
   setInterval(()=>{for(const socket of sockets)socket.write(JSON.stringify({sequence:++sequence,value:native.value()})+'\\n');},15);
   process.on('message',message=>{if(message==='stop')bridge.close().finally(()=>process.exit(0));
-    else if(message?.op==='nativeWrite')Promise.resolve().then(()=>native.submit(message.params,message.operationId)).then(result=>process.send({tag:message.tag,result}),error=>process.send({tag:message.tag,error:error.code??'native_write_failed'}));});`);
+    else if(message?.op==='pluginWrite')Promise.resolve().then(()=>native.submit(message.params,message.operationId)).then(result=>process.send({tag:message.tag,result}),error=>process.send({tag:message.tag,error:error.code??'native_write_failed'}));});`);
   const child = spawn(process.execPath, [entry], {cwd: root, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc']});
   let stderr = '';
   child.stderr.on('data', bytes => stderr += bytes);
@@ -90,9 +90,9 @@ async function coreLease(t, f, options = {}) {
 }
 const replacement = (f, generation, epoch, options = {}) => ({op: 'replace', operationId: `generation-${generation}-${options.broken ? 'broken' : 'good'}`, expectedEpoch: epoch, previousOwner: epoch ? 'codlet.core' : null,
   owner: 'codlet.core', generation, code: source(generation, options), compatibleUpdate: true, configuration: {log: f.log}, ...options});
-function nativeWrite(f,operationId,params={}) {
+function pluginWrite(f,operationId,params={}) {
   const tag=Math.random().toString(16).slice(2);
-  return new Promise((resolve,reject)=>{const listener=message=>{if(message.tag!==tag)return;f.child.off('message',listener);message.error?reject(Error(message.error)):resolve(message.result);};f.child.on('message',listener);f.child.send({op:'nativeWrite',tag,operationId,params});});
+  return new Promise((resolve,reject)=>{const listener=message=>{if(message.tag!==tag)return;f.child.off('message',listener);message.error?reject(Error(message.error)):resolve(message.result);};f.child.on('message',listener);f.child.send({op:'pluginWrite',tag,operationId,params});});
 }
 
 test('real IPC takeover preserves the Native stream, explicit state and accepted write outcomes across Core lease owners', async t => {
@@ -172,7 +172,7 @@ test('cancelling a draining update keeps its accepted write and old owner, and c
   assert.equal((await request(f.endpoint,{...command,code:source(3)})).code,'client_bridge_operation_id_conflict');
 });
 
-test('one admission lease holds Native writes across the entire module transaction and resumes them in the new owner once',async t=>{
+test('one admission lease holds explicit plugin writes across the entire module transaction and resumes them in the new owner once',async t=>{
   const f=await nativeFixture(t);await coreLease(t,f);await request(f.endpoint,replacement(f,1,0));
   const frames=[];const stream=net.createConnection({host:'127.0.0.1',port:f.streamPort});let buffer='';const streamErrors=[];stream.on('error',error=>streamErrors.push(error.code));
   stream.on('data',bytes=>{buffer+=bytes;for(let at;(at=buffer.indexOf('\n'))>=0;){frames.push(JSON.parse(buffer.slice(0,at)));buffer=buffer.slice(at+1);}});t.after(()=>stream.destroy());
@@ -184,7 +184,7 @@ test('one admission lease holds Native writes across the entire module transacti
   assert.equal((await request(f.endpoint,begin)).result.admissionToken,held.admissionToken);
   const duplicate=(await request(f.endpoint,{...begin,drainTimeoutMs:1}));assert.equal(duplicate.code,'client_bridge_operation_id_conflict');
   assert.equal((await request(f.endpoint,{...begin,operationId:'another-owner'})).result.error,'core_admission_owner_busy');
-  let resolved=0;const queued=nativeWrite(f,'queued-during-snapshot').then(value=>{resolved++;return value;});const same=nativeWrite(f,'queued-during-snapshot').then(value=>{resolved++;return value;});
+  let resolved=0;const queued=pluginWrite(f,'queued-during-snapshot').then(value=>{resolved++;return value;});const same=pluginWrite(f,'queued-during-snapshot').then(value=>{resolved++;return value;});
   const at=frames.length;await delay(65);assert.equal(resolved,0);assert.ok(frames.length>at);assert.equal(await readFile(f.log,'utf8'),'before-snapshot\n');
   const protectedUpdate={...replacement(f,2,1),admissionId:begin.operationId,admissionToken:held.admissionToken};
   assert.equal((await request(f.endpoint,replacement(f,2,1))).result.error,'core_admission_owner_changed');
@@ -204,7 +204,7 @@ test('one admission lease holds Native writes across the entire module transacti
 test('failed source takeover keeps the outer lease held until old owners confirm restoration',async t=>{
   const f=await nativeFixture(t);await coreLease(t,f);await request(f.endpoint,replacement(f,1,0));
   const held=(await request(f.endpoint,{op:'beginAdmission',operationId:'rollback-admission',expectedEpoch:1})).result;
-  let settled=false;const queued=nativeWrite(f,'rollback-queued').then(result=>{settled=true;return result;});await delay(25);assert.equal(settled,false);
+  let settled=false;const queued=pluginWrite(f,'rollback-queued').then(result=>{settled=true;return result;});await delay(25);assert.equal(settled,false);
   const failed=(await request(f.endpoint,{...replacement(f,2,1,{broken:true}),admissionId:'rollback-admission',admissionToken:held.admissionToken})).result;
   assert.equal(failed.outcome,'rolled_back');assert.equal(failed.onlineUpdate.writes.accepting,false);await delay(35);assert.equal(settled,false);
   const finished=(await request(f.endpoint,{op:'finishAdmission',operationId:'rollback-release',expectedEpoch:2,admissionId:'rollback-admission',admissionToken:held.admissionToken,disposition:'rolled_back'})).result;

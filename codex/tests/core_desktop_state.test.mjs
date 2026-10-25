@@ -40,17 +40,18 @@ test('Desktop source reload keeps canonical permission guards with no preSubmit 
   await old.api.write('permissions.update',{threadId:'thread-a',selection:{kind:'agent-mode',mode:'auto'},expectedRevision:before.revision},null,caller);
   const gate=f.scope[Symbol.for('codlet.core.native-ingress.v1')];gate.pause('core-update');
   const snapshot=plain(old.saveState());assert.deepEqual(snapshot,{schema:1,value:{permissions:{guards:[{threadId:'thread-a',pluginId:'consumer',generation:1}]}}});
-  f.postbox.postMessage(f.native('queued'));assert.equal(f.sent.length,0);old.dispose();
+  f.postbox.postMessage(f.native('during-update'));await tick();assert.equal(f.sent.length,1);old.dispose();
   assert.notEqual(f.postbox.postMessage,f.original);f.thread.latestThreadSettings={approvalPolicy:'on-request',sandboxPolicy:{type:'readOnly'}};
   const fresh=f.start(2);await fresh.restoreState(snapshot);f.register(fresh,2);
   assert.equal(f.writes.length,1);assert.equal(gate.resume('core-update',{outcome:'applied'}).ok,true);await tick();
-  assert.equal(f.sent.length,1);assert.equal(f.sent[0].request.id,'queued');assert.equal(f.sent[0].request.params.sandboxPolicy.type,'readOnly');assert.equal(f.errors.length,0);
+  assert.equal(f.sent.length,1);assert.equal(f.sent[0].request.id,'during-update');assert.equal(f.sent[0].request.params.sandboxPolicy.type,'workspaceWrite');
+  f.postbox.postMessage(f.native('after-update'));await tick();assert.equal(f.sent.length,2);assert.equal(f.sent[1].request.params.sandboxPolicy.type,'readOnly');assert.equal(f.errors.length,0);
   assert.equal(fresh.saveState().value.permissions.guards[0].generation,2);fresh.dispose();assert.equal(f.postbox.postMessage,f.original);
 });
-test('Core manager facade dispatches an admitted SDK request through held ingress without making the ordinary Native queue writable',async()=>{
+test('Core manager facade and ordinary Native requests both dispatch during a Core handoff',async()=>{
   const f=fixture(),adapter=f.start(1),gate=f.scope[Symbol.for('codlet.core.native-ingress.v1')];gate.pause('accepted');
   f.postbox.postMessage(f.native('ordinary'));
   assert.deepEqual(plain(await adapter.api.read('turns.list',{threadId:'thread-a'})),{turns:[],cursor:null});
-  assert.deepEqual(f.sent.map(value=>value.request.id),['sdk-1']);
-  gate.resume('accepted',{outcome:'rolledBack'});assert.deepEqual(f.sent.map(value=>value.request.id),['sdk-1','ordinary']);adapter.dispose();
+  assert.deepEqual(f.sent.map(value=>value.request.id),['ordinary','sdk-1']);
+  gate.resume('accepted',{outcome:'rolledBack'});assert.deepEqual(f.sent.map(value=>value.request.id),['ordinary','sdk-1']);adapter.dispose();
 });

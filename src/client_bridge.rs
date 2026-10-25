@@ -435,7 +435,7 @@ impl ClientSourceRuntime {
         Ok(())
     }
     /// Resume only after the coordinator confirms all selected renderer/Host
-    /// owners. Unknown outcomes keep this exact lease and queued Native writes.
+    /// owners. Unknown outcomes keep this exact lease for Core-owned writes.
     pub(crate) fn finish_core_admission(
         &self,
         operation_id: &str,

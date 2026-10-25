@@ -13,9 +13,9 @@ const {startClientBridge}=require('../runtime/client-bridge-bundle.cjs');
 const {observeModules}=require('../runtime/client-bridge-bundle.cjs');
 const {plan,sameExecutable}=require('../runtime/client-bridge-bootstrap.cjs');
 const TOKEN='a'.repeat(48);
-async function fixture(t){
+async function fixture(t,dependencies={}){
   const directory=await mkdtemp(path.join(tmpdir(),'codlet-client-bridge-'));
-  let ready=false;const bridge=startClientBridge({app:{isReady:()=>ready,getAppPath:()=>directory}},{token:TOKEN},{identity:()=>({pid:process.pid,executable:process.execPath,type:'browser'})});
+  let ready=false;const bridge=startClientBridge({app:{isReady:()=>ready,getAppPath:()=>directory}},{token:TOKEN},{identity:()=>({pid:process.pid,executable:process.execPath,type:'browser'}),...dependencies});
   const endpoint=await bridge.endpoint();
   t.after(async()=>{await bridge.close();const resolved=path.resolve(directory);assert.equal(path.dirname(resolved),path.resolve(tmpdir()));await rm(resolved,{recursive:true});});
   return {bridge,endpoint,directory,ready:()=>ready=true};
@@ -23,6 +23,21 @@ async function fixture(t){
 function request(endpoint,input,token=TOKEN){return new Promise((resolve,reject)=>{const socket=net.createConnection({host:endpoint.host,port:endpoint.port});let body='';socket.on('connect',()=>socket.write(JSON.stringify({...input,token})+'\n'));socket.on('data',data=>body+=data);socket.on('error',reject);socket.on('end',()=>{try{resolve(JSON.parse(body));}catch{reject(Error('connection_closed'));}});});}
 const source=value=>`module.exports={validateClientSource(electron,context){const record=context.modules.list().find(record=>record.name==='native.cjs');if(!record)throw Object.assign(Error(),{code:'native_missing'});},installElectronTraffic(electron,configuration,context){const record=context.modules.list().find(record=>record.name==='native.cjs');const Native=record.evaluate('Native');const original=Native.prototype.value;Native.prototype.value=()=>${JSON.stringify(value)};return{ready:async()=>({installed:true,activatedSources:[],unsupportedSources:[]}),close(){Native.prototype.value=original;}};}};`;
 function compile(directory){const filename=path.join(directory,'native.cjs'),module=new Module(filename);module.filename=filename;module.paths=Module._nodeModulePaths(directory);module._compile('class Native {constructor(){this.created=true;}value(){return "original";}};module.exports={Native};',filename);return module.exports.Native;}
+test('Native failures never fill the Core ledger and Native operations survive a full, held ledger unchanged',async t=>{
+  let updates;
+  const f=await fixture(t,{load:()=>({installElectronTraffic(_electron,_configuration,context){updates=context.onlineUpdates;return{ready:async()=>({installed:true,activatedSources:[],unsupportedSources:[]}),close(){}};}})});
+  assert.equal((await request(f.endpoint,{op:'replace',operationId:'native-continuity',expectedEpoch:0,previousOwner:null,owner:'codlet.core',generation:1,code:'fixture',configuration:{}})).result.outcome,'applied');
+  const error=Object.assign(Error('Native network failure'),{code:'native_network_failure'});let calls=0;
+  for(let i=0;i<300;i++)await assert.rejects(updates.run('desktop.fetch',()=>{calls++;return Promise.reject(error);}),value=>value===error);
+  assert.equal(updates.receipts().length,0);assert.equal(calls,300);
+  for(let i=0;i<256;i++)await updates.execute({operationId:'plugin-'+i,expectedEpoch:1,method:'plugin.write',params:null},async()=>{throw error;});
+  assert.equal(updates.receipts().length,256);
+  const held=(await request(f.endpoint,{op:'beginAdmission',operationId:'blocked-core-update',expectedEpoch:1})).result;
+  assert.equal(held.outcome,'blocked');assert.equal(updates.accepting(),false);
+  const value=Promise.resolve({native:true});assert.equal(updates.run('desktop.fetch',()=>{calls++;return value;}),value);
+  assert.throws(()=>updates.run('backend.send',()=>{calls++;throw error;}),value=>value===error);
+  assert.equal(calls,302);assert.equal(updates.receipts().length,256);
+});
 test('a late source can replace native hooks repeatedly while the same process and object stay alive',async t=>{
   const f=await fixture(t),Native=compile(f.directory),object=new Native();f.ready();
   assert.equal(f.bridge.inspect().moduleObserver.modules,1);

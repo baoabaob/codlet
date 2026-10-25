@@ -44,6 +44,45 @@ const main = `class wEe {
 }; module.exports={wEe};`;
 const hash = code => createHash('sha256').update(code).digest('hex');
 function compile(name, code) { const filename=path.join(process.cwd(),name), module=new Module(filename); module.filename=filename; module.paths=Module._nodeModulePaths(process.cwd()); module._compile(code,filename); return module.exports; }
+test('HTTP and Stdio never consult Core update admission, including repeated Native errors',async()=>{
+  const nativeError=Error('Native request failed');globalThis.nativeContinuityError=nativeError;globalThis.nativeContinuityCalls=0;
+  const boot=`class Pt {assertAllowed(){}fetch(){}request(){const request=new(require('node:events').EventEmitter)();request.abort=()=>{};request.end=()=>{globalThis.nativeContinuityCalls++;queueMicrotask(()=>request.emit('error',globalThis.nativeContinuityError));};return request;}}module.exports={Pt};`;
+  const stdio=`class Gs{constructor(proc){this.proc=proc;}send(message){globalThis.nativeContinuityCalls++;if(message==='throw')throw globalThis.nativeContinuityError;return message;}}module.exports={Gs};`;
+  const owned=new EventEmitter(),onlineUpdates=new Proxy({}, {get(){assert.fail('Native must not consult Core admission or receipts');}});
+  const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source:{interceptHttp(input,{forward}){return forward(input,{signal:new AbortController().signal});}},onlineUpdates,ownsBackendProcess:proc=>proc===owned,deadlineUnixMs:Date.now()+1000},{expectedHashes:{'bootstrap-DK4EfNwt.js':hash(boot),'main-LM8MUIFp.js':hash(main),'application-network-startup-YSC7OAs0.js':hash(stdio)}});
+  try {
+    const {Pt}=compile('bootstrap-DK4EfNwt.js',boot),{wEe}=compile('main-LM8MUIFp.js',main),{Gs}=compile('application-network-startup-YSC7OAs0.js',stdio),wrapper=new wEe(new Pt()),native=new Gs(owned);
+    for(let i=0;i<300;i++)await assert.rejects(wrapper.performDesktopFetch({progress:i%2===0}),error=>error===nativeError);
+    assert.equal(native.send('native-message'),'native-message');assert.throws(()=>native.send('throw'),error=>error===nativeError);
+    assert.equal(globalThis.nativeContinuityCalls,302);
+  } finally {hook.close();delete globalThis.nativeContinuityError;delete globalThis.nativeContinuityCalls;}
+});
+test('Stdio preparation failure falls through once and accepted sends survive source retirement',async()=>{
+  const code=`class Gs{constructor(proc){this.proc=proc;this.sent=[];}send(message){this.sent.push(message);return message;}}module.exports={Gs};`;
+  const proc=new EventEmitter();let rejectRoute;
+  const source={interceptHttp(){},reserveRoute(){return{baseUrl:'http://127.0.0.1:45678/route/',ready:new Promise((_resolve,reject)=>{rejectRoute=reject;}),close(){}};}};
+  const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source,ownsBackendProcess:value=>value===proc,deadlineUnixMs:Date.now()+1000},{expectedHashes:{'application-network-startup-YSC7OAs0.js':hash(code)}});
+  try {
+    const {Gs}=compile('application-network-startup-YSC7OAs0.js',code),native=new Gs(proc),message=JSON.stringify({id:1,method:'thread/start',params:{config:{'model_providers.custom.base_url':'https://provider.example/v1'}}});
+    native.send(message);native.send('second');hook.close();rejectRoute(Error('Core route unavailable'));
+    await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(native.sent,[message,'second']);
+  } finally {hook.close();}
+});
+test('an unavailable Core HTTP source falls through only before Native has dispatched',async()=>{
+  globalThis.fixtureRequests=[];
+  const error=Object.assign(Error('Core source closed'),{code:'peer_closed'});let afterDispatch=false;
+  const source={async interceptHttp(input,{forward}) {if(afterDispatch)await forward(input,{signal:new AbortController().signal});throw error;}};
+  const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source,deadlineUnixMs:Date.now()+1000},{expectedHashes:{'bootstrap-DK4EfNwt.js':hash(bootstrap),'main-LM8MUIFp.js':hash(main)}});
+  try {
+    const {Pt}=compile('bootstrap-DK4EfNwt.js',bootstrap),{wEe}=compile('main-LM8MUIFp.js',main),wrapper=new wEe(new Pt());
+    assert.equal(await (await wrapper.performDesktopFetch()).text(),'upstream');
+    assert.equal(await new Response(Readable.toWeb(await wrapper.performDesktopFetch({progress:true}))).text(),'upstream');
+    assert.equal(globalThis.fixtureRequests.length,2);assert.ok(globalThis.fixtureRequests.every(request=>String(request.body)==='original'));
+    afterDispatch=true;
+    for(const progress of [false,true])await assert.rejects(wrapper.performDesktopFetch({progress}),value=>value===error);
+    assert.equal(globalThis.fixtureRequests.length,4);
+  }finally{hook.close();delete globalThis.fixtureRequests;}
+});
 
 test('current four-module source mapping acquires each hook and restores split connection ownership',async()=>{
  const code={
@@ -150,14 +189,9 @@ for(const outcome of ['ready','failed','retired','changed'])test('Native restart
   try{
     const options={intent:'restart',killCodexProcess:false},pending=connection.restart(options);
     assert.deepEqual(connection.calls,[]);
-    if(outcome==='failed'){
-      const rejected=assert.rejects(pending,{code:'backend_config_unavailable'});failPreparation(Object.assign(Error(),{code:'backend_config_unavailable'}));await rejected;
-    }else if(outcome==='retired'||outcome==='changed'){
-      const rejected=assert.rejects(pending,{code:outcome==='retired'?'backend_owner_closed':'backend_connection_changed'});
-      if(outcome==='retired')hook.close();else connection.connection={proc:{}};
-      complete();await rejected;
-    }else{complete();assert.equal(await pending,'restarted');assert.deepEqual(connection.calls,[options]);}
-    if(outcome!=='ready')assert.deepEqual(connection.calls,[]);
+    if(outcome==='failed')failPreparation(Object.assign(Error(),{code:'backend_config_unavailable'}));
+    else {if(outcome==='retired')hook.close();else if(outcome==='changed')connection.connection={proc:{}};complete();}
+    assert.equal(await pending,'restarted');assert.deepEqual(connection.calls,[options]);
   }finally{hook.close();assert.equal(native.mB.prototype.restart,original);}
 });
 
