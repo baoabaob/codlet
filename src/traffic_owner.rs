@@ -231,7 +231,7 @@ impl TrafficOwner {
                 configuration.clone(),
                 None,
                 self.traffic.clone(),
-                Instant::now() + Duration::from_secs(10),
+                deadline,
             )?;
             self.client_source.replace(Some(source));
             return Ok(());
