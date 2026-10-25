@@ -53,4 +53,14 @@ checks and resolves the exact two settings assets in the signed package.
 This release changes resident Core/bridge code. Windows MSI users upgrade with
 the installer after exiting the current client. No online-only package is
 published for an already-running rc.15 process with the old ledger. The installer
-self-check and public package hash receipts are added after packaging.
+self-check passes without performing an installation. All five public assets
+were downloaded without authentication and matched their planned byte counts
+and SHA-256 hashes. The published Native compatibility catalog is revision
+`2026102501`.
+
+The production build is from `6739bd51da4ddd7a232d093cb39b4bca815fd892`, with Core
+SHA-256 `fa640a58f124ed1568d9cef0e2c20b7224c7e18522cb98861fb3177facb6c4c8`.
+[Delivery receipts](release-receipts.json) record the installer check and public
+download hashes. The VM was shut down, its fixture server stopped, and redundant
+runtime/package copies removed while retaining reports, session data and the
+current delivery packages.

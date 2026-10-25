@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "sourceCommit": "6739bd51da4ddd7a232d093cb39b4bca815fd892",
+  "coreSha256": "fa640a58f124ed1568d9cef0e2c20b7224c7e18522cb98861fb3177facb6c4c8",
+  "publication": {
+    "tag": "v1.0.0-rc.17",
+    "assets": [
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.17/Codlet-1.0.0-rc.17-windows-x64-setup.exe",
+        "name": "Codlet-1.0.0-rc.17-windows-x64-setup.exe",
+        "bytes": 8786432,
+        "sha256": "d9e2edc72bbf0629b17deb86205c7971071e8fe4519785c2fff08e7bcf938dbf"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.17/codlet-runtime-1.0.0-rc.17-win-x64-portable.zip",
+        "name": "codlet-runtime-1.0.0-rc.17-win-x64-portable.zip",
+        "bytes": 9693879,
+        "sha256": "ddf204c69b0cefb041a3edd0babaad430da6723b1d30b035833a75059c6b51ef"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.17/codlet-update-managed.json",
+        "name": "codlet-update-managed.json",
+        "bytes": 561,
+        "sha256": "5fefff6b8efd9343518a4a7e49268b6619b1377c0ed57aaddfc08e75fc7e7e38"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.17/codlet-update-managed-v2.json",
+        "name": "codlet-update-managed-v2.json",
+        "bytes": 561,
+        "sha256": "26b623955edbe3a2ffdeaf8f7476ac7e203c30e66f451cff293b301809715c62"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.17/SHA256SUMS.txt",
+        "name": "SHA256SUMS.txt",
+        "bytes": 410,
+        "sha256": "e97a1ced2129a53123e7551cc4f299090ddf5cf77b0b49387de250e47224ce29"
+      }
+    ],
+    "publishedAt": "2026-10-25T08:19:11Z",
+    "schema": 1,
+    "releaseUrl": "https://github.com/baoabaob/codlet/releases/tag/v1.0.0-rc.17",
+    "verified": true
+  },
+  "compatibilityCatalog": {
+    "commit": "7dfab2ea15c30384c9eab5701667788dfadb2c92",
+    "source": "https://raw.githubusercontent.com/baoabaob/codlet/main/compatibility/tested-client-versions.json",
+    "schema": 1,
+    "sha256": "cb950d507dc0bfb14be0bb97d4427220dc7b9c5ad3d7417fd4b5a242bbc44e16",
+    "revision": 2026102501,
+    "verified": true
+  },
+  "installerSelfTest": {
+    "passed": true,
+    "installationPerformed": false,
+    "nativeUi": true,
+    "payloadHashVerified": true,
+    "scopeAndFeatures": true,
+    "upgradeMaintenanceDowngrade": true,
+    "msiProgressAndCancellation": true,
+    "version": "1.0.0-rc.17"
+  }
+}
