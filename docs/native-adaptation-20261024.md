@@ -33,6 +33,10 @@ restart preparation failures cannot invent a Native rejection; fallback occurs
 only before the original operation has been dispatched. Explicit plugin hooks
 and Native's own network policy continue to apply.
 
+The first corrected VM candidate exposed a separate startup lease timeout while
+Native was loading modules. Lease acquisition now uses the caller's existing
+startup deadline rather than a shorter ten-second deadline within that startup.
+
 The official update bridge uses entry `index-340508751504.js`, AppScope `Bst`,
 services `Qot` and update selector `sHt` under the exact app/build identity above.
 

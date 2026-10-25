@@ -219,7 +219,9 @@ pub(crate) enum CoreAdmissionOutcome {
 }
 
 fn acquire_lease(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, HostError> {
-    let deadline = deadline.min(Instant::now() + Duration::from_secs(10));
+    // Native can still be synchronously loading its entry modules when the
+    // private listener is created. Honor the caller's startup deadline instead
+    // of imposing a shorter lease deadline while that same startup is in flight.
     let remaining = || {
         let wait = deadline.saturating_duration_since(Instant::now());
         if wait.is_zero() {
