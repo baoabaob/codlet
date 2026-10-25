@@ -9,8 +9,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 fn startup_timeout() -> Duration {
-    // The non-release acceptance binary can measure slow disposable hosts
-    // without changing the installed launcher's bounded startup contract.
+    // Native module loading and bridge ownership share one startup budget.
+    // The acceptance binary can measure slower disposable hosts with an
+    // explicit bounded override.
     #[cfg(all(windows, feature = "desktop-acceptance"))]
     if let Some(milliseconds) = std::env::var("CODLET_ACCEPTANCE_STARTUP_TIMEOUT_MS")
         .ok()
@@ -19,7 +20,7 @@ fn startup_timeout() -> Duration {
     {
         return Duration::from_millis(milliseconds);
     }
-    Duration::from_secs(15)
+    Duration::from_secs(60)
 }
 
 pub(crate) struct TrafficOwner {
