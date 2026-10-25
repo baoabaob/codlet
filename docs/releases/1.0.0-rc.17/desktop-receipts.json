@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "native": {
+    "schema": 1,
+    "verified": true,
+    "before": "OpenAI.Codex_26.1016.8622.0_x64__2p2nqsd0c76g0",
+    "nativePackage": "OpenAI.Codex_26.1021.3705.0_x64__2p2nqsd0c76g0",
+    "packageVersion": "26.1021.3705.0",
+    "appVersion": "26.1021.31345",
+    "buildNumber": "21828",
+    "clientApp": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1021.3705.0_x64__2p2nqsd0c76g0\\app",
+    "packageSha256": "0024ecd081b1187c51de45e983dc3e0bfb3b923faea7526ef2233c9ec8e8b7ac",
+    "nativeAsarSha256": "04862a659c6a90fc50514d8c0b8016709d97dece58839726c57495ed72f1d9f0",
+    "packageSignature": "Valid",
+    "imageSignature": "Valid",
+    "time": "2026-10-25T04:55:06.2203599Z"
+  },
+  "sourceCommit": "c17427281b41de4543e09ef1753da657b4838653",
+  "acceptanceBinarySha256": "47d8b87e8f0ab6130a2800be94598068d76af425384386b80433cedd021b8290",
+  "receiptSha256": "853fd07d01e170c8575841306ff88b23490f17480b59a2b3e389c35f593aeb42",
+  "originalReceiptSha256": "ab5471e1a35071e13d90efa3721e4a1a093f43418264e3cd1b412edf73e52384",
+  "launcher": {
+    "elevated": false,
+    "startedAt": "2026-10-25T08:01:15.6285212Z",
+    "exit": 0,
+    "error": null,
+    "pid": 2228,
+    "created": "2026-10-25T08:01:15.6615502Z"
+  },
+  "verdict": {
+    "exit": "Ok(Some(0))",
+    "msixUpdateAccepted": false,
+    "normalShutdown": true,
+    "pluginErrorCount": 0,
+    "rendered": true,
+    "signedInSessionAccepted": false
+  },
+  "checks": {
+    "rail": {
+      "button": true,
+      "ready": true
+    },
+    "activity": true,
+    "surface": {
+      "composer": true,
+      "permission": true,
+      "transcript": true
+    },
+    "permissions": "ready",
+    "composerPreserved": true
+  },
+  "passed": true,
+  "ownedProcesses": []
+}

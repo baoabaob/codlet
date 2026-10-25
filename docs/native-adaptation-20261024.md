@@ -1,4 +1,4 @@
-# Native build 21828 candidate adaptation
+# Native build 21828 adaptation
 
 The signed Windows package is `OpenAI.Codex_26.1021.3705.0_x64__2p2nqsd0c76g0`,
 app `26.1021.31345`, build `21828`. The downloaded package and both OpenAI
@@ -36,17 +36,17 @@ restart preparation failures cannot invent a Native rejection; fallback occurs
 only before the original operation has been dispatched. Explicit plugin hooks
 and Native's own network policy continue to apply.
 
-The first corrected VM candidate exposed a separate startup lease timeout while
-Native was loading modules. Lease acquisition now uses the caller's existing
-startup deadline rather than a shorter ten-second deadline within that startup.
+Native module loading and bridge lease acquisition share a bounded 60-second
+startup budget. Lease acquisition uses the original deadline throughout the
+call chain.
 
 The official update bridge uses entry `index-340508751504.js`, AppScope `Bst`,
 services `Qot` and update selector `sHt` under the exact app/build identity above.
 
 Source verification passes all 27 workspace checks, 15 Desktop checks and the
-four main-process network/fetch/stdio/connection class contracts. The adapter
-suite passes 456 tests with two optional skips; the final shortcut boundary
-change also passes its 12 targeted tests and the actual-source workspace checks.
+four main-process network/fetch/stdio/connection class contracts. The initial
+source adaptation passed 456 adapter tests with two optional skips. Subsequent
+changes used focused regression checks and actual Native VM acceptance.
 
 The targeted Rust close/cancel restart test passes. Native continuity checks
 cover 300 consecutive failures, a full held Core ledger, hook retirement,
@@ -54,7 +54,8 @@ unknown update outcomes and pre-dispatch fallback. Detailed source evidence is
 in [Desktop contracts](native-desktop-21828.json) and the
 [official update mapping](native-official-update-21828.json).
 
-Source checks do not execute Native modules. The signed package is installed in
-the disposable VM. Its first UI acceptance exposed the tooltip and primary-module
-changes above; the corrected candidate is awaiting the final VM check. It is not
-yet listed as tested in the compatibility catalog or published as a release.
+The signed package passes the focused VM check: Native navigation, idle/working
+state transitions, root-task identity, permissions, transcript mounting and
+composer preservation. Native renders and shuts down normally with zero plugin
+errors and no remaining owned processes. [rc.17 validation](releases/1.0.0-rc.17/validation.md)
+and its compact receipt record the exact executable, source and test scope.
