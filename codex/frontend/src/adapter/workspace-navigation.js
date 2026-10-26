@@ -6,7 +6,7 @@ import { nativeInitializationPending } from './native-readiness.js';
 
 export function createWorkspaceNavigation({document,load,host,check,changed,onPrepared,readBinding,readCurrentInput,metrics}) {
   const validateTarget=thread=>{if(threadIdentity(thread).isSubagent)throw workspaceError('workspace_thread_not_selectable','A subagent task has no independent Native main input');};
-  const sessions=new Set(),guards=new Set();let native,prepared,current,sequence=0,observer,frame,microtask=false,queueEpoch=0,disposed=false;
+  const sessions=new Set(),guards=new Set();let native,prepared,current,sequence=0,observer,unlisten,frame,microtask=false,queueEpoch=0,disposed=false;
   let tracking=false,restoringLocation=false,composing=new WeakMap(),compositionRoots=new WeakMap();
   function compositionStart(event){
     const target=event.target,input=target?.closest?.('[data-codex-composer-root]');
@@ -37,7 +37,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
     if(value&&(value.controller.view.composing===true||composing.get(value.input)))throw workspaceError('workspace_composer_busy','Native main input is composing');
     return value;
   }
-  function stop(){observer?.disconnect();observer=null;if(frame!=null)document.defaultView.cancelAnimationFrame?.(frame);frame=null;microtask=false;queueEpoch++;}
+  function stop(){observer?.disconnect();observer=null;unlisten?.();unlisten=null;document.removeEventListener('visibilitychange',schedule);if(frame!=null)document.defaultView.cancelAnimationFrame?.(frame);frame=null;microtask=false;queueEpoch++;}
   function pulse(wake){
     const op=current;if(!op||op.settled||!op.didExecute)return;
     const started=metrics?.start();metrics?.add(wake==='frame'?'navigation.pulse.frame':'navigation.pulse.microtask',op.measurement);
@@ -55,7 +55,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
       op.settled=true;stop();const surfaceStarted=metrics?.start();
       try{changed(value,op.measurement?.operationId);}
       finally{metrics?.end('navigation.surface',surfaceStarted,op.measurement);}
-      clearTimeout(op.timer);op.removeAbort?.();
+      op.removeAbort?.();
       metrics?.end('navigation.committed',op.started,op.measurement);
       op.session.operations.delete(op);op.resolveCommitted(Object.freeze({threadId:op.threadId,hostId:'local',inputConfirmed:true,submitDisabled:value.submitDisabled,revision:op.sequence}));
     }catch(error){if(!['workspace_host_pending','ui_host_pending'].includes(error.code))finish(op,error.code??'workspace_navigation_unavailable',error.message);else metrics?.add('navigation.input.pending.host',op.measurement);}
@@ -66,8 +66,8 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
     if(!microtask){microtask=true;const epoch=queueEpoch;queueMicrotask(()=>{if(epoch!==queueEpoch)return;microtask=false;pulse('microtask');});}
     if(frame==null&&document.visibilityState!=='hidden'&&document.defaultView.requestAnimationFrame)frame=document.defaultView.requestAnimationFrame(()=>{frame=null;pulse('frame');});
   }
-  function observe(){if(observer)return;observer=new document.defaultView.MutationObserver(schedule);observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-codex-composer-root','data-app-shell-active-page','disabled','contenteditable']});}
-  function finish(op,code,message){if(op.settled)return;op.settled=true;if(current===op)stop();op.session.operations.delete(op);clearTimeout(op.timer);op.removeAbort?.();const error=workspaceError(code,message);op.controller.abort(error);if(!op.didExecute)op.rejectExecuted(error);op.rejectCommitted(error);metrics?.end('navigation.finished',op.started,op.measurement);}
+  function observe(){if(observer)return;observer=new document.defaultView.MutationObserver(schedule);observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-codex-composer-root','data-app-shell-active-page','disabled','contenteditable']});unlisten=native.manager.addConversationStateCallback?.(id=>{if(id===current?.threadId)schedule();});document.addEventListener('visibilitychange',schedule);}
+  function finish(op,code,message){if(op.settled)return;op.settled=true;if(current===op)stop();op.session.operations.delete(op);op.removeAbort?.();const error=workspaceError(code,message);op.controller.abort(error);if(!op.didExecute)op.rejectExecuted(error);op.rejectCommitted(error);metrics?.end('navigation.finished',op.started,op.measurement);}
   function ensure(){return prepared??=Promise.resolve().then(load).then(value=>{if(disposed)throw workspaceError('workspace_retired','Navigation provider retired');if(value.inputApi===1&&typeof value.openLocalThread!=='function')throw workspaceError('workspace_navigation_unsupported','Strict navigation requires the Native local task entry');native=value;onPrepared?.();return value;}).catch(error=>{if(nativeInitializationPending(error)||error?.name==='AbortError')prepared=undefined;throw error;});}
   function create(live){
     const session={alive:true,operations:new Set(),latest:null};sessions.add(session);track();
@@ -82,7 +82,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
       finally{metrics?.end('navigation.dispatch',started,op.measurement);}
     }};},beforeNavigate:()=>composition(op.measurement),request:async(method,args,signal)=>{
       const started=metrics?.start();metrics?.add('navigation.metadata.begin',op.measurement);
-      try{const value=await native.manager.sendRequest(method,args,{timeoutMs:10000});if(signal?.aborted)throw workspaceError('invocation_cancelled','Navigation validation was cancelled');return value;}
+      try{const value=await native.manager.sendRequest(method,args);if(signal?.aborted)throw workspaceError('invocation_cancelled','Navigation validation was cancelled');return value;}
       finally{metrics?.end('navigation.metadata',started,op.measurement);}
     }});
     return Object.freeze({ready,get inputApi(){return native?.inputApi===1?1:0;},
@@ -112,7 +112,7 @@ export function createWorkspaceNavigation({document,load,host,check,changed,onPr
           try{changed();}finally{metrics?.end('navigation.execution.publish',publishStarted,op.measurement);}
           op.resolveExecuted(Object.freeze({...receipt,synchronousMs,revision:op.sequence}));
           metrics?.end('navigation.executed',op.started,op.measurement);op.executedAt=metrics?.start();
-          op.timer=setTimeout(()=>finish(op,'workspace_navigation_commit_timeout','Native composer did not confirm the selected task'),5000);observe();schedule('executed');
+          observe();schedule('executed');
         },error=>finish(op,error.code??'workspace_navigation_unavailable',error.message)).catch(error=>finish(op,error.code??'workspace_retired',error.message));}
         if(native)run();else ready.then(run,error=>finish(op,error.code??'workspace_navigation_unavailable',error.message));
         return Object.freeze({executed,committed,dispose(){finish(op,'invocation_cancelled','Navigation operation retired');if(session.latest?.revision===op.sequence)session.latest=null;session.operations.delete(op);}});

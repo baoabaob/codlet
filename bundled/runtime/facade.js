@@ -16,6 +16,7 @@
         const api = Object.freeze({abi: 1, world: options.world,
             activate: forward('activate'), deactivate: forward('deactivate'), status: forward('status'),
             __snapshot: forward('__snapshot'), __resume: forward('__resume'),
+            __confirmOfficialUpdate: forward('__confirmOfficialUpdate'),
             __coreAdmissionPause: forward('__coreAdmissionPause'), __coreAdmissionResume: forward('__coreAdmissionResume'),
             __rpcInvoke: forward('__rpcInvoke'), __rpcCancel: forward('__rpcCancel'),
             __rpcReceive: forward('__rpcReceive'), __rpcClose: forward('__rpcClose')});

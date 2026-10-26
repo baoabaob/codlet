@@ -8,7 +8,7 @@ import {EventEmitter} from 'node:events';
 const require=createRequire(import.meta.url);
 const {observeModules}=require('../../runtime/client-bridge-bundle.cjs');
 const {installDesktopPlaintext}=require('../host/electron-plaintext.cjs');
-const {supportsRole}=require('../host/source-contracts.cjs');
+const {supportsRole,sourceCandidates}=require('../host/source-contracts.cjs');
 const network=`const electron={net:{fetch:async()=>new Response('native'),request(){throw Error('unused request');}}};
 class FutureNetwork { assertAllowed(url){if(!url.startsWith('https://provider.example/'))throw Error('policy');}
 fetch(url,options){this.assertAllowed(url);return electron.net.fetch(url,options);}
@@ -42,6 +42,18 @@ test('network URL normalization and JSONL templates satisfy the same delegation 
     send(message){if(this.readyState!==1)throw Error('closed');const line=`${message}\n`;this.ioStatsTracker.trackWritten(Buffer.byteLength(line));this.proc.stdin.write(line);}
   }
   assert.equal(supportsRole(Network,'network'),true);assert.equal(supportsRole(Stdio,'stdio'),true);
+});
+
+test('Native module, class, method and live-instance counts do not hide later owners',t=>{
+  const f=setup(t),decoys=Array.from({length:1100},(_,i)=>`class Unrelated${i}{unrelated(){}}`).join('');
+  const methods=Array.from({length:270},(_,i)=>`unrelated${i}(){}`).join('');
+  const Network=f.compile('large-native-module.js',decoys+network.replace('class FutureNetwork {','class FutureNetwork {constructor(){}'+methods));
+  const record=f.registry.list().find(value=>value.name==='large-native-module.js'),description=record.classes.find(value=>value.binding==='FutureNetwork');
+  assert.ok(description.methods.includes('fetch'));assert.ok(sourceCandidates(record,{},{}).some(value=>value.role==='network'&&value.binding==='FutureNetwork'));
+  const instances=Array.from({length:8300},()=>new Network());
+  assert.equal(f.registry.instances(Network).length,instances.length);
+  for(let i=0;i<4100;i++)f.registry.register(path.join(record.filename,'module-'+i),String(i),{},()=>Network,[]);
+  assert.equal(f.registry.list().length,4101);
 });
 test('unlisted filenames and renamed classes retain each proven source capability',async t=>{
   const f=setup(t),Network=f.compile('new-network.js',network),Fetch=f.compile('new-fetch.js',wrapper),Stdio=f.compile('new-transport.js',stdio);

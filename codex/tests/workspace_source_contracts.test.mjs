@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { keymapSourceExport, navigationSourceExport, workspaceModuleSyntax, clearWorkspaceSourceCache } from '../frontend/src/adapter/workspace-source.js';
+import { keymapSourceExport, navigationSourceExport, workspaceModuleSyntax, workspaceSourceFunctions, clearWorkspaceSourceCache } from '../frontend/src/adapter/workspace-source.js';
 import { createWorkspaceDiscovery } from '../frontend/src/adapter/workspace-discovery.js';
 import { uniqueModuleExport } from '../frontend/src/host-discovery.js';
 import { WORKSPACE_FUNCTION_ROLES, matchesWorkspaceFunction, workspaceInputProperties } from '../frontend/src/adapter/workspace-role-contracts.js';
@@ -18,6 +18,17 @@ test('a query and a cache invalidation reference identify one derived keymap res
   assert.equal(keymapSourceExport(source), 'keymap');
   assert.equal(keymapSourceExport(source + ';"codex-command-keymap-state";'), 'keymap');
   assert.equal(keymapSourceExport(source.replace('$state as keymap', '$state as keymap,$state as alias')), 'alias');
+});
+
+test('source ownership survives larger declarations, repeated markers and unrelated nested functions', () => {
+  const unrelated = Array.from({ length: 140 }, (_, index) => `function other${index}(){return ${index}}`).join('');
+  const source = keymap().replace('function init(){', `function init(){/*${'padding '.repeat(6000)}*/${unrelated}`) +
+    Array(160).fill(';"codex-command-keymap-state";').join('');
+  assert.equal(keymapSourceExport(source), 'keymap');
+  const complex = 'function owner(a=function defaults(){return "marker"},{x}={x:`${(()=>({text:"marker"}))()}`}){function nested(){return "marker"}return a}';
+  assert.deepEqual(workspaceSourceFunctions(complex, 'marker').map(node => node.id.name), ['owner', 'defaults', 'nested']);
+  const delegate = 'function renamed(owner,...args){/*' + 'comment '.repeat(100) + '*/return owner.get(nav).navigateToLocalConversation(...args)}';
+  assert.equal(matchesWorkspaceFunction(delegate, 1, WORKSPACE_FUNCTION_ROLES.threadNavigation), true);
 });
 
 test('keymap selection follows data reaching the return value, not an unrelated matching string', () => {

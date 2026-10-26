@@ -1,4 +1,4 @@
-import { componentSource, currentElementAncestry } from '../host-discovery.js';
+import { componentSource, currentElementAncestry, linkedNodes } from '../host-discovery.js';
 
 const fail = message => Object.assign(new Error(message), { code: 'workspace_composer_binding_drift' });
 const hasMarkers = (fiber, markers) => markers.every(marker => componentSource(fiber.type).includes(marker));
@@ -9,7 +9,7 @@ export function inspectNativeComposerScope(native, chain) {
   for (const implementation of chain) {
     if (!hasMarkers(implementation, ['onDocumentChange', 'onDocumentDispose', 'composerController'])) continue;
     let model;
-    for (let hook = implementation.memoizedState, count = 0; hook && count++ < 128; hook = hook.next) {
+    for (const hook of linkedNodes(implementation.memoizedState)) {
       const candidate = hook.memoizedState?.current;
       if (candidate?.scope !== native.composerScope || !candidate.node) continue;
       if (model && model.node !== candidate.node) throw fail('Native composer model is ambiguous');
@@ -28,7 +28,6 @@ export function inspectNativeInput(native, input, root, register, diagnose) {
     return !ancestor || !input.contains(ancestor); // Rich code blocks can own nested editors.
   });
   if (!editables.length) return pending('editable');
-  if (editables.length > 16) throw fail('Native editable input exceeds the discovery limit');
   if (editables.length === 1) return inspectNativeEditable(native, input, editables[0], root, register, diagnose);
   // Native request cards can contain another independent editor inside the
   // composer root. Match the controller's EditorProvider draft namespace before
@@ -44,7 +43,7 @@ function inspectNativeEditable(native, input, editable, root, register, diagnose
   const pending = (stage, counts = {}) => { diagnose?.({ stage, ...counts }); return null; };
   let chain;
   // ProseMirror inserts its DOM outside React; prove the closest committed host.
-  for (let element = editable, depth = 0; element && root.contains(element) && depth < 16; element = element.parentElement, depth++) {
+  for (let element = editable; element && root.contains(element); element = element.parentElement) {
     chain = currentElementAncestry(element, root); if (chain) break;
   }
   if (!chain) return pending('committed-ancestry');
@@ -57,7 +56,6 @@ function inspectNativeEditable(native, input, editable, root, register, diagnose
   const branch = [], queue = owner?.child ? [owner.child] : [], seen = new Set();
   while (queue.length) {
     const fiber = queue.pop(); if (!fiber || seen.has(fiber)) continue;
-    if (seen.size >= 2048) throw fail('Native input branch exceeds the discovery limit');
     seen.add(fiber); branch.push(fiber);
     if (fiber.child) queue.push(fiber.child);
     if (fiber.sibling) queue.push(fiber.sibling);
@@ -71,11 +69,11 @@ function inspectNativeEditable(native, input, editable, root, register, diagnose
     const value = fiber.tag === 10 && fiber.memoizedProps?.value;
     if (views && value?.view?.dom) views.push({ kind: 'provider', sameDom: value.view.dom === editable, withinInput: input.contains(value.view.dom) });
     if (value?.view?.dom === editable) controllers.add(value);
-    for (let dep = fiber.dependencies?.firstContext, count = 0; dep && count++ < 128; dep = dep.next) {
+    for (const dep of linkedNodes(fiber.dependencies?.firstContext)) {
       if (views && dep.memoizedValue?.view?.dom) views.push({ kind: 'dependency', sameDom: dep.memoizedValue.view.dom === editable, withinInput: input.contains(dep.memoizedValue.view.dom) });
       if (dep.memoizedValue?.view?.dom === editable) controllers.add(dep.memoizedValue);
     }
-    if (views) for (let hook = fiber.memoizedState, count = 0; hook && count++ < 128; hook = hook.next) {
+    if (views) for (const hook of linkedNodes(fiber.memoizedState)) {
       const value = hook.memoizedState?.current?.controller;
       if (views && value?.view?.dom) views.push({ kind: 'hook', sameDom: value.view.dom === editable, withinInput: input.contains(value.view.dom) });
     }
@@ -94,7 +92,7 @@ function inspectNativeEditable(native, input, editable, root, register, diagnose
       ['getInitialContent', 'getInitialInput', 'onDocumentChange', 'onDocumentDispose', 'pending-input-ready']));
     const owners = providers.filter(fiber => {
       if (fiber.memoizedProps?.composerController === controller) return true;
-      for (let hook = fiber.memoizedState, count = 0; hook && count++ < 128; hook = hook.next)
+      for (const hook of linkedNodes(fiber.memoizedState))
         if (hook.memoizedState?.current?.controller === controller) return true;
       return false;
     });

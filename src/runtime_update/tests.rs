@@ -174,6 +174,7 @@ fn online_install_fixture(include_modules: bool) {
     let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
     std::fs::write(stage.join(package::MANIFEST), &manifest_bytes).unwrap();
     let staged = package::StagedRuntime {
+        installer: None,
         directory: stage,
         manifest,
         manifest_sha256: sha(&manifest_bytes),
@@ -707,6 +708,7 @@ fn zip_payload(
 }
 fn candidate(bytes: &[u8], profile: RuntimePayloadProfile) -> source::Candidate {
     source::Candidate {
+        installer: None,
         public: RuntimeUpdateCandidate {
             online_only: false,
             id: sha(bytes),

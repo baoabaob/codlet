@@ -139,7 +139,8 @@
       "servicesModule": "app://-/assets/app-shared-955d52676f9c.js",
       "exports": {
         "scope": "Bst",
-        "services": "Qot"
+        "services": "Qot",
+        "servicesSetter": "tst"
       },
       "officialUpdates": {
         "stateSelector": "sHt"

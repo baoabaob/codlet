@@ -5,7 +5,13 @@ export function desktopDocument() {
   if (location.origin !== 'app://-' || location.pathname !== '/index.html')
     throw fail('desktop_document_unsupported', 'This is not a Desktop document');
 }
-export function hostFibers(limit = 20000) {
+// Native owns these finite linked structures. Cycles terminate traversal;
+// component depth and hook count are not compatibility contracts.
+export function* linkedNodes(first, next = value => value.next) {
+  const seen = new Set();
+  for(let value=first;value&&!seen.has(value);value=next(value)) { seen.add(value);yield value; }
+}
+export function hostFibers() {
   const root = document.getElementById('root');
   const key = root && Object.keys(root).find(key => key.startsWith('__reactContainer$'));
   const container = key && root[key], current = container?.stateNode?.current ?? container;
@@ -25,13 +31,11 @@ export function hostFibers(limit = 20000) {
     }
     throw fail('desktop_host_pending', 'Waiting for the current native navigation tree');
   }
-  // Auxiliary documents and cold startup have no navigation landmark. Their
-  // fallback stays bounded; an unknown large tree still fails closed.
+  // Auxiliary documents and cold startup have no navigation landmark.
   const pending = [current], seen = new Set();
   while (pending.length) {
     const fiber = pending.pop();
     if (!fiber || seen.has(fiber)) continue;
-    if (seen.size >= limit) throw fail('desktop_host_drift', 'Desktop tree exceeds the discovery limit');
     seen.add(fiber);
     if (fiber.sibling) pending.push(fiber.sibling);
     if (fiber.child) pending.push(fiber.child);
@@ -44,27 +48,30 @@ export function hostFibers(limit = 20000) {
 // checking both parents' actual child links handles that case and rejects a
 // detached provider even when its stale return chain still reaches the root.
 export function currentAncestry(fiber, current) {
-  const pending = [{ fiber, depth: 1 }], seen = new Set(); let links = 0;
+  if(!fiber||!current)return null;
+  const pending = [{ fiber }], queued = new Set([fiber]), children = new Map();
   // A commit may reuse children whose return links still name the previous
   // parent. Prove each edge in either parent's child list, then follow the
-  // proven current branch. Bounds cover both alternates of a 256-deep shell.
-  for (let index = 0; index < pending.length && seen.size < 512; index++) {
+  // proven current branch. Cache sibling proofs so shared ancestors are read
+  // once, without visiting message descendants or imposing a shell depth.
+  const owns=(parent,child)=>{
+    let scan=children.get(parent);
+    if(!scan){scan={next:parent.child,seen:new Set()};children.set(parent,scan);}
+    while(!scan.seen.has(child)&&scan.next&&!scan.seen.has(scan.next)){
+      const candidate=scan.next;scan.seen.add(candidate);scan.next=candidate.sibling;
+    }
+    return scan.seen.has(child);
+  };
+  for (let index = 0; index < pending.length; index++) {
     const entry = pending[index], child = entry.fiber;
-    if (!child || seen.has(child) || entry.depth > 256) continue;
     if (child === current) {
       const chain = new Set();
       for (let item = entry; item; item = item.previous) chain.add(item.fiber);
       return chain;
     }
-    seen.add(child);
     for (const parent of new Set([child.return, child.return?.alternate])) {
-      if (!parent) continue;
-      const siblings = new Set(); let candidate = parent.child;
-      while (candidate && !siblings.has(candidate)) {
-        if (++links > 2048) return null;
-        if (candidate === child) { pending.push({ fiber: parent, previous: entry, depth: entry.depth + 1 }); break; }
-        siblings.add(candidate); candidate = candidate.sibling;
-      }
+      if (!parent||queued.has(parent)||!owns(parent,child)) continue;
+      queued.add(parent);pending.push({fiber:parent,previous:entry});
     }
   }
   return null;
@@ -95,7 +102,7 @@ export function createScopeLocator(token, fibers = hostFibers()) {
   if (!owners.length) throw fail('desktop_scope_missing', 'Desktop AppScope is not mounted; reload the adapter after Desktop is ready');
   // Prefer the outermost matching provider so route/sidebar replacement does
   // not retire an app-wide connection inherited by those inner providers.
-  const depth = fiber => { const seen = new Set(); while (fiber && !seen.has(fiber) && seen.size < 256) { seen.add(fiber); fiber = fiber.return; } return seen.size; };
+  const depth = fiber => [...linkedNodes(fiber,value=>value.return)].length;
   owners.sort((a, b) => depth(a) - depth(b));
   const node = [...nodes][0];
   return () => {
@@ -124,18 +131,15 @@ export function localConnection() {
   desktopDocument();
   const fibers = hostFibers();
   const nodes = new Set(), matches = new Map();
-  let metadataEntries = 0, localReads = 0;
   for (const fiber of fibers) {
     const chain = fiber.memoizedProps?.value;
     if (!(chain instanceof Map)) continue;
     for (const node of chain.values()) {
       if (!node?.token || chain.get(node.token.id) !== node || !(node.familyBindings instanceof Map) || nodes.has(node)) continue;
       nodes.add(node);
-      if (nodes.size > 256 || (metadataEntries += node.familyBindings.size) > 32768) throw fail('desktop_scope_drift', 'Desktop scope exceeds the discovery limit');
       const bound = [];
       for (const [family, bindings] of node.familyBindings) {
         if (family?.scope !== node.token || typeof family.read !== 'function' || !(bindings instanceof Map) || !bindings.has('local')) continue;
-        if (++localReads > 512) throw fail('desktop_scope_drift', 'Desktop local bindings exceed the discovery limit');
         // read is called only on a family with an existing local binding.
         const value = family.read(node, chain, 'local');
         bound.push({ family, value });

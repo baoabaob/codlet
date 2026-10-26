@@ -90,6 +90,7 @@ fn verify_signed_archive(app: &Path, zip: &Path, mode: package::NodeRuntimeMode)
         bytes += n as u64;
     }
     let candidate = source::Candidate {
+        installer: None,
         public: RuntimeUpdateCandidate {
             online_only: false,
             id: "0".repeat(64),

@@ -1,5 +1,12 @@
 // Navigation registration does not need React, styles, or a UI owner. Acquire
 // those only while the native adapter actually exposes this page's mount.
+function pageUI(base,lease){
+  let glyph;try{glyph=JSON.parse(lease.dataset.codletNativeDownload??'null');}catch{}
+  const viewBox=typeof glyph?.viewBox==='string'?glyph.viewBox.trim().split(/\s+/).map(Number):null;
+  if(viewBox?.length!==4||viewBox.some(value=>!Number.isFinite(value))||!Array.isArray(glyph?.paths)||!glyph.paths.length||glyph.paths.some(value=>typeof value!=='string'||!/^[MmLlHhVvCcSsQqTtAaZz0-9eE+.,\s-]+$/.test(value)))return base;
+  const Download=props=>base.React.createElement('svg',{width:'1em',height:'1em',viewBox:glyph.viewBox,fill:'none',...props},...glyph.paths.map((d,index)=>base.React.createElement('path',{key:index,d,fill:'currentColor'})));
+  return Object.freeze({...base,icons:Object.freeze({...base.icons,Download})});
+}
 export default async function registerPage(context, {label, icon = 'Cube', toolbar = false, render, onActivate, onDeactivate}, acquireUI, onDispose = null, onCreate = null) {
   if (typeof render !== 'function') throw new Error('A page render function is required');
   if (typeof toolbar !== 'boolean') throw new Error('Toolbar must be a boolean');
@@ -43,7 +50,7 @@ export default async function registerPage(context, {label, icon = 'Cube', toolb
         const errors=detach();if(errors.length){errors.push(...clean([stop]));fail(errors);}
         if(!live)return;host=next;
         if(host){
-          const ui=acquireUI();view={ui,mounted:null};
+          const ui=pageUI(acquireUI(),lease);view={ui,mounted:null};
           const node=ui.container(),toolbarNode=toolbar?ui.container():null,overlay=ui.container();
           Object.assign(view,{node,toolbar:toolbarNode,overlay});
           const scope={contains:target=>node.contains(target)||!!toolbarNode?.contains(target)||overlay.contains(target)};
@@ -67,6 +74,11 @@ export default async function registerPage(context, {label, icon = 'Cube', toolb
       try{reconcile();}catch(error){const errors=[error,...clean([stop])];try{fail(errors);}catch(failure){context.reportDiagnostic?.({code:'ui_cleanup_failed',message:String(failure?.message??failure).slice(0,3000)});}}
     });
     observer.observe(document.documentElement,{childList:true,subtree:true});reconcile();
-    return Object.freeze({path:reply.path,dispose:stop});
+    return Object.freeze({path:reply.path,dispose:stop,setBadge(label){
+      assertLive();
+      if(label!==null&&(typeof label!=='string'||!label.trim()||label.length>160))throw new Error('A page badge requires a short accessible label or null');
+      if(label===null)delete lease.dataset.codletPageBadge;
+      else lease.dataset.codletPageBadge=label;
+    }});
   }catch(error){fail([error,...clean([stop])]);}
 }

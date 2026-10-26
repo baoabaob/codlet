@@ -47,10 +47,18 @@ pub(super) struct Candidate {
     pub profile: RuntimePayloadProfile,
     pub url: Url,
     pub origins: BTreeSet<String>,
+    pub installer: Option<InstallerAsset>,
+}
+#[derive(Debug, Clone)]
+pub(super) struct InstallerAsset {
+    pub url: Url,
+    pub bytes: u64,
+    pub sha256: String,
 }
 pub(super) struct UpdateClient {
     client: reqwest::Client,
     pub(super) resident_sha256: Option<String>,
+    pub(super) installer_owned: bool,
     #[cfg(test)]
     pub fixture_origin: Option<Url>,
 }
@@ -67,6 +75,7 @@ impl UpdateClient {
         Ok(Self {
             client,
             resident_sha256: None,
+            installer_owned: false,
             #[cfg(test)]
             fixture_origin: None,
         })
@@ -233,13 +242,48 @@ impl UpdateClient {
                     "https://api.github.com/repos/{}/{}/releases/assets/{}",
                     repo.owner, repo.name, asset.id
                 ))?;
-                Ok(Some(candidate(
+                let mut selected = candidate(
                     manifest.version,
                     artifact,
                     url,
                     origins,
                     Some(release.html_url),
-                )?))
+                )?;
+                let installer_name =
+                    format!("Codlet-{}-windows-x64-setup.exe", selected.public.version);
+                let installers = release
+                    .assets
+                    .iter()
+                    .filter(|asset| asset.name == installer_name)
+                    .collect::<Vec<_>>();
+                if self.installer_owned && installers.len() == 1 {
+                    let installer = installers[0];
+                    check_github_asset(installer)?;
+                    if let Some(sha256) = installer
+                        .digest
+                        .as_deref()
+                        .and_then(|value| value.strip_prefix("sha256:"))
+                        .filter(|value| package::valid_sha(value))
+                    {
+                        let url = https_url(&format!(
+                            "https://api.github.com/repos/{}/{}/releases/assets/{}",
+                            repo.owner, repo.name, installer.id
+                        ))?;
+                        selected.public.id = format!(
+                            "{:x}",
+                            Sha256::digest(format!(
+                                "{}:{}:{}:{}",
+                                selected.public.id, url, installer.size, sha256
+                            ))
+                        );
+                        selected.installer = Some(InstallerAsset {
+                            url,
+                            bytes: installer.size,
+                            sha256: sha256.into(),
+                        });
+                    }
+                }
+                Ok(Some(selected))
             }
         }
     }
@@ -499,7 +543,64 @@ impl UpdateClient {
             ));
         }
         temporary.as_file().sync_all().map_err(io_error)?;
-        package::stage_archive(temporary.path(), selected, &root)
+        let installer = if let Some(installer) = &selected.installer {
+            let mut setup = tempfile::NamedTempFile::new_in(&root).map_err(io_error)?;
+            let mut response = self
+                .response(
+                    installer.url.clone(),
+                    &selected.origins,
+                    true,
+                    installer.bytes,
+                )
+                .await?;
+            let mut bytes = 0u64;
+            let mut digest = Sha256::new();
+            while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+                bytes = bytes.checked_add(chunk.len() as u64).ok_or_else(|| {
+                    error("runtime_update_size_limit", "Installer size overflow.")
+                })?;
+                if bytes > installer.bytes || bytes > MAX_DOWNLOAD_BYTES {
+                    return Err(error(
+                        "runtime_update_size_limit",
+                        "Installer exceeded its release size.",
+                    ));
+                }
+                setup.write_all(&chunk).map_err(io_error)?;
+                digest.update(&chunk);
+                progress(selected.public.size + bytes);
+            }
+            if bytes != installer.bytes || format!("{:x}", digest.finalize()) != installer.sha256 {
+                return Err(error(
+                    "runtime_update_digest_mismatch",
+                    "Installer differs from its release digest.",
+                ));
+            }
+            setup.as_file().sync_all().map_err(io_error)?;
+            let destination = root.join(format!("runtime-installer-{}.exe", installer.sha256));
+            if destination.exists() {
+                let present = package::file_record(&destination, "")?;
+                if present.bytes != bytes || present.sha256 != installer.sha256 {
+                    return Err(error(
+                        "runtime_update_digest_mismatch",
+                        "Cached installer identity changed.",
+                    ));
+                }
+            } else {
+                setup
+                    .persist(&destination)
+                    .map_err(|failure| io_error(failure.error))?;
+            }
+            Some(package::StagedInstaller {
+                path: destination,
+                bytes,
+                sha256: installer.sha256.clone(),
+            })
+        } else {
+            None
+        };
+        let mut staged = package::stage_archive(temporary.path(), selected, &root)?;
+        staged.installer = installer;
+        Ok(staged)
     }
     async fn response(
         &self,
@@ -761,6 +862,7 @@ fn candidate(
         profile: artifact.profile,
         url,
         origins,
+        installer: None,
     })
 }
 

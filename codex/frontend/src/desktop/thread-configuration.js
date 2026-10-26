@@ -102,7 +102,7 @@ export function createThreadConfiguration({ check, owner, capability, client, bu
         if (source !== 'thread.start') text(params.threadId, 'threadId');
         const draft = Object.freeze({ source, threadId: source === 'thread.start' ? null : params.threadId, cwd: optional(params.cwd),
             model: optional(params.model) ?? (source === 'turn.start' ? optional(params.collaborationMode?.settings?.model) : null), provider: optional(params.modelProvider) });
-        const deadline = Math.min(Date.now() + 5000, Number.isFinite(message.expiresAtMs) ? message.expiresAtMs : Infinity);
+        const deadline = Number.isFinite(message.expiresAtMs) ? message.expiresAtMs : Infinity;
         let chosen = null;
         for (const hook of item.hooks) {
             assertReady();
@@ -155,7 +155,6 @@ export function createThreadConfiguration({ check, owner, capability, client, bu
             if (collaborationMode != null && (typeof collaborationMode !== 'object' || Array.isArray(collaborationMode) || !collaborationMode.settings || typeof collaborationMode.settings !== 'object' || Array.isArray(collaborationMode.settings))) throw fail('desktop_configuration_drift', 'Native collaboration mode changed');
             const next = { ...message, request: { ...message.request, params: { ...params, model: chosen.model,
                 ...(collaborationMode == null ? {} : { collaborationMode: { ...collaborationMode, settings: { ...collaborationMode.settings, model: chosen.model } } }) } } };
-            if (JSON.stringify(next).length > 524288) throw fail('configuration_request_too_large', 'Native turn request exceeds the adapter limit');
             item.chosen = chosen.hook;
             return next;
         }
@@ -167,7 +166,6 @@ export function createThreadConfiguration({ check, owner, capability, client, bu
             ...(chosen.modelProvider === undefined ? {} : { modelProvider: chosen.modelProvider }),
             ...(chosen.model === undefined ? {} : { model: chosen.model }),
             ...(providerKey ? { config: { ...config, [providerKey]: chosen.provider } } : {}) } } };
-        if (JSON.stringify(next).length > 524288) throw fail('configuration_request_too_large', 'Native task request exceeds the adapter limit');
         item.chosen = chosen.hook;
         return next;
     }
@@ -177,7 +175,6 @@ export function createThreadConfiguration({ check, owner, capability, client, bu
         const source = message.request.method.replace('/', '.');
         const selected = ordered().filter(hook => hook.enabled && hook.appliesAt.includes(source));
         if (!alive || !selected.length) return send(message);
-        if (pending.size >= 16) { client.onError(message.request.id, fail('configuration_limit', 'Too many pending task configurations')); return; }
         const item = { hooks: selected, controller: new AbortController(), chosen: null };
         pending.add(item);
         run(message, item).then(next => {

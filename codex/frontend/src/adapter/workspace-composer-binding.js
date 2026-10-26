@@ -30,7 +30,7 @@ const cancelled = () => workspaceError('invocation_cancelled', 'Composer operati
 // State/cancellation boundary only. A reviewed Native driver owns the actual
 // scopes, editor, submit binding, draft checkpoint and asynchronous release.
 // Supplying this controller is not evidence that a Native profile supports it.
-export function createComposerBinding({ driver, initialIdentity, onState, check, report, metrics, timeoutMs = 10000, released = () => {} }) {
+export function createComposerBinding({ driver, initialIdentity, onState, check, report, metrics, timeoutMs = Infinity, released = () => {} }) {
   for (const method of ['bind', 'activate', 'block', 'readBinding', 'focus', 'isComposing', 'close'])
     if (typeof driver?.[method] !== 'function') throw workspaceError('workspace_composer_unsupported', 'Native composer driver is incomplete');
   let requested = identity(initialIdentity), revision = 0, phase, bindingOp, activationOp, active = false, retired = false, closing, closeController, closeDone = false;
@@ -70,7 +70,7 @@ export function createComposerBinding({ driver, initialIdentity, onState, check,
       if (current && !retired && op.revision === revision) { block(); state('inactive', cancelled()); }
     };
     if (signal) { signal.addEventListener('abort', abort, { once: true }); op.unsubscribe = () => signal.removeEventListener('abort', abort); }
-    op.timer = setTimeout(() => {
+    if (Number.isFinite(timeoutMs)) op.timer = setTimeout(() => {
       if (op.done) return;
       finish(op, workspaceError(`workspace_composer_${kind}_timeout`, 'Native composer did not complete ' + kind));
       if (!retired && op.revision === revision) { block(); state('error', workspaceError(`workspace_composer_${kind}_timeout`, 'Native composer timed out')); }
@@ -151,7 +151,7 @@ export function createComposerBinding({ driver, initialIdentity, onState, check,
       const abort = () => aborted.reject(closeController.signal.reason ?? cancelled());
       closeController.signal.addEventListener('abort', abort, { once: true });
       if (closeController.signal.aborted) abort();
-      const timer = setTimeout(() => closeController.abort(workspaceError('workspace_composer_cleanup_incomplete', 'Native composer cleanup did not finish')), timeoutMs);
+      const timer = Number.isFinite(timeoutMs) ? setTimeout(() => closeController.abort(workspaceError('workspace_composer_cleanup_incomplete', 'Native composer cleanup did not finish')), timeoutMs) : undefined;
       Promise.race([Promise.resolve().then(() => driver.close({ signal: closeController.signal })), aborted.promise]).then(() => {
         closeController.signal.throwIfAborted();
         if (metrics) metrics.end('composer.close.complete', started, { viewId, threadAlias: revision });

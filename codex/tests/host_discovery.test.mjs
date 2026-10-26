@@ -111,9 +111,9 @@ test('a stale DOM attachment that returns to the current root cannot override it
   assert.equal(vm.runInContext('hostFibers().size',f.context),5);
   const connection=await f.probe();assert.equal(connection.manager,f.native.manager);connection.check();
 });
-test('unknown large trees, duplicate native landmarks and detached shell ancestry remain fail closed',async()=>{
+test('large startup trees retain their actual owner; duplicate landmarks and detached ancestry reject',async()=>{
   const unknown=largeShell();unknown.shell.rails.length=0;
-  await assert.rejects(unknown.probe(),{code:'desktop_host_drift'});assert.equal(unknown.imports.length,0);
+  assert.equal((await unknown.probe()).manager,unknown.native.manager);
   const duplicate=largeShell();duplicate.shell.rails.push({});
   await assert.rejects(duplicate.probe(),{code:'desktop_host_drift'});assert.equal(duplicate.imports.length,0);
   const detached=largeShell();detached.shell.navFiber.return=null;
@@ -134,13 +134,13 @@ test('partial, remote, unbound and ambiguous connections cannot acquire a transp
   const f=fixture();f.native.urls.push({href:'app://-/assets/app-shared-second.js'});
   await assert.rejects(f.probe(),{code:'desktop_asset_ambiguous'});assert.equal(f.imports.length,0);
 });
-test('cached task families do not consume local service reads; eligible reads remain bounded',async()=>{
+test('cached task families are not read and additional local bindings do not hide the service owner',async()=>{
   const f=fixture();f.context.fixtureNative=f.native;
   vm.runInContext(`for(let i=0;i<3000;i++)fixtureNative.node.familyBindings.set({scope:fixtureNative.token,read(){throw Error('must not read task bindings')}},new Map([['task-'+i,{}]]));`,f.context);
   const connection=await f.probe();assert.equal(connection.manager,f.native.manager);connection.check();
   const saturated=fixture();saturated.context.fixtureNative=saturated.native;
   vm.runInContext(`for(let i=0;i<600;i++)fixtureNative.node.familyBindings.set({scope:fixtureNative.token,read:()=>({})},new Map([['local',{}]]));`,saturated.context);
-  await assert.rejects(saturated.probe(),{code:'desktop_scope_drift'});assert.equal(saturated.imports.length,0);
+  assert.equal((await saturated.probe()).manager,saturated.native.manager);
 });
 test('missing manager methods and ambiguous or immutable transports do not install an interceptor',async()=>{
   for(const mutate of [f=>{f.native.manager.sendRequest=undefined;},f=>{f.module.decoy={...f.native.postbox};},f=>{Object.defineProperty(f.native.postbox,'postMessage',{writable:false});}]){
@@ -155,6 +155,12 @@ const client${suffix}=cjs(e=>{e.createRoot=()=>{throw Error('must never execute 
 export{wrap${suffix} as r${suffix},dom${suffix} as d${suffix},client${suffix} as c${suffix}};`;
 test('React resolution follows parsed export relationships across arbitrary renaming without execution',()=>{
   for(const suffix of ['a','future_123'])assert.deepEqual(reactFactories(factorySource(suffix)),{react:'r'+suffix,dom:'d'+suffix,client:'c'+suffix});
+});
+test('React factory aliases follow their actual chain beyond eight wrappers',()=>{
+  const aliases=Array.from({length:20},(_,i)=>`const layer${i}=cjs((e,m)=>{m.exports=${i?'layer'+(i-1):'wrapa'}()});`).join('');
+  const source=factorySource('a').replace('export{wrapa as ra,',aliases+'export{layer19 as ra,');
+  assert.deepEqual(reactFactories(source),{react:'ra',dom:'da',client:'ca'});
+  assert.throws(()=>reactFactories(source.replace('m.exports=wrapa()','m.exports=layer19()')),{code:'ui_react_drift'});
 });
 test('React resolution rejects missing, duplicate and misleading factory contracts',()=>{
   assert.throws(()=>reactFactories(factorySource('a').replace('e.useState=()=>{};','')),{code:'ui_react_drift'});

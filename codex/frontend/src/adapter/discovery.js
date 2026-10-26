@@ -1,14 +1,31 @@
-import { component, componentSource, desktopDocument, loadedAsset, uniqueExport } from '../host-discovery.js';
+import { component, componentSource, desktopDocument, loadedAsset, uniqueExport, linkedNodes } from '../host-discovery.js';
 import { reactFactories } from './react-factories.js';
+import {parseExpressionAt} from 'acorn';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 export const COMPOSER_PROFILE = Object.freeze({ rootAttribute: 'data-codex-composer-root', scrollAreaAttribute: 'data-composer-utility-bar-scroll-area' });
+export function notificationBadge(exports) {
+  const matches=[...new Set(exports)].filter(value=>component(value)&&['badgeEnabled','border-surface-secondary absolute right-0','rounded-full'].every(marker=>componentSource(value).includes(marker)));
+  return matches.length===1?matches[0]:undefined;
+}
+export function nativeDownloadGlyph(exports) {
+  // This is the glyph used by Native's appHeader.installUpdate control. Resolve
+  // its exported SVG data so isolated pages can reuse it without Native objects.
+  const matches=[...new Set(exports)].filter(value=>componentSource(value).includes('M2.66831 12.6664V12.5004'));
+  if(matches.length!==1)return undefined;
+  try{
+    const root=parseExpressionAt(componentSource(matches[0]),0,{ecmaVersion:'latest'}),pending=[root],paths=[],boxes=[];
+    const literal=value=>value?.type==='Literal'?value.value:value?.type==='TemplateLiteral'&&!value.expressions.length?value.quasis[0].value.cooked:undefined;
+    while(pending.length){const node=pending.pop();if(!node||typeof node!=='object')continue;
+      if(node.type==='Property'&&!node.computed){const key=node.key.name??literal(node.key),value=literal(node.value);if(key==='d'&&typeof value==='string')paths.push(value);if(key==='viewBox'&&typeof value==='string')boxes.push(value);}
+      for(const value of Object.values(node)){if(Array.isArray(value))pending.push(...value);else if(value&&typeof value==='object')pending.push(value);}
+    }
+    return boxes.length===1&&paths.length?{viewBox:boxes[0],paths}:undefined;
+  }catch{return undefined;}
+}
 function ancestors(element) {
   const key = element && Object.keys(element).find(key => key.startsWith('__reactFiber$'));
-  let fiber = key && element[key];
-  const result = [];
-  for (let i = 0; fiber && i < 32; i++, fiber = fiber.return) result.push(fiber);
-  return result;
+  return [...linkedNodes(key&&element[key],fiber=>fiber.return)];
 }
 function tooltipContentProp(source) {
   if (source.includes('tooltipContent') && source.includes('delayDuration')) return 'tooltipContent';
@@ -54,15 +71,9 @@ export function newTaskHook(initial) {
   return hooks.length === 1 ? hooks[0] : undefined;
 }
 export async function discoverNative({ load = url => import(url), read = async url => {
-  const response = await fetch(url, { signal: AbortSignal.timeout(10000), credentials: 'omit' });
+  const response = await fetch(url, { credentials: 'omit' });
   if (!response.ok || response.url !== url) throw fail('ui_asset_unavailable', 'Unable to read the loaded native shared module');
-  const reader = response.body.getReader(), parts = []; let size = 0;
-  try {
-    for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength;
-      if (size > 16 * 1024 * 1024) throw fail('ui_asset_unavailable', 'Native shared module exceeds the source limit'); parts.push(value); }
-  } finally { await reader.cancel(); }
-  const bytes = new Uint8Array(size); let offset = 0; for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
-  return new TextDecoder().decode(bytes);
+  return response.text();
 } } = {}) {
   desktopDocument();
   const sharedUrl = loadedAsset('shared'), initialUrl = loadedAsset('initial');
@@ -81,7 +92,8 @@ export async function discoverNative({ load = url => import(url), read = async u
     throw fail('ui_react_drift', 'Native React and DOM contracts do not match');
   const appExports = modules.slice(1).flatMap(module => Object.values(module));
   const header = uniqueExport(appExports, value => value && component(value.Header) && component(value.HeaderToolbar) && component(value.Root), 'page header', true);
-  return { React, DOM, Client, ...rail, RailTooltip: adaptRailTooltip(React, rail.RailTooltip), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
+  return { React, DOM, Client, ...rail, NotificationBadge: notificationBadge(appExports), RailTooltip: adaptRailTooltip(React, rail.RailTooltip), Header: header?.Header, HeaderToolbar: header?.HeaderToolbar,
+    nativeDownloadGlyph:nativeDownloadGlyph(Object.values(shared)),
     composerActionProfile: COMPOSER_PROFILE, toolbarInset: 'page', newTaskOptions: { codexAppMode: 'codex' },
     useStartNewConversation: newTaskHook(appExports), compatibility: 'structural' };
 }

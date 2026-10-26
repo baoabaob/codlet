@@ -78,7 +78,7 @@ export function createShortcuts({ document, load, surface, activity, check, repo
       ...[...records].map(record => native.React.createElement(Components.Command, { key: record.nativeId, record }))))));
   }
   function settingsInput() {
-    const matches = [...document.querySelectorAll('#root input')].filter(input => !input.closest(OWNED + ',[data-app-shell-active-page="false"]') && ancestry(input, 24).some(fiber => componentSource(fiber.type).includes('settings.keyboardShortcuts.search.placeholder')));
+    const matches = [...document.querySelectorAll('#root input')].filter(input => !input.closest(OWNED + ',[data-app-shell-active-page="false"]') && ancestry(input).some(fiber => componentSource(fiber.type).includes('settings.keyboardShortcuts.search.placeholder')));
     if (matches.length > 1) throw workspaceError('workspace_shortcuts_unavailable', 'Shortcut settings search ownership is ambiguous');
     return matches[0] ?? null;
   }

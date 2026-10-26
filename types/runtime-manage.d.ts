@@ -66,6 +66,8 @@ export interface RuntimePreferences {
   checkPluginUpdatesOnStartup: boolean;
   /** Controls whether literal plugin labels are shown in the management list. */
   showPluginTags: boolean;
+  /** Defaults to true. False remembers the native update prompt's opt-out. */
+  warnBeforeOfficialUpdate?: boolean;
   /** Null inherits the trusted release channel interval; otherwise 300–86400 seconds. */
   updateCheckIntervalSeconds: number | null;
   /** Null inherits the existing launch default. */
@@ -75,7 +77,7 @@ export interface RuntimeSettingsSnapshot {
   schema: 1;
   revision: number;
   values: RuntimePreferences;
-  effective: { automaticUpdateChecks: boolean; checkPluginUpdatesOnStartup: boolean; showPluginTags: boolean; updateCheckIntervalSeconds: number; localSourceAutoReload: boolean };
+  effective: { automaticUpdateChecks: boolean; checkPluginUpdatesOnStartup: boolean; showPluginTags: boolean; warnBeforeOfficialUpdate?: boolean; updateCheckIntervalSeconds: number; localSourceAutoReload: boolean };
   defaults: { updateCheckIntervalSeconds: number; localSourceAutoReload: boolean };
   availability: { updateChecks: boolean; pluginUpdateChecks: boolean; localSourceWatch: boolean };
 }
@@ -127,6 +129,9 @@ export interface OfficialUpdateStatus {
   isUpdateReady: boolean;
   combinedPhase: 'idle'|'downloading'|'preparing'|'installing'|'failed';
   error: string|null;
+  target: {id: string; version: string}|null;
+  /** Exact published verification for this Core candidate and the staged Native package. */
+  compatibleCandidateId: string|null;
 }
 export interface PluginInstallBatch {
   id: number; running: boolean;
@@ -339,7 +344,7 @@ export interface RuntimeManageMethods {
   downloadRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
   installRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
   /** One explicit combined transaction; a lost reply is resolved through versionStatus, never replayed. */
-  installCombinedUpdate: { params: {candidateId: string}; result: OfficialUpdateStatus };
+  installCombinedUpdate: { params: {candidateId: string; targetId?: string}; result: OfficialUpdateStatus };
   folderSelection: { params: { selectionId: string }; result: FolderSelection };
   githubReleases: { params: { url: string }; result: GitHubJob };
   githubDiscover: { params: { query?: string; page?: number; refresh?: boolean }; result: GitHubJob };

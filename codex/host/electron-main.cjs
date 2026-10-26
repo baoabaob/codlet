@@ -3,6 +3,7 @@ const { connectPlaintextSource } = require('./vendor/plaintext-source-client.cjs
 const { installDesktopPlaintext } = require('./electron-plaintext.cjs');
 const { installBackendSpawn } = require('./backend-spawn.cjs');
 const { recordSourceDiagnostic } = require('./source-diagnostics.cjs');
+const { createOfficialUpdates } = require('./official-updates.cjs');
 const fail = code => Object.assign(new Error(code), { code });
 function localBackends(context, ownsProcess, dependencies = {}) {
   const profiles = dependencies.profiles ?? require('./electron-plaintext.cjs').reviewedSourceProfiles;
@@ -96,8 +97,11 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   try { attachHooks();
   } catch (error) { desktop?.close(); backend?.close(); if(!shared)source.close(); throw error; }
   const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason } });
+  const officialUpdates = createOfficialUpdates(electron, context?.modules);
   return Object.freeze({
     handoffVersion: 1,
+    officialUpdateTarget: () => officialUpdates.target(),
+    installOfficialUpdate: target => officialUpdates.install(target),
     snapshot() {
       if(desktop.canSuspend?.()===false)throw fail('core_update_source_busy');
       const state=context?.resources.get('backendState');
@@ -204,12 +208,12 @@ function installElectronTraffic(electron, configuration, context, dependencies =
       }catch(error){diagnose(false,error);throw error;}
     },
     inspect: status,
-    async close() { if(closed)return;closed=true;desktop.close(); await backend.close(); if(!shared)source.close(); },
+    async close() { if(closed)return;closed=true;officialUpdates.close();desktop.close(); await backend.close(); if(!shared)source.close(); },
   });
 }
 function validateSnapshot(value) {return !!value&&value.schema===1&&(value.recoveryReason===null||typeof value.recoveryReason==='string')
     &&(value.activatedSources===undefined||Array.isArray(value.activatedSources)&&value.activatedSources.length<=2
       &&new Set(value.activatedSources).size===value.activatedSources.length&&value.activatedSources.every(id=>['desktop-main-http','owned-backend-provider'].includes(id)))
-  &&Array.isArray(value.backends)&&value.backends.length<=64&&Number.isSafeInteger(value.taskRoutes)&&value.taskRoutes>=0
+  &&Array.isArray(value.backends)&&Number.isSafeInteger(value.taskRoutes)&&value.taskRoutes>=0
   &&value.backends.every(record=>Number.isSafeInteger(record.pid)&&record.pid>0&&Array.isArray(record.routes)&&record.routes.every(route=>typeof route==='string'&&route.length<2048));}
 module.exports = { handoffVersion:1, installElectronTraffic, validateClientSource, validateSnapshot, recoverLocalBackends };

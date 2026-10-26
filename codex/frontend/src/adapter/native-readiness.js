@@ -1,6 +1,6 @@
 const pendingCodes=new Set(['workspace_host_pending','ui_host_pending','desktop_host_pending','desktop_connection_not_ready','desktop_scope_missing']);
 export function nativeInitializationPending(error) {
-  return pendingCodes.has(error?.code)||error?.code==='desktop_contract_drift'&&/required \(found 0\)$/.test(error.message??'');
+  return pendingCodes.has(error?.code);
 }
 
 export function memoizeNativeLoad(load) {
@@ -8,7 +8,7 @@ export function memoizeNativeLoad(load) {
   return ()=>{
     if(!pending){
       const result=Promise.resolve().then(load).catch(error=>{
-        if(pending===result&&(nativeInitializationPending(error)||error?.name==='AbortError'))pending=undefined;
+        if(pending===result)pending=undefined;
         throw error;
       });
       pending=result;
@@ -23,18 +23,23 @@ const delay=(milliseconds,signal)=>new Promise((resolve,reject)=>{
   signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
 });
 
-// Cold Native exports are initialized lazily. Retry only that pending state,
-// with bounded backoff; contract ambiguity and other failures remain immediate.
-export async function awaitNativeInitialization(load,{signal,timeout=15000,pause=delay,clock=()=>Date.now()}={}) {
+// Native owns initialization timing. Provider lifetime or a caller's explicit
+// deadline cancels pending work; contract ambiguity remains an immediate error.
+export async function awaitNativeInitialization(load,{signal,timeout=Infinity,pause=delay,clock=()=>Date.now()}={}) {
   const started=clock();let attempt=0;
-  for(;;){
-    signal?.throwIfAborted();
-    try{const value=await load();signal?.throwIfAborted();return value;}
-    catch(error){
+  const run=async()=>{for(;;){
       signal?.throwIfAborted();
-      const remaining=timeout-(clock()-started);
-      if(!nativeInitializationPending(error)||remaining<=0)throw error;
-      await pause(Math.min(remaining,Math.min(1000,50*2**Math.min(attempt++,5))),signal);
-    }
-  }
+      try{const value=await load();signal?.throwIfAborted();return value;}
+      catch(error){
+        signal?.throwIfAborted();
+        const remaining=timeout-(clock()-started);
+        if(!nativeInitializationPending(error)||remaining<=0)throw error;
+        await pause(Math.min(remaining,Math.min(1000,50*2**Math.min(attempt++,5))),signal);
+      }
+    }};
+  if(!signal)return run();
+  let abort;
+  const retired=new Promise((_,reject)=>{abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();});
+  try{return await Promise.race([run(),retired]);}
+  finally{signal.removeEventListener('abort',abort);}
 }

@@ -2,22 +2,22 @@
   "schema": 3,
   "kind": "codlet-client-compatibility",
   "repository": "baoabaob/codlet",
-  "revision": 2026102501,
+  "revision": 2026102601,
   "records": [
     {
       "platform": "windows-x86_64",
       "clientVersion": "26.1021.3705.0",
-      "minimumCoreVersion": "1.0.0-rc.17",
+      "minimumCoreVersion": "1.0.0-rc.18",
       "requiredAdapters": {
-        "codex.desktop.adapter": "0.2.19",
-        "codex.ui.adapter": "0.1.15"
+        "codex.desktop.adapter": "0.2.20",
+        "codex.ui.adapter": "0.1.16"
       },
       "verifiedWith": [
         {
-          "coreVersion": "1.0.0-rc.17",
+          "coreVersion": "1.0.0-rc.18",
           "adapters": {
-            "codex.desktop.adapter": "0.2.19",
-            "codex.ui.adapter": "0.1.15"
+            "codex.desktop.adapter": "0.2.20",
+            "codex.ui.adapter": "0.1.16"
           }
         }
       ]

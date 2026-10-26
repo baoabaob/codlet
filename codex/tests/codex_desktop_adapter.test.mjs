@@ -123,6 +123,32 @@ test('ordered pre-submit rewrite/context preserves identities, attachment and De
     f.dispose();
 });
 
+test('Native input size and concurrent requests do not consume plugin output limits', async () => {
+    const f=fixture(),release=[];
+    f.api.registerPreSubmit(f.owner('context-plugin').ctx,{id:'context'},()=>new Promise(resolve=>release.push(resolve)));
+    const original=Array.from({length:24},(_,index)=>f.submit(index===0?'native '.repeat(100000):'small'));
+    await tick();assert.equal(release.length,24);assert.equal(f.failures.length,0);
+    for(const resolve of release)resolve({context:[{text:'small plugin addition'}]});
+    await tick();assert.equal(f.sent.length,24);assert.equal(f.failures.length,0);
+    assert.equal(f.sent[0].request.params.input[0].text,original[0].request.params.input[0].text);
+    f.dispose();
+});
+
+test('large Native histories and approval queues preserve every current record',async()=>{
+    const f=fixture(1,true);
+    f.thread.turns=Array.from({length:5000},(_,index)=>({turnId:'turn-'+index,status:index===4999?'inProgress':'completed'}));
+    let selection=await f.api.read('selection.get');
+    assert.equal(selection.activeTurnKnown,true);assert.equal(selection.activeTurnId,'turn-4999');
+    f.thread.turnHistory={kind:'canonical',history:{islands:[{entries:f.thread.turns.map(turn=>({value:turn.turnId}))}],entitiesByKey:Object.fromEntries(f.thread.turns.map(turn=>[turn.turnId,turn]))}};
+    selection=await f.api.read('selection.get');assert.equal(selection.activeTurnId,'turn-4999');
+    f.thread.requests=Array.from({length:300},(_,index)=>({id:index,method:'item/commandExecution/requestApproval',params:{threadId:'thread-a',turnId:'turn-4999',itemId:'item-'+index,availableDecisions:['accept','cancel']}}));
+    const requests=(await f.api.read('approvals.list',{threadId:'thread-a'})).requests;
+    assert.equal(requests.length,300);assert.equal(new Set(requests.map(value=>value.token)).size,300);
+    for(let index=0;index<300;index++)f.callbacks.get('notification')({method:'serverRequest/resolved',params:{threadId:'thread-a',requestId:index}});
+    assert.equal((await f.api.read('approvals.list',{threadId:'thread-a'})).requests.length,0,'resolved requests must not reappear while Native removes them');
+    f.dispose();
+});
+
 test('failed, timed out and retired interceptors block the original UI request and identify the source', async () => {
     for (const mode of ['failure', 'timeout', 'retirement', 'adapter-retirement', 'request-retirement']) {
         const f = fixture(), owner = f.owner('source-plugin');

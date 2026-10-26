@@ -22,6 +22,7 @@ import { useEscCloseStack } from '@openai/apps-sdk-ui/hooks/useEscCloseStack';
 import './official.css';
 import registerPage from './page.js';
 import { releaseDocumentEvents } from './react-document-events.js';
+import { officialUpdateConfirmation } from './update-confirmation.jsx';
 
 const components = Object.freeze({ Button, ButtonLink, Input, Textarea, Switch, Checkbox, Popover, Menu, EmptyMessage, Tooltip, SegmentedControl, Select, TextLink, LoadingIndicator, Dialog });
 const icons = Object.freeze({ ArrowLeft, ArrowRotateCw, ArrowUpRight, ChevronDown, Cube, Download, ExclamationMarkCircle, ExternalLink, FolderOpen, InfoCircle, Plus, QuestionMarkCircle, Regenerate, Search, TriangleExclamationErrorWarning, X });
@@ -168,3 +169,4 @@ export default function createUI(context) {
   const focusReturn = document.activeElement;
   return Object.freeze({ api: 2, React, components, icons, PortalContainer, useEscCloseStack, createPortal, flushSync, container, removeContainer, mount, mountReact, page, signal: abort.signal, dispose });
 }
+createUI.confirmOfficialUpdate=context=>officialUpdateConfirmation(createUI(context));

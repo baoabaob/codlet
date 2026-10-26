@@ -289,6 +289,21 @@ fn acquire_lease(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, Ho
 }
 
 impl ClientSourceRuntime {
+    #[cfg(windows)]
+    pub(crate) fn official_update_target(&self) -> Result<Value, HostError> {
+        self.request(json!({"op":"officialUpdateTarget"}))
+    }
+    #[cfg(windows)]
+    pub(crate) fn install_official_update(
+        &self,
+        operation: &str,
+        target: &str,
+    ) -> Result<Value, HostError> {
+        self.operation_receipt(
+            operation,
+            Some(json!({"op":"officialUpdateInstall","operationId":operation,"targetId":target})),
+        )
+    }
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }

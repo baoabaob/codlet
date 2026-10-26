@@ -2,8 +2,8 @@ import { createCodletIcons } from '../icons.js';
 import { CLIENT_PROFILES, clientProfile } from '../../../compatibility/client-profiles.js';
 import { COMPOSER_CAPABILITY, createComposerActions, composerLease } from './composer-action.js';
 import { reviewedNavigator } from '../native-navigation.js';
-import { COMPOSER_PROFILE, discoverNative } from './discovery.js';
-import { desktopDocument, hostFibers } from '../host-discovery.js';
+import { COMPOSER_PROFILE, discoverNative, notificationBadge } from './discovery.js';
+import { desktopDocument, hostFibers, linkedNodes } from '../host-discovery.js';
 import { createWorkspace } from './workspace.js';
 
 // Reviewed mappings are the fast path. Structural discovery handles unlisted
@@ -84,8 +84,7 @@ function nativePlacement(SidebarItem, SidebarGroup) {
   for (const button of document.querySelectorAll('nav button.sidebar-item')) {
     if (button.closest('[data-codlet-native-navigation]')) continue;
     const key = Object.keys(button).find(key => key.startsWith('__reactFiber$'));
-    let fiber = key && button[key];
-    for (let depth = 0; fiber && depth < 16; depth++, fiber = fiber.return) {
+    for (const fiber of linkedNodes(key&&button[key],value=>value.return)) {
       if (fiber.type !== SidebarItem) continue;
       const anchors = SidebarGroup ? ['sidebar-tasks', 'sidebar-plugins', 'sidebar-library', 'sidebar-new-chat'] : ['sidebar-tasks', 'sidebar-plugins', 'sidebar-library'];
       const priority = anchors.indexOf(fiber.memoizedProps?.animatedIcon);
@@ -93,8 +92,7 @@ function nativePlacement(SidebarItem, SidebarGroup) {
         if (SidebarGroup) {
           // Build 11645 puts New chat inside a drag/drop wrapper. Insert beside
           // that row in the reviewed group, not inside its interactive region.
-          let group = fiber.return;
-          for (let n=0;group&&group.type!==SidebarGroup&&n<20;n++) group=group.return;
+          const group = [...linkedNodes(fiber.return,value=>value.return)].find(value=>value.type===SidebarGroup);
           const parent = group?.type===SidebarGroup ? group.child?.stateNode : null;
           if (parent?.nodeType===1 && parent.contains(button)) {
             let anchor=button;while(anchor.parentElement!==parent)anchor=anchor.parentElement;
@@ -116,8 +114,7 @@ function railPlacement(SidebarGroup) {
   // Explore and the nested sortable group. Stay outside the sortable region.
   const rail = rails[0], home = rail.querySelector('[data-sidebar-destination="builtin:home"]');
   const key = home && Object.keys(home).find(key => key.startsWith('__reactFiber$'));
-  let fiber = key && home[key];
-  for (let depth = 0; fiber && depth < 24; depth++, fiber = fiber.return) {
+  for (const fiber of linkedNodes(key&&home[key],value=>value.return)) {
     if (fiber.type !== SidebarGroup || fiber.memoizedProps?.itemSpacing !== 'rail') continue;
     const parent = fiber.child?.stateNode;
     if (parent?.nodeType !== 1 || !rail.contains(parent) || !parent.contains(home)) return null;
@@ -181,13 +178,18 @@ export function createNavigation(context, native, host, withComposer = true) {
     navRoot.render(h(React.Fragment, null, ...[...entries.values()].map(entry => {
       const onClick = () => { try { check(); if (!entry.active) { entry.previous = { ...host.navigator.location }; host.navigator.push(entry.path); } }
         catch (error) { context.reportDiagnostic?.({ code: error.code, message: error.message }); } };
-      const props = { 'aria-label': entry.label, 'data-codlet-navigation-entry': entry.owner, onClick };
+      const badge = entry.lease.dataset.codletPageBadge?.slice(0,160), label = badge ? `${entry.label}: ${badge}` : entry.label;
+      const props = { 'aria-label': label, 'data-codlet-navigation-entry': entry.owner, onClick };
+      const icon=h(icons[entry.icon], {filled:entry.active});
+      const markedIcon=!badge?icon:h('span',{'data-codlet-navigation-badge':entry.owner,'aria-hidden':true},native.NotificationBadge?
+        h(native.NotificationBadge,{color:'bg-text-warning',borderColor:'border-surface-secondary'},icon):
+        h('span',{style:{position:'relative',display:'flex'}},icon,h('span',{style:{position:'absolute',right:-2,top:-2,width:7,height:7,borderRadius:'50%',background:'var(--color-text-warning)',border:'1px solid var(--color-surface-secondary)'}})));
       return RailButton ? h(RailTooltip, { key: entry.token, cloneCustomTrigger: true, closeOnTriggerClick: true,
-        side: 'right', tooltipContent: entry.label },
+        side: 'right', tooltipContent: label },
         h(RailButton, { ...props, 'aria-current': entry.active ? 'page' : undefined,
           color: 'secondary', variant: 'ghost', pill: false, size: 'xl', iconSize: 'lg', uniform: true, selected: entry.active },
-          h(icons[entry.icon], {filled:entry.active}), h('span', { className: 'sr-only' }, entry.label))) :
-        h(SidebarItem, { ...props, key: entry.token, label: entry.label, icon: icons[entry.icon], isActive: entry.active });
+          markedIcon, h('span', { className: 'sr-only' }, label))) :
+        h(SidebarItem, { ...props, key: entry.token, label: entry.label, icon: icons[entry.icon], isActive: entry.active, unread:!!badge });
     })));
   };
   const retire = entry => {
@@ -220,6 +222,8 @@ export function createNavigation(context, native, host, withComposer = true) {
       placement.parent.insertBefore(navContainer, placement.anchor.nextSibling);
   };
   const schedule = records => {
+    if(alive&&records.some(record=>record.type==='attributes'&&[...entries.values()].some(entry=>entry.lease===record.target)))renderNav();
+    records=records.filter(record=>record.type!=='attributes');
     if (!alive || pending || records.every(record => navContainer?.contains(record.target) || record.target.closest?.('[data-codlet-official-ui]'))) return;
     // Streaming messages change the document much more often than the sidebar.
     // Inspect only the changed subtrees; a document-wide placement scan is needed
@@ -235,7 +239,7 @@ export function createNavigation(context, native, host, withComposer = true) {
     pending = true; queueMicrotask(() => { pending = false; reconcile(); });
   };
   const observer = new MutationObserver(schedule);
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, { childList: true, subtree: true, attributes:true, attributeFilter:['data-codlet-page-badge'] });
   function DraftBridge({entry}) {
     const compose=native.useStartNewConversation();
     React.useLayoutEffect(()=>{entry.compose=compose;return()=>{if(entry.compose===compose)entry.compose=null;};},[entry,compose]);
@@ -264,6 +268,7 @@ export function createNavigation(context, native, host, withComposer = true) {
     const entry = { owner: caller.pluginId, token: args.token, lease, label: args.label, icon: args.icon,
       path: '/codlet/' + encodeURIComponent(caller.pluginId), active: false, previous: null };
     entry.description = { api: 1, token: entry.token, path: entry.path };
+    if(native.nativeDownloadGlyph)lease.dataset.codletNativeDownload=JSON.stringify(native.nativeDownloadGlyph);
     // The route owns both the content and the native Header outlet. Native
     // teardown clears the outlet on navigation; a second toolbar in the page
     // body would duplicate the shell's header height and shift all content.
@@ -328,6 +333,7 @@ async function loadNative() {
   const profile = nativeProfile(), page = profile.page, names = page.exports;
   const [react, dom, client, primary, initial] = await Promise.all([import(page.react), import(page.dom), import(page.client), import(page.primary), import(page.initial ?? profile.module)]);
   const native = { React: react[names.react??'t'](), DOM: dom[names.dom??'t'](), Client: client[names.client??'t'](), SidebarItem: primary[names.sidebar], ...reviewedHeader(initial, names) };
+  native.NotificationBadge=notificationBadge(Object.values(primary));
   native.composerActionProfile = page.composerAction ?? null;
   native.SidebarGroup = names.sidebarGroup ? primary[names.sidebarGroup] : undefined;
   if(names.sidebarGroup && typeof native.SidebarGroup!=='function')throw fail('ui_build_drift','The reviewed native sidebar group changed');

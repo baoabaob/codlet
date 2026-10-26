@@ -498,6 +498,22 @@ impl ClientCompatibility {
             plugins,
         )
     }
+    pub(crate) fn verified_pair(&self, client_version: &str, core_version: &str) -> bool {
+        let state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.catalog.records.iter().any(|record| {
+            record.platform == self.0.platform
+                && record.client_version == client_version
+                && !record.legacy_record
+                && record
+                    .verified_with
+                    .iter()
+                    .any(|verification| verification.core_version == core_version)
+        })
+    }
 }
 
 struct RefreshInput {

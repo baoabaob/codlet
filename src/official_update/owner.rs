@@ -65,10 +65,11 @@ pub(crate) struct OfficialUpdateOwner {
     intent: RestartIntent,
     handoff: Option<RuntimeUpdateHandoff>,
     request: Option<RuntimeInstallRequest>,
-    install_sent: Option<Instant>,
     rehearsal: bool,
     completed: bool,
     reported_status: String,
+    warning_receipt: Option<Value>,
+    target_probe: Option<std::sync::mpsc::Receiver<Option<Value>>>,
 }
 impl OfficialUpdateOwner {
     pub fn start(
@@ -110,10 +111,11 @@ impl OfficialUpdateOwner {
             intent: Default::default(),
             handoff: None,
             request: None,
-            install_sent: None,
             rehearsal: false,
             completed: false,
             reported_status: String::new(),
+            warning_receipt: None,
+            target_probe: None,
         }
     }
     pub fn seed_sessions(&mut self, sessions: &[TargetSession]) {
@@ -203,8 +205,28 @@ impl OfficialUpdateOwner {
             return;
         }
         self.last_probe = Instant::now();
-        let sample = self.evaluate(json!({"kind":"status"}));
+        let sample = self.evaluate(json!({"kind":"status","guard":true,
+            "warnBeforeUpdate":self.manage.preferences_for_start().values.warn_before_official_update,
+            "warningReceipt":self.warning_receipt}));
         if let Ok(value) = &sample {
+            if let Some(id) = value
+                .pointer("/warningRequest/id")
+                .and_then(Value::as_str)
+                .filter(|id| id.len() <= 80 && !id.is_empty())
+            {
+                if self
+                    .warning_receipt
+                    .as_ref()
+                    .and_then(|receipt| receipt["id"].as_str())
+                    != Some(id)
+                {
+                    let saved = self.manage.suppress_official_update_warning();
+                    if let Err(error) = &saved {
+                        eprintln!("official-update: could not save warning preference: {error}");
+                    }
+                    self.warning_receipt = Some(json!({"id":id,"saved":saved.is_ok()}));
+                }
+            }
             let phase = value["phase"].as_str().unwrap_or("idle");
             {
                 let mut state = self.manage.official_updates.0.lock().unwrap();
@@ -228,6 +250,7 @@ impl OfficialUpdateOwner {
                 .status
                 .available = false;
         }
+        self.poll_target();
         if let Err(error) = self.poll_combined(management_busy) {
             self.abort(&error);
         }
@@ -235,6 +258,86 @@ impl OfficialUpdateOwner {
         if report != self.reported_status {
             eprintln!("official-update: {report}");
             self.reported_status = report;
+        }
+    }
+    fn poll_target(&mut self) {
+        let sample = self
+            .target_probe
+            .as_ref()
+            .and_then(|probe| match probe.try_recv() {
+                Ok(value) => Some(value),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            });
+        if sample.is_some() {
+            self.target_probe = None;
+        }
+        let expected = self
+            .manage
+            .official_updates
+            .0
+            .lock()
+            .unwrap()
+            .expected_target
+            .clone();
+        if let Some(value) = sample.as_ref().and_then(|value| value.as_ref())
+            && let Some(target) = expected
+            && value
+                .pointer("/installation/targetId")
+                .and_then(Value::as_str)
+                == Some(target.id.as_str())
+            && matches!(
+                value.pointer("/installation/state").and_then(Value::as_str),
+                Some("cancelled" | "failed")
+            )
+        {
+            self.abort("The official update was cancelled or did not complete.");
+        }
+        let runtime = self.manage.runtime_update_service();
+        let core = runtime.as_ref().map(RuntimeUpdateService::status);
+        let compatibility = self.manage.client_compatibility_service();
+        let mut state = self.manage.official_updates.0.lock().unwrap();
+        let ready =
+            state.status.available && state.status.is_update_ready && state.status.phase == "ready";
+        if !ready {
+            state.status.target = None;
+        } else if let Some(sample) = sample {
+            state.status.target = sample
+                .and_then(|value| {
+                    serde_json::from_value::<OfficialUpdateTarget>(value["target"].clone()).ok()
+                })
+                .filter(|target| {
+                    target.id.len() == 64
+                        && target.id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        && target.version.split('.').count() == 4
+                        && target.version.split('.').all(|part| {
+                            !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                });
+        }
+        state.status.compatible_candidate_id = state.status.target.as_ref().and_then(|target| {
+            let candidate = core.as_ref()?.candidate.as_ref()?;
+            (runtime.as_ref()?.supports_combined_install()
+                && compatibility
+                    .as_ref()?
+                    .verified_pair(&target.version, &candidate.version))
+            .then(|| candidate.id.clone())
+        });
+        drop(state);
+        if (ready || self.manage.official_updates.status().combined_phase == "installing")
+            && self.target_probe.is_none()
+            && let Some(runtime) = runtime
+        {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            if std::thread::Builder::new()
+                .name("official-update-target".into())
+                .spawn(move || {
+                    let _ = sender.send(runtime.official_update_target());
+                })
+                .is_ok()
+            {
+                self.target_probe = Some(receiver);
+            }
         }
     }
     fn poll_combined(&mut self, management_busy: bool) -> Result<(), String> {
@@ -260,6 +363,21 @@ impl OfficialUpdateOwner {
             .clone();
         if core.candidate.as_ref().map(|c| &c.id) != candidate.as_ref() {
             return Err("The Codlet update candidate changed; review the updates again.".into());
+        }
+        let expected_target = self
+            .manage
+            .official_updates
+            .0
+            .lock()
+            .unwrap()
+            .expected_target
+            .clone()
+            .ok_or("The official update target is unavailable.")?;
+        if status.combined_phase != "installing"
+            && (status.target.as_ref() != Some(&expected_target)
+                || status.compatible_candidate_id != candidate)
+        {
+            return Err("The prepared official update or its Codlet compatibility changed; review the updates again.".into());
         }
         if core.error.is_some() || core.phase == RuntimeUpdatePhase::Failed {
             return Err(core
@@ -310,7 +428,6 @@ impl OfficialUpdateOwner {
                     "Restart preservation is unavailable; the current client was retained.".into(),
                 );
             }
-            self.install_sent = Some(Instant::now());
             self.manage
                 .official_updates
                 .0
@@ -321,20 +438,13 @@ impl OfficialUpdateOwner {
             let id = self.request.as_ref().unwrap().id.clone();
             // A timeout after dispatch is uncertain. Keep the helper gated and
             // observe the real native installer; never retry the API call.
-            match self.evaluate(json!({"kind":"install","id":id})) {
+            match runtime.install_official_update(&id, &expected_target.id) {
                 Ok(value) if value["accepted"] == true => (),
                 Ok(_) => return Err("The official installer did not accept the update.".into()),
                 Err(error) => eprintln!(
                     "official-update: install response unavailable; observing without retry: {error}"
                 ),
             }
-        }
-        if self
-            .install_sent
-            .is_some_and(|at| at.elapsed() > Duration::from_secs(120))
-            && !self.intent.pending
-        {
-            return Err("The official installer did not begin installation; the current client was retained.".into());
         }
         Ok(())
     }
@@ -343,7 +453,6 @@ impl OfficialUpdateOwner {
             let _ = gate(&request, false, error);
         }
         self.handoff = None;
-        self.install_sent = None;
         self.manage.official_updates.fail(error);
     }
     /// Only the lab's explicit stdin control exposes this rehearsal. It never
@@ -390,10 +499,21 @@ impl OfficialUpdateOwner {
         }
         eprintln!("official-update: waiting for Windows to finish registering the updated package");
         let deadline = Instant::now() + Duration::from_secs(300);
+        let expected = self
+            .manage
+            .official_updates
+            .0
+            .lock()
+            .unwrap()
+            .expected_target
+            .clone();
         let mut stable = None;
         while Instant::now() < deadline {
             if let Ok(package) = find_unique_current_user_package(CODEX_PACKAGE_FAMILY)
                 && newer_package(&self.package, &package)
+                && expected
+                    .as_ref()
+                    .is_none_or(|target| target.version == package.version.to_string())
                 && resolve_package_executable(&package, Path::new(CODEX_EXECUTABLE_RELATIVE_PATH))
                     .is_ok()
             {
@@ -438,6 +558,9 @@ impl OfficialUpdateOwner {
 }
 impl Drop for OfficialUpdateOwner {
     fn drop(&mut self) {
+        if self.sessions.values().any(|session| session.is_live()) {
+            let _ = self.evaluate(json!({"kind":"dispose"}));
+        }
         if !self.completed {
             self.abort_pending("The update owner stopped before confirming installation.");
         }

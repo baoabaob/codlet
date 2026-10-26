@@ -19,6 +19,8 @@ pub struct RuntimePreferences {
     pub check_plugin_updates_on_startup: bool,
     #[serde(default = "default_show_plugin_tags")]
     pub show_plugin_tags: bool,
+    #[serde(default = "default_show_plugin_tags")]
+    pub warn_before_official_update: bool,
     pub update_check_interval_seconds: Option<u64>,
     pub local_source_auto_reload: Option<bool>,
 }
@@ -29,6 +31,7 @@ impl Default for RuntimePreferences {
             automatic_update_checks: true,
             check_plugin_updates_on_startup: true,
             show_plugin_tags: true,
+            warn_before_official_update: true,
             update_check_interval_seconds: None,
             local_source_auto_reload: None,
         }
@@ -140,6 +143,17 @@ impl RuntimeSettings {
                 "Invalid settings revision.",
             ));
         }
+        self.change(Some(expected_revision), |current| *current = values)
+    }
+    pub(crate) fn suppress_official_update_warning(&self) -> Result<(), SettingsError> {
+        self.change(None, |values| values.warn_before_official_update = false)
+            .map(|_| ())
+    }
+    fn change(
+        &self,
+        expected_revision: Option<u64>,
+        update: impl FnOnce(&mut RuntimePreferences),
+    ) -> Result<SettingsDocument, SettingsError> {
         let mut cache = self
             .cached
             .lock()
@@ -153,14 +167,23 @@ impl RuntimeSettings {
         let _lock = lock_file(&self.path)?;
         let latest = read_document(&self.path)?;
         *cache = Ok(latest.clone());
-        if latest.revision != expected_revision {
+        if expected_revision.is_some_and(|expected| latest.revision != expected) {
             return Err(SettingsError::new(
                 "settings_conflict",
                 "Settings changed in another window. Review the current values before saving again.",
             ));
         }
+        let mut values = latest.values.clone();
+        update(&mut values);
+        values.validate()?;
         if latest.values == values {
             return Ok(latest);
+        }
+        if latest.revision >= MAX_REVISION {
+            return Err(SettingsError::new(
+                "invalid_settings",
+                "Invalid settings revision.",
+            ));
         }
         let next = SettingsDocument {
             schema: 1,
@@ -285,6 +308,27 @@ fn lock_file(path: &Path) -> Result<File, SettingsError> {
 mod tests {
     use super::*;
     #[test]
+    fn suppressing_the_update_warning_preserves_the_latest_other_preferences() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("registry.json");
+        let warning = RuntimeSettings::for_registry(&path);
+        let other = RuntimeSettings::for_registry(&path);
+        other
+            .save(
+                0,
+                RuntimePreferences {
+                    automatic_update_checks: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        warning.suppress_official_update_warning().unwrap();
+        let result = other.read().unwrap();
+        assert_eq!(result.revision, 2);
+        assert!(!result.values.automatic_update_checks);
+        assert!(!result.values.warn_before_official_update);
+    }
+    #[test]
     fn defaults_are_read_only_and_saves_persist_without_touching_registrations() {
         let root = tempfile::tempdir().unwrap();
         let registry = root.path().join("配置.json");
@@ -296,6 +340,7 @@ mod tests {
             automatic_update_checks: false,
             check_plugin_updates_on_startup: true,
             show_plugin_tags: true,
+            warn_before_official_update: true,
             update_check_interval_seconds: Some(3600),
             local_source_auto_reload: Some(true),
         };

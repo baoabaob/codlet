@@ -59,17 +59,17 @@ export function createNativePermissionReader({document,manager,native,reduce,con
     return{...cache,config:cache.configs[0],agent,thread,conversation,settings,roots,menu,windows,reduced:projected[0].options};
   };
   function menuChoices(cache){
-    const options=new Map(),profiles=new Map(),queue=[...cache.values],seen=new Set();let count=0;
+    const options=new Map(),profiles=new Map(),queue=[...cache.values],seen=new Set();
     const insert=(map,key,value)=>{const previous=map.get(key);if(previous&&!equal(previous,value))throw workspaceError('permissions_loading','Native permission menu records disagree');map.set(key,value);};
     const textId=node=>{
       const pending=[node],visited=new Set();
-      while(pending.length&&visited.size<64){const value=pending.pop();if(!value||typeof value!=='object'||visited.has(value))continue;visited.add(value);
+      while(pending.length){const value=pending.pop();if(!value||typeof value!=='object'||visited.has(value))continue;visited.add(value);
         if(typeof value.props?.id==='string')return value.props.id;
         const children=value.props?.children;if(Array.isArray(children))pending.push(...children);else if(children&&typeof children==='object')pending.push(children);
       }
       return null;
     };
-    while(queue.length&&count++<2048){const value=queue.pop();if(!value||typeof value!=='object'||seen.has(value))continue;seen.add(value);
+    while(queue.length){const value=queue.pop();if(!value||typeof value!=='object'||seen.has(value))continue;seen.add(value);
       if(Array.isArray(value)){queue.push(...value);continue;}
       const props=value.props;if(!props)continue;
       if(typeof props.disabled==='boolean'&&(typeof props.onClick==='function'||typeof props.onSelect==='function')){

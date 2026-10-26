@@ -248,27 +248,28 @@ function activeTurnState(thread) {
         const source = thread.turnHistory.history;
         if (!Array.isArray(source?.islands) || !source.entitiesByKey || typeof source.entitiesByKey !== 'object') return unknown;
         for (const island of source.islands) {
-            if (!Array.isArray(island.entries) || history.length + island.entries.length > 4096) return unknown;
+            if (!Array.isArray(island.entries)) return unknown;
             for (const entry of island.entries) { const turn = source.entitiesByKey[entry.value]; if (!turn) return unknown; history.push(turn); }
         }
     } else if (thread.turnHistory != null && thread.turnHistory.kind !== 'legacy') return unknown;
-    if (thread.turns.length > 4096) return unknown;
     const valid = turn => turn && (turn.turnId == null || typeof turn.turnId === 'string' && turn.turnId.length > 0 && turn.turnId.length <= 256) && ['inProgress', 'completed', 'interrupted', 'failed'].includes(turn.status);
     if (!history.every(valid) || !thread.turns.every(valid)) return unknown;
     const canonical = new Map(history.filter(turn => turn.turnId != null).map(turn => [turn.turnId, turn]));
     const live = new Map(thread.turns.filter(turn => turn.turnId != null).map(turn => [turn.turnId, turn]));
-    const ordered = history.filter(turn => turn.turnId != null).map(turn => ({ id: turn.turnId, status: live.has(turn.turnId) ?
-        turn.status !== 'inProgress' && live.get(turn.turnId).status === 'inProgress' && (turn.itemsPagination || live.get(turn.turnId).itemsPagination) ? turn.status : live.get(turn.turnId).status : turn.status }));
-    let pending = [];
+    // The last canonical turn and the live suffix determine the current turn.
+    // Earlier live-only turns precede the next shared canonical turn; building
+    // and repeatedly splicing the whole history would make this quadratic.
+    const last = history.findLast(turn => turn.turnId != null);
+    let current = last ? { id: last.turnId, status: live.has(last.turnId) ?
+        last.status !== 'inProgress' && live.get(last.turnId).status === 'inProgress' && (last.itemsPagination || live.get(last.turnId).itemsPagination) ? last.status : live.get(last.turnId).status : last.status } : null;
+    let pending = null;
     for (const turn of thread.turns) {
         if (turn.turnId == null) continue;
         if (canonical.has(turn.turnId)) {
-            const index = ordered.findIndex(value => value.id === turn.turnId);
-            if (pending.length) { ordered.splice(index, 0, ...pending); pending = []; }
-        } else pending.push({ id: turn.turnId, status: turn.status });
+            pending = null;
+        } else pending = { id: turn.turnId, status: turn.status };
     }
-    ordered.push(...pending);
-    const current = ordered.at(-1);
+    current = pending ?? current;
     return { activeTurnId: current?.status === 'inProgress' ? current.id : null, activeTurnKnown: true };
 }
 
@@ -378,7 +379,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         const submissionId = method === 'turn/start' ? crypto.randomUUID() : null;
         if (submissionId) { params = { ...params, clientUserMessageId: submissionId }; submissions.set(submissionId, { signal }); }
         try {
-            const result = await manager.sendRequest(method, params, { timeoutMs: 10000 });
+            const result = await manager.sendRequest(method, params);
             check();
             if (signal?.aborted) throw fail('outcome_unknown', 'Caller retired after dispatch; inspect the Desktop event stream before retrying a write');
             return result;
@@ -481,10 +482,6 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         }
         const selected = orderedHooks().filter(hook => hook.enabled);
         if (selected.length === 0) return dispatchNative.call(this, message, ...rest);
-        if (pendingSubmits.size >= 16) {
-            client.onError(message.request.id, fail('submission_rejected', 'Codlet has 16 pending submission interceptors'));
-            return;
-        }
         const receiver = this;
         const pending = { hooks: selected, controller: new AbortController() };
         pendingSubmits.add(pending);
@@ -507,7 +504,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         const params = obj(message.request.params);
         if (!Array.isArray(params.input)) throw fail('desktop_input_drift', 'Desktop turn input is not an array');
         const next = { ...message, request: { ...message.request, params: { ...params, input: copy(params.input), additionalContext: { ...(params.additionalContext ?? {}) } } } };
-        const deadline = Math.min(Date.now() + 5000, Number.isFinite(message.expiresAtMs) ? message.expiresAtMs : Infinity);
+        const deadline = Number.isFinite(message.expiresAtMs) ? message.expiresAtMs : Infinity;
         for (const hook of pending.hooks) {
             let started = null;
             try {
@@ -515,7 +512,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
                 if (!hook.active || pending.controller.signal.aborted) throw pending.controller.signal.reason ?? fail('interceptor_deactivated', 'Interceptor was deactivated');
                 const budget = Math.min(hook.timeoutMs, deadline - Date.now());
                 if (budget < 1) throw fail('interceptor_timeout', 'Submission interceptor deadline expired');
-                const texts = next.request.params.input.filter(part => part.type === 'text').map(part => { if (typeof part.text !== 'string' || part.text.length > 524288) throw fail('desktop_input_drift', 'Desktop text input is invalid or too large'); return part.text; });
+                const texts = next.request.params.input.filter(part => part.type === 'text').map(part => { if (typeof part.text !== 'string') throw fail('desktop_input_drift', 'Desktop text input is invalid'); return part.text; });
                 const draft = freeze({ threadId: identity(params.threadId, 'threadId'), text: texts.join('\n'), contextSources: Object.keys(next.request.params.additionalContext), source: 'turn.start' });
                 let timer, onAbort;
                 const signal = pending.controller.signal;
@@ -544,7 +541,6 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
                         next.request.params.additionalContext[`codlet:${hook.key}:${index}`] = { kind, value: str(entry.text, 'context text', 65536) };
                     });
                 }
-                if (JSON.stringify(next.request.params).length > 524288) throw fail('submission_too_large', 'Transformed submission exceeds the adapter limit');
             } catch (error) {
                 if (started !== null) { hook.failures += 1; hook.lastFailure = { code: ['interceptor_timeout', 'interceptor_disabled', 'interceptor_deactivated', 'adapter_deactivated', 'submission_cancelled', 'invocation_cancelled', 'invalid_argument', 'desktop_input_drift', 'submission_too_large', 'desktop_build_drift', 'desktop_connection_replaced', 'capability_unavailable'].includes(error.code) ? error.code : 'interceptor_failed', at: Date.now() }; }
                 pending.controller.abort(error);
@@ -562,7 +558,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         switch (method) {
             case 'selection.get': fields(args, []); return selection();
             case 'permissions.get': return permissions.get(args);
-            case 'threads.loaded': await nativeWorking.prepare();check();return loadedThreads.read(args);
+            case 'threads.loaded': void nativeWorking.prepare();check();return loadedThreads.read(args);
             case 'threads.configuration': {
                 fields(args, ['threadId']);
                 const id = identity(args.threadId, 'threadId');
@@ -663,15 +659,14 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         if (!alive || typeof threadId !== 'string') return;
         const requests = manager.getConversation(threadId)?.requests ?? [];
         const active = new Set();
-        for (const [key, entry] of retiredApprovals) if (entry.retiredAt + 60000 < Date.now()) retiredApprovals.delete(key);
-        for (const request of requests.slice(0, 128)) {
+        for (const [key, entry] of retiredApprovals) if (!entry.resolved && entry.retiredAt + 60000 < Date.now()) retiredApprovals.delete(key);
+        for (const request of requests) {
             const key = `${threadId}:${typeof request.id}:${request.id}`;
             active.add(key);
             const retired = retiredApprovals.get(key);
             if (retired?.resolved && retired.method === request.method && retired.turnId === request.params?.turnId && retired.itemId === request.params?.itemId) continue;
             retiredApprovals.delete(key);
             if (approvals.has(key)) continue;
-            if (approvals.size >= 256) break;
             const token = crypto.randomUUID(), dto = approvalDto(threadId, request, token);
             if (dto) { approvals.set(key, { dto, id: request.id, method: request.method, submitted: false }); emit({ type: 'approval.requested', request: dto }); }
         }
@@ -685,7 +680,6 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
     function retireApproval(key, entry, resolved) {
         const value = entry.dto ? { token: entry.dto.token, threadId: entry.dto.threadId, turnId: entry.dto.turnId, itemId: entry.dto.itemId, method: entry.method } : entry;
         retiredApprovals.set(key, { ...value, retiredAt: Date.now(), resolved });
-        while (retiredApprovals.size > 256) retiredApprovals.delete(retiredApprovals.keys().next().value);
     }
     function resolveApproval(params) {
         const threadId = identity(params.threadId, 'threadId');

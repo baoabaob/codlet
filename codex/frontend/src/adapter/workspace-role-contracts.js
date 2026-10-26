@@ -10,7 +10,7 @@ export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
   draftIdentity: { label: 'composer draft identity', arity: 1, markers: ['gpt-draft:', 'draftThreadLocationId', 'library-preview:', 'widget-overlay:', 'clientThreadId'], capabilities: ['navigationInput', 'composer'] },
   threadNavigation: { label: 'thread navigation action', markers: [], variants: [
     {arity:7,markers:['sidebarThreadLocationId','orbitPrewarmId','`sidebar`','threadId:']},
-    {markers:['navigateToLocalConversation'],maxBytes:256,localNavigationDelegate:true},
+    {markers:['navigateToLocalConversation'],localNavigationDelegate:true},
   ], capabilities: ['navigation', 'navigationInput', 'locationRestore'] },
   transcriptContent: { label: 'transcript content', markers: ['trackReadState', 'retainActiveInterest', 'contentSearchOrchestrationId'],
     inputProperties: ['conversationId', 'hostId', 'isReadOnly', 'trackReadState', 'retainActiveInterest', 'contentSearchOrchestrationId'], capabilities: ['transcript'] },
@@ -21,19 +21,19 @@ export const WORKSPACE_FUNCTION_ROLES = Object.freeze({
   composerFrame: { label: 'composer frame', markers: ['hideThreadContent', 'canInteract', 'shouldResume', 'threadAccess', 'hostMcpApps'], capabilities: ['composer'] },
   shortcutCapture: { label: 'shortcut capture control', markers: ['allowsBareModifiers', 'allowsSequences', 'captureAriaLabel', 'onStartCapture'],
     inputProperties: ['allowsBareModifiers', 'allowsSequences', 'captureAriaLabel', 'onStartCapture', 'onCapture', 'onCancelCapture'], capabilities: ['shortcuts'] },
-  eventAccelerator: { label: 'keyboard event accelerator', arity: 1, maxBytes: 1024, markers: ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'Command', '.join('], capabilities: ['shortcuts'] },
+  eventAccelerator: { label: 'keyboard event accelerator', arity: 1, markers: ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'Command', '.join('], capabilities: ['shortcuts'] },
   settingsRow: { label: 'settings row', markers: ['labelSizing', 'controlSizing', 'description', 'control'], capabilities: ['shortcuts'] },
   commandHook: { label: 'command hook', markers: ['contextHandler', 'keyboardHandler', 'menuItem', 'useEffect'], capabilities: ['shortcuts'] },
-  keyboardDispatch: { label: 'keyboard command dispatch', arity: 3, maxBytes: 256, markers: ['keyboard_shortcut'], capabilities: ['shortcuts'] },
-  shortcutBindings: { label: 'effective shortcut bindings', maxBytes: 2048, markers: ['keymapState', 'accelerator:', 'label:', 'macOS', 'chatgpt'], capabilities: ['shortcuts'] },
+  keyboardDispatch: { label: 'keyboard command dispatch', arity: 3, markers: ['keyboard_shortcut'], capabilities: ['shortcuts'] },
+  shortcutBindings: { label: 'effective shortcut bindings', markers: ['keymapState', 'accelerator:', 'label:', 'macOS', 'chatgpt'], capabilities: ['shortcuts'] },
   viewportSetOpen: { label: 'viewport open action', markers: ['window-resize', 'closeReason', '.stop()', 'animate'], capabilities: ['viewport'] },
-  viewportPersistence: { label: 'viewport persistence action', arity: 1, maxBytes: 4096, markers: ['mainContentWidth', 'storageKey', 'widthMode', 'width'], capabilities: ['viewport'] },
+  viewportPersistence: { label: 'viewport persistence action', arity: 1, markers: ['mainContentWidth', 'storageKey', 'widthMode', 'width'], capabilities: ['viewport'] },
 });
 
 export function matchesWorkspaceFunction(source, arity, contract, inputProperties = []) {
   if(contract.variants)return contract.variants.some(value=>matchesWorkspaceFunction(source,arity,value,inputProperties));
   return (!contract.arity && contract.arity !== 0 || arity === contract.arity) &&
-    (!contract.maxBytes || source.length < contract.maxBytes) && contract.markers.every(marker => source.includes(marker)) &&
+    contract.markers.every(marker => source.includes(marker)) &&
     (!contract.localNavigationDelegate || isNativeLocalNavigationDelegate(source)) &&
     (!contract.inputProperties || contract.inputProperties.every(name => inputProperties.includes(name)));
 }
@@ -42,7 +42,7 @@ export function matchesWorkspaceFunction(source, arity, contract, inputPropertie
 // Reject delegates that add work, rewrite arguments or call another method.
 export function isNativeLocalNavigationDelegate(source){
   try{
-    if(typeof source!=='string'||source.length>256)return false;
+    if(typeof source!=='string')return false;
     const fn=parseExpressionAt(source,0,{ecmaVersion:'latest'}),[scope,rest]=fn.params??[],body=fn.body?.body;
     if(fn.async||fn.generator||fn.params.length!==2||scope?.type!=='Identifier'||rest?.type!=='RestElement'||rest.argument.type!=='Identifier'||body?.length!==1||body[0].type!=='ReturnStatement')return false;
     const call=body[0].argument,member=call?.callee,get=member?.object,getter=get?.callee;

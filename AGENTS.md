@@ -15,3 +15,15 @@
   JSONL, databases and the latest useful delivery packages.
 - Resolve cleanup targets inside the intended generated-output directory, reject
   symlinks/junctions, and use literal paths. Do not use force deletion flags.
+
+# Native integration
+
+- Determine Native ownership from its current objects, lexical relationships and
+  lifecycle. Do not infer compatibility from component depth, hook count, bundle
+  length, cached history size or elapsed initialization time.
+- Traverse finite Native structures with identity-based cycle detection. Follow
+  semantic boundaries so unrelated message trees do not need to be scanned.
+- Apply plugin payload and concurrency budgets to plugin-owned resources. Native
+  requests and existing content must not inherit those limits. Tie pending work
+  to cancellation, supersession and owner retirement; report actual contract
+  errors instead of reclassifying them as temporary initialization.

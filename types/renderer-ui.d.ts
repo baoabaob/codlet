@@ -37,6 +37,12 @@ export interface RendererUiPageOptions {
   onActivate?(): void;
   onDeactivate?(): void;
 }
+export interface RendererUiPageHandle {
+  readonly path: string | null;
+  dispose(): void;
+  /** Updates the native navigation notification dot. Null clears it; feature-detect on older Core versions. */
+  setBadge?(label: string | null): void;
+}
 export interface RendererUi {
   readonly api: 2;
   readonly React: typeof React;
@@ -64,7 +70,7 @@ export interface RendererUi {
     onCommit?(revision: number): void;
   }): RendererUiMount;
   /** Requires codex.ui.navigation.page@1. Path is null in reviewed auxiliary windows. */
-  page(options: RendererUiPageOptions): Promise<Readonly<{ path: string | null; dispose(): void }>>;
+  page(options: RendererUiPageOptions): Promise<Readonly<RendererUiPageHandle>>;
   /** Aborts the owner, unregisters pages and synchronously unmounts every root. */
   dispose(): void;
 }
@@ -74,7 +80,7 @@ export interface RendererUiFactory {
   /** Registers navigation without loading the UI SDK. The render callback receives
    * a page-scoped UI owner; leaving the page disposes that owner. Feature-detect
    * for compatibility with earlier API 2 runtimes. */
-  page?(options: RendererUiPageOptions): Promise<Readonly<{ path: string | null; dispose(): void }>>;
+  page?(options: RendererUiPageOptions): Promise<Readonly<RendererUiPageHandle>>;
 }
 
 /** codex.ui.navigation.page@1 RPC; only callable by its active page owner.

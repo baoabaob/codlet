@@ -633,6 +633,7 @@ mod tests {
         std::fs::write(root.path().join("codlet.exe"), b"old-transport").unwrap();
         let old = package::file_record(&root.path().join("codlet.exe"), "codlet.exe").unwrap();
         let mut staged = package::StagedRuntime {
+            installer: None,
             directory: root.path().to_owned(),
             manifest: package::RuntimePackageManifest {
                 schema: 1,

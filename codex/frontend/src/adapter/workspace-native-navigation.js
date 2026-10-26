@@ -1,5 +1,5 @@
 import { workspaceError } from './workspace-dom.js';
-import { hostFibers, componentSource } from '../host-discovery.js';
+import { hostFibers, componentSource, linkedNodes } from '../host-discovery.js';
 import { navigationSourceExport } from './workspace-source.js';
 import { isNativeLocalNavigationDelegate } from './workspace-role-contracts.js';
 
@@ -15,7 +15,7 @@ export function nativeNavigationScope(connection) {
   const { node } = connection;
   // hA's mounted Native AppScope hook stores its imperative facade in a ref.
   // Inspect only the committed navigation ancestry, independently of editors.
-  for (const fiber of hostFibers()) for (let hook = fiber.memoizedState, count = 0; hook && count++ < 128; hook = hook.next) {
+  for (const fiber of hostFibers()) for (const hook of linkedNodes(fiber.memoizedState)) {
     const value = hook.memoizedState?.current;
     if (value?.scope === node.token && value.node === node && value.chain?.get(node.token.id) === node &&
         typeof value.get === 'function' && typeof value.set === 'function') return value;

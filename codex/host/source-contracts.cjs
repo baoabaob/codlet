@@ -26,7 +26,7 @@ function inspectMethod(Constructor, name) {
   if (parsedMethods.has(value)) return parsedMethods.get(value);
   const source = Function.prototype.toString.call(value);
   let result = null;
-  if (source.length <= 256 * 1024) try {
+  try {
     const tree = parse(`({${source}})`, {ecmaVersion:'latest',sourceType:'script'});
     const fn = tree.body[0]?.expression?.properties?.[0]?.value;
     if (!fn?.body) throw Error('method_missing');
@@ -110,7 +110,7 @@ function sourceCandidates(record, profiles, expectedHashes) {
     }
     return candidates;
   }
-  for (const description of (Array.isArray(record.classes) ? record.classes : []).slice(0, 1024)) {
+  for (const description of (Array.isArray(record.classes) ? record.classes : [])) {
     if (!identifier(description.binding) || !Array.isArray(description.methods)) continue;
     for (const [role, names] of Object.entries(required)) if (names.every(name => description.methods.includes(name))) add(role, description.binding, false);
   }

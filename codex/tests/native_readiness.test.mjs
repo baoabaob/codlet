@@ -16,12 +16,19 @@ test('Native readiness backs off while pending, stops at its deadline and never 
   assert.deepEqual(delays,[50,100,200,50]);assert.equal(calls,5);
   let attempts=0;await assert.rejects(awaitNativeInitialization(async()=>{attempts++;throw Object.assign(new Error('A unique native scope is required (found 2)'),{code:'desktop_contract_drift'});},{pause:()=>assert.fail('must not retry ambiguity')}),{code:'desktop_contract_drift'});
   assert.equal(attempts,1);
+  await assert.rejects(awaitNativeInitialization(async()=>{throw Object.assign(new Error('A unique native scope is required (found 0)'),{code:'desktop_contract_drift'});},{pause:()=>assert.fail('a missing contract is not initialization evidence')}),{code:'desktop_contract_drift'});
+});
+
+test('Native initialization can complete after a slow startup without a Core-imposed deadline',async()=>{
+  let now=0,calls=0;
+  assert.equal(await awaitNativeInitialization(async()=>{if(++calls<40)throw pending();return 'ready';},{clock:()=>now,pause:async ms=>{now+=ms;}}),'ready');
+  assert.ok(now>15000);
 });
 
 test('retired preparation cannot publish a late successful loader or retain a retry timer',async()=>{
   const controller=new AbortController();let release;
   const ready=awaitNativeInitialization(()=>new Promise(resolve=>{release=resolve;}),{signal:controller.signal});
-  controller.abort();release({});await assert.rejects(ready,{name:'AbortError'});
+  controller.abort();await assert.rejects(ready,{name:'AbortError'});release({});
   const next=new AbortController();const waiting=awaitNativeInitialization(async()=>{next.abort();throw pending();},{signal:next.signal,pause:()=>assert.fail('must not schedule after retirement')});
   await assert.rejects(waiting,{name:'AbortError'});
 });

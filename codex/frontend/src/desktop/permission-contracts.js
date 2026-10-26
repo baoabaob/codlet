@@ -4,11 +4,11 @@ export const NATIVE_PERMISSION_FUNCTIONS = Object.freeze({
   reduce: { label: 'permission option reducer', markers: ['availableAgentModes','canShowCustom','configNonFullAccessMode','hasAuthoritativeGuardianApprovalDefault','showGuardianOption'] },
   convert: { label: 'permission converter', arities: [3,4], markers: ['read-only','full-access','guardian-approvals','runtimeWorkspaceRoots','sandbox_workspace_write'] },
   toSettings: { label: 'permission wire settings', arity: 1, markers: ['activePermissionProfile','sandboxPolicy','permissions:'] },
-  modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'], maxLength: 180 },
+  modeFromPolicy: { label: 'canonical permission mode', arity: 1, markers: ['approvalPolicy','sandboxPolicy','custom','??'] },
   profileMode: { label: 'built-in permission profile', arity: 2, markers: [':read-only',':workspace',':danger-full-access'] },
-  defaultMode: { label: 'default workspace mode', arity: 1, markers: ['isProjectless','requirements','granular','auto'], maxLength: 256 },
-  windowsMode: { label: 'Windows default permission mode', arity: 1, markers: ['defaultWorkspaceWriteMode','isWindowsSandboxRequired','read-only'], maxLength: 180 },
-  cyberModel: { label: 'model confirmation classification', arity: 1, markers: ['toLowerCase','cyber','daybreak'], maxLength: 180, modelClassification: true },
+  defaultMode: { label: 'default workspace mode', arity: 1, markers: ['isProjectless','requirements','granular','auto'] },
+  windowsMode: { label: 'Windows default permission mode', arity: 1, markers: ['defaultWorkspaceWriteMode','isWindowsSandboxRequired','read-only'] },
+  cyberModel: { label: 'model confirmation classification', arity: 1, markers: ['toLowerCase','cyber','daybreak'], modelClassification: true },
 });
 
 function modelClassification(source) {
@@ -31,6 +31,6 @@ function modelClassification(source) {
 export function matchesNativePermissionSource(source, arity, contract) {
   return (contract.arity == null || arity === contract.arity) &&
     (!contract.arities || contract.arities.includes(arity)) &&
-    (contract.maxLength == null || source.length < contract.maxLength) && contract.markers.every(marker => source.includes(marker)) &&
+    contract.markers.every(marker => source.includes(marker)) &&
     (!contract.modelClassification||modelClassification(source));
 }

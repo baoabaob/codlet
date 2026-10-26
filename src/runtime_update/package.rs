@@ -114,6 +114,14 @@ pub(super) struct StagedRuntime {
     pub manifest: RuntimePackageManifest,
     pub manifest_sha256: String,
     pub candidate: RuntimeUpdateCandidate,
+    pub installer: Option<StagedInstaller>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct StagedInstaller {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -124,6 +132,8 @@ struct SavedStage {
     directory: PathBuf,
     manifest_sha256: String,
     candidate: RuntimeUpdateCandidate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    installer: Option<StagedInstaller>,
 }
 fn channel_digest(channel: &super::RuntimeUpdateChannel) -> String {
     format!(
@@ -143,6 +153,7 @@ pub(super) fn persist_staged(
         directory: staged.directory.clone(),
         manifest_sha256: staged.manifest_sha256.clone(),
         candidate: staged.candidate.clone(),
+        installer: staged.installer.clone(),
     };
     atomic_json(&state_root.join("runtime-update-staged.json"), &saved)
 }
@@ -201,6 +212,7 @@ pub(super) fn restore_staged(
         manifest,
         manifest_sha256: saved.manifest_sha256,
         candidate: saved.candidate,
+        installer: saved.installer,
     };
     recheck_staged(&staged)?;
     Ok(Some(staged))
@@ -680,6 +692,7 @@ pub(super) fn stage_archive(
         manifest,
         manifest_sha256: format!("{:x}", Sha256::digest(bytes)),
         candidate: selected.public.clone(),
+        installer: None,
     };
     let _ = temporary.keep();
     Ok(staged)
@@ -695,6 +708,25 @@ pub(super) fn recheck_staged(staged: &StagedRuntime) -> Result<()> {
             "runtime_update_changed",
             "Staged runtime manifest changed after download.",
         ));
+    }
+    if let Some(installer) = &staged.installer {
+        if !valid_sha(&installer.sha256)
+            || installer.path.parent() != staged.directory.parent()
+            || installer.path.file_name().and_then(|value| value.to_str())
+                != Some(format!("runtime-installer-{}.exe", installer.sha256).as_str())
+        {
+            return Err(error(
+                "runtime_update_changed",
+                "The staged installer is outside this release's update directory.",
+            ));
+        }
+        let actual = file_record(&installer.path, "")?;
+        if actual.bytes != installer.bytes || actual.sha256 != installer.sha256 {
+            return Err(error(
+                "runtime_update_changed",
+                "The staged installer changed after download.",
+            ));
+        }
     }
     verify_payload(&staged.directory, &staged.manifest, true)
 }

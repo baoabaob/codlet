@@ -18,12 +18,6 @@ use crate::windows::process::ChildProcess;
 const RESTART_SCRIPT: &[u8] = include_bytes!("../../scripts/Restart-Codlet.ps1");
 const QUIT_SCRIPT: &str = include_str!("../lab/quit.js");
 const QUIT_AVAILABLE_SCRIPT: &str = r#"(() => { const document = 'app://-/index.html'; const href = window.location.href; return window === window.top && (href === document || href.startsWith(document + '?') || href.startsWith(document + '#')) && window.electronBridge?.windowType === 'electron' && typeof window.electronBridge?.sendMessageFromView === 'function'; })()"#;
-const AUDITED_QUIT_VERSIONS: &[&str] = &[
-    "26.903.8094.0",
-    "26.903.9818.0",
-    "26.908.4834.0",
-    "26.915.4065.0",
-];
 
 pub(super) struct RuntimeUpdateOwner {
     service: Option<RuntimeUpdateService>,
@@ -80,7 +74,15 @@ impl RuntimeUpdateOwner {
                 .to_owned();
             let scope =
                 RegistryScope::for_path(registry_path).map_err(|error| error.to_string())?;
-            let state_root = install_root.join(".codlet-updates").join(scope.id());
+            let state_root = if install_root.join("msi-install.json").exists() {
+                registry_path
+                    .parent()
+                    .ok_or("The registry has no parent directory")?
+                    .join("runtime-updates")
+                    .join(scope.id())
+            } else {
+                install_root.join(".codlet-updates").join(scope.id())
+            };
             let restart =
                 restart_context(&executable, registry_path, watch, child, package_version);
             RuntimeUpdateService::start_with_preferences(
@@ -240,22 +242,16 @@ fn restart_context(
     registry_path: &Path,
     watch: bool,
     child: &ChildProcess,
-    package_version: &str,
+    _package_version: &str,
 ) -> Option<RuntimeRestartContext> {
-    if !AUDITED_QUIT_VERSIONS.contains(&package_version)
-        || !executable
-            .file_name()?
-            .to_str()?
-            .eq_ignore_ascii_case("codlet.exe")
+    if !executable
+        .file_name()?
+        .to_str()?
+        .eq_ignore_ascii_case("codlet.exe")
     {
         return None;
     }
     let directory = executable.parent()?;
-    // MSI owns this installation's executable files. Its maintenance database
-    // must not be bypassed by the portable ZIP replacement helper.
-    if directory.join("msi-install.json").exists() {
-        return None;
-    }
     let wrapper = directory.join("Restart-Codlet.ps1");
     let mut script = Vec::with_capacity(RESTART_SCRIPT.len());
     std::fs::File::open(&wrapper)

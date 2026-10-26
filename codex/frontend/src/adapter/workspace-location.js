@@ -94,7 +94,7 @@ export function createWorkspaceLocations({document,host,load,check,changed,befor
         const signal=options.signal,abort=()=>controller.abort(signal?.reason);
         if(signal!=null&&(typeof signal.aborted!=='boolean'||typeof signal.addEventListener!=='function'||typeof signal.removeEventListener!=='function')){record.pending=null;throw workspaceError('invalid_argument','Invalid location restoration signal');}
         if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
-        let observer,timer,releaseRestore,inspect;
+        let observer,frame,unlisten,releaseRestore,inspect;
         try{
           await ready;check();live();if(controller.signal.aborted)throw workspaceError('invocation_cancelled','Location restoration cancelled');
           if(!sameNativeHost(document,host(),rootNode,identity))throw workspaceError('workspace_host_drift','Captured page belongs to another Native host');
@@ -124,11 +124,13 @@ export function createWorkspaceLocations({document,host,load,check,changed,befor
               }else changed();resolve();
             }catch(error){if(!['workspace_host_pending','ui_host_pending','workspace_composer_binding_drift'].includes(error.code))reject(error);}};
             observer=new document.defaultView.MutationObserver(inspect);observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-app-shell-active-page','data-codex-composer-root']});
-            timer=setTimeout(()=>reject(workspaceError('workspace_location_restore_timeout','Native page restoration was not confirmed')),5000);
+            unlisten=native.manager?.addConversationStateCallback?.(inspect);
+            document.addEventListener('visibilitychange',inspect);
+            frame=document.defaultView.requestAnimationFrame?.(inspect);
             controller.signal.addEventListener('abort',inspect,{once:true});queueMicrotask(inspect);
           });
           return Object.freeze({restored:true,kind});
-        }finally{observer?.disconnect();clearTimeout(timer);if(inspect)controller.signal.removeEventListener('abort',inspect);signal?.removeEventListener('abort',abort);releaseRestore?.();if(record.pending===controller)record.pending=null;}
+        }finally{observer?.disconnect();unlisten?.();if(frame!=null)document.defaultView.cancelAnimationFrame?.(frame);if(inspect){controller.signal.removeEventListener('abort',inspect);document.removeEventListener('visibilitychange',inspect);}signal?.removeEventListener('abort',abort);releaseRestore?.();if(record.pending===controller)record.pending=null;}
       },dispose});
   }
   return{capture,prepare:ensure,dispose(){disposed=true;for(const record of [...handles]){record.active=false;record.pending?.abort();record.releaseGuard?.();

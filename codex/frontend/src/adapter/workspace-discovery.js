@@ -11,14 +11,7 @@ import { memoizeNativeLoad } from './native-readiness.js';
 export async function readWorkspaceAsset(url, signal) {
   const response = await fetch(url, { credentials: 'omit', signal });
   if (!response.ok || response.url !== url) throw workspaceError('workspace_host_drift', 'Unable to read the loaded workspace module');
-  const reader = response.body.getReader(), chunks = []; let size = 0;
-  try {
-    for (;;) { const { value, done } = await reader.read(); if (done) break;
-      size += value.byteLength; if (size > 16 * 1024 * 1024) throw workspaceError('workspace_host_drift', 'Workspace module exceeds the discovery limit'); chunks.push(value); }
-  } finally { await reader.cancel(); }
-  const bytes = new Uint8Array(size); let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(bytes);
+  return response.text();
 }
 export function assetReferences(source, parent, role) {
   if (!/^[a-z-]+$/.test(role)) throw workspaceError('invalid_argument', 'Invalid native module role');
@@ -56,7 +49,7 @@ function workspaceFunction(native, name, optional = false) {
     let properties = [];
     if (contract.inputProperties) {
       if (!inputProperties.has(value)) {
-        try { inputProperties.set(value, source.length <= 32768 ? workspaceInputProperties(parseExpressionAt(source, 0, { ecmaVersion: 'latest' })) : []); }
+        try { inputProperties.set(value, workspaceInputProperties(parseExpressionAt(source, 0, { ecmaVersion: 'latest' }))); }
         catch { inputProperties.set(value, []); }
       }
       properties = inputProperties.get(value);
@@ -154,7 +147,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     action: async () => { const native=await getCommon();if(!native.RailButton||!native.RailTooltip)throw workspaceError('workspace_action_unavailable','Native toolbar button or tooltip is unavailable');return{...native,Button:native.RailButton,Tooltip:native.RailTooltip}; },
     transcript: () => cached('transcript',async () => {
       const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'local-conversation-thread');
-      if (!urls.length || urls.length > 8) throw workspaceError('workspace_transcript_unavailable', 'Native transcript modules are missing or ambiguous');
+      if (!urls.length) throw workspaceError('workspace_transcript_unavailable', 'Native transcript modules are missing');
       const candidates = await Promise.all(urls.map(async url => ({ url, source: await source(url) })));
       const wrappers = candidates.filter(value => value.source.includes('LocalConversationSideChatTab') && !value.source.includes('retainActiveInterest'));
       const implementations = candidates.filter(value => value.source.includes('trackReadState') && value.source.includes('retainActiveInterest'));
@@ -202,7 +195,7 @@ export function createWorkspaceDiscovery(baseNative, { load = url => import(url)
     shortcuts: () => cached('shortcuts',async () => {
       const native = await getCommon(), graph = await source(native.initialUrl), urls = assetReferences(graph, native.initialUrl, 'app-primary');
       const settingsUrls = await shortcutSettingsReferences(graph, native.initialUrl, source);
-      if (!settingsUrls.length || settingsUrls.length > 4) throw workspaceError('workspace_shortcuts_unavailable', 'Native shortcut settings entries are unavailable');
+      if (!settingsUrls.length) throw workspaceError('workspace_shortcuts_unavailable', 'Native shortcut settings entries are unavailable');
       const settings = await Promise.all(settingsUrls.map(async url => ({ url, source: await source(url) })));
       const wrappers = settings.filter(value => value.source.includes('KeyboardShortcutsSettings') && !value.source.includes('settings.keyboardShortcuts.resetAllConfirm'));
       if (wrappers.length !== 1) throw workspaceError('workspace_shortcuts_unavailable', 'The native shortcut settings entry changed');

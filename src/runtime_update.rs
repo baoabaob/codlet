@@ -230,6 +230,7 @@ struct State {
     online_target: Option<crate::client_bridge::ClientSourceRuntime>,
     online_modules: Option<PendingOnlineModules>,
     deferred: bool,
+    installer_owned: bool,
     #[cfg(all(windows, feature = "desktop-acceptance"))]
     owned_fixture: Option<owned_fixture::Authority>,
 }
@@ -279,7 +280,9 @@ impl RuntimeUpdateService {
             .map(|_| ())
             .ok_or_else(|| "The launcher has not supplied a verified restart context.".to_owned())
             .err();
-        if let Err(e) = install::ensure_same_volume(&install_root, &state_root) {
+        if !install_root.join("msi-install.json").exists()
+            && let Err(e) = install::ensure_same_volume(&install_root, &state_root)
+        {
             unavailable_reason = Some(e.message);
         }
         let status = RuntimeUpdateStatus {
@@ -318,6 +321,7 @@ impl RuntimeUpdateService {
             online_target: None,
             online_modules: None,
             deferred: false,
+            installer_owned: install_root.join("msi-install.json").exists(),
             #[cfg(all(windows, feature = "desktop-acceptance"))]
             owned_fixture: None,
         }));
@@ -356,6 +360,10 @@ impl RuntimeUpdateService {
                 )
                 .ok()
                 .flatten();
+                client.installer_owned = install_root.join("msi-install.json").exists();
+                if client.installer_owned {
+                    client.resident_sha256 = None;
+                }
                 let mut next =
                     (configured && automatic_checks).then_some(std::time::Instant::now());
                 let mut failures = 0u32;
@@ -368,8 +376,9 @@ impl RuntimeUpdateService {
                         Ok(Some(staged)) => {
                             let mut state = worker_shared.lock().unwrap();
                             state.status.phase = RuntimeUpdatePhase::Downloaded;
-                            state.status.downloaded_bytes = staged.candidate.size;
-                            state.status.total_bytes = staged.candidate.size;
+                            state.status.downloaded_bytes = staged.candidate.size
+                                + staged.installer.as_ref().map_or(0, |setup| setup.bytes);
+                            state.status.total_bytes = state.status.downloaded_bytes;
                             state.status.candidate = Some(staged.candidate.clone());
                             state.staged = Some(staged);
                             restore_deferred(&mut state, &state_root);
@@ -557,6 +566,50 @@ impl RuntimeUpdateService {
     }
     pub fn status(&self) -> RuntimeUpdateStatus {
         self.shared.lock().unwrap().status.clone()
+    }
+    pub(crate) fn supports_combined_install(&self) -> bool {
+        let state = self.shared.lock().unwrap();
+        state.status.install_available
+            && (!state.installer_owned
+                || state
+                    .candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.installer.is_some())
+                || state.staged.as_ref().is_some_and(|staged| {
+                    staged.installer.is_some()
+                        && state
+                            .status
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.id == staged.candidate.id)
+                }))
+    }
+    #[cfg(windows)]
+    pub(crate) fn official_update_target(&self) -> Option<serde_json::Value> {
+        let target = self.shared.lock().ok()?.online_target.clone()?;
+        target.official_update_target().ok()
+    }
+    #[cfg(windows)]
+    pub(crate) fn install_official_update(
+        &self,
+        operation: &str,
+        expected_target: &str,
+    ) -> Result<serde_json::Value> {
+        let target = self
+            .shared
+            .lock()
+            .unwrap()
+            .online_target
+            .clone()
+            .ok_or_else(|| {
+                error(
+                    "official_update_target_unavailable",
+                    "The Native updater connection is unavailable.",
+                )
+            })?;
+        target
+            .install_official_update(operation, expected_target)
+            .map_err(|failure| error(&failure.code, failure.message))
     }
     /// Supplied only by the owned launcher after its authenticated Native bridge
     /// is ready. Renderer RPC cannot select another process or source endpoint.
@@ -956,7 +1009,9 @@ async fn run_command(
             } else {
                 RuntimeUpdatePhase::UpToDate
             };
-            state.status.total_bytes = candidate.as_ref().map_or(0, |c| c.public.size);
+            state.status.total_bytes = candidate.as_ref().map_or(0, |c| {
+                c.public.size + c.installer.as_ref().map_or(0, |setup| setup.bytes)
+            });
             state.status.downloaded_bytes = 0;
             state.status.candidate = candidate.as_ref().map(|c| c.public.clone());
             state.candidate = candidate;
@@ -1080,10 +1135,10 @@ async fn run_command(
             if staged.candidate.online_only {
                 return Err(error("core_update_online_only", next_start_reason));
             }
-            if install_root.join("msi-install.json").exists() {
+            if install_root.join("msi-install.json").exists() && staged.installer.is_none() {
                 return Err(error(
-                    "core_update_installer_owned",
-                    "Use the Codlet setup executable to upgrade this installation.",
+                    "core_update_installer_missing",
+                    "This release does not include a verified Codlet setup executable.",
                 ));
             }
             let restart = restart.ok_or_else(|| error("core_update_next_start_required","This update changes resident Core files or its bootstrap; activate it on the next start."))?;

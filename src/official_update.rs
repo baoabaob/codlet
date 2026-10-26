@@ -1,7 +1,7 @@
 //! Official updates use the client's own channel and installer. Core contributes
 //! only restart ownership and the optional coordinated Codlet update transaction.
 use crate::runtime_update::{RuntimeUpdatePhase, RuntimeUpdateService};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Serialize)]
@@ -13,6 +13,14 @@ pub(crate) struct OfficialUpdateStatus {
     pub is_update_ready: bool,
     pub combined_phase: String,
     pub error: Option<String>,
+    pub target: Option<OfficialUpdateTarget>,
+    pub compatible_candidate_id: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct OfficialUpdateTarget {
+    pub id: String,
+    pub version: String,
 }
 impl Default for OfficialUpdateStatus {
     fn default() -> Self {
@@ -23,6 +31,8 @@ impl Default for OfficialUpdateStatus {
             is_update_ready: false,
             combined_phase: "idle".into(),
             error: None,
+            target: None,
+            compatible_candidate_id: None,
         }
     }
 }
@@ -30,6 +40,7 @@ impl Default for OfficialUpdateStatus {
 struct State {
     status: OfficialUpdateStatus,
     candidate_id: Option<String>,
+    expected_target: Option<OfficialUpdateTarget>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct OfficialUpdates(Arc<Mutex<State>>);
@@ -47,6 +58,7 @@ impl OfficialUpdates {
         &self,
         runtime: &RuntimeUpdateService,
         expected_candidate: &str,
+        expected_target: Option<&str>,
     ) -> Result<OfficialUpdateStatus, String> {
         let mut state = self.0.lock().unwrap();
         if matches!(
@@ -68,6 +80,12 @@ impl OfficialUpdates {
             || !state.status.is_update_ready
             || state.status.phase != "ready"
             || !update.install_available
+            || state.status.compatible_candidate_id.as_deref() != Some(expected_candidate)
+            || state
+                .status
+                .target
+                .as_ref()
+                .is_none_or(|target| expected_target.is_some_and(|expected| target.id != expected))
             || !matches!(
                 update.phase,
                 RuntimeUpdatePhase::Available | RuntimeUpdatePhase::Downloaded
@@ -83,6 +101,7 @@ impl OfficialUpdates {
                 .id
                 .clone(),
         );
+        state.expected_target = state.status.target.clone();
         if update.phase == RuntimeUpdatePhase::Available {
             runtime.download().map_err(|e| e.to_string())?;
         }
@@ -96,6 +115,7 @@ impl OfficialUpdates {
         state.status.combined_phase = "failed".into();
         state.status.error = Some(message.into());
         state.candidate_id = None;
+        state.expected_target = None;
     }
 }
 

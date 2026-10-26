@@ -14,9 +14,7 @@ use super::*;
 
 const MAX_HANDLES: usize = 64;
 const MAX_RAW_SESSIONS: usize = 128;
-const MAX_TARGETS: usize = 64;
 const MAX_RENDERER_INVOCATIONS: usize = 32;
-const MAX_ENTRY_IDENTITIES: usize = 8192;
 
 pub(super) struct RawAttachPermit {
     shared: CoreRpcShared,
@@ -246,21 +244,6 @@ impl CoreRpcShared {
                 ));
             }
             for (id, provides, requires) in entries {
-                if !state.declarations.contains_key(&id)
-                    && !state.blocked.contains_key(&id)
-                    && state.declarations.len()
-                        + state
-                            .blocked
-                            .keys()
-                            .filter(|id| !state.declarations.contains_key(*id))
-                            .count()
-                        >= MAX_ENTRY_IDENTITIES
-                {
-                    return Err(HostError::new(
-                        "identity_limit",
-                        "Core has exhausted its bounded entry identity history",
-                    ));
-                }
                 if state
                     .blocked
                     .get(&id)
@@ -940,12 +923,6 @@ impl State {
         if self.targets.contains_key(target) {
             return Ok(());
         }
-        if self.targets.len() >= MAX_TARGETS {
-            return Err(HostError::new(
-                "scope_limit",
-                "Core has 64 active Target scopes",
-            ));
-        }
         let epoch = self
             .registry
             .activate_scope(CapabilityScopeInstance::Target(target.into()))
@@ -1125,6 +1102,28 @@ mod tests {
     }
     fn descriptor(scope: CapabilityScope) -> CapabilityDescriptor {
         CapabilityDescriptor::new("dev.rpc.kernel", 1, scope).unwrap()
+    }
+
+    #[test]
+    fn native_targets_and_retired_plugin_history_do_not_exhaust_registration() {
+        let shared = CoreRpcShared::default();
+        for index in 0..5000 {
+            shared.retire_plugin(&format!("dev.retired.{index}"), 1);
+        }
+        let active = plugin("dev.current", 1, &[], &[]);
+        shared.register_plugins(&[active]).unwrap();
+        shared
+            .register_plugins(&[plugin("dev.retired.1", 1, &[], &[])])
+            .unwrap();
+        let mut state = shared.0.lock().unwrap();
+        assert!(state.declarations.contains_key("dev.current:host"));
+        assert!(!state.declarations.contains_key("dev.retired.1:host"));
+        for index in 0..128 {
+            state
+                .ensure_target(&format!("native-target-{index}"))
+                .unwrap();
+        }
+        assert_eq!(state.targets.len(), 128);
     }
 
     #[test]

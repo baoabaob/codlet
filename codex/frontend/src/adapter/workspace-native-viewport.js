@@ -1,4 +1,4 @@
-import { componentSource, currentElementAncestry } from '../host-discovery.js';
+import { componentSource, currentElementAncestry, linkedNodes } from '../host-discovery.js';
 import { OWNED, nativeMainInput, nativeInputBinding, providersFor, wrapProviders, workspaceError } from './workspace-dom.js';
 import { workspaceSourceFunctions, workspaceExportName, workspaceModuleSyntax, workspaceLexicalReferences } from './workspace-source.js';
 
@@ -49,7 +49,7 @@ export function viewportPersistenceReference(source, { optional = false } = {}) 
   const candidates = [];
   for (const ast of workspaceSourceFunctions(source, 'mainContentWidth')) {
     const properties = ast.params[0]?.properties ?? [], names = properties.map(value => value.key?.name);
-    if (ast.end - ast.start > 4096 || ast.params.length !== 1 || names.length !== 4 || !['mainContentWidth', 'storageKey', 'width', 'widthMode'].every(key => names.includes(key))) continue;
+    if (ast.params.length !== 1 || names.length !== 4 || !['mainContentWidth', 'storageKey', 'width', 'widthMode'].every(key => names.includes(key))) continue;
     const expression = ast.body.body[0]?.expression, key = properties.find(value => value.key.name === 'storageKey')?.value.name;
     if (ast.body.body.length === 1 && expression?.type === 'CallExpression' && expression.callee.type === 'Identifier' && expression.arguments[0]?.name === key) candidates.push(expression.callee.name);
   }
@@ -75,7 +75,7 @@ export function nativeViewportContext(document, native, pins = new WeakMap()) {
     facade.chain?.get(native.RouteScope.id)?.token === native.RouteScope && facade.chain?.get(native.ThreadScope.id)?.token === native.ThreadScope;
   let facade = valid(input?.scope) ? input.scope : null;
   if (!facade) for (const fiber of currentElementAncestry(main, root) ?? []) {
-    for (let hook = fiber.memoizedState, count = 0; hook && count++ < 128; hook = hook.next) if (valid(hook.memoizedState?.current)) facade = hook.memoizedState.current;
+    for (const hook of linkedNodes(fiber.memoizedState)) if (valid(hook.memoizedState?.current)) facade = hook.memoizedState.current;
   }
   if (!facade) throw workspaceError('workspace_host_pending', 'Native viewport scope is not mounted');
   const chain = new Map(facade.chain), routeNode = chain.get(native.RouteScope.id), threadNode = chain.get(native.ThreadScope.id);
@@ -112,7 +112,6 @@ export function nativeViewportLayout(context) {
   const pending = [shell.child], seen = new Set(), candidates = [];
   while (pending.length) {
     const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue;
-    if (seen.size >= 512) throw unavailable('Native viewport layout exceeds the discovery boundary');
     seen.add(fiber); if (fiber.sibling) pending.push(fiber.sibling);
     const props = fiber.memoizedProps, text = componentSource(fiber.type);
     if (text.includes('pane_resize') && text.includes('contentPaneWidthRatio') && text.includes('data-app-shell-focus-area')) {
@@ -150,7 +149,6 @@ export function learnNativeViewportWidth(document, native, context) {
     const pending = [current], seen = new Set(), signals = new Set();
     while (pending.length) {
       const fiber = pending.pop(); if (!fiber || seen.has(fiber)) continue;
-      if (seen.size >= 128) throw unavailable('Native viewport outlet exceeds the discovery boundary');
       seen.add(fiber); const props = fiber.memoizedProps;
       if (props?.value === config && props.signal?.scope === native.RouteScope && props.signal.cache === 'signal' && typeof props.signal.resolve === 'function') signals.add(props.signal);
       if (fiber.sibling) pending.push(fiber.sibling); if (fiber.child) pending.push(fiber.child);

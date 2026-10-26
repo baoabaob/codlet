@@ -266,6 +266,7 @@ fn run_foreground(scenario: &str) {
     {
         let mut state = updates.shared.lock().unwrap();
         state.staged = Some(package::StagedRuntime {
+            installer: None,
             directory: stage,
             manifest,
             manifest_sha256: digest(&bytes),

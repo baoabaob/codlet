@@ -95,6 +95,7 @@ fn managed_cross_layer_child() {
     assert_eq!(manifest.runtime.mode, package::NodeRuntimeMode::Managed);
     let digest = sha(&zip_bytes);
     let selected = source::Candidate {
+        installer: None,
         public: RuntimeUpdateCandidate {
             online_only: false,
             id: digest.clone(),

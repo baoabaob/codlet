@@ -1,22 +1,19 @@
-import { componentSource, currentElementAncestry } from '../host-discovery.js';
+import { componentSource, currentElementAncestry, linkedNodes } from '../host-discovery.js';
 import { inspectNativeInput, inspectNativeComposerScope } from './workspace-native-input.js';
 
 export const workspaceError = (code, message) => Object.assign(new Error(message), { code });
 export const OWNED = '[data-codlet-workspace-owned]';
-export function ancestry(node, limit = 64) {
+export function ancestry(node) {
   const key = node && Object.keys(node).find(key => key.startsWith('__reactFiber$'));
-  const result = []; let fiber = key && node[key];
-  for (; fiber && result.length < limit; fiber = fiber.return) result.push(fiber);
-  return result;
+  return [...linkedNodes(key&&node[key],fiber=>fiber.return)];
 }
 export function providersFor(node) {
   const result = [], seen = new Set();
   const current = currentElementAncestry(node, node?.ownerDocument?.getElementById('root'));
   // currentElementAncestry already returns the closest host first. Selecting
   // an outer value for a repeated Native context can discard its AppScope.
-  for (const fiber of current ?? ancestry(node, 180)) {
-    let count = 0;
-    for (let dep = fiber.dependencies?.firstContext; dep && count++ < 128; dep = dep.next) {
+  for (const fiber of current ?? ancestry(node)) {
+    for (const dep of linkedNodes(fiber.dependencies?.firstContext)) {
       if (!dep.context || seen.has(dep.context)) continue;
       seen.add(dep.context); result.push([dep.context, dep.memoizedValue]);
     }
@@ -100,7 +97,7 @@ export function findActivity(document) {
   const matches = [];
   for (const button of document.querySelectorAll('#root button')) {
     if (!active(button) || button.closest('main')) continue;
-    const owner = ancestry(button, 24).find(fiber => {
+    const owner = ancestry(button).find(fiber => {
       const props = fiber.memoizedProps ?? {};
       if (props.description?.props?.id === 'sidebarElectron.priorityThreads.coachmark.description' &&
           props.title?.props?.id === 'sidebarElectron.priorityThreads.filterByPriority' &&
@@ -114,7 +111,7 @@ export function findActivity(document) {
 }
 export function activityPlacement(button) {
   if (!button?.isConnected) return null;
-  const chain = currentElementAncestry(button) ?? ancestry(button, 48);
+  const chain = currentElementAncestry(button) ?? ancestry(button);
   const owner = chain.find(fiber => {
     const source = componentSource(fiber.type);
     return source.includes('sidebarElectron.priorityThreads.coachmark.description') && source.includes('onActivate') && source.includes('needsAttention');
@@ -174,7 +171,7 @@ export function resolveThreadReference(document, element, isCachedLocal = () => 
   const title = element.closest('[data-thread-title]');
   if (!title) return null;
   const found = new Map();
-  for (const fiber of ancestry(title, 32)) {
+  for (const fiber of ancestry(title)) {
     const props = fiber.memoizedProps ?? {};
     const values = [props, props.thread, props.conversation, props.item, props.threadKey];
     for (const value of values) {
@@ -253,10 +250,10 @@ export function createSurfaceControl() {
         else if(surface.content?.contains(surface.composer)){
           // Hide only siblings along the home input's ancestry. Its controller,
           // attachments and controls stay under their original Native parents.
-          let child=surface.composer,depth=0;
+          let child=surface.composer;
           while(child!==surface.content){
             const parent=child.parentElement;
-            if(!parent||depth++>=32)throw workspaceError('workspace_host_drift','The home composer branch exceeds the surface boundary');
+            if(!parent)throw workspaceError('workspace_host_drift','The home composer left its content surface');
             for(const node of parent.children)if(node!==child&&bodyNode(node))suppress(node,true,true);
             child=parent;
           }

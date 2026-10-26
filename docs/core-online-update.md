@@ -52,7 +52,7 @@ Unknown and rolled-back lifecycle completions preserve the first eight target fa
 
 ## Deferred installation
 
-Complete portable and macApp installation requests stage incompatible updates with `phase: "deferred"`, `activation.mode: "nextStart"` and a pinned `runtime-update-next-start.json` intent. They emit no generic install request, quit call or launcher command. On successful natural Native exit, the owned probe, lab or macOS lifecycle can prepare a fresh checked helper plan marked `activateOnNextStart`. The helper waits for the exact owner identities to retire, replaces files, publishes startup module pins, and returns `installedDeferred` without launching a Native process. Deferred rollback also never launches one. An explicitly requested restart remains a separate API/action.
+Complete installation requests stage incompatible updates with `phase: "deferred"`, `activation.mode: "nextStart"` and a pinned `runtime-update-next-start.json` intent. They emit no generic install request, quit call or launcher command. On successful natural Native exit, the owned probe, lab or macOS lifecycle can prepare a fresh checked helper plan marked `activateOnNextStart`. The helper waits for the exact owner identities to retire, installs the candidate, and returns `installedDeferred` without launching a Native process. Portable/macApp helpers replace their own files; Windows MSI installations use the verified setup EXE from the same release, preserving Windows Installer's ownership, scope and feature choices. An explicitly requested restart remains a separate API/action.
 
 The write ledger records explicit Core/plugin writes only. Cancelled or failed Core operations without a determinate result stay `unknown`, including after late replies, and an unsettled drain defers the Core update. Native HTTP requests, backend sends and renderer messages do not enter that ledger or wait for Core admission. A stalled or failed Core handoff keeps Native forwarding through the current plugin hooks, or its original transport while hooks retire. Native errors and cancellation belong to Native. Core source preparation failures may fall through only before dispatch; an upstream request that has already started is never replayed. Response bodies and task routes survive source retirement.
 
@@ -60,6 +60,14 @@ If an accepted backend send is waiting for Core route preparation, subsequent
 sends retain their original order even when preparation falls back to Native.
 Source snapshot/suspension defers the Core handoff until this preparation settles;
 it does not pause new Native calls or create Native write receipts.
+
+## Official client updates
+
+The GUI marks available Core updates on its navigation entry and offers a download control in its header. Joint updates are offered only when the prepared official MSIX identity is known and the compatibility catalog verifies that exact client/Core version pair. Confirmation binds both candidate identities; either changing invalidates consent. Native cancellation or failure stops the handoff. The Core installer runs only after the official package registration matches the confirmed target and the old process identities have exited.
+
+For MSI installations, Core verifies the setup EXE's release digest and prepares a sealed helper plan. Setup first performs a read-only check of the installed product. The later installation uses Windows Installer, retaining its elevation and rollback behavior. Unknown outcomes preserve receipts rather than replaying installation or replacing MSI-owned files directly.
+
+Direct official update clicks show a Core-owned confirmation with an optional persistent suppression preference. A failed preference save reports the failure and still honors an accepted update. Store-managed updates whose target package cannot be inspected do not receive an inferred joint-update compatibility claim.
 
 ## Verification and remaining acceptance
 

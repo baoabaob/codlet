@@ -1,7 +1,7 @@
 /** Core renderer SDK API 1. Availability is probed per capability; these types
  * describe implementation coverage, not verified client/platform evidence. */
 import type { CapabilityDescriptor, RpcOptions } from './renderer';
-import type { RendererUiPageOptions } from './renderer-ui';
+import type { RendererUiPageOptions, RendererUiPageHandle } from './renderer-ui';
 import type { WorkspaceSession } from './codex-workspace';
 import type { ComposerActionRegister, ComposerActionRegistration, ComposerActionStatus, ComposerActionClick } from './codex-ui';
 import type { ReadMethods, WriteMethods, DesktopRead, DesktopWrite, DesktopCompatibility, DesktopEvent, EventRead, EventBatch, InterceptorOptions, SubmissionInterceptor, InterceptorHandle, InterceptorList, ThreadConfigurationOptions, ThreadConfigurationHandler, ThreadConfigurationHandle, ThreadConfigurationInfo } from './codex-desktop';
@@ -24,7 +24,7 @@ export interface CodexSdk {
   readonly api: 1;
   readonly capabilities: Readonly<Record<'navigation'|'composer'|'workspace'|'compatibility'|'submissions'|'read'|'write'|'events', CapabilityDescriptor>>;
   readonly navigation: {
-    page(options: RendererUiPageOptions): Promise<Readonly<{ path: string | null; dispose(): void }>>;
+    page(options: RendererUiPageOptions): Promise<Readonly<RendererUiPageHandle>>;
     newTaskDraft(params: { prompt: string }, options?: RpcOptions): Promise<{ opened: true; submitted: false }>;
   };
   readonly composer: {

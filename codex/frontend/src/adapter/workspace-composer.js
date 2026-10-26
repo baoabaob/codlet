@@ -161,7 +161,6 @@ export function createComposers({ document, load, surface, check, report, metric
       if(document.defaultView.ResizeObserver)record.resize=new document.defaultView.ResizeObserver(()=>size(record));
       record.observer=new document.defaultView.MutationObserver(()=>{if(!record.footer?.isConnected||!record.readyDone||record.activation)pulse(record);});
       record.observer.observe(mount,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','contenteditable','data-codex-composer-root']});
-      record.readyTimer=setTimeout(()=>fail(record,workspaceError('workspace_composer_ready_timeout','Native composer did not confirm its requested conversation')),10000);
       render(record);schedule(record);
     }).catch(error=>fail(record,error));
     return Object.freeze({threadId:opts.threadId,hostId:'local',ready,
@@ -171,7 +170,6 @@ export function createComposers({ document, load, surface, check, report, metric
         deactivate(record);const epoch=++record.epoch;let resolve,reject;
         const result=new Promise((yes,no)=>{resolve=yes;reject=no;});result.catch(()=>{});
         const op={epoch,resolve,reject};record.activation=op;
-        op.timer=setTimeout(()=>{if(record.activation===op)rejectActivation(record,'workspace_composer_activation_timeout','Native composer is not ready to edit');},10000);
         state(record,'activating');
         ready.then(()=>{
           if(record.disposed||record.activation!==op)return;valid();native.check?.();

@@ -39,7 +39,7 @@ export function factoryStatements(source) {
 // only a uniquely identified React/DOM factory from the loaded native ESM module
 // can be called. The generated local identifiers and export aliases may change.
 export function reactFactories(source) {
-  if (typeof source !== 'string' || source.length > 16 * 1024 * 1024) throw fail('Native shared module exceeds the source limit');
+  if (typeof source !== 'string') throw fail('Native shared module source is unavailable');
   const factories = new Map(), exports = new Map();
   const expressions = value => value?.type === 'SequenceExpression' ? value.expressions.flatMap(expressions) : [value];
   for (const statement of factoryStatements(source)) {
@@ -72,12 +72,16 @@ export function reactFactories(source) {
   for (const [role, properties] of Object.entries(roles)) {
     const roots = [...factories].filter(([, value]) => properties.every(p => value.properties.has(p))).map(([name]) => name);
     if (roots.length !== 1) throw fail(`Native ${role} factory is missing or ambiguous`);
-    const reaches = (name, seen = new Set()) => {
-      if (name === roots[0]) return true;
-      if (seen.has(name) || seen.size >= 8) return false;
-      seen.add(name);
-      const aliases = factories.get(name)?.aliases;
-      return aliases?.size === 1 && reaches([...aliases][0], seen);
+    const reaches = name => {
+      const seen = new Set();
+      while (!seen.has(name)) {
+        if (name === roots[0]) return true;
+        seen.add(name);
+        const aliases = factories.get(name)?.aliases;
+        if (aliases?.size !== 1) return false;
+        name = aliases.values().next().value;
+      }
+      return false;
     };
     const names = [...exports].filter(([name]) => reaches(name)).map(([, name]) => name);
     if (names.length !== 1) throw fail(`Native ${role} export is missing or ambiguous`);

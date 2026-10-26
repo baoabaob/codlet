@@ -11,6 +11,8 @@ use super::{
 };
 
 const HELPER: &[u8] = include_bytes!("../../scripts/runtime-update-helper.mjs");
+#[cfg(windows)]
+mod msi;
 pub(super) fn prepare_deferred_install_plan(
     install_root: &Path,
     state_root: &Path,
@@ -120,6 +122,10 @@ pub(super) fn prepare_install_plan_with_official(
     restart: &RuntimeRestartContext,
     official_update: bool,
 ) -> Result<RuntimeInstallRequest> {
+    #[cfg(windows)]
+    if install_root.join("msi-install.json").exists() {
+        return msi::prepare(install_root, state_root, staged, restart, official_update);
+    }
     if staged.candidate.online_only {
         return Err(error(
             "core_update_online_only",

@@ -1,10 +1,10 @@
-import {loadedAsset,localConnection,hostFibers} from '../host-discovery.js';
+import {loadedAsset,localConnection,hostFibers,linkedNodes} from '../host-discovery.js';
 import {awaitNativeInitialization} from '../adapter/native-readiness.js';
 const pending=message=>Object.assign(new Error(message),{code:'desktop_host_pending'});
 
 function mountedWorkingScope(connection){
   const {node}=connection;
-  for(const fiber of hostFibers())for(let hook=fiber.memoizedState,count=0;hook&&count++<128;hook=hook.next){
+  for(const fiber of hostFibers())for (const hook of linkedNodes(fiber.memoizedState)){
     const value=hook.memoizedState?.current;
     if(value?.scope===node.token&&value.node===node&&value.chain?.get(node.token.id)===node&&typeof value.get==='function'&&typeof value.watch==='function')return value;
   }
@@ -79,11 +79,12 @@ export function createNativeWorking({load=()=>loadNativeWorking(),changed}={}){
   async function prepare(){
     if(disposed)return;
     if(driver)return;
-    if(!preparing)preparing=awaitNativeInitialization(async()=>{const value=await load();if(disposed){value.dispose?.();controller.signal.throwIfAborted();}return value;},{signal:controller.signal}).then(value=>{driver=value;}).catch(()=>{}).finally(()=>{preparing=null;});
+    if(!preparing)preparing=awaitNativeInitialization(async()=>{const value=await load();if(disposed){value.dispose?.();controller.signal.throwIfAborted();}return value;},{signal:controller.signal}).then(value=>{driver=value;for(const id of values.keys()){read(id);changed?.(id);}}).catch(()=>{}).finally(()=>{preparing=null;});
     await preparing;
   }
   function read(id,thread){
-    if(disposed||!driver)return null;
+    if(disposed)return null;
+    if(!driver){values.set(id,null);return null;}
     let current=null;try{current=driver.read(id);}catch{}set(id,current,false);
     try{
       if(!subscriptions.has(id)){

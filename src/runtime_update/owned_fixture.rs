@@ -350,6 +350,7 @@ impl Authority {
             ));
         }
         let selected = super::source::Candidate {
+            installer: None,
             public: RuntimeUpdateCandidate {
                 online_only: false,
                 id: value.id.clone(),

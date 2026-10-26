@@ -28,10 +28,10 @@ function describeClasses(ast) {
     if (node.type === 'ClassDeclaration' && node.id) bindings.add(node.id.name);
   }
   const add = (name, node) => {
-    if (!bindings.has(name) || !/^[A-Za-z_$][\w$]*$/u.test(name) || classes.size >= 1024) return;
+    if (!bindings.has(name) || !/^[A-Za-z_$][\w$]*$/u.test(name)) return;
     const methods = node.body.body.filter(item => item.type === 'MethodDefinition' && !item.static && item.kind === 'method')
       .map(item => !item.computed && item.key.type === 'Identifier' ? item.key.name : item.key.type === 'Literal' && typeof item.key.value === 'string' ? item.key.value : null)
-      .filter(value => value !== null).slice(0, 256);
+      .filter(value => value !== null);
     if (methods.length) classes.set(name, { binding: name, methods });
   };
   const walk = node => {
@@ -55,14 +55,14 @@ function observeModules(root, key, dependencies = {}) {
   const original = prototype._compile;
   const records = new Map(), subscribers = new Set(), instances = new Set(), observedInstances = new WeakSet();
   const finalized=new FinalizationRegistry(ref=>instances.delete(ref));
-  let closed = false, instanceDrops = 0;
+  let closed = false;
   const inScope = filename => typeof filename === 'string' && roots.some(root => {
     const relative = path.relative(root, filename);
     return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
   });
   const registry = Object.freeze({
     register(filename, hash, exported, evaluate, classes = []) {
-      if (closed || records.size >= 4096 || typeof evaluate !== 'function') return;
+      if (closed || typeof evaluate !== 'function') return;
       const descriptions = Object.freeze(classes.map(item => Object.freeze({binding:item.binding, methods:Object.freeze([...item.methods])})));
       const record = Object.freeze({ filename, name: path.basename(filename), hash, exported, evaluate, classes:descriptions });
       records.set(filename, record);
@@ -71,7 +71,6 @@ function observeModules(root, key, dependencies = {}) {
     list: () => [...records.values()],
     instance(value) {
       if(closed||!value||typeof value!=='object'||observedInstances.has(value))return;
-      if(instances.size>=8192){instanceDrops++;return;}
       observedInstances.add(value);const ref=new WeakRef(value);instances.add(ref);finalized.register(value,ref);
     },
     instances(Constructor) { const result=[];for(const ref of instances){const value=ref.deref();if(!value)instances.delete(ref);else if(typeof Constructor==='function'&&value instanceof Constructor)result.push(value);}return result; },
@@ -82,7 +81,7 @@ function observeModules(root, key, dependencies = {}) {
       let live = true;
       return () => { if (live) { live = false; subscribers.delete(callback); } };
     },
-    inspect: () => ({ modules: records.size, subscribers: subscribers.size, instanceReferences:instances.size,instanceDrops }),
+    inspect: () => ({ modules: records.size, subscribers: subscribers.size, instanceReferences:instances.size,instanceDrops:0 }),
     close() {
       if (closed) return;
       closed = true; subscribers.clear(); records.clear();instances.clear();
@@ -91,7 +90,7 @@ function observeModules(root, key, dependencies = {}) {
     },
   });
   const compile = function(code, filename) {
-    if (closed || typeof code !== 'string' || !inScope(filename) || code.length > 20 * 1024 * 1024 || records.size >= 4096) return original.call(this, code, filename);
+    if (closed || typeof code !== 'string' || !inScope(filename)) return original.call(this, code, filename);
     const hash = createHash('sha256').update(code).digest('hex');
     const reference=`globalThis[Symbol.for(${JSON.stringify(Symbol.keyFor(key))})]`;
     const edits=[]; let classes=[];
@@ -117,7 +116,7 @@ function observeModules(root, key, dependencies = {}) {
   if (entry && inScope(entry.filename) && typeof entry.evaluate === 'function') {
     try {
       const info=statSync(entry.filename);
-      if (info.isFile() && info.size <= 20 * 1024 * 1024) {
+      if (info.isFile()) {
         const code=readFileSync(entry.filename,'utf8');
         const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true});
         registry.register(entry.filename,createHash('sha256').update(code).digest('hex'),entry.exported,entry.evaluate,describeClasses(ast));
@@ -347,6 +346,10 @@ function startClientBridge(electron, configuration, dependencies = {}) {
   }
   async function command(input) {
     if (input.op === 'status') return input.operationId ? receipts.get(input.operationId) ?? { pending: false, unknown: true } : status();
+    if (input.op === 'officialUpdateTarget') {
+      if (typeof active?.runtime.officialUpdateTarget !== 'function') throw fail('official_update_target_unavailable');
+      return active.runtime.officialUpdateTarget();
+    }
     if (input.op === 'writeResult') return {...writes.result(input.operationId), ...identity()};
     if (input.op === 'writeReceipts') return {receipts:writes.receipts(),...identity()};
     if (input.op === 'cancelWrite') return {...writes.cancel(input.operationId), ...identity()};
@@ -379,8 +382,9 @@ function startClientBridge(electron, configuration, dependencies = {}) {
         if(await bounded(()=>candidate.validateSnapshot?.(snapshot),'core_update_preflight_timeout')===false)throw fail('core_update_snapshot_incompatible');}
       return {outcome:'preflight_passed',...status()};
     }
-    if (!label(input.operationId) || !['replace', 'clear', 'ready','beginAdmission','finishAdmission','ownedFixtureRoute'].includes(input.op)) throw fail('client_bridge_request_invalid');
-    const fingerprint=createHash('sha256').update(JSON.stringify([input.op,input.expectedEpoch,input.previousOwner,input.owner,input.generation,input.code,input.configuration,input.compatibleUpdate,input.coreVersion,input.drainTimeoutMs,input.admissionId,input.admissionToken,input.disposition,input.upstreamBaseUrl])).digest('hex');
+    if (!label(input.operationId) || !['replace', 'clear', 'ready','beginAdmission','finishAdmission','ownedFixtureRoute','officialUpdateInstall'].includes(input.op)) throw fail('client_bridge_request_invalid');
+    if(input.op==='officialUpdateInstall'&&(!/^[a-f0-9]{64}$/.test(input.targetId)||typeof active?.runtime.installOfficialUpdate!=='function'))throw fail('official_update_target_unavailable');
+    const fingerprint=createHash('sha256').update(JSON.stringify([input.op,input.expectedEpoch,input.previousOwner,input.owner,input.generation,input.code,input.configuration,input.compatibleUpdate,input.coreVersion,input.drainTimeoutMs,input.admissionId,input.admissionToken,input.disposition,input.upstreamBaseUrl,input.targetId])).digest('hex');
     if (receipts.has(input.operationId)) {
       if(receiptFingerprints.get(input.operationId)!==fingerprint)throw fail('client_bridge_operation_id_conflict');
       return receipts.get(input.operationId);
@@ -391,7 +395,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     receipts.set(input.operationId, { pending: true });
     receiptFingerprints.set(input.operationId,fingerprint);
     transactions.set(input.operationId,new AbortController());
-    const operation = chain.then(() => input.op==='beginAdmission'?beginAdmission(input):input.op==='finishAdmission'?finishAdmission(input):input.op==='ownedFixtureRoute'?ownedFixtureRoute(input):replace(input)).catch(error => ({ outcome: 'rejected', error: codeOf(error), ...status() }));
+    const operation = chain.then(() => input.op==='officialUpdateInstall'?active.runtime.installOfficialUpdate(input.targetId):input.op==='beginAdmission'?beginAdmission(input):input.op==='finishAdmission'?finishAdmission(input):input.op==='ownedFixtureRoute'?ownedFixtureRoute(input):replace(input)).catch(error => ({ outcome: 'rejected', error: codeOf(error), ...status() }));
     chain = operation.then(() => {});
     const result = await operation;
     if(admission&&input.op==='replace'&&input.admissionId===admission.id)admission.lastSourceOutcome=result.outcome;

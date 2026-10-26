@@ -11,12 +11,11 @@ export function createTranscriptIsolation({ document, report }) {
     for (const source of sources) {
       let entry = record.links.get(source);
       if (!entry) {
-        const clone = source.cloneNode(false); let timer, resolve, reject;
+        const clone = source.cloneNode(false); let resolve, reject;
         const ready = new Promise((yes, no) => { resolve = yes; reject = no; }); ready.catch(() => {});
-        function finish(error) { clearTimeout(timer); clone.removeEventListener('load', loaded); clone.removeEventListener('error', failed); if (error) reject(error); else resolve(); }
+        function finish(error) { clone.removeEventListener('load', loaded); clone.removeEventListener('error', failed); if (error) reject(error); else resolve(); }
         const loaded = () => finish(), failed = () => finish(workspaceError('workspace_transcript_styles_unavailable', 'A loaded Native stylesheet could not be reused'));
         clone.addEventListener('load', loaded, { once: true }); clone.addEventListener('error', failed, { once: true });
-        timer = setTimeout(failed, 10000);
         record.shadow.insertBefore(clone, record.container);
         entry = { clone, ready, dispose() { finish(workspaceError('workspace_retired', 'Native transcript styles retired')); clone.remove(); } };
         record.links.set(source, entry);

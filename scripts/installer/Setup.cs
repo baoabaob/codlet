@@ -25,6 +25,7 @@ namespace Codlet.Setup {
 #if SETUP_FIXTURE
                 if (!preview) return 87;
 #endif
+                if (args.Contains("--validate-upgrade") || args.Contains("--upgrade-existing")) return ManagedUpgrade.Run(args);
                 var app = new Application();
                 if (args.Contains("--chinese")) System.Threading.Thread.CurrentThread.CurrentUICulture = CultureInfo.GetCultureInfo("zh-CN");
                 var setup = new SetupWindow(preview, args.Contains("--english"));
@@ -271,7 +272,7 @@ namespace Codlet.Setup {
             foreach (string key in new[]{"ELECTRON_RUN_AS_NODE", "NODE_OPTIONS"}) info.EnvironmentVariables.Remove(key);
             Process.Start(info);
         }
-        static string ExtractPayload(string directory) {
+        internal static string ExtractPayload(string directory) {
             string file = Path.Combine(directory, "Codlet.msi");
             using (var input = Assembly.GetExecutingAssembly().GetManifestResourceStream("Codlet.Payload.msi"))
             using (var output = new FileStream(file, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);

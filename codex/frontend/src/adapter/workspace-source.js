@@ -3,46 +3,71 @@ import { analyze } from 'eslint-scope';
 import { workspaceError } from './workspace-dom.js';
 import { keymapQueryKind } from './workspace-keymap-query.js';
 
-const syntaxCache = new Map(), MAX_DECLARATION = 32768, MAX_MODULE_INTERFACE = 512 * 1024;
+const syntaxCache = new Map();
 const text = node => node?.type === 'Literal' ? node.value :
   node?.type === 'TemplateLiteral' && !node.expressions.length ? node.quasis[0].value.cooked : undefined;
 const key = node => node?.computed ? text(node.key ?? node.property) :
   (node?.key ?? node?.property)?.name ?? text(node?.key ?? node?.property);
 const functionNode = node => ['FunctionExpression', 'FunctionDeclaration', 'ArrowFunctionExpression'].includes(node?.type);
 export function visitWorkspaceSource(node, visit, skipFunctions = false, root = node) {
-  if (!node || typeof node !== 'object' || skipFunctions && node !== root && functionNode(node)) return;
-  if (node.type) visit(node);
-  for (const [name, value] of Object.entries(node)) if (!['start', 'end', 'range', 'loc'].includes(name)) {
-    if (Array.isArray(value)) for (const child of value) visitWorkspaceSource(child, visit, skipFunctions, root);
-    else if (value && typeof value === 'object') visitWorkspaceSource(value, visit, skipFunctions, root);
+  const pending = [node];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || skipFunctions && current !== root && functionNode(current)) continue;
+    if (current.type) visit(current);
+    const children = Object.entries(current).filter(([name]) => !['start', 'end', 'range', 'loc'].includes(name)).flatMap(([, value]) => Array.isArray(value) ? value : [value]);
+    for (let index = children.length - 1; index >= 0; index--) if (children[index] && typeof children[index] === 'object') pending.push(children[index]);
   }
 }
 
-// Tokenization identifies real declarations, skipping strings/comments and
-// nested properties named "export". Only small import/export clauses get ASTs.
+// Index complete lexical function boundaries while tokenizing. Only functions
+// containing the requested marker get ASTs; bundle size, declaration length,
+// and unrelated function counts do not determine Native compatibility.
+function functionIndex(stream, functions) {
+  let braces = 0, parens = 0, header, body;
+  const parameters = new Map(), bodies = new Map();
+  return () => {
+    const token = stream.getToken(), label = token.type.label;
+    if (body) { if (label === '{') bodies.set(braces + 1, body); body = undefined; }
+    if (header) {
+      if (label === '(') { parameters.set(parens + 1, header); header = undefined; }
+      else if (label !== 'name' && label !== '*') header = undefined;
+    }
+    if (label === ')' && parameters.has(parens)) { body = parameters.get(parens); parameters.delete(parens); }
+    if (label === '}' && bodies.has(braces)) { bodies.get(braces).end = token.end; bodies.delete(braces); }
+    if (label === 'function') { header = { start: token.start, end: null }; functions.push(header); }
+    if (label === '{' || label === '${') braces++;
+    if (label === '}') braces--;
+    if (label === '(') parens++;
+    if (label === ')') parens--;
+    return token;
+  };
+}
+
+// Tokenization skips strings/comments and nested properties named "export".
 export function workspaceModuleSyntax(source) {
   if (syntaxCache.has(source)) return syntaxCache.get(source);
   const result = { imports: [], exports: [], functions: [], parsed: new Map() };
   const stream = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module' });
+  const indexed = functionIndex(stream, result.functions);
   let buffered, braces = 0, brackets = 0, parens = 0;
-  const next = () => { const value = buffered ?? stream.getToken(); buffered = undefined; return value; };
+  const next = () => { const value = buffered ?? indexed(); buffered = undefined; return value; };
   for (;;) {
     const token = next(), label = token.type.label;
     if (label === 'eof') break;
-    if (label === 'function') result.functions.push(token.start);
     if (!braces && !brackets && !parens && (label === 'export' || label === 'import')) {
       let item = next();
       if (label === 'export' && item.type.label !== '{' || label === 'import' && ['(', '.'].includes(item.type.label)) { buffered = item; continue; }
       let end = item.end, depth = 0, completed = false;
       if (label === 'export') {
         depth = 1;
-        while (depth && end - token.start <= MAX_MODULE_INTERFACE) {
+        while (depth) {
           item = next(); if (item.type.label === 'eof') break;
           if (item.type.label === '{') depth++;
           if (item.type.label === '}') depth--;
           end = item.end;
         }
-        if (depth) throw workspaceError('workspace_host_drift', 'Native export declaration exceeds its boundary');
+        if (depth) throw workspaceError('workspace_host_drift', 'Native export declaration is incomplete');
         item = next();
         if (item.value === 'from') {
           item = next();
@@ -51,7 +76,7 @@ export function workspaceModuleSyntax(source) {
         } else buffered = item;
         completed = true;
       } else {
-        while (end - token.start <= MAX_MODULE_INTERFACE) {
+        for (;;) {
           if (item.type.label === 'string' && !depth) { end = item.end; completed = true; break; }
           if (item.type.label === '{') depth++;
           if (item.type.label === '}') depth--;
@@ -59,7 +84,7 @@ export function workspaceModuleSyntax(source) {
           if (item.type.label === 'eof') break;
         }
       }
-      if (!completed) throw workspaceError('workspace_host_drift', 'Native import declaration exceeds its boundary');
+      if (!completed) throw workspaceError('workspace_host_drift', 'Native import declaration is incomplete');
       const declaration = parse(source.slice(token.start, end), { ecmaVersion: 'latest', sourceType: 'script', allowImportExportEverywhere: true }).body[0];
       if (declaration.type === 'ExportNamedDeclaration') for (const specifier of declaration.specifiers) result.exports.push({
         local: specifier.local.name ?? specifier.local.value, exported: specifier.exported.name ?? specifier.exported.value,
@@ -83,27 +108,28 @@ export function workspaceModuleSyntax(source) {
 }
 
 export function workspaceSourceFunctions(source, marker, {identifier=false}={}) {
-  if (!source.includes(marker)) return [];
+  if (!marker || !source.includes(marker)) return [];
   const syntax = workspaceModuleSyntax(source), found = new Map();
-  let count = 0;
+  const positions = [];
   for (let at = source.indexOf(marker); at >= 0; at = source.indexOf(marker, at + marker.length)) {
     if(identifier&&(/[A-Za-z0-9_$]/.test(source[at-1]??'')||/[A-Za-z0-9_$]/.test(source[at+marker.length]??'')))continue;
-    if (++count > 128) throw workspaceError('workspace_host_drift', 'Native source marker exceeds its search boundary');
-    let low = 0, high = syntax.functions.length;
-    while (low < high) { const middle = (low + high) >>> 1; if (syntax.functions[middle] < at) low = middle + 1; else high = middle; }
-    for (let i = low - 1, attempts = 0; i >= 0 && attempts++ < 64 && at - syntax.functions[i] <= MAX_DECLARATION; i--) {
-      const start = syntax.functions[i];
-      if (!syntax.parsed.has(start)) {
-        let ast;
-        try {
-          ast = parseExpressionAt(source.slice(start, start + MAX_DECLARATION), 0, { ecmaVersion: 'latest', ranges: true });
-          visitWorkspaceSource(ast, node => { node.start += start; node.end += start; node.range = [node.start, node.end]; });
-        } catch { ast = null; }
-        syntax.parsed.set(start, ast && ast.end - ast.start <= MAX_DECLARATION ? ast : null);
+    positions.push(at);
+  }
+  for (const { start, end } of syntax.functions) {
+    let low = 0, high = positions.length;
+    while (low < high) { const middle = (low + high) >>> 1; if (positions[middle] < start) low = middle + 1; else high = middle; }
+    if (end === null || low === positions.length || positions[low] >= end) continue;
+    if (!syntax.parsed.has(start)) {
+      let ast;
+      try {
+        ast = parseExpressionAt(source.slice(start, end), 0, { ecmaVersion: 'latest', ranges: true });
+        visitWorkspaceSource(ast, node => { node.start += start; node.end += start; node.range = [node.start, node.end]; });
       }
-      const ast = syntax.parsed.get(start);
-      if (ast?.end > at) found.set(start, ast);
+      catch { ast = null; }
+      syntax.parsed.set(start, ast?.end === end ? ast : null);
     }
+    const ast = syntax.parsed.get(start);
+    if (ast) found.set(start, ast);
   }
   return [...found.values()];
 }
@@ -175,9 +201,8 @@ export function keymapSourceExport(source, { optional = false } = {}) {
     const resolve=workspaceLexicalReferences(ast);
     for(const value of assignments(ast))if(typeof resolve(value.left)==='string'&&value.right.type==='ArrayExpression'&&value.right.elements.length===2&&text(value.right.elements[0])==='vscode'&&text(value.right.elements[1])==='codex-command-keymap-state')keys.add(value.left.name);
   }
-  if(keys.size>16)throw workspaceError(code,'Native keymap keys exceed the discovery boundary');
   // Native can initialize the module-level query key separately from its query
-  // and derived state. Collect only bounded functions that reference that key.
+  // and derived state. Collect functions that reference that lexical key.
   for(const name of keys)for(const ast of workspaceSourceFunctions(source,name,{identifier:true}))roots.set(ast.start,ast);
   const definitions=new Map();
   for(const ast of roots.values()){

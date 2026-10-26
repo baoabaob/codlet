@@ -134,6 +134,16 @@ impl RuntimeManageService {
                 document
             })
     }
+    #[cfg(windows)]
+    pub(crate) fn suppress_official_update_warning(&self) -> Result<(), String> {
+        let settings = self
+            .settings
+            .as_ref()
+            .ok_or("Codlet preferences are unavailable")?;
+        settings
+            .suppress_official_update_warning()
+            .map_err(|error| error.message)
+    }
     pub(crate) fn start_plugin_update_checks(&self) {
         if let Some(compatibility) = self.client_compatibility_service() {
             compatibility.start();
@@ -171,6 +181,7 @@ impl RuntimeManageService {
             "effective":{"automaticUpdateChecks":document.values.automatic_update_checks,
                 "checkPluginUpdatesOnStartup":document.values.check_plugin_updates_on_startup,
                 "showPluginTags":document.values.show_plugin_tags,
+                "warnBeforeOfficialUpdate":document.values.warn_before_official_update,
                 "updateCheckIntervalSeconds":document.values.update_check_interval_seconds.unwrap_or(interval),
                 "localSourceAutoReload":document.values.local_source_auto_reload.unwrap_or(self.local_watch)},
             "defaults":{"updateCheckIntervalSeconds":interval,"localSourceAutoReload":self.local_watch},
@@ -269,7 +280,7 @@ impl RuntimeManageService {
         }
     }
 
-    fn client_compatibility_service(
+    pub(crate) fn client_compatibility_service(
         &self,
     ) -> Option<crate::client_compatibility::ClientCompatibility> {
         self.client_compatibility
@@ -401,7 +412,7 @@ impl RuntimeManageService {
                     .get("values")
                     .and_then(Value::as_object)
                     .is_none_or(|values| {
-                        values.len() != 5
+                        !(5..=6).contains(&values.len())
                             || ![
                                 "automaticUpdateChecks",
                                 "checkPluginUpdatesOnStartup",
@@ -418,9 +429,14 @@ impl RuntimeManageService {
                         "saveSettings requires all five preference values.",
                     ));
                 }
-                let input: Input = serde_json::from_value(params).map_err(|error| {
+                let includes_warning = params["values"].get("warnBeforeOfficialUpdate").is_some();
+                let mut input: Input = serde_json::from_value(params).map_err(|error| {
                     RuntimeManageError::new("invalid_params", error.to_string())
                 })?;
+                if !includes_warning {
+                    input.values.warn_before_official_update =
+                        read()?.values.warn_before_official_update;
+                }
                 input
                     .values
                     .validate()
@@ -489,10 +505,17 @@ impl RuntimeManageService {
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
             struct CombinedInput {
                 candidate_id: String,
+                #[serde(default)]
+                target_id: Option<String>,
             }
             let input: CombinedInput = serde_json::from_value(params)
                 .map_err(|e| RuntimeManageError::new("invalid_params", e.to_string()))?;
-            if input.candidate_id.is_empty() || input.candidate_id.len() > 512 {
+            if input.candidate_id.is_empty()
+                || input.candidate_id.len() > 512
+                || input.target_id.as_ref().is_some_and(|id| {
+                    id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            {
                 return Err(RuntimeManageError::new(
                     "invalid_params",
                     "Invalid update candidate.",
@@ -506,7 +529,7 @@ impl RuntimeManageService {
             })?;
             let status = self
                 .official_updates
-                .request_combined(&service, &input.candidate_id)
+                .request_combined(&service, &input.candidate_id, input.target_id.as_deref())
                 .map_err(|e| RuntimeManageError::new("combined_update_unavailable", e))?;
             return Ok(serde_json::to_value(status).expect("official update status serializes"));
         }

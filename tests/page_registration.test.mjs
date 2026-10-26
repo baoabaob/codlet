@@ -16,6 +16,16 @@ test('navigation registration acquires UI only on entry and retires each view on
   page.dispose();assert.equal(f.observers.size,baseline.observers);assert.equal(f.cleanups.size,baseline.cleanups);
 });
 
+test('page badges remain available outside the view and the download glyph reuses Native SVG data',async t=>{
+  const f=uiFixture();t.after(()=>f.dispose());
+  const page=await f.context.ui.page({label:'Updates',render:({ui})=>ui.React.createElement(ui.icons.Download,{'data-native-download':true})});
+  const lease=f.document.querySelector('[data-codlet-page-lease]');page.setBadge('Codlet 2 is available');assert.equal(lease.dataset.codletPageBadge,'Codlet 2 is available');
+  lease.dataset.codletNativeDownload=JSON.stringify({viewBox:'0 0 20 20',paths:['M2 3H4V8Z']});
+  await f.open();const icon=f.document.querySelector('[data-native-download]');assert.equal(icon.getAttribute('viewBox'),'0 0 20 20');assert.equal(icon.querySelector('path').getAttribute('d'),'M2 3H4V8Z');
+  await f.leave();assert.equal(lease.dataset.codletPageBadge,'Codlet 2 is available');page.setBadge(null);assert.equal(lease.hasAttribute('data-codlet-page-badge'),false);
+  page.dispose();assert.throws(()=>page.setBadge('retired'),/retired/);
+});
+
 test('declined auxiliary page does not initialize the SDK or retain a lease',async t=>{
   const f=uiFixture();t.after(()=>f.dispose());const baseline=f.cleanups.size;
   f.context.ui.create=()=>{throw Error('auxiliary window must not initialize UI');};

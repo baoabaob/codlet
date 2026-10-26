@@ -13,6 +13,7 @@ const MAX_FILE = 512 * 1024 * 1024;
 const CORE_MODULES=new Map(['renderer-bootstrap','renderer-helpers','renderer-ui','renderer-facade','renderer-page','renderer-i18n','renderer-codex-sdk','renderer-core-services','core-ui-provider','core-desktop-provider','host-bootstrap'].map(id=>[id,'runtime/core-modules/'+id+(id==='renderer-core-services'||id.startsWith('core-')||id==='host-bootstrap'?'.cjs':'.js')]));
 const CORE_MODULE_PATHS=new Set(CORE_MODULES.values());
 const fail = (code, message) => Object.assign(new Error(message), { code });
+export {read,verify,digest,writeJson,ordinary,ancestors,key,sha,absolute,ownersAlive};
 const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const key = value => path.resolve(value).replace(/^\\\\\?\\/, '').toLowerCase();

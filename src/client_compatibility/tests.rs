@@ -19,6 +19,33 @@ fn published_catalog_is_valid_and_can_advance_without_changing_the_baseline() {
 }
 
 #[test]
+fn combined_updates_require_an_exact_published_core_and_future_client_pair() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut service = ClientCompatibility::new("26.1.1.0", &temp.path().join("config.json"), None);
+    Arc::get_mut(&mut service.0).unwrap().platform = "windows-x86_64".into();
+    let pair = {
+        let state = service.0.state.lock().unwrap();
+        state
+            .catalog
+            .records
+            .iter()
+            .find(|record| {
+                record.platform == service.0.platform && !record.verified_with.is_empty()
+            })
+            .map(|record| {
+                (
+                    record.client_version.clone(),
+                    record.verified_with[0].core_version.clone(),
+                )
+            })
+            .unwrap()
+    };
+    assert!(service.verified_pair(&pair.0, &pair.1));
+    assert!(!service.verified_pair(&pair.0, "99.0.0"));
+    assert!(!service.verified_pair("99.999.1.0", &pair.1));
+}
+
+#[test]
 fn native_21477_acceptance_is_included_in_the_offline_catalog() {
     let temp = tempfile::tempdir().unwrap();
     let state = State::load(&temp.path().join("cache.json"));

@@ -56,6 +56,7 @@
     // Retired isolated worlds can outlive their plugin in Chromium; do not keep
     // the SDK's module graph rooted through the immutable runtime tombstone.
     let uiFactory = options.lazyUI === true ? null : createUI;
+    let officialUpdatePrompt = null;
     let retired = false;
     let retireFacade = null;
     const RPC_TIMEOUT_MS = 15000;
@@ -328,6 +329,7 @@
 
     function releaseEmptyRuntime() {
         if (!plugins.size && !activating.size && !stopping.size && !operations.size) {
+            officialUpdatePrompt?.dispose(); officialUpdatePrompt = null;
             let failure;
             const release = disposeHelpers;
             disposeHelpers = null;
@@ -724,6 +726,16 @@
             record.updating = false;
             record.snapshotController?.abort(rpcError('state_snapshot_cancelled', 'Core cancelled this state checkpoint'));
             return { ok: true };
+        },
+        async __confirmOfficialUpdate() {
+            wakeEventLoop();
+            if(retired||world!=='main')return {accepted:false,suppress:false};
+            if(officialUpdatePrompt)return officialUpdatePrompt.result;
+            if(!uiFactory)uiFactory=createUI();
+            if(typeof uiFactory?.confirmOfficialUpdate!=='function')throw new Error('The Core update dialog is unavailable');
+            const prompt=uiFactory.confirmOfficialUpdate({pluginId:'codlet.core.official-update',generation:0,onDeactivate:()=>()=>{}});
+            officialUpdatePrompt=prompt;
+            try{return await prompt.result;}finally{if(officialUpdatePrompt===prompt)officialUpdatePrompt=null;}
         },
         __coreAdmissionPause(operationId) {
             if (!validAdmissionId(operationId)) return { ok: false, error: 'Invalid Core admission operation identity' };

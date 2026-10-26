@@ -60,6 +60,16 @@ test('task configuration changes the actual Native request and preserves unrelat
     assert.equal(f.api.status().threadConfiguration.existingLoadedThreads, true);
 });
 
+test('model-only changes preserve large Native input and every concurrent dispatch',async t=>{
+    const f=fixture(t),release=[];
+    f.api.registerThreadConfiguration(f.owner().ctx,{id:'models',appliesAt:['turn.start']},()=>new Promise(resolve=>release.push(resolve)));
+    const input=[{type:'text',text:'native '.repeat(100000)}];
+    for(let index=0;index<24;index++)f.dispatch('turn/start',{threadId:'thread-'+index,input:index===0?input:[]});
+    await tick();assert.equal(release.length,24);assert.equal(f.errors.length,0);
+    for(const resolve of release)resolve({model:'chosen-model'});
+    await tick();assert.equal(f.sent.length,24);assert.equal(f.errors.length,0);assert.equal(f.sent[0].request.params.input,input);
+});
+
 test('no registration, remote hosts, turn calls and undefined selection preserve Native requests', async t => {
     const f = fixture(t);
     const first = f.dispatch(); assert.equal(f.sent[0], first);
