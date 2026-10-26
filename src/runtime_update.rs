@@ -31,11 +31,16 @@ pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_FILES: usize = 4096;
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 pub const PLATFORM: &str = "win-x64";
+#[cfg(all(windows, target_arch = "aarch64"))]
+pub const PLATFORM: &str = "win-arm64";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub const PLATFORM: &str = "darwin-arm64";
-#[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+#[cfg(not(any(
+    all(windows, any(target_arch = "x86_64", target_arch = "aarch64")),
+    all(target_os = "macos", target_arch = "aarch64")
+)))]
 pub const PLATFORM: &str = "unsupported";
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -609,15 +614,20 @@ impl RuntimeUpdateService {
             })?;
         target
             .install_official_update(operation, expected_target)
-            .map_err(|failure| error(&failure.code, failure.message))
+            .map_err(|failure| error(failure.code, failure.message))
     }
     /// Supplied only by the owned launcher after its authenticated Native bridge
     /// is ready. Renderer RPC cannot select another process or source endpoint.
     pub(crate) fn attach_online_target(&self, target: crate::client_bridge::ClientSourceRuntime) {
         let mut state = self.shared.lock().unwrap();
         state.online_target = Some(target);
-        state.status.install_available = true;
-        state.status.unavailable_reason = None;
+        // Windows may update compatible modules without a restart context.
+        // Mac bundles currently require the checked launcher for every update.
+        #[cfg(windows)]
+        {
+            state.status.install_available = true;
+            state.status.unavailable_reason = None;
+        }
     }
     #[cfg(all(windows, feature = "desktop-acceptance"))]
     pub(crate) fn attach_owned_fixture(
@@ -1400,5 +1410,5 @@ fn read_channel(install_root: &Path) -> Result<RuntimeUpdateChannel> {
 mod foreground_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, target_arch = "x86_64"))]
 mod windows_acceptance;

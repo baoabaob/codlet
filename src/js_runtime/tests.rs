@@ -358,6 +358,34 @@ fn active_windows_cache_gc_preserves_original_marker_node_and_license() {
     );
 }
 
+#[test]
+fn cache_cleanup_ignores_non_ascii_preparation_and_retired_names() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = isolated_cache(&directory);
+    fs::create_dir(&root).unwrap();
+    let target = DesktopTarget::current().unwrap();
+    // Byte 64 falls inside the final three-byte character, rather than at a
+    // UTF-8 boundary. These are user-owned paths, never preparation receipts.
+    let suffix = format!("{}界-tail", "a".repeat(63));
+    let names = [
+        format!(".node-prepare-{}-{suffix}", target.node_platform()),
+        format!(".gc-{}-{suffix}", target.node_platform()),
+    ];
+    for name in &names {
+        let path = root.join(name);
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("keep.txt"), b"unowned content").unwrap();
+    }
+    let pin = fixture_pin(b"current Node", b"current LICENSE", Some("managed"));
+    provision::prune_obsolete_inner(&root, target, &pin).unwrap();
+    for name in names {
+        assert_eq!(
+            fs::read(root.join(name).join("keep.txt")).unwrap(),
+            b"unowned content"
+        );
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn fixed_official_zip_extracts_only_node_and_license() {

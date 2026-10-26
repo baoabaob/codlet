@@ -275,11 +275,11 @@ impl ControlBroker {
         state.queue.clear();
     }
 
-    /// A small settings commit shares the owner's readiness/stop boundary.
+    /// A synchronous managed-file mutation shares the owner's readiness/stop boundary.
     /// It cannot overlap a queued/running lifecycle operation or outlive stop.
-    pub(crate) fn with_settings_write<T>(
+    pub(crate) fn with_owner_write<T>(
         &self,
-        save: impl FnOnce() -> T,
+        write: impl FnOnce() -> T,
     ) -> Result<T, ControlStatus> {
         let state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         if state.stopped {
@@ -296,7 +296,7 @@ impl ControlBroker {
         }) {
             return Err(ControlStatus::Busy);
         }
-        Ok(save())
+        Ok(write())
     }
 
     pub fn handle(&self, request: ControlRequest) -> ControlReport {

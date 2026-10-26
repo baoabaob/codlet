@@ -25,6 +25,74 @@ fn allow_refresh(path: &Path, url: &str) {
 }
 
 #[test]
+fn concurrent_origin_cooldowns_keep_the_longest_server_deadline_and_repair_invalid_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let registry = root.path().join("config.json");
+    let path = cache_path(&registry, "origin:https://github.com").unwrap();
+    std::fs::write(&path, b"invalid-cache").unwrap();
+    let now = now_ms();
+    extend_cooldown(
+        Some(&path),
+        Cooldown {
+            until: now + 60_000,
+            message: "first".into(),
+        },
+    )
+    .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let mut workers = Vec::new();
+    for delay in [120_000, 3_600_000] {
+        let path = path.clone();
+        let barrier = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            extend_cooldown(
+                Some(&path),
+                Cooldown {
+                    until: now + delay,
+                    message: format!("delay-{delay}"),
+                },
+            )
+            .unwrap();
+        }));
+    }
+    barrier.wait();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let late = extend_cooldown(
+        Some(&path),
+        Cooldown {
+            until: now + 60_000,
+            message: "short response arriving last".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(late.until, now + 3_600_000);
+    assert_eq!(
+        read_cache::<Cooldown>(Some(&path)).unwrap().until,
+        now + 3_600_000
+    );
+    write_cache(
+        Some(&path),
+        &Cooldown {
+            until: now - 1,
+            message: "expired".into(),
+        },
+    )
+    .unwrap();
+    let renewed = extend_cooldown(
+        Some(&path),
+        Cooldown {
+            until: now + 120_000,
+            message: "new restriction".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(renewed.until, now + 120_000);
+}
+
+#[test]
 fn retry_times_accept_http_dates_and_never_shortcut_an_exhausted_quota_reset() {
     let now = 1_792_512_000_000;
     let mut headers = reqwest::header::HeaderMap::new();

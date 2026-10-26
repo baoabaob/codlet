@@ -42,6 +42,30 @@ struct State {
     candidate_id: Option<String>,
     expected_target: Option<OfficialUpdateTarget>,
 }
+impl State {
+    fn validate_combined_identity(
+        &self,
+        expected_candidate: &str,
+        expected_target: Option<&str>,
+    ) -> Result<bool, String> {
+        let busy = matches!(
+            self.status.combined_phase.as_str(),
+            "downloading" | "preparing" | "installing"
+        );
+        let target = if busy {
+            self.expected_target.as_ref()
+        } else {
+            self.status.target.as_ref()
+        };
+        if expected_target.is_none()
+            || target.is_none_or(|target| Some(target.id.as_str()) != expected_target)
+            || busy && self.candidate_id.as_deref() != Some(expected_candidate)
+        {
+            return Err("The update changed or its target was not confirmed. Cancel and review it again before installing.".into());
+        }
+        Ok(busy)
+    }
+}
 #[derive(Clone, Default)]
 pub(crate) struct OfficialUpdates(Arc<Mutex<State>>);
 impl OfficialUpdates {
@@ -61,10 +85,7 @@ impl OfficialUpdates {
         expected_target: Option<&str>,
     ) -> Result<OfficialUpdateStatus, String> {
         let mut state = self.0.lock().unwrap();
-        if matches!(
-            state.status.combined_phase.as_str(),
-            "downloading" | "preparing" | "installing"
-        ) {
+        if state.validate_combined_identity(expected_candidate, expected_target)? {
             return Ok(state.status.clone());
         }
         let update = runtime.status();
@@ -81,11 +102,6 @@ impl OfficialUpdates {
             || state.status.phase != "ready"
             || !update.install_available
             || state.status.compatible_candidate_id.as_deref() != Some(expected_candidate)
-            || state
-                .status
-                .target
-                .as_ref()
-                .is_none_or(|target| expected_target.is_some_and(|expected| target.id != expected))
             || !matches!(
                 update.phase,
                 RuntimeUpdatePhase::Available | RuntimeUpdatePhase::Downloaded
@@ -123,3 +139,75 @@ impl OfficialUpdates {
 mod owner;
 #[cfg(windows)]
 pub(crate) use owner::{OfficialUpdateOwner, UpdateExit};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> State {
+        let mut state = State::default();
+        state.status.target = Some(OfficialUpdateTarget {
+            id: "confirmed-target".into(),
+            version: "26.1021.3705.0".into(),
+        });
+        state
+    }
+
+    #[test]
+    fn combined_update_requires_the_confirmed_target_before_scheduling() {
+        let state = state();
+        assert!(state.validate_combined_identity("candidate", None).is_err());
+        assert!(
+            state
+                .validate_combined_identity("candidate", Some(""))
+                .is_err()
+        );
+        assert!(
+            state
+                .validate_combined_identity("candidate", Some("earlier-target"))
+                .is_err()
+        );
+        assert_eq!(
+            state.validate_combined_identity("candidate", Some("confirmed-target")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn pending_combined_update_queries_only_the_original_identity() {
+        for phase in ["downloading", "preparing", "installing"] {
+            let mut state = state();
+            state.status.combined_phase = phase.into();
+            state.candidate_id = Some("original-candidate".into());
+            state.expected_target = state.status.target.clone();
+            state.status.target = Some(OfficialUpdateTarget {
+                id: "newly-observed-target".into(),
+                version: "26.1022.1.0".into(),
+            });
+            assert_eq!(
+                state.validate_combined_identity("original-candidate", Some("confirmed-target")),
+                Ok(true)
+            );
+            assert!(
+                state
+                    .validate_combined_identity("original-candidate", None)
+                    .is_err()
+            );
+            assert!(
+                state
+                    .validate_combined_identity("original-candidate", Some("newly-observed-target"))
+                    .is_err()
+            );
+            assert!(
+                state
+                    .validate_combined_identity("new-candidate", Some("confirmed-target"))
+                    .is_err()
+            );
+            assert_eq!(state.candidate_id.as_deref(), Some("original-candidate"));
+            assert_eq!(
+                state.expected_target.as_ref().unwrap().id,
+                "confirmed-target"
+            );
+        }
+    }
+}

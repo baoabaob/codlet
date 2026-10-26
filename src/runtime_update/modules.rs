@@ -48,15 +48,37 @@ pub(super) fn module_path(id: &str) -> Option<&'static str> {
         .map(|(_, path)| *path)
 }
 const MODULE_BYTES: u64 = 8 * 1024 * 1024;
-static ACTIVE: OnceLock<Mutex<Option<BTreeMap<String, String>>>> = OnceLock::new();
+static ACTIVE: OnceLock<Mutex<ModuleOverlay>> = OnceLock::new();
 static VERIFIED: OnceLock<Mutex<BTreeSet<(String, String)>>> = OnceLock::new();
 static INSTALLED: OnceLock<BTreeMap<String, String>> = OnceLock::new();
-static OWNER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-fn owner() -> &'static Mutex<Option<String>> {
-    OWNER.get_or_init(|| Mutex::new(None))
+#[derive(Default)]
+struct ModuleOverlay {
+    current: Option<BTreeMap<String, String>>,
+    owner: Option<String>,
 }
-fn active() -> &'static Mutex<Option<BTreeMap<String, String>>> {
-    ACTIVE.get_or_init(|| Mutex::new(None))
+impl ModuleOverlay {
+    fn claim(&mut self, id: &str) -> Result<Option<BTreeMap<String, String>>> {
+        if self.owner.is_some() {
+            return Err(error(
+                "core_modules_owner_busy",
+                "Another foreground transaction owns the Core module set.",
+            ));
+        }
+        let previous = self.current.clone();
+        self.owner = Some(id.into());
+        Ok(previous)
+    }
+    fn retire(&mut self, id: &str, previous: Option<BTreeMap<String, String>>, committed: bool) {
+        if self.owner.as_deref() == Some(id) {
+            if !committed {
+                self.current = previous;
+            }
+            self.owner = None;
+        }
+    }
+}
+fn active() -> &'static Mutex<ModuleOverlay> {
+    ACTIVE.get_or_init(|| Mutex::new(ModuleOverlay::default()))
 }
 fn verified() -> &'static Mutex<BTreeSet<(String, String)>> {
     VERIFIED.get_or_init(|| Mutex::new(BTreeSet::new()))
@@ -102,15 +124,8 @@ impl CoreModulesGuard {
 }
 impl Drop for CoreModulesGuard {
     fn drop(&mut self) {
-        if let Ok(mut held) = owner().lock()
-            && held.as_deref() == Some(self.owner.as_str())
-        {
-            if !self.committed
-                && let Ok(mut current) = active().lock()
-            {
-                *current = self.previous.take();
-            }
-            *held = None;
+        if let Ok(mut held) = active().lock() {
+            held.retire(&self.owner, self.previous.take(), self.committed);
         }
     }
 }
@@ -141,22 +156,7 @@ pub(crate) fn activate_online_modules(
                 "Core module owner is unavailable.",
             )
         })?
-        .clone();
-    {
-        let mut held = owner().lock().map_err(|_| {
-            error(
-                "core_modules_owner_poisoned",
-                "Core module owner is unavailable.",
-            )
-        })?;
-        if held.is_some() {
-            return Err(error(
-                "core_modules_owner_busy",
-                "Another foreground transaction owns the Core module set.",
-            ));
-        }
-        *held = Some(request.id.clone());
-    }
+        .claim(&request.id)?;
     let guard = CoreModulesGuard {
         previous: prior.clone(),
         committed: false,
@@ -169,12 +169,15 @@ pub(crate) fn activate_online_modules(
     next.extend(request.modules.clone());
     next.insert("client-source".into(), request.client_source.clone());
     remember(&next);
-    *active().lock().map_err(|_| {
-        error(
-            "core_modules_owner_poisoned",
-            "Core module owner is unavailable.",
-        )
-    })? = Some(next);
+    active()
+        .lock()
+        .map_err(|_| {
+            error(
+                "core_modules_owner_poisoned",
+                "Core module owner is unavailable.",
+            )
+        })?
+        .current = Some(next);
     Ok(guard)
 }
 fn installed_current() -> Result<BTreeMap<String, String>> {
@@ -193,7 +196,7 @@ fn installed_current() -> Result<BTreeMap<String, String>> {
     Ok(modules)
 }
 pub(crate) fn core_module_override(id: &str) -> Option<String> {
-    active().lock().ok()?.as_ref()?.get(id).cloned()
+    active().lock().ok()?.current.as_ref()?.get(id).cloned()
 }
 pub(crate) fn core_module_source(id: &str, embedded: &str) -> String {
     if let Some(source) = core_module_override(id) {
@@ -225,8 +228,14 @@ pub(super) fn installed_modules(root: &Path) -> Result<BTreeMap<String, String>>
     let Some(pin) = super::online::load_pin(root)? else {
         return Ok(BTreeMap::new());
     };
+    read_pinned_modules(root, &pin.modules)
+}
+pub(super) fn read_pinned_modules(
+    root: &Path,
+    pins: &[super::online::InstalledModule],
+) -> Result<BTreeMap<String, String>> {
     let mut modules = BTreeMap::new();
-    for record in pin.modules {
+    for record in pins {
         if module_path(&record.id) != Some(record.file.path.as_str())
             || record.file.bytes > MODULE_BYTES
             || modules.contains_key(&record.id)
@@ -239,11 +248,11 @@ pub(super) fn installed_modules(root: &Path) -> Result<BTreeMap<String, String>>
             ));
         }
         let code = String::from_utf8(package::read_file(
-            &root.join(record.file.path),
+            &root.join(&record.file.path),
             MODULE_BYTES,
         )?)
         .map_err(|_| error("core_modules_pin_invalid", "Core module must be UTF-8."))?;
-        modules.insert(record.id, code);
+        modules.insert(record.id.clone(), code);
     }
     Ok(modules)
 }
@@ -395,4 +404,52 @@ pub(super) fn foreground_wait(
     }
     state.online_modules = None;
     completion
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn partial_transactions_capture_the_latest_committed_overlay_and_rollback_to_it() {
+        let overlay = Arc::new(Mutex::new(ModuleOverlay {
+            current: Some(BTreeMap::from([(
+                "renderer-ui".into(),
+                "initial-ui".into(),
+            )])),
+            owner: None,
+        }));
+        let previous = overlay.lock().unwrap().claim("first").unwrap();
+        overlay.lock().unwrap().current = Some(BTreeMap::from([
+            ("renderer-ui".into(), "updated-ui".into()),
+            ("renderer-i18n".into(), "updated-i18n".into()),
+        ]));
+        let (send, receive) = mpsc::sync_channel(1);
+        let competing = overlay.clone();
+        let contender = std::thread::spawn(move || {
+            send.send(competing.lock().unwrap().claim("second").unwrap_err().code)
+                .unwrap();
+        });
+        assert_eq!(receive.recv().unwrap(), "core_modules_owner_busy");
+        contender.join().unwrap();
+        overlay.lock().unwrap().retire("first", previous, true);
+
+        let mut held = overlay.lock().unwrap();
+        let committed = held.current.clone();
+        let previous = held.claim("second").unwrap();
+        assert_eq!(previous, committed);
+        let mut partial = previous.clone().unwrap();
+        partial.insert("renderer-ui".into(), "candidate-ui".into());
+        assert_eq!(
+            partial.get("renderer-i18n").map(String::as_str),
+            Some("updated-i18n")
+        );
+        held.current = Some(partial);
+        held.retire("retired-owner", None, false);
+        assert_eq!(held.owner.as_deref(), Some("second"));
+        held.retire("second", previous, false);
+        assert_eq!(held.current, committed);
+        assert!(held.owner.is_none());
+    }
 }

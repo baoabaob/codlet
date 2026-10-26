@@ -249,8 +249,11 @@ impl UpdateClient {
                     origins,
                     Some(release.html_url),
                 )?;
-                let installer_name =
-                    format!("Codlet-{}-windows-x64-setup.exe", selected.public.version);
+                let installer_name = format!(
+                    "Codlet-{}-{}-setup.exe",
+                    selected.public.version,
+                    selected.public.platform.replacen("win-", "windows-", 1)
+                );
                 let installers = release
                     .assets
                     .iter()
@@ -775,6 +778,15 @@ fn select_artifact(
     profile: RuntimePayloadProfile,
     resident_sha256: Option<&str>,
 ) -> Result<ChannelArtifact> {
+    select_artifact_for_platform(manifest, channel, profile, resident_sha256, PLATFORM)
+}
+fn select_artifact_for_platform(
+    manifest: &ChannelManifest,
+    channel: &RuntimeUpdateChannel,
+    profile: RuntimePayloadProfile,
+    resident_sha256: Option<&str>,
+    platform: &str,
+) -> Result<ChannelArtifact> {
     if !matches!(manifest.schema, 1 | 2)
         || manifest.kind != "codlet-runtime-channel"
         || manifest.channel != channel.channel
@@ -817,7 +829,7 @@ fn select_artifact(
     let matched = manifest
         .artifacts
         .iter()
-        .filter(|a| a.platform == PLATFORM && a.profile == profile)
+        .filter(|a| a.platform == platform && a.profile == profile)
         .collect::<Vec<_>>();
     let full = matched
         .iter()
@@ -869,6 +881,40 @@ fn candidate(
 #[cfg(test)]
 mod release_selection_tests {
     use super::*;
+    #[test]
+    fn arm64_core_cannot_select_an_x64_only_release() {
+        let mut x64 = artifact(None);
+        x64.platform = "win-x64".into();
+        let mut manifest = ChannelManifest {
+            schema: 2,
+            kind: "codlet-runtime-channel".into(),
+            channel: "preview".into(),
+            version: "9.0.0".into(),
+            artifacts: vec![x64],
+        };
+        let select = |manifest: &ChannelManifest, platform| {
+            select_artifact_for_platform(
+                manifest,
+                &channel(),
+                RuntimePayloadProfile::Portable,
+                None,
+                platform,
+            )
+        };
+        assert_eq!(select(&manifest, "win-x64").unwrap().platform, "win-x64");
+        assert_eq!(
+            select(&manifest, "win-arm64").unwrap_err().code,
+            "runtime_update_platform_unavailable"
+        );
+        let mut arm64 = artifact(None);
+        arm64.platform = "win-arm64".into();
+        manifest.artifacts.push(arm64);
+        assert_eq!(
+            select(&manifest, "win-arm64").unwrap().platform,
+            "win-arm64"
+        );
+        assert_eq!(select(&manifest, "win-x64").unwrap().platform, "win-x64");
+    }
     fn artifact(base: Option<&str>) -> ChannelArtifact {
         ChannelArtifact {
             platform: PLATFORM.into(),

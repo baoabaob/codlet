@@ -36,7 +36,12 @@ fn pe(label: &str) -> Vec<u8> {
     bytes[..2].copy_from_slice(b"MZ");
     bytes[60..64].copy_from_slice(&64u32.to_le_bytes());
     bytes[64..68].copy_from_slice(b"PE\0\0");
-    bytes[68..70].copy_from_slice(&0x8664u16.to_le_bytes());
+    let machine = if PLATFORM == "win-arm64" {
+        0xaa64u16
+    } else {
+        0x8664u16
+    };
+    bytes[68..70].copy_from_slice(&machine.to_le_bytes());
     bytes.extend_from_slice(label.as_bytes());
     bytes
 }
@@ -54,7 +59,7 @@ pub(super) fn payload(
         license_sha256: sha(&license),
         mode: package::NodeRuntimeMode::Bundled,
     };
-    let pin = serde_json::json!({"schema":1,"version":node_version,"baseUrl":"https://nodejs.org/fixture","platforms":{"win-x64":{"executableSha256":runtime.executable_sha256,"licenseSha256":runtime.license_sha256}}});
+    let pin = serde_json::json!({"schema":1,"version":node_version,"baseUrl":"https://nodejs.org/fixture","platforms":{(PLATFORM):{"executableSha256":runtime.executable_sha256,"licenseSha256":runtime.license_sha256}}});
     let executable = if profile == RuntimePayloadProfile::Portable {
         "codlet.exe"
     } else {
@@ -67,11 +72,11 @@ pub(super) fn payload(
         serde_json::to_vec(&pin).unwrap(),
     );
     files.insert(
-        format!("runtime/node-v{node_version}-win-x64/node.exe"),
+        format!("runtime/node-v{node_version}-{PLATFORM}/node.exe"),
         node,
     );
     files.insert(
-        format!("runtime/node-v{node_version}-win-x64/LICENSE"),
+        format!("runtime/node-v{node_version}-{PLATFORM}/LICENSE"),
         license,
     );
     let records = files
@@ -1071,7 +1076,7 @@ fn managed_portable_package_has_exact_slim_layout_and_pin_mode() {
     );
     let (wrong, mut files) = managed_payload(RuntimePayloadProfile::Portable);
     files.insert(
-        "runtime/node-v25.0.0-win-x64/node.exe".into(),
+        format!("runtime/node-v25.0.0-{PLATFORM}/node.exe"),
         pe("unexpected"),
     );
     assert!(
@@ -1108,7 +1113,7 @@ fn managed_portable_package_has_exact_slim_layout_and_pin_mode() {
 fn legacy_bundled_package_cannot_omit_its_pinned_node() {
     let temp = tempfile::tempdir().unwrap();
     let (manifest, mut files) = payload(RuntimePayloadProfile::Portable, "9.0.0", "24.21.0", "new");
-    files.remove("runtime/node-v24.21.0-win-x64/node.exe");
+    files.remove(&format!("runtime/node-v24.21.0-{PLATFORM}/node.exe"));
     assert!(
         stage(
             &zip_payload(&manifest, &files, None),
@@ -1342,7 +1347,7 @@ fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
 }
 #[cfg(windows)]
 fn release(bytes: &[u8]) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({"schema":1,"kind":"codlet-runtime-channel","channel":"stable","version":"9.0.0","artifacts":[{"platform":"win-x64","profile":"portable","bytes":bytes.len(),"sha256":sha(bytes),"url":"https://cdn.example/runtime.zip","assetName":null}]})).unwrap()
+    serde_json::to_vec(&serde_json::json!({"schema":1,"kind":"codlet-runtime-channel","channel":"stable","version":"9.0.0","artifacts":[{"platform":PLATFORM,"profile":"portable","bytes":bytes.len(),"sha256":sha(bytes),"url":"https://cdn.example/runtime.zip","assetName":null}]})).unwrap()
 }
 
 fn github_channel(name: &str) -> RuntimeUpdateChannel {
@@ -1665,7 +1670,7 @@ fn install_plan_binds_current_identity_and_only_the_two_owner_configuration_pins
     )
     .unwrap();
     let config = install_root.join("lab-config.json");
-    let original = serde_json::json!({"schema":1,"labBinary":"codlet-lab.exe","labBinarySha256":old.files.iter().find(|f|f.path=="codlet-lab.exe").unwrap().sha256.to_uppercase(),"nodeRelative":"runtime/node-v24.21.0-win-x64/node.exe","userSetting":"preserve","officialCli":"C:/not-touched/codex.exe"});
+    let original = serde_json::json!({"schema":1,"labBinary":"codlet-lab.exe","labBinarySha256":old.files.iter().find(|f|f.path=="codlet-lab.exe").unwrap().sha256.to_uppercase(),"nodeRelative":format!("runtime/node-v24.21.0-{PLATFORM}/node.exe"),"userSetting":"preserve","officialCli":"C:/not-touched/codex.exe"});
     std::fs::write(&config, serde_json::to_vec(&original).unwrap()).unwrap();
     let program = PathBuf::from(std::env::var("SYSTEMROOT").unwrap())
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -1690,11 +1695,11 @@ fn install_plan_binds_current_identity_and_only_the_two_owner_configuration_pins
         serde_json::from_slice(&std::fs::read(&request.plan_path).unwrap()).unwrap();
     assert_eq!(
         plan["configPin"]["oldNodeRelative"],
-        "runtime/node-v24.21.0-win-x64/node.exe"
+        format!("runtime/node-v24.21.0-{PLATFORM}/node.exe")
     );
     assert_eq!(
         plan["configPin"]["newNodeRelative"],
-        "runtime/node-v25.0.0-win-x64/node.exe"
+        format!("runtime/node-v25.0.0-{PLATFORM}/node.exe")
     );
     assert_eq!(
         plan["configPin"]["newValue"],
@@ -1738,8 +1743,7 @@ fn install_plan_binds_current_identity_and_only_the_two_owner_configuration_pins
     );
 }
 
-#[cfg(windows)]
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 fn powershell_builder_emits_real_dotnet_zips_and_merges_both_profiles_without_user_files() {
     use std::os::windows::process::CommandExt;
@@ -1827,7 +1831,6 @@ fn powershell_builder_emits_real_dotnet_zips_and_merges_both_profiles_without_us
     }
 }
 
-#[cfg(windows)]
 #[cfg(windows)]
 #[test]
 fn cross_volume_install_is_rejected_before_any_process_handoff_or_file_access() {

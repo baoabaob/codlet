@@ -99,6 +99,13 @@
             "codex.desktop.adapter": "0.2.8",
             "codex.ui.adapter": "0.1.10"
           }
+        },
+        {
+          "coreVersion": "0.2.0-preview.24",
+          "adapters": {
+            "codex.desktop.adapter": "0.2.8",
+            "codex.ui.adapter": "0.1.10"
+          }
         }
       ]
     }

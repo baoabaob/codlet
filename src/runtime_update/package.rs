@@ -1028,23 +1028,36 @@ fn verify_payload(
     Ok(())
 }
 fn verify_pe(path: &Path) -> Result<()> {
+    verify_pe_for_platform(path, PLATFORM)
+}
+fn verify_pe_for_platform(path: &Path, platform: &str) -> Result<()> {
     let mut file = File::open(path).map_err(io_error)?;
     let header = read_at(&mut file, 0, 64)?;
     let offset = u32::from_le_bytes(header[60..64].try_into().unwrap()) as u64;
     if &header[..2] != b"MZ" || !(64..=1024 * 1024).contains(&offset) {
         return Err(error(
             "runtime_update_executable_invalid",
-            "Runtime package does not contain Windows x64 PE executables.",
+            "Runtime package does not contain valid Windows PE executables.",
         ));
     }
     let pe = read_at(&mut file, offset, 6)?;
-    if &pe[..4] != b"PE\0\0" || u16::from_le_bytes(pe[4..6].try_into().unwrap()) != 0x8664 {
+    if &pe[..4] != b"PE\0\0"
+        || pe_machine_for_platform(platform)
+            != Some(u16::from_le_bytes(pe[4..6].try_into().unwrap()))
+    {
         return Err(error(
             "runtime_update_executable_invalid",
-            "Runtime executable architecture is not Windows x64.",
+            "Runtime executable architecture differs from this Core platform.",
         ));
     }
     Ok(())
+}
+fn pe_machine_for_platform(platform: &str) -> Option<u16> {
+    match platform {
+        "win-x64" => Some(0x8664),
+        "win-arm64" => Some(0xaa64),
+        _ => None,
+    }
 }
 
 fn zip_error(message: impl Into<String>) -> super::RuntimeUpdateError {
@@ -1369,4 +1382,34 @@ fn extract_zip(path: &Path, destination: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod architecture_tests {
+    use super::*;
+
+    #[test]
+    fn windows_payload_architecture_is_bound_to_the_selected_platform() {
+        let directory = tempfile::tempdir().unwrap();
+        for (machine, expected_platform, other_platform) in [
+            (0x8664u16, "win-x64", "win-arm64"),
+            (0xaa64u16, "win-arm64", "win-x64"),
+        ] {
+            let mut bytes = vec![0u8; 70];
+            bytes[..2].copy_from_slice(b"MZ");
+            bytes[60..64].copy_from_slice(&64u32.to_le_bytes());
+            bytes[64..68].copy_from_slice(b"PE\0\0");
+            bytes[68..70].copy_from_slice(&machine.to_le_bytes());
+            let path = directory.path().join(format!("{expected_platform}.exe"));
+            std::fs::write(&path, bytes).unwrap();
+            verify_pe_for_platform(&path, expected_platform).unwrap();
+            assert_eq!(
+                verify_pe_for_platform(&path, other_platform)
+                    .unwrap_err()
+                    .code,
+                "runtime_update_executable_invalid"
+            );
+            assert!(verify_pe_for_platform(&path, "unsupported").is_err());
+        }
+    }
 }

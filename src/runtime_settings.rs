@@ -219,6 +219,11 @@ fn checked_file(path: &Path) -> Result<Option<File>, SettingsError> {
         use std::os::windows::fs::OpenOptionsExt;
         options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
     }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
     let file = options.open(path).map_err(io_error)?;
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file() || metadata.len() > MAX_BYTES {
@@ -278,6 +283,11 @@ fn lock_file(path: &Path) -> Result<File, SettingsError> {
     {
         use std::os::windows::fs::OpenOptionsExt;
         options.share_mode(0x1 | 0x2).custom_flags(0x00200000);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
     if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(io_error("Settings lock cannot be a symbolic link."));

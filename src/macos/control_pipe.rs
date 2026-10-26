@@ -65,14 +65,7 @@ impl RegistryScope {
         if !path.is_absolute() {
             return Err(io::Error::other("Registry path must be absolute"));
         }
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("Registry has no parent"))?;
-        std::fs::create_dir_all(parent)?;
-        let path = parent.canonicalize()?.join(
-            path.file_name()
-                .ok_or_else(|| io::Error::other("Registry has no name"))?,
-        );
+        let path = canonical_registry_path(path)?;
         let id = format!("{:x}", Sha256::digest(path.as_os_str().as_bytes()));
         Ok(Self {
             path,
@@ -95,6 +88,33 @@ impl RegistryScope {
             scope: self.clone(),
             _file: file,
         })
+    }
+}
+fn canonical_registry_path(path: &Path) -> io::Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    let mut ancestor = absolute.as_path();
+    let mut missing = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut resolved) => {
+                for name in missing.iter().rev() {
+                    resolved.push(name);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(
+                    ancestor
+                        .file_name()
+                        .ok_or_else(|| io::Error::other("Registry has no existing ancestor"))?
+                        .to_owned(),
+                );
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| io::Error::other("Registry has no parent"))?;
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 pub(crate) fn lock_file(path: &Path, timeout: Duration) -> io::Result<File> {
@@ -496,4 +516,24 @@ fn exchange(path: &Path, scope: Option<&str>, request: &ControlRequest) -> Contr
             e.to_string(),
         )
     })
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_scope_resolution_preserves_missing_directories_and_stable_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let path = root.join("missing/Codlet/config.json");
+        let before = RegistryScope::for_path(&path).unwrap();
+        assert!(!root.join("missing").exists());
+        assert_eq!(before.path(), path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{}").unwrap();
+        let after = RegistryScope::for_path(&path).unwrap();
+        assert_eq!(before.id(), after.id());
+        assert_eq!(before.path(), after.path());
+    }
 }

@@ -9,5 +9,6 @@ Useful entry points:
 - [UI container review](core-ui-container-review-2026-10-13.md)
 - [Foreground measurement](core-foreground-measurement-2026-10-13.md) and [follow-up](core-foreground-followup-2026-10-13.md)
 - [Window drag investigation](native-window-drag-review-2026-10-12.md)
+- [Pre-v1 client profile catalog](client-profiles-before-v1.json), retained byte for byte after its root loader was retired. Current Native mappings live in `codex/compatibility/client-profiles.json`.
 
 Use [current known issues](../../known-issues.md) for present limitations and [release evidence](../../releases/README.md) for candidate acceptance. Original paths and hashes are listed in the [move inventory](../document-moves.json).

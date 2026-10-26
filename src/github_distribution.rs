@@ -1397,24 +1397,7 @@ pub(crate) fn clone_prepared_package(
         .prefix("ready-")
         .tempdir_in(staging_root(registry)?)
         .map_err(io_error)?;
-    let mut pending = vec![PathBuf::new()];
-    while let Some(relative) = pending.pop() {
-        for entry in std::fs::read_dir(source.join(&relative)).map_err(io_error)? {
-            let entry = entry.map_err(io_error)?;
-            let child = relative.join(entry.file_name());
-            if child == Path::new(RECEIPT) {
-                continue;
-            }
-            let metadata = std::fs::symlink_metadata(entry.path()).map_err(io_error)?;
-            check_regular(&entry.path(), metadata.is_dir())?;
-            if metadata.is_dir() {
-                std::fs::create_dir(target.path().join(&child)).map_err(io_error)?;
-                pending.push(child);
-            } else {
-                std::fs::copy(entry.path(), target.path().join(child)).map_err(io_error)?;
-            }
-        }
-    }
+    copy_prepared_contents(source, target.path())?;
     let old: Receipt =
         serde_json::from_slice(&read_bounded(&source.join(RECEIPT), MAX_METADATA_BYTES)?)
             .map_err(|e| error("github_package_unowned", e.to_string()))?;
@@ -1443,6 +1426,83 @@ pub(crate) fn clone_prepared_package(
         ));
     }
     Ok(copied)
+}
+
+fn copy_prepared_contents(source: &Path, target: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut pending = vec![PathBuf::new()];
+    let mut count = 0;
+    let mut total = 0_u64;
+    while let Some(relative) = pending.pop() {
+        for entry in std::fs::read_dir(source.join(&relative)).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let child = relative.join(entry.file_name());
+            if child == Path::new(RECEIPT) {
+                continue;
+            }
+            let name = child
+                .to_str()
+                .ok_or_else(|| error("github_package_invalid", "Non-UTF-8 package path."))?
+                .replace('\\', "/");
+            archive::validate_name(&name)?;
+            count += 1;
+            if count > MAX_PACKAGE_FILES {
+                return Err(error(
+                    "github_package_limit",
+                    "Too many package entries while copying.",
+                ));
+            }
+            let metadata = std::fs::symlink_metadata(entry.path()).map_err(io_error)?;
+            check_regular(&entry.path(), metadata.is_dir())?;
+            if metadata.is_dir() {
+                std::fs::create_dir(target.join(&child)).map_err(io_error)?;
+                pending.push(child);
+            } else {
+                // The source can change after the initial tree inspection. Pin
+                // the actual object and bound bytes before writing staging data.
+                #[cfg(any(windows, target_os = "macos"))]
+                let selected =
+                    crate::os_broker::filesystem::pin_exact_grant(&entry.path(), &[entry.path()])
+                        .map_err(|failure| error("github_package_changed", failure.to_string()))?;
+                #[cfg(any(windows, target_os = "macos"))]
+                let input = &selected.file;
+                #[cfg(not(any(windows, target_os = "macos")))]
+                let input = std::fs::File::open(entry.path()).map_err(io_error)?;
+                let remaining = MAX_EXTRACTED_BYTES.saturating_sub(total);
+                let before = input.metadata().map_err(io_error)?;
+                if !before.is_file() || before.len() > remaining {
+                    return Err(error(
+                        "github_package_limit",
+                        "Package exceeds 64 MiB while copying.",
+                    ));
+                }
+                let mut bytes = Vec::new();
+                input
+                    .take(remaining + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(io_error)?;
+                if bytes.len() as u64 > remaining {
+                    return Err(error(
+                        "github_package_limit",
+                        "Package grew beyond 64 MiB while copying.",
+                    ));
+                }
+                #[cfg(any(windows, target_os = "macos"))]
+                selected
+                    .check_location()
+                    .map_err(|failure| error("github_package_changed", failure.to_string()))?;
+                total += bytes.len() as u64;
+                let mut output = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target.join(child))
+                    .map_err(io_error)?;
+                output.write_all(&bytes).map_err(io_error)?;
+                output.sync_all().map_err(io_error)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn relocate_prepared_package(

@@ -147,13 +147,19 @@ fn observed_inventory_stays_independent_of_disk_and_historical_failures() {
             .collect::<Vec<_>>(),
         vec!["fixture.host", "fixture.renderer"]
     );
-    assert!(
-        json["plugins"]["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|plugin| plugin["id"] == "codlet-gui")
-    );
+    let declared_ids: Vec<_> = json["plugins"]["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plugin| plugin["id"].as_str().unwrap().to_owned())
+        .collect();
+    let mut expected_ids: Vec<_> = bundled_plugins()
+        .unwrap()
+        .into_iter()
+        .map(|plugin| plugin.manifest.id)
+        .collect();
+    expected_ids.sort();
+    assert_eq!(declared_ids, expected_ids);
     let human = report.to_human_readable();
     for text in [
         "runtime: inspected",

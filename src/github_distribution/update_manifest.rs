@@ -12,6 +12,7 @@ mod tests;
 const CACHE_LIFETIME_MS: u64 = 6 * 60 * 60 * 1000;
 const MIN_CHECK_INTERVAL_MS: u64 = 60 * 1000;
 const MAX_CACHE_BYTES: u64 = MAX_FEED_BYTES * 6;
+const CACHE_WRITE_LOCK_TIMEOUT: Duration = Duration::from_millis(1500);
 pub(crate) const MISSING_MANIFEST: &str = "The publisher has not provided an update manifest. Open the plugin's releases to update manually.";
 
 #[derive(Clone)]
@@ -55,7 +56,7 @@ struct Cache {
     error: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Cooldown {
     until: u64,
@@ -217,6 +218,54 @@ fn write_cache(path: Option<&Path>, value: &impl Serialize) -> std::io::Result<(
     Ok(())
 }
 
+/// Feed downloads can run concurrently for one public origin. Only the short
+/// read/merge/write phase is serialized; Native networking never uses this lock.
+fn extend_cooldown(path: Option<&Path>, candidate: Cooldown) -> std::io::Result<Cooldown> {
+    let Some(path) = path else {
+        return Ok(candidate);
+    };
+    plain(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("Cache has no parent."))?,
+        true,
+    )?;
+    let lock_path = path.with_extension("lock");
+    if lock_path.exists() {
+        plain(&lock_path, false)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0x1 | 0x2).custom_flags(0x00200000);
+    }
+    let lock = options.open(&lock_path)?;
+    plain(&lock_path, false)?;
+    let started = std::time::Instant::now();
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock)
+                if started.elapsed() < CACHE_WRITE_LOCK_TIMEOUT =>
+            {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(std::io::Error::other("Plugin update cache writer is busy."));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    // Missing, expired or corrupt records contribute no active restriction.
+    // A valid later deadline always survives an earlier response arriving last.
+    let merged = read_cache::<Cooldown>(Some(path))
+        .filter(|previous| previous.until > now_ms() && previous.until > candidate.until)
+        .unwrap_or(candidate);
+    write_cache(Some(path), &merged)?;
+    Ok(merged)
+}
+
 fn cached_result(
     cache: &Cache,
     repository: &GitHubRepository,
@@ -362,14 +411,16 @@ impl GitHubClient {
                     .retry_at
                     .unwrap_or_else(|| now_ms().saturating_add(MIN_CHECK_INTERVAL_MS));
                 cache.error = Some(failure.error.to_string());
-                if let Some(until) = failure.retry_at {
-                    let _ = write_cache(
+                if let Some(until) = failure.retry_at
+                    && let Ok(merged) = extend_cooldown(
                         cooldown_path.as_deref(),
-                        &Cooldown {
+                        Cooldown {
                             until,
                             message: failure.error.to_string(),
                         },
-                    );
+                    )
+                {
+                    cache.next_check_at = merged.until;
                 }
                 let _ = write_cache(path.as_deref(), &cache);
                 cached_result(&cache, repository)

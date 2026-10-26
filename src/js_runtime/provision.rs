@@ -733,7 +733,7 @@ fn prune_obsolete_selected(
         let name = entry.file_name().to_string_lossy().into_owned();
         let preparation_prefix = format!(".node-prepare-{}-", target.node_platform());
         if let Some(rest) = name.strip_prefix(&preparation_prefix) {
-            if rest.len() > 65 {
+            if rest.len() > 65 && rest.is_ascii() {
                 let digest = &rest[..64];
                 if hash(digest)
                     && rest.as_bytes().get(64) == Some(&b'-')
@@ -746,7 +746,7 @@ fn prune_obsolete_selected(
         }
         let retired_prefix = format!(".gc-{}-", target.node_platform());
         if let Some(rest) = name.strip_prefix(&retired_prefix) {
-            if rest.len() > 65 {
+            if rest.len() > 65 && rest.is_ascii() {
                 let digest = &rest[..64];
                 if hash(digest)
                     && rest.as_bytes().get(64) == Some(&b'-')

@@ -35,6 +35,52 @@ fn good_zip() -> Vec<u8> {
 }
 
 #[test]
+fn installation_copy_reapplies_package_limits_to_files_added_after_the_initial_inspection() {
+    for changed in ["oversized", "too-many", "hard-link", "nonportable"] {
+        let temp = tempfile::tempdir().unwrap();
+        let prepared = test_prepare_archive(&temp.path().join("config.json"), &good_zip()).unwrap();
+        inspect_prepared_package(&temp.path().join("config.json"), &prepared.package_path).unwrap();
+        let added = prepared.package_path.join("changed.bin");
+        match changed {
+            "oversized" => {
+                std::fs::File::create(&added)
+                    .unwrap()
+                    .set_len(MAX_EXTRACTED_BYTES + 1)
+                    .unwrap();
+            }
+            "too-many" => {
+                for index in 0..MAX_PACKAGE_FILES {
+                    std::fs::write(prepared.package_path.join(format!("extra-{index}.bin")), [])
+                        .unwrap();
+                }
+            }
+            "hard-link" => {
+                std::fs::hard_link(prepared.package_path.join("codlet.json"), &added).unwrap();
+            }
+            "nonportable" => {
+                std::fs::write(prepared.package_path.join("not-portable!.bin"), []).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let output = tempfile::tempdir_in(temp.path()).unwrap();
+        let failure = copy_prepared_contents(&prepared.package_path, output.path()).unwrap_err();
+        if matches!(changed, "oversized" | "too-many") {
+            assert_eq!(failure.code, "github_package_limit");
+        }
+        assert!(
+            prepared.package_path.join("codlet.json").is_file(),
+            "the original selected package must survive the failed copy"
+        );
+        if changed == "oversized" {
+            assert!(
+                !output.path().join("changed.bin").exists(),
+                "reject before copying oversized file bytes"
+            );
+        }
+    }
+}
+
+#[test]
 fn deflated_prebuilt_packages_with_explicit_directories_are_supported() {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default()

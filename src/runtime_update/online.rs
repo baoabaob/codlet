@@ -32,6 +32,41 @@ pub(super) fn retained_components() -> Vec<String> {
         .collect()
 }
 
+fn claim_install_lock(path: &Path, bytes: &[u8]) -> Result<std::fs::File> {
+    claim_install_lock_with(path, |temporary| {
+        temporary.write_all(bytes)?;
+        temporary.as_file().sync_all()
+    })
+}
+
+fn claim_install_lock_with(
+    path: &Path,
+    prepare: impl FnOnce(&mut tempfile::NamedTempFile) -> std::io::Result<()>,
+) -> Result<std::fs::File> {
+    package::no_redirect_ancestors(path)?;
+    let parent = path.parent().ok_or_else(|| {
+        error(
+            "runtime_update_path_invalid",
+            "Installation lock has no parent.",
+        )
+    })?;
+    package::canonical_directory(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
+    // An incomplete write or failed sync owns only this temporary file. Publish
+    // the complete lock atomically, without replacing an existing transaction.
+    prepare(&mut temporary).map_err(io_error)?;
+    temporary.persist_noclobber(path).map_err(|failure| {
+        if failure.error.kind() == std::io::ErrorKind::AlreadyExists {
+            error(
+                "runtime_update_locked",
+                "Another installation transaction owns Core.",
+            )
+        } else {
+            io_error(failure.error)
+        }
+    })
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct InstalledPin {
@@ -136,6 +171,11 @@ pub(super) fn installed_source(root: &Path) -> Result<Option<String>> {
             return Ok(None);
         }
     }
+    // Source and renderer/Host modules are one persisted generation. Reject a
+    // damaged module before accepting the Native source, so callers cannot mix
+    // the new source with fallback embedded modules. This helper never loads a
+    // source pin or calls installed_source again.
+    super::modules::read_pinned_modules(root, &pin.modules)?;
     if package::file_record(&root.join(&pin.source.path), &pin.source.path)? != pin.source {
         return Err(error(
             "core_update_pin_changed",
@@ -275,25 +315,9 @@ pub(super) fn apply(
     std::fs::create_dir_all(parent).map_err(io_error)?;
     package::canonical_directory(parent)?;
     let lock_path = root.join(".codlet-runtime-update.lock.json");
-    let mut lock = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-        .map_err(|failure| {
-            if failure.kind() == std::io::ErrorKind::AlreadyExists {
-                error(
-                    "runtime_update_locked",
-                    "Another installation transaction owns Core.",
-                )
-            } else {
-                io_error(failure)
-            }
-        })?;
     let lock_bytes=serde_json::to_vec(&json!({"schema":1,"kind":"codlet-online-install-lock","pid":std::process::id(),"candidate":staged.candidate.id}))
         .expect("lock serializes");
-    lock.write_all(&lock_bytes)
-        .and_then(|()| lock.sync_all())
-        .map_err(io_error)?;
+    let lock = claim_install_lock(&lock_path, &lock_bytes)?;
     // Prepare durable bytes and a receipt before touching hook authority. An
     // activation failure leaves the installed component file unchanged.
     let result = (|| {
@@ -420,21 +444,8 @@ pub(super) fn apply_modules(
     std::fs::create_dir_all(&parent).map_err(io_error)?;
     package::canonical_directory(&parent)?;
     let lock_path = root.join(".codlet-runtime-update.lock.json");
-    let mut lock = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-        .map_err(|failure| {
-            if failure.kind() == std::io::ErrorKind::AlreadyExists {
-                error("runtime_update_locked", "Another transaction owns Core.")
-            } else {
-                io_error(failure)
-            }
-        })?;
     let lock_bytes=serde_json::to_vec(&json!({"schema":1,"kind":"codlet-online-modules-lock","id":request.id,"pid":std::process::id()})).expect("lock serializes");
-    lock.write_all(&lock_bytes)
-        .and_then(|()| lock.sync_all())
-        .map_err(io_error)?;
+    let lock = claim_install_lock(&lock_path, &lock_bytes)?;
     let result = (|| {
         let mut module_pins = load_pin(root)?.map_or_else(Vec::new, |pin| pin.modules);
         let mut prepared = Vec::new();
@@ -627,6 +638,99 @@ pub(super) fn apply_modules(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_source_rejects_damaged_module_pins_as_one_generation() {
+        for damage in ["bytes", "id", "path", "duplicate", "utf8"] {
+            let root = tempfile::tempdir().unwrap();
+            let module_path = super::super::modules::module_path("renderer-ui").unwrap();
+            for (path, bytes) in [
+                ("codlet.exe", b"resident".as_slice()),
+                ("runtime/node-runtime.json", b"{}".as_slice()),
+                (package::ONLINE_CLIENT_SOURCE, b"verified source".as_slice()),
+                (module_path, b"verified module".as_slice()),
+            ] {
+                let path = root.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+            let record = |path: &str| package::file_record(&root.path().join(path), path).unwrap();
+            let mut pin = InstalledPin {
+                schema: 1,
+                version: "9.0.0".into(),
+                contract: package::OnlineRuntime::current(),
+                source: record(package::ONLINE_CLIENT_SOURCE),
+                resident_files: vec![record("codlet.exe"), record("runtime/node-runtime.json")],
+                modules: vec![InstalledModule {
+                    id: "renderer-ui".into(),
+                    file: record(module_path),
+                }],
+            };
+            let pin_path = root.path().join("runtime/core-modules/activation.json");
+            package::atomic_json(&pin_path, &pin).unwrap();
+            assert_eq!(
+                installed_source(root.path()).unwrap().as_deref(),
+                Some("verified source")
+            );
+            match damage {
+                "bytes" => {
+                    std::fs::write(root.path().join(module_path), b"changed module").unwrap()
+                }
+                "id" => pin.modules[0].id = "unknown-module".into(),
+                "path" => pin.modules[0].file.path = package::ONLINE_CLIENT_SOURCE.into(),
+                "duplicate" => pin.modules.push(pin.modules[0].clone()),
+                "utf8" => {
+                    std::fs::write(root.path().join(module_path), [0xff]).unwrap();
+                    pin.modules[0].file = record(module_path);
+                }
+                _ => unreachable!(),
+            }
+            package::atomic_json(&pin_path, &pin).unwrap();
+            let expected = if damage == "utf8" {
+                "core_modules_pin_invalid"
+            } else {
+                "core_modules_pin_changed"
+            };
+            assert_eq!(
+                installed_source(root.path()).unwrap_err().code,
+                expected,
+                "{damage}"
+            );
+            assert_eq!(
+                super::super::modules::installed_modules(root.path())
+                    .unwrap_err()
+                    .code,
+                expected,
+                "{damage}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_lock_is_published_only_after_preparation_and_never_replaces_an_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".codlet-runtime-update.lock.json");
+        for wrote_partial_bytes in [false, true] {
+            let failure = claim_install_lock_with(&path, |temporary| {
+                assert!(!path.exists());
+                if wrote_partial_bytes {
+                    temporary.write_all(b"partial lock")?;
+                }
+                Err(std::io::Error::other("fixture write/sync failure"))
+            });
+            assert!(failure.is_err());
+            assert!(!path.exists());
+            assert_eq!(root.path().read_dir().unwrap().count(), 0);
+        }
+        let first = claim_install_lock(&path, b"original owner").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"original owner");
+        let failure = claim_install_lock(&path, b"competing owner").unwrap_err();
+        assert_eq!(failure.code, "runtime_update_locked");
+        assert_eq!(std::fs::read(&path).unwrap(), b"original owner");
+        assert_eq!(root.path().read_dir().unwrap().count(), 1);
+        drop(first);
+    }
+
     #[test]
     fn binary_or_bootstrap_changes_cannot_claim_online_activation() {
         let root = tempfile::tempdir().unwrap();

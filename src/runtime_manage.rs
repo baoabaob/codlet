@@ -313,8 +313,8 @@ impl RuntimeManageService {
             .unwrap_or_else(|error| error.into_inner()) = Some(service);
     }
 
-    /// Publish owner facts without reading plugin files. Host callers receive
-    /// this sampled list, including its timestamp, rather than invented live state.
+    /// Publish sampled owner facts with current installation metadata. Host
+    /// callers receive the sample's timestamp rather than invented live state.
     pub fn publish_list(&self, mut listing: Value) {
         self.decorate_list(&mut listing);
         let snapshot = if listing.get("plugins").is_some_and(Value::is_array) {
@@ -441,7 +441,7 @@ impl RuntimeManageService {
                     .values
                     .validate()
                     .map_err(|error| RuntimeManageError::new(error.code, error.message))?;
-                self.broker.with_settings_write(|| settings.save(input.expected_revision,input.values))
+                self.broker.with_owner_write(|| settings.save(input.expected_revision,input.values))
                     .map_err(|_|RuntimeManageError::new("settings_busy","The runtime is starting, stopping, or applying a plugin operation. Try again when it is ready."))?
                     .map_err(|error|RuntimeManageError::new(error.code,error.message))?
             };
@@ -733,9 +733,7 @@ impl RuntimeManageService {
                     )
                     .map_err(|message| RuntimeManageError::new("folder_selection_error", message));
             }
-            let registry = crate::plugins::PluginRegistry::load(path.as_ref())
-                .map_err(|error| RuntimeManageError::new("registry_error", error.to_string()))?;
-            let value = if method == "completeImport" {
+            if method == "completeImport" {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields, rename_all = "camelCase")]
                 struct Input {
@@ -746,15 +744,25 @@ impl RuntimeManageService {
                 }
                 let input: Input = serde_json::from_value(params)
                     .map_err(|e| RuntimeManageError::new("invalid_params", e.to_string()))?;
-                crate::installation_files::complete_import(
-                    &registry,
-                    &input.plugin_id,
-                    &input.content_digest,
-                    input.delete_source,
-                )
-                .map_err(|e| RuntimeManageError::new("import_completion_error", e.to_string()))?;
-                serde_json::json!({"completed":true,"pluginId":input.plugin_id})
-            } else if method == "sourceRemovalPreview" || method == "openFolder" {
+                return self.broker.with_owner_write(|| {
+                    let registry = crate::plugins::PluginRegistry::load(path.as_ref())
+                        .map_err(|error| RuntimeManageError::new("registry_error", error.to_string()))?;
+                    crate::installation_files::complete_import(
+                        &registry,
+                        &input.plugin_id,
+                        &input.content_digest,
+                        input.delete_source,
+                    )
+                    .map_err(|error| RuntimeManageError::new("import_completion_error", error.to_string()))?;
+                    Ok(serde_json::json!({"completed":true,"pluginId":input.plugin_id}))
+                }).map_err(|_| RuntimeManageError::new(
+                    "import_completion_busy",
+                    "The runtime is starting, stopping, or applying a plugin operation. Complete the import when it is ready.",
+                ))?;
+            }
+            let registry = crate::plugins::PluginRegistry::load(path.as_ref())
+                .map_err(|error| RuntimeManageError::new("registry_error", error.to_string()))?;
+            let value = if method == "sourceRemovalPreview" || method == "openFolder" {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields, rename_all = "camelCase")]
                 struct SourceInput {
@@ -1101,6 +1109,84 @@ mod tests {
     use crate::plugin_control::{PluginControlAction, PluginControlError};
     use crate::runtime_control::ControlStatus;
     use serde_json::json;
+
+    #[test]
+    fn import_completion_waits_for_ready_idle_owner_before_acknowledging_or_deleting_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("author");
+        std::fs::create_dir(&source).unwrap();
+        let id = "dev.complete-gate";
+        std::fs::write(
+            source.join("codlet.json"),
+            json!({
+                "schema":1,"id":id,"version":"1",
+                "renderer":{"entry":"entry.js","world":"isolated"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(source.join("entry.js"), "module.exports={activate(){}};").unwrap();
+        let registry =
+            crate::plugins::PluginRegistry::load(directory.path().join("data/config.json"))
+                .unwrap();
+        let preview = crate::local_import::preview(&registry, &source).unwrap();
+        let request = preview.request(vec![], Default::default(), false);
+        let (staged, _) = crate::local_import::stage(&registry, id, &request).unwrap();
+        let (mut installation, installed, _) =
+            crate::managed_storage::Installation::publish_with_reset(
+                &staged, &registry, id, false, false,
+            )
+            .unwrap();
+        installation.commit().unwrap();
+        drop(installation);
+        let receipt = installed.local_plugins()[id]
+            .path
+            .join(".codlet-folder-install.json");
+        let before = std::fs::read(&receipt).unwrap();
+        let params =
+            json!({"pluginId":id,"contentDigest":preview.content_digest,"deleteSource":true});
+        for phase in ["starting", "queued", "running", "stopping"] {
+            let broker = ControlBroker::new([43; 16], phase.into());
+            if phase != "starting" {
+                broker.set_ready();
+            }
+            if matches!(phase, "queued" | "running") {
+                let request =
+                    serde_json::from_value(json!({"action":"reload","plugin_id":id})).unwrap();
+                let prepared = broker.handle(ControlRequest::prepare(request));
+                broker.handle(ControlRequest::submit(prepared.operation_id().unwrap()));
+                if phase == "running" {
+                    assert!(broker.take_next().is_some());
+                }
+            }
+            if phase == "stopping" {
+                broker.stop();
+            }
+            let service = RuntimeManageService::new(broker)
+                .with_local_management(installed.path().to_owned(), false);
+            assert_eq!(
+                service
+                    .invoke("completeImport", params.clone())
+                    .unwrap_err()
+                    .code,
+                "import_completion_busy",
+                "{phase}"
+            );
+            assert!(source.join("entry.js").exists(), "{phase}");
+            assert_eq!(std::fs::read(&receipt).unwrap(), before, "{phase}");
+        }
+        let broker = ControlBroker::new([44; 16], "ready".into());
+        broker.set_ready();
+        let service = RuntimeManageService::new(broker)
+            .with_local_management(installed.path().to_owned(), false);
+        assert_eq!(
+            service.invoke("completeImport", params).unwrap()["completed"],
+            true
+        );
+        assert!(!source.exists());
+        assert!(installed.local_plugins()[id].path.join("entry.js").exists());
+        assert!(crate::installation_files::pending_import(&installed, id).is_none());
+    }
 
     #[test]
     fn public_management_prepares_once_submits_once_and_reads_the_same_completion() {

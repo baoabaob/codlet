@@ -9,13 +9,26 @@ fn plugins() -> Value {
 }
 
 #[test]
-fn published_catalog_is_valid_and_can_advance_without_changing_the_baseline() {
+fn published_catalog_matches_the_bundled_snapshot_and_is_acceptable() {
     let baseline = parse_catalog(BASELINE.as_bytes()).unwrap();
     let published = parse_catalog(include_bytes!(
         "../../compatibility/tested-client-versions.json"
     ))
     .unwrap();
-    assert!(published.revision >= baseline.revision);
+    assert_eq!(published, baseline);
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("cache.json");
+    let mut state = State::load(&path);
+    state
+        .accept(
+            Fetched {
+                catalog: Some(published.clone()),
+                etag: None,
+            },
+            &path,
+        )
+        .expect("the published revision must be acceptable from the bundled baseline");
+    assert_eq!(State::load(&path).catalog, published);
 }
 
 #[test]
