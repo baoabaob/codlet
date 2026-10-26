@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "kind": "codlet-rc19-verification",
+  "sourceCommit": "6fd2355954ac9c864e87e7d24d6551aa752b3e7b",
+  "splitCommit": "1ba6daf",
+  "nativePackageVersion": "26.1021.3705.0",
+  "skill": {
+    "previousError": "The Desktop scope exceeds the skill discovery limit",
+    "status": "ready",
+    "fibers": 18898,
+    "scopes": 38,
+    "largestScope": 981,
+    "skills": [
+      {
+        "name": "codlet",
+        "enabled": true
+      }
+    ]
+  },
+  "scroll": {
+    "hidden": true,
+    "before": {
+      "top": 10062,
+      "left": 0,
+      "height": 10462,
+      "viewport": 400,
+      "gap": 0
+    },
+    "applied": {
+      "top": 10062,
+      "left": 0,
+      "height": 10462,
+      "viewport": 400,
+      "gap": 0
+    },
+    "afterLayout": {
+      "top": 10062,
+      "left": 0,
+      "height": 10462,
+      "viewport": 400,
+      "gap": 0
+    }
+  },
+  "temporaryProbesRemoved": true,
+  "tests": {
+    "skillBridge": 9,
+    "rustSkills": 5,
+    "rustCompatibility": 16,
+    "workspace": 58,
+    "splitConsumer": 154,
+    "typecheck": "passed"
+  },
+  "installerSelfTest": {
+    "passed": true,
+    "installationPerformed": false,
+    "nativeUi": true,
+    "payloadHashVerified": true,
+    "scopeAndFeatures": true,
+    "upgradeMaintenanceDowngrade": true,
+    "msiProgressAndCancellation": true,
+    "version": "1.0.0-rc.19"
+  },
+  "installedProductPreflight": {
+    "phase": "ready",
+    "scope": "user",
+    "version": "1.0.0-rc.19"
+  },
+  "release": {
+    "tag": "v1.0.0-rc.19",
+    "assets": [
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.19/Codlet-1.0.0-rc.19-windows-x64-setup.exe",
+        "name": "Codlet-1.0.0-rc.19-windows-x64-setup.exe",
+        "bytes": 8792064,
+        "sha256": "35b8944657a94a601ad1a935a204c6c765162f3656221b9124d88e851e362501"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.19/codlet-runtime-1.0.0-rc.19-win-x64-portable.zip",
+        "name": "codlet-runtime-1.0.0-rc.19-win-x64-portable.zip",
+        "bytes": 9736958,
+        "sha256": "90f428dcdb995bd0bae6be38ccf22a3e4f75f84878c2cc0034c14b5ea2c1f4e9"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.19/codlet-update-managed.json",
+        "name": "codlet-update-managed.json",
+        "bytes": 561,
+        "sha256": "c3a097ffd9f0d682ae225854f4449015d0b12814355b95d93baa89170b8c914b"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.19/codlet-update-managed-v2.json",
+        "name": "codlet-update-managed-v2.json",
+        "bytes": 561,
+        "sha256": "310b898d89a4aedbda6b27b0638e9882ad1a4d3767099074d12ae415ad4845ad"
+      },
+      {
+        "verified": true,
+        "url": "https://github.com/baoabaob/codlet/releases/download/v1.0.0-rc.19/SHA256SUMS.txt",
+        "name": "SHA256SUMS.txt",
+        "bytes": 410,
+        "sha256": "01960e2a0935c69acaad4b6254dc248195a7755d9121aee4e5f3e452501403c3"
+      }
+    ],
+    "publishedAt": "2026-10-26T16:20:07Z",
+    "schema": 1,
+    "releaseUrl": "https://github.com/baoabaob/codlet/releases/tag/v1.0.0-rc.19",
+    "verified": true
+  },
+  "catalog": {
+    "unqualifiedUrlInitiallyCachedPreviousRevision": true,
+    "sha256": "5627e4b3663b9cc5efdf9006d1a417bb65f7541c8309fa989a821efd48b3a7f7",
+    "sourceCommit": "83fd3465478a9576aae5fafcb41d74c35d3ffd4c",
+    "revision": 2026102602,
+    "verified": true,
+    "url": "https://raw.githubusercontent.com/baoabaob/codlet/main/compatibility/tested-client-versions.json?revision=2026102602"
+  }
+}
