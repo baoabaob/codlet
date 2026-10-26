@@ -21,6 +21,8 @@ export interface ScrollPosition { top: number; left: number }
 export interface TranscriptHandle {
   ready: Promise<void>; update(options: Partial<TranscriptOptions>): void; dispose(): void;
   getScrollPosition(): ScrollPosition; setScrollPosition(position: ScrollPosition): void;
+  /** Scroll this ready transcript to its latest content using its actual viewport size. */
+  scrollToLatest(): void;
 }
 export interface ComposerBinding { readonly threadId: string; readonly hostId: 'local'; readonly inputConfirmed: true; readonly submitDisabled: boolean }
 export interface ComposerRebindBinding extends ComposerBinding { readonly bindingRevision: number }

@@ -178,6 +178,7 @@ const transcript = workspace.mountTranscript(container, {
   onState(state) { /* loading / ready / error / disposed */ }
 });
 await transcript.ready;
+transcript.scrollToLatest(); // Explicit initial position for a newly opened pane.
 transcript.update({readOnly:false,trackReadState:true});
 transcript.dispose();
 ```
@@ -185,6 +186,8 @@ transcript.dispose();
 `mountTranscript(container, options)` synchronously returns `{ready:Promise<void>,update,dispose,getScrollPosition,setScrollPosition}`. After `ready`, `getScrollPosition()` returns `{top,left}` and `setScrollPosition({top,left})` restores finite CSS offsets (including negative offsets used by reverse scrolling and RTL) in this handle's independent native scroller. The consumer never needs a private selector. The container must be a connected, empty HTMLElement in this document, owned by the consumer; native surface nodes and shared mount containers are rejected. `threadId` is required (8–256 letters, digits, underscores or hyphens), `hostId` defaults to and only accepts `'local'`, `readOnly` defaults to `true`, and `trackReadState` defaults to `false`. `onState` is optional. State is `{phase,threadId,hostId:'local',diagnostic:null|{code,message}}`. `ready` resolves after native rendering is committed; failure rejects it and emits `phase:'error'`. Consumers should catch the promise. `update(partialOptions)` changes flags/callback or rebinds a new thread; it is synchronous and reports asynchronous failures through `onState`. Native component errors are contained and diagnosed.
 
 Core owns provider reconstruction, native history loading, active-interest and stream lifecycle through the existing local Desktop manager, and an independent scroll container. It does not open a second backend connection or implement a composer in the transcript. Scroll position within a handle is preserved on flag updates; caching scroll positions across disposed handles is the consumer's responsibility. Read-only disables transcript interaction; it does not choose or navigate the main thread. There is no per-session or per-Target transcript count limit: each accepted mount creates its requested instance and remains owned until explicitly disposed or its owner/provider retires. No hidden count-based truncation or eviction is applied.
+
+`scrollToLatest()` is available from Core 1.0.0-rc.19. It uses this handle's ready Native scroller and its actual content/viewport dimensions, preserving horizontal position and other transcripts. It is an explicit scroll operation; later Native scrolling and user input retain their usual behavior. Existing panes can restore their captured position with `setScrollPosition` instead.
 
 History reads are deduplicated by thread and at most two queued reads start concurrently, with interactive/visible mounts first. Retirement cancels queued work and prevents late native roots, callbacks or commits. An already dispatched shared Native history read can finish under Native's ownership; the current manager does not expose an independent abort for that shared read.
 

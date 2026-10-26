@@ -190,6 +190,11 @@ export function createTranscripts({ document, load, surface, check, report, isol
         }
       },
       getScrollPosition() { check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired'); if (!scroll) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready'); return { top: scroll.scrollTop, left: scroll.scrollLeft }; },
+      scrollToLatest() {
+        check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired');
+        if (!scroll) throw workspaceError('workspace_host_pending', 'Transcript scroller is not ready');
+        scroll.scrollTop = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      },
       setScrollPosition(value) {
         check(); if (record.disposed) throw workspaceError('workspace_retired', 'Transcript retired');
         if (!value || Object.keys(value).some(key => !['top', 'left'].includes(key)) || !['top', 'left'].every(key => Number.isFinite(value[key]))) throw workspaceError('invalid_argument', 'Invalid transcript scroll position');

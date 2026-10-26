@@ -337,7 +337,12 @@ test('Native transcript mount inherits the inner AppScope instead of rendering a
   N.manager={getConversation:()=>({resumeState:'resumed',turns:[{}]}),addConversationStateCallback:()=>()=>{}};N.Scope=({children})=>children;N.composerScope={};N.composerValue=()=>({});N.ThreadSubscription=()=>null;
   N.Content=({conversationId})=>{if(R.useContext(Context).get('AppScope')!=='native')throw Error('Missing parent scope');return h('div',{className:'thread-scroll-container'},h('div',{'data-thread-find-target':'conversation'},'Native '+conversationId));};f.discovery.transcript=async()=>N;
   const session=f.connect().session,container=f.document.createElement('div');f.document.body.append(container);const handle=session.mountTranscript(container,{threadId:'thread-b'});await handle.ready;
-  assert.equal(container.textContent,'Native thread-b');assert.equal(f.diagnostics.some(value=>value.message==='Missing parent scope'),false);handle.dispose();
+  assert.equal(container.textContent,'Native thread-b');assert.equal(f.diagnostics.some(value=>value.message==='Missing parent scope'),false);
+  const own=container.querySelector('.thread-scroll-container'),main=f.document.querySelector('main .thread-scroll-container');main.scrollTop=120;own.scrollLeft=9;
+  Object.defineProperties(own,{scrollHeight:{value:2400,configurable:true},clientHeight:{value:400,configurable:true}});
+  handle.scrollToLatest();assert.deepEqual(plain(handle.getScrollPosition()),{top:2000,left:9});assert.equal(main.scrollTop,120);
+  Object.defineProperty(own,'scrollHeight',{value:260});handle.scrollToLatest();assert.equal(own.scrollTop,0);
+  handle.dispose();assert.throws(()=>handle.scrollToLatest(),{code:'workspace_retired'});
 });
 
 function composerNative(f,{wrong=false}={}){

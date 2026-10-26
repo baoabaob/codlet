@@ -384,14 +384,15 @@ impl RuntimeSkills {
                     return json!({"ready":true});
                 }
                 let roots = if input["action"] == "set" {
-                    let Some(values) = input["roots"].as_array().filter(|v| v.len() <= 32) else {
+                    let Some(values) = input["roots"].as_array() else {
                         return fail("Invalid extra skill roots");
                     };
                     let mut roots = Vec::new();
                     for value in values {
-                        let Some(path) = value.as_str().filter(|s| {
-                            s.len() < 8192 && !s.contains('\0') && Path::new(s).is_absolute()
-                        }) else {
+                        let Some(path) = value
+                            .as_str()
+                            .filter(|s| !s.contains('\0') && Path::new(s).is_absolute())
+                        else {
                             return fail("Invalid extra skill root");
                         };
                         if Path::new(path) != self.root && !roots.iter().any(|r| r == path) {
@@ -566,6 +567,20 @@ mod tests {
         assert!(skill.pending.is_none());
         assert_eq!(skill.roots, vec![other.to_string_lossy().into_owned()]);
         assert!(skill.shutdown_script().contains("other-skills"));
+    }
+    #[test]
+    fn native_extra_roots_are_not_limited_by_a_core_plugin_quota() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut skill = RuntimeSkills::prepare(&temp.path().join("config.json")).unwrap();
+        let roots: Vec<_> = (0..64)
+            .map(|index| temp.path().join(format!("skills-{index}")))
+            .collect();
+        let lease = skill.invoke("window", 7, &json!({"action":"set","roots":roots}));
+        assert_eq!(lease["roots"].as_array().unwrap().len(), 65);
+        assert_eq!(
+            &lease["roots"].as_array().unwrap()[..64],
+            json!(roots).as_array().unwrap()
+        );
     }
     #[test]
     fn skill_resources_live_only_in_the_core_owned_directory_and_include_scoped_authoring_paths() {

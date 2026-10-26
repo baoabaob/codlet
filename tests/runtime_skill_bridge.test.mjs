@@ -7,7 +7,7 @@ const settle=async()=>{for(let i=0;i<15;i++)await new Promise(r=>setTimeout(r,0)
 function fixture(t,{mounted=true,ambiguous=false,version='future-backend',origin='app://-'}={}){
   const calls=[],coreCalls=[];let registered=false,ticket=0;
   const connection=()=>{
-    const client={requestPromises:new Map(),getAppServerVersion:()=>version,setAppServerVersion(){},async sendRequest(method,params){calls.push({method,params});return {};}};
+    const client={requestPromises:new Map(),getAppServerVersion:()=>version,setAppServerVersion(){},async sendRequest(method,params,options){calls.push({method,params,options});return {};}};
     const manager={requestClient:client,getHostId:()=> 'local',getConversation(){}};
     const token={id:Symbol()},family={scope:token,read:()=>client},managerFamily={scope:token,read:()=>manager};
     const node={token,familyBindings:new Map([[family,new Map([['local',client]])],[managerFamily,new Map([['local',manager]])]])};
@@ -85,4 +85,22 @@ test('unbound, remote and mismatched scope clients are never initialized',async 
 });
 test('non Desktop documents do not install a skill bridge',async t=>{
   const f=fixture(t,{origin:'https://example.com'});await settle();assert.equal(f.state(),undefined);assert.equal(f.calls.length,0);
+});
+test('large finite Native trees and scope caches still resolve the exact local client',async t=>{
+  const f=fixture(t,{mounted:false});
+  for(let index=0;index<600;index++)f.node.familyBindings.set({scope:{},read(){throw Error('Unowned family was read');}},new Map());
+  for(let index=0;index<300;index++){const token={id:Symbol()};f.chain.set(token.id,{token,familyBindings:new Map()});}
+  let tail=f.root.__reactContainer$test;
+  for(let index=0;index<20500;index++){tail.child={};tail=tail.child;}
+  tail.child=f.root.__reactContainer$test;
+  f.mount();await new Promise(resolve=>setTimeout(resolve,130));await settle();
+  assert.equal(f.state().status,'ready');assert.equal(f.coreCalls.includes('failed'),false);
+  assert.equal(f.calls.filter(call=>call.method==='skills/extraRoots/set').length,1);
+});
+test('root registration preserves Native request options without adding a guessed Native deadline',async t=>{
+  const f=fixture(t);await settle();assert.equal(f.calls[0].options,undefined);
+  const options={timeoutMs:60000};
+  await f.client.sendRequest('skills/extraRoots/set',{extraRoots:['/another-root']},options);
+  assert.equal(f.calls.at(-1).options,options);
+  assert.deepEqual([...f.calls.at(-1).params.extraRoots],['/another-root','/runtime']);
 });

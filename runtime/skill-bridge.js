@@ -22,11 +22,11 @@ function installCodletSkill(config) {
     const container=root&&root[Object.keys(root).find(k=>k.startsWith('__reactContainer$'))];
     const pending=[container?.stateNode?.current??container],seen=new Set(),nodes=new Set(),clients=new Set();
     while(pending.length){const fiber=pending.pop();if(!fiber||seen.has(fiber))continue;
-      if(seen.size>=20000)throw Error('The Desktop tree exceeds the skill discovery limit');seen.add(fiber);
+      seen.add(fiber);
       const chain=fiber.memoizedProps?.value;
       if(chain instanceof Map)for(const node of chain.values()){
         if(!node?.token||chain.get(node.token.id)!==node||!(node.familyBindings instanceof Map)||nodes.has(node))continue;
-        nodes.add(node);if(nodes.size>256||node.familyBindings.size>512)throw Error('The Desktop scope exceeds the skill discovery limit');
+        nodes.add(node);
         const bound=[];
         for(const [family,bindings]of node.familyBindings){
           if(family?.scope!==node.token||typeof family.read!=='function'||!(bindings instanceof Map)||!bindings.has('local'))continue;
@@ -43,14 +43,13 @@ function installCodletSkill(config) {
     if(clients.size>1)throw Error('The local Desktop skill connection is ambiguous');
     return clients.size===1?[...clients][0]:null;
   }
-  async function updateRoots(roots) {
-    const deadline=Date.now()+15000;
+  async function updateRoots(roots,options) {
     for(;;){
       const lease=await ask(roots?'set':'ensure',roots?{roots}:{});
       if(lease.ready)return;
-      if(lease.busy){if(Date.now()>deadline)throw Error('Another skill root registration is still pending');await delay(50);continue;}
+      if(lease.busy){await delay(50);continue;}
       try {
-        await state.original.call(state.client,'skills/extraRoots/set',{extraRoots:lease.roots},{timeoutMs:10000});
+        await state.original.call(state.client,'skills/extraRoots/set',{extraRoots:lease.roots},options);
         await ask('complete',{ticket:lease.ticket,ok:true});state.status='ready';state.error=null;return;
       } catch(error){await ask('complete',{ticket:lease.ticket,ok:false}).catch(()=>{});throw error;}
     }
@@ -66,7 +65,7 @@ function installCodletSkill(config) {
     if(roots&&state.original)await state.original.call(state.client,'skills/extraRoots/set',{extraRoots:roots},{timeoutMs:3000}).catch(()=>{});
     if(globalThis[key]===state)delete globalThis[key];
   };
-  void(async()=>{
+  state.ready=(async()=>{
     const fastDiscoveryUntil=Date.now()+30000;
     // Reuse the mounted local request client. Hashed resources, minified export
     // names and frontend/backend versions are not part of the skills RPC ABI.
@@ -88,7 +87,7 @@ function installCodletSkill(config) {
     state.wrapper=async function(method,params,options){
       if(method==='skills/extraRoots/set'){
         if(!Array.isArray(params?.extraRoots)||Object.keys(params).some(k=>k!=='extraRoots'))return state.original.call(this,method,params,options);
-        await updateRoots(params.extraRoots);return {};
+        await updateRoots(params.extraRoots,options);return {};
       }
       if(['skills/list','thread/start','thread/resume','thread/fork','turn/start'].includes(method)){
         try{await updateRoots();}catch(error){state.status='failed';state.error=String(error.message??error);if(method==='turn/start'&&params?.input?.some(i=>i.type==='text'&&/^\s*\/codlet(?:\s|$)/.test(i.text)))throw error;}
@@ -100,5 +99,6 @@ function installCodletSkill(config) {
     };
     client.sendRequest=state.wrapper;client.setAppServerVersion=state.versionWrapper;
     await updateRoots();
-  })().catch(error=>{if(state.alive){state.status='failed';state.error=String(error.message??error);void ask('failed',{message:state.error.slice(0,1000)}).catch(()=>{});}});
+  })();
+  state.ready.catch(error=>{if(state.alive){state.status='failed';state.error=String(error.message??error);void ask('failed',{message:state.error.slice(0,1000)}).catch(()=>{});}});
 }
