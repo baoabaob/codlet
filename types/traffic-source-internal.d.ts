@@ -42,6 +42,7 @@ export interface PlaintextSourceDescriptor {
   readonly routeBaseUrl: string;
 }
 export interface PlaintextRoute {
+  /** Private reservation URL. Await ready before publishing it to Native. */
   readonly baseUrl: string;
   readonly ready: Promise<unknown>;
   update(input: { upstreamBaseUrl: string; additionalCaPem?: string }): Promise<{ updated: true }>;

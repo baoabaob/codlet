@@ -149,6 +149,15 @@ test('correctly owned target input with a different Native draft namespace fails
   await assert.rejects(handle.restore(),{code:'workspace_location_state_evicted'});
 });
 
+test('a committed composer ownership error rejects captured-page restoration instead of waiting indefinitely',async t=>{
+  const f=draftLocation(t),handle=f.provider.capture(()=>{});await handle.ready;
+  f.navigator.location={pathname:'/settings',state:null};
+  const input=f.makeInput(f.draft);
+  Object.defineProperty(input,'scope',{get(){throw Object.assign(Error('Native scopes disagree'),{code:'workspace_composer_binding_drift'});}});
+  f.setInput(input);
+  await assert.rejects(handle.restore(),{code:'workspace_composer_binding_drift'});
+});
+
 test('viewport capability is published only after Native readiness and incomplete preparation still closes its allocation',async()=>{
   let prepared=0,closed=0;const view={ready:Promise.reject(Object.assign(Error('layout unavailable'),{code:'workspace_viewport_unsupported'})),bind(){},update(){},subscribe(){return()=>{};},close(){closed++;}};view.ready.catch(()=>{});
   const provider=createWorkspaceViewports({load:async()=>({api:1,independent:true,restoresSettings:true,avoidsThreadPersistence:true,notifiesChanges:true,create:()=>view}),prepared(){prepared++;},check(){},isConfirmed:()=>true,report(){}});

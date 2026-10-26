@@ -158,9 +158,12 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
     {
         let mut host_control = host_control;
         if src.is_some()
-            && traffic
-                .as_ref()
-                .is_some_and(|owner| !owner.bridge_supported())
+            && traffic.as_ref().is_some_and(|owner| {
+                matches!(
+                    owner.bridge_startup_observation(),
+                    crate::client_bridge::StartupObservation::Ready(false)
+                )
+            })
         {
             let registry = PluginRegistry::load(renderer.registry_path())?;
             let mut catalog = PluginCatalog::load(&registry)?;
@@ -297,8 +300,20 @@ pub fn launch(application: Application, watch: bool, safe_mode: bool) -> Result<
                                 TargetChange::Attached(target) => {
                                     sessions.insert(id.clone(), target.clone());
                                 }
-                                _ => {
-                                    sessions.remove(&id);
+                                TargetChange::NavigatedAway(target) => {
+                                    if sessions.get(&id).is_some_and(|current| {
+                                        current.session_id() == target.session_id()
+                                    }) {
+                                        sessions.remove(&id);
+                                    }
+                                }
+                                TargetChange::SessionEnded { session_id, .. } => {
+                                    if sessions
+                                        .get(&id)
+                                        .is_some_and(|current| current.session_id() == session_id)
+                                    {
+                                        sessions.remove(&id);
+                                    }
                                 }
                             }
                             if let Err(e) = session.renderer.apply_target_change(change) {

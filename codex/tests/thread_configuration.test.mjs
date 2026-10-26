@@ -143,6 +143,16 @@ test('callback cancellation, disable, timeout and connection drift never dispatc
     }
 });
 
+test('a configuration completion cannot send or reject a replacement Native pending object with the same ID',async t=>{
+    for(const rejects of [false,true]){
+        const f=fixture(t);let resolve,reject;
+        f.api.registerThreadConfiguration(f.owner().ctx,{id:'identity'},()=>new Promise((yes,no)=>{resolve=yes;reject=no;}));
+        const request=f.dispatch();await tick();const replacement={};f.client.requestPromises.set(request.request.id,replacement);
+        if(rejects)reject(Error('old callback failed'));else resolve({model:'old completion'});
+        await tick();assert.equal(f.sent.length,0);assert.equal(f.errors.length,0);assert.equal(f.client.requestPromises.get(request.request.id),replacement);
+    }
+});
+
 test('invalid provider destinations and callback errors do not log private endpoints', async t => {
     for (const baseUrl of ['https://example.org/v1', 'http://localhost:32123/v1', 'http://127.0.0.1:32123/v1?secret=marker', 'http://user:secret@127.0.0.1:32123/v1', 'not-a-url']) {
         const f = fixture(t);

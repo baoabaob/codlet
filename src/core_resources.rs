@@ -9,6 +9,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+// Only explicit plugin service owners use this budget; Native transport and
+// existing Native content never enter CoreResources.
+const MAX_RESOURCE_OWNERS: usize = 8192;
+
 mod events;
 mod processes;
 mod tasks;
@@ -62,7 +66,9 @@ type Result<T> = std::result::Result<T, ServiceError>;
 #[derive(Default)]
 struct State {
     closing: bool,
+    owners: BTreeSet<OwnerKey>,
     retired: BTreeSet<OwnerKey>,
+    retired_hosts: BTreeSet<OwnerKey>,
     events: events::Events,
     tasks: tasks::Tasks,
     processes: processes::Processes,
@@ -78,6 +84,16 @@ pub struct CoreResources {
 }
 
 impl CoreResources {
+    #[cfg(test)]
+    pub(crate) fn resources_for_test(&self, owner: &ResourceOwner) -> Vec<Value> {
+        let key = owner.key();
+        let state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries = state.events.list(&key);
+        entries.extend(state.tasks.list_resources(&key));
+        entries.extend(state.processes.list(&key));
+        entries
+    }
+
     /// The dispatcher must validate the consumer's requires and the provider's
     /// matching provides before calling this entry point. Subsequent reads use
     /// the consumer-owned subscription; retiring the pinned provider closes it.
@@ -96,7 +112,7 @@ impl CoreResources {
         let consumer = consumer.key();
         let provider = provider.key();
         let mut state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
-        check(&state, &consumer)?;
+        admit(&mut state, &consumer)?;
         check(&state, &provider)?;
         let value = events::invoke_for(&mut state.events, &consumer, &provider, method, params)?;
         self.shared.changed.notify_all();
@@ -104,6 +120,16 @@ impl CoreResources {
     }
 
     pub fn invoke(&self, owner: &ResourceOwner, method: &str, params: Value) -> Result<Value> {
+        self.invoke_from(owner, method, params, false)
+    }
+
+    pub(crate) fn invoke_from(
+        &self,
+        owner: &ResourceOwner,
+        method: &str,
+        params: Value,
+        host: bool,
+    ) -> Result<Value> {
         if owner.plugin_id.is_empty()
             || owner.plugin_id.len() > 256
             || owner.source_identity.is_empty()
@@ -121,10 +147,20 @@ impl CoreResources {
                 "resource request exceeds 512 KiB",
             ));
         }
-        if method.starts_with("processes.") {
-            return processes::invoke(self, owner, method, params);
-        }
         let key = owner.key();
+        {
+            let mut state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
+            admit(&mut state, &key)?;
+            if host && state.retired_hosts.contains(&key) {
+                return Err(ServiceError::new(
+                    "stale_generation",
+                    "the resource Host has retired",
+                ));
+            }
+        }
+        if method.starts_with("processes.") {
+            return processes::invoke(self, owner, method, params, host);
+        }
         let wait_ms = params.get("waitMs").and_then(Value::as_u64).unwrap_or(0);
         if wait_ms > 1000 {
             return Err(invalid("waitMs must be at most 1000; repeat bounded reads"));
@@ -178,32 +214,60 @@ impl CoreResources {
         let key = owner.key();
         let processes = {
             let mut state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
-            if state.retired.len() >= 8192 && !state.retired.contains(&key) {
-                return Err(ServiceError::new(
-                    "resource_limit",
-                    "retired owner identity bound reached",
-                ));
+            // Admission reserves the history slot before an owner can create
+            // resources. Cleanup must remain available when that budget is full.
+            // An unseen owner at capacity has no resources and cannot be admitted.
+            if state.owners.contains(&key) || state.owners.len() < MAX_RESOURCE_OWNERS {
+                state.owners.insert(key.clone());
+                state.retired.insert(key.clone());
             }
-            state.retired.insert(key.clone());
             state.events.retire(&key);
             state.tasks.retire(&key);
-            state.processes.retire(&key)
+            state.processes.retiring(&key, false)
         };
         self.shared.changed.notify_all();
-        for process in &processes {
+        self.close_processes(processes)?;
+        Ok(json!({"retired":true,"cleanupComplete":true}))
+    }
+
+    /// A combined plugin's renderer may still own its generation. Only processes
+    /// dispatched by the retired Host are closed here.
+    pub(crate) fn retire_host_processes(&self, owner: &ResourceOwner) -> Result<Value> {
+        let processes = {
+            let mut state = self.shared.state.lock().unwrap_or_else(|p| p.into_inner());
+            let key = owner.key();
+            state.retired_hosts.insert(key.clone());
+            state.processes.retiring(&key, true)
+        };
+        self.close_processes(processes)?;
+        Ok(json!({"retired":true,"cleanupComplete":true}))
+    }
+
+    fn close_processes(&self, processes: Vec<(String, Arc<processes::Process>)>) -> Result<()> {
+        for (_, process) in &processes {
             process.request_close();
         }
         let mut complete = true;
-        for process in processes {
-            complete &= process.close().is_ok();
+        for (id, process) in processes {
+            if process.close().is_ok() {
+                self.shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .processes
+                    .confirm_closed(&id, &process);
+            } else {
+                complete = false;
+            }
         }
-        if !complete {
-            return Err(ServiceError::new(
+        if complete {
+            Ok(())
+        } else {
+            Err(ServiceError::new(
                 "cleanup_incomplete",
-                "a managed process did not confirm cleanup",
-            ));
+                "a managed process scope or I/O worker has not confirmed exit",
+            ))
         }
-        Ok(json!({"retired":true,"cleanupComplete":true}))
     }
 
     pub fn shutdown(&self) -> Result<Value> {
@@ -212,22 +276,10 @@ impl CoreResources {
             state.closing = true;
             state.events = events::Events::default();
             state.tasks = tasks::Tasks::default();
-            state.processes.drain()
+            state.processes.retiring_all()
         };
         self.shared.changed.notify_all();
-        for process in &processes {
-            process.request_close();
-        }
-        let mut complete = true;
-        for process in processes {
-            complete &= process.close().is_ok();
-        }
-        if !complete {
-            return Err(ServiceError::new(
-                "cleanup_incomplete",
-                "resource shutdown could not confirm process cleanup",
-            ));
-        }
+        self.close_processes(processes)?;
         Ok(json!({"closed":true,"cleanupComplete":true}))
     }
 }
@@ -245,6 +297,17 @@ fn check(state: &State, owner: &OwnerKey) -> Result<()> {
             "resource owner has retired",
         ));
     }
+    Ok(())
+}
+fn admit(state: &mut State, owner: &OwnerKey) -> Result<()> {
+    check(state, owner)?;
+    if !state.owners.contains(owner) && state.owners.len() >= MAX_RESOURCE_OWNERS {
+        return Err(ServiceError::new(
+            "resource_limit",
+            "resource owner identity bound reached",
+        ));
+    }
+    state.owners.insert(owner.clone());
     Ok(())
 }
 fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {

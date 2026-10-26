@@ -49,6 +49,308 @@ const ASSETS: [(&str, &str, &str, bool); 4] = [
 const WAIT: Duration = Duration::from_secs(15);
 
 #[test]
+fn a_host_only_final_entry_retires_its_actual_process_tasks_and_events() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let scope = root.join("config.json");
+    let id = "test.host-only-resources";
+    let (mut peer, _events) = VmPeer::start();
+    let executable = peer.runtime.executable_path().canonicalize().unwrap();
+    let capability = json!({"name":"codlet.core.services","api":1,"scope":"runtime"});
+    let permissions = vec![
+        Permission::HostProcess,
+        Permission::HostProcessSpawn,
+        Permission::CoreTasks,
+        Permission::CoreEvents,
+    ];
+    std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":{"entry":"host.js"},"requires":[capability],"permissions":permissions}).to_string()).unwrap();
+    let spawn = json!({"executable":executable,"args":["-e","setInterval(()=>{},1000)"],"operationKey":"host-owned-process"});
+    std::fs::write(root.join("host.js"), format!("exports.activate=async context=>{{const rpc=(method,params)=>context.rpc.request({capability},method,params);await rpc('processes.spawn',{spawn});const runner=await rpc('tasks.register',{{name:'host-work'}});await rpc('tasks.start',{{runner:runner.runner,input:{{work:true}},operationKey:'host-task'}});await rpc('events.createTopic',{{name:'host-events'}});}};exports.deactivate=()=>{{}};" )).unwrap();
+    let mut registry = PluginRegistry::load(&scope).unwrap();
+    let registration = LocalPluginRegistration {
+        path: root,
+        grants: permissions,
+        broker_policy: crate::plugin_permissions::BrokerPolicy {
+            executables: vec![executable],
+            ..Default::default()
+        },
+    };
+    registry.register_local(id, registration.clone()).unwrap();
+    registry.save().unwrap();
+    let plugin =
+        crate::local_plugins::load_local_plugin_with_registration(id, &registration, 1).unwrap();
+    let services = crate::core_services::SharedCoreServices::new(&scope).unwrap();
+    let mut hosts = HostRuntime::start_with_services(
+        vec![plugin.clone()],
+        peer.client.clone(),
+        Some(peer.runtime.clone()),
+        HostCoreServices {
+            plugin_services: Some(services.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while hosts.is_starting() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        hosts.observations()[0].state,
+        ExecutionState::Active,
+        "{:?}",
+        hosts.observations()
+    );
+    let (resources, owner) = services.owned_resources_for_test(id, 1).unwrap();
+    let before = resources.resources_for_test(&owner);
+    for kind in ["process", "task", "eventTopic"] {
+        assert!(
+            before.iter().any(|resource| resource["kind"] == kind),
+            "{before:?}"
+        );
+    }
+    let mut stopping = hosts.begin_stop(id, 1).unwrap();
+    loop {
+        if let Some(result) = stopping.try_result() {
+            assert!(
+                matches!(result.unwrap(), crate::host_runtime::HostOperationResult::Stopped { report, .. } if report.workers_reaped)
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(resources.resources_for_test(&owner).is_empty());
+    assert!(services.cleanup_result(id, 1).is_ok());
+    services.retire(id, 1).unwrap();
+    assert_eq!(
+        services
+            .register(std::slice::from_ref(&plugin))
+            .unwrap_err()
+            .code,
+        "stale_generation"
+    );
+    let mut next = plugin;
+    next.generation = 2;
+    services.register(&[next]).unwrap();
+    services.retire(id, 2).unwrap();
+    hosts.stop().unwrap();
+    peer.close();
+}
+
+#[test]
+fn a_combined_hosts_exit_reaps_its_streaming_process_without_retiring_the_renderer_process() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let scope = root.join("config.json");
+    let id = "test.combined-processes";
+    let capability = json!({"name":"codlet.core.services","api":1,"scope":"runtime"});
+    let exported = crate::capabilities::CapabilityDescriptor::new(
+        id,
+        1,
+        crate::capabilities::CapabilityScope::Runtime,
+    )
+    .unwrap();
+    let (mut peer, events) = VmPeer::start();
+    let executable = peer.runtime.executable_path().canonicalize().unwrap();
+    let spawn = json!({"executable":executable,"args":["-e","process.stdout.write('owned');setInterval(()=>{},1000)"],"operationKey":"host-process"});
+    std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","renderer":{"entry":"renderer.js","world":"isolated"},"host":{"entry":"host.js","provides":[exported],"requires":[capability]},"requires":[capability],"permissions":["host.process","host.process.spawn"]}).to_string()).unwrap();
+    std::fs::write(root.join("host.js"), format!("exports.activate=async context=>{{const process=await context.rpc.request({capability},'processes.spawn',{spawn});context.rpc.provide({},'receipt',()=>process)}};exports.deactivate=()=>{{}};", json!(exported))).unwrap();
+    std::fs::write(root.join("renderer.js"), "exports.activate=context=>{globalThis.__ownedProcessContext=context};exports.deactivate=()=>{delete globalThis.__ownedProcessContext};").unwrap();
+    let mut registry = PluginRegistry::load(&scope).unwrap();
+    for bundled in bundled_plugins().unwrap() {
+        registry.set_enabled(&bundled.manifest.id, false).unwrap();
+    }
+    registry
+        .register_local(
+            id,
+            LocalPluginRegistration {
+                path: root.clone(),
+                grants: vec![Permission::HostProcess, Permission::HostProcessSpawn],
+                broker_policy: crate::plugin_permissions::BrokerPolicy {
+                    executables: vec![executable],
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    registry.save().unwrap();
+    let catalog = PluginCatalog::load(&registry).unwrap();
+    let services = crate::core_services::SharedCoreServices::new(&scope).unwrap();
+    let mut hosts = HostRuntime::start_with_services(
+        catalog.enabled_plugins(&registry).unwrap(),
+        peer.client.clone(),
+        Some(peer.runtime.clone()),
+        HostCoreServices {
+            plugin_services: Some(services.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while hosts.is_starting() {
+        assert!(Instant::now() < deadline, "{:?}", hosts.observations());
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        hosts.observations()[0].state,
+        ExecutionState::Active,
+        "{:?}",
+        hosts.observations()
+    );
+    let mut host_receipt = hosts
+        .capability_client()
+        .begin_request(crate::host_runtime::HostCapabilityRequest {
+            owner_plugin_id: id.into(),
+            expected_generation: 1,
+            capability: exported,
+            method: "receipt".into(),
+            params: Value::Null,
+            caller: crate::host_runtime::HostCapabilityCaller {
+                plugin_id: "test.caller".into(),
+                generation: 1,
+                target_id: String::new(),
+                document_epoch: 0,
+            },
+            cleanup: false,
+            deadline,
+        })
+        .unwrap();
+    let host_process = loop {
+        if let Some(result) = host_receipt.try_result() {
+            break result.unwrap()["process"].clone();
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    };
+    let mut renderer = RendererRuntime::from_catalog(catalog, registry).unwrap();
+    renderer.set_core_services(services.clone()).unwrap();
+    renderer.set_host_capability_client(hosts.capability_client());
+    let (_controller, sessions) =
+        TargetController::discover(peer.client.clone(), events, Duration::from_secs(5)).unwrap();
+    assert!(
+        renderer
+            .attach_all(&sessions)
+            .iter()
+            .all(|(_, result)| result.is_ok())
+    );
+    let inspected = peer.request("Fixture.inspect", json!({"keys":[]}));
+    let realm = inspected["contexts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|context| {
+            context["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|plugin| plugin["id"] == id)
+        })
+        .unwrap();
+    let session = sessions
+        .iter()
+        .find(|session| session.target_id() == realm["targetId"].as_str().unwrap())
+        .unwrap();
+    let mut eval = |expression: String| {
+        let deadline = Instant::now() + WAIT;
+        let mut request = session
+            .until(deadline)
+            .start_evaluate_in_context(&expression, realm["id"].as_u64())
+            .unwrap();
+        loop {
+            renderer.pump_bindings().unwrap();
+            if let Some(response) = request.try_response().unwrap() {
+                let value = response.result.unwrap();
+                assert!(value.get("exceptionDetails").is_none(), "{value}");
+                break value
+                    .pointer("/result/value")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let mut renderer_spawn = spawn;
+    renderer_spawn["operationKey"] = json!("renderer-process");
+    let renderer_process = eval(format!(
+        "__ownedProcessContext.rpc.request({capability},'processes.spawn',{renderer_spawn})"
+    ))["process"]
+        .clone();
+    assert_ne!(renderer_process, host_process);
+    let mut stopping = hosts.begin_stop(id, 1).unwrap();
+    let stop_deadline = Instant::now() + WAIT;
+    let stopped = loop {
+        if let Some(result) = stopping.try_result() {
+            break result.unwrap();
+        }
+        assert!(Instant::now() < stop_deadline);
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(
+        matches!(stopped, crate::host_runtime::HostOperationResult::Stopped { report, .. } if report.workers_reaped)
+    );
+    assert_eq!(
+        services
+            .begin(
+                crate::core_services::ServiceCaller {
+                    id,
+                    generation: 1,
+                    host: true,
+                    document: None
+                },
+                "processes.spawn",
+                renderer_spawn,
+                Instant::now() + WAIT,
+                peer.client.clone(),
+            )
+            .err()
+            .expect("a late request from the old authenticated Host must be rejected")
+            .code,
+        "stale_generation"
+    );
+    let retired_host = hosts.observations()[0].plugin.clone();
+    assert_eq!(
+        hosts
+            .capability_client()
+            .shared
+            .resolve_host(
+                &retired_host,
+                &crate::capabilities::CapabilityDescriptor::new(
+                    crate::core_services::CAPABILITY,
+                    1,
+                    crate::capabilities::CapabilityScope::Runtime
+                )
+                .unwrap(),
+                None,
+                None,
+                Instant::now() + WAIT,
+            )
+            .err()
+            .expect("a retired Host cannot borrow its live renderer entry principal")
+            .code,
+        "capability_denied"
+    );
+    let retired_host = eval(format!(
+        "__ownedProcessContext.rpc.request({capability},'processes.status',{{process:{host_process}}}).catch(error=>({{code:error.code}}))"
+    ));
+    assert_eq!(retired_host["code"], "resource_not_found");
+    let retained_renderer = eval(format!(
+        "__ownedProcessContext.rpc.request({capability},'processes.status',{{process:{renderer_process}}})"
+    ));
+    assert_eq!(retained_renderer["workerDone"], false);
+    assert_eq!(retained_renderer["process"], renderer_process);
+    services.retire(id, 1).unwrap();
+    services.retire(id, 1).unwrap();
+    assert!(services.cleanup_result(id, 1).is_ok());
+    for session in &sessions {
+        renderer.deactivate_target(session.target_id()).unwrap();
+    }
+    hosts.stop().unwrap();
+    peer.close();
+}
+
+#[test]
 fn renderer_only_core_services_share_cas_storage_files_and_events_between_windows() {
     let directory = tempdir().unwrap();
     let root = directory.path().join("renderer-services");
@@ -110,7 +412,7 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
     let mut renderer = RendererRuntime::from_catalog(catalog, registry).unwrap();
     renderer.set_core_services(services).unwrap();
     renderer.set_host_capability_client(hosts.capability_client());
-    let (_controller, sessions) =
+    let (mut controller, sessions) =
         TargetController::discover(peer.client.clone(), events, Duration::from_secs(5)).unwrap();
     let reports = renderer.attach_all(&sessions);
     assert!(
@@ -149,6 +451,9 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
             .start_evaluate_in_context(&expression, Some(*context))
             .unwrap();
         loop {
+            for change in controller.pump(Duration::ZERO).unwrap() {
+                renderer.apply_target_change(change).unwrap();
+            }
             renderer.pump_bindings().unwrap();
             if let Some(response) = request.try_response().unwrap() {
                 let value = response.result.unwrap();
@@ -248,6 +553,37 @@ fn renderer_only_core_services_share_cas_storage_files_and_events_between_window
         ),
     );
     assert_eq!(events["events"].as_array().unwrap().len(), 1);
+    let mut tasks = Vec::new();
+    for index in 0..2 {
+        let runner = eval(
+            index,
+            format!(
+                "__coreServicesTest.rpc.request({capability},'tasks.register',{{name:'document-{index}'}})"
+            ),
+        );
+        tasks.push(eval(index, format!("__coreServicesTest.rpc.request({capability},'tasks.start',{})", json!({"runner":runner["runner"],"input":null,"operationKey":format!("document-{index}")}))));
+    }
+    peer.request("Fixture.destroyTarget", json!({"targetId":realms[0].0}));
+    assert_eq!(
+        eval(
+            1,
+            format!(
+                "__coreServicesTest.services.tasks.get({})",
+                json!({"task":tasks[0]["task"]})
+            )
+        )["state"],
+        "cancelled"
+    );
+    assert_eq!(
+        eval(
+            1,
+            format!(
+                "__coreServicesTest.services.tasks.get({})",
+                json!({"task":tasks[1]["task"]})
+            )
+        )["state"],
+        "queued"
+    );
     for session in &sessions {
         renderer.deactivate_target(session.target_id()).unwrap();
     }

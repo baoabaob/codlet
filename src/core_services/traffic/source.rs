@@ -15,17 +15,38 @@ pub(super) struct RouteConfig {
     pub base: url::Url,
     pub ca: String,
 }
+pub(super) struct RegisteringRoute {
+    peer: Arc<Rpc>,
+    stopped: CancellationToken,
+}
+struct RegistrationGuard {
+    engine: Weak<Engine>,
+    token: String,
+    registration: Option<Arc<RegisteringRoute>>,
+}
+impl Drop for RegistrationGuard {
+    fn drop(&mut self) {
+        if let (Some(engine), Some(registration)) = (self.engine.upgrade(), &self.registration) {
+            let mut pending = engine
+                .registering_routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if pending
+                .get(&self.token)
+                .is_some_and(|current| Arc::ptr_eq(current, registration))
+            {
+                pending.remove(&self.token);
+            }
+        }
+    }
+}
 pub(super) fn base(value: &str) -> Result<url::Url> {
     let target = url(value)?;
     let path = value
         .split_once("://")
         .map(|(_, tail)| tail.find('/').map(|i| &tail[i..]).unwrap_or("/"))
         .unwrap_or("/");
-    if value.len() > 2048
-        || !matches!(target.scheme(), "http" | "https")
-        || target.query().is_some()
-        || bad_path(path)
-    {
+    if !matches!(target.scheme(), "http" | "https") || target.query().is_some() || bad_path(path) {
         return Err(error("invalid_target", "invalid upstream base"));
     }
     let mut target = target;
@@ -77,7 +98,7 @@ impl Engine {
                         if current.is_some(){return;}*current=Some(peer.clone());
                     }
                     let weak=Arc::downgrade(&engine);let source=peer.clone();
-                    let handler:Handler=Arc::new(move|method,params|{let weak=weak.clone();let source=source.clone();Box::pin(async move{weak.upgrade().ok_or_else(||error("traffic_unavailable","engine retired"))?.source_request(source,&method,params).await})});
+                    let handler:Handler=Arc::new(move|method,params|{match weak.upgrade(){Some(engine)=>engine.source_request(source.clone(),&method,params),None=>Box::pin(async{Err(error("traffic_unavailable","engine retired"))})}});
                     if peer.send(json!({"event":"connected"})).is_ok(){rpc::serve_socket(stream,peer.clone(),outgoing,handler,Arc::new(|_|{})).await;}
                     let removed={let mut routes=engine.routes.lock().unwrap_or_else(|p|p.into_inner());let removed=routes.iter().filter(|(_,r)|Arc::ptr_eq(&r.peer,&peer)).map(|(id,_)|id.clone()).collect::<Vec<_>>();removed.into_iter().filter_map(|id|routes.remove(&id)).collect::<Vec<_>>()};
                     for route in removed {route.stopped.cancel();}
@@ -95,19 +116,14 @@ impl Engine {
         id: &str,
         value: Option<&Value>,
         fallback: &str,
+        stopped: CancellationToken,
     ) -> Result<String> {
         let Some(value) = value else {
             return Ok(fallback.to_owned());
         };
-        let bytes = streams::remote_body(
-            peer,
-            id.to_owned(),
-            value.clone(),
-            self.stopped.child_token(),
-            128 * 1024,
-        )?
-        .collect(128 * 1024)
-        .await?;
+        let bytes = streams::remote_body(peer, id.to_owned(), value.clone(), stopped, None)?
+            .collect(None)
+            .await?;
         let value = String::from_utf8(bytes.to_vec())
             .map_err(|_| error("invalid_ca_bundle", "invalid CA encoding"))?;
         if value.is_empty() {
@@ -115,7 +131,7 @@ impl Engine {
         }
         let certificates = reqwest::Certificate::from_pem_bundle(value.as_bytes())
             .map_err(|_| error("invalid_ca_bundle", "invalid CA bundle"))?;
-        if certificates.is_empty() || certificates.len() > 64 {
+        if certificates.is_empty() {
             return Err(error("invalid_ca_bundle", "invalid CA bundle"));
         }
         let mut remainder = value.as_str();
@@ -133,11 +149,64 @@ impl Engine {
         }
         Ok(value)
     }
-    pub async fn source_request(
+    pub fn source_request(
         self: &Arc<Self>,
         peer: Arc<Rpc>,
         method: &str,
         params: Value,
+    ) -> futures_util::future::BoxFuture<'static, Result<Value>> {
+        let prepared = (|| {
+            if peer.stopped.is_cancelled() {
+                return Err(error("peer_closed", "source retired"));
+            }
+            if !matches!(method, "route.register" | "route.close") {
+                return Ok(None);
+            }
+            let id = string(&params, "token")?;
+            if !token(id) {
+                return Err(error("invalid_target", "invalid route token"));
+            }
+            let mut pending = self
+                .registering_routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if method == "route.close" {
+                if let Some(registration) = pending.get(id).filter(|r| Arc::ptr_eq(&r.peer, &peer))
+                {
+                    registration.stopped.cancel();
+                }
+                return Ok(None);
+            }
+            if pending.contains_key(id) {
+                return Err(error("route_collision", "registration already pending"));
+            }
+            let registration = Arc::new(RegisteringRoute {
+                peer: peer.clone(),
+                stopped: peer.stopped.child_token(),
+            });
+            pending.insert(id.to_owned(), registration.clone());
+            Ok(Some(registration))
+        })();
+        let guard = RegistrationGuard {
+            engine: Arc::downgrade(self),
+            token: params["token"].as_str().unwrap_or("").to_owned(),
+            registration: prepared.as_ref().ok().and_then(Clone::clone),
+        };
+        let engine = self.clone();
+        let method = method.to_owned();
+        Box::pin(async move {
+            let _guard = guard;
+            engine
+                .source_request_inner(peer, &method, params, prepared?)
+                .await
+        })
+    }
+    async fn source_request_inner(
+        self: &Arc<Self>,
+        peer: Arc<Rpc>,
+        method: &str,
+        params: Value,
+        registration: Option<Arc<RegisteringRoute>>,
     ) -> Result<Value> {
         if peer.stopped.is_cancelled() {
             return Err(error("peer_closed", "source retired"));
@@ -175,13 +244,39 @@ impl Engine {
                 let config = Arc::new(RouteConfig {
                     base: base(string(&params, "upstreamBaseUrl")?)?,
                     ca: self
-                        .certificate(peer.clone(), id, params.get("additionalCaPem"), &fallback)
-                        .await?,
+                        .certificate(
+                            peer.clone(),
+                            id,
+                            params.get("additionalCaPem"),
+                            &fallback,
+                            registration
+                                .as_ref()
+                                .map(|r| r.stopped.clone())
+                                .or_else(|| prior.as_ref().map(|r| r.stopped.child_token()))
+                                .unwrap_or_else(|| peer.stopped.child_token()),
+                        )
+                        .await
+                        .map_err(|error| {
+                            if registration
+                                .as_ref()
+                                .is_some_and(|r| r.stopped.is_cancelled())
+                            {
+                                super::error("route_closed", "registration retired")
+                            } else {
+                                error
+                            }
+                        })?,
                 });
                 if peer.stopped.is_cancelled() {
                     return Err(error("peer_closed", "source retired"));
                 }
                 let mut routes = self.routes.lock().unwrap_or_else(|p| p.into_inner());
+                if registration
+                    .as_ref()
+                    .is_some_and(|r| r.stopped.is_cancelled())
+                {
+                    return Err(error("route_closed", "route retired"));
+                }
                 if method == "route.update" {
                     let current = routes
                         .get(id)
@@ -192,9 +287,6 @@ impl Engine {
                 } else {
                     if routes.contains_key(id) {
                         return Err(error("route_collision", "route already exists"));
-                    }
-                    if routes.len() >= 32 {
-                        return Err(error("resource_limit", "route limit reached"));
                     }
                     routes.insert(
                         id.to_owned(),
@@ -212,8 +304,11 @@ impl Engine {
             }
             "route.close" => {
                 let id = string(&params, "token")?;
+                if !token(id) {
+                    return Err(error("invalid_target", "invalid route token"));
+                }
                 let mut routes = self.routes.lock().unwrap_or_else(|p| p.into_inner());
-                if routes.get(id).is_none_or(|r| !Arc::ptr_eq(&r.peer, &peer)) {
+                if routes.get(id).is_some_and(|r| !Arc::ptr_eq(&r.peer, &peer)) {
                     return Err(error("target_not_found", "route unavailable"));
                 }
                 if let Some(route) = routes.remove(id) {
@@ -226,14 +321,9 @@ impl Engine {
                 if !token(&id) {
                     return Err(error("invalid_target", "invalid exchange token"));
                 }
-                let permit = self
-                    .http_slots
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| error("resource_limit", "HTTP capacity reached"))?;
                 let exchange = self.exchange(
                     &peer.stopped,
-                    permit,
+                    None,
                     Some((peer.clone(), id.clone())),
                     None,
                     false,
@@ -248,7 +338,7 @@ impl Engine {
                 }
                 let outcome=async {
                     let value=&params["request"];let target=bounded_string(value,"url",8192)?;if !matches!(url(target)?.scheme(),"http"|"https"){return Err(error("invalid_target","HTTP URL required"));}
-                    let request=Request{id:files::token("request")?,url:target.to_owned(),method:super::model::method(string(value,"method")?)?,headers:pairs(value.get("headers").unwrap_or(&json!([])))?,body:streams::remote_body(peer.clone(),id.clone(),value.get("body").cloned().unwrap_or(Value::Null),exchange.stopped.child_token(),streams::BODY_LIMIT)?,protocols:vec![]};
+                    let request=Request{id:files::token("request")?,url:target.to_owned(),method:super::model::method(string(value,"method")?)?,headers:native_pairs(value.get("headers").unwrap_or(&json!([])))?,body:streams::remote_body(peer.clone(),id.clone(),value.get("body").cloned().unwrap_or(Value::Null),exchange.stopped.child_token(),None)?,protocols:vec![]};
                     let response=self.intercept_http(request,&exchange,&Default::default()).await?;exchange.check()?;
                     let body=exchange.streams.export(response.body)?;
                     Ok(json!({"status":response.status,"headers":strip(&response.headers,false),"body":body}))
@@ -308,7 +398,7 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| error("invalid_target", "missing source"))?;
         let body = exchange.streams.export(request.body.clone())?;
-        let result=peer.request("http.forward",json!({"exchange":id,"request":{"url":request.url,"method":request.method,"headers":request.headers,"body":body}}),&exchange.stopped,Duration::from_secs(300)).await?;
+        let result=peer.request("http.forward",json!({"exchange":id,"request":{"url":request.url,"method":request.method,"headers":request.headers,"body":body}}),&exchange.stopped,None).await?;
         let final_url = result
             .get("finalUrl")
             .and_then(Value::as_str)
@@ -321,9 +411,17 @@ impl Engine {
             id.clone(),
             result.get("body").cloned().unwrap_or(Value::Null),
             exchange.stopped.child_token(),
-            streams::BODY_LIMIT,
+            None,
         )?;
-        Self::headers_response(&result, body)
+        Ok(Response {
+            status: status(&result["status"])?,
+            headers: native_pairs(result.get("headers").unwrap_or(&json!([])))?,
+            body,
+            final_url: result
+                .get("finalUrl")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
     }
     pub fn retire_removed_owners(&self) {
         let Some(hub) = self.hub.upgrade() else {

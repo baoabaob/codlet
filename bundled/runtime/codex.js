@@ -7,7 +7,7 @@
     let alive = true;
     context.onDeactivate(() => { alive = false; });
     const check = () => { if (!alive) throw fail('plugin_deactivated', 'Codex SDK owner has retired'); };
-    const pure = new Set(['getSnapshot', 'getSurface', 'resolveThreadReference', 'resolveThreadInteraction', 'hasBlockingOverlay', 'getScrollPosition', 'exportState']);
+    const pure = new Set(['getSnapshot', 'getSurface', 'resolveThreadReference', 'resolveThreadInteraction', 'hasBlockingOverlay', 'getScrollPosition', 'exportState', 'inspect']);
     const cleanup = new Set(['dispose', 'close', 'deactivate']);
     const wrapped = new WeakMap();
     const run = (operation, cleaning = false) => { if (!cleaning) check(); return admission ? admission.run(operation, cleaning) : operation(); };
@@ -16,8 +16,8 @@
     // until it settles, and all later handle writes need a fresh admission.
     function handle(value) {
         if (!admission) return value;
-        if (typeof value === 'function') return (...args) => run(() => value(...args), true);
-        if (!value || typeof value !== 'object') return value;
+        const callable = typeof value === 'function';
+        if (!value || !callable && typeof value !== 'object') return value;
         if (typeof value.then === 'function') {
             const completion = Promise.resolve(value).then(handle);
             admission?.track(completion);
@@ -25,9 +25,10 @@
         }
         if (wrapped.has(value)) return wrapped.get(value);
         const descriptors = Object.getOwnPropertyDescriptors(value);
-        if (!Object.values(descriptors).some(item => typeof item.value === 'function') && !['ready', 'executed', 'committed'].some(key => key in descriptors)) return value;
-        const shell = {}; wrapped.set(value, shell);
+        if (!callable && !Object.values(descriptors).some(item => typeof item.value === 'function') && !['ready', 'executed', 'committed'].some(key => key in descriptors)) return value;
+        const shell = callable ? (...args) => run(() => handle(value(...args)), true) : {}; wrapped.set(value, shell);
         for (const [name, descriptor] of Object.entries(descriptors)) {
+            if (callable && ['name', 'length', 'prototype', 'caller', 'arguments'].includes(name)) continue;
             if (typeof descriptor.value === 'function') descriptor.value = (...args) => {
                 if (!cleanup.has(name)) check();
                 const operation = () => handle(value[name](...args));

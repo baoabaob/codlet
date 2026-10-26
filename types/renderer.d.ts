@@ -36,7 +36,6 @@ export interface RendererRpc {
   provide<P = unknown, R = unknown>(capability: CapabilityDescriptor & { scope: 'target' }, method: string, handler: (params: P, invocation: RendererInvocation) => R | Promise<R>): Readonly<{ ok: true }>;
   /** Withdraw this owner's handlers; later provide() publishes it again. */
   unavailable(capability: CapabilityDescriptor, reason: string): void;
-  onNotification(handler: (message: unknown) => void): () => void;
 }
 export interface RendererContext {
   /** Core-owned Codex UI/Desktop semantics. Individual calls retain capability
@@ -52,6 +51,7 @@ export interface RendererContext {
    * automatic side effects before restoration; false after restore succeeds. */
   readonly restoringState: boolean;
   readonly rpc: RendererRpc;
+  readonly i18n: PluginI18n;
   /** Optional convenience library. Rendering controls does not grant runtime management. */
   readonly ui?: RendererUiFactory;
   /** At most 64 synchronous cleanup callbacks; run once before deactivate or forced retirement. */

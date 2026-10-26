@@ -91,6 +91,8 @@ pub enum ProbeError {
     Renderer(#[from] RendererError),
     #[error(transparent)]
     PluginHost(#[from] HostError),
+    #[error("client bridge preparation failed before launch: {0}")]
+    StartupBridgePreparation(#[source] HostError),
     #[error(transparent)]
     OsBroker(#[from] crate::os_broker::OsBrokerError),
     #[error(transparent)]
@@ -888,7 +890,9 @@ fn start_codlet_runtime_with_connector_filtered(
                 .as_ref()
                 .expect("traffic requires a Host runtime");
             let mut owner = crate::traffic_owner::TrafficOwner::start(&plugin_services)?;
-            owner.prepare_bridge(runtime, renderer.registry_path(), provider)?;
+            owner
+                .prepare_bridge(runtime, renderer.registry_path(), provider)
+                .map_err(ProbeError::StartupBridgePreparation)?;
             Ok::<_, HostError>(owner)
         }?)
     };
@@ -916,18 +920,13 @@ fn start_codlet_runtime_with_connector_filtered(
     if let Some(traffic) = &traffic {
         traffic.complete_bridge_startup()?;
     }
-    if source_requested
-        && traffic
-            .as_ref()
-            .is_some_and(|owner| !owner.bridge_supported())
-    {
-        let registry = PluginRegistry::load(renderer.registry_path())?;
-        let prepared =
-            prepare_plugin_runtimes_filtered(registry, Some("client_source_unavailable"))?;
-        renderer = prepared.0;
-        renderer.enable_runtime_skill();
-        renderer.set_status_publisher(status.clone());
-        host_control.seed_watch_sources(&renderer, &prepared.1);
+    if source_requested && let Some(owner) = &traffic {
+        startup_recovery::apply_source_observation(
+            &mut renderer,
+            &mut host_control,
+            &status,
+            owner.bridge_startup_observation(),
+        )?;
     }
     renderer.set_client_source(traffic.as_ref().and_then(|owner| owner.client_source()));
     let manage_service = crate::runtime_manage::RuntimeManageService::new(control.clone())

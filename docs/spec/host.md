@@ -60,6 +60,8 @@ Cleanup has its own signal, `remainingMs()`, plugin metadata, root and logger. I
 
 Core can forcibly end its process scope (Windows Job / macOS process group) and reclaim managed sessions. A cleanup acknowledgment or process exit does not certify reversal of arbitrary page or OS effects. Late callbacks cannot deliver into the next generation. A malformed protocol or failed active event callback can fail this Host; already-retiring callback failures cannot abort the separate cleanup phase.
 
+When a Host-only package's last actual managed Host owner retires, Core also retires the plugin generation's remaining transient services. A combined package retains its Renderer owner and resources; a dedicated Native launch entry without a managed Host owner keeps its separate lifecycle.
+
 ## Public surfaces
 
 | Surface | Contract |
@@ -150,18 +152,16 @@ authenticated consumer generation reclaims its guards, and normal owner retireme
 removes them. Accepted permission/configuration/submission work must settle before
 the provider checkpoint succeeds.
 
-Whole-Core replacement also pauses the reviewed local renderer request ingress
-before retiring providers. A private, same-document API 1 forwarding stub retains
-the existing Native postbox/client and at most 64 queued requests / 4 MiB. It retains
-original request identity, pending-record identity and deadline (at most ten seconds),
-then admits still-live queued requests once through the acknowledged current provider
-after a determinate applied or rolled-back result. Already accepted requests and
-responses are not replayed; responses continue while admission is paused. Missing
-support, changed document/transport ownership, or an unknown takeover cannot be
-treated as a successful pause/resume. Ordinary provider disable restores Native's
-original hook when no update owns the gate.
-New documents inherit the trusted renderer admission identity before attaching their
-Native gate. A changed target/document set remains held until explicitly resolved.
+Whole-Core replacement retains a private, same-document API 1 forwarding stub
+with the existing Native postbox/client. Its handoff marker tracks Core ownership;
+Native requests and responses continue through the current dispatcher or original
+Native transport while Core/plugin SDK admission is held. The stub adds no Native
+request queue, payload quota or deadline. An unknown takeover does not make Native
+work wait for Core admission. A legacy queued request is adopted only if its exact
+pending record still exists and it was never dispatched; accepted operations and
+responses are never replayed. Ordinary provider disable restores the original hook.
+New documents inherit Core's admission identity for plugin work. A changed
+target/document set keeps that Core work held until explicitly resolved.
 
 The frozen API and minimal forwarding stub are retained Core ABI resources during
 the transaction, not serialized JavaScript closures. New providers replace their

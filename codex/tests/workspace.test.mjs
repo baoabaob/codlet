@@ -17,8 +17,22 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function fixture(t,options={}) {
   const dom = new JSDOM('<!doctype html><body><div id="root"><nav><button id="activity"></button><span data-thread-title id="thread"></span></nav><div data-app-shell-main-titlebar></div><main data-app-shell-main-surface><div data-includes-composer><div class="thread-scroll-container"><section id="body">body</section><footer data-thread-scroll-footer><div data-codex-composer-root></div></footer></div></div></main><aside data-app-shell-focus-area="right-panel"></aside></div></body>', { url: 'app://-/index.html', runScripts: 'outside-only' });
   const { window } = dom, { document } = window; window.eval(source); window.eval(domSource);
+  const current = {};
+  document.getElementById('root').__reactContainer$fixture = { stateNode: { current } };
+  function attach(node, props, parent = current, name = 'fixture') {
+    const previousKey = Object.keys(node).find(key => key.startsWith('__reactFiber$')), previous = previousKey && node[previousKey];
+    const parents = new Set();
+    for (let value = parent; value && !parents.has(value); value = value.return) parents.add(value);
+    if (previous?.return && !parents.has(previous)) {
+      if (previous.return.child === previous) previous.return.child = previous.sibling;
+      else for (let sibling = previous.return.child; sibling; sibling = sibling.sibling) if (sibling.sibling === previous) { sibling.sibling = previous.sibling; break; }
+    }
+    if (previousKey) delete node[previousKey];
+    const fiber = { ...props, stateNode: node, return: parent, sibling: parent.child };
+    parent.child = fiber; node['__reactFiber$' + name] = fiber; return fiber;
+  }
   const activity = document.getElementById('activity');
-  activity.__reactFiber$fixture = { memoizedProps: {}, type: function activityOwner({ onActivate, needsAttention }) { return 'sidebarElectron.priorityThreads.coachmark.description'; } };
+  attach(activity, { memoizedProps: {}, type: function activityOwner({ onActivate, needsAttention }) { return 'sidebarElectron.priorityThreads.coachmark.description'; } });
   const frames = new Map(), diagnostics = [], cleanups = new Set(), asyncCleanups = new Set(), rpc = new Map(); let frameCount = 0, discoveryCount = 0;
   const context = { onDeactivate(fn) { cleanups.add(fn); return () => cleanups.delete(fn); }, onCleanup(fn) { asyncCleanups.add(fn); return () => asyncCleanups.delete(fn); }, reportDiagnostic(error) { diagnostics.push(error); }, rpc: { provide(cap, method, handler) { rpc.set(cap.name + ':' + method, handler); } } };
   const navigator = { location: { pathname: '/local/thread-a', search: '', hash: '' } }, host = { navigator, rootNode: document.getElementById('root') };
@@ -28,7 +42,7 @@ function fixture(t,options={}) {
   function owner(id, generation = 1) { const cleanups = new Set(); return { world: 'main', pluginId: id, generation, onDeactivate(fn) { cleanups.add(fn); return () => cleanups.delete(fn); }, retire() { for (const fn of [...cleanups]) fn(); } }; }
   const connect = (id = 'consumer', generation = 1) => { const ctx = owner(id, generation), descriptor = workspace.issueTicket({}, { caller: ctx }); return { ctx, session: workspace.connect(ctx, descriptor.ticket), descriptor }; };
   async function flush() { await tick(); const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn()); await tick(); }
-  return { window, document, workspace, discovery, rpc, connect, owner, flush, frames, navigator, diagnostics, cleanup: cleanup => Promise.all([...asyncCleanups].map(fn => fn(cleanup))), stats: () => ({ frameCount, discoveryCount }) };
+  return { window, document, current, attach, workspace, discovery, rpc, connect, owner, flush, frames, navigator, diagnostics, cleanup: cleanup => Promise.all([...asyncCleanups].map(fn => fn(cleanup))), stats: () => ({ frameCount, discoveryCount }) };
 }
 
 test('workspace tickets bind owner/generation, are single-use, and deactivation retires all owned handles', async t => {
@@ -144,8 +158,8 @@ test('Native content motion subscriptions retire on owner cleanup and do not add
   const f=fixture(t),input=f.document.querySelector('[data-codex-composer-root]'),listeners=new Set();let shift=0;
   const motion={get:()=>shift,on(event,listener){assert.equal(event,'change');listeners.add(listener);return()=>listeners.delete(listener);}};
   function NativeFrame(){return 'floatingContent contentX LocalConversationPage';}
-  const current={},frame={type:NativeFrame,memoizedProps:{contentX:motion},return:current},owner={stateNode:input,return:frame};current.child=frame;frame.child=owner;
-  f.document.getElementById('root').__reactContainer$motion={stateNode:{current}};input.__reactFiber$motion=owner;
+  const frame={type:NativeFrame,memoizedProps:{contentX:motion},return:f.current,sibling:f.current.child};f.current.child=frame;
+  f.attach(input,{},frame,'motion');
   const scroller=f.document.querySelector('.thread-scroll-container');scroller.getBoundingClientRect=()=>({x:100,y:50,left:100,right:1300,top:50,bottom:950,width:1200,height:900});
   const connected=f.connect();await f.flush();assert.equal(listeners.size,1);assert.equal(f.frames.size,0);
   shift=-64;for(const listener of listeners)listener(shift);await f.flush();assert.equal(connected.session.getSurface().bodyViewport.rect.width,1072);assert.equal(f.frames.size,0);
@@ -154,7 +168,7 @@ test('Native content motion subscriptions retire on owner cleanup and do not add
 
 test('a transcript can reuse Native shell providers on a page without a main conversation surface',async t=>{
   const f=fixture(t),N=native(f),rail=f.document.querySelector('nav');rail.dataset.appNavigationRail='true';
-  rail.__reactFiber$fixture=f.document.querySelector('[data-includes-composer]').__reactFiber$providers;
+  f.attach(rail,{dependencies:f.document.querySelector('[data-includes-composer]').__reactFiber$providers.dependencies});
   f.document.querySelector('main').remove();f.navigator.location.pathname='/settings';
   N.manager={getConversation:()=>({resumeState:'resumed',turns:[{}]}),addConversationStateCallback:()=>()=>{}};
   N.Scope=({children})=>children;N.composerScope={};N.composerValue=()=>({});N.ThreadSubscription=()=>null;
@@ -275,7 +289,7 @@ test('streamed body tokens and owned slots do not schedule full discovery; burst
 
 test('native thread references are bounded, reject remote/consumer/main nodes, and surface ambiguity fails closed', async t => {
   const f = fixture(t), session = f.connect().session, row = f.document.getElementById('thread');
-  row.__reactFiber$fixture = { memoizedProps: { threadKey: { threadId: 'thread-a', hostId: 'local' } } };
+  f.attach(row, { memoizedProps: { threadKey: { threadId: 'thread-a', hostId: 'local' } } });
   assert.deepEqual(plain(session.resolveThreadReference(row)), { threadId: 'thread-a', hostId: 'local' });
   row.__reactFiber$fixture.memoizedProps.threadKey.hostId = 'remote'; assert.equal(session.resolveThreadReference(row), null);
   row.__reactFiber$fixture.memoizedProps.threadKey.hostId = 'local'; f.document.querySelector('main').append(row); assert.equal(session.resolveThreadReference(row), null);
@@ -312,11 +326,12 @@ test('more than 4096 loaded summaries page completely and later additions and up
 
 function native(f) {
   const N = { ...f.window.eval(nativeSource + ';NativeShell;') }, context = N.React.createContext(null);
-  const provider = { dependencies: { firstContext: { context, memoizedValue: 'native-app-scope' } } };
-  f.document.querySelector('[data-includes-composer]').__reactFiber$providers = provider;
-  f.document.getElementById('activity').__reactFiber$fixture.return = provider;
+  const provider = { dependencies: { firstContext: { context, memoizedValue: 'native-app-scope' } }, return: f.current, child: f.current.child };
+  for (let child = provider.child; child; child = child.sibling) child.return = provider;
+  f.current.child = provider;
+  f.attach(f.document.querySelector('[data-includes-composer]'), { dependencies: provider.dependencies }, provider, 'providers');
   let roots = 0; const createRoot = N.Client.createRoot;
-  N.Client = { createRoot(...args) { roots++; return createRoot(...args); } };
+  N.Client = { createRoot(...args) { roots++; delete args[0].__reactContainer$fixture; return createRoot(...args); } };
   N.roots = () => roots; return N;
 }
 
@@ -649,7 +664,8 @@ test('shadow style discovery fails closed when Native resources are absent',t=>{
 test('activity slots and native actions live outside the native tooltip trigger, preserve controls and retire with the owner',async t=>{
   const f=fixture(t),N=native(f),owner=f.connect(),button=f.document.getElementById('activity'),toolbar=button.parentElement,group=f.document.createElement('div'),trigger=f.document.createElement('span');
   toolbar.insertBefore(group,button);group.append(trigger);trigger.append(button);
-  const ownerFiber=button.__reactFiber$fixture;button.__reactFiber$fixture={stateNode:button,return:{stateNode:trigger,return:{stateNode:group,return:ownerFiber}}};
+  const ownerFiber=button.__reactFiber$fixture;
+  f.attach(button,{},f.attach(trigger,{},f.attach(group,{},ownerFiber)));
   const slot=owner.session.createSlot('activity.before');assert.equal(slot.container.parentElement,toolbar);assert.equal(slot.container.nextElementSibling,group);assert.equal(trigger.contains(slot.container),false);
   N.Button=props=>N.React.createElement('button',props);N.Tooltip=({tooltipContent,shortcut,children})=>N.React.createElement('span',{'data-native-tooltip':tooltipContent,'data-native-shortcut':shortcut},children);f.discovery.action=async()=>N;
   let invoked=0;const action=owner.session.registerAction({id:'generic-action',label:'Generic action',icon:{paths:['M0 0 H24 V24 H0 Z']},shortcut:'Ctrl+K',onInvoke(){invoked++;}});await action.ready;
@@ -694,7 +710,7 @@ test('action placement rebinds Native provider values after its anchor is replac
   N.Button=props=>N.React.createElement('button',{...props,'data-context':N.React.useContext(Context)});N.Tooltip=({children})=>children;f.discovery.action=async()=>N;
   const action=owner.session.registerAction({id:'rebound-action',label:'Rebound action',icon:{paths:['M0 0 H24 V24 H0 Z']},onInvoke(){}});await action.ready;
   const control=f.document.querySelector('[data-codlet-workspace-action]');assert.equal(control.dataset.context,'old-context');
-  const next=old.cloneNode(true);next.__reactFiber$fixture={...old.__reactFiber$fixture,dependencies:{firstContext:{context:Context,memoizedValue:'new-context'}}};old.replaceWith(next);await f.flush();await tick();
+  const next=old.cloneNode(true);f.attach(next,{...old.__reactFiber$fixture,dependencies:{firstContext:{context:Context,memoizedValue:'new-context'}}},old.__reactFiber$fixture.return);old.replaceWith(next);await f.flush();await tick();
   assert.equal(f.document.querySelector('[data-codlet-workspace-action]'),control);assert.equal(control.dataset.context,'new-context');assert.equal(N.roots(),1);
 });
 
@@ -756,12 +772,14 @@ test('native shortcut capture/clear/restore/search and programmatic conflicts re
     N.React.createElement('button', { 'data-test-restore': '', disabled: !props.onReset, onClick: props.onReset }, 'restore'),
     props.conflict ? N.React.createElement('span', { role: 'alert' }, props.conflict) : null);
   const settings = f.document.createElement('div'); settings.className = '@container/keyboard-shortcuts'; const input = f.document.createElement('input'); settings.append(input); f.document.getElementById('root').append(settings);
-  input.__reactFiber$settings = { type: function Search() { return 'settings.keyboardShortcuts.search.placeholder'; }, return: f.document.querySelector('[data-includes-composer]').__reactFiber$providers };
+  f.attach(input, { type: function Search() { return 'settings.keyboardShortcuts.search.placeholder'; } }, f.document.querySelector('[data-includes-composer]').__reactFiber$providers, 'settings');
   f.discovery.shortcuts = async () => N;
   const handle = owner.session.registerShortcut({ id: 'toggle', label: 'Toggle workspace', accelerator: 'Ctrl+Alt+Shift+F12', onInvoke() { invocations++; }, onChange(value) { changes.push(value); } }); await handle.ready; await tick();
   assert.equal(commands.size, 1); settings.querySelector('[data-test-conflict]').click(); await tick(); assert.equal(settings.querySelector('[role=alert]').textContent, 'Native action'); assert.equal(changes.length, 0);
   settings.querySelector('[data-test-edit]').click(); await tick(); assert.equal(handle.getSnapshot().accelerator, 'Ctrl+Alt+Shift+F10');
   settings.querySelector('[data-test-clear]').click(); await tick(); assert.equal(handle.getSnapshot().accelerator, null);
+  f.document.body.dispatchEvent(new f.window.KeyboardEvent('keydown', { key: 'Control', ctrlKey: true, bubbles: true, cancelable: true }));
+  assert.equal(invocations, 0, 'a modifier-only event cannot invoke a cleared shortcut');
   settings.querySelector('[data-test-restore]').click(); await tick(); assert.equal(handle.getSnapshot().accelerator, 'Ctrl+Alt+Shift+F12'); assert.deepEqual(changes, ['Ctrl+Alt+Shift+F10', null, 'Ctrl+Alt+Shift+F12']);
   assert.throws(() => handle.update({ accelerator: 'Ctrl+K' }), { code: 'shortcut_conflict' });
   f.document.body.dispatchEvent(new f.window.KeyboardEvent('keydown', { key: 'F12', ctrlKey: true, altKey: true, shiftKey: true, bubbles: true, cancelable: true })); assert.equal(invocations, 1);

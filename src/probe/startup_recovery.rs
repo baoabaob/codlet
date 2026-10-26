@@ -4,7 +4,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 fn reason(error: &ProbeError) -> Option<&str> {
-    if let ProbeError::PluginHost(error) = error
+    if let ProbeError::StartupBridgePreparation(error) = error
         && error.code == "client_bridge_lease_timeout"
     {
         return Some(error.code);
@@ -17,12 +17,20 @@ fn reason(error: &ProbeError) -> Option<&str> {
                     "client_bridge_bootstrap_failed: Client bridge bootstrap failed: ",
                 )
             })?,
-        ProbeError::PluginHost(error) if error.code == "client_launch_adapter_failed" => error
-            .message
-            .strip_prefix("Client launch adapter failed: ")?,
-        ProbeError::PluginHost(error) if error.code == "client_bridge_bootstrap_failed" => error
-            .message
-            .strip_prefix("Client bridge bootstrap failed: ")?,
+        ProbeError::StartupBridgePreparation(error)
+            if error.code == "client_launch_adapter_failed" =>
+        {
+            error
+                .message
+                .strip_prefix("Client launch adapter failed: ")?
+        }
+        ProbeError::StartupBridgePreparation(error)
+            if error.code == "client_bridge_bootstrap_failed" =>
+        {
+            error
+                .message
+                .strip_prefix("Client bridge bootstrap failed: ")?
+        }
         _ => return None,
     };
     // Legacy launch ABI codes are finite identifiers. Compatibility meanings
@@ -50,8 +58,9 @@ pub(super) fn attempt<T>(
             eprintln!(
                 "startup-plugin-recovery: reason={reason}; action=suspend-incompatible-plugins"
             );
-            // The failed attempt has returned: suspended child/adapter/IPC
-            // owners have already unwound before the new ordinary launch.
+            // Only bridge preparation before launch or the suspended child's
+            // before-resume bootstrap can reach this branch. An ordinary Host
+            // error after Native resumes cannot prove dispatch did not happen.
             launch(Some(reason))
         }
         result => result,
@@ -60,6 +69,27 @@ pub(super) fn attempt<T>(
 
 pub(super) fn affected(plugins: &[LoadedPlugin]) -> BTreeSet<String> {
     crate::client_launch::startup_affected(plugins)
+}
+
+pub(super) fn apply_source_observation(
+    renderer: &mut RendererRuntime,
+    host_control: &mut HostControl,
+    status: &StatusPublisher,
+    observation: crate::client_bridge::StartupObservation,
+) -> Result<(), ProbeError> {
+    if matches!(
+        observation,
+        crate::client_bridge::StartupObservation::Ready(false)
+    ) {
+        let registry = PluginRegistry::load(renderer.registry_path())?;
+        let prepared =
+            prepare_plugin_runtimes_filtered(registry, Some("client_source_unavailable"))?;
+        *renderer = prepared.0;
+        renderer.enable_runtime_skill();
+        renderer.set_status_publisher(status.clone());
+        host_control.seed_watch_sources(renderer, &prepared.1);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -131,6 +161,58 @@ mod tests {
     }
 
     #[test]
+    fn pending_source_keeps_the_original_catalog_until_a_definitive_unavailable_observation() {
+        use crate::client_bridge::StartupObservation;
+
+        let (_directory, registry, plugins) = fixture();
+        let saved = std::fs::read(registry.path()).unwrap();
+        let (mut renderer, hosts) = prepare_plugin_runtimes(registry.clone()).unwrap();
+        let original_ids: Vec<_> = renderer
+            .logical_plugins()
+            .iter()
+            .map(|plugin| plugin.manifest.id.clone())
+            .collect();
+        let mut control = HostControl::new(registry.path().to_owned());
+        control.seed_watch_sources(&renderer, &hosts);
+        let status = StatusPublisher::new();
+        for observation in [
+            StartupObservation::Pending,
+            StartupObservation::Pending,
+            StartupObservation::Ready(true),
+        ] {
+            apply_source_observation(&mut renderer, &mut control, &status, observation).unwrap();
+            assert_eq!(
+                renderer
+                    .logical_plugins()
+                    .iter()
+                    .map(|plugin| plugin.manifest.id.clone())
+                    .collect::<Vec<_>>(),
+                original_ids
+            );
+            for plugin in &plugins {
+                renderer.validate_package_shape(plugin).unwrap();
+            }
+            assert_eq!(std::fs::read(registry.path()).unwrap(), saved);
+        }
+        apply_source_observation(
+            &mut renderer,
+            &mut control,
+            &status,
+            StartupObservation::Ready(false),
+        )
+        .unwrap();
+        for plugin in &plugins {
+            let result = renderer.validate_package_shape(plugin);
+            if matches!(plugin.manifest.id.as_str(), "dev.adapter" | "dev.dependent") {
+                assert_eq!(result.unwrap_err().code, "startup_plugin_suspended");
+            } else {
+                result.unwrap();
+            }
+        }
+        assert_eq!(std::fs::read(registry.path()).unwrap(), saved);
+    }
+
+    #[test]
     fn unknown_process_and_adapter_failures_are_not_retried() {
         for code in [
             "client_launch_adapter_protocol",
@@ -140,7 +222,7 @@ mod tests {
             let mut calls = 0;
             let result: Result<(), _> = attempt(|_| {
                 calls += 1;
-                Err(ProbeError::PluginHost(HostError::new(
+                Err(ProbeError::StartupBridgePreparation(HostError::new(
                     "client_launch_adapter_failed",
                     format!("Client launch adapter failed: {code}"),
                 )))
@@ -166,7 +248,7 @@ mod tests {
                 assert!(without_bridge(reason));
                 Ok(())
             } else {
-                Err(ProbeError::PluginHost(HostError::new(
+                Err(ProbeError::StartupBridgePreparation(HostError::new(
                     "client_bridge_lease_timeout",
                     "bounded wait expired",
                 )))
@@ -183,7 +265,36 @@ mod tests {
             "client_bridge_lease_unavailable",
         ] {
             assert!(!without_bridge(code));
-            assert!(reason(&ProbeError::PluginHost(HostError::new(code, "rejected"))).is_none());
+            assert!(
+                reason(&ProbeError::StartupBridgePreparation(HostError::new(
+                    code, "rejected"
+                )))
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_errors_after_native_launch_never_replay_the_launch() {
+        for (code, message) in [
+            ("client_bridge_lease_timeout", "bounded wait expired"),
+            (
+                "client_launch_adapter_failed",
+                "Client launch adapter failed: client_bootstrap_version_unsupported",
+            ),
+            (
+                "client_bridge_bootstrap_failed",
+                "Client bridge bootstrap failed: client_bridge_fuse_unsupported",
+            ),
+        ] {
+            let mut dispatched = 0;
+            let result: Result<(), _> = attempt(|suspension| {
+                assert!(suspension.is_none());
+                dispatched += 1;
+                Err(ProbeError::PluginHost(HostError::new(code, message)))
+            });
+            assert!(result.is_err());
+            assert_eq!(dispatched, 1, "post-launch {code} was replayed");
         }
     }
 

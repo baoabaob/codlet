@@ -13,6 +13,9 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
 
   const runners = new Map();
   let closed = false;
+  let closing = null;
+
+  const closedError = () => rootSignal.reason ?? Object.assign(new Error('Core services are closed'), { code: 'resource_closed' });
 
   function combinedOptions(options) {
     options ??= {};
@@ -26,10 +29,13 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
   }
 
   function call(method, params, options) {
-    if (closed || rootSignal.aborted) {
-      return Promise.reject(rootSignal.reason ?? Object.assign(new Error('Core services are closed'), { code: 'resource_closed' }));
+    if (closed || closing || rootSignal.aborted) {
+      return Promise.reject(closedError());
     }
-    return Promise.resolve().then(() => request(method, params, combinedOptions(options)));
+    return Promise.resolve().then(() => {
+      if (closed || closing || rootSignal.aborted) throw closedError();
+      return request(method, params, combinedOptions(options));
+    });
   }
 
   const nullary = method => options => call(method, null, options);
@@ -206,6 +212,7 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
     } finally {
       active.finished = true;
       clearTimeout(timer);
+      if (!controller.signal.aborted) controller.abort(Object.assign(new Error('task callback ended'), { code: 'task_callback_ended' }));
       state.active.delete(claimed.task);
     }
   }
@@ -237,28 +244,34 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
     if (!state.stopped && !closed && !rootSignal.aborted) await closeRunner(state);
   }
 
-  async function closeRunner(state, unregister = true) {
-    if (state.stopped) return { unregistered: true };
+  function closeRunner(state) {
+    if (state.closing) return state.closing;
+    if (state.stopped) return Promise.resolve({ unregistered: false });
     state.stopped = true;
     runners.delete(state.runner);
     for (const active of state.active.values()) {
       if (!active.controller.signal.aborted) active.controller.abort(Object.assign(new Error('task runner closed'), { code: 'runner_retired' }));
     }
-    if (!unregister) return { unregistered: true };
-    try { return await call('tasks.unregister', { runner: state.runner }); }
-    catch { return { unregistered: false }; }
+    state.closing = Promise.resolve().then(() => request('tasks.unregister', { runner: state.runner }, combinedOptions()))
+      .catch(() => ({ unregistered: false }));
+    return state.closing;
   }
 
   const tasks = Object.freeze({
     async register(name, callback, options) {
       if (typeof name !== 'string' || typeof callback !== 'function') throw new TypeError('task runner name and callback are required');
       const registered = await call('tasks.register', { name }, options);
+      if (closed || closing || rootSignal.aborted) {
+        try { await request('tasks.unregister', { runner: registered.runner }, { timeoutMs: 1000 }); } catch {}
+        throw closedError();
+      }
       const state = { runner: registered.runner, callback, active: new Map(), stopped: false };
       runners.set(state.runner, state);
       detached(() => runnerLoop(state)).catch(() => {});
       return Object.freeze({
         runner: state.runner,
         start(params, startOptions) {
+          if (state.stopped) return Promise.reject(Object.assign(new Error('Task runner has retired'), { code: 'resource_closed' }));
           if (!params || typeof params !== 'object' || Array.isArray(params)) throw new TypeError('task start parameters must be an object');
           return call('tasks.start', { ...params, runner: state.runner }, startOptions);
         },
@@ -272,13 +285,18 @@ function createCoreServicesRuntime({ request, rootSignal, detach }) {
     list: optional('tasks.list', {}),
   });
 
-  async function close() {
-    if (closed) return { closed: true };
-    const states = [...runners.values()];
-    await Promise.allSettled(states.map(state => closeRunner(state)));
-    closed = true;
-    rootSignal.removeEventListener('abort', onRootAbort);
-    return { closed: true };
+  function close() {
+    if (closing) return closing;
+    if (closed) return Promise.resolve({ closed: true });
+    // Reserve closure before unregistering. Late registration receipts still
+    // release their original runner, but may never publish a new callback loop.
+    closing = Promise.resolve().then(async () => {
+      await Promise.allSettled([...runners.values()].map(state => closeRunner(state)));
+      closed = true;
+      rootSignal.removeEventListener('abort', onRootAbort);
+      return { closed: true };
+    });
+    return closing;
   }
   function onRootAbort() {
     // The transport may already be shutting down. Abort callbacks immediately,

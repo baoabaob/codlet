@@ -55,6 +55,8 @@ const status = await context.services.tasks.get({ task: started.task });
 
 The SDK claims callbacks outside the short registering RPC's lineage and tracks task cancellation/deadline separately. A Host runner can survive closure of its observing panel. Renderer runners belong to their document and are interrupted when it ends. Runners/tasks are owner-local; they are not a cross-plugin job scheduler or durable workflow engine.
 
+Retiring the last managed Host owner of a Host-only package also retires that plugin generation's remaining transient services, including tasks and events; a combined package retains its Renderer-owned resources until their own lifecycle ends.
+
 `operationKey` with identical parameters returns the original task; different work cannot reuse that key. `cancel` requests cooperation. Throw the invocation's signal reason or an AbortError to acknowledge cancellation; ignoring cancellation and returning normally remains success. Running tasks are not automatically replayed after restart. Inspect `terminal` and `outcomeKnown`; an interrupted task is not proof that external effects were undone.
 
 Task input is at most 64 KiB, progress/error 16 KiB, result 128 KiB of JSON (`undefined` becomes null). Invalid results fail the task. Current bounds are 16 runners/64 retained tasks per owner and 128 runners/256 tasks globally. Low-level `claim/progress/finish` use unguessable claim tokens; only the claimant can finish and cancellation acknowledgment requires a preceding request.
@@ -64,6 +66,8 @@ Task input is at most 64 KiB, progress/error 16 KiB, result 128 KiB of JSON (`un
 `processes.start` uses a granted executable and argument array without a shell string. `cwd` and caller-provided environment keys require their additional scopes. `read/write/endInput/status/wait/terminate/close` control bounded binary pipes and a real Windows Job or macOS process group. This is a lifecycle boundary, not containment for arbitrary child code.
 
 Stdin has one sequenced writer: start at `"0"`, use the returned next sequence, and only retry the last receipt. A repeated sequence does not duplicate bytes. An unconfirmed write closes stdin and terminates the managed process scope. Output buffers are bounded to 256 KiB per stream and read chunks to 32 KiB. Check exit/EOF, worker completion, `processesReaped` and `outputDiscarded`; a termination request alone does not prove native resource retirement.
+
+In a combined plugin, processes started by its Host entry retire with that Host. Processes started by its Renderer entry remain owned by the plugin generation until that whole generation retires. Host exit alone does not confirm that managed process scopes and I/O workers have stopped. Unconfirmed retirement returns `cleanup_incomplete`, retains the original owner for further checks and prevents replacement or recreation of that generation until cleanup is confirmed.
 
 ## Network and desktop
 

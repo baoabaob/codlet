@@ -119,7 +119,7 @@ page injection capabilities are not removed to make a memory measurement pass.
   reservations; renderer unit tests live separately in `src/renderer/tests.rs`.
 - `runtime/`: managed Host runtime and runtime skill sources.
 - `frontend/src/`: generic UI SDK sources; `frontend/build.mjs` builds the bundles.
-- `bundled/runtime/`: generated SDK artifacts required by Rust's embedded runtime.
+- `bundled/runtime/`: maintained renderer runtime sources and generated UI/page SDK artifacts embedded by Rust.
 - `types/`: public TypeScript contracts.
 - `compatibility/`: reviewed client identity and runtime-skill profiles.
 - `examples/`: runnable examples and deliberately synthetic protocol fixtures.

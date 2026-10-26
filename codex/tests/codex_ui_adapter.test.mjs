@@ -65,6 +65,15 @@ test('preconverted route objects retain native history, toolbar and exact remova
   assert.equal(f.shell.routes.length,original.length);original.forEach((route,i)=>assert.equal(f.shell.routes[i],route));assert.equal(f.document.querySelector('[data-codlet-page-host]'),null);
 });
 
+test('route discovery follows deep finite route objects and terminates cycles by identity',t=>{
+  const f=fixture(t,{dataRouter:true,objectRoutes:true,rail:true}),extra={children:[]};
+  let leaf=extra;
+  for(let index=0;index<12000;index++){const child={children:[]};leaf.children.push(child);leaf=child;}
+  leaf.children.push(extra);f.shell.tree.children.push(extra);
+  assert.equal(f.adapter.locateHost().routes,f.shell.routes);
+  f.shell.tree.children.pop();
+});
+
 test('a contextual sidebar without a rail keeps pages outside the native New chat drag row',async t=>{
   const f=fixture(t,{dataRouter:true,groupedNewChat:true});register(f);await tick();
   const entry=f.document.querySelector('[data-codlet-native-navigation]');
@@ -278,6 +287,12 @@ test('retiring before native startup cancels the wait without importing any host
   let loads=0;const bridge=f.adapter.deferredNavigation(f.context,async()=>{loads++;return f.native;});
   bridge.dispose();await assert.rejects(bridge.ready,{code:'ui_retired'});
   root.id='root';await tick();assert.equal(loads,0);
+});
+
+test('provider retirement rejects readiness while an already-started Native module load remains pending',async t=>{
+  const f=fixture(t);f.navigation.dispose();const loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);
+  await Promise.resolve();bridge.dispose();await assert.rejects(bridge.ready,{code:'ui_retired'});
+  loading.resolve(f.native);await tick();assert.equal(f.document.querySelector('[data-codlet-native-navigation]'),null);
 });
 test('deferred registration retires with its page or provider and never adds a late route',async t=>{
   const f=fixture(t);f.navigation.dispose();const count=f.shell.routes.length,loading=deferred(),bridge=f.adapter.deferredNavigation(f.context,()=>loading.promise);

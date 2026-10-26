@@ -50,12 +50,22 @@ struct Shared {
     network: network::Network,
     owners: Mutex<BTreeMap<String, Principal>>,
     retired: Mutex<BTreeMap<String, u64>>,
+    retired_hosts: Mutex<BTreeMap<String, u64>>,
+    retiring: Mutex<BTreeMap<(String, u64, bool), Arc<PendingCleanup>>>,
+    #[cfg(test)]
+    retirement_pause: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
     documents: Mutex<BTreeMap<DocumentKey, DocumentRunners>>,
     log: Mutex<(u64, VecDeque<Value>)>,
     traffic: Mutex<BTreeMap<String, Value>>,
     entrance: Mutex<Option<traffic::Traffic>>,
     sender: mpsc::SyncSender<Work>,
     pending: AtomicUsize,
+}
+
+struct PendingCleanup {
+    owner: ResourceOwner,
+    host_only: bool,
+    running: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -118,6 +128,10 @@ impl SharedCoreServices {
             network: network::Network::default(),
             owners: Mutex::new(BTreeMap::new()),
             retired: Mutex::new(BTreeMap::new()),
+            retired_hosts: Mutex::new(BTreeMap::new()),
+            retiring: Mutex::new(BTreeMap::new()),
+            #[cfg(test)]
+            retirement_pause: Mutex::new(None),
             documents: Mutex::new(BTreeMap::new()),
             log: Mutex::new((0, VecDeque::new())),
             traffic: Mutex::new(BTreeMap::new()),
@@ -180,19 +194,6 @@ impl SharedCoreServices {
         let registry = PluginRegistry::load(&self.0.registry)
             .map_err(|_| error("registry_error", "cannot read the plugin registry"))?;
         for plugin in plugins {
-            if self
-                .0
-                .retired
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(&plugin.manifest.id)
-                .is_some_and(|generation| plugin.generation <= *generation)
-            {
-                return Err(error(
-                    "stale_generation",
-                    "the plugin generation has retired",
-                ));
-            }
             let id = plugin.manifest.id.clone();
             let source_identity = if let Some(current) = registry
                 .managed_plugins()
@@ -236,26 +237,87 @@ impl SharedCoreServices {
                 },
                 plugin: plugin.clone(),
             };
-            let old = self
-                .0
-                .owners
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(id, principal.clone());
-            if let Some(old) = old
-                && (old.plugin.generation != plugin.generation || old.owner != principal.owner)
-            {
-                self.retire_resources(&old);
+            loop {
+                // Retirement publishes its pending scope under this same guard.
+                // Slow OS cleanup runs after releasing it; admission then checks
+                // every identity again instead of overwriting a concurrent launch.
+                let mut retired = self.0.retired.lock().unwrap_or_else(|p| p.into_inner());
+                if retired
+                    .get(&id)
+                    .is_some_and(|generation| plugin.generation <= *generation)
+                {
+                    return Err(error(
+                        "stale_generation",
+                        "the plugin generation has retired",
+                    ));
+                }
+                let old = {
+                    let mut owners = self.0.owners.lock().unwrap_or_else(|p| p.into_inner());
+                    if owners
+                        .get(&id)
+                        .is_some_and(|current| current.plugin.generation > plugin.generation)
+                    {
+                        return Err(error(
+                            "stale_generation",
+                            "a newer plugin service generation is registered",
+                        ));
+                    }
+                    if owners.get(&id).is_some_and(|current| {
+                        current.plugin.generation == plugin.generation
+                            && current.owner != principal.owner
+                    }) {
+                        return Err(error(
+                            "stale_generation",
+                            "a service generation cannot change its source identity",
+                        ));
+                    }
+                    if owners.get(&id).is_some_and(|old| {
+                        old.plugin.generation != plugin.generation || old.owner != principal.owner
+                    }) {
+                        owners.remove(&id)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(old) = old {
+                    retired
+                        .entry(id.clone())
+                        .and_modify(|generation| {
+                            *generation = (*generation).max(old.plugin.generation)
+                        })
+                        .or_insert(old.plugin.generation);
+                    let pending = self.reserve_cleanup(&old.resources, false);
+                    drop(retired);
+                    self.retire_resources(&old, pending)?;
+                    continue;
+                }
+                if self
+                    .0
+                    .retiring
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .keys()
+                    .any(|(pending_id, _, _)| pending_id == &id)
+                {
+                    return Err(error(
+                        "cleanup_incomplete",
+                        "the previous service generation still owns an unconfirmed process scope",
+                    ));
+                }
+                self.0
+                    .owners
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(id.clone(), principal.clone());
+                break;
             }
         }
         Ok(())
     }
 
-    pub fn retire(&self, id: &str, generation: u64) {
-        self.0
-            .retired
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+    pub fn retire(&self, id: &str, generation: u64) -> Result<()> {
+        let mut retired = self.0.retired.lock().unwrap_or_else(|p| p.into_inner());
+        retired
             .entry(id.into())
             .and_modify(|n| *n = (*n).max(generation))
             .or_insert(generation);
@@ -270,11 +332,31 @@ impl SharedCoreServices {
                 None
             }
         };
+        let pending = old
+            .as_ref()
+            .and_then(|principal| self.reserve_cleanup(&principal.resources, false));
+        drop(retired);
         if let Some(old) = old {
-            self.retire_resources(&old);
+            #[cfg(test)]
+            if let Some((published, resume)) = self
+                .0
+                .retirement_pause
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+            {
+                published.wait();
+                resume.wait();
+            }
+            self.retire_resources(&old, pending)?;
         }
+        self.cleanup_result(id, generation)
     }
-    fn retire_resources(&self, principal: &Principal) {
+    fn retire_resources(
+        &self,
+        principal: &Principal,
+        pending: Option<Arc<PendingCleanup>>,
+    ) -> Result<()> {
         if let Some(traffic) = self
             .0
             .entrance
@@ -284,7 +366,14 @@ impl SharedCoreServices {
         {
             traffic.retire(&owner_key(principal));
         }
-        let _ = self.0.resources.retire(&principal.resources);
+        let result = pending
+            .ok_or_else(|| {
+                error(
+                    "cleanup_incomplete",
+                    "the original scope cleanup is still running",
+                )
+            })
+            .and_then(|pending| self.finish_cleanup(&pending));
         self.0.files.retire(principal);
         self.0.desktop.retire(principal);
         self.0.network.retire(principal);
@@ -300,6 +389,154 @@ impl SharedCoreServices {
             .retain(|(_, id, generation), _| {
                 id != &principal.owner.plugin_id || generation != &principal.plugin.generation
             });
+        result
+    }
+
+    fn retire_processes(&self, owner: &ResourceOwner, host_only: bool) -> Result<()> {
+        let pending = self.reserve_cleanup(owner, host_only).ok_or_else(|| {
+            error(
+                "cleanup_incomplete",
+                "the original scope cleanup is still running",
+            )
+        })?;
+        self.finish_cleanup(&pending)
+    }
+
+    fn reserve_cleanup(
+        &self,
+        owner: &ResourceOwner,
+        host_only: bool,
+    ) -> Option<Arc<PendingCleanup>> {
+        let key = (owner.plugin_id.clone(), owner.generation, host_only);
+        // Publish the exact pending owner before starting cleanup so another
+        // lifecycle observer cannot mistake an in-flight close for completion.
+        let mut retiring = self.0.retiring.lock().unwrap_or_else(|p| p.into_inner());
+        let pending = retiring.entry(key).or_insert_with(|| {
+            Arc::new(PendingCleanup {
+                owner: owner.clone(),
+                host_only,
+                running: AtomicBool::new(false),
+            })
+        });
+        pending
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| pending.clone())
+    }
+
+    fn finish_cleanup(&self, pending: &Arc<PendingCleanup>) -> Result<()> {
+        let result = if pending.host_only {
+            self.0.resources.retire_host_processes(&pending.owner)
+        } else {
+            self.0.resources.retire(&pending.owner)
+        };
+        if result.is_ok() {
+            let key = (
+                pending.owner.plugin_id.clone(),
+                pending.owner.generation,
+                pending.host_only,
+            );
+            let mut retiring = self.0.retiring.lock().unwrap_or_else(|p| p.into_inner());
+            if retiring
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, pending))
+            {
+                retiring.remove(&key);
+            }
+        }
+        pending.running.store(false, Ordering::Release);
+        result.map(|_| ()).map_err(|e| error(e.code, e.message))
+    }
+
+    fn retry_cleanup(&self, pending: &Arc<PendingCleanup>) -> Result<()> {
+        let key = (
+            pending.owner.plugin_id.clone(),
+            pending.owner.generation,
+            pending.host_only,
+        );
+        let retiring = self.0.retiring.lock().unwrap_or_else(|p| p.into_inner());
+        if !retiring
+            .get(&key)
+            .is_some_and(|current| Arc::ptr_eq(current, pending))
+        {
+            return Ok(());
+        }
+        if pending
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(error(
+                "cleanup_incomplete",
+                "the original scope cleanup is still running",
+            ));
+        }
+        drop(retiring);
+        self.finish_cleanup(pending)
+    }
+
+    pub(crate) fn cleanup_result(&self, id: &str, generation: u64) -> Result<()> {
+        if self
+            .0
+            .retiring
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .keys()
+            .any(|(pending_id, pending_generation, _)| {
+                pending_id == id && *pending_generation <= generation
+            })
+        {
+            Err(error(
+                "cleanup_incomplete",
+                "the generation still owns an unconfirmed managed process scope",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn retire_host(&self, id: &str, generation: u64) -> Result<()> {
+        self.0
+            .retired_hosts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(id.into())
+            .and_modify(|n| *n = (*n).max(generation))
+            .or_insert(generation);
+        self.retire_host_traffic(id, generation);
+        let principal = self
+            .0
+            .owners
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .filter(|p| p.plugin.generation == generation)
+            .cloned();
+        if let Some(principal) = principal {
+            if principal.plugin.manifest.renderer.is_none() {
+                // This was the last executable entry for this generation.
+                // Combined plugins retain their independent renderer owner.
+                return self.retire(id, generation);
+            }
+            self.retire_processes(&principal.resources, true)?;
+        }
+        self.cleanup_result(id, generation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owned_resources_for_test(
+        &self,
+        id: &str,
+        generation: u64,
+    ) -> Option<(CoreResources, ResourceOwner)> {
+        self.0
+            .owners
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .filter(|principal| principal.plugin.generation == generation)
+            .map(|principal| (self.0.resources.clone(), principal.resources.clone()))
     }
 
     pub fn retire_document(&self, target: &str, plugin_id: Option<&str>) {
@@ -455,7 +692,7 @@ impl SharedCoreServices {
             let registry = PluginRegistry::load(&self.0.registry)
                 .map_err(|_| error("registry_error", "cannot verify plugin authorization"))?;
             if registry.local_plugins().get(&principal.owner.plugin_id) != Some(expected) {
-                self.retire(&principal.owner.plugin_id, principal.plugin.generation);
+                let _ = self.retire(&principal.owner.plugin_id, principal.plugin.generation);
                 return Err(error(
                     "authorization_revoked",
                     "the plugin's complete trust record changed",
@@ -473,6 +710,17 @@ impl SharedCoreServices {
     }
     fn check(&self, principal: &Principal, method: &str, host: bool, params: &Value) -> Result<()> {
         self.current_checked(principal, method.starts_with("traffic."))?;
+        if host
+            && self
+                .0
+                .retired_hosts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&principal.owner.plugin_id)
+                .is_some_and(|generation| principal.plugin.generation <= *generation)
+        {
+            return Err(error("stale_generation", "the service Host has retired"));
+        }
         if matches!(method, "traffic.connect" | "traffic.connectPeer") {
             if !host || !principal.plugin.manifest.has_runtime_host() {
                 return Err(error(
@@ -751,7 +999,7 @@ impl SharedCoreServices {
             Some(("events" | "tasks" | "processes", _)) => self
                 .0
                 .resources
-                .invoke(&p.resources, &work.method, params)
+                .invoke_from(&p.resources, &work.method, params, work.host)
                 .map_err(|e| error(e.code, e.message)),
             Some(("files", method)) => self.0.files.invoke(p, method, params, &check),
             Some(("desktop", method)) => self.0.desktop.invoke(p, method, params, &check),
@@ -808,7 +1056,7 @@ impl SharedCoreServices {
                     .cloned()
                     .collect::<Vec<_>>();
                 Ok(
-                    json!({"events":events,"cursor":log.0,"gap":log.1.front().and_then(|v| v["cursor"].as_u64()).is_some_and(|first| after != 0 && after + 1 < first)}),
+                    json!({"events":events,"cursor":log.0,"gap":log.1.front().and_then(|v| v["cursor"].as_u64()).is_some_and(|first| after != 0 && after.saturating_add(1) < first)}),
                 )
             }
             _ => Err(error("method_not_found", "unknown Core service method")),
@@ -992,14 +1240,14 @@ impl SharedCoreServices {
                 let _ = self.0.resources.invoke(
                     &p.resources,
                     "events.close",
-                    json!({"topic":value["topic"]}),
+                    json!({"resource":value["topic"]}),
                 );
             }
             "events.subscribe" => {
                 let _ = self.0.resources.invoke(
                     &p.resources,
                     "events.close",
-                    json!({"subscription":value["subscription"]}),
+                    json!({"resource":value["subscription"]}),
                 );
             }
             "network.createProfile" => {
@@ -1110,6 +1358,18 @@ fn monitor(weak: Weak<Shared>) {
             break;
         };
         let service = SharedCoreServices(shared);
+        let pending = service
+            .0
+            .retiring
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(_, pending)| !pending.running.load(Ordering::Acquire))
+            .map(|(_, pending)| pending.clone())
+            .collect::<Vec<_>>();
+        for pending in pending {
+            let _ = service.retry_cleanup(&pending);
+        }
         let owners = service
             .0
             .owners
@@ -1120,7 +1380,7 @@ fn monitor(weak: Weak<Shared>) {
             .collect::<Vec<_>>();
         for owner in owners {
             if service.current(&owner).is_err() {
-                service.retire(&owner.owner.plugin_id, owner.plugin.generation);
+                let _ = service.retire(&owner.owner.plugin_id, owner.plugin.generation);
                 continue;
             }
             // Activation precedes the enable preference commit. A disabled

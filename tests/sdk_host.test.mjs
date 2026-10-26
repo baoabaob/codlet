@@ -98,3 +98,73 @@ test('SDK stream callbacks move bytes through the JSON bridge without exposing N
   });
   await plugin.activate(context); await plugin.deactivate(context);
 });
+
+test('long-lived callback runners reclaim invocation methods and never rebind an old handle', async () => {
+  const callbacks = new Map();
+  const { plugin, context } = fixture(`let previous;module.exports={activate(context){
+    context.provide('run',async(_input,invocation)=>{previous=invocation;await invocation.progress({});return invocation.remainingMs();});
+    context.provide('old',async()=>previous.remainingMs());
+  },deactivate(){}};`, { provide: (name, callback) => { callbacks.set(name, callback); } });
+  await plugin.activate(context);
+  for (let index = 0; index < 1500; index++) {
+    const owner = new AbortController();
+    assert.equal(await callbacks.get('run')(null, { signal: owner.signal, remainingMs: () => index, progress: async () => {}, rpc: { request: async () => {} } }), index);
+    owner.abort(Object.assign(new Error('invocation ended'), { code: 'invocation_cancelled' }));
+  }
+  await assert.rejects(callbacks.get('old')(), { code: 'sdk_handle_invalid' });
+  const next = new AbortController();
+  assert.equal(await callbacks.get('run')(null, { signal: next.signal, remainingMs: () => 9000, progress: async () => {} }), 9000);
+  next.abort();
+  await assert.rejects(callbacks.get('old')(), { code: 'sdk_handle_invalid' });
+  await plugin.deactivate(context);
+});
+
+test('a callback-returned stream keeps its lease methods after handler completion and retires their descendants at lease end', async () => {
+  let callback;
+  const { plugin, context } = fixture(`module.exports={activate(context){context.provide(async(request)=>request.body);},deactivate(){}};`, { provide: value => { callback = value; } });
+  await plugin.activate(context);
+  const owner = new AbortController();
+  const stream = await callback({ body: (async function* () { yield Uint8Array.from([7]); yield Uint8Array.from([8]); })() }, { signal: owner.signal });
+  const iterator = stream[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { done: false, value: Uint8Array.from([7]) });
+  owner.abort(Object.assign(new Error('stream lease ended'), { code: 'stream_retired' }));
+  await assert.rejects(iterator.next(), { code: 'sdk_handle_invalid' });
+  await plugin.deactivate(context);
+});
+
+test('compute realm retirement rejects pending SDK waiters and retained callback wrappers', async () => {
+  let callback, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const { plugin, context } = fixture(`module.exports={async activate(context){context.provide(async()=>42);await context.wait();},deactivate(){}};`, {
+    provide: value => { callback = value; }, wait: () => { entered(); return new Promise(() => {}); },
+  });
+  const activation = plugin.activate(context);
+  const rejected = assert.rejects(activation, { code: 'host_stopping' });
+  await started;
+  await plugin.deactivate(context);
+  await rejected;
+  await assert.rejects(callback(), { code: 'host_stopping' });
+});
+
+test('external resources keep inline guest callbacks and returned streams alive through forced GC', { skip: typeof global.gc !== 'function' }, async () => {
+  let externalCallback;
+  const { plugin, context } = fixture(`module.exports={activate(context){context.provide(async request=>request.body??42);},deactivate(){}};`, {
+    provide: callback => { externalCallback = callback; },
+  });
+  await plugin.activate(context);
+  for (let index = 0; index < 4; index++) { global.gc(); await new Promise(resolve => setImmediate(resolve)); }
+  assert.equal(await externalCallback({}), 42);
+  const owner = new AbortController();
+  const stream = await externalCallback({ body: (async function* () { yield Uint8Array.from([21]); })() }, { signal: owner.signal });
+  for (let index = 0; index < 4; index++) { global.gc(); await new Promise(resolve => setImmediate(resolve)); }
+  const bytes = []; for await (const chunk of stream) bytes.push(...chunk);
+  assert.deepEqual(bytes, [21]);
+  owner.abort(); await plugin.deactivate(context);
+});
+
+test('bundled CommonJS syntax traversal handles a large finite declaration without argument-stack limits', async () => {
+  let length;
+  const values = Array.from({ length: 150000 }, () => '0').join(',');
+  const { plugin, context } = fixture(`module.exports={activate(context){return context.done([${values}].length);},deactivate(){}};`, { done: value => { length = value; } });
+  await plugin.activate(context); assert.equal(length, 150000); await plugin.deactivate(context);
+});

@@ -55,6 +55,7 @@ let sdkPaused = false;
 let coreAdmission = null;
 const pausedNotifications = [];
 let drainingNotifications = false;
+let notificationPending = 0;
 const MAX_STATE_BYTES = 256 * 1024;
 
 // Keep plugin logging outside the protocol. Writing directly to stdout is an
@@ -438,7 +439,7 @@ function snapshotState(message) {
   operation.timer = setTimeout(() => finish(null, error('snapshot_timeout', 'plugin state snapshot exceeded its 1400 ms budget; old owner retained')), 1400);
   const settle = () => {
     if (stateTransition !== operation || state !== 'active') return;
-    if (invocations.size || pending.size || [...subscriptions.values()].some(subscription => subscription.inFlight)) { setTimeout(settle, 5); return; }
+    if (invocations.size || pending.size || notificationPending) { setTimeout(settle, 5); return; }
     // Legacy entries without hooks remain reloadable; null explicitly means no
     // plugin state is declared. Hooks must return a valid envelope, never null.
     if (typeof loaded.saveState !== 'function') { finish(null); return; }
@@ -549,14 +550,16 @@ function handle(message, replayNotification = false) {
     if (message.method === 'cdp.event') {
       if (subscription.inFlight >= 4) throw error('event_handler_limit', 'host event handlers are not keeping up with the bounded stream');
       subscription.inFlight++;
+      notificationPending++;
       Promise.resolve().then(() => {
         if ((state === 'starting' || state === 'active') && subscriptions.has(id)) return subscription.onEvent(message.params.event);
-      }).finally(() => { subscription.inFlight--; }).catch(ordinaryCallbackFailed);
+      }).finally(() => { subscription.inFlight--; notificationPending--; }).catch(ordinaryCallbackFailed);
     } else if (message.method === 'cdp.subscriptionEnded') {
       subscriptions.delete(id);
+      notificationPending++;
       Promise.resolve().then(() => {
         if (state === 'starting' || state === 'active') return subscription.onEnd?.(message.params.reason);
-      }).catch(ordinaryCallbackFailed);
+      }).finally(() => { notificationPending--; }).catch(ordinaryCallbackFailed);
     }
     return;
   }
@@ -574,11 +577,12 @@ function handle(message, replayNotification = false) {
       pluginContext = context(message.params);
       return loaded.activate(pluginContext);
     }).then(async () => {
+      if (state !== 'starting') return;
       if (message.params.initialState != null) {
         if (typeof loaded.restoreState !== 'function') throw error('state_restore_unsupported', 'plugin must export restoreState for compatible online transfer');
         await loaded.restoreState(stateSnapshot(message.params.initialState), pluginContext);
       }
-      restoringState = false;
+      if (state === 'starting') restoringState = false;
     }));
     activation.then(() => {
       if (state !== 'starting') return;

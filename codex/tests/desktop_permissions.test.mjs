@@ -7,7 +7,7 @@ test('cold permission exports recover before publishing options and late readers
   const f=fixture();let calls=0;
   const options={manager:f.manager,client:f.client,check(){},selection:()=>({threadId:'thread-a'}),emit(){}};
   const recovering=createPermissions({...options,load:async()=>{
-    if(++calls===1)throw Object.assign(new Error('A unique Native scope is required (found 0)'),{code:'desktop_contract_drift'});
+    if(++calls===1)throw Object.assign(new Error('Native scope is not mounted yet'),{code:'desktop_host_pending'});
     return f.native;
   }});
   assert.equal((await recovering.get({threadId:'thread-a'})).phase,'ready');assert.equal(calls,2);recovering.dispose();
@@ -16,6 +16,12 @@ test('cold permission exports recover before publishing options and late readers
   const read=retiring.get({threadId:'thread-a'});await tick();retiring.dispose();
   release({...f.native,subscribe(){subscribed++;},dispose(){disposed++;}});
   await assert.rejects(read,{code:'adapter_deactivated'});assert.equal(disposed,1);assert.equal(subscribed,0);f.api.dispose();
+});
+
+test('an actual Native permission contract failure remains unsupported without an initialization retry',async()=>{
+  const f=fixture();let calls=0;
+  const provider=createPermissions({manager:f.manager,client:f.client,check(){},selection:()=>({threadId:'thread-a'}),emit(){},load:async()=>{calls++;throw Object.assign(Error('Native scope is ambiguous'),{code:'desktop_contract_drift'});}});
+  assert.equal((await provider.get({threadId:'thread-a'})).phase,'unsupported');assert.equal(calls,1);provider.dispose();f.api.dispose();
 });
 function fixture(){
   let current='thread-a',mode='auto',resolveUpdate;const listeners=new Set(),events=[],calls=[],errors=[],requests=new Map();
@@ -48,6 +54,17 @@ test('Native mapping failure reports unsupported and cancellation before dispatc
   await assert.rejects(f.api.update({threadId:'thread-a',selection:{kind:'agent-mode',mode:'auto'},expectedRevision:1},controller.signal,{pluginId:'consumer',generation:1}),{code:'invocation_cancelled'});assert.equal(f.calls.length,0);
   const blocked=createPermissions({manager:f.manager,client:{},check(){},selection:()=>({threadId:'thread-a'}),load:async()=>{throw Error('Missing authoritative Native mapping');},emit(){}});
   assert.equal((await blocked.get({threadId:'thread-a'})).phase,'unsupported');
+});
+
+test('permission guards pin pending objects and keep a newer same-ID dispatch reserved',async()=>{
+  const f=fixture(),before=await f.api.get({threadId:'thread-a'});
+  await f.api.update({threadId:'thread-a',selection:{kind:'agent-mode',mode:'auto'},expectedRevision:before.revision},null,{pluginId:'consumer',generation:1});
+  const waits=[],sent=[];f.manager.waitForPendingThreadSettingsUpdate=()=>new Promise(resolve=>waits.push(resolve));
+  const message=value=>({type:'mcp-request',hostId:'local',request:{id:'reused',method:'turn/start',params:{threadId:'thread-a',input:[{type:'text',text:value}]}}});
+  f.requests.set('reused',{});f.api.intercept(message('old'),value=>sent.push(value));await tick();
+  const next={};f.requests.set('reused',next);f.api.intercept(message('new'),value=>sent.push(value));await tick();
+  waits[0]();await tick();assert.equal(sent.length,0);assert.equal(f.errors.length,0);assert.equal(f.requests.get('reused'),next);assert.throws(()=>f.api.captureState(),{code:'permissions_busy'});
+  waits[1]();await tick();assert.equal(sent.length,1);assert.equal(sent[0].request.params.input[0].text,'new');f.api.dispose();
 });
 test('cancelled in-flight permission writes report unknown outcome and their next Native send still waits for canonical settings',async()=>{
   const f=fixture(),controller=new AbortController(),before=await f.api.get({threadId:'thread-a'});let finish;

@@ -161,7 +161,7 @@ for(const closeDelay of [50,1800])test(closeDelay===50?'Core establishes its rec
   await writeFile(path.join(root,'main.cjs'),'class NativeEntry {value(){return "entry-original";}};require("./native.cjs");globalThis.nativeEntry=new NativeEntry();globalThis.nativeReady=true;setInterval(()=>{},1000);');
   const child=spawn(process.execPath,['--inspect-brk=127.0.0.1:0','--require',path.join(root,'preload.cjs'),path.join(root,'main.cjs')],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
   child.stdout.on('error',()=>{});child.stderr.on('error',()=>{});
-  t.after(async()=>{child.kill();await new Promise(resolve=>child.exitCode!==null?resolve():child.once('exit',resolve));assert.equal(path.dirname(path.resolve(root)),path.resolve(tmpdir()));await rm(root,{recursive:true});});
+  t.after(async()=>{if(child.exitCode===null&&child.signalCode===null){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;}assert.equal(path.dirname(path.resolve(root)),path.resolve(tmpdir()));await rm(root,{recursive:true});});
   const inspectorUrl=await new Promise((resolve,reject)=>{let text='';const timer=setTimeout(()=>reject(Error('owned_inspector_timeout')),5000);child.stderr.on('data',bytes=>{text+=bytes;const match=text.match(/ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]{36}/);if(match){clearTimeout(timer);resolve(match[0]);}});child.once('error',reject);});
   let code=await readFile(new URL('../runtime/client-bridge-bundle.cjs',import.meta.url),'utf8');
   const closeTimer='require("node:inspector").close(), 50)';

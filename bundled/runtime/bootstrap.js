@@ -279,16 +279,7 @@
             record.unavailable.set(capabilityKey(capability), reason);
         };
 
-        const onNotification = (handler) => {
-            if (typeof handler !== 'function') {
-                throw rpcError('invalid_notification_handler', 'notification handler must be a function');
-            }
-            if (record.notifications.size >= 64) throw rpcError('request_limit', 'renderer notification listener limit reached');
-            record.notifications.add(handler);
-            return () => record.notifications.delete(handler);
-        };
-
-        return Object.freeze({ request, notify, provide, unavailable, onNotification });
+        return Object.freeze({ request, notify, provide, unavailable });
     }
 
     function takePending(record, id) {
@@ -319,6 +310,7 @@
         };
         return Object.freeze({
             run(operation, cleanup = false) {
+                if (record.closed && cleanup) return operation();
                 if (record.closed || stopping.has(record) && !cleanup) throw rpcError('plugin_deactivated', 'renderer plugin was deactivated');
                 if ((record.updating || coreAdmission.operationId !== null && !record.initializing) && !cleanup && !stopping.has(record)) throw rpcError('core_updating', 'Core is checkpointing this plugin generation');
                 return track(operation());
@@ -364,7 +356,6 @@
         rejectPending(record, error);
         record.endpoints.clear();
         record.unavailable.clear();
-        record.notifications.clear();
         if (plugins.get(record.id) === record) plugins.delete(record.id);
         if (activating.get(record.id) === record) activating.delete(record.id);
         stopping.delete(record);
@@ -495,7 +486,8 @@
             const invocation = Object.freeze({
                 pluginId: record.id, generation: record.generation, capability: endpoint.capability, method: request.method,
                 ...(core ? { caller: Object.freeze({ ...core.caller }), scope: Object.freeze({ ...core.scope }), depth: core.depth } : {}),
-                signal: controller.signal, remainingMs: () => Math.max(0, Math.floor(lineage.deadline - now())), rpc: createRpc(record, lineage)
+                signal: controller.signal, remainingMs: () => Math.max(0, Math.floor(lineage.deadline - now())), rpc: createRpc(record, lineage),
+                get i18n() { return record.context.i18n; }
             });
             Promise.resolve().then(() => endpoint.handler(request.params, invocation)).then(value => finish(value), failure => finish(null, failure));
         });
@@ -549,7 +541,6 @@
                     endpoints: new Map(),
                     unavailable: new Map(),
                     invocations: new Map(),
-                    notifications: new Set(),
                     disposers: new Set(),
                     cleanups: new Set(),
                     cleanupController: null,

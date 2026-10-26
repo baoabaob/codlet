@@ -22,15 +22,18 @@ function fixture(t, Tooltip, contentProp) {
   const tooltip = { type: Tooltip, memoizedProps: { [contentProp]: 'Home', side: 'right' }, return: group };
   const button = { type: RailButton, memoizedProps: { uniform: true, iconSize: 'lg', 'data-sidebar-destination': 'builtin:home' }, return: tooltip };
   const home = { __reactFiber$test: { type: 'button', return: button } };
+  const current = { child: group }, root = { __reactContainer$test: { stateNode: { current } } };
+  group.return = current; group.child = tooltip; tooltip.child = button; button.child = home.__reactFiber$test;
+  home.__reactFiber$test.stateNode = home;
   const rail = { querySelectorAll: () => [home] };
   const previous = { document: globalThis.document, location: globalThis.location };
   globalThis.location = { origin: 'app://-', pathname: '/index.html' };
-  globalThis.document = { querySelectorAll: selector => selector.startsWith('nav[') ? [rail] : [
+  globalThis.document = { getElementById: () => root, querySelectorAll: selector => selector.startsWith('nav[') ? [rail] : [
     { href: 'app://-/assets/app-shared-new.js' }, { href: 'app://-/assets/app-initial-new.js' },
   ] };
   t.after(() => { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } });
   const primary = {}, initial = {};
-  return { shared, tooltip, group, primary, initial, discover: () => discoverNative({ load: async url => url.includes('app-shared-') ? shared : url.includes('app-primary-') ? primary : initial, read: async url => url.includes('app-shared-') ? factorySource : 'import("./app-primary-new.js")' }) };
+  return { shared, tooltip, group, current, primary, initial, discover: () => discoverNative({ load: async url => url.includes('app-shared-') ? shared : url.includes('app-primary-') ? primary : initial, read: async url => url.includes('app-shared-') ? factorySource : 'import("./app-primary-new.js")' }) };
 }
 test('mounted legacy rail tooltip retains its native component and prop contract', async t => {
   const f = fixture(t, LegacyTooltip, 'tooltipContent'), native = await f.discover();
@@ -60,6 +63,13 @@ test('a changed content-tooltip interface and multiple mounted owners remain una
   await assert.rejects(f.discover(), { code: 'ui_host_drift' });
   f.tooltip.memoizedProps = { content: 'Home', side: 'right' };
   f.shared.LegacyTooltip = LegacyTooltip;
-  f.tooltip.return = { type: LegacyTooltip, memoizedProps: { tooltipContent: 'Home', side: 'right' }, return: f.group };
+  f.tooltip.return = { type: LegacyTooltip, memoizedProps: { tooltipContent: 'Home', side: 'right' }, return: f.group, child: f.tooltip };
+  f.group.child = f.tooltip.return;
+  await assert.rejects(f.discover(), { code: 'ui_host_drift' });
+});
+
+test('a detached rail ancestry cannot supply stale Native components', async t => {
+  const f = fixture(t, ContentTooltip, 'content');
+  f.current.child = null;
   await assert.rejects(f.discover(), { code: 'ui_host_drift' });
 });

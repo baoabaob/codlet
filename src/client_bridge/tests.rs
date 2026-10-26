@@ -20,6 +20,196 @@ const SOURCE: &str = "dev.fixture.source";
 const DEPENDENT: &str = "dev.fixture.dependent";
 const WAIT: Duration = Duration::from_secs(15);
 
+fn protocol_source(port: u16, configuration: Value) -> (ClientSourceRuntime, TcpStream) {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = directory.path().join("config.json");
+    let services = crate::core_services::SharedCoreServices::new(&registry).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let lease = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (retained, _) = listener.accept().unwrap();
+    let source = ClientSourceRuntime(Arc::new(SourceOwner {
+        endpoint: Endpoint {
+            version: 1,
+            host: "127.0.0.1".into(),
+            port,
+            token: "a".repeat(48),
+            pid: 42,
+            executable: "fixture".into(),
+            kind: "browser".into(),
+        },
+        runtime: JsRuntime::discover().unwrap(),
+        registry,
+        directory,
+        configuration,
+        state: Mutex::new(State {
+            epoch: 0,
+            provider: None,
+            startup_provider: None,
+            admission: None,
+            core_pending: None,
+            #[cfg(all(windows, feature = "desktop-acceptance"))]
+            fixture_route: None,
+        }),
+        startup: Mutex::new(None),
+        startup_unsettled: AtomicBool::new(false),
+        startup_observation: AtomicU8::new(0),
+        retired: AtomicBool::new(false),
+        lifecycle: Mutex::new(()),
+        traffic: services.prepare_traffic().unwrap(),
+        _lease: lease,
+    }));
+    (source, retained)
+}
+
+fn read_command(socket: &mut TcpStream) -> Value {
+    socket.set_read_timeout(Some(WAIT)).unwrap();
+    let mut bytes = Vec::new();
+    let mut byte = [0];
+    while byte[0] != b'\n' {
+        socket.read_exact(&mut byte).unwrap();
+        bytes.push(byte[0]);
+    }
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[test]
+fn skill_root_observation_pages_large_native_paths_and_rejects_mixed_authority() {
+    let long_path = format!("C:/{}", "原生😀/".repeat(20_000));
+    let chars: Vec<_> = long_path.chars().collect();
+    let pieces: Vec<String> = chars
+        .chunks(5000)
+        .map(|part| part.iter().collect())
+        .collect();
+    let mut pages = Vec::new();
+    for (index, text) in pieces.iter().enumerate() {
+        pages.push(json!({"pid":42,"status":"observed","authorityId":"actual-child","revision":"7","provenance":"confirmed","rootCount":1,"fragments":[{"index":0,"text":text,"complete":index+1==pieces.len()}],"cursor":if index+1==pieces.len(){Value::Null}else{json!(format!("page.{}",index+1))}}));
+    }
+    let first = json!({"pid":42,"status":"observed","authorityId":"actual-child","revision":"7","provenance":"confirmed","rootCount":1,"fragments":[{"index":0,"text":"C:/","complete":false}],"cursor":"changed"});
+    let second = json!({"pid":42,"status":"observed","authorityId":"different-child","revision":"7","provenance":"confirmed","rootCount":1,"fragments":[{"index":0,"text":"root","complete":true}],"cursor":null});
+    let page_count = pages.len();
+    pages.extend([first, second]);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        for response in pages {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(WAIT)).unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while byte[0] != b'\n' {
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let command: Value = serde_json::from_slice(&request).unwrap();
+            assert_eq!(command["op"], "skillRoots");
+            assert_eq!(command["anchors"][0]["id"], "pending-native-request");
+            let bytes = serde_json::to_vec(&json!({"ok":true,"result":response})).unwrap();
+            assert!(bytes.len() < 65536);
+            socket.write_all(&bytes).unwrap();
+        }
+        page_count
+    });
+    let (source, _retained_lease) = protocol_source(port, json!({}));
+    let anchors = json!([{"id":"pending-native-request","method":"skills/list"}]);
+    let observed = source
+        .skill_roots_snapshot("current-client", 3, &anchors, None)
+        .unwrap();
+    assert_eq!(observed["roots"], json!([long_path]));
+    assert_eq!(observed["provenance"], "confirmed");
+    assert_eq!(
+        source
+            .skill_roots_snapshot("current-client", 3, &anchors, None)
+            .unwrap_err()
+            .code,
+        "skill_roots_observation_changed"
+    );
+    assert!(peer.join().unwrap() > 16);
+}
+
+#[test]
+fn malformed_startup_contract_is_terminal_and_never_replays_ready() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let (source, mut lease) = protocol_source(
+        listener.local_addr().unwrap().port(),
+        json!({"source":{"operations":["http.intercept"],"protocols":["http"]}}),
+    );
+    let peer = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let command = read_command(&mut socket);
+        assert_eq!(command["op"], "ready");
+        assert_eq!(command["operationId"], STARTUP_OPERATION);
+        socket.write_all(serde_json::to_string(&json!({"ok":true,"result":{"pid":42,"outcome":"applied","epoch":0,"owner":null,"generation":null,"activation":{"installed":true,"activatedSources":[{"id":"unowned","operations":["http.intercept"],"protocols":["http"],"coverage":["unowned"]}],"unsupportedSources":[]}}})).unwrap().as_bytes()).unwrap();
+    });
+    assert_eq!(
+        source.complete_startup(None).unwrap_err().code,
+        "client_bridge_protocol"
+    );
+    assert_eq!(
+        source.complete_startup(None).unwrap_err().code,
+        "client_bridge_protocol"
+    );
+    assert_eq!(
+        source.refresh_startup().unwrap_err().code,
+        "client_bridge_protocol"
+    );
+    assert_eq!(
+        source.cached_startup_observation(),
+        StartupObservation::Ready(false)
+    );
+    lease.set_read_timeout(Some(WAIT)).unwrap();
+    assert_eq!(lease.read(&mut [0]).unwrap(), 0);
+    peer.join().unwrap();
+}
+
+#[test]
+fn retiring_the_native_owner_rejects_an_inflight_late_startup_observation() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let (source, mut lease) = protocol_source(
+        listener.local_addr().unwrap().port(),
+        json!({"source":{"operations":[],"protocols":[]}}),
+    );
+    let (observing, observed) = std::sync::mpsc::channel();
+    let (resume, resumed) = std::sync::mpsc::channel();
+    let peer = std::thread::spawn(move || {
+        for operation in ["ready", "status"] {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert_eq!(read_command(&mut socket)["op"], operation);
+            if operation == "status" {
+                observing.send(()).unwrap();
+                resumed.recv_timeout(WAIT).unwrap();
+            }
+            socket.write_all(serde_json::to_string(&json!({"ok":true,"result":{"pid":42,"outcome":"applied","epoch":0,"owner":null,"generation":null,"activation":{"installed":false,"activatedSources":[],"unsupportedSources":[]}}})).unwrap().as_bytes()).unwrap();
+        }
+    });
+    let completing = source.clone();
+    let completion = std::thread::spawn(move || completing.complete_startup(None));
+    observed.recv_timeout(WAIT).unwrap();
+    source.retire();
+    resume.send(()).unwrap();
+    assert_eq!(
+        completion.join().unwrap().unwrap_err().code,
+        "client_bridge_retired"
+    );
+    assert_eq!(
+        source.cached_startup_observation(),
+        StartupObservation::Ready(false)
+    );
+    assert!(
+        source
+            .0
+            .startup
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .receipt
+            .is_some()
+    );
+    lease.set_read_timeout(Some(WAIT)).unwrap();
+    assert_eq!(lease.read(&mut [0]).unwrap(), 0);
+    peer.join().unwrap();
+}
+
 #[test]
 fn core_module_preflight_checks_factory_syntax_without_evaluating_candidate_code() {
     let fixture = Fixture::new(false);
@@ -115,6 +305,21 @@ impl Fixture {
         initial_source: bool,
         ready_stall_ms: u64,
     ) -> Self {
+        Self::new_with_startup_mode(
+            suspended,
+            lease_delay_ms,
+            initial_source,
+            ready_stall_ms,
+            false,
+        )
+    }
+    fn new_with_startup_mode(
+        suspended: bool,
+        lease_delay_ms: u64,
+        initial_source: bool,
+        ready_stall_ms: u64,
+        late_activation: bool,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let registry_path = directory.path().join("state/config.json");
         let mut registry = PluginRegistry::load(&registry_path).unwrap();
@@ -204,7 +409,12 @@ impl Fixture {
           if({initial_source}){{
             const file=require('node:path').join(__dirname,'connected.marker');
             let code=require('./dev.fixture.source/host.cjs').clientSource().code;
-            code+='\nconst original=module.exports.installElectronTraffic;module.exports.installElectronTraffic=(...args)=>{{const runtime=original(...args);return {{...runtime,ready:async()=>{{if(!require("node:fs").existsSync('+JSON.stringify(file)+'))throw Object.assign(Error(),{{code:"native_connection_pending"}});return runtime.ready();}}}};}};';
+            const calls=require('node:path').join(__dirname,'startup-ready.calls');
+            if({late_activation}){{
+              code='const fs=require("node:fs"),file='+JSON.stringify(file)+',calls='+JSON.stringify(calls)+';const activation=()=>fs.existsSync(file)?{{installed:true,activatedSources:[{{id:"fixture-main",operations:["http.intercept"],protocols:["http"],coverage:["late-native-hook"]}}],unsupportedSources:[],pending:false,pendingSources:[]}}:{{installed:false,activatedSources:[],unsupportedSources:[],pending:true,pendingSources:[{{id:"fixture-main",reason:"initializing"}}]}};module.exports={{installElectronTraffic(){{return {{ready:async()=>{{fs.appendFileSync(calls,"ready\\n");return activation();}},inspect:()=>({{activation:activation()}}),close(){{}}}};}}}};';
+            }}else{{
+              code+='\nconst original=module.exports.installElectronTraffic;module.exports.installElectronTraffic=(...args)=>{{const runtime=original(...args);return {{...runtime,ready:async()=>{{const fs=require("node:fs");fs.appendFileSync('+JSON.stringify(calls)+',"ready\\n");while(!fs.existsSync('+JSON.stringify(file)+'))await new Promise(resolve=>setTimeout(resolve,10));return runtime.ready();}}}};}};';
+            }}
             bridge.installInitial({{owner:'dev.fixture.source',generation:1,code,configuration:{{}}}}).catch(()=>{{}});
           }}
           ready=true;bridge.endpoint().then(endpoint=>process.stdout.write(JSON.stringify(endpoint)+'\n'));
@@ -337,7 +547,7 @@ fn startup_ready_recovers_the_original_receipt_after_a_slow_native_main_loop() {
             .join("startup-stall.marker")
             .is_file()
     );
-    assert!(!result.unwrap());
+    assert_eq!(result.unwrap(), StartupObservation::Ready(false));
     let receipt = fixture
         .source
         .request(json!({"op":"status","operationId":"startup-ready"}))
@@ -482,11 +692,105 @@ fn startup_source_is_confirmed_only_after_the_native_connection_can_initialize()
         1,
     )
     .unwrap();
-    assert!(f.source.complete_startup(Some(&provider)).unwrap());
+    assert_eq!(
+        f.source.complete_startup(Some(&provider)).unwrap(),
+        StartupObservation::Ready(true)
+    );
     assert_eq!(f.inspect()["activation"]["installed"], true);
     assert_eq!(f.inspect()["pid"], f.peer.pid());
     f.source.replace(None).unwrap();
     assert!(f.inspect()["owner"].is_null());
+}
+
+#[test]
+fn pending_startup_keeps_one_ready_invocation_and_later_confirms_the_same_native_owner() {
+    startup_pending_case(false);
+}
+
+#[test]
+fn a_terminal_ready_receipt_tracks_late_activation_without_reinitializing_native() {
+    startup_pending_case(true);
+}
+
+fn startup_pending_case(late_activation: bool) {
+    let f = Fixture::new_with_startup_mode(true, 0, true, 0, late_activation);
+    let registry = PluginRegistry::load(&f.registry).unwrap();
+    let provider = crate::local_plugins::load_local_plugin_with_registration(
+        SOURCE,
+        &registry.local_plugins()[SOURCE],
+        1,
+    )
+    .unwrap();
+    let pid = f.peer.pid();
+    let first = f
+        .source
+        .complete_startup_until(Some(&provider), Instant::now() + Duration::from_millis(200))
+        .unwrap();
+    assert_eq!(first, StartupObservation::Pending);
+    assert_eq!(
+        f.source.cached_startup_observation(),
+        StartupObservation::Pending
+    );
+    assert!(
+        f.source
+            .0
+            .startup
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .dispatched
+    );
+    assert_eq!(
+        f.source
+            .0
+            .startup
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .receipt
+            .is_some(),
+        late_activation
+    );
+    let before = Instant::now();
+    assert_eq!(
+        f.source.complete_startup(Some(&provider)).unwrap(),
+        StartupObservation::Pending
+    );
+    assert!(
+        before.elapsed() < Duration::from_secs(1),
+        "repeated completion only observes the original receipt"
+    );
+    let calls = f.directory.path().join("startup-ready.calls");
+    assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    std::fs::write(f.directory.path().join("connected.marker"), "connected").unwrap();
+    let until = Instant::now() + WAIT;
+    loop {
+        match f.source.refresh_startup().unwrap() {
+            StartupObservation::Ready(true) => break,
+            StartupObservation::Pending => {}
+            other => panic!("unexpected startup observation: {other:?}"),
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        f.source.cached_startup_observation(),
+        StartupObservation::Ready(true)
+    );
+    assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+    assert_eq!(f.inspect()["pid"], pid);
+    assert_eq!(f.inspect()["owner"], SOURCE);
+    f.source.retire();
+    assert_eq!(
+        f.source.cached_startup_observation(),
+        StartupObservation::Ready(false)
+    );
+    assert_eq!(
+        f.source.refresh_startup().unwrap_err().code,
+        "client_bridge_retired"
+    );
 }
 
 #[test]

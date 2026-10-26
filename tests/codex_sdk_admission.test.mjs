@@ -53,3 +53,19 @@ test('Core-authenticated local connection accepted before checkpoint can finish 
  runtime.__rpcReceive('bridge',{v:1,type:'response',id:requests[0].id,ok:true,result:{api:1,symbol:'codlet.codex.ui.workspace.v1',ticket:'owned'}});
  assert.equal((await connecting).getSnapshot().ready,true);assert.equal((await saving).ok,true);assert.equal(connections,1);await runtime.deactivate('local',1);
 });
+
+test('callable callback registrations retain method properties, admission and idempotent disposal after owner retirement', async () => {
+ let enabled = true, disposed = false;
+ const registration = Object.assign(() => { disposed = true; }, { setEnabled(value) { enabled = value; }, inspect() { return { enabled, disposed }; } });
+ const f = await fixture({ register() { return registration; } });
+ const handle = f.session.register();
+ assert.equal(typeof handle, 'function'); assert.equal(typeof handle.setEnabled, 'function');
+ handle.setEnabled(false); assert.equal(handle.inspect().enabled, false);
+ assert.equal((await f.runtime.__snapshot('local', 1)).ok, true);
+ assert.throws(() => handle.setEnabled(true), { code: 'core_updating' });
+ assert.equal(handle.inspect().enabled, false);
+ handle(); assert.equal(disposed, true);
+ await f.runtime.deactivate('local', 1);
+ assert.doesNotThrow(() => handle());
+ assert.throws(() => handle.setEnabled(true), { code: 'plugin_deactivated' });
+});

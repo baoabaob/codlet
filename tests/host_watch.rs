@@ -327,6 +327,7 @@ fn error_code(report: ControlReport) -> String {
 #[test]
 fn online_enabled_host_joins_watch_coalesces_writes_and_follows_only_the_declared_entry() {
     let mut fixture = Fixture::new();
+    let renderer_baseline = fixture.renderer.plugin_count();
     let id = "dev.watch-live";
     let root = fixture.register(id, &source("original", ""), true);
     fixture.tick(Some(0));
@@ -356,7 +357,7 @@ fn online_enabled_host_joins_watch_coalesces_writes_and_follows_only_the_declare
             .iter()
             .any(|event| event["label"] == "transient")
     );
-    assert_eq!(fixture.renderer.plugin_count(), 0);
+    assert_eq!(fixture.renderer.plugin_count(), renderer_baseline);
 
     std::fs::write(
         root.join("dist/replacement.js"),
@@ -777,9 +778,15 @@ fn an_initially_loaded_failed_host_keeps_its_source_anchor_and_watch_can_recover
         .control
         .seed_watch_sources(&fixture.renderer, &plugins);
     fixture.hosts.stop().unwrap();
-    fixture.hosts =
-        HostRuntime::start_with_runtime(plugins, fixture.client.clone(), Some(js_runtime()))
-            .unwrap();
+    fixture.hosts = HostRuntime::start_with_runtime(
+        plugins
+            .into_iter()
+            .filter(|plugin| plugin.host.is_some())
+            .collect(),
+        fixture.client.clone(),
+        Some(js_runtime()),
+    )
+    .unwrap();
     fixture.until(|fixture| {
         fixture.hosts.observations().iter().any(|observation| {
             observation.plugin.manifest.id == id && observation.state == ExecutionState::Failed
@@ -905,9 +912,15 @@ fn a_missing_or_junction_redirected_loaded_host_root_is_paused_before_reads_and_
         .control
         .seed_watch_sources(&fixture.renderer, &plugins);
     fixture.hosts.stop().unwrap();
-    fixture.hosts =
-        HostRuntime::start_with_runtime(plugins, fixture.client.clone(), Some(js_runtime()))
-            .unwrap();
+    fixture.hosts = HostRuntime::start_with_runtime(
+        plugins
+            .into_iter()
+            .filter(|plugin| plugin.host.is_some())
+            .collect(),
+        fixture.client.clone(),
+        Some(js_runtime()),
+    )
+    .unwrap();
     fixture.until(|fixture| {
         fixture.hosts.observations().iter().any(|observation| {
             observation.plugin.manifest.id == id && observation.state == ExecutionState::Failed

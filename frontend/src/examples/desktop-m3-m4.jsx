@@ -52,8 +52,8 @@ async function initialize(ctx){
     remember(event){this.set({events:[...this.state.events.slice(-255),event]});},configure(enabled){interceptor.setEnabled(enabled);this.set({interception:enabled});},
     async action(id,fn){if(!alive||this.state.busy.includes(id))return;this.set({busy:[...this.state.busy,id],message:''});try{await fn();}catch(error){this.set({message:`${error.code??'error'}: ${error.message}`});}finally{this.set({busy:this.state.busy.filter(value=>value!==id)});}}};
   const selection=value=>{owned.set({selection:value,...(value.threadId?{thread:value.threadId}:{}),...(value.activeTurnId?{turn:value.activeTurnId}:{})});};
-  const deadline=Date.now()+35000;let connection;
-  while(alive){connection=await owned.call('codex.desktop.compatibility','waitReady',{timeoutMs:1000});if(connection.available)break;if(!connection.initializing||Date.now()>=deadline)throw Error(connection.unavailable?.message??'Desktop Adapter is unavailable');}
+  let connection;
+  while(alive){connection=await owned.call('codex.desktop.compatibility','waitReady',{timeoutMs:1000});if(connection.available)break;if(!connection.initializing)throw Error(connection.unavailable?.message??'Desktop Adapter is unavailable');}
   if(!alive)return;owned.set({connection});
   const access=await owned.call('codex.ui.preSubmit','getApi');if(!alive)return;
   interceptor=globalThis[Symbol.for(access.symbol)].registerPreSubmit(ctx,access.ticket,{id:'acceptance',priority:0,timeoutMs:500,enabled:false},draft=>{

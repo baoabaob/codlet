@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+import { buildSync } from '../../frontend/node_modules/esbuild/lib/main.js';
 
-const source = readFileSync(new URL('../bundled/codex-desktop-adapter/renderer.js', import.meta.url), 'utf8');
+const source = buildSync({entryPoints:[fileURLToPath(new URL('../frontend/src/desktop/entry.js',import.meta.url))],bundle:true,write:false,platform:'browser',format:'cjs',target:'chrome130'}).outputFiles[0].text;
 const plain = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -197,6 +198,16 @@ test('empty pipeline stays synchronous; lifecycle removes callbacks and reports 
     assert.equal(drift.dispose().reloadRequired, true);
 });
 
+test('a retired pre-submit request cannot dispatch or reject another pending object reusing its ID', async () => {
+    for (const rejects of [false,true]) {
+        const f=fixture();let resolve,reject;
+        f.api.registerPreSubmit(f.owner('identity-hook').ctx,{id:'held'},()=>new Promise((yes,no)=>{resolve=yes;reject=no;}));
+        const message=f.submit();await tick();const replacement={};f.client.requestPromises.set(message.request.id,replacement);
+        if(rejects)reject(Error('old hook failed'));else resolve({text:'old completion'});
+        await tick();assert.equal(f.sent.length,0);assert.equal(f.failures.length,0);assert.equal(f.client.requestPromises.get(message.request.id),replacement);f.dispose();
+    }
+});
+
 test('stable read DTOs keep Thread/Turn/Item identity and do not return provider secrets', async () => {
     const f = fixture();
     f.responses.set('thread/read', { thread: { id: 'thread-a', preview: 'task', modelProvider: 'p', cwd: 'C:/work', privateEnvelope: 'hidden' } });
@@ -270,6 +281,29 @@ test('bounded event stream preserves UI ids, reports overflow, cancels waits, an
     const newer = fixture(); await assert.rejects(newer.api.readEvents({ cursor }), { code: 'event_cursor_retired' }); newer.dispose();
 });
 
+test('approval tokens retain one Native request across reads but retire when its object or consent payload changes', async () => {
+    const f=fixture(),request={id:71,method:'item/commandExecution/requestApproval',params:{threadId:'thread-a',turnId:'turn-a',itemId:'command-a',command:'first command'}};
+    f.thread.requests=[request];const first=(await f.api.read('approvals.list',{threadId:'thread-a'})).requests[0];
+    f.thread.requests=[...f.thread.requests];f.callbacks.get('conversation')('thread-a');
+    assert.equal((await f.api.read('approvals.list',{threadId:'thread-a'})).requests[0].token,first.token);
+    f.thread.requests=[{...request,params:{...request.params,turnId:'turn-b',itemId:'command-b'}}];
+    await assert.rejects(f.api.write('approvals.respond',{token:first.token,decision:'approve'}),{code:'approval_retired'});
+    assert.equal(f.approvals.length,0);const second=(await f.api.read('approvals.list',{threadId:'thread-a'})).requests[0];assert.notEqual(second.token,first.token);
+    f.thread.requests[0].params.command='changed command';
+    await assert.rejects(f.api.write('approvals.respond',{token:second.token,decision:'approve'}),{code:'approval_retired'});assert.equal(f.approvals.length,0);
+    const third=(await f.api.read('approvals.list',{threadId:'thread-a'})).requests[0];
+    await f.api.write('approvals.respond',{token:third.token,decision:'decline'});assert.equal(f.approvals.length,1);f.dispose();
+});
+
+test('a submitted approval stays one-shot if Native republishes the same request before server resolution',async()=>{
+    const f=fixture(),request={id:71,method:'item/commandExecution/requestApproval',params:{threadId:'thread-a',turnId:'turn-a',itemId:'command-a',command:'same command'}};
+    f.thread.requests=[request];const first=(await f.api.read('approvals.list',{threadId:'thread-a'})).requests[0];
+    await f.api.write('approvals.respond',{token:first.token,decision:'decline'});
+    f.thread.requests=[{...request,params:{...request.params}}];f.callbacks.get('conversation')('thread-a');
+    assert.equal((await f.api.read('approvals.list',{threadId:'thread-a'})).requests[0].token,first.token);
+    await assert.rejects(f.api.write('approvals.respond',{token:first.token,decision:'decline'}),{code:'approval_retired'});assert.equal(f.approvals.length,1);f.dispose();
+});
+
 test('public page API exposes only callbacks and requires one-use tickets from the declared Core capability', () => {
     const f = fixture(), owner = f.owner('consumer'), other = f.owner('other');
     const exposed = f.scope[Symbol.for('codlet.codex.desktop.v1')];
@@ -293,6 +327,14 @@ test('unknown builds without mounted services fail without creating a connection
     scope.document.scripts.push({ src: 'app://-/assets/index-71057a3aecef.js' });
     await assert.rejects(probe(async () => { imports++; return {}; }, 0), { code: 'desktop_scope_missing' });
     assert.equal(imports, 1);
+});
+
+test('an elapsed entry-probe attempt stays pending while the reviewed Native document is still loading',async()=>{
+    const scope=vm.createContext({module:{exports:{}},location:{origin:'app://-',pathname:'/index.html'},document:{scripts:[],readyState:'loading'},electronBridge:{getSentryInitOptions:()=>({appVersion:'26.903.61454',buildNumber:'8378'}),sendMessageFromView(){}}});
+    const probe=vm.runInContext(source+'\nprobeDesktop',scope);let imports=0;
+    await assert.rejects(probe(async()=>{imports++;},0),{code:'desktop_entry_pending'});assert.equal(imports,0);
+    scope.document.readyState='complete';
+    assert.throws(()=>vm.runInContext('validateDesktopBuild',scope)(),{code:'desktop_build_drift'});
 });
 
 test('permission approval with unmapped path kinds can only be declined through this SDK', async () => {
@@ -416,6 +458,12 @@ test('Desktop recovers after a startup timeout without reactivating the plugin',
     assert.ok(f.endpoints.has('codex.backend.read:threads.list'));
     assert.deepEqual(reported.map(item => item.code), ['desktop_connection_not_ready', 'desktop_adapter_ready']);
     pending.dispose();
+});
+
+test('the Desktop owner retries a still-loading entry after an elapsed probe attempt',async()=>{
+    const f=fixture();f.dispose();f.endpoints.clear();const start=vm.runInContext('startAdapter',f.scope);let attempts=0,retry;
+    const pending=start(f.context,async()=>{if(!attempts++)throw Object.assign(Error('entry still loading'),{code:'desktop_entry_pending'});return f.connection;},()=>new Promise(resolve=>{retry=resolve;}));
+    await tick();assert.equal(pending.probe().initializing,true);retry();await tick();assert.equal(pending.probe().available,true);assert.equal(attempts,2);pending.dispose();
 });
 
 test('retiring a Desktop readiness retry prevents another probe and publication', async () => {

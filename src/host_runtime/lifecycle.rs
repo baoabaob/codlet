@@ -465,6 +465,10 @@ impl HostOwner {
             && self.scope_cleanup.is_empty()
             && self.scope_cleanup_queue.is_empty()
             && !self.cleanup_quarantined
+            && self.services.cleanup_complete(
+                &self.observation.plugin.manifest.id,
+                self.observation.plugin.generation,
+            )
             && !self.services.rpc.has_cleanup_sessions(
                 &self.observation.plugin.manifest.id,
                 self.observation.plugin.generation,

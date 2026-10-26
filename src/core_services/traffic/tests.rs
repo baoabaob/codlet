@@ -622,3 +622,255 @@ fn native_data_plane_round_trips_host_callbacks_and_large_streams() {
     assert_eq!(resources["leases"], 0);
     assert_eq!(resources["pending"], 0);
 }
+
+#[test]
+fn native_streaming_passes_the_plugin_total_budget_without_collecting() {
+    use bytes::Bytes;
+    use streams::{BODY_LIMIT, Body, CHUNK};
+    use tokio_util::sync::CancellationToken;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let chunk = Bytes::from(vec![7; CHUNK]);
+            let chunks = BODY_LIMIT / CHUNK + 1;
+            let make = || {
+                Body::new(
+                    Box::pin(futures_util::stream::iter(
+                        (0..chunks).map(|_| Ok(chunk.clone())).collect::<Vec<_>>(),
+                    )),
+                    CancellationToken::new(),
+                )
+            };
+            let mut native = make().reader(None).unwrap();
+            let mut received = 0;
+            while let Some(chunk) = native.next().await.unwrap() {
+                received += chunk.len();
+            }
+            assert_eq!(received, BODY_LIMIT + CHUNK);
+            let mut plugin = make().reader(BODY_LIMIT).unwrap();
+            for _ in 0..(chunks - 1) {
+                assert_eq!(plugin.next().await.unwrap().unwrap().len(), CHUNK);
+            }
+            assert_eq!(plugin.next().await.unwrap_err().code, "body_too_large");
+
+            let stopped = CancellationToken::new();
+            let body = Body::new(Box::pin(futures_util::stream::pending()), stopped.clone());
+            let mut reader = body.reader(None).unwrap();
+            let (result, _) = tokio::join!(reader.next(), async {
+                tokio::task::yield_now().await;
+                stopped.cancel();
+            });
+            assert_eq!(result.unwrap_err().code, "stream_retired");
+        });
+}
+
+#[test]
+fn native_route_retirement_blocks_late_registration_without_a_lookup_timer() {
+    use tokio_util::sync::CancellationToken;
+    let fixture = Fixture::new();
+    fixture.traffic.start_native().unwrap();
+    let engine = fixture.traffic.native().unwrap();
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let sent = frames.clone();
+        let peer = rpc::Rpc::new(move |value| { sent.lock().unwrap().push(value); Ok(()) }, CancellationToken::new(), 64);
+        for _ in 0..40 {
+            let token = source::private_token().unwrap();
+            engine.source_request(peer.clone(), "route.register", json!({"token":token,"upstreamBaseUrl":"https://allowed.invalid/v1"})).await.unwrap();
+        }
+        assert_eq!(engine.routes.lock().unwrap().len(), 40);
+        let token = source::private_token().unwrap();
+        let current = engine.clone();
+        let source = peer.clone();
+        let registering_token = token.clone();
+        let registering = tokio::spawn(async move {
+            current.source_request(source, "route.register", json!({"token":registering_token,"upstreamBaseUrl":"https://allowed.invalid/v1","additionalCaPem":{"stream":"0123456789abcdef0123456789abcdef"}})).await
+        });
+        let frame = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(frame) = frames.lock().unwrap().pop() { break frame; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        engine.source_request(peer.clone(), "route.close", json!({"token":token})).await.unwrap();
+        let handler: rpc::Handler = Arc::new(|_, _| Box::pin(async { panic!("unexpected request") }));
+        let event: rpc::Event = Arc::new(|_| {});
+        peer.receive(json!({"id":frame["id"],"result":{"done":true}}), &handler, &event, &Arc::new(tokio::sync::Semaphore::new(1))).unwrap();
+        assert_eq!(registering.await.unwrap().unwrap_err().code, "route_closed");
+        assert!(!engine.routes.lock().unwrap().contains_key(&token));
+        engine.source_request(peer.clone(), "route.close", json!({"token":token})).await.unwrap();
+        let route_base = fixture.traffic.launch_descriptor().unwrap()["source"]["routeBaseUrl"].as_str().unwrap().to_owned();
+        for target in [token, source::private_token().unwrap()] {
+            let response = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(1)).build().unwrap().get(format!("{route_base}/{target}/responses")).send().await.unwrap();
+            assert_eq!(response.status(), 404);
+        }
+    });
+    fixture.traffic.stop_native();
+}
+
+#[test]
+fn native_transport_policy_does_not_share_plugin_deadlines_or_cached_clients() {
+    use tokio_util::sync::CancellationToken;
+    use transport::{TransportPolicy, Trust};
+    assert_eq!(TransportPolicy::Native.connect_timeout(), None);
+    assert_eq!(TransportPolicy::Native.headers_timeout(), None);
+    assert_eq!(
+        TransportPolicy::Plugin.connect_timeout(),
+        Some(Duration::from_secs(30))
+    );
+    assert_eq!(
+        TransportPolicy::Plugin.headers_timeout(),
+        Some(Duration::from_secs(300))
+    );
+    let fixture = Fixture::new();
+    fixture.traffic.start_native().unwrap();
+    let engine = fixture.traffic.native().unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let parent = CancellationToken::new();
+            let native = engine.exchange(&parent, None, None, None, false).unwrap();
+            let permit = Arc::new(tokio::sync::Semaphore::new(1))
+                .acquire_owned()
+                .await
+                .unwrap();
+            let plugin = engine
+                .exchange(&parent, Some(permit), None, None, false)
+                .unwrap();
+            assert_eq!(
+                TransportPolicy::for_exchange(&native),
+                TransportPolicy::Native
+            );
+            assert_eq!(
+                TransportPolicy::for_exchange(&plugin),
+                TransportPolicy::Plugin
+            );
+            let target = url::Url::parse("http://127.0.0.1:9/").unwrap();
+            let trust = Trust {
+                route: Some(json!({})),
+                ..Default::default()
+            };
+            engine
+                .network_client(&target, &trust, &native)
+                .await
+                .unwrap();
+            engine
+                .network_client(&target, &trust, &plugin)
+                .await
+                .unwrap();
+            assert_eq!(engine.clients.lock().unwrap().len(), 2);
+            engine
+                .network_client(&target, &trust, &native)
+                .await
+                .unwrap();
+            engine
+                .network_client(&target, &trust, &plugin)
+                .await
+                .unwrap();
+            assert_eq!(engine.clients.lock().unwrap().len(), 2);
+        });
+    fixture.traffic.stop_native();
+}
+
+#[test]
+fn native_stalled_headers_end_on_route_cancellation_and_actual_source_disconnect() {
+    use tokio::io::AsyncReadExt;
+    let fixture = Fixture::new();
+    fixture.traffic.start_native().unwrap();
+    let descriptor = fixture.traffic.launch_descriptor().unwrap();
+    let endpoint = &descriptor["source"]["endpoint"];
+    let socket =
+        TcpStream::connect(("127.0.0.1", endpoint["port"].as_u64().unwrap() as u16)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut peer = Wire { socket, next: 0 };
+    peer.send(json!({"token":endpoint["token"]}));
+    assert_eq!(peer.read()["event"], "connected");
+    let route_base = descriptor["source"]["routeBaseUrl"].as_str().unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let upstream = format!(
+                "http://127.0.0.1:{}/",
+                listener.local_addr().unwrap().port()
+            );
+            for disconnect in [false, true] {
+                let token = source::private_token().unwrap();
+                assert!(
+                    peer.call(
+                        "route.register",
+                        json!({"token":token,"upstreamBaseUrl":upstream})
+                    )["result"]["baseUrl"]
+                        .is_string()
+                );
+                let target = format!("{route_base}/{token}/stalled");
+                let request = tokio::spawn(async move {
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .build()
+                        .unwrap()
+                        .get(target)
+                        .send()
+                        .await
+                        .unwrap()
+                });
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut received = Vec::new();
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    let mut byte = [0];
+                    while !received.ends_with(b"\r\n\r\n") {
+                        assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+                        received.push(byte[0]);
+                    }
+                })
+                .await
+                .unwrap();
+                assert!(
+                    String::from_utf8(received)
+                        .unwrap()
+                        .starts_with("GET /stalled HTTP/1.1")
+                );
+                assert!(!request.is_finished());
+                if disconnect {
+                    peer.socket.shutdown(std::net::Shutdown::Both).unwrap();
+                } else {
+                    assert_eq!(
+                        peer.call("route.close", json!({"token":token}))["result"]["closed"],
+                        true
+                    );
+                }
+                let response = tokio::time::timeout(Duration::from_secs(3), request)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(response.status(), 502);
+                assert!(response.text().await.unwrap().contains("request_cancelled"));
+                let mut byte = [0];
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(3), socket.read(&mut byte))
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    0
+                );
+            }
+        });
+    fixture.traffic.stop_native();
+}

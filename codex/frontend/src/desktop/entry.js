@@ -89,12 +89,13 @@ async function probeDesktop(loadModule = source => import(source), readyTimeoutM
         try { build = validateDesktopBuild(false, true); break; }
         catch (error) {
             if (error.code !== 'desktop_entry_pending') throw error;
-            if (Date.now() >= readyDeadline) throw fail('desktop_build_drift', 'The Desktop entry resource does not match this adapter');
+            if (Date.now() >= readyDeadline) throw error;
             await probeTick(signal, Math.min(50, readyDeadline - Date.now()));
         }
     }
     while (!Array.from(document.scripts).some(script => script.src === build.entry)) {
-        if (document.readyState === 'complete' || Date.now() >= readyDeadline) throw fail('desktop_build_drift', 'The Desktop entry resource does not match this adapter');
+        if (document.readyState === 'complete') throw fail('desktop_build_drift', 'The Desktop entry resource does not match this adapter');
+        if (Date.now() >= readyDeadline) throw fail('desktop_entry_pending', 'Waiting for the reviewed Desktop entry resource');
         await probeTick(signal, Math.min(50, readyDeadline - Date.now()));
     }
     // Import reuses the already loaded module and its existing app-host services.
@@ -483,7 +484,8 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         const selected = orderedHooks().filter(hook => hook.enabled);
         if (selected.length === 0) return dispatchNative.call(this, message, ...rest);
         const receiver = this;
-        const pending = { hooks: selected, controller: new AbortController() };
+        const pending = { hooks: selected, controller: new AbortController(), request: client.requestPromises.get(message.request.id) };
+        const ownsRequest = () => client.requestPromises.has(message.request.id) && client.requestPromises.get(message.request.id) === pending.request;
         pendingSubmits.add(pending);
         const cancelSubmission = () => pending.controller.abort(fail('submission_cancelled', 'The calling plugin retired before dispatch'));
         submission?.signal?.addEventListener('abort', cancelSubmission, { once: true });
@@ -491,10 +493,10 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         // pending request, never throw into a detached Promise or invent an id.
         runInterceptors(message, pending).then(next => {
             check();
-            if (pending.controller.signal.aborted || !client.requestPromises.has(message.request.id)) throw fail('submission_retired', 'Desktop submission retired before dispatch');
+            if (pending.controller.signal.aborted || !ownsRequest()) throw fail('submission_retired', 'Desktop submission retired before dispatch');
             dispatchNative.call(receiver, next, ...rest);
         }).catch(error => {
-            if (client.requestPromises.has(message.request.id)) client.onError(message.request.id, fail(error.code ?? 'interceptor_failed', `Codlet: ${error.message ?? String(error)}`));
+            if (ownsRequest()) client.onError(message.request.id, fail(error.code ?? 'interceptor_failed', `Codlet: ${error.message ?? String(error)}`));
             emit({ type: 'submission.blocked', threadId: optionalText(message.request.params?.threadId, 256), pluginId: error.pluginId ?? null, message: optionalText(error.message) });
         }).finally(() => { pendingSubmits.delete(pending); submission?.signal?.removeEventListener('abort', cancelSubmission); pending.controller.abort(); });
     }
@@ -655,6 +657,8 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         if (kind === 'userInput') dto.questions = (params.questions ?? []).map(question => ({ id: identity(question.id, 'question id'), header: optionalText(question.header), question: str(question.question, 'question', 65536), secret: question.isSecret === true, options: question.options == null ? [] : question.options.map(option => ({ label: str(option.label, 'option'), description: optionalText(option.description) })) }));
         return dto;
     }
+    const approvalFingerprint = request => JSON.stringify([request.method, request.params]);
+    const sameApproval = (entry, request) => entry.request === request && entry.method === request.method && entry.fingerprint === approvalFingerprint(request);
     function syncApprovals(threadId) {
         if (!alive || typeof threadId !== 'string') return;
         const requests = manager.getConversation(threadId)?.requests ?? [];
@@ -664,11 +668,19 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
             const key = `${threadId}:${typeof request.id}:${request.id}`;
             active.add(key);
             const retired = retiredApprovals.get(key);
-            if (retired?.resolved && retired.method === request.method && retired.turnId === request.params?.turnId && retired.itemId === request.params?.itemId) continue;
+            if (retired?.resolved && sameApproval(retired, request)) continue;
             retiredApprovals.delete(key);
-            if (approvals.has(key)) continue;
+            const previous = approvals.get(key);
+            if (previous && sameApproval(previous, request)) continue;
+            // A dispatched reply keeps its receipt if Native republishes the
+            // same pending request. A new object alone cannot authorize replay.
+            if (previous?.submitted && previous.fingerprint === approvalFingerprint(request)) { previous.request = request; continue; }
+            if (previous) {
+                approvals.delete(key);
+                emit({ type: 'approval.retired', token: previous.dto.token, threadId });
+            }
             const token = crypto.randomUUID(), dto = approvalDto(threadId, request, token);
-            if (dto) { approvals.set(key, { dto, id: request.id, method: request.method, submitted: false }); emit({ type: 'approval.requested', request: dto }); }
+            if (dto) { approvals.set(key, { dto, id: request.id, method: request.method, request, fingerprint: approvalFingerprint(request), submitted: false }); emit({ type: 'approval.requested', request: dto }); }
         }
         for (const [key, entry] of approvals) if (entry.dto.threadId === threadId && !active.has(key)) {
             approvals.delete(key);
@@ -678,7 +690,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         for (const [key, entry] of retiredApprovals) if (entry.threadId === threadId && entry.resolved && !active.has(key)) retiredApprovals.delete(key);
     }
     function retireApproval(key, entry, resolved) {
-        const value = entry.dto ? { token: entry.dto.token, threadId: entry.dto.threadId, turnId: entry.dto.turnId, itemId: entry.dto.itemId, method: entry.method } : entry;
+        const value = entry.dto ? { token: entry.dto.token, threadId: entry.dto.threadId, turnId: entry.dto.turnId, itemId: entry.dto.itemId, method: entry.method, request: entry.request, fingerprint: entry.fingerprint } : entry;
         retiredApprovals.set(key, { ...value, retiredAt: Date.now(), resolved });
     }
     function resolveApproval(params) {
@@ -698,7 +710,7 @@ function createAdapter(connection, context, { compatibilityProvided = false } = 
         if (!entry || entry.submitted) throw fail('approval_retired', 'Approval token is no longer pending');
         const thread = loadedThread(entry.dto.threadId);
         const request = thread.requests?.find(request => request.id === entry.id && request.method === entry.method);
-        if (!request) { syncApprovals(entry.dto.threadId); throw fail('approval_retired', 'Desktop already resolved this request'); }
+        if (!request || !sameApproval(entry, request)) { syncApprovals(entry.dto.threadId); throw fail('approval_retired', 'Desktop resolved or replaced this request'); }
         if (signal?.aborted) throw fail('invocation_cancelled', 'Approval reply was cancelled before dispatch');
         const { kind, threadId } = entry.dto;
         if (typeof manager[APPROVAL_RESPONSES[kind]] !== 'function') throw fail('desktop_approval_response_unavailable', 'This Native approval reply is unavailable; use the Native approval UI');
@@ -899,7 +911,7 @@ function startAdapter(context, probe = (signal, timeout) => probeDesktop(undefin
                 return;
             } catch (error) {
                 if (!alive) return;
-                if (!['desktop_scope_missing', 'desktop_host_pending', 'desktop_connection_not_ready', 'ui_host_pending'].includes(error.code)) throw error;
+                if (!['desktop_entry_pending', 'desktop_scope_missing', 'desktop_host_pending', 'desktop_connection_not_ready', 'ui_host_pending'].includes(error.code)) throw error;
                 failure = { code: error.code, message: optionalText(error.message) ?? 'Waiting for the existing Desktop app-host services' };
                 if (lastReported !== error.code) {
                     lastReported = error.code;

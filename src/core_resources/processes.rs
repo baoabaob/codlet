@@ -8,7 +8,7 @@ use crate::platform::host::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +22,7 @@ const CHUNK_BYTES: usize = 32 * 1024;
 pub(super) struct Processes {
     entries: BTreeMap<String, (OwnerKey, Arc<Process>)>,
     operations: BTreeMap<(OwnerKey, String), (Value, String)>,
+    host_entries: BTreeSet<String>,
 }
 #[derive(Default)]
 struct IoState {
@@ -96,6 +97,7 @@ pub(super) fn invoke(
     owner: &ResourceOwner,
     method: &str,
     params: Value,
+    host: bool,
 ) -> Result<Value> {
     let key = owner.key();
     if method == "processes.spawn" {
@@ -103,6 +105,12 @@ pub(super) fn invoke(
         name(&input.operation_key)?;
         let mut state = core.shared.state.lock().unwrap_or_else(|p| p.into_inner());
         check(&state, &key)?;
+        if host && state.retired_hosts.contains(&key) {
+            return Err(ServiceError::new(
+                "stale_generation",
+                "the resource Host has retired",
+            ));
+        }
         let op = (key.clone(), input.operation_key.clone());
         if let Some((original, id)) = state.processes.operations.get(&op) {
             if original != &params {
@@ -142,6 +150,9 @@ pub(super) fn invoke(
         let process = Arc::new(spawn(owner, input)?);
         let result = with_id(&id, process.status());
         state.processes.entries.insert(id.clone(), (key, process));
+        if host {
+            state.processes.host_entries.insert(id.clone());
+        }
         state.processes.operations.insert(op, (params, id));
         return Ok(result);
     }
@@ -231,6 +242,7 @@ pub(super) fn invoke(
             let result = process.close()?;
             let mut state = core.shared.state.lock().unwrap_or_else(|p| p.into_inner());
             state.processes.entries.remove(&id);
+            state.processes.host_entries.remove(&id);
             Ok(result)
         }
         _ => Err(ServiceError::new(
@@ -479,8 +491,18 @@ impl Process {
         let (state, _) = changed
             .wait_timeout_while(state, Duration::from_millis(2500), |s| !s.worker_done)
             .unwrap_or_else(|p| p.into_inner());
-        let complete = state.worker_done && state.reaped;
+        let worker_done = state.worker_done;
+        let mut complete = worker_done && state.reaped;
         drop(state);
+        // The worker's finite wait can end before the original OS scope does.
+        // Retain that same scope and check it again; never respawn or replay work.
+        if worker_done && !complete {
+            complete = self.child.wait(Duration::ZERO).ok().flatten().is_some()
+                && self.child.process_scope_is_empty().unwrap_or(false);
+            if complete {
+                self.io.0.lock().unwrap_or_else(|p| p.into_inner()).reaped = true;
+            }
+        }
         let mut worker = self.worker.lock().unwrap_or_else(|p| p.into_inner());
         if worker.as_ref().is_some_and(JoinHandle::is_finished)
             && let Some(worker) = worker.take()
@@ -635,26 +657,40 @@ fn pump(channel: &Channel, is_stdout: bool, io: &Arc<(Mutex<IoState>, Condvar)>)
     Ok(())
 }
 impl Processes {
-    pub(super) fn retire(&mut self, owner: &OwnerKey) -> Vec<Arc<Process>> {
-        let ids: Vec<_> = self
+    pub(super) fn retiring(
+        &mut self,
+        owner: &OwnerKey,
+        host_only: bool,
+    ) -> Vec<(String, Arc<Process>)> {
+        let retired = self
             .entries
             .iter()
-            .filter(|(_, (key, _))| key == owner)
-            .map(|(id, _)| id.clone())
+            .filter(|(id, (key, _))| {
+                key == owner && (!host_only || self.host_entries.contains(*id))
+            })
+            .map(|(id, (_, process))| (id.clone(), Arc::clone(process)))
             .collect();
-        let retired = ids
-            .into_iter()
-            .filter_map(|id| self.entries.remove(&id).map(|(_, p)| p))
-            .collect();
-        self.operations.retain(|(key, _), _| key != owner);
+        if !host_only {
+            self.operations.retain(|(key, _), _| key != owner);
+        }
         retired
     }
-    pub(super) fn drain(&mut self) -> Vec<Arc<Process>> {
+    pub(super) fn retiring_all(&mut self) -> Vec<(String, Arc<Process>)> {
         self.operations.clear();
-        std::mem::take(&mut self.entries)
-            .into_values()
-            .map(|(_, p)| p)
+        self.entries
+            .iter()
+            .map(|(id, (_, process))| (id.clone(), Arc::clone(process)))
             .collect()
+    }
+    pub(super) fn confirm_closed(&mut self, id: &str, process: &Arc<Process>) {
+        if self
+            .entries
+            .get(id)
+            .is_some_and(|(_, current)| Arc::ptr_eq(current, process))
+        {
+            self.entries.remove(id);
+            self.host_entries.remove(id);
+        }
     }
     pub(super) fn list(&self, owner: &OwnerKey) -> Vec<Value> {
         self.entries
@@ -667,5 +703,58 @@ impl Processes {
                 value
             })
             .collect()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod retirement_tests {
+    use super::*;
+
+    #[test]
+    fn an_unconfirmed_worker_receipt_keeps_the_original_scope_until_a_later_retire_confirms_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = crate::js_runtime::JsRuntime::discover().unwrap();
+        let owner = ResourceOwner {
+            client_permissions: false,
+            plugin_id: "test.delayed-process-receipt".into(),
+            source_identity: "local:test".into(),
+            generation: 1,
+            default_cwd: directory.path().canonicalize().unwrap(),
+            executables: vec![runtime.executable_path().canonicalize().unwrap()],
+            cwd_roots: vec![],
+            env_keys: vec![],
+        };
+        let core = CoreResources::default();
+        let created = core.invoke(&owner, "processes.spawn", json!({"executable":owner.executables[0],"args":["-e","process.exit(0)"],"operationKey":"one-process"})).unwrap();
+        let id = created["process"].as_str().unwrap();
+        let process = Arc::clone(&core.shared.state.lock().unwrap().processes.entries[id].1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !process.io.0.lock().unwrap().worker_done {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Hold the worker's terminal receipt after this actual child has exited.
+        // Cleanup must retain ownership while either part of that receipt is unknown.
+        {
+            let mut receipt = process.io.0.lock().unwrap();
+            receipt.worker_done = false;
+            receipt.reaped = false;
+        }
+        assert_eq!(core.retire(&owner).unwrap_err().code, "cleanup_incomplete");
+        let retained = Arc::clone(&core.shared.state.lock().unwrap().processes.entries[id].1);
+        assert!(Arc::ptr_eq(&retained, &process));
+        process.io.0.lock().unwrap().worker_done = true;
+        process.io.1.notify_all();
+        assert_eq!(core.retire(&owner).unwrap()["cleanupComplete"], true);
+        assert!(
+            core.shared
+                .state
+                .lock()
+                .unwrap()
+                .processes
+                .entries
+                .is_empty()
+        );
+        assert_eq!(core.retire(&owner).unwrap()["cleanupComplete"], true);
     }
 }

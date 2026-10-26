@@ -122,7 +122,7 @@ export function createWorkspaceLocations({document,host,load,check,changed,befor
                   throw workspaceError('workspace_location_state_evicted','Native restored a different draft namespace');
                 if(binding&&kind==='thread')changed(binding);else changed();
               }else changed();resolve();
-            }catch(error){if(!['workspace_host_pending','ui_host_pending','workspace_composer_binding_drift'].includes(error.code))reject(error);}};
+            }catch(error){if(!['workspace_host_pending','ui_host_pending'].includes(error.code))reject(error);}};
             observer=new document.defaultView.MutationObserver(inspect);observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-app-shell-active-page','data-codex-composer-root']});
             unlisten=native.manager?.addConversationStateCallback?.(inspect);
             document.addEventListener('visibilitychange',inspect);

@@ -16,7 +16,9 @@ use codlet::cdp::{
 use codlet::plugins::PluginRegistry;
 use codlet::probe::{MarkerFailure, ProbeError, hold_cdp_until_child_exit, probe_marker};
 use codlet::renderer::RendererRuntime;
-use codlet::runtime_status::{PluginLifecycle, StatusPublisher};
+#[cfg(feature = "test-fixtures")]
+use codlet::runtime_status::PluginLifecycle;
+use codlet::runtime_status::StatusPublisher;
 use codlet::windows::process::{ChildProcess, launch_with_cdp_pipes};
 use serde_json::json;
 use tempfile::{TempDir, tempdir};
@@ -38,6 +40,7 @@ fn launch(
     (child, client, events)
 }
 
+#[cfg(feature = "test-fixtures")]
 fn bundled_runtime() -> (TempDir, RendererRuntime) {
     let directory = tempdir().unwrap();
     let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
@@ -316,14 +319,14 @@ fn runtime_inspection_samples_owned_registration_and_lifecycle_without_cdp_or_di
             .any(|event| event.code == "cleanup_failed"
                 && event.message.contains("simulated cleanup failure"))
     );
-    assert!(
-        stopped
-            .targets
+    assert!(stopped.targets.iter().all(|target| {
+        let local: Vec<_> = target
+            .plugins
             .iter()
-            .all(|target| target.plugins.len() == 1
-                && target.plugins[0].id == "dev.other"
-                && target.plugins[0].active)
-    );
+            .filter(|plugin| plugin.id.starts_with("dev."))
+            .collect();
+        local.len() == 1 && local[0].id == "dev.other" && local[0].active
+    }));
     for session in &sessions {
         runtime.deactivate_target(session.target_id()).unwrap();
     }
@@ -453,8 +456,12 @@ fn running_control_batches_dependency_order_fresh_generations_validation_and_com
     let (directory, registry_path, mut runtime) = control_runtime();
     let (child, client, events) = launch("renderer-control", &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let renderer_baseline = runtime.plugin_count();
     for session in &sessions {
-        assert_eq!(runtime.attach(session).unwrap().plugin_count, 3);
+        assert_eq!(
+            runtime.attach(session).unwrap().plugin_count,
+            renderer_baseline
+        );
     }
 
     let rejected = runtime
@@ -603,13 +610,19 @@ fn running_control_batches_dependency_order_fresh_generations_validation_and_com
         .unwrap()
         .result
         .unwrap();
-    assert_eq!(stats["bindings"].as_array().unwrap().len(), 6);
+    assert_eq!(
+        stats["bindings"].as_array().unwrap().len(),
+        before["bindings"].as_array().unwrap().len()
+    );
     assert!(stats["scripts"].as_array().unwrap().iter().all(|world| {
-        world == "codlet.plugin.dev.other.g1"
-            || world
-                .as_str()
-                .unwrap()
-                .ends_with(&format!(".g{rollback_generation}"))
+        let world_name = world.as_str().unwrap();
+        if world_name.starts_with("codlet.plugin.dev.provider.")
+            || world_name.starts_with("codlet.plugin.dev.consumer.")
+        {
+            world_name.ends_with(&format!(".g{rollback_generation}"))
+        } else {
+            before["scripts"].as_array().unwrap().contains(world)
+        }
     }));
 
     for id in ["dev.consumer", "dev.provider"] {
@@ -726,15 +739,14 @@ fn running_control_does_not_restore_a_local_plugin_after_trust_is_removed() {
             .iter()
             .any(|failure| failure.stage == "rollback_validate")
     );
-    assert!(
-        runtime
-            .status_snapshot()
-            .targets
+    assert!(runtime.status_snapshot().targets.iter().all(|target| {
+        let local: Vec<_> = target
+            .plugins
             .iter()
-            .all(|target| target.plugins.len() == 1
-                && target.plugins[0].id == "dev.other"
-                && target.plugins[0].active)
-    );
+            .filter(|plugin| plugin.id.starts_with("dev."))
+            .collect();
+        local.len() == 1 && local[0].id == "dev.other" && local[0].active
+    }));
     assert!(
         !PluginRegistry::load(&registry_path)
             .unwrap()
@@ -757,6 +769,7 @@ fn running_enable_retires_new_instances_if_its_registry_commit_fails() {
     let (directory, registry_path, mut runtime) = control_runtime();
     let (child, client, events) = launch("renderer-control", &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
+    let renderer_baseline = runtime.plugin_count();
     for session in &sessions {
         runtime.attach(session).unwrap();
     }
@@ -780,10 +793,15 @@ fn running_enable_retires_new_instances_if_its_registry_commit_fails() {
     assert!(!report.desired_enabled);
     assert!(report.generations.is_empty());
     assert_eq!(report.target_failures[0].stage, "commit");
-    assert_eq!(runtime.plugin_count(), 3);
-    assert!(runtime.status_snapshot().targets.iter().all(
-        |target| target.plugins.len() == 3 && target.plugins.iter().all(|plugin| plugin.active)
-    ));
+    assert_eq!(runtime.plugin_count(), renderer_baseline);
+    assert!(
+        runtime
+            .status_snapshot()
+            .targets
+            .iter()
+            .all(|target| target.plugins.len() == renderer_baseline
+                && target.plugins.iter().all(|plugin| plugin.active))
+    );
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
         .unwrap();
@@ -938,15 +956,14 @@ fn running_enable_recovery_guards_every_restarted_dependents_registration_at_com
             .local_plugins()
             .contains_key("dev.consumer")
     );
-    assert!(
-        runtime
-            .status_snapshot()
-            .targets
+    assert!(runtime.status_snapshot().targets.iter().all(|target| {
+        let local: Vec<_> = target
+            .plugins
             .iter()
-            .all(|target| target.plugins.len() == 1
-                && target.plugins[0].id == "dev.other"
-                && target.plugins[0].active)
-    );
+            .filter(|plugin| plugin.id.starts_with("dev."))
+            .collect();
+        local.len() == 1 && local[0].id == "dev.other" && local[0].active
+    }));
     client
         .request("Fake.hostStillAlive", None, None, DEADLINE)
         .unwrap();
@@ -1315,6 +1332,7 @@ fn target_controller_bootstraps_existing_and_new_browser_windows_once() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_runtime_installs_and_deactivates_the_bundled_codlet() {
     let (child, client, events) = launch("renderer-runtime", &[]);
@@ -1331,6 +1349,7 @@ fn renderer_runtime_installs_and_deactivates_the_bundled_codlet() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_activation_pumps_host_and_provider_rpc_until_ready() {
     let (child, client, events) = launch("renderer-ready-handshake", &[]);
@@ -1346,6 +1365,7 @@ fn renderer_activation_pumps_host_and_provider_rpc_until_ready() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 fn reentrant_runtime() -> (TempDir, RendererRuntime) {
     let directory = tempdir().unwrap();
     let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
@@ -1361,21 +1381,25 @@ fn reentrant_runtime() -> (TempDir, RendererRuntime) {
     (directory, RendererRuntime::new(plugins, registry).unwrap())
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_reentrant_activation_provider_and_deactivate_complete_only_after_nested_rpc() {
     run_reentrant_scenario("renderer-reentrant", false);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_reentrant_wait_depth_is_bounded_and_host_remains_usable() {
     run_reentrant_scenario("renderer-reentrant-depth", false);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_reentrant_plain_response_failure_is_diagnostic_and_does_not_end_host() {
     run_reentrant_scenario("renderer-reentrant-response-failure", true);
 }
 
+#[cfg(feature = "test-fixtures")]
 fn run_reentrant_scenario(mode: &str, response_failure: bool) {
     let (child, client, events) = launch(mode, &[]);
     let (_targets, sessions) = discover_targets(client.clone(), events, DEADLINE);
@@ -1400,6 +1424,7 @@ fn run_reentrant_scenario(mode: &str, response_failure: bool) {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_reentrant_nested_wait_uses_original_absolute_deadline() {
     let (child, client, events) = launch("renderer-reentrant-deadline", &[]);
@@ -1441,6 +1466,7 @@ fn renderer_reentrant_nested_wait_uses_original_absolute_deadline() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_reentrant_destruction_revokes_during_activation_provider_and_deactivate() {
     for phase in ["activation", "provider", "deactivate"] {
@@ -1476,6 +1502,7 @@ fn renderer_reentrant_destruction_revokes_during_activation_provider_and_deactiv
     }
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn activating_plugin_cannot_commit_runtime_management_actions() {
     let (child, client, events) = launch("renderer-ready-rejection", &[]);
@@ -1509,6 +1536,7 @@ fn activating_plugin_cannot_commit_runtime_management_actions() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     let (child, client, events) = launch("renderer-ready-timeout", &[]);
@@ -1579,6 +1607,7 @@ fn renderer_activation_timeout_is_bounded_and_rolls_back_the_candidate() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_binding_round_trip_rejects_stale_unknown_and_revoked_calls() {
     let (child, client, events) = launch("renderer-rpc", &[]);
@@ -1620,6 +1649,7 @@ fn renderer_binding_round_trip_rejects_stale_unknown_and_revoked_calls() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets() {
     let (child, client, events) = launch("renderer-manage", &[]);
@@ -1702,6 +1732,7 @@ fn runtime_manage_persists_isolates_cleanup_failure_and_filters_future_targets()
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn subframe_and_default_contexts_cannot_replace_the_owned_plugin_contexts() {
     let (child, client, events) = launch("renderer-subframe-context", &[]);
@@ -1727,6 +1758,7 @@ fn subframe_and_default_contexts_cannot_replace_the_owned_plugin_contexts() {
     );
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn status_does_not_infer_activation_from_a_recreated_context() {
     let (child, client, events) = launch("renderer-status-context", &[]);
@@ -1778,16 +1810,19 @@ fn status_does_not_infer_activation_from_a_recreated_context() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn main_document_navigation_reconfirms_plugins_and_rejects_old_bindings() {
     document_recovery_case(false);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn failed_document_recovery_is_bounded_and_a_later_navigation_can_retry() {
     document_recovery_case(true);
 }
 
+#[cfg(feature = "test-fixtures")]
 fn document_recovery_case(timeout_first_recovery: bool) {
     let scenario = if timeout_first_recovery {
         "renderer-document-recovery-timeout"
@@ -1888,16 +1923,19 @@ fn document_recovery_case(timeout_first_recovery: bool) {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn local_runtime_management_uses_loaded_metadata_and_preserves_concurrent_registry_edits() {
     local_runtime_management_case(true);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn local_runtime_management_without_grant_cannot_list_or_persist() {
     local_runtime_management_case(false);
 }
 
+#[cfg(feature = "test-fixtures")]
 fn local_runtime_management_case(has_grant: bool) {
     use codlet::catalog::PluginCatalog;
     use codlet::plugins::{LocalPluginRegistration, Permission};
@@ -2013,6 +2051,7 @@ fn local_runtime_management_case(has_grant: bool) {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn persisted_runtime_action_survives_renderer_response_delivery_failure() {
     let (child, client, events) = launch("renderer-manage-response-failure", &[]);
@@ -2047,6 +2086,7 @@ fn persisted_runtime_action_survives_renderer_response_delivery_failure() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_target_replacement_does_not_touch_the_dead_session() {
     let (child, client, events) = launch("renderer-target-replacement", &[]);
@@ -2096,6 +2136,7 @@ fn renderer_target_replacement_does_not_touch_the_dead_session() {
     assert_child_success(&child);
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn renderer_navigation_cleans_live_session_and_detaches_exactly_once() {
     let (child, client, events) = launch("renderer-navigation", &[]);

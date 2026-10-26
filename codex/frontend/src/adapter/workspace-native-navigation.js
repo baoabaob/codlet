@@ -30,8 +30,9 @@ export function createNativeNavigation(signal, connection, dispatch, scope) {
     // Read an existing binding only; never resolve an unbound default bridge.
     if (!node.signalBindings?.has(signal)) throw workspaceError('workspace_host_pending', 'Waiting for the mounted Native navigation bridge');
     const bridge = node.store.get(signal.resolve(node, chain));
-    if (!bridge || !['navigate', 'navigateToLocalConversation', 'prepareNavigation'].every(key => typeof bridge[key] === 'function') ||
-        typeof bridge.pathname !== 'string' || typeof bridge.search !== 'string') throw workspaceError('workspace_host_pending', 'Native navigation bridge is not mounted');
+    if (bridge == null) throw workspaceError('workspace_host_pending', 'Native navigation bridge is not mounted');
+    if (!['navigate', 'navigateToLocalConversation', 'prepareNavigation'].every(key => typeof bridge[key] === 'function') ||
+        typeof bridge.pathname !== 'string' || typeof bridge.search !== 'string') throw workspaceError('workspace_navigation_unsupported', 'Mounted Native navigation bridge contract changed');
     return bridge;
   };
   current();

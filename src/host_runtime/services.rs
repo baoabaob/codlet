@@ -32,7 +32,7 @@ impl CoreServices {
         }
     }
 
-    pub fn invalidate(&self, id: &str, generation: u64) {
+    pub fn invalidate(&self, id: &str, generation: u64) -> Result<(), HostError> {
         self.invalidated
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -43,8 +43,18 @@ impl CoreServices {
             broker.revoke_owner(id, generation);
         }
         if let Some(services) = &self.config.plugin_services {
-            services.retire(id, generation);
+            services
+                .retire(id, generation)
+                .map_err(|e| HostError::new(e.code, e.message))?;
         }
+        Ok(())
+    }
+
+    pub(super) fn cleanup_complete(&self, id: &str, generation: u64) -> bool {
+        self.config
+            .plugin_services
+            .as_ref()
+            .is_none_or(|services| services.cleanup_result(id, generation).is_ok())
     }
 
     fn invalidated(&self, id: &str, generation: u64) -> bool {
@@ -113,8 +123,7 @@ impl HostRuntime {
                 "authorization revocation must name the currently owned Host generation",
             ));
         }
-        self.services.invalidate(plugin_id, expected_generation);
-        Ok(())
+        self.services.invalidate(plugin_id, expected_generation)
     }
 }
 
@@ -284,13 +293,15 @@ impl HostOwner {
             return;
         }
         self.services_active = false;
-        if let Some(services) = &self.services.config.plugin_services {
-            services.retire_host_traffic(
+        if let Some(services) = &self.services.config.plugin_services
+            && let Err(error) = services.retire_host(
                 &self.observation.plugin.manifest.id,
                 self.observation.plugin.generation,
-            );
+            )
+        {
+            self.cleanup_error = Some(error.to_string());
         }
-        self.services.rpc.retire_plugin(
+        self.services.rpc.retire_host_entry(
             &self.observation.plugin.manifest.id,
             self.observation.plugin.generation,
         );

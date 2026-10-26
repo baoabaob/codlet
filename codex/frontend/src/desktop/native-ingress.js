@@ -76,7 +76,7 @@ export function attachNativeIngress({global = globalThis, postbox, client, dispa
   const legacyQueue = state.queue ?? []; delete state.queue; delete state.bytes;
   for (const entry of legacyQueue) {
     const id = entry.message?.request?.id;
-    if (state.client.requestPromises.get(id) !== entry.pending || !state.client.requestPromises.has(id) || entry.expires <= Date.now()) continue;
+    if (state.client.requestPromises.get(id) !== entry.pending || !state.client.requestPromises.has(id)) continue;
     try { state.original.call(entry.receiver, entry.message, ...entry.rest); }
     catch (error) { state.client.onError(id, error); }
   }

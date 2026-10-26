@@ -54,7 +54,6 @@ enum Request {
         reply: SyncSender<Result<()>>,
         cancelled: Arc<AtomicBool>,
     },
-    Unregister(String),
 }
 struct MainState {
     next: u32,
@@ -65,6 +64,7 @@ struct MainState {
 struct Queue {
     sender: SyncSender<Request>,
     state: Mutex<MainState>,
+    retiring: Mutex<BTreeSet<String>>,
     waker: Mutex<Option<crate::cdp::CdpClient>>,
 }
 fn queue() -> &'static Queue {
@@ -79,6 +79,7 @@ fn queue() -> &'static Queue {
                 events: VecDeque::new(),
                 receiver,
             }),
+            retiring: Mutex::new(BTreeSet::new()),
             waker: Mutex::new(None),
         }
     })
@@ -123,7 +124,13 @@ pub(super) fn register(id: &str, key: u32, modifiers: u32) -> Result<()> {
     }
 }
 pub(super) fn unregister(id: &str) {
-    let _ = queue().sender.try_send(Request::Unregister(id.into()));
+    // Cleanup cannot compete with new registration admission for queue slots.
+    // Keep each pending resource identity until the main thread retires it.
+    queue()
+        .retiring
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id.into());
     wake();
 }
 pub(super) fn take_events(ids: &BTreeSet<String>) -> Vec<(String, &'static str)> {
@@ -144,16 +151,17 @@ pub(crate) fn pump() {
         return;
     }
     let mut state = queue().state.lock().unwrap_or_else(|p| p.into_inner());
+    let retiring = std::mem::take(&mut *queue().retiring.lock().unwrap_or_else(|p| p.into_inner()));
+    for id in retiring {
+        if let Some((handle, _)) = state.handles.remove(&id) {
+            unsafe {
+                UnregisterEventHotKey(handle as Ref);
+            }
+        }
+        state.events.retain(|entry| entry != &id);
+    }
     while let Ok(request) = state.receiver.try_recv() {
         match request {
-            Request::Unregister(id) => {
-                if let Some((handle, _)) = state.handles.remove(&id) {
-                    unsafe {
-                        UnregisterEventHotKey(handle as Ref);
-                    }
-                }
-                state.events.retain(|entry| entry != &id);
-            }
             Request::Register {
                 id,
                 key,

@@ -27,9 +27,38 @@ pub(super) type UpstreamSocket = WebSocketStream<reqwest::Upgraded>;
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct ClientKey {
     pub owner: String,
+    policy: TransportPolicy,
     proxy: Option<String>,
     proxy_authorization: Option<String>,
     ca: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TransportPolicy {
+    Native,
+    Plugin,
+}
+impl TransportPolicy {
+    pub(super) fn for_exchange(exchange: &Exchange) -> Self {
+        // Permits are assigned by the authenticated route/channel owner. They
+        // are never accepted from a request payload.
+        if exchange._permit.is_some() {
+            Self::Plugin
+        } else {
+            Self::Native
+        }
+    }
+    pub(super) fn connect_timeout(self) -> Option<Duration> {
+        match self {
+            Self::Native => None,
+            Self::Plugin => Some(Duration::from_secs(30)),
+        }
+    }
+    pub(super) fn headers_timeout(self) -> Option<Duration> {
+        match self {
+            Self::Native => None,
+            Self::Plugin => Some(Duration::from_secs(300)),
+        }
+    }
 }
 #[derive(Clone, Default)]
 pub(super) struct Trust {
@@ -127,16 +156,7 @@ impl Engine {
             return Err(error("target_not_found", "unknown route"));
         }
         let websocket = is_upgrade(input.headers());
-        let permit = if websocket {
-            self.ws_slots.clone()
-        } else {
-            self.http_slots.clone()
-        }
-        .try_acquire_owned()
-        .map_err(|_| error("resource_limit", "ingress capacity reached"))?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        let (config, parent) = loop {
-            let notified = self.route_changed.notified();
+        let (config, parent, plugin_owned) = {
             let registered = self
                 .routes
                 .lock()
@@ -149,17 +169,20 @@ impl Engine {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
-                break (config, route.stopped.clone());
-            }
-            let owned = self.hub.upgrade().and_then(|h| {
-                h.state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .sources
-                    .get(id)
-                    .cloned()
-            });
-            if let Some(source) = owned {
+                (config, route.stopped.clone(), false)
+            } else {
+                let source = self
+                    .hub
+                    .upgrade()
+                    .and_then(|h| {
+                        h.state
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .sources
+                            .get(id)
+                            .cloned()
+                    })
+                    .ok_or_else(|| error("target_not_found", "route unavailable"))?;
                 let check = source.check.clone();
                 let base = source.base_url.clone();
                 let allowed = tokio::task::spawn_blocking(move || check("intercept", &base))
@@ -168,15 +191,28 @@ impl Engine {
                 if !allowed || source.stopped.is_cancelled() {
                     return Err(error("permission_denied", "source retired"));
                 }
-                break (
+                (
                     Arc::new(super::source::RouteConfig {
                         base: super::source::base(&source.base_url)?,
                         ca: String::new(),
                     }),
                     source.stopped.clone(),
-                );
+                    true,
+                )
             }
-            tokio::select! {_=self.stopped.cancelled()=>return Err(error("traffic_unavailable","engine retired")),_=tokio::time::sleep_until(deadline)=>return Err(error("target_not_found","route unavailable")),_=notified=>{}}
+        };
+        let permit = if plugin_owned {
+            Some(
+                if websocket {
+                    self.ws_slots.clone()
+                } else {
+                    self.http_slots.clone()
+                }
+                .try_acquire_owned()
+                .map_err(|_| error("resource_limit", "ingress capacity reached"))?,
+            )
+        } else {
+            None
         };
         let mut target = config
             .base
@@ -222,6 +258,10 @@ impl Engine {
             // Taking the body does not buffer it. Hyper's original request is
             // left with an empty incoming body only after an explicit split.
             let body = take_incoming(input, exchange.stopped.child_token())?;
+            let body = Body::new(
+                body.stream(plugin_owned.then_some(streams::BODY_LIMIT))?,
+                exchange.stopped.child_token(),
+            );
             let request = Request {
                 id: files::token("request")?,
                 url: target.to_string(),
@@ -270,6 +310,7 @@ impl Engine {
             .map(|(_, pem)| pem.as_str())
             .or_else(|| route["caPem"].as_str());
         let key = ClientKey {
+            policy: TransportPolicy::for_exchange(exchange),
             owner: exchange
                 .channel
                 .as_ref()
@@ -294,11 +335,13 @@ impl Engine {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .pool_max_idle_per_host(0)
-            .connect_timeout(Duration::from_secs(30))
             .no_gzip()
             .no_brotli()
             .no_deflate()
             .no_zstd();
+        if let Some(timeout) = key.policy.connect_timeout() {
+            builder = builder.connect_timeout(timeout);
+        }
         if let Some(proxy) = route["proxyUrl"].as_str() {
             let parsed =
                 url::Url::parse(proxy).map_err(|_| error("invalid_proxy", "invalid proxy URL"))?;
@@ -373,7 +416,7 @@ impl Engine {
         request: &Request,
         trust: &Trust,
         exchange: &Exchange,
-        limit: usize,
+        limit: impl Into<Option<usize>>,
     ) -> Result<Response> {
         let target = url(&request.url)?;
         if !matches!(target.scheme(), "http" | "https") {
@@ -392,9 +435,7 @@ impl Engine {
             outgoing = outgoing.bearer_auth(credential);
         }
         if !matches!(request.method.as_str(), "GET" | "HEAD") {
-            outgoing = outgoing.body(reqwest::Body::wrap_stream(
-                request.body.stream(streams::BODY_LIMIT)?,
-            ));
+            outgoing = outgoing.body(reqwest::Body::wrap_stream(request.body.stream(None)?));
         }
         let response = send(outgoing, exchange).await?;
         let status = response.status().as_u16();
@@ -478,7 +519,21 @@ impl Engine {
         let socket = WebSocketStream::from_raw_socket(
             stream,
             WsRole::Client,
-            Some(ws_config(8 * 1024 * 1024, 16 * 1024 * 1024)),
+            Some(
+                exchange
+                    .channel
+                    .as_ref()
+                    .map(|channel| {
+                        ws_config(channel.options.max_message, channel.options.queue_bytes)
+                    })
+                    .unwrap_or_else(|| {
+                        if exchange._permit.is_some() {
+                            ws_config(8 * 1024 * 1024, 16 * 1024 * 1024)
+                        } else {
+                            native_ws_config()
+                        }
+                    }),
+            ),
         )
         .await;
         Ok(WsConnection { socket, protocol })
@@ -529,8 +584,8 @@ impl Engine {
         self.spawn(async move{
             let _completion=completion;
             let socket=tokio::select!{biased;_=exchange.stopped.cancelled()=>return,result=upgraded=>match result{Ok(value)=>value,Err(_)=>return}};
-            let (limit,queue)=channel.as_ref().map(|c|(c.options.max_message,c.options.queue_bytes)).unwrap_or((8*1024*1024,16*1024*1024));
-            let downstream=WebSocketStream::from_raw_socket(TokioIo::new(socket),WsRole::Server,Some(ws_config(limit,queue))).await;
+            let limits=channel.as_ref().map(|c|(c.options.max_message,c.options.queue_bytes)).or_else(||exchange._permit.as_ref().map(|_|(8*1024*1024,16*1024*1024)));
+            let downstream=WebSocketStream::from_raw_socket(TokioIo::new(socket),WsRole::Server,Some(limits.map(|(limit,queue)|ws_config(limit,queue)).unwrap_or_else(native_ws_config))).await;
             let (mut down_write,mut down_read)=downstream.split();let(mut up_write,mut up_read)=upstream.socket.split();
             let participants=Arc::new(participants);
             let down_closing=AtomicBool::new(false);let up_closing=AtomicBool::new(false);
@@ -538,13 +593,13 @@ impl Engine {
             let client=async{
                 while let Some(frame)=down_read.next().await{
                     let frame=frame.map_err(|_|error("websocket_closed","downstream closed"))?;
-                    if let Some(frame)=engine.ws_frame(&participants,"clientToServer",frame,&exchange,channel.as_ref(),(limit,queue)).await?{let closing=frame.is_close();if closing{down_closing.store(true,Ordering::Release);}if closing&&up_closing.load(Ordering::Acquire){up_write.flush().await}else{up_write.send(frame).await}.map_err(|_|error("websocket_closed","upstream closed"))?;if closing{break;}}
+                    if let Some(frame)=engine.ws_frame(&participants,"clientToServer",frame,&exchange,channel.as_ref(),limits).await?{let closing=frame.is_close();if closing{down_closing.store(true,Ordering::Release);}if closing&&up_closing.load(Ordering::Acquire){up_write.flush().await}else{up_write.send(frame).await}.map_err(|_|error("websocket_closed","upstream closed"))?;if closing{break;}}
                 }Ok::<(),ServiceError>(())
             };
             let server=async{
                 while let Some(frame)=up_read.next().await{
                     let frame=frame.map_err(|_|error("websocket_closed","upstream closed"))?;
-                    if let Some(frame)=engine.ws_frame(&participants,"serverToClient",frame,&exchange,channel.as_ref(),(limit,queue)).await?{let closing=frame.is_close();if closing{up_closing.store(true,Ordering::Release);}if closing&&down_closing.load(Ordering::Acquire){down_write.flush().await}else{down_write.send(frame).await}.map_err(|_|error("websocket_closed","downstream closed"))?;if closing{break;}}
+                    if let Some(frame)=engine.ws_frame(&participants,"serverToClient",frame,&exchange,channel.as_ref(),limits).await?{let closing=frame.is_close();if closing{up_closing.store(true,Ordering::Release);}if closing&&down_closing.load(Ordering::Acquire){down_write.flush().await}else{down_write.send(frame).await}.map_err(|_|error("websocket_closed","downstream closed"))?;if closing{break;}}
                 }Ok::<(),ServiceError>(())
             };
             tokio::pin!(client,server);
@@ -575,15 +630,14 @@ impl Engine {
         frame: Message,
         exchange: &Arc<Exchange>,
         channel: Option<&Arc<super::channels::Channel>>,
-        limits: (usize, usize),
+        limits: Option<(usize, usize)>,
     ) -> Result<Option<Message>> {
-        let (limit, queue) = limits;
         let binary = frame.is_binary();
         if !binary && !frame.is_text() {
             return Ok(Some(frame));
         }
         let bytes = frame.into_data();
-        if bytes.len() > limit || bytes.len() > queue {
+        if limits.is_some_and(|(limit, queue)| bytes.len() > limit || bytes.len() > queue) {
             return Err(error("body_too_large", "WebSocket message exceeds limit"));
         }
         let changed = if let Some(channel) = channel {
@@ -596,7 +650,7 @@ impl Engine {
         let Some((bytes, binary)) = changed else {
             return Ok(None);
         };
-        if bytes.len() > limit || bytes.len() > queue {
+        if limits.is_some_and(|(limit, queue)| bytes.len() > limit || bytes.len() > queue) {
             return Err(error("body_too_large", "transformed message exceeds limit"));
         }
         Ok(Some(if binary {
@@ -618,12 +672,28 @@ pub(super) fn ws_config(limit: usize, queue: usize) -> WebSocketConfig {
         .max_message_size(Some(limit))
         .max_frame_size(Some(limit))
 }
+fn native_ws_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .read_buffer_size(32 * 1024)
+        .write_buffer_size(0)
+        .max_write_buffer_size(usize::MAX)
+        .max_message_size(None)
+        .max_frame_size(None)
+}
 async fn send(request: reqwest::RequestBuilder, exchange: &Exchange) -> Result<reqwest::Response> {
+    let response = async {
+        match TransportPolicy::for_exchange(exchange).headers_timeout() {
+            Some(timeout) => tokio::time::timeout(timeout, request.send())
+                .await
+                .map_err(|_| error("traffic_timeout", "upstream headers timed out")),
+            None => Ok(request.send().await),
+        }
+    };
     tokio::select! {
         biased;
         _ = exchange.stopped.cancelled() => Err(error("request_cancelled", "exchange retired")),
-        response = tokio::time::timeout(Duration::from_secs(300), request.send()) => {
-            response.map_err(|_| error("traffic_timeout", "upstream headers timed out"))?
+        response = response => {
+            response?
                 .map_err(|reason| {
                     use std::error::Error as _;
                     let mut cause = reason.source();
@@ -767,7 +837,7 @@ pub(super) fn wire_response(
         drop(completion);
         empty_wire()
     } else {
-        let stream = response.body.stream(streams::BODY_LIMIT)?;
+        let stream = response.body.stream(None)?;
         let frames =
             futures_util::stream::unfold((stream, completion), |(mut stream, guard)| async move {
                 stream
@@ -791,14 +861,8 @@ pub(super) fn inherited_ca(path: Option<String>) -> Result<Option<String>> {
     };
     let mut bytes = vec![];
     std::fs::File::open(path)
-        .and_then(|file| file.take(1024 * 1024 + 1).read_to_end(&mut bytes))
+        .and_then(|mut file| file.read_to_end(&mut bytes))
         .map_err(|_| error("invalid_ca_bundle", "cannot read inherited CA bundle"))?;
-    if bytes.len() > 1024 * 1024 {
-        return Err(error(
-            "invalid_ca_bundle",
-            "inherited CA bundle exceeds bound",
-        ));
-    }
     let pem = String::from_utf8(bytes)
         .map_err(|_| error("invalid_ca_bundle", "invalid inherited CA encoding"))?;
     if reqwest::Certificate::from_pem_bundle(pem.as_bytes()).map_or(true, |v| v.is_empty()) {

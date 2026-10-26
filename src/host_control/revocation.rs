@@ -433,21 +433,19 @@ impl PendingRevocation {
             if let Some(observation) = observations
                 .iter()
                 .find(|observation| observation.plugin.manifest.id == owner.id)
+                && observation.plugin.generation != owner.generation
             {
-                if observation.plugin.generation != owner.generation {
-                    self.failures.push(failure(
-                        &owner.id,
-                        "revoke_cleanup",
-                        "A different generation appeared during revocation.",
-                    ));
-                    self.retiring.remove(index);
-                    continue;
-                }
-                if !is_live(observation.state) {
-                    self.retiring.remove(index);
-                    continue;
-                }
+                self.failures.push(failure(
+                    &owner.id,
+                    "revoke_cleanup",
+                    "A different generation appeared during revocation.",
+                ));
+                self.retiring.remove(index);
+                continue;
             }
+            // Node/process observation can become terminal while late raw
+            // attachments or managed OS resources still await retirement.
+            // Only this exact generation's stop receipt confirms cleanup.
             if admitted < 4 {
                 match hosts.begin_stop(&owner.id, owner.generation) {
                     Ok(operation) => {
@@ -646,5 +644,131 @@ mod tests {
         revoke.action = PluginControlAction::Enable;
         revoke.permission = Some(crate::plugins::Permission::CdpRaw);
         assert_eq!(revoke.validate().unwrap_err().code, "invalid_permission");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn revocation_waits_for_the_late_attachment_receipt_after_node_has_exited() {
+        use crate::capabilities::{CapabilityDescriptor, CapabilityScope};
+        use crate::host_runtime::{HostCapabilityCaller, HostCapabilityRequest};
+        use crate::plugins::{Permission, bundled_plugins};
+        use crate::runtime_control::ControlCompletion;
+        use serde_json::json;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("plugin");
+        std::fs::create_dir(&root).unwrap();
+        let id = "test.revocation-attachment";
+        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":{"entry":"host.js"},"permissions":["host.process","cdp.raw"],"provides":[{"name":id,"api":1,"scope":"runtime"}]}).to_string()).unwrap();
+        std::fs::write(root.join("host.js"), format!("exports.activate=context=>context.rpc.provide({{name:'{id}',api:1,scope:'runtime'}},'attach',()=>context.cdp.request('Target.attachToTarget',{{targetId:'window-a',flatten:true}}));exports.deactivate=()=>{{}};")).unwrap();
+        let path = directory.path().join("registry.json");
+        let mut registry = PluginRegistry::load(&path).unwrap();
+        for plugin in bundled_plugins().unwrap() {
+            registry.set_enabled(&plugin.manifest.id, false).unwrap();
+        }
+        let registration = LocalPluginRegistration {
+            path: root.canonicalize().unwrap(),
+            grants: vec![Permission::HostProcess, Permission::CdpRaw],
+            ..Default::default()
+        };
+        registry.register_local(id, registration.clone()).unwrap();
+        registry.set_enabled(id, true).unwrap();
+        registry.save().unwrap();
+        let plugin =
+            crate::local_plugins::load_local_plugin_with_registration(id, &registration, 1)
+                .unwrap();
+        let mut renderer = RendererRuntime::from_catalog(
+            crate::catalog::PluginCatalog::load(&registry).unwrap(),
+            registry,
+        )
+        .unwrap();
+        let (mut peer, events) = crate::cdp::VmPeer::start();
+        drop(events);
+        let mut hosts = HostRuntime::start_with_runtime(
+            vec![plugin],
+            peer.client.clone(),
+            Some(peer.runtime.clone()),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while hosts.is_starting() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        peer.request("Fixture.holdNextAttach", json!({}));
+        let _call = hosts
+            .capability_client()
+            .begin_request(HostCapabilityRequest {
+                owner_plugin_id: id.into(),
+                expected_generation: 1,
+                capability: CapabilityDescriptor::new(id, 1, CapabilityScope::Runtime).unwrap(),
+                method: "attach".into(),
+                params: serde_json::Value::Null,
+                caller: HostCapabilityCaller {
+                    plugin_id: "test.caller".into(),
+                    generation: 1,
+                    target_id: String::new(),
+                    document_epoch: 0,
+                },
+                cleanup: false,
+                deadline,
+            })
+            .unwrap();
+        while peer.request("Fixture.inspect", json!({}))["heldAttachments"] != 1 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let broker = ControlBroker::new([93; 16], "revocation-attachment".into());
+        broker.set_ready();
+        let prepared = broker.handle(ControlRequest::prepare(PluginControlRequest {
+            action: PluginControlAction::Revoke,
+            plugin_id: id.into(),
+            permission: Some(Permission::CdpRaw),
+            cascade: false,
+            local_import: None,
+            remove_source: None,
+        }));
+        let receipt = prepared.operation_id().unwrap().to_owned();
+        assert_eq!(
+            broker.handle(ControlRequest::submit(&receipt)).status,
+            ControlStatus::Queued
+        );
+        let mut control = HostControl::new(path);
+        control.dispatch(broker.take_next().unwrap(), &mut renderer, &hosts, &broker);
+        while !matches!(
+            hosts.observations()[0].state,
+            ExecutionState::Exited | ExecutionState::Failed
+        ) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        control.poll(&mut renderer, &hosts, &broker);
+        assert_eq!(
+            broker.handle(ControlRequest::result(&receipt)).status,
+            ControlStatus::Running,
+            "Node exit is not a raw-session retirement receipt"
+        );
+        peer.request("Fixture.releaseAttaches", json!({}));
+        loop {
+            control.poll(&mut renderer, &hosts, &broker);
+            let response = broker.handle(ControlRequest::result(&receipt));
+            if response.status == ControlStatus::Completed {
+                let ControlCompletion::Report { report } =
+                    response.operation.unwrap().completion.unwrap()
+                else {
+                    panic!("revocation rejected")
+                };
+                assert_eq!(report.outcome, PluginControlOutcome::Applied, "{report:?}");
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            peer.request("Fixture.inspect", json!({}))["sessions"],
+            json!([])
+        );
+        hosts.stop().unwrap();
+        peer.close();
     }
 }

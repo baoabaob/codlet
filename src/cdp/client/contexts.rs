@@ -4,9 +4,7 @@ use serde_json::Value;
 
 use super::CdpEvent;
 
-const MAX_FRAMES_PER_SESSION: usize = 256;
-
-/// A bounded cache of CDP's default execution contexts for owned sessions.
+/// CDP's current default execution contexts for owned sessions.
 /// Runtime.enable emits these before its response; retaining them avoids a
 /// second enable/disable cycle or exposing a temporary all-world binding.
 #[derive(Default)]
@@ -50,13 +48,13 @@ impl DefaultContexts {
                 ) else {
                     return;
                 };
-                if id == 0 || id > 9_007_199_254_740_991 || frame.is_empty() || frame.len() > 256 {
+                if id == 0 || id > 9_007_199_254_740_991 || frame.is_empty() {
                     return;
                 }
-                let frames = self.0.entry(session.to_owned()).or_default();
-                if frames.len() < MAX_FRAMES_PER_SESSION || frames.contains_key(frame) {
-                    frames.insert(frame.to_owned(), id);
-                }
+                self.0
+                    .entry(session.to_owned())
+                    .or_default()
+                    .insert(frame.to_owned(), id);
             }
             "Runtime.executionContextDestroyed" => {
                 if let Some(id) = params.get("executionContextId").and_then(Value::as_u64)
@@ -136,5 +134,32 @@ mod tests {
         assert_eq!(contexts.get("b", "main"), Some(4));
         contexts.forget("b");
         assert_eq!(contexts.get("b", "main"), None);
+    }
+
+    #[test]
+    fn native_frames_do_not_exhaust_default_context_discovery() {
+        let mut contexts = DefaultContexts::default();
+        for id in 1..=600 {
+            contexts.observe(&event(
+                "native",
+                "Runtime.executionContextCreated",
+                json!({"context":{"id":id,"auxData":{"frameId":format!("child-{id}"),"isDefault":true}}}),
+            ));
+        }
+        let main = "main".repeat(128);
+        contexts.observe(&event(
+            "native",
+            "Runtime.executionContextCreated",
+            json!({"context":{"id":601,"auxData":{"frameId":main,"isDefault":true}}}),
+        ));
+        assert_eq!(contexts.get("native", "child-600"), Some(600));
+        assert_eq!(contexts.get("native", &main), Some(601));
+        contexts.observe(&event(
+            "native",
+            "Runtime.executionContextsCleared",
+            json!({}),
+        ));
+        assert_eq!(contexts.get("native", "child-600"), None);
+        assert_eq!(contexts.get("native", &main), None);
     }
 }

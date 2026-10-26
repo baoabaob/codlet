@@ -18,9 +18,15 @@ pub(super) struct Response {
     pub final_url: Option<String>,
 }
 pub(super) fn pairs(value: &Value) -> Result<Headers> {
+    parse_pairs(value, true)
+}
+pub(super) fn native_pairs(value: &Value) -> Result<Headers> {
+    parse_pairs(value, false)
+}
+fn parse_pairs(value: &Value, bounded: bool) -> Result<Headers> {
     let array = value
         .as_array()
-        .filter(|v| v.len() <= 128)
+        .filter(|v| !bounded || v.len() <= 128)
         .ok_or_else(|| error("invalid_headers", "bounded header pairs required"))?;
     let mut bytes = 0;
     array
@@ -40,7 +46,7 @@ pub(super) fn pairs(value: &Value) -> Result<Headers> {
                 .map_err(|_| error("invalid_headers", "invalid header name"))?;
             header_value(value)?;
             bytes += name.len() + value.len();
-            if bytes > 32 * 1024 {
+            if bounded && bytes > 32 * 1024 {
                 return Err(error("invalid_headers", "headers exceed bound"));
             }
             Ok((name.to_owned(), value.to_owned()))
@@ -168,8 +174,7 @@ pub(super) fn cross_origin(headers: &Headers) -> Headers {
 }
 pub(super) fn url(value: &str) -> Result<url::Url> {
     let target = url::Url::parse(value).map_err(|_| error("invalid_target", "invalid URL"))?;
-    if value.len() > 8192
-        || !matches!(target.scheme(), "http" | "https" | "ws" | "wss")
+    if !matches!(target.scheme(), "http" | "https" | "ws" | "wss")
         || !target.username().is_empty()
         || target.password().is_some()
         || target.fragment().is_some()

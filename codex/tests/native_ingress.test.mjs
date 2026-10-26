@@ -54,12 +54,12 @@ test('new Native documents forward while the Core SDK admission lease is held',(
 test('takeover releases only undispatched, still-current requests from an older queue once',()=>{
   const f=fixture();f.api.pause('legacy');f.owner.detach();
   const state=f.global[Symbol.for('codlet.core.native-ingress.owner.v1')];
-  const current=f.request('current'),cancelled=f.request('cancelled'),reused=f.request('reused');
+  const current=f.request('current'),expired=f.request('expired-but-live'),cancelled=f.request('cancelled'),reused=f.request('reused');
   const entry=message=>({message,receiver:f.postbox,rest:[],pending:f.client.requestPromises.get(message.request.id),expires:Date.now()+10000});
-  state.queue=[entry(current),entry(cancelled),entry(reused)];state.bytes=100;
+  state.queue=[entry(current),{...entry(expired),expires:0},entry(cancelled),entry(reused)];state.bytes=100;
   f.client.requestPromises.delete('cancelled');f.client.requestPromises.set('reused',{});
-  const next=f.attach('new');assert.deepEqual(f.sent.map(value=>value.message),[current]);assert.equal(state.queue,undefined);
-  f.api.resume('legacy',{outcome:'applied'});assert.equal(f.sent.length,1);assert.deepEqual(f.errors,[]);next.detach();
+  const next=f.attach('new');assert.deepEqual(f.sent.map(value=>value.message),[current,expired]);assert.equal(state.queue,undefined);
+  f.api.resume('legacy',{outcome:'applied'});assert.equal(f.sent.length,2);assert.deepEqual(f.errors,[]);next.detach();
 });
 test('stable wrapper and API release the retired dispatch lexical environment after takeover', {skip:typeof globalThis.gc!=='function'},async()=>{
   const global={},postbox={postMessage(){}},client={requestPromises:new Map(),onError(){}};let weak;

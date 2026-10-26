@@ -3,7 +3,7 @@ import { CLIENT_PROFILES, clientProfile } from '../../../compatibility/client-pr
 import { COMPOSER_CAPABILITY, createComposerActions, composerLease } from './composer-action.js';
 import { reviewedNavigator } from '../native-navigation.js';
 import { COMPOSER_PROFILE, discoverNative, notificationBadge } from './discovery.js';
-import { desktopDocument, hostFibers, linkedNodes } from '../host-discovery.js';
+import { desktopDocument, hostFibers, currentElementAncestry } from '../host-discovery.js';
 import { createWorkspace } from './workspace.js';
 
 // Reviewed mappings are the fast path. Structural discovery handles unlisted
@@ -56,24 +56,28 @@ export function locateHost() {
   // Legacy <Routes> retains its JSX input as well as derived match objects.
   // Mutate the retained input there; only use objects when JSX is absent.
   if (!trees.size) for (const tree of objectTrees) trees.add(tree);
-  if (navigators.size !== 1 || trees.size !== 1) throw fail('ui_host_pending', 'A unique Desktop router and route tree are required');
+  if (navigators.size > 1 || trees.size > 1) throw fail('ui_host_drift', 'Desktop router or route tree ownership is ambiguous');
+  if (!navigators.size || !trees.size) throw fail('ui_host_pending', 'Waiting for the Desktop router and route tree');
   const navigator = reviewedNavigator(navigators, routerContexts), tree = [...trees][0];
   if (!navigator)
     throw fail('ui_host_drift', 'The Desktop memory router is unavailable in this window');
   if(navigator.location.pathname==='/avatar-overlay'||navigator.location.pathname.startsWith('/avatar-overlay/'))
     return {navigator,tree,rootNode:document.getElementById('root'),auxiliary:true};
   const candidates = [], objects = !tree.props;
-  const visit = element => {
+  const pending = [tree], visited = new Set();
+  while (pending.length) {
+    const element = pending.pop();
+    if (!element || visited.has(element)) continue;
+    visited.add(element);
     const props = objects ? element : element?.props;
-    if (!props) return;
+    if (!props) continue;
     const children = props.children;
     if (Array.isArray(children)) {
       const path = child => objects ? child?.path : child?.props?.path;
       if (children.some(child => path(child) === '/inbox') && children.some(child => path(child) === '/connector/oauth_callback')) candidates.push(children);
-      children.forEach(visit);
-    } else visit(children);
-  };
-  visit(tree);
+      for (let index = children.length - 1; index >= 0; index--) pending.push(children[index]);
+    } else if (children) pending.push(children);
+  }
   if (candidates.length !== 1 || Object.isFrozen(candidates[0]) || !Object.isExtensible(candidates[0]))
     throw fail('ui_host_drift', 'The reviewed authenticated route collection is unavailable');
   return { navigator, routes: candidates[0], Route: tree.type, objects, tree, rootNode: document.getElementById('root') };
@@ -83,8 +87,8 @@ function nativePlacement(SidebarItem, SidebarGroup) {
   const candidates = [];
   for (const button of document.querySelectorAll('nav button.sidebar-item')) {
     if (button.closest('[data-codlet-native-navigation]')) continue;
-    const key = Object.keys(button).find(key => key.startsWith('__reactFiber$'));
-    for (const fiber of linkedNodes(key&&button[key],value=>value.return)) {
+    const chain = currentElementAncestry(button) ?? [];
+    for (const fiber of chain) {
       if (fiber.type !== SidebarItem) continue;
       const anchors = SidebarGroup ? ['sidebar-tasks', 'sidebar-plugins', 'sidebar-library', 'sidebar-new-chat'] : ['sidebar-tasks', 'sidebar-plugins', 'sidebar-library'];
       const priority = anchors.indexOf(fiber.memoizedProps?.animatedIcon);
@@ -92,7 +96,7 @@ function nativePlacement(SidebarItem, SidebarGroup) {
         if (SidebarGroup) {
           // Build 11645 puts New chat inside a drag/drop wrapper. Insert beside
           // that row in the reviewed group, not inside its interactive region.
-          const group = [...linkedNodes(fiber.return,value=>value.return)].find(value=>value.type===SidebarGroup);
+          const group = chain.slice(chain.indexOf(fiber) + 1).find(value=>value.type===SidebarGroup);
           const parent = group?.type===SidebarGroup ? group.child?.stateNode : null;
           if (parent?.nodeType===1 && parent.contains(button)) {
             let anchor=button;while(anchor.parentElement!==parent)anchor=anchor.parentElement;
@@ -113,8 +117,7 @@ function railPlacement(SidebarGroup) {
   // The reviewed rail's outer SidebarGroup owns Home, the fixed destinations,
   // Explore and the nested sortable group. Stay outside the sortable region.
   const rail = rails[0], home = rail.querySelector('[data-sidebar-destination="builtin:home"]');
-  const key = home && Object.keys(home).find(key => key.startsWith('__reactFiber$'));
-  for (const fiber of linkedNodes(key&&home[key],value=>value.return)) {
+  for (const fiber of currentElementAncestry(home) ?? []) {
     if (fiber.type !== SidebarGroup || fiber.memoizedProps?.itemSpacing !== 'rail') continue;
     const parent = fiber.child?.stateNode;
     if (parent?.nodeType !== 1 || !rail.contains(parent) || !parent.contains(home)) return null;
@@ -357,7 +360,7 @@ async function loadNative() {
 }
 
 export function deferredNavigation(context, load = loadNative) {
-  let alive = true, navigation, failure, cancelWait, independentActions, native;
+  let alive = true, navigation, failure, cancelWait, independentActions, native, rejectRetired;
   const pending = new Map(), pendingComposer = new Map();
   const composer = () => {
     if (load !== loadNative) return null;
@@ -370,7 +373,7 @@ export function deferredNavigation(context, load = loadNative) {
     independentActions = createComposerActions(context, host, COMPOSER_PROFILE);
     return independentActions;
   };
-  const ready = (async () => {
+  const initialization = (async () => {
     let delay = 50;
     while (alive) {
       try {
@@ -427,6 +430,7 @@ export function deferredNavigation(context, load = loadNative) {
     pendingComposer.clear();
     return navigation;
   })();
+  const ready = Promise.race([initialization, new Promise((_, reject) => { rejectRetired = reject; })]);
   ready.catch(error => {
     failure = error;
     for (const entry of pending.values()) entry.lease.remove();
@@ -496,7 +500,7 @@ export function deferredNavigation(context, load = loadNative) {
     },
     dispose() {
       if (!alive) return;
-      alive = false; cancelWait?.();
+      alive = false; rejectRetired(fail('ui_retired', 'The UI adapter retired during initialization')); cancelWait?.();
       for (const entry of pending.values()) entry.lease.remove();
       pending.clear(); navigation?.dispose(); independentActions?.dispose();
       for (const entry of pendingComposer.values()) entry.lease.remove();

@@ -140,6 +140,57 @@ fn event_wait_releases_service_lock_and_shutdown_wakes_it() {
 }
 
 #[test]
+fn exhausted_owner_history_rejects_admission_and_keeps_existing_cleanup_available() {
+    let core = CoreResources::default();
+    let active = owner();
+    call(
+        &core,
+        &active,
+        "events.createTopic",
+        json!({"name":"active"}),
+    );
+    let runner = call(&core, &active, "tasks.register", json!({"name":"active"}));
+    call(
+        &core,
+        &active,
+        "tasks.start",
+        json!({"runner":runner["runner"],"input":null,"operationKey":"active"}),
+    );
+    for generation in 2..=MAX_RESOURCE_OWNERS as u64 {
+        core.retire(&ResourceOwner {
+            generation,
+            ..active.clone()
+        })
+        .unwrap();
+    }
+    let unseen = ResourceOwner {
+        generation: MAX_RESOURCE_OWNERS as u64 + 1,
+        ..active.clone()
+    };
+    assert_eq!(
+        code(&core, &unseen, "tasks.register", json!({"name":"full"})),
+        "resource_limit"
+    );
+    core.retire(&active).unwrap();
+    core.retire(&active).unwrap();
+    assert_eq!(
+        code(&core, &active, "tasks.register", json!({"name":"retired"})),
+        "stale_generation"
+    );
+    let state = core.shared.state.lock().unwrap();
+    assert!(state.events.list(&active.key()).is_empty());
+    assert!(state.tasks.list_resources(&active.key()).is_empty());
+    assert_eq!(state.owners.len(), MAX_RESOURCE_OWNERS);
+    assert_eq!(state.retired.len(), MAX_RESOURCE_OWNERS);
+    drop(state);
+    core.retire(&unseen).unwrap();
+    assert_eq!(
+        code(&core, &unseen, "events.createTopic", json!({"name":"late"})),
+        "resource_limit"
+    );
+}
+
+#[test]
 fn cross_plugin_subscription_pins_provider_and_retires_without_rebinding() {
     let core = CoreResources::default();
     let provider = owner();
@@ -613,7 +664,15 @@ fn process_backpressure_and_retirement_keep_buffers_bounded() {
         json!({"process":created["process"]}),
     );
     assert!(status["stdoutBuffered"].as_u64().unwrap() <= 256 * 1024);
-    core.retire(&owner).unwrap();
+    for generation in 2..=MAX_RESOURCE_OWNERS as u64 {
+        core.retire(&ResourceOwner {
+            generation,
+            ..owner.clone()
+        })
+        .unwrap();
+    }
+    assert_eq!(core.retire(&owner).unwrap()["cleanupComplete"], true);
+    assert_eq!(core.retire(&owner).unwrap()["cleanupComplete"], true);
     assert_eq!(
         code(
             &core,

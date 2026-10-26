@@ -1,4 +1,4 @@
-/** Public Target capability from codex.ui.adapter. Works in isolated/main worlds. */
+/** Core-owned composer action Target capability. Works in isolated/main worlds. */
 export const composerActionCapability: Readonly<{ name: 'codex.ui.composer.action'; api: 1; scope: 'target' }>;
 
 export interface ComposerActionRegister {

@@ -397,8 +397,9 @@ fn assert_resource_order(trace: &Value, generations: &[u64], live: bool) {
 #[test]
 fn actual_cleanup_example_completes_enable_watch_inspection_compensation_and_disable_as_one_flow() {
     let mut flow = DevelopmentSession::new();
+    let renderer_baseline = flow.renderer.plugin_count();
     let (root, original) = flow.copy_and_register_example();
-    assert_eq!(flow.renderer.plugin_count(), 0);
+    assert_eq!(flow.renderer.plugin_count(), renderer_baseline);
     assert!(
         !flow.registry().is_enabled("codlet-gui")
             && !flow.registry().is_enabled("codex.ui.adapter")

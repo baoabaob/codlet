@@ -6,6 +6,7 @@ const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { sourceCandidates, supportsRole } = require('./source-contracts.cjs');
+const { providerSetting, providerName } = require('./backend-launch.cjs');
 
 // Exact source mappings are a fast path. Core's generic module inventory also
 // discovers unlisted classes through the contracts of the methods we wrap.
@@ -73,12 +74,6 @@ function headerObject(values) {
 const requestBody = value => value == null ? undefined : typeof value === 'string' ? value : value instanceof ArrayBuffer ? new Uint8Array(value) : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : value;
 const asUrl = value => typeof value === 'string' ? value : value instanceof URL ? value.href : value?.url;
 
-async function bytes(body, signal) {
-  if (body == null || typeof body === 'string' || body instanceof Uint8Array) return body;
-  const chunks = []; let size = 0;
-  for await (const chunk of body) { signal?.throwIfAborted(); size += chunk.length; if (size > 64 * 1024 * 1024) throw fail('desktop_body_too_large'); chunks.push(Buffer.from(chunk)); }
-  return Buffer.concat(chunks);
-}
 function stream(body) {
   if (body == null || typeof body === 'string' || body instanceof Uint8Array) return body;
   const iterator = body[Symbol.asyncIterator]();
@@ -107,7 +102,7 @@ function routedThreadMessage(message, reserve, isProviderSupported = () => true)
   if (!['thread/start', 'thread/resume'].includes(payload?.method)) return message;
   const inputConfig = payload.params?.config;
   const selected = payload.params?.modelProvider ?? inputConfig?.model_provider;
-  const inline = typeof selected === 'string' ? inputConfig?.[`model_providers.${selected}`] ?? inputConfig?.model_providers?.[selected] : null;
+  const inline = typeof selected === 'string' ? inputConfig?.[providerSetting(selected).slice(0,-'.base_url'.length)] ?? inputConfig?.model_providers?.[selected] : null;
   if (typeof selected === 'string' && !isProviderSupported(selected) && typeof inline?.base_url !== 'string') throw fail('backend_provider_unsupported');
   if (!inputConfig || typeof inputConfig !== 'object' || Array.isArray(inputConfig)) return message;
   const config = { ...inputConfig }; let changed = false;
@@ -115,16 +110,15 @@ function routedThreadMessage(message, reserve, isProviderSupported = () => true)
     if (key === 'model_providers' && value && typeof value === 'object' && !Array.isArray(value)) {
       const mapped = { ...value };
       for (const [name, provider] of Object.entries(mapped)) if (provider && typeof provider === 'object' && typeof provider.base_url === 'string') {
-        if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name)) throw fail('backend_provider_unsupported');
         mapped[name] = { ...provider, base_url: reserve(providerUrl(provider.base_url)) }; changed = true;
       }
       config[key] = mapped;
-    } else if (/^model_providers\..*\.base_url$/u.test(key) && !/^model_providers\.[A-Za-z0-9_-]{1,64}\.base_url$/u.test(key)) throw fail('backend_provider_unsupported');
+    } else if (/^model_providers\..*\.base_url$/u.test(key) && providerName(key)===null) throw fail('backend_provider_unsupported');
     else if (/^model_providers\..+$/u.test(key) && value && typeof value === 'object' && typeof value.base_url === 'string'
-      && !/^model_providers\.[A-Za-z0-9_-]{1,64}$/u.test(key)) throw fail('backend_provider_unsupported');
-    if (key === 'openai_base_url' || /^model_providers\.[A-Za-z0-9_-]{1,64}\.base_url$/u.test(key)) {
+      && providerName(key+'.base_url')===null) throw fail('backend_provider_unsupported');
+    if (key === 'openai_base_url' || providerName(key)!==null) {
       config[key] = reserve(providerUrl(value)); changed = true;
-    } else if (/^model_providers\.[A-Za-z0-9_-]{1,64}$/u.test(key) && value && typeof value === 'object' && typeof value.base_url === 'string') {
+    } else if (providerName(key+'.base_url')!==null && value && typeof value === 'object' && typeof value.base_url === 'string') {
       config[key] = { ...value, base_url: reserve(providerUrl(value.base_url)) }; changed = true;
     }
   }
@@ -135,7 +129,7 @@ function routedThreadMessage(message, reserve, isProviderSupported = () => true)
 // classes, after their auth, workspace policy and cancellation decisions.
 function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendProcess = () => false, isProviderSupported = () => true,
   providerTrustForProcess = () => undefined, prepareBackendRestart,
-  pendingAccountUpdate = () => null, updateAccountMode = () => {}, moduleRegistry, state }, { expectedHashes = HASHES } = {}) {
+  pendingAccountUpdate = () => null, updateAccountMode = () => {}, moduleRegistry, state, observeBackendOwner, registerBackendOwners }, { expectedHashes = HASHES } = {}) {
   if ((!moduleRegistry && app.isReady()) || !source?.interceptHttp) throw fail('desktop_bootstrap_too_late');
   const scope = state?.scope??new AsyncLocalStorage();
   if(state&&!state.scope)state.scope=scope;
@@ -145,7 +139,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     stdioVerified = false, connectionVerified = false, stdioInstalled = false, connectionInstalled = false, desktopReason = null, taskReason = null, mismatch = null, closed = false;
   const bindingErrors = Object.create(null);
   const restores = [];
-  const observed = new Map(), roleBindings = new Map(), roleReasons = new Map(), driftedRoles = new Set();
+  const observed = new Map(), rejectedRoles = new Map(), roleBindings = new Map(), roleReasons = new Map(), driftedRoles = new Set();
+  const hasContract=role=>[...observed.values()].flat().some(candidate=>candidate.role===role)||[...rejectedRoles.values()].some(roles=>roles.includes(role));
   const wrappedMethods={network:['fetch','request'],fetch:['performDesktopFetch'],stdio:['send'],connection:['routeIncomingMessage',...(typeof prepareBackendRestart==='function'?['restart']:[])]};
   const taskRoutes = state?.taskRoutes??new Set(), routesByProcess = state?.routesByProcess??new WeakMap(), sendQueues = state?.sendQueues??new WeakMap();
   const pendingSends = state?.pendingSends ?? new Set();
@@ -157,7 +152,6 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       proc.once('exit', () => { for (const route of routes.values()) { closeRoute(route); taskRoutes.delete(route); } routes.clear(); });
     }
     if (routes.has(url)) return routes.get(url);
-    if (taskRoutes.size >= 64) throw fail('backend_route_limit');
     const additionalCaPem = providerTrustForProcess(proc);
     const route = source.reserveRoute({ upstreamBaseUrl: url, ...(additionalCaPem === undefined ? {} : { additionalCaPem }) });
     route.ready.catch(() => { routes.delete(url); taskRoutes.delete(route); closeRoute(route); });
@@ -176,11 +170,14 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       // Native's provider choice and its own validation in charge.
       catch { routed = message; account = null; waits.length = 0; }
       if (!waits.length && !account && !previous) return original.call(this,routed);
+      const proc=this.proc;let retire;
+      const retired=new Promise((_,reject)=>{retire=()=>reject(fail('backend_owner_retired'));proc.once('exit',retire);proc.once('error',retire);});
       const prepared = Promise.all([...waits,...(account?[account]:[])]).then(()=>routed,()=>message);
       // Accepted Native sends survive hook retirement. Only preparation can
       // fall back; an actual Native send is never retried after an error.
-      const operation = Promise.resolve(previous).catch(()=>{}).then(()=>prepared)
-        .then(next=>original.call(this,next)).catch(error=>this.onerror?.(error));
+      const operation = Promise.race([Promise.resolve(previous).catch(()=>{}).then(()=>prepared),retired])
+        .then(next=>{if(this.proc!==proc||proc.killed===true||proc.exitCode!=null||proc.signalCode!=null)throw fail('backend_owner_retired');return original.call(this,next);}).catch(error=>this.onerror?.(error))
+        .finally(()=>{proc.off('exit',retire);proc.off('error',retire);});
       sendQueues.set(this, operation);
       pendingSends.add(operation);
       operation.finally(() => { pendingSends.delete(operation); if (sendQueues.get(this) === operation) sendQueues.delete(this); }).catch(() => {});
@@ -197,12 +194,14 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
         // A connection can predate constructor observation. Its verified native
         // method provides the live receiver without constructing or replaying it.
         try { if(this instanceof Connection)moduleRegistry?.instance?.(this); } catch { /* Observation cannot interrupt a native message. */ }
+        try { if(this instanceof Connection&&this.connection?.proc)observeBackendOwner?.(this.connection.proc,this); }catch{/* The actual connection receiver is the only owner association. */}
         try { if(message?.method === 'account/updated' && ownsBackendProcess(this.connection?.proc))updateAccountMode(this.connection.proc, message.params?.authMode); }
         catch { /* Core observation must not interrupt Native notification delivery. */ }
       }
       return original.call(this, message, ...rest);
     };
     connectionInstalled = true;
+    if(registerBackendOwners&&typeof moduleRegistry?.instances==='function')restores.push(registerBackendOwners(()=>roleLive('connection',Connection)?moduleRegistry.instances(Connection):[]));
     const wrapped=Connection.prototype.routeIncomingMessage;
     restores.push(() => { if(Connection.prototype.routeIncomingMessage===wrapped)Connection.prototype.routeIncomingMessage = original; });
     const originalRestart=Connection.prototype.restart;
@@ -225,10 +224,12 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     const originalFetch = Network.prototype.fetch, originalRequest = Network.prototype.request;
     function nativeForward(network, request, options, signal, onRequest) {
       return new Promise((resolve, reject) => {
-        let settled = false, finalUrl = request.url, redirects = 0, live;
+        let settled = false, finalUrl = request.url, live;
+        const uploadController=new AbortController();
         const finish = (error, value) => {
           if (settled) return;
           settled = true;
+          uploadController.abort();
           if (error) reject(error); else resolve(value);
         };
         const abort = () => { finish(fail('desktop_request_aborted')); live?.abort(); };
@@ -242,7 +243,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
             try {
               if (options.redirect === 'error') throw fail('desktop_redirect_disallowed');
               if (options.redirect === 'manual') throw fail('desktop_manual_redirect_unavailable');
-              if (++redirects > 20 || !['http:', 'https:'].includes(new URL(destination).protocol)) throw fail('desktop_redirect_disallowed');
+              if (!['http:', 'https:'].includes(new URL(destination).protocol)) throw fail('desktop_redirect_disallowed');
               network.assertAllowed(destination);
               finalUrl = destination;
               // Electron requires this call during the event. The intermediate
@@ -251,12 +252,42 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
             } catch (error) { finish(error); live.abort(); }
           });
           live.once('error', error => { signal?.removeEventListener('abort', abort); finish(error); });
+          live.once('close',()=>{if(!settled){signal?.removeEventListener('abort',abort);finish(fail('desktop_request_closed'));}});
           live.once('response', incoming => {
             incoming.once('end', () => signal?.removeEventListener('abort', abort));
             incoming.once('close', () => signal?.removeEventListener('abort', abort));
             finish(null, { status: incoming.statusCode, headers: headers(incoming.headers), body: incoming, finalUrl });
           });
-          live.end(request.body == null || typeof request.body === 'string' ? request.body : Buffer.from(request.body));
+          const body=request.body;
+          if(body==null||typeof body==='string'||body instanceof Uint8Array)live.end(body==null||typeof body==='string'?body:Buffer.from(body));
+          else {
+            if(typeof live.write!=='function')throw fail('desktop_upload_contract_invalid');
+            const iterator=body[Symbol.asyncIterator]?.()??body[Symbol.iterator]?.();
+            if(!iterator)throw fail('desktop_upload_contract_invalid');
+            const stopped=Symbol('upload stopped');
+            const next=()=>new Promise((resolve,reject)=>{
+              const abort=()=>{uploadController.signal.removeEventListener('abort',abort);resolve(stopped);};
+              if(uploadController.signal.aborted){abort();return;}
+              uploadController.signal.addEventListener('abort',abort,{once:true});
+              Promise.resolve().then(()=>iterator.next()).then(value=>{uploadController.signal.removeEventListener('abort',abort);resolve(value);},error=>{uploadController.signal.removeEventListener('abort',abort);reject(error);});
+            });
+            const pump=(async()=>{
+              try {
+                while(!settled) {
+                  const item=await next();
+                  if(item===stopped||settled)return;
+                  signal?.throwIfAborted();if(item.done){live.end();return;}
+                  if(typeof item.value!=='string'&&!(item.value instanceof Uint8Array))throw fail('desktop_upload_contract_invalid');
+                  if(!live.write(item.value))await new Promise((resolve,reject)=>{
+                    const cleanup=()=>{live.off('drain',drained);live.off('error',failed);live.off('close',ended);uploadController.signal.removeEventListener('abort',ended);};
+                    const drained=()=>{cleanup();resolve();},failed=error=>{cleanup();reject(error);},ended=()=>{cleanup();resolve();};
+                    live.once('drain',drained);live.once('error',failed);live.once('close',ended);uploadController.signal.addEventListener('abort',ended,{once:true});if(uploadController.signal.aborted)ended();
+                  });
+                }
+              }finally{if(settled)try{Promise.resolve(iterator.return?.()).catch(()=>{});}catch{/* A retired producer cannot interrupt the Native response. */}}
+            })();
+            pump.catch(error=>{finish(error);live.abort();});
+          }
         } catch (error) { signal?.removeEventListener('abort', abort); finish(error); live?.abort(); }
       });
     }
@@ -268,10 +299,9 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       let dispatched = false, nativeError;
       let result;
       try { result = await source.interceptHttp(current, { signal, forward: async (next, control) => {
-        const body = await bytes(next.body, control.signal);
         const omit = next.credentialMode === 'omit' || !sameOrigin(url, next.url);
         dispatched = true;
-        try { return await nativeForward(this, { ...next, body, headers: omit ? withoutCredentials(next.headers) : next.headers }, { redirect: init.redirect ?? 'follow',
+        try { return await nativeForward(this, { ...next, headers: omit ? withoutCredentials(next.headers) : next.headers }, { redirect: init.redirect ?? 'follow',
           credentials: omit ? 'omit' : init.credentials, cache: init.cache, referrerPolicy: init.referrerPolicy,
           priority: init.priority, ...(init.credentials === 'same-origin' && !omit ? { origin: new URL(url).origin } : {}) }, control.signal);
         } catch (error) { nativeError = error; throw error; }
@@ -297,10 +327,9 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
           const current = { url: options.url, method: options.method ?? 'GET', headers: headers(options.headers), body: requestBody(body) };
           let dispatched = false, nativeError, result;
           try { result = await source.interceptHttp(current, { signal: controller.signal, forward: async (next, control) => {
-            const forwardBody = await bytes(next.body, control.signal);
             const omit = next.credentialMode === 'omit' || !sameOrigin(options.url, next.url);
             dispatched = true;
-            try { return await nativeForward(network, { ...next, body: forwardBody, headers: omit ? withoutCredentials(next.headers) : next.headers }, { ...options, redirect: options.redirect ?? 'follow',
+            try { return await nativeForward(network, { ...next, headers: omit ? withoutCredentials(next.headers) : next.headers }, { ...options, redirect: options.redirect ?? 'follow',
               credentials: omit ? 'omit' : options.credentials,
               useSessionCookies: !omit && options.useSessionCookies === true }, control.signal,
             request => { liveRequest = request; upload = request.getUploadProgress?.() ?? upload; });
@@ -404,7 +433,7 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       }
     }
     srcVerified=stdioVerified&&connectionVerified;
-    const terminal=roles=>roles.map(role=>roleReasons.get(role)).find(reason=>['ambiguous_contract','binding_changed'].includes(reason))??null;
+    const terminal=roles=>roles.map(role=>({role,reason:roleReasons.get(role)})).find(({role,reason})=>['ambiguous_contract','binding_changed'].includes(reason)||reason==='contract_unavailable'&&hasContract(role))?.reason??null;
     desktopReason=bootstrapVerified&&mainVerified?null:terminal(['network','fetch']);
     taskReason=srcVerified?null:terminal(['stdio','connection']);
   }
@@ -412,7 +441,11 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
     const {name,hash:observedSha256}=record;
     if(Object.hasOwn(expectedHashes,name)&&observedSha256!==expectedHashes[name])mismatch={name,observedSha256};
     const key=record.filename??name,candidates=sourceCandidates(record,PROFILES,expectedHashes);
-    if(!candidates.length&&!observed.has(key))return;
+    if(Object.hasOwn(expectedHashes,name)) {
+      const profile=PROFILES[name],roles=profile?.kind==='bootstrap'?['network',...(profile.connectionSymbol?['connection']:[])]:profile?.kind==='main'?['fetch']:profile?.kind==='stdio'?['stdio']:profile?.kind==='connection'?['connection']:['stdio','connection'];
+      rejectedRoles.set(key,roles.filter(role=>!candidates.some(candidate=>candidate.role===role)));
+    }
+    if(!candidates.length&&!observed.has(key)&&!rejectedRoles.has(key))return;
     if(candidates.length)observed.set(key,candidates);else observed.delete(key);
     refreshBindings();
   }
@@ -439,18 +472,15 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
   const needsTaskSources = Object.keys(expectedHashes).some(name => ['src', 'stdio', 'connection'].includes(PROFILES[name]?.kind) || name.startsWith('src-'));
   const taskDone = () => taskReason || !needsTaskSources || srcVerified && stdioInstalled && connectionInstalled;
   return Object.freeze({
-    async ready({ deadlineUnixMs: readinessDeadlineUnixMs = deadlineUnixMs } = {}) {
-      while (!closed && !(desktopDone() && taskDone()) && Date.now() < readinessDeadlineUnixMs - 500) {
+    async ready() {
+      while (!closed && !(desktopDone() || taskDone())) {
         refreshBindings();
         await new Promise(resolve => setTimeout(resolve, 20));
       }
-      // A busy native event loop can initialize bindings after the last poll
-      // while exhausting the wait budget. Check those verified bindings once
-      // more before deciding that their hooks are unavailable.
       if(!closed)refreshBindings();
       return this.inspect();
     },
-    inspect: () => { for(const [role,binding]of [...roleBindings])roleLive(role,binding.Constructor);return ({ installed: !closed, available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
+    inspect: () => { if(!closed)refreshBindings();for(const [role,binding]of [...roleBindings])roleLive(role,binding.Constructor);return ({ installed: !closed, available: !desktopReason && bootstrapVerified && mainVerified && fetchInstalled && requestInstalled,
       taskConfigurationAvailable: !taskReason && srcVerified && stdioInstalled && connectionInstalled,
       modules: { bootstrap: bootstrapVerified, main: mainVerified, src: srcVerified, stdio: stdioInstalled, connection: connectionInstalled },
       mismatch,
@@ -460,8 +490,8 @@ function installDesktopPlaintext({ app }, { source, deadlineUnixMs, ownsBackendP
       observedModuleInventory:moduleRegistry?.list?.().slice(0,64).map(record=>({name:record.name,hash:record.hash,classes:record.classes?.length??null}))??[],
       bindingCandidates:Object.fromEntries(['network','fetch','stdio','connection'].map(role=>[role,[...observed.values()].flat().filter(candidate=>candidate.role===role).length])),
       bindingReasons:Object.fromEntries(roleReasons),
-      reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : 'contract_unavailable'),
-      taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : 'contract_unavailable') }); },
+      reason: desktopReason ?? (bootstrapVerified && mainVerified ? null : 'initializing'),
+      taskConfigurationReason: taskReason ?? (srcVerified && stdioInstalled && connectionInstalled ? null : 'initializing') }); },
     connectionConstructors:()=>roleBindings.has('connection')?[roleBindings.get('connection').Constructor]:[],
     canSuspend: () => pendingSends.size === 0,
     suspend() { if (closed) return; closed = true; observed.clear();roleBindings.clear(); for (const restore of restores.splice(0).reverse()) restore(); },

@@ -7,6 +7,13 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 const { installBackendSpawn, effectiveProviders, providerTrust, lastStringOverride } = createRequire(import.meta.url)('../host/backend-spawn.cjs');
 const contract=(...settings)=>({api:1,initialize:true,configRead:true,accountRead:true,routing:'runtime',providerOverrides:['openai_base_url',...settings]});
+async function spawnPrepared(hook, prototype, child, options) {
+  const initial = new EventEmitter();
+  prototype.spawn.call(initial, options);
+  assert.equal(hook.ownsProcess(initial), false);
+  assert.equal((await hook.ready()).policyReady, true);
+  prototype.spawn.call(child, options);
+}
 
 test('effective provider routing preserves ChatGPT/API-key defaults and custom response providers', () => {
   assert.equal(effectiveProviders({accountType:'chatgpt'}).get('openai_base_url'),'https://chatgpt.com/backend-api/codex');
@@ -30,7 +37,7 @@ test('account changes update default custom routes while explicit provider endpo
   const hook=installBackendSpawn({source,runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000},{prototype,verify(){return{binarySha256:'verified'};},probe(){return policy;},prepare(plan){return{arguments:plan.arguments};}});
   const child=new EventEmitter();
   try{
-    prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});
+    await spawnPrepared(hook,prototype,child,{file,args:[file,'app-server'],envPairs:[]});
     assert.equal((await hook.ready()).available,true);assert.equal(hook.isProviderSupported(child,'custom'),true);
     hook.updateAccountMode(child,'apiKey');await hook.pendingAccountUpdate(child);
     assert.equal(routes[0].updated,undefined);assert.deepEqual(routes[1].updated,{upstreamBaseUrl:'https://api.openai.com/v1'});assert.equal(routes[2].updated,undefined);
@@ -58,12 +65,13 @@ test('owned verified backend receives only route config; original environment an
     assert.equal(dispatched[0],unrelated);
     const executable=path.resolve('codex.exe');
     const owned={file:executable,args:[executable,'app-server','--stdio'],envPairs:Object.entries(environment).map(([key,value])=>`${key}=${value}`)};
-    const child=new EventEmitter();prototype.spawn.call(child,owned);
+    const child=new EventEmitter();await spawnPrepared(hook,prototype,child,owned);
     assert.equal((await hook.ready()).available,true);
     assert.equal(reservations.length,2);
     assert.deepEqual(reservations.map(value=>value.upstreamBaseUrl),['https://chatgpt.com/backend-api/codex','https://custom.example/v1']);
-    assert.equal(dispatched[1].envPairs,owned.envPairs);
-    assert.equal(dispatched[1].args.at(-1),'model_providers.custom.base_url=http://127.0.0.1:43210/r1/');
+    assert.equal(dispatched[1],owned,'First spawn keeps Native configuration while routes register');
+    assert.equal(dispatched[2].envPairs,owned.envPairs);
+    assert.equal(dispatched[2].args.at(-1),'model_providers.custom.base_url=http://127.0.0.1:43210/r1/');
     assert.equal(environment.HTTPS_PROXY,'http://corporate.invalid');
     hook.updateAccountMode(child,'apiKey');await hook.pendingAccountUpdate(child);
     assert.deepEqual(reservations[0].updated,{upstreamBaseUrl:'https://api.openai.com/v1'});
@@ -72,7 +80,7 @@ test('owned verified backend receives only route config; original environment an
 });
 
 test('existing provider CA is passed only as a scoped route trust input', t => {
-  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'codlet-trust-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'codlet-trust-'));t.after(()=>fs.rmSync(directory,{recursive:true}));
   const file=path.join(directory,'owned.pem');fs.writeFileSync(file,'-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n');
   assert.match(providerTrust({CODEX_CA_CERTIFICATE:file,SSL_CERT_FILE:'ignored'},directory),/BEGIN CERTIFICATE/u);
   assert.equal(providerTrust({OTHER:'value'},directory),undefined);
@@ -97,7 +105,7 @@ test('client-owned backend routes and process identity survive source replacemen
   const dependencies={prototype,state,verify(){return{binarySha256:'unlisted',recorded:false}},probe(){return {accountType:'apiKey',contract:contract()};},prepare(plan){return {arguments:plan.arguments};}};
   const configuration={source,runtimeExecutable:process.execPath,deadlineUnixMs:Date.now()+1000};
   const first=installBackendSpawn(configuration,dependencies),child=new EventEmitter(),file=path.resolve('codex.exe');
-  prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});
+  await spawnPrepared(first,prototype,child,{file,args:[file,'app-server'],envPairs:[]});
   assert.equal((await first.ready()).available,true);first.close();assert.equal(prototype.spawn,original);assert.equal(routes[0].closed,false);
   const next=installBackendSpawn(configuration,dependencies);assert.equal(next.ownsProcess(child),true);assert.equal((await next.ready()).available,true);
   next.close();assert.equal(routes[0].closed,false);child.emit('exit');assert.equal(routes[0].closed,true);assert.equal(state.records.size,0);
@@ -148,7 +156,7 @@ test('an owned backend restart prepares fresh policy before replacing its live p
   });
   const options={file,args:[file,'app-server'],envPairs:[]},first=new EventEmitter();
   try{
-    prototype.spawn.call(first,options);assert.equal(hook.ownsProcess(first),true);
+    await spawnPrepared(hook,prototype,first,options);assert.equal(hook.ownsProcess(first),true);
     const pending=hook.prepareConnection({proc:first},{forRestart:true});
     assert.equal(probes,2);assert.equal(routes[0].closed,undefined);assert.equal(hook.ownsProcess(first),true);
     complete(policy);await pending;
@@ -164,7 +172,7 @@ test('a failed restart leaves its owner alive and a later explicit retry probes 
   });
   const child=new EventEmitter();
   try{
-    prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]});
+    await spawnPrepared(hook,prototype,child,{file,args:[file,'app-server'],envPairs:[]});
     await assert.rejects(hook.prepareConnection({proc:child},{forRestart:true}),{code:'backend_config_unavailable'});
     assert.equal(hook.ownsProcess(child),true);
     await hook.prepareConnection({proc:child},{forRestart:true});assert.equal(probes,3);
@@ -203,5 +211,34 @@ test('late Native connection preparation reuses a verified policy across environ
     prototype.spawn.call(replacement,{file,args:[file,'app-server'],envPairs:['FIRST=one','SECOND=two']});
     assert.equal(probes,1);assert.equal(hook.ownsProcess(replacement),true);
     assert.equal((await hook.ready()).available,true);
+  } finally {await hook.close();}
+});
+
+test('a pending route cannot publish a launch URL and failed preparation leaves a live child untouched', async () => {
+  const dispatched=[],routes=[],prototype={spawn(options){dispatched.push(options);return 'native';}};
+  let rejectRoute;
+  const hook=installBackendSpawn({source:{reserveRoute(){const route={baseUrl:'http://127.0.0.1:43210/pending/',ready:new Promise((_resolve,reject)=>{rejectRoute=reject;}),close(){route.closed=true;}};routes.push(route);return route;}},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify:()=>({binarySha256:'verified'}),probe:()=>({accountType:'apiKey',contract:contract()}),prepare(){assert.fail('unconfirmed routes cannot reach Native');}
+  });
+  try {
+    const file=path.resolve('codex.exe'), options={file,args:[file,'app-server'],envPairs:[]}, child=new EventEmitter();
+    prototype.spawn.call(child,options); await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(hook.canRecover(child),false); assert.equal(dispatched.length,1); assert.equal(dispatched[0],options);
+    rejectRoute(Object.assign(Error(),{code:'backend_route_unavailable'})); await hook.ready();
+    assert.equal(hook.canRecover(child),false); assert.equal(hook.ownsProcess(child),false); assert.equal(routes[0].closed,true);
+    assert.equal(dispatched.length,1);
+  } finally {await hook.close();}
+});
+
+test('exiting the waiting child retires its pending route objects and rejects their late receipt', async () => {
+  let complete,route;
+  const prototype={spawn(){return 'native';}},hook=installBackendSpawn({source:{reserveRoute(){return route={baseUrl:'http://127.0.0.1:43210/late/',ready:new Promise(resolve=>{complete=resolve;}),close(){route.closed=true;}};}},deadlineUnixMs:Date.now()+1000},{
+    prototype,verify:()=>({binarySha256:'verified'}),probe:()=>({accountType:'apiKey',contract:contract()})
+  });
+  const child=new EventEmitter(),file=path.resolve('codex.exe');
+  try {
+    prototype.spawn.call(child,{file,args:[file,'app-server'],envPairs:[]}); await new Promise(resolve=>setImmediate(resolve));
+    child.emit('exit'); assert.equal(route.closed,true); complete(); await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(hook.canRecover(child),false); assert.equal(hook.inspect().policyReady,false); assert.equal(hook.ownsProcess(child),false);
   } finally {await hook.close();}
 });

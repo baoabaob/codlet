@@ -1,5 +1,5 @@
 'use strict';
-// Serialized into the metadata worker. Only bounded routing metadata leaves
+// Serialized into the metadata worker. Only routing metadata leaves
 // the worker; all protocol requests are read-only and use the selected executable.
 // App Server initialization writes SQLite state, so probes own a disposable state
 // directory while preserving the actual configuration and account context.
@@ -35,7 +35,8 @@ function runConfigProbe(input, dependencies = {}) {
     liveChild = child;
     try {
       return await new Promise((resolve, reject) => {
-        let settled = false, buffer = '', count = 0, expected = 1, config;
+        const decoder = new (require('node:string_decoder').StringDecoder)('utf8');
+        let settled = false, buffer = '', expected = 1, config;
         const abort = () => finish(fail('backend_probe_cancelled'));
         const timer = setTimeout(() => finish(fail('backend_config_timeout'),undefined,{outcome:'timeout'}), Math.max(1, until - Date.now()));
         signal?.addEventListener('abort', abort, { once: true });
@@ -53,16 +54,14 @@ function runConfigProbe(input, dependencies = {}) {
         child.once('exit', code => finish(fail('backend_config_unavailable'),undefined,{outcome:'child_exit',exitCode:code}));
         child.stdout.on('data', chunk => {
           if (settled) return;
-          count += chunk.length;
-          if (count > 2 * 1024 * 1024) { finish(fail('backend_config_too_large')); return; }
-          buffer += chunk.toString(); let at;
+          buffer += decoder.write(chunk); let at;
           while (!settled && (at = buffer.indexOf('\n')) >= 0) {
             const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
             let message; try { message = JSON.parse(line); } catch { continue; }
             if (!object(message) || message.id !== expected) continue;
             if (message.error || !object(message.result)) { finish(fail('backend_contract_unavailable')); return; }
             if (expected === 1) {
-              if (typeof message.result.userAgent !== 'string' || !message.result.userAgent || message.result.userAgent.length > 4096) {
+              if (typeof message.result.userAgent !== 'string' || !message.result.userAgent) {
                 finish(fail('backend_contract_unavailable')); return;
               }
               expected = 2;
@@ -90,27 +89,25 @@ function runConfigProbe(input, dependencies = {}) {
     let plan = input;
     if (plan === undefined) {
       const bytes = fs.readFileSync(0);
-      if (bytes.length > 256 * 1024) throw fail('backend_config_unavailable');
       plan = JSON.parse(bytes);
     }
     if (!object(plan) || typeof plan.executable !== 'string' || typeof plan.cwd !== 'string'
-      || !object(plan.environment) || !Array.isArray(plan.configArguments) || plan.configArguments.length > 256
+      || !object(plan.environment) || !Array.isArray(plan.configArguments)
       || plan.configArguments.some(value => typeof value !== 'string')) throw fail('backend_config_unavailable');
     stateRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'codlet-config-probe-'));
     const { config, accountType } = await read(plan, [], true);
     if (config.model_providers != null && !object(config.model_providers)
       || config.model_provider != null && typeof config.model_provider !== 'string'
       || config.openai_base_url != null && typeof config.openai_base_url !== 'string') throw fail('backend_contract_unavailable');
-    const providers = {}, providerAuthDefaults = {};
+    const providers = Object.create(null), providerAuthDefaults = Object.create(null);
     for (const [name, provider] of Object.entries(config.model_providers ?? {})) {
       if (provider?.wire_api !== 'responses') continue;
       const defaultEndpoint = provider.base_url == null && provider.auth == null && provider.gateway_oauth == null && provider.aws == null;
       if (typeof provider.base_url !== 'string' && !defaultEndpoint) continue;
-      if (!/^[A-Za-z0-9_-]{1,64}$/u.test(name) || Object.keys(providers).length >= 16) throw fail('backend_provider_unsupported');
       providers[name] = defaultEndpoint ? null : provider.base_url;
       if (defaultEndpoint) providerAuthDefaults[name] = provider.requires_openai_auth === true;
     }
-    const settings = ['openai_base_url', ...Object.keys(providers).map(name => `model_providers.${name}.base_url`)];
+    const settings = ['openai_base_url', ...Object.keys(providers).map(name => `model_providers.${/^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name)}.base_url`)];
     // Recorded implementations already have routing evidence. A new file must
     // accept and return every required override in a second read-only process.
     if (plan.recordedRouting !== true) {

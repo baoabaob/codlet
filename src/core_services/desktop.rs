@@ -191,7 +191,7 @@ impl Desktop {
                     })
                     .collect::<Vec<_>>();
                 Ok(
-                    json!({"events":events,"cursor":state.cursor,"gap":state.events.front().and_then(|v|v["cursor"].as_u64()).is_some_and(|n|after>0&&after+1<n)}),
+                    json!({"events":events,"cursor":state.cursor,"gap":state.events.front().and_then(|v|v["cursor"].as_u64()).is_some_and(|n|after>0&&after.saturating_add(1)<n)}),
                 )
             }
             _ => Err(error("method_not_found", "unknown desktop service method")),

@@ -370,6 +370,42 @@ test('bodyless Desktop responses release each source exchange, including HEAD', 
   } finally {hook.close();}
 });
 
+test('Native uploads stream beyond the old body quota with backpressure and cancel their actual producer',async()=>{
+  for(const cancel of [false,true]) {
+    const stats={bytes:0,writes:0,aborted:0,returned:0};globalThis.fixtureStreamingStats=stats;
+    const streamingBootstrap=`class Pt {assertAllowed(){}fetch(){throw Error('unexpected fetch')}request(){
+      const call=new(require('node:events').EventEmitter)(),stats=globalThis.fixtureStreamingStats;
+      call.write=chunk=>{stats.bytes+=chunk.length;stats.writes++;if(stats.writes%2){queueMicrotask(()=>call.emit('drain'));return false;}return true;};
+      call.end=()=>{const incoming=require('node:stream').Readable.from([Buffer.from('done')]);incoming.statusCode=200;incoming.headers={};queueMicrotask(()=>call.emit('response',incoming));};
+      call.abort=()=>{stats.aborted++;call.emit('error',Error('aborted'));};return call;
+    }};module.exports={Pt};`;
+    const streamingMain=`class wEe {constructor(network){this.network=network}performDesktopFetch(body,signal){return this.network.fetch('https://provider.example/upload',{method:'POST',body,signal})}};module.exports={wEe};`;
+    const source={interceptHttp(input,{forward,signal}){return forward(input,{signal});}};
+    const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source,deadlineUnixMs:Date.now()-1},{expectedHashes:{'bootstrap-DK4EfNwt.js':hash(streamingBootstrap),'main-LM8MUIFp.js':hash(streamingMain)}});
+    try {
+      const {Pt}=compile('bootstrap-DK4EfNwt.js',streamingBootstrap),{wEe}=compile('main-LM8MUIFp.js',streamingMain),controller=new AbortController();
+      const chunk=Buffer.alloc(32768),body={async *[Symbol.asyncIterator](){try{for(let i=0;i<2049;i++){if(cancel&&i===2)controller.abort();yield chunk;}}finally{stats.returned++;}}};
+      const pending=new wEe(new Pt()).performDesktopFetch(body,controller.signal);
+      if(cancel){await assert.rejects(pending,{code:'desktop_request_aborted'});await new Promise(resolve=>setImmediate(resolve));assert.equal(stats.aborted,1);assert(stats.bytes<65536+32768);}
+      else {assert.equal(await(await pending).text(),'done');assert.equal(stats.bytes,64*1024*1024+32768);assert.equal(stats.writes,2049);}
+      assert.equal(stats.returned,1);
+    }finally{hook.close();delete globalThis.fixtureStreamingStats;}
+  }
+});
+
+test('a delayed Stdio send retires with its captured Native process rather than writing to a replacement',async()=>{
+  const code=`class mQ {constructor(proc){this.proc=proc;this.sent=[];}send(message){this.sent.push([this.proc,message]);}};class un {routeIncomingMessage(message){return message}};module.exports={mQ,un};`;
+  let finish;const ready=new Promise(resolve=>{finish=resolve;}),old=new EventEmitter(),replacement=new EventEmitter(),errors=[];
+  const source={interceptHttp(){},reserveRoute(){return{baseUrl:'http://127.0.0.1:45678/route/',ready,close(){}};}};
+  const hook=installDesktopPlaintext({app:{isReady:()=>false}},{source,deadlineUnixMs:Date.now()-1,ownsBackendProcess:()=>true},{expectedHashes:{'src-C3YaUE83.js':hash(code)}});
+  try {
+    const {mQ}=compile('src-C3YaUE83.js',code),transport=new mQ(old);transport.onerror=error=>errors.push(error);
+    transport.send(JSON.stringify({id:1,method:'thread/start',params:{config:{openai_base_url:'https://provider.example/v1'}}}));
+    transport.proc=replacement;finish();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(transport.sent.length,0);assert.equal(errors[0].code,'backend_owner_retired');assert.equal(hook.canSuspend(),true);
+  }finally{hook.close();}
+});
+
 test('task-local Responses provider is routed at Stdio JSONL send without changing model or provider choice', () => {
   const input={id:1,method:'thread/start',params:{model:'chosen-model',modelProvider:'custom',config:{'model_providers.custom':{name:'Custom',wire_api:'responses',base_url:'https://original.example/v1',requires_openai_auth:false}}}};
   const urls=[];

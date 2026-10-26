@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { build } from '../frontend/node_modules/esbuild/lib/main.js';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { createNativeViewportDriver, viewportSignalExports, viewportPersistenceExport, nativeViewportLayout } from '../frontend/src/adapter/workspace-native-viewport.js';
+import { createNativeViewportDriver, viewportSignalExports, viewportPersistenceExport, nativeViewportLayout, nativeViewportContext } from '../frontend/src/adapter/workspace-native-viewport.js';
 const require=createRequire(new URL('../frontend/package.json',import.meta.url)),{JSDOM}=require('jsdom');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
@@ -29,7 +29,12 @@ test('Native layout discovery reaches a closed pane inside main while pruning th
   root.__reactContainer$layout={stateNode:{current}};main.__reactFiber$layout=host;
   assert.equal(nativeViewportLayout({root,main}),props);
   const duplicate={...pane,return:row};pane.sibling=duplicate;
-  assert.throws(()=>nativeViewportLayout({root,main}),{code:'workspace_host_pending'},'ambiguous matching layouts cannot be guessed');
+  assert.throws(()=>nativeViewportLayout({root,main}),{code:'workspace_viewport_unsupported'},'ambiguous matching layouts are contract errors');
+});
+
+test('Native viewport discovery rejects multiple active main owners before reading or pinning scopes',t=>{
+  const dom=new JSDOM('<div id="root"><main data-app-shell-main-surface></main><main data-app-shell-main-surface></main></div>');t.after(()=>dom.window.close());
+  assert.throws(()=>nativeViewportContext(dom.window.document,{}),{code:'workspace_viewport_unsupported'});
 });
 
 function fixture(t){
@@ -52,7 +57,9 @@ function fixture(t){
 }
 
 test('Native viewport preserves resource DOM, isolates width persistence and restores each visited context independently',async t=>{
-  const f=fixture(t),resource=f.document.querySelector('aside span'),view=await f.driver.create({open:true,width:360});await view.ready;
+  const f=fixture(t),resource=f.document.querySelector('aside span'),otherRoot=f.document.createElement('section');otherRoot.innerHTML='<main data-app-shell-main-surface></main><aside data-app-shell-focus-area="right-panel">Other owner</aside>';f.document.body.append(otherRoot);
+  const view=await f.driver.create({open:true,width:360});await view.ready;
+  assert.equal(otherRoot.querySelector('aside').hasAttribute('inert'),false);assert.equal(otherRoot.querySelector('aside').style.visibility,'');
   const seen=[];view.subscribe(value=>seen.push(value));await view.bind({threadId:'thread-a'});
   assert.equal(f.document.querySelector('aside span'),resource);assert.equal(f.document.querySelector('aside').hasAttribute('inert'),false);
   f.a.resize(520);assert.equal(seen.at(-1).width,520);f.a.facade.set(f.signals.open,false);assert.equal(seen.at(-1).open,false);
@@ -126,7 +133,9 @@ test('width discovery mounts only the Native registration in an owned temporary 
   const signal={scope:RouteScope,cache:'signal',resolve(){}},registrations=[];let roots=0,unmounted=0;
   function Registration({signal,value}){const chain=R.useContext(ScopeContext);R.useLayoutEffect(()=>{registrations.push({signal,value,thread:chain.get(ThreadScope),route:chain.get(RouteScope)});return()=>unmounted++;},[]);return null;}
   const native={...N,ThreadScope,RouteScope,Scope:({scope,value,children})=>{const parent=R.useContext(ScopeContext);return h(ScopeContext,{value:new Map([...parent,[scope,value]])},children);},routeDescription:value=>value,Shell:{RightPanelOutlet:({paneWidth})=>h(Registration,{signal,value:paneWidth})},Client:{createRoot(...args){roots++;return N.Client.createRoot(...args);}}};
-  const main=document.querySelector('main');main.__reactFiber$fixture={dependencies:{firstContext:{context:ScopeContext,memoizedValue:new Map([[ThreadScope,originalThread],[RouteScope,originalRoute]])}}};
+  const main=document.querySelector('main'),current={};
+  main.__reactFiber$fixture={stateNode:main,return:current,dependencies:{firstContext:{context:ScopeContext,memoizedValue:new Map([[ThreadScope,originalThread],[RouteScope,originalRoute]])}}};
+  current.child=main.__reactFiber$fixture;document.getElementById('root').__reactContainer$fixture={stateNode:{current}};
   assert.equal(window.Viewport.learnNativeViewportWidth(document,native,{main}),signal);assert.equal(roots,1);assert.equal(unmounted,1);assert.equal(registrations.length,1);
   assert.notEqual(registrations[0].thread,originalThread);assert.notEqual(registrations[0].route,originalRoute);assert.equal(originalThread.clientThreadId,'original');
   assert.equal(document.querySelector('[data-codlet-workspace-owned]'),null);assert.equal(document.querySelector('[contenteditable]'),null);
@@ -141,6 +150,7 @@ test('captured viewport facades keep their existing route nodes when the Native 
     if(!ref.current||ref.current.node!==node){const facade={chain,node,scope,get(){},set(key,value){facade.chain.get(key.scope.id).writes.push(value);},watch(){return()=>{};}};ref.current=facade;}else ref.current.chain=chain;return ref.current;}};
   const Frame=()=>{userFacade=native.useScope(ThreadScope);return h('main',{'data-app-shell-main-surface':''});};const root=native.Client.createRoot(document.getElementById('root')),pins=new WeakMap();t.after(()=>N.DOM.flushSync(()=>root.unmount()));
   N.DOM.flushSync(()=>root.render(h(Context,{value:chainA},h(Frame))));
+  const otherRoot=document.createElement('section');otherRoot.innerHTML='<main data-app-shell-main-surface></main>';document.body.append(otherRoot);
   const first=window.Viewport.nativeViewportContext(document,native,pins);assert.equal(first.facade.node,a);assert.notEqual(first.facade,userFacade);
   N.DOM.flushSync(()=>root.render(h(Context,{value:chainB},h(Frame))));assert.equal(userFacade.chain.get(RouteScope.id),b);
   first.facade.set(signal,600);assert.deepEqual(a.writes,[600]);assert.deepEqual(b.writes,[]);

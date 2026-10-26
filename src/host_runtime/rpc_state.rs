@@ -100,12 +100,14 @@ impl Drop for RendererCall {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Release);
         if let Some(key) = &self.key {
-            self.shared
-                .0
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+            let mut state = self.shared.0.lock().unwrap_or_else(|p| p.into_inner());
+            if state
                 .renderer_calls
-                .remove(key);
+                .get(key)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.cancelled))
+            {
+                state.renderer_calls.remove(key);
+            }
         }
     }
 }
@@ -307,6 +309,26 @@ impl CoreRpcShared {
         state.invocations.retain(|_, invocation| {
             invocation.endpoint.plugin_id != id || invocation.endpoint.generation > generation
         });
+    }
+
+    pub fn retire_host_entry(&self, id: &str, generation: u64) {
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = host_provider_id(id);
+        state
+            .blocked
+            .entry(entry.clone())
+            .and_modify(|current| *current = (*current).max(generation))
+            .or_insert(generation);
+        if state
+            .declarations
+            .get(&entry)
+            .is_some_and(|current| current.generation <= generation)
+        {
+            let _ = state.registry.unregister_provider(&entry);
+            state.declarations.remove(&entry);
+        }
+        // The renderer entry has its own document/principal lifetime. Its
+        // unrelated calls and resources survive an individual Host retirement.
     }
 
     pub fn host_state(
@@ -1168,6 +1190,62 @@ mod tests {
                     Instant::now() + Duration::from_secs(1)
                 )
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn retired_renderer_receipt_does_not_unregister_a_reused_request_identity() {
+        let shared = CoreRpcShared::default();
+        let capability = descriptor(CapabilityScope::Runtime);
+        let consumer = plugin("dev.consumer", 1, &[], std::slice::from_ref(&capability));
+        let provider = plugin("dev.provider", 1, std::slice::from_ref(&capability), &[]);
+        shared
+            .register_plugins(&[consumer.clone(), provider])
+            .unwrap();
+        let route = shared
+            .resolve_host(
+                &consumer,
+                &capability,
+                None,
+                None,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap();
+        let key = ("session".into(), "binding".into(), 1);
+        let old = Arc::new(AtomicBool::new(false));
+        shared
+            .0
+            .lock()
+            .unwrap()
+            .renderer_calls
+            .insert(key.clone(), old.clone());
+        let receipt = RendererCall {
+            route,
+            shared: shared.clone(),
+            key: Some(key.clone()),
+            cancelled: old.clone(),
+        };
+        // Cancellation removes the original registration before its asynchronous
+        // receipt drops. A later request can then reuse the same caller ID.
+        shared.0.lock().unwrap().renderer_calls.remove(&key);
+        let replacement = Arc::new(AtomicBool::new(false));
+        shared
+            .0
+            .lock()
+            .unwrap()
+            .renderer_calls
+            .insert(key.clone(), replacement.clone());
+        drop(receipt);
+        assert!(old.load(Ordering::Acquire));
+        assert!(!replacement.load(Ordering::Acquire));
+        assert!(
+            shared
+                .0
+                .lock()
+                .unwrap()
+                .renderer_calls
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &replacement))
         );
     }
     fn attach(shared: &CoreRpcShared, owner: &str, generation: u64, session: &str) -> String {

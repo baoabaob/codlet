@@ -123,12 +123,17 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
         await new Promise(resolve => setTimeout(resolve, Math.min(20, remaining)));
       }
     }
-    async function close() {
-      if (registration.closed) return;
-      registration.closed = true; registrations.delete(key);
+    function close() {
+      if (registration.closing) return registration.closing;
+      if (registration.closed) return Promise.resolve();
+      registration.closed = true;
       for (const [id, lease] of leases) if (lease.registration === registration) closeLease(id);
-      try { await coreRequest('services.traffic.unregister', { registration: key }, rootSignal); }
-      catch (error) { if (!['host_stopping', 'stale_generation', 'authorization_revoked', 'traffic_unavailable'].includes(error.code)) throw error; }
+      registration.closing = Promise.resolve().then(async () => {
+        try { await coreRequest('services.traffic.unregister', { registration: key }, rootSignal); }
+        catch (error) { if (!['host_stopping', 'stale_generation', 'authorization_revoked', 'traffic_unavailable'].includes(error.code)) throw error; }
+        if (registrations.get(key) === registration) registrations.delete(key);
+      });
+      return registration.closing;
     }
     try {
       check(); await synchronized(await connected.request('activate', { registration: key }, { signal: rootSignal, timeoutMs: 2000 })); check(); if (registration.closed) throw fail('interceptor_retired');
@@ -149,15 +154,20 @@ function createHostedInterceptors({ coreRequest, rootSignal, detach = fn => fn()
     check(); await getPeer();
     const value = await coreRequest('services.traffic.openSource', options, rootSignal);
     const record = { retired: false }; sources.add(record);
-    const finish = async () => {
-      if (record.retired) return;
-      record.retired = true; sources.delete(record);
-      try {
-        const result = await coreRequest('services.traffic.closeSource', { source: value.source }, rootSignal);
-        await synchronized(result.revision, false);
-      } catch (error) {
-        if (!['host_stopping', 'stale_generation', 'authorization_revoked', 'traffic_unavailable'].includes(error.code)) throw error;
-      }
+    const finish = () => {
+      if (record.closing) return record.closing;
+      if (record.retired) return Promise.resolve();
+      record.retired = true;
+      record.closing = Promise.resolve().then(async () => {
+        try {
+          const result = await coreRequest('services.traffic.closeSource', { source: value.source }, rootSignal);
+          await synchronized(result.revision, false);
+        } catch (error) {
+          if (!['host_stopping', 'stale_generation', 'authorization_revoked', 'traffic_unavailable'].includes(error.code)) throw error;
+        }
+        sources.delete(record);
+      });
+      return record.closing;
     };
     async function synchronized(revision, expectedOpen) {
       const deadline = Date.now() + 2000;

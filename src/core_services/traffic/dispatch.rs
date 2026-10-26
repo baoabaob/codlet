@@ -305,8 +305,13 @@ impl Engine {
                 if exchange.delegate.is_some() {
                     self.delegate_http(&request, exchange).await?
                 } else {
-                    self.forward_http(&request, trust, exchange, streams::BODY_LIMIT)
-                        .await?
+                    self.forward_http(
+                        &request,
+                        trust,
+                        exchange,
+                        exchange._permit.as_ref().map(|_| streams::BODY_LIMIT),
+                    )
+                    .await?
                 }
             }
         };

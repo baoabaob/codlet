@@ -2,7 +2,7 @@
 
 Core v1 provides `codex.ui.workspace@1` (target scope) through `await context.codex.workspace.connect()`. Consumers declare this capability, `ui.dom`, and `ui.mainWorld`, run in the main world, and use Core directly for controls, storage and lifecycle. Layout, selection policy, dragging, caching and render scheduling belong to the consumer. Core also owns Desktop metadata/events and RPC navigation. No separate Adapter installation is required. [types/codex-workspace.d.ts](../../types/codex-workspace.d.ts) defines the complete API; [Codex SDK](codex.md) defines facade admission, update checkpoints and availability.
 
-The [archived acceptance record](../history/adapters/spec/workspace-review.md) preserves earlier Native evidence and its limits. Current candidate identities and scope are in [release validation](../releases/1.0.0-rc.1/validation.md). The [composer contract](../history/adapters/spec/workspace-composer-contract.md) distinguishes the offline protocol implementation from the unvalidated Native driver. No production Native profile currently advertises `composerRebind`.
+The [archived acceptance record](../history/adapters/spec/workspace-review.md) preserves earlier Native evidence and its limits. Current candidate identities and scope are in [release validation](../releases/1.0.0-rc.19/validation.md). The [composer contract](../history/adapters/spec/workspace-composer-contract.md) distinguishes the offline protocol implementation from the unvalidated Native driver. No production Native profile currently advertises `composerRebind`.
 
 ```js
 const workspace = await context.codex.workspace.connect();
@@ -123,7 +123,7 @@ After `ready`, an IME-busy `open` synchronously throws `workspace_composer_busy`
 
 `focus({revision})` returns true only for this session's latest successful, unchanged committed input on the same full route. It compares the current model, scope values, actual controller, submission handler and editable identity with the commit pin, refuses disabled/inert/hidden input and does not steal focus during composition. A stale revision, changed model/controller/handler, changed route or disposed operation returns false. Owner/session/provider retirement throws `workspace_retired`. It adds no selection policy.
 
-One navigation session per workspace session is supported. Abort, operation disposal, owner/provider retirement and a newer valid operation reject pending confirmation. Invalid or already-aborted calls do not cancel another valid operation. Late metadata responses cannot navigate after cancellation/supersession. Cancellation does not undo a route already executed. A user route change supersedes pending confirmation. A bounded 5-second confirmation timeout reports `workspace_navigation_commit_timeout`; there is no polling. The observer is connected only while a valid execution awaits input confirmation; queued frames/microtasks are cancelled at settlement. The consumer owns selection ordering, highlighting and input enablement policy.
+One navigation session per workspace session is supported. Abort, operation disposal, owner/provider retirement and a newer valid operation reject pending confirmation. Invalid or already-aborted calls do not cancel another valid operation. Late metadata responses cannot navigate after cancellation/supersession. Cancellation does not undo a route already executed. A user route change supersedes pending confirmation. Native lifecycle callbacks determine readiness and settle confirmation. The observer is connected only while a valid execution awaits input confirmation; queued frames/microtasks are cancelled at settlement. The consumer owns selection ordering, highlighting and input enablement policy.
 
 ## Owned native composers
 
@@ -144,7 +144,7 @@ input.dispose();
 
 The prototype uses Native's thread Frame with its body hidden, retaining editor behavior and per-thread actions as well as extra layout/route work. Core creates independent Thread/Route/Composer scopes without copying a previous input's submit closure. This does not prove safe simultaneous draft synchronization or durable save completion. Preheating does not ask Native to resume a task or acquire stream ownership. Activating an unloaded or non-owner task uses Native's own resume lifecycle and stays inert until confirmed. Main-route navigation remains separate. The prototype supports 16 composer handles per session and 32 per provider, without an eviction policy.
 
-Optional `onState` receives `{phase,threadId,hostId:'local',diagnostic}` where phase is `preparing`, `ready`, `activating`, `active`, `inactive`, `error` or `disposed`. Readiness/activation have bounded 10-second timeouts. Disposal disconnects owned observers, cancels pending callbacks, unmounts Native and removes the owned subtree.
+Optional `onState` receives `{phase,threadId,hostId:'local',diagnostic}` where phase is `preparing`, `ready`, `activating`, `active`, `inactive`, `error` or `disposed`. Native commits, mutations and scheduled frames determine readiness and activation. Retirement, deactivation and supersession cancel pending work. Disposal disconnects owned observers, cancels pending callbacks, unmounts Native and removes the owned subtree.
 
 ### Rebindable composer contract
 

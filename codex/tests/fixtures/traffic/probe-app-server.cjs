@@ -14,12 +14,21 @@ if(['default-auth','default-api'].includes(process.env.CODLET_PROBE_FIXTURE)){
   config.model_provider='custom';config.model_providers.custom.base_url=null;
   config.model_providers.custom.requires_openai_auth=process.env.CODLET_PROBE_FIXTURE==='default-auth';
 }
+if(process.env.CODLET_PROBE_FIXTURE==='large-native-config') {
+  config.unrelatedHistory='值'.repeat(800000);
+  for(const name of [...Array.from({length:40},(_,index)=>'provider'+index),'long'.repeat(40),'原生提供者','__proto__']) {
+    Object.defineProperty(config.model_providers,name,{value:{wire_api:'responses',base_url:'https://custom.example/v1'},enumerable:true,writable:true});
+  }
+}
 for(let i=2;i<process.argv.length;i++) {
   if(process.argv[i]!=='-c')continue;
   const [key,...parts]=process.argv[++i].split('=');
   if(process.env.CODLET_PROBE_FIXTURE==='ignore-overrides')continue;
   if(key==='openai_base_url')config.openai_base_url=JSON.parse(parts.join('='));
-  if(key==='model_providers.custom.base_url')config.model_providers.custom.base_url=JSON.parse(parts.join('='));
+  if(key.startsWith('model_providers.')&&key.endsWith('.base_url')) {
+    const keyPart=key.slice('model_providers.'.length,-'.base_url'.length),name=keyPart.startsWith('"')?JSON.parse(keyPart):keyPart;
+    if(Object.hasOwn(config.model_providers,name))config.model_providers[name].base_url=JSON.parse(parts.join('='));
+  }
 }
 (async () => { for await (const line of createInterface({ input: process.stdin })) {
   let message; try { message = JSON.parse(line); } catch { continue; }

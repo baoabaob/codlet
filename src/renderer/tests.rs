@@ -34,6 +34,31 @@ fn provider_bootstrap_failure_codes_preserve_the_original_diagnostic() {
     }
 }
 
+#[test]
+fn runtime_skill_shutdown_requires_a_confirmed_receipt_and_preserves_uncertainty() {
+    for status in ["absent", "restored", "retired"] {
+        assert!(runtime_skill_shutdown_status(&json!({"result":{"value":{"api":1,"status":status,"reason":null,"pendingNativeWrites":0}}})).unwrap().contains(status));
+    }
+    for (status, reason, pending) in [
+        ("unknown", "native_skill_write_pending", 1),
+        ("unknown", "native_skill_write_unknown", 0),
+        ("failed", "native_skill_restore_failed", 0),
+        ("restored", "native_skill_write_pending", 1),
+    ] {
+        let error = runtime_skill_shutdown_status(&json!({"result":{"value":{"api":1,"status":status,"reason":reason,"pendingNativeWrites":pending}}})).unwrap_err();
+        assert!(error.contains(status));
+        assert!(error.contains(reason));
+        assert!(error.contains(&format!("pendingNativeWrites={pending}")));
+    }
+    for result in [
+        json!({"result":{"type":"undefined"}}),
+        json!({"exceptionDetails":{"text":"Uncaught"}}),
+        json!({"result":{"value":{"api":2,"status":"restored","reason":null,"pendingNativeWrites":0}}}),
+    ] {
+        assert!(runtime_skill_shutdown_status(&result).is_err());
+    }
+}
+
 fn test_registry() -> (TempDir, PluginRegistry) {
     let directory = tempdir().unwrap();
     let registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();

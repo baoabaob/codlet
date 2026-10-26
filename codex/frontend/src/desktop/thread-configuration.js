@@ -170,8 +170,10 @@ export function createThreadConfiguration({ check, owner, capability, client, bu
         return next;
     }
     function intercept(message, send) {
+        const pendingRequest = client.requestPromises.get(message.request.id);
+        const ownsRequest = () => client.requestPromises.has(message.request.id) && client.requestPromises.get(message.request.id) === pendingRequest;
         try { if (restoration?.intercept(message, send)) return; }
-        catch (error) { client.onError(message.request.id, error); return; }
+        catch (error) { if (ownsRequest()) client.onError(message.request.id, error); return; }
         const source = message.request.method.replace('/', '.');
         const selected = ordered().filter(hook => hook.enabled && hook.appliesAt.includes(source));
         if (!alive || !selected.length) return send(message);
@@ -179,11 +181,11 @@ export function createThreadConfiguration({ check, owner, capability, client, bu
         pending.add(item);
         run(message, item).then(next => {
             assertReady();
-            if (item.controller.signal.aborted || !client.requestPromises.has(message.request.id)) throw fail('configuration_retired', 'Native task request retired before dispatch');
+            if (item.controller.signal.aborted || !ownsRequest()) throw fail('configuration_retired', 'Native task request retired before dispatch');
             restoration?.authorize(next, item.chosen?.restorationOwner);
             send(next); if (item.chosen) item.chosen.applied++;
         }).catch(error => {
-            if (client.requestPromises.has(message.request.id)) client.onError(message.request.id, fail(error.code ?? 'configuration_failed', error.message ?? 'Task configuration failed'));
+            if (ownsRequest()) client.onError(message.request.id, fail(error.code ?? 'configuration_failed', error.message ?? 'Task configuration failed'));
         }).finally(() => { pending.delete(item); item.controller.abort(); });
     }
     return {

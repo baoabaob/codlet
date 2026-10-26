@@ -131,7 +131,13 @@ impl OfficialUpdateOwner {
                     .insert(session.target_id().to_owned(), session.clone());
             }
             TargetChange::NavigatedAway(session) => {
-                self.sessions.remove(session.target_id());
+                if self
+                    .sessions
+                    .get(session.target_id())
+                    .is_some_and(|current| current.session_id() == session.session_id())
+                {
+                    self.sessions.remove(session.target_id());
+                }
             }
             TargetChange::SessionEnded {
                 target_id,
@@ -213,19 +219,17 @@ impl OfficialUpdateOwner {
                 .pointer("/warningRequest/id")
                 .and_then(Value::as_str)
                 .filter(|id| id.len() <= 80 && !id.is_empty())
-            {
-                if self
+                && self
                     .warning_receipt
                     .as_ref()
                     .and_then(|receipt| receipt["id"].as_str())
                     != Some(id)
-                {
-                    let saved = self.manage.suppress_official_update_warning();
-                    if let Err(error) = &saved {
-                        eprintln!("official-update: could not save warning preference: {error}");
-                    }
-                    self.warning_receipt = Some(json!({"id":id,"saved":saved.is_ok()}));
+            {
+                let saved = self.manage.suppress_official_update_warning();
+                if let Err(error) = &saved {
+                    eprintln!("official-update: could not save warning preference: {error}");
                 }
+                self.warning_receipt = Some(json!({"id":id,"saved":saved.is_ok()}));
             }
             let phase = value["phase"].as_str().unwrap_or("idle");
             {

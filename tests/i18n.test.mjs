@@ -64,3 +64,15 @@ for (const world of ['isolated', 'main']) test(`${world} renderer language obser
     assert.equal((await runtime.activate({id:'test.locale',version:'1',generation:3}, { activate(context) { context.i18n.onChange(() => {}); throw new Error('fixture'); }, deactivate() {} })).ok, false);
     assert.equal(observers.size, 0);
 });
+
+test('provider invocations use their generation context language facade', async () => {
+    const scope = vm.createContext({ document: { documentElement: { lang: 'zh-CN' } }, TextEncoder, AbortController, setTimeout, clearTimeout });
+    vm.runInContext(`(${bootstrap})({world:'main'},null,(${source}))`, scope);
+    const runtime = scope.__codletRendererV1, capability = { name: 'test.locale', api: 1, scope: 'target' };
+    await runtime.activate({ id: 'locale', generation: 1, binding: 'localeBinding', provides: [capability] }, {
+        activate(context) { context.rpc.provide(capability, 'locale', (_params, invocation) => ({ same: invocation.i18n === context.i18n, locale: invocation.i18n.locale })); }, deactivate() {}
+    });
+    const result = await runtime.__rpcInvoke('localeBinding', { v: 1, type: 'request', pluginId: 'caller', generation: 1, id: 1, capability, method: 'locale', params: null });
+    assert.equal(result.value.same, true); assert.equal(result.value.locale, 'zh');
+    await runtime.deactivate('locale', 1);
+});

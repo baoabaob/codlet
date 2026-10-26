@@ -3,6 +3,7 @@
 //! of all optional plugins. User/project skill directories are never modified.
 use crate::cdp::TargetSession;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 struct SkillDirectory {
     #[cfg(any(windows, target_os = "macos"))]
@@ -79,16 +80,30 @@ struct Pending {
     target: String,
     context: u64,
     roots: Vec<String>,
+    unknown: bool,
+    dispatched: bool,
+    confirmed: bool,
+    client_id: String,
+    client_epoch: u64,
+}
+type Owner = (String, u64, String, u64);
+#[derive(Default)]
+struct RootAuthority {
+    roots: Vec<String>,
+    registered: bool,
+    uncertain: bool,
+    baseline_known: bool,
+    pending: Option<Pending>,
+    revision: Value,
 }
 
 pub(crate) struct RuntimeSkills {
     _directory: SkillDirectory,
     root: PathBuf,
     script: String,
-    roots: Vec<String>,
-    registered: bool,
     next: u64,
-    pending: Option<Pending>,
+    authorities: BTreeMap<String, RootAuthority>,
+    bindings: BTreeMap<Owner, String>,
 }
 impl RuntimeSkills {
     pub(crate) fn prepare(registry: &Path) -> Result<Self, String> {
@@ -337,10 +352,9 @@ impl RuntimeSkills {
             _directory: directory,
             root,
             script,
-            roots: Vec::new(),
-            registered: false,
             next: 0,
-            pending: None,
+            authorities: BTreeMap::new(),
+            bindings: BTreeMap::new(),
         })
     }
     pub(crate) fn descriptor(&self) -> Value {
@@ -363,7 +377,153 @@ impl RuntimeSkills {
         session.evaluate(&self.script).map_err(|e| e.to_string())?;
         Ok(id)
     }
+    pub(crate) fn observe_baseline(
+        &mut self,
+        target: &str,
+        context: u64,
+        client_id: &str,
+        client_epoch: u64,
+        fact: &Value,
+    ) -> Value {
+        let key = (
+            target.to_owned(),
+            context,
+            client_id.to_owned(),
+            client_epoch,
+        );
+        let Some(authority) = fact["authorityId"].as_str().filter(|id| !id.is_empty()) else {
+            self.bindings.remove(&key);
+            return json!({"error":"The Native skill root owner has not been observed","unobserved":true});
+        };
+        if fact["status"] == "retired" {
+            self.authorities.remove(authority);
+            self.bindings.retain(|_, id| id != authority);
+            return json!({"error":"The Native skill root owner retired","unobserved":true});
+        }
+        if fact["status"] != "observed" && fact["status"] != "unknown" {
+            self.bindings.remove(&key);
+            return json!({"error":"The current Native skill root owner is unobserved","unobserved":true,"authorityId":authority});
+        }
+        self.bindings.insert(key, authority.to_owned());
+        let state = self.authorities.entry(authority.to_owned()).or_default();
+        if state.uncertain {
+            return json!({"error":"Native skill root write outcome is unknown until its owner retires","unknown":true,"authorityId":authority});
+        }
+        if fact["status"] == "unknown" {
+            if fact["reason"] == "root_write_pending" {
+                return json!({"busy":true,"authorityId":authority});
+            }
+            state.uncertain = true;
+            state.registered = false;
+            return json!({"error":"Native skill root write outcome is unknown","unknown":true,"authorityId":authority});
+        }
+        let Some(roots) = fact["roots"].as_array().and_then(|roots| {
+            roots
+                .iter()
+                .map(|root| root.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        }) else {
+            return json!({"error":"The Native skill root baseline is malformed","unobserved":true});
+        };
+        if let Some(pending) = state.pending.as_mut() {
+            if pending.dispatched {
+                let mut expected = pending.roots.clone();
+                expected.push(self.root.to_string_lossy().into_owned());
+                if roots != expected {
+                    pending.unknown = true;
+                    state.uncertain = true;
+                    state.registered = false;
+                    return json!({"error":"The observed Native roots changed during the pending write","unknown":true,"authorityId":authority});
+                }
+                pending.confirmed = true;
+            } else if state.revision != fact["revision"] {
+                state.pending = None;
+            }
+        }
+        if state.pending.is_none() {
+            state.registered = roots.iter().any(|root| Path::new(root) == self.root);
+            state.roots = roots
+                .into_iter()
+                .filter(|root| Path::new(root) != self.root)
+                .collect();
+            state.baseline_known = true;
+            state.revision = fact["revision"].clone();
+        }
+        json!({"observed":true,"authorityId":authority,"revision":state.revision})
+    }
     pub(crate) fn invoke(&mut self, target: &str, context: u64, input: &Value) -> Value {
+        if input["action"] == "failed" {
+            let message: String = input["message"]
+                .as_str()
+                .unwrap_or("Runtime skill registration failed")
+                .chars()
+                .take(1000)
+                .collect();
+            crate::runtime_log::error("runtime_skill_unavailable", &message);
+            return json!({"reported":true});
+        }
+        let Some((client_id, client_epoch)) = input["clientId"]
+            .as_str()
+            .zip(input["clientEpoch"].as_u64())
+        else {
+            return json!({"error":"The Native skill request client has not been observed","unobserved":true});
+        };
+        let key = (
+            target.to_owned(),
+            context,
+            client_id.to_owned(),
+            client_epoch,
+        );
+        let Some(id) = self.bindings.get(&key) else {
+            return json!({"error":"The Native skill root owner has not been observed","unobserved":true});
+        };
+        if input
+            .get("authorityId")
+            .is_some_and(|value| value.as_str() != Some(id))
+        {
+            return json!({"error":"The Native skill root owner changed","unobserved":true});
+        }
+        let Some(state) = self.authorities.get_mut(id) else {
+            return json!({"error":"The Native skill root owner retired","unobserved":true});
+        };
+        state.invoke(&self.root, &mut self.next, &key, input)
+    }
+    pub(crate) fn retire(&mut self, target: &str) {
+        for state in self.authorities.values_mut() {
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.target == target && !p.dispatched)
+            {
+                state.pending = None;
+            } else if let Some(pending) = state.pending.as_mut().filter(|p| p.target == target) {
+                pending.unknown = true;
+                state.uncertain = true;
+                state.registered = false;
+            }
+        }
+        self.bindings.retain(|owner, _| owner.0 != target);
+        self.authorities.retain(|id, state| {
+            state.pending.is_some()
+                || state.uncertain
+                || self.bindings.values().any(|bound| bound == id)
+        });
+    }
+    pub(crate) fn shutdown_script(&self) -> String {
+        let plans = self.bindings.iter().map(|(owner, id)| {
+            let state = &self.authorities[id];
+            json!({"target":owner.0,"clientId":owner.2,"clientEpoch":owner.3,"authorityId":id,"roots":if state.pending.is_none() && !state.uncertain && state.baseline_known { Some(&state.roots) } else { None }})
+        }).collect::<Vec<_>>();
+        format!(
+            "(async()=>{{const bridge=globalThis[Symbol.for({})];if(!bridge)return{{api:1,status:'absent',reason:null,pendingNativeWrites:0}};const plan={}.find(plan=>plan.clientId===bridge.clientId&&plan.clientEpoch===bridge.clientEpoch&&plan.authorityId===bridge.authorityId);return bridge.dispose(Array.isArray(plan?.roots)?plan.roots:undefined);}})()",
+            json!(MARKER),
+            json!(plans)
+        )
+    }
+}
+impl RootAuthority {
+    fn invoke(&mut self, root: &Path, next: &mut u64, owner: &Owner, input: &Value) -> Value {
+        let (target, context, client_id, client_epoch) = owner;
         let fail = |message: &str| json!({"error":message});
         match input["action"].as_str() {
             Some("failed") => {
@@ -377,8 +537,14 @@ impl RuntimeSkills {
                 json!({"reported":true})
             }
             Some("ensure" | "set") => {
+                if self.uncertain {
+                    return json!({"error":"Native skill root write outcome is unknown until this Core runtime retires","unknown":true});
+                }
                 if self.pending.is_some() {
                     return json!({"busy":true});
+                }
+                if input["action"] == "ensure" && !self.baseline_known {
+                    return json!({"error":"The current Native extra skill roots have not been observed","unobserved":true});
                 }
                 if input["action"] == "ensure" && self.registered {
                     return json!({"ready":true});
@@ -395,7 +561,7 @@ impl RuntimeSkills {
                         else {
                             return fail("Invalid extra skill root");
                         };
-                        if Path::new(path) != self.root && !roots.iter().any(|r| r == path) {
+                        if Path::new(path) != root && !roots.iter().any(|r| r == path) {
                             roots.push(path.to_string());
                         }
                     }
@@ -403,29 +569,62 @@ impl RuntimeSkills {
                 } else {
                     self.roots.clone()
                 };
-                self.next += 1;
-                let ticket = self.next;
+                let Some(ticket) = next.checked_add(1).filter(|n| *n <= 9_007_199_254_740_991)
+                else {
+                    return fail("Skill root ticket identity exhausted");
+                };
+                *next = ticket;
                 let mut merged = roots.clone();
-                merged.push(self.root.to_string_lossy().into_owned());
+                merged.push(root.to_string_lossy().into_owned());
                 self.pending = Some(Pending {
                     ticket,
-                    target: target.into(),
-                    context,
+                    target: target.clone(),
+                    context: *context,
                     roots,
+                    unknown: false,
+                    dispatched: false,
+                    confirmed: false,
+                    client_id: client_id.clone(),
+                    client_epoch: *client_epoch,
                 });
                 json!({"ticket":ticket,"roots":merged})
             }
-            Some("complete") => {
-                let Some(pending) = self.pending.as_ref().filter(|p| {
+            Some("dispatch" | "complete") => {
+                let Some(pending) = self.pending.as_mut().filter(|p| {
                     p.ticket == input["ticket"].as_u64().unwrap_or(0)
-                        && p.target == target
-                        && p.context == context
+                        && &p.target == target
+                        && p.context == *context
+                        && &p.client_id == client_id
+                        && p.client_epoch == *client_epoch
                 }) else {
                     return fail("Retired skill root lease");
                 };
+                if input["action"] == "dispatch" {
+                    if pending.unknown || self.uncertain {
+                        return json!({"error":"Native skill root write outcome is unknown","unknown":true});
+                    }
+                    pending.dispatched = true;
+                    return json!({"admitted":true});
+                }
+                if input["unknown"] == true {
+                    pending.unknown = true;
+                    self.uncertain = true;
+                    self.registered = false;
+                    return json!({"ready":false,"unknown":true});
+                }
+                if pending.unknown || self.uncertain {
+                    return json!({"error":"Native skill root write outcome is unknown","unknown":true});
+                }
+                if input["ok"] == true && !pending.dispatched {
+                    return fail("Skill root write was not admitted");
+                }
+                if input["ok"] == true && !pending.confirmed {
+                    return fail("The Native skill root write has no matching observed receipt");
+                }
                 if input["ok"] == true {
                     self.roots = pending.roots.clone();
                     self.registered = true;
+                    self.baseline_known = true;
                     crate::runtime_log::info(
                         "runtime_skill_ready",
                         "Codlet skill registered with the local App Server",
@@ -440,28 +639,37 @@ impl RuntimeSkills {
                 self.registered = false;
                 json!({"ready":false})
             }
+            Some("unknown") => {
+                self.uncertain = true;
+                self.registered = false;
+                if let Some(pending) = &mut self.pending {
+                    pending.unknown = true;
+                }
+                json!({"ready":false,"unknown":true})
+            }
             _ => fail("Unknown runtime skill action"),
         }
-    }
-    pub(crate) fn retire(&mut self, target: &str) {
-        if self.pending.as_ref().is_some_and(|p| p.target == target) {
-            let pending = self.pending.take().unwrap();
-            self.roots = pending.roots;
-            self.registered = false;
-        }
-    }
-    pub(crate) fn shutdown_script(&self) -> String {
-        format!(
-            "globalThis[Symbol.for({})]?.dispose({})",
-            json!(MARKER),
-            json!(self.roots)
-        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn invoke(skill: &mut RuntimeSkills, target: &str, context: u64, input: &Value) -> Value {
+        let mut input = input.clone();
+        input["clientId"] = json!(target);
+        input["clientEpoch"] = json!(0);
+        skill.invoke(target, context, &input)
+    }
+    fn observed(
+        skill: &mut RuntimeSkills,
+        target: &str,
+        context: u64,
+        authority: &str,
+        roots: Value,
+    ) -> Value {
+        skill.observe_baseline(target, context, target, 0, &json!({"status":"observed","authorityId":authority,"revision":"fixture","roots":roots,"provenance":"confirmed"}))
+    }
     #[test]
     fn interrupted_skill_preparation_does_not_publish_partial_files_or_block_the_next_start() {
         let temp = tempfile::tempdir().unwrap();
@@ -529,44 +737,96 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut skill = RuntimeSkills::prepare(&temp.path().join("config.json")).unwrap();
         let root = skill.root.to_string_lossy().into_owned();
-        let a = skill.invoke("window-a", 7, &json!({"action":"ensure"}));
+        assert_eq!(
+            invoke(&mut skill, "window-a", 7, &json!({"action":"ensure"}))["unobserved"],
+            true
+        );
+        observed(&mut skill, "window-a", 7, "native", json!([]));
+        observed(&mut skill, "window-b", 8, "native", json!([]));
+        let a = invoke(
+            &mut skill,
+            "window-a",
+            7,
+            &json!({"action":"set","roots":[]}),
+        );
         assert_eq!(a["roots"], json!([root]));
         assert_eq!(
-            skill.invoke("window-b", 8, &json!({"action":"ensure"}))["busy"],
+            invoke(&mut skill, "window-b", 8, &json!({"action":"ensure"}))["busy"],
             true
         );
         assert!(
-            skill.invoke(
+            invoke(
+                &mut skill,
                 "window-b",
                 8,
                 &json!({"action":"complete","ticket":a["ticket"],"ok":true})
             )["error"]
                 .is_string()
         );
-        skill.invoke(
+        invoke(
+            &mut skill,
+            "window-a",
+            7,
+            &json!({"action":"dispatch","ticket":a["ticket"]}),
+        );
+        observed(&mut skill, "window-a", 7, "native", a["roots"].clone());
+        invoke(
+            &mut skill,
             "window-a",
             7,
             &json!({"action":"complete","ticket":a["ticket"],"ok":true}),
         );
         assert_eq!(
-            skill.invoke("window-b", 8, &json!({"action":"ensure"}))["ready"],
+            invoke(&mut skill, "window-b", 8, &json!({"action":"ensure"}))["ready"],
             true
         );
         let other = temp.path().join("other-skills");
-        let change = skill.invoke("window-b", 8, &json!({"action":"set","roots":[other,root]}));
+        let change = invoke(
+            &mut skill,
+            "window-b",
+            8,
+            &json!({"action":"set","roots":[other,root]}),
+        );
         assert_eq!(change["roots"], json!([other, root]));
-        skill.invoke(
+        invoke(
+            &mut skill,
+            "window-b",
+            8,
+            &json!({"action":"dispatch","ticket":change["ticket"]}),
+        );
+        observed(&mut skill, "window-b", 8, "native", change["roots"].clone());
+        invoke(
+            &mut skill,
             "window-b",
             8,
             &json!({"action":"complete","ticket":change["ticket"],"ok":true}),
         );
-        skill.invoke("window-a", 7, &json!({"action":"invalidate"}));
-        let restored = skill.invoke("window-a", 7, &json!({"action":"ensure"}));
+        invoke(&mut skill, "window-a", 7, &json!({"action":"invalidate"}));
+        let restored = invoke(&mut skill, "window-a", 7, &json!({"action":"ensure"}));
         assert_eq!(restored["roots"], json!([other, root]));
+        invoke(
+            &mut skill,
+            "window-a",
+            7,
+            &json!({"action":"dispatch","ticket":restored["ticket"]}),
+        );
         skill.retire("window-a");
-        assert!(skill.pending.is_none());
-        assert_eq!(skill.roots, vec![other.to_string_lossy().into_owned()]);
-        assert!(skill.shutdown_script().contains("other-skills"));
+        assert!(
+            skill.authorities["native"]
+                .pending
+                .as_ref()
+                .unwrap()
+                .unknown
+        );
+        assert_eq!(
+            invoke(&mut skill, "window-b", 8, &json!({"action":"ensure"}))["unknown"],
+            true
+        );
+        assert_eq!(
+            skill.authorities["native"].roots,
+            vec![other.to_string_lossy().into_owned()]
+        );
+        assert!(!skill.shutdown_script().contains("other-skills"));
     }
     #[test]
     fn native_extra_roots_are_not_limited_by_a_core_plugin_quota() {
@@ -575,12 +835,92 @@ mod tests {
         let roots: Vec<_> = (0..64)
             .map(|index| temp.path().join(format!("skills-{index}")))
             .collect();
-        let lease = skill.invoke("window", 7, &json!({"action":"set","roots":roots}));
+        observed(&mut skill, "window", 7, "native", json!([]));
+        let lease = invoke(
+            &mut skill,
+            "window",
+            7,
+            &json!({"action":"set","roots":roots}),
+        );
         assert_eq!(lease["roots"].as_array().unwrap().len(), 65);
         assert_eq!(
             &lease["roots"].as_array().unwrap()[..64],
             json!(roots).as_array().unwrap()
         );
+    }
+    #[test]
+    fn actual_native_authorities_have_independent_roots_and_prepared_retirement_never_commits() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut skill = RuntimeSkills::prepare(&temp.path().join("config.json")).unwrap();
+        let other = temp.path().join("existing");
+        observed(&mut skill, "one", 1, "child-one", json!([other]));
+        observed(&mut skill, "two", 2, "child-two", json!([]));
+        let one = invoke(&mut skill, "one", 1, &json!({"action":"ensure"}));
+        let two = invoke(&mut skill, "two", 2, &json!({"action":"ensure"}));
+        assert_eq!(one["roots"].as_array().unwrap().len(), 2);
+        assert_eq!(two["roots"].as_array().unwrap().len(), 1);
+        skill.retire("one");
+        assert!(!skill.authorities.contains_key("child-one"));
+        assert!(
+            !skill.authorities["child-two"]
+                .pending
+                .as_ref()
+                .unwrap()
+                .dispatched
+        );
+        assert!(
+            invoke(
+                &mut skill,
+                "two",
+                2,
+                &json!({"action":"complete","ticket":two["ticket"],"ok":true})
+            )["error"]
+                .is_string()
+        );
+    }
+    #[test]
+    fn a_skill_write_requires_the_observed_native_receipt_and_different_roots_stay_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut skill = RuntimeSkills::prepare(&temp.path().join("config.json")).unwrap();
+        observed(&mut skill, "one", 1, "child", json!([]));
+        let lease = invoke(&mut skill, "one", 1, &json!({"action":"ensure"}));
+        invoke(
+            &mut skill,
+            "one",
+            1,
+            &json!({"action":"dispatch","ticket":lease["ticket"]}),
+        );
+        assert!(
+            invoke(
+                &mut skill,
+                "one",
+                1,
+                &json!({"action":"complete","ticket":lease["ticket"],"ok":true})
+            )["error"]
+                .is_string()
+        );
+        let reply = observed(
+            &mut skill,
+            "one",
+            1,
+            "child",
+            json!([temp.path().join("later-user-roots")]),
+        );
+        assert_eq!(reply["unknown"], true);
+        skill.retire("one");
+        observed(&mut skill, "two", 2, "child", lease["roots"].clone());
+        assert_eq!(
+            invoke(&mut skill, "two", 2, &json!({"action":"ensure"}))["unknown"],
+            true
+        );
+        skill.observe_baseline(
+            "two",
+            2,
+            "two",
+            0,
+            &json!({"status":"retired","authorityId":"child"}),
+        );
+        assert!(!skill.authorities.contains_key("child"));
     }
     #[test]
     fn skill_resources_live_only_in_the_core_owned_directory_and_include_scoped_authoring_paths() {

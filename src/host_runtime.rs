@@ -919,6 +919,10 @@ impl HostOwner {
         if let Some(mut supervisor) = self.supervisor.take() {
             let mut result = supervisor.stop();
             if self.cleanup_quarantined
+                || !self.services.cleanup_complete(
+                    &self.observation.plugin.manifest.id,
+                    self.observation.plugin.generation,
+                )
                 || !self.scope_cleanup.is_empty()
                 || !self.scope_cleanup_queue.is_empty()
                 || !self.retiring_os.is_empty()
@@ -952,6 +956,10 @@ impl HostOwner {
             Some(report)
         } else {
             if self.cleanup_quarantined
+                || !self.services.cleanup_complete(
+                    &self.observation.plugin.manifest.id,
+                    self.observation.plugin.generation,
+                )
                 || !self.scope_cleanup.is_empty()
                 || !self.scope_cleanup_queue.is_empty()
                 || !self.retiring_os.is_empty()

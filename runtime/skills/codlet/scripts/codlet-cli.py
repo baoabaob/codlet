@@ -9,6 +9,8 @@ runtime = json.loads((Path(__file__).resolve().parent.parent / "runtime.json").r
 executable = runtime["cliExecutable"]
 if not Path(executable).is_absolute():
     raise ValueError("Core CLI executable must be an absolute path")
+if not Path(runtime["registry"]).is_absolute():
+    raise ValueError("Core registry must be an absolute path")
 environment = os.environ.copy()
 environment["CODLET_HOME"] = os.path.dirname(runtime["registry"])
 if os.name == "nt" and runtime.get("cliLocalAppData"):

@@ -44,6 +44,14 @@ test('navigation never resolves an unbound default and rejects wrong or retired 
   assert.deepEqual(live.calls, []);
 });
 
+test('an initialized navigation binding with a changed bridge contract fails without a readiness retry', () => {
+  const f = fixture();
+  f.bridge = { ...f.bridge, prepareNavigation: undefined };
+  assert.throws(() => createNativeNavigation(f.signal, () => f.connection, f.dispatch, () => f.facade), { code: 'workspace_navigation_unsupported' });
+  f.bridge = null;
+  assert.throws(() => createNativeNavigation(f.signal, () => f.connection, f.dispatch, () => f.facade), { code: 'workspace_host_pending' });
+});
+
 test('the Native action cannot silently change host, route kind or task identity', () => {
   const f = fixture(), make = dispatch => createNativeNavigation(f.signal, () => f.connection, dispatch, () => f.facade);
   assert.throws(() => make((scope, key, local) => local('other', 'local')).openLocalThread('b'), { code: 'workspace_navigation_unavailable' });

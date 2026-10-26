@@ -15,7 +15,7 @@ function createSdkHost({ source, filename }) {
     if (!node || typeof node !== 'object') continue;
     if (node.type === 'ImportExpression' || node.type === 'ImportDeclaration') throw Object.assign(new Error('SDK Host requires bundled CommonJS; dynamic and static import loaders are unavailable'), { code: 'sdk_import_denied' });
     for (const value of Object.values(node)) {
-      if (Array.isArray(value)) syntax.push(...value);
+      if (Array.isArray(value)) { for (const child of value) syntax.push(child); }
       else if (value && typeof value === 'object') syntax.push(value);
     }
   }
@@ -25,19 +25,27 @@ function createSdkHost({ source, filename }) {
   const localSignals = new Map();
   const hostObjects = new Map();
   const timers = new Map();
-  const listeners = [];
+  const listeners = new Set();
+  const scopes = new WeakMap();
   let sequence = 0;
   let closed = false;
   let deliver;
+  const callbackFinalizers = new FinalizationRegistry(({ id, reference }) => {
+    if (realmFunctions.get(id) !== reference) return;
+    realmFunctions.delete(id);
+    if (!closed) { try { deliver('releaseCallback', id, 'null'); } catch {} }
+  });
   const fail = (code, message) => Object.assign(new Error(message), { code });
   const failure = value => ({ code: String(value?.code || 'plugin_error'), message: String(value?.message || value || 'plugin failed') });
   const token = (kind, value) => ({ $codletSdk: kind, ...value });
-  function encode(value, seen = new Set()) {
+  function encode(value, seen = new Set(), owned = null) {
+    if (owned?.retired) throw fail('sdk_handle_invalid', 'SDK callback owner has retired');
     if (value === undefined) return token('undefined', {});
     if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return value;
     if (typeof value === 'function') {
       if (hostFunctions.size >= 4096) throw fail('sdk_handle_limit', 'SDK Host method handle limit reached');
-      const id = ++sequence; hostFunctions.set(id, value);
+      const id = ++sequence; hostFunctions.set(id, { fn: value, owned });
+      owned?.functions.add(id);
       return token('function', { id });
     }
     if (value instanceof Uint8Array) return token('bytes', { data: Array.from(value) });
@@ -46,42 +54,78 @@ function createSdkHost({ source, filename }) {
       let id = hostSignals.get(value);
       if (!id) {
         id = ++sequence; hostSignals.set(value, id);
-        const onAbort = () => { if (!closed) deliver('signal', id, JSON.stringify(encode(value.reason))); };
-        value.addEventListener('abort', onAbort, { once: true });
-        listeners.push(() => value.removeEventListener('abort', onAbort));
+        const remove = () => { value.removeEventListener('abort', onAbort); listeners.delete(remove); };
+        const onAbort = () => { remove(); if (!closed) deliver('signal', id, JSON.stringify(encode(value.reason))); };
+        if (!value.aborted) { value.addEventListener('abort', onAbort, { once: true }); listeners.add(remove); }
       }
       return token('signal', { id, aborted: value.aborted, reason: encode(value.reason) });
     }
     if (seen.has(value)) throw fail('sdk_value_invalid', 'SDK values must not contain cycles');
     seen.add(value);
     try {
-      if (Array.isArray(value)) return value.map(item => encode(item, seen));
+      if (Array.isArray(value)) return value.map(item => encode(item, seen, owned));
       const result = {};
       for (const [key, item] of Object.entries(value)) {
-        result[key] = encode(typeof item === 'function' ? item.bind(value) : item, seen);
+        result[key] = encode(typeof item === 'function' ? item.bind(value) : item, seen, owned);
       }
       if (typeof value[Symbol.asyncIterator] === 'function') {
-        result.$codletIterator = encode(() => value[Symbol.asyncIterator](), seen);
+        result.$codletIterator = encode(() => value[Symbol.asyncIterator](), seen, owned);
       }
       if (typeof value.next === 'function') {
-        result.next = encode(value.next.bind(value), seen);
-        if (typeof value.return === 'function') result.return = encode(value.return.bind(value), seen);
+        result.next = encode(value.next.bind(value), seen, owned);
+        if (typeof value.return === 'function') result.return = encode(value.return.bind(value), seen, owned);
       }
       const reference = value.kind === 'target' && typeof value.close === 'function' ? ++sequence : undefined;
       if (reference) hostObjects.set(reference, value);
+      if (reference) owned?.objects.add(reference);
       return token('object', { value: result, ...(reference ? { reference } : {}) });
     } finally { seen.delete(value); }
   }
-  function decode(value) {
+  function decode(value, owned = null) {
+    if (owned?.retired) throw fail('sdk_handle_invalid', 'SDK callback owner has retired');
     if (value === null || typeof value !== 'object') return value;
-    if (Array.isArray(value)) return value.map(decode);
+    if (Array.isArray(value)) return value.map(item => decode(item, owned));
     switch (value.$codletSdk) {
       case 'undefined': return undefined;
       case 'bytes': return Uint8Array.from(value.data);
       case 'error': return fail(value.code, value.message);
       case 'function': {
-        if (!realmFunctions.has(value.id)) realmFunctions.set(value.id, (...args) => Promise.resolve(deliver('call', value.id, JSON.stringify(encode(args)))).then(serialized => decode(JSON.parse(serialized))));
-        return realmFunctions.get(value.id);
+        let callback = realmFunctions.get(value.id)?.deref();
+        if (!callback) {
+          callback = (...args) => {
+            if (closed) return Promise.reject(fail('host_stopping', 'SDK compute realm has retired'));
+            if (owned?.retired) return Promise.reject(fail('sdk_handle_invalid', 'SDK callback owner has retired'));
+            // Callback handles follow the real invocation/stream signal, rather
+            // than accumulating against a process-lifetime method quota. Streams
+            // returned by a callback remain usable until that same owner retires.
+            const signal = args.find(item => item?.signal && typeof item.signal.addEventListener === 'function')?.signal;
+            let scope = signal ? scopes.get(signal) : owned;
+            if (signal && !scope) {
+              scope = { functions: new Set(), objects: new Set(), callbacks: new Set(), retired: false }; scopes.set(signal, scope);
+              const release = () => {
+                scope.retired = true;
+                signal.removeEventListener('abort', release); listeners.delete(release);
+                for (const id of scope.functions) hostFunctions.delete(id);
+                for (const id of scope.objects) hostObjects.delete(id);
+                for (const id of scope.callbacks) {
+                  realmFunctions.delete(id);
+                  if (!closed) deliver('releaseCallback', id, 'null');
+                }
+                scope.functions.clear(); scope.objects.clear(); scope.callbacks.clear();
+              };
+              signal.addEventListener('abort', release, { once: true }); listeners.add(release);
+              scope.release = release;
+            }
+            const serialized = JSON.stringify(encode(args, new Set(), scope));
+            if (signal?.aborted) scope.release();
+            return Promise.resolve(deliver('call', value.id, serialized)).then(serialized => decode(JSON.parse(serialized), scope));
+          };
+          const reference = new WeakRef(callback);
+          realmFunctions.set(value.id, reference);
+          callbackFinalizers.register(callback, { id: value.id, reference });
+          owned?.callbacks.add(value.id);
+        }
+        return callback;
       }
       case 'localSignal': {
         if (!localSignals.has(value.id)) localSignals.set(value.id, new AbortController());
@@ -95,7 +139,7 @@ function createSdkHost({ source, filename }) {
         return object;
       }
       case 'object': {
-        const result = Object.fromEntries(Object.entries(value.value).map(([key, item]) => [key, decode(item)]));
+        const result = Object.fromEntries(Object.entries(value.value).map(([key, item]) => [key, decode(item, owned)]));
         if (result.$codletIterator) {
           const openIterator = result.$codletIterator;
           result[Symbol.asyncIterator] = () => {
@@ -115,18 +159,18 @@ function createSdkHost({ source, filename }) {
       if (closed) throw fail('host_stopping', 'SDK compute realm has retired');
       const input = JSON.parse(serialized);
       if (input.action === 'call') {
-        const fn = hostFunctions.get(input.id);
-        if (!fn) throw fail('sdk_handle_invalid', 'SDK method handle has retired');
-        const result = fn(...decode(input.args));
+        const handle = hostFunctions.get(input.id);
+        if (!handle) throw fail('sdk_handle_invalid', 'SDK method handle has retired');
+        const result = handle.fn(...decode(input.args));
         if (result && typeof result.then === 'function') {
           result.then(value => {
-            if (!closed) deliver('resolve', input.request, JSON.stringify(encode(value)));
+            if (!closed) deliver('resolve', input.request, JSON.stringify(encode(value, new Set(), handle.owned)));
           }, reason => {
             if (!closed) deliver('reject', input.request, JSON.stringify(failure(reason)));
           }).catch(reason => { if (!closed) deliver('reject', input.request, JSON.stringify(failure(reason))); });
           return JSON.stringify({ pending: true });
         }
-        return JSON.stringify({ value: encode(result) });
+        return JSON.stringify({ value: encode(result, new Set(), handle.owned) });
       }
       if (input.action === 'timer') {
         const id = ++sequence;
@@ -143,7 +187,7 @@ function createSdkHost({ source, filename }) {
         return '{}';
       }
       if (input.action === 'abortSignal') {
-        localSignals.get(input.id)?.abort(decode(input.reason)); return '{}';
+        localSignals.get(input.id)?.abort(decode(input.reason)); localSignals.delete(input.id); return '{}';
       }
       throw fail('sdk_value_invalid', 'unsupported SDK bridge operation');
     } catch (reason) { return JSON.stringify({ error: failure(reason) }); }
@@ -161,10 +205,13 @@ function createSdkHost({ source, filename }) {
   }
   const sanitize = context => ({ ...context, log: Object.fromEntries(['log', 'info', 'warn', 'error', 'debug'].map(key => [key, context.log[key].bind(context.log)])) });
   function dispose() {
+    if (closed) return;
     closed = true;
+    deliver('dispose', 0, 'null');
     for (const timer of timers.values()) { clearTimeout(timer); clearInterval(timer); }
     timers.clear(); hostFunctions.clear(); realmFunctions.clear(); localSignals.clear(); hostObjects.clear();
-    for (const remove of listeners) remove();
+    for (const remove of [...listeners]) remove();
+    listeners.clear();
   }
   return {
     activate: context => run('activate', context),
@@ -183,8 +230,10 @@ function sdkRealm(bridge) {
   const signals = new Map();
   const localSignals = new WeakMap();
   const hostObjects = new WeakMap();
+  const timerCallbacks = new Map();
   let next = 0;
   let restoringState = false;
+  let retired = false;
   const token = (kind, value) => ({ $codletSdk: kind, ...value });
   const makeError = value => Object.assign(new Error(value.message), { code: value.code });
   function strictState(value) {
@@ -237,6 +286,7 @@ function sdkRealm(bridge) {
       case 'bytes': return Uint8Array.from(value.data);
       case 'error': return makeError(value);
       case 'function': return (...args) => {
+        if (retired) return Promise.reject(makeError({ code: 'host_stopping', message: 'SDK compute realm has retired' }));
         const request = ++next;
         const result = JSON.parse(bridge(JSON.stringify({ action: 'call', id: value.id, request, args: encode(args) })));
         if (result.error) throw makeError(result.error);
@@ -246,7 +296,7 @@ function sdkRealm(bridge) {
       case 'signal': {
         if (!signals.has(value.id)) signals.set(value.id, new SdkSignal());
         const signal = signals.get(value.id);
-        if (value.aborted) signal.abort(decode(value.reason));
+        if (value.aborted) { signal.abort(decode(value.reason)); signals.delete(value.id); }
         return signal;
       }
       case 'object': {
@@ -292,12 +342,21 @@ function sdkRealm(bridge) {
   globalThis.TextDecoder = class { decode(bytes = new Uint8Array()) { return decodeURIComponent(escape(Array.from(bytes, byte => String.fromCharCode(byte)).join(''))); } };
   const timer = interval => (callback, delay, ...args) => {
     if (typeof callback !== 'function') throw new TypeError('timer callback must be a function');
-    const id = ++next; callbacks.set(id, callback);
+    const id = ++next;
+    let hostTimer;
+    callbacks.set(id, (...values) => {
+      if (!interval) { callbacks.delete(id); timerCallbacks.delete(hostTimer); }
+      return callback(...values);
+    });
     const result = JSON.parse(bridge(JSON.stringify({ action: 'timer', callback: id, delay, args: encode(args), interval })));
-    if (result.error) throw makeError(result.error); return result.value;
+    if (result.error) { callbacks.delete(id); throw makeError(result.error); }
+    hostTimer = result.value; timerCallbacks.set(hostTimer, id); return hostTimer;
   };
   globalThis.setTimeout = timer(false); globalThis.setInterval = timer(true);
-  globalThis.clearTimeout = globalThis.clearInterval = id => bridge(JSON.stringify({ action: 'clearTimer', id }));
+  globalThis.clearTimeout = globalThis.clearInterval = id => {
+    callbacks.delete(timerCallbacks.get(id)); timerCallbacks.delete(id);
+    bridge(JSON.stringify({ action: 'clearTimer', id }));
+  };
   globalThis.queueMicrotask = callback => Promise.resolve().then(callback);
   globalThis.module = { exports: {} }; globalThis.exports = module.exports;
   globalThis.require = () => { throw makeError({ code: 'sdk_import_denied', message: 'SDK Host has no Node or disk module loader; distribute bundled JavaScript or choose node + host.raw' }); };
@@ -306,11 +365,18 @@ function sdkRealm(bridge) {
   // or objects are reachable through the resulting context.
   return function deliver(kind, id, serialized) {
     const value = JSON.parse(serialized);
+    if (kind === 'releaseCallback') { callbacks.delete(id); return; }
+    if (kind === 'dispose') {
+      retired = true;
+      for (const waiter of pending.values()) waiter.reject(makeError({ code: 'host_stopping', message: 'SDK compute realm has retired' }));
+      pending.clear(); callbacks.clear(); signals.clear(); timerCallbacks.clear();
+      return;
+    }
     if (kind === 'resolve' || kind === 'reject') {
       const waiter = pending.get(id); if (!waiter) return;
       pending.delete(id); kind === 'resolve' ? waiter.resolve(decode(value)) : waiter.reject(makeError(value)); return;
     }
-    if (kind === 'signal') { signals.get(id)?.abort(decode(value)); return; }
+    if (kind === 'signal') { const signal = signals.get(id); signals.delete(id); signal?.abort(decode(value)); return; }
     if (kind === 'call') return Promise.resolve(callbacks.get(id)?.(...decode(value))).then(result => JSON.stringify(encode(result)));
     const context = decode(value);
     const ownerContext = kind === 'restoreState' ? context.context : context;

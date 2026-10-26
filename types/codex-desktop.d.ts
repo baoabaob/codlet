@@ -55,7 +55,7 @@ export interface DesktopSelection {
   threadId: string | null;
   /** Running turn, never the most recently completed turn or a historical UI selection. */
   activeTurnId: string | null;
-  /** False when history is unloaded, unsupported or exceeds the projection bound. */
+  /** False when current Native state cannot determine the active turn. */
   activeTurnKnown: boolean;
   resumeState: 'resumed' | 'loading' | 'unloaded';
   /** Native manager value; multiple Desktop windows can report owner. */

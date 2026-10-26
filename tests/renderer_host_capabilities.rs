@@ -170,12 +170,25 @@ impl Fixture {
     }
 
     fn attach(&mut self, index: usize) {
+        let renderer_baseline = self.renderer.plugin_count();
         assert_eq!(
             self.renderer
                 .attach(&self.sessions[index])
                 .unwrap()
                 .plugin_count,
-            1
+            renderer_baseline
+        );
+        assert!(
+            self.renderer
+                .status_snapshot()
+                .targets
+                .iter()
+                .any(|target| {
+                    target.target_id == self.sessions[index].target_id()
+                        && target.plugins.iter().any(|plugin| {
+                            plugin.id == CONSUMER && plugin.active && plugin.generation == 1
+                        })
+                })
         );
     }
 

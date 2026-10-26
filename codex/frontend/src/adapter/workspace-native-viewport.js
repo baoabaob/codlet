@@ -68,14 +68,16 @@ export function viewportPersistenceExport(source) { return viewportPersistenceRe
 
 export function nativeViewportContext(document, native, pins = new WeakMap()) {
   const root = document.getElementById('root'), input = nativeMainInput(document, native);
-  const main = input?.input.closest('main[data-app-shell-main-surface]') ?? [...document.querySelectorAll('main[data-app-shell-main-surface]')]
-    .find(node => !node.closest(OWNED + ',[data-app-shell-active-page="false"]'));
+  const mains = input ? [input.input.closest('main[data-app-shell-main-surface]')].filter(Boolean) : [...root?.querySelectorAll('main[data-app-shell-main-surface]') ?? []]
+    .filter(node => !node.closest(OWNED + ',[data-app-shell-active-page="false"]'));
+  if (mains.length > 1) throw unavailable('Native main viewport ownership is ambiguous');
+  const main = mains[0];
   if (!root || !main?.isConnected) throw workspaceError('workspace_host_pending', 'Native main viewport is not mounted');
   const valid = facade => facade && typeof facade.get === 'function' && typeof facade.set === 'function' && typeof facade.watch === 'function' &&
     facade.chain?.get(native.RouteScope.id)?.token === native.RouteScope && facade.chain?.get(native.ThreadScope.id)?.token === native.ThreadScope;
   let facade = valid(input?.scope) ? input.scope : null;
-  if (!facade) for (const fiber of currentElementAncestry(main, root) ?? []) {
-    for (const hook of linkedNodes(fiber.memoizedState)) if (valid(hook.memoizedState?.current)) facade = hook.memoizedState.current;
+  if (!facade) outer: for (const fiber of currentElementAncestry(main, root) ?? []) {
+    for (const hook of linkedNodes(fiber.memoizedState)) if (valid(hook.memoizedState?.current)) { facade = hook.memoizedState.current; break outer; }
   }
   if (!facade) throw workspaceError('workspace_host_pending', 'Native viewport scope is not mounted');
   const chain = new Map(facade.chain), routeNode = chain.get(native.RouteScope.id), threadNode = chain.get(native.ThreadScope.id);
@@ -124,7 +126,8 @@ export function nativeViewportLayout(context) {
     if (fiber.stateNode?.matches?.(`${OWNED},[data-app-shell-main-content-layout],[data-app-shell-focus-area="main"],.thread-scroll-container,[data-codex-composer-root],aside[data-app-shell-focus-area="right-panel"]`)) continue;
     if (fiber.child) pending.push(fiber.child);
   }
-  if (candidates.length !== 1) throw workspaceError('workspace_host_pending', 'A unique Native viewport layout is required');
+  if (candidates.length > 1) throw unavailable('Native viewport layout ownership is ambiguous');
+  if (!candidates.length) throw workspaceError('workspace_host_pending', 'Native viewport layout is not mounted');
   return candidates[0];
 }
 
@@ -197,7 +200,9 @@ export function createNativeViewportDriver({ document, native, signals, readCont
       };
       const unmask = () => { restoreMask?.(); restoreMask = null; masked = null; };
       const mask = () => {
-        const panel = bound ? null : [...document.querySelectorAll('aside[data-app-shell-focus-area="right-panel"]')].find(node => !node.closest(OWNED + ',[data-app-shell-active-page="false"]'));
+        const panels = bound ? [] : [...current.context.root.querySelectorAll('aside[data-app-shell-focus-area="right-panel"]')].filter(node => !node.closest(OWNED + ',[data-app-shell-active-page="false"]'));
+        if (panels.length > 1) throw unavailable('Native resource panel ownership is ambiguous');
+        const panel = panels[0] ?? null;
         if (masked === panel) return; unmask(); if (!panel) return;
         masked = panel; const visibility = [panel.style.getPropertyValue('visibility'), panel.style.getPropertyPriority('visibility')], inert = panel.getAttribute('inert'), hidden = panel.getAttribute('aria-hidden');
         panel.style.setProperty('visibility', 'hidden', 'important'); panel.setAttribute('inert', ''); panel.setAttribute('aria-hidden', 'true');
@@ -265,7 +270,7 @@ export function createNativeViewportDriver({ document, native, signals, readCont
                 if (!isCurrentContext(entry.context.threadId)) return;
                 let now;
                 try { now = readContext(); } catch (error) {
-                  if (['workspace_host_pending','workspace_composer_binding_drift'].includes(error?.code)) return;
+                  if (error?.code === 'workspace_host_pending') return;
                   throw error;
                 }
                 if (now.routeNode !== entry.context.routeNode || now.threadNode !== entry.context.threadNode) return;

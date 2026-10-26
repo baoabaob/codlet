@@ -1,4 +1,4 @@
-import { component, componentSource, desktopDocument, loadedAsset, uniqueExport, linkedNodes } from '../host-discovery.js';
+import { component, componentSource, desktopDocument, loadedAsset, uniqueExport, currentElementAncestry } from '../host-discovery.js';
 import { reactFactories } from './react-factories.js';
 import {parseExpressionAt} from 'acorn';
 
@@ -24,8 +24,9 @@ export function nativeDownloadGlyph(exports) {
   }catch{return undefined;}
 }
 function ancestors(element) {
-  const key = element && Object.keys(element).find(key => key.startsWith('__reactFiber$'));
-  return [...linkedNodes(key&&element[key],fiber=>fiber.return)];
+  const chain = currentElementAncestry(element);
+  if (!chain) throw fail('ui_host_drift', 'Native navigation is not owned by the current React tree');
+  return chain;
 }
 function tooltipContentProp(source) {
   if (source.includes('tooltipContent') && source.includes('delayDuration')) return 'tooltipContent';

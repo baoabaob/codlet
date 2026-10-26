@@ -671,6 +671,17 @@ test('renderer notification uses the fixed envelope without a request id', async
     }]);
 });
 
+test('incoming notifications invoke their declared endpoint without a dormant listener API', async () => {
+    const fixture = rpcFixture(); let context, received;
+    await fixture.runtime.activate(fixture.metadata, {
+        activate(value) { context = value; value.rpc.provide(capability, 'changed', params => { received = params; }); }, deactivate() {}
+    });
+    assert.equal('onNotification' in context.rpc, false);
+    const result = await fixture.runtime.__rpcInvoke('test_binding', { v: 1, type: 'notification', pluginId: 'consumer', generation: 1, capability, method: 'changed', params: { active: true } });
+    assert.equal(result.ok, true); assert.deepEqual(received, { active: true });
+    await fixture.runtime.deactivate('dev.example', 1);
+});
+
 test('renderer response errors preserve diagnostic code and message', async () => {
     const context = vm.createContext({ setTimeout, clearTimeout, AbortController, TextEncoder });
     vm.runInContext(bootstrapSource, context);

@@ -36,9 +36,11 @@ restart preparation failures cannot invent a Native rejection; fallback occurs
 only before the original operation has been dispatched. Explicit plugin hooks
 and Native's own network policy continue to apply.
 
-Native module loading and bridge lease acquisition share a bounded 60-second
-startup budget. Lease acquisition uses the original deadline throughout the
-call chain.
+Windows owned-launch module loading and bridge lease acquisition share a
+60-second startup transaction budget. Lease acquisition uses the original
+deadline throughout the call chain. This transport transaction is separate from
+renderer scope and composer readiness, which follow Native ownership,
+commit callbacks, cancellation and retirement.
 
 The official update bridge uses entry `index-340508751504.js`, AppScope `Bst`,
 services `Qot` and update selector `sHt` under the exact app/build identity above.

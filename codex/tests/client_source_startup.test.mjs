@@ -44,7 +44,7 @@ test('the packaged source activates across cold boots and delayed native module 
     let cleaned=false;
     const cleanup=async()=>{
       if(cleaned)return;cleaned=true;
-      if(child.exitCode===null){child.kill();await new Promise(resolve=>child.once('exit',resolve));}
+      if(child.exitCode===null&&child.signalCode===null){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;}
       assert.equal(path.dirname(path.resolve(root)),path.resolve(tmpdir()));await rm(root,{recursive:true});
     };
     t.after(cleanup);

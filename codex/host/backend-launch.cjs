@@ -11,7 +11,7 @@ function verifyBackend(executable, platform = process.platform) {
   const fd = fs.openSync(executable, 'r'); let binarySha256;
   try {
     const before = fs.fstatSync(fd);
-    if (!before.isFile() || before.size < 1 || before.size > 512 * 1024 * 1024) throw fail('backend_identity_unavailable');
+    if (!before.isFile() || before.size < 1) throw fail('backend_identity_unavailable');
     const hash = createHash('sha256'), bytes = Buffer.alloc(64 * 1024);
     for (;;) { const count = fs.readSync(fd, bytes); if (!count) break; hash.update(bytes.subarray(0, count)); }
     const after = fs.fstatSync(fd);
@@ -27,10 +27,19 @@ function verifyBackend(executable, platform = process.platform) {
 function supportsBackendContract(contract, settings) {
   return contract?.api === 1 && contract.initialize === true && contract.configRead === true && contract.accountRead === true
     && ['runtime', 'recorded'].includes(contract.routing)
-    && Array.isArray(contract.providerOverrides) && contract.providerOverrides.length > 0 && contract.providerOverrides.length <= 17
+    && Array.isArray(contract.providerOverrides) && contract.providerOverrides.length > 0
     && new Set(contract.providerOverrides).size === contract.providerOverrides.length
-    && contract.providerOverrides.every(value => typeof value === 'string' && (value === 'openai_base_url' || /^model_providers\.[A-Za-z0-9_-]{1,64}\.base_url$/u.test(value)))
+    && contract.providerOverrides.every(value => value === 'openai_base_url' || providerName(value) !== null)
     && settings.every(setting => contract.providerOverrides.includes(setting));
+}
+function providerSetting(name) {
+  return `model_providers.${/^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name)}.base_url`;
+}
+function providerName(setting) {
+  if (typeof setting !== 'string' || !setting.startsWith('model_providers.') || !setting.endsWith('.base_url')) return null;
+  const key = setting.slice('model_providers.'.length, -'.base_url'.length);
+  if (/^[A-Za-z0-9_-]+$/u.test(key)) return key;
+  try { const name = JSON.parse(key); return typeof name === 'string' && providerSetting(name) === setting ? name : null; } catch { return null; }
 }
 
 // Overrides are process local and appended last. A route contains only a
@@ -42,7 +51,7 @@ function prepareBackendLaunch({ executable, arguments: args, originalEnvironment
   if (!supportsBackendContract(compatibility.contract, Object.keys(providerRoutes))
     || compatibility.contract.routing === 'recorded' && !identity.recorded) throw fail('backend_contract_unavailable');
   for (const [setting, baseUrl] of Object.entries(providerRoutes)) {
-    if (setting !== 'openai_base_url' && setting !== 'chatgpt_base_url' && !/^model_providers\.[A-Za-z0-9_-]+\.base_url$/u.test(setting)) throw fail('invalid_backend_route');
+    if (setting !== 'openai_base_url' && setting !== 'chatgpt_base_url' && providerName(setting) === null) throw fail('invalid_backend_route');
     const url = new URL(baseUrl);
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password || url.search || url.hash) throw fail('invalid_backend_route');
     overrides.push('-c', `${setting}=${toml(baseUrl)}`);
@@ -51,4 +60,4 @@ function prepareBackendLaunch({ executable, arguments: args, originalEnvironment
   return Object.freeze({ executable, arguments: Object.freeze([...args, ...overrides]), environment: originalEnvironment, compatibility,
     status: Object.freeze({ available: true, backendProviderPrepared: true, coverage: ['owned-local-app-server-model-provider'] }) });
 }
-module.exports = { prepareBackendLaunch, verifyBackend, supportsBackendContract, toml };
+module.exports = { prepareBackendLaunch, verifyBackend, supportsBackendContract, providerSetting, providerName, toml };

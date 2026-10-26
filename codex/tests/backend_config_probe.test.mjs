@@ -62,6 +62,15 @@ test('in-process async configuration probing yields the event loop and retires i
   assert(children.every(child=>child.exitCode!==null||child.signalCode!==null));
 });
 
+test('routing proofs follow Native config contents beyond old size and provider-name/count cutoffs', async () => {
+  const fixture=fileURLToPath(new URL('./fixtures/traffic/probe-app-server.cjs',import.meta.url));
+  const result=await runConfigProbe({executable:process.execPath,configArguments:[fixture],environment:{...process.env,CODLET_PROBE_FIXTURE:'large-native-config'},cwd:process.cwd()});
+  assert.equal(Object.keys(result.providerBaseUrls).length,44);
+  assert.equal(Object.hasOwn(result.providerBaseUrls,'__proto__'),true);
+  assert(result.contract.providerOverrides.includes('model_providers."原生提供者".base_url'));
+  assert(!JSON.stringify(result).includes('unrelatedHistory'));
+});
+
 test('cancelling an async probe stops its owned child without publishing policy', async () => {
   const fixture=fileURLToPath(new URL('./fixtures/traffic/probe-app-server.cjs',import.meta.url)),controller=new AbortController(),children=[];
   const work=runConfigProbe({executable:process.execPath,configArguments:[fixture],environment:process.env,cwd:process.cwd()},{

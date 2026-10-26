@@ -26,7 +26,7 @@ to SHA-256, the current embedded bridge/bootstrap hashes and protocol, and the
 actual retained runtime file identities. Unpinned source is ignored. Malformed
 pins or source mismatches fail before executing candidate code. A changed
 resident Core makes the previous pin inapplicable and falls back to its new
-embedded source. [Management](management.md) describe the
+embedded source. [Management](management.md) describes the
 takeover and persistence receipts.
 
 The Native source explicitly transfers JSON state and references live

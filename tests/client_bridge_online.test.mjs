@@ -70,7 +70,7 @@ async function nativeFixture(t,{ownedFixtureRoutes=false}={}) {
     child.once('error', reject);
   });
   t.after(async () => {
-    if (child.exitCode === null) {child.send('stop'); await new Promise(resolve => child.once('exit', resolve));}
+    if (child.exitCode === null&&child.signalCode===null) {const stopped=new Promise(resolve=>child.once('exit',resolve));child.send('stop');await stopped;}
     assert.equal(path.dirname(path.resolve(root)), path.resolve(tmpdir()));
     await rm(root, {recursive: true});
   });
@@ -85,7 +85,7 @@ async function coreLease(t, f, options = {}) {
   process.on('message',message=>{if(message==='stop')socket.destroy();});`);
   const child = spawn(process.execPath, [file], {windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc']});
   const receipt = await new Promise((resolve, reject) => {child.once('message', resolve); child.once('error', reject);});
-  t.after(() => {if (child.exitCode === null) child.kill();});
+  t.after(async() => {if (child.exitCode === null&&child.signalCode===null){const stopped=new Promise(resolve=>child.once('exit',resolve));child.kill();await stopped;}});
   return {child, receipt};
 }
 const replacement = (f, generation, epoch, options = {}) => ({op: 'replace', operationId: `generation-${generation}-${options.broken ? 'broken' : 'good'}`, expectedEpoch: epoch, previousOwner: epoch ? 'codlet.core' : null,

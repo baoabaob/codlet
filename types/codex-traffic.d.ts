@@ -2,7 +2,7 @@
 export type TrafficBody = string | Uint8Array | Iterable<string | Uint8Array> | AsyncIterable<string | Uint8Array> | null;
 export type TrafficHeaders = readonly (readonly [string, string])[];
 export interface HttpChannelResponse { status: number; headers?: TrafficHeaders; body?: TrafficBody }
-export interface TrafficRequest { readonly id: string; readonly url: string; readonly path: string; readonly method: string; readonly headers: TrafficHeaders; readonly body: AsyncIterable<Uint8Array> & { cancel(): boolean } }
+export interface TrafficRequest { readonly id: string; readonly url: string; readonly path: string; readonly method: string; readonly headers: TrafficHeaders; readonly body: (AsyncIterable<Uint8Array> & { cancel(): boolean; cancelAndWait(): Promise<void> }) | null }
 export interface TrafficFrame { readonly data: string | Uint8Array; readonly binary: boolean }
 export type TrafficTransform = (frame: TrafficFrame, context: { readonly signal: AbortSignal; readonly direction: 'clientToServer' | 'serverToClient' }) => TrafficFrame | string | Uint8Array | null | Promise<TrafficFrame | string | Uint8Array | null>;
 export interface TrafficInterceptorOptions { id: string; origins: readonly string[]; priority?: number; timeoutMs?: number }

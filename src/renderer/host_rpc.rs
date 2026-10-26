@@ -136,17 +136,26 @@ impl RendererRuntime {
         Ok(())
     }
 
-    pub(super) fn retire_rpc_plugin(&self, id: &str, generation: u64) {
+    pub(super) fn retire_rpc_plugin(&self, id: &str, generation: u64) -> Result<(), RendererError> {
         #[cfg(any(windows, target_os = "macos"))]
-        if let Some(services) = &self.core_services {
-            services.retire(id, generation);
-        }
+        let cleanup = self
+            .core_services
+            .as_ref()
+            .map(|services| services.retire(id, generation));
         #[cfg(any(windows, target_os = "macos"))]
         if let Some(client) = &self.host_rpc.client {
             client.shared.retire_plugin(id, generation);
         }
         #[cfg(not(any(windows, target_os = "macos")))]
         let _ = (id, generation);
+        #[cfg(any(windows, target_os = "macos"))]
+        if let Some(Err(error)) = cleanup {
+            return Err(RendererError::PluginRejected {
+                plugin_id: id.into(),
+                message: error.to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub(super) fn publish_rpc_target(&self, target: &str) {

@@ -278,7 +278,13 @@ impl Engine {
         }
         .try_acquire_owned()
         .map_err(|_| error("resource_limit", "channel concurrency reached"))?;
-        let exchange = self.exchange(&channel.stopped, permit, None, Some(channel.clone()), ws)?;
+        let exchange = self.exchange(
+            &channel.stopped,
+            Some(permit),
+            None,
+            Some(channel.clone()),
+            ws,
+        )?;
         let completion = Completion(exchange.clone());
         let lease = Arc::new(LeaseContext {
             id: files::token("channel-lease")?,
@@ -296,10 +302,6 @@ impl Engine {
                     registration: channel.registration.clone(),
                     opening_request: Value::Null,
                     url: String::new(),
-                    // Explicit channels retain the original socket-owned
-                    // lifetime. Callback/read deadlines still apply; an open
-                    // WebSocket is not forcibly ended after five minutes.
-                    expires: None,
                 },
             );
         }

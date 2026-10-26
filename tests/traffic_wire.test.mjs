@@ -29,6 +29,27 @@ test('data stream handles are one-shot, chunk bounded, binary exact and released
   source.dispose(); sink.dispose(); assert.equal(getEventListeners(root.signal,'abort').length,0);
 });
 
+test('authenticated Native streams pass existing content beyond plugin budgets with bounded chunks', async () => {
+  const root = new AbortController(), chunk = Buffer.alloc(32 * 1024, 5);
+  let source, sink;
+  source = createTrafficStreams({}, 'native', root.signal, { native: true });
+  sink = createTrafficStreams({ request: async (_method, params) => source.handle(params.operation, params.payload) }, 'native', root.signal, { native: true });
+  const make = () => (function* () { for (let index = 0; index < 2049; index++) yield chunk; })();
+  let received = 0;
+  for await (const value of sink.importBody(source.exportBody(make()))) { assert(value.length <= chunk.length); received += value.length; }
+  assert.equal(received, 64 * 1024 * 1024 + chunk.length);
+  assert.equal(source.status().streams, 0);
+  const plugin = createTrafficStreams({}, 'plugin', root.signal), reference = plugin.exportBody(make());
+  for (let index = 0; index < 2048; index++) await plugin.handle('stream.read', reference);
+  await assert.rejects(plugin.handle('stream.read', reference), { code: 'body_too_large' });
+  const stalled = source.exportBody((function* () { while (true) yield Buffer.alloc(0); })());
+  const read = source.handle('stream.read', stalled);
+  setImmediate(() => root.abort());
+  await assert.rejects(read, { code: 'stream_retired' });
+  assert.equal(source.status().streams, 0);
+  plugin.dispose(); sink.dispose();
+});
+
 test('stream cancellation settles a stalled read even when the producer ignores return', async () => {
   const root=new AbortController();
   const source=createTrafficStreams({},'lease',root.signal);
@@ -36,6 +57,24 @@ test('stream cancellation settles a stalled read even when the producer ignores 
   const read=source.handle('stream.read',reference);
   await delay(0); assert.deepEqual(await source.handle('stream.cancel',reference),{cancelled:true});
   await assert.rejects(read,{code:'stream_retired'}); assert.equal(source.status().streams,0); source.dispose();
+});
+
+test('cancelAndWait preserves one cancellation result and distinguishes explicit retirement from lost peers',async()=>{
+  for(const code of ['peer_closed','request_cancelled','underlying_cleanup_failed']) {
+    const root=new AbortController(),error=Object.assign(Error(code),{code});let calls=0;
+    const streams=createTrafficStreams({request(){calls++;return Promise.reject(error);}},'lease',root.signal);
+    const body=streams.importBody({stream:'a'.repeat(32)});assert.equal(body.cancel(),true);
+    const first=body.cancelAndWait();assert.equal(body.cancelAndWait(),first);
+    await assert.rejects(first,value=>value===error);assert.equal(calls,1);streams.dispose();
+  }
+  for(const reply of [{cancelled:true},Object.assign(Error('closed'),{code:'stream_retired'})]) {
+    const root=new AbortController(),streams=createTrafficStreams({request:()=>reply instanceof Error?Promise.reject(reply):Promise.resolve(reply)},'lease',root.signal);
+    await streams.importBody({stream:'a'.repeat(32)}).cancelAndWait();streams.dispose();
+  }
+  const root=new AbortController(),error=Error('producer cleanup failed');let calls=0;
+  const streams=createTrafficStreams({},'lease',root.signal),reference=streams.exportBody({[Symbol.iterator]:function*(){},cancelAndWait(){calls++;return Promise.reject(error);}});
+  await assert.rejects(streams.handle('stream.cancel',reference),value=>value===error);
+  await assert.rejects(streams.handle('stream.cancel',reference),value=>value===error);assert.equal(calls,1);assert.equal(streams.status().streams,1);streams.dispose();
 });
 
 test('empty producers and cross-lease handles fail without an unbounded loop or lookup', async () => {
@@ -93,4 +132,30 @@ test('aborted open sends ordered cancellation even before the Native lease resul
   await assert.rejects(peer.request('open', {}, { cancelOpen: true, signal: requestAbort.signal, prepareResult: () => { delivered = true; } }), { code: 'request_cancelled' });
   await cancellation; await delay(10);
   assert.equal(delivered, false); assert.equal(peer.status().pending, 0);
+});
+
+test('Native control admission queues existing calls, cancels queued work and dispatches each accepted call once', async t => {
+  const root=new AbortController(), queuedAbort=new AbortController();
+  const received=[], replies=[];
+  const listener=await listenTrafficPeer({signal:root.signal,handle:async(_peer,method)=>{
+    received.push(method); return new Promise(resolve=>replies.push(resolve));
+  }});
+  t.after(()=>root.abort());
+  const peer=await connectTrafficPeer({...listener.endpoint,maxPendingRequests:1},{signal:root.signal,queueRequests:true});
+  const first=peer.request('first',{}, {timeoutMs:null}), cancelled=peer.request('cancelled',{}, {timeoutMs:null,signal:queuedAbort.signal}), second=peer.request('second',{}, {timeoutMs:null});
+  const rejected=assert.rejects(cancelled,{code:'request_cancelled'}); queuedAbort.abort(); await rejected;
+  while(!replies.length)await delay(0);
+  assert.deepEqual(received,['first']); replies.shift()({done:1}); await first;
+  while(!replies.length)await delay(0);
+  assert.deepEqual(received,['first','second']); replies.shift()({done:2}); await second;
+  assert.equal(peer.status().pending,0);
+});
+
+test('Native body reads use owner cancellation while plugin readers retain their explicit wait budget',async()=>{
+  for(const native of [true,false]) {
+    const root=new AbortController();let options;
+    const streams=createTrafficStreams({request(_method,_params,input){options=input;return new Promise((_,reject)=>input.signal.addEventListener('abort',()=>reject(Object.assign(Error(),{code:'request_cancelled'})),{once:true}));}},'lease',root.signal,{native});
+    const body=streams.importBody({stream:'a'.repeat(32)}),read=body[Symbol.asyncIterator]().next();
+    assert.equal(options.timeoutMs,native?null:300000);root.abort();await assert.rejects(read,{code:'request_cancelled'});
+  }
 });

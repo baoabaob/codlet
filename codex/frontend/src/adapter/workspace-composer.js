@@ -29,7 +29,7 @@ export function createComposers({ document, load, surface, check, report, metric
   function binding(record) {
     const input=record.mount.querySelector('[data-codex-composer-root]');
     const value=nativeComposerBinding(input,record.mount,native);
-    return value && { ...value, disabled:value.submitDisabled, input, editable:input.querySelector('[contenteditable="true"]') };
+    return value && { ...value, disabled:value.submitDisabled };
   }
   function state(record,phase,error) {
     if(record.phase===phase&&!error)return;record.phase=phase;
@@ -38,7 +38,7 @@ export function createComposers({ document, load, surface, check, report, metric
   }
   function stopPending(record) { if(record.frame!=null)document.defaultView.cancelAnimationFrame?.(record.frame);record.frame=null;clearTimeout(record.retry);record.retry=null; }
   function rejectActivation(record,code,message) {
-    const op=record.activation;if(!op)return;record.activation=null;clearTimeout(op.timer);op.reject(workspaceError(code,message));stopPending(record);
+    const op=record.activation;if(!op)return;record.activation=null;op.reject(workspaceError(code,message));stopPending(record);
   }
   function deactivate(record) {
     if(record.disposed)return;
@@ -67,10 +67,10 @@ export function createComposers({ document, load, surface, check, report, metric
       if(!value?.editable)return;
       if(value.threadId!==record.options.threadId||value.hostId!=='local')throw workspaceError('workspace_composer_binding_drift','Native composer changed its immutable conversation');
       footer(record,value);
-      if(!record.readyDone){record.readyDone=true;clearTimeout(record.readyTimer);state(record,'ready');record.resolveReady(receipt(record,value));}
+      if(!record.readyDone){record.readyDone=true;state(record,'ready');record.resolveReady(receipt(record,value));}
       const op=record.activation;
       if(op&&op.epoch===record.epoch&&!value.disabled&&native.manager.getConversation(record.options.threadId)?.resumeState==='resumed'&&native.manager.getStreamRole(record.options.threadId)?.role==='owner'){
-        record.activation=null;clearTimeout(op.timer);record.active=true;record.wrapper.removeAttribute('inert');stopPending(record);state(record,'active');op.resolve(receipt(record,value));
+        record.activation=null;record.active=true;record.wrapper.removeAttribute('inert');stopPending(record);state(record,'active');op.resolve(receipt(record,value));
       }else if(!op)stopPending(record);
     }catch(error){fail(record,error);}
   }
@@ -82,7 +82,7 @@ export function createComposers({ document, load, surface, check, report, metric
     else record.retry=setTimeout(tick,50);
   }
   function fail(record,error) {
-    if(record.disposed||record.failed)return;record.failed=true;record.active=false;record.wrapper.setAttribute('inert','');stopPending(record);clearTimeout(record.readyTimer);
+    if(record.disposed||record.failed)return;record.failed=true;record.active=false;record.wrapper.setAttribute('inert','');stopPending(record);
     if(!record.readyDone)record.rejectReady(error);rejectActivation(record,error.code??'workspace_composer_unavailable',error.message);state(record,'error',error);report(error);
   }
   function render(record) {
@@ -140,7 +140,7 @@ export function createComposers({ document, load, surface, check, report, metric
     const ready=new Promise((resolve,reject)=>{record.resolveReady=resolve;record.rejectReady=reject;});ready.catch(()=>{});
     const valid=()=>{check();live();if(record.disposed||record.failed)throw workspaceError('workspace_retired','Composer handle retired');};
     function dispose() {
-      if(record.disposed)return;deactivate(record);record.disposed=true;record.epoch++;stopPending(record);clearTimeout(record.readyTimer);record.observer?.disconnect();record.resize?.disconnect();
+      if(record.disposed)return;deactivate(record);record.disposed=true;record.epoch++;stopPending(record);record.observer?.disconnect();record.resize?.disconnect();
       if(!record.readyDone)record.rejectReady(workspaceError('workspace_retired','Composer retired before readiness'));
       if(record.root)native.DOM.flushSync(()=>record.root.unmount());wrapper.remove();records.delete(record);containers.delete(container);state(record,'disposed');
     }

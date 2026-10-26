@@ -226,15 +226,6 @@ impl Hub {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         state.tickets.retain(|_, ticket| ticket.expires > now);
-        let leases = state
-            .leases
-            .iter()
-            .filter(|(_, v)| v.expires.is_some_and(|deadline| deadline <= now))
-            .map(|(k, _)| k.clone())
-            .collect::<Vec<_>>();
-        for lease in leases {
-            self.release(&mut state, &lease);
-        }
         let calls = state
             .pending
             .iter()
@@ -496,7 +487,7 @@ impl Hub {
                     if state
                         .leases
                         .values()
-                        .filter(|lease| lease.expires.is_some())
+                        .filter(|lease| !lease.opening_request.is_null())
                         .count()
                         >= MAX_LEASES
                     {
@@ -523,7 +514,9 @@ impl Hub {
                             registration,
                             opening_request: id.clone(),
                             url: policy_url.origin().ascii_serialization(),
-                            expires: Some(Instant::now() + Duration::from_secs(300)),
+                            // The exchange/socket owns this lease. Callback and
+                            // read operations have their own deadlines; idle
+                            // Native content does not expire its owner.
                         },
                     );
                     json!({"lease":lease})

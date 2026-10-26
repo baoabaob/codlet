@@ -121,7 +121,7 @@ pub fn run() -> Result<()> {
                 return Ok(traffic.launch_descriptor().unwrap_or(Value::Null));
             }
             if method == "retire" {
-                services.retire(owner, 1);
+                services.retire(owner, 1)?;
                 return Ok(json!({"retired":true}));
             }
             if method == "disable" {

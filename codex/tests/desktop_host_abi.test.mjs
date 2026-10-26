@@ -11,16 +11,21 @@ import { createInterface } from 'node:readline';
 test('Desktop source entry initializes and shuts down through the standard Core Host ABI', { skip: !process.env.CODLET_CORE_ROOT, timeout: 5000 }, async t => {
   const core = process.env.CODLET_CORE_ROOT;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'codlet-host-abi-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  let child,lines,closed;
+  t.after(async()=>{
+    lines?.close();
+    if(child&&child.exitCode===null&&child.signalCode===null){child.kill();await closed;}
+    assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));
+    await fs.rm(directory,{recursive:true});
+  });
   const entry = fileURLToPath(new URL('../host/desktop-launch.cjs', import.meta.url));
   const snapshot = path.join(directory, 'snapshot.cjs'), bootstrap = path.join(directory, 'bootstrap.cjs');
   const host = await fs.readFile(path.join(core, 'runtime/core-modules/host-bootstrap.cjs'), 'utf8');
   await fs.copyFile(entry, snapshot);
   await fs.writeFile(bootstrap, `process.argv.splice(1, 1);\n${host}`);
-  const child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', bootstrap, entry, snapshot], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-  t.after(() => child.kill());
-  const closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
-  const lines = createInterface({ input: child.stdout }); t.after(() => lines.close());
+  child = spawn(process.execPath, ['--no-addons', '--no-experimental-strip-types', bootstrap, entry, snapshot], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  closed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  lines = createInterface({ input: child.stdout });
   const pending = new Map(); let stderr = '';
   child.stderr.on('data', bytes => { stderr += bytes.toString(); });
   const identity = { v: 1, pluginId: 'codlet-desktop-adapter', generation: 1 };

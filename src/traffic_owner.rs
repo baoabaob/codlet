@@ -9,9 +9,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 fn startup_timeout() -> Duration {
-    // Native module loading and bridge ownership share one startup budget.
-    // The acceptance binary can measure slower disposable hosts with an
-    // explicit bounded override.
+    // Owned launch patching and inspector/lease acquisition are one managed
+    // transport transaction. Native module readiness continues after it.
     #[cfg(all(windows, feature = "desktop-acceptance"))]
     if let Some(milliseconds) = std::env::var("CODLET_ACCEPTANCE_STARTUP_TIMEOUT_MS")
         .ok()
@@ -41,7 +40,6 @@ pub(crate) struct TrafficOwner {
         Value,
         Option<crate::plugins::LoadedPlugin>,
     )>,
-    bridge_supported: std::cell::Cell<bool>,
 }
 
 fn failure(code: &'static str) -> HostError {
@@ -54,6 +52,9 @@ fn failure(code: &'static str) -> HostError {
 impl TrafficOwner {
     #[cfg(target_os = "macos")]
     pub(crate) fn retire_for_update(&self) -> Result<(), HostError> {
+        if let Some(source) = self.client_source() {
+            source.retire();
+        }
         self.traffic.stop_native();
         self.wait_retired(Duration::from_secs(5))
     }
@@ -102,7 +103,6 @@ impl TrafficOwner {
             bridge_bootstrap: std::cell::RefCell::new(None),
             client_source: std::cell::RefCell::new(None),
             bridge_inputs: None,
-            bridge_supported: std::cell::Cell::new(false),
         };
         owner.check_alive()?;
         Ok(owner)
@@ -169,8 +169,11 @@ impl TrafficOwner {
     pub(crate) fn client_source(&self) -> Option<crate::client_bridge::ClientSourceRuntime> {
         self.client_source.borrow().clone()
     }
-    pub(crate) fn bridge_supported(&self) -> bool {
-        self.bridge_supported.get()
+    pub(crate) fn bridge_startup_observation(&self) -> crate::client_bridge::StartupObservation {
+        self.client_source().map_or(
+            crate::client_bridge::StartupObservation::Ready(false),
+            |source| source.cached_startup_observation(),
+        )
     }
 
     pub(crate) fn arguments(&self) -> &[OsString] {
@@ -244,8 +247,7 @@ impl TrafficOwner {
         if let (Some(source), Some((_, _, _, provider))) =
             (self.client_source(), self.bridge_inputs.as_ref())
         {
-            self.bridge_supported
-                .set(source.complete_startup(provider.as_ref())?);
+            let _ = source.complete_startup(provider.as_ref())?;
         }
         Ok(())
     }
@@ -321,6 +323,9 @@ impl TrafficOwner {
 impl Drop for TrafficOwner {
     fn drop(&mut self) {
         // The official client retires first; then bounded native tasks/sockets.
+        if let Some(source) = self.client_source() {
+            source.retire();
+        }
         self.traffic.stop_native();
         if self.wait_retired(Duration::from_secs(2)).is_err() {
             crate::runtime_log::error(

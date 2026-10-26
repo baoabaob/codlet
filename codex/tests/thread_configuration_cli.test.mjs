@@ -114,7 +114,7 @@ for (const mode of ['http', 'websocket']) test(`official AppServer starts and re
         await new Promise(resolve => server.close(resolve));
         assert.equal(path.dirname(path.resolve(root)), path.resolve(tmpdir()));
         assert.ok(path.basename(root).startsWith('codlet-transport-native-'));
-        await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        await rm(root, { recursive: true, maxRetries: 10, retryDelay: 100 });
     });
     await startNative();
     const attached = createThreadConfiguration({ check() {}, owner: ctx => ({ pluginId: ctx.pluginId, generation: 1 }), capability: {}, build: { threadConfiguration: true }, client: { requestPromises: new Map([['fixture-thread', {}]]), onError(_id, error) { throw error; } } });

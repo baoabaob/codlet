@@ -19,7 +19,7 @@ export async function buildCodex(root = resolve(base, '..')) {
     artifacts.set(resolve(root, 'codex/bundled', destination), result.outputFiles[0].text);
     used(result.metafile);
   }
-  const main = await build({ absWorkingDir: sources, entryPoints: [resolve(root, 'codex/host/electron-main.cjs')], bundle: true, write: false, metafile: true, format: 'cjs', platform: 'node', target: 'node24', nodePaths: [resolve(base, 'node_modules')], plugins: [{ name: 'core-plaintext-client', setup(plugin) { plugin.onResolve({ filter: /^\.\.\/runtime\/plaintext-source-client\.cjs$/ }, () => ({ path: resolve(root, 'runtime/plaintext-source-client.cjs') })); } }] });
+  const main = await build({ absWorkingDir: sources, entryPoints: [resolve(root, 'codex/host/electron-main.cjs')], bundle: true, write: false, metafile: true, format: 'cjs', platform: 'node', target: 'node24', nodePaths: [resolve(base, 'node_modules')] });
   const host = await build({ absWorkingDir: sources, entryPoints: [resolve(root, 'codex/host/desktop-launch.cjs')], bundle: true, write: false, metafile: true, format: 'cjs', platform: 'node', target: 'node24', nodePaths: [resolve(base, 'node_modules')], define: { CODEX_TRAFFIC_MAIN_SOURCE: JSON.stringify(main.outputFiles[0].text) } });
   artifacts.set(resolve(root, 'runtime/core-modules/client-source.cjs'), main.outputFiles[0].text);
   artifacts.set(resolve(root, 'codex/bundled/codex-desktop-adapter/host.cjs'), host.outputFiles[0].text);

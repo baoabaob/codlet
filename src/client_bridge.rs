@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(all(test, windows))]
 mod tests;
@@ -194,12 +194,65 @@ struct SourceOwner {
     directory: tempfile::TempDir,
     configuration: Value,
     state: Mutex<State>,
+    startup: Mutex<Option<Startup>>,
+    startup_unsettled: AtomicBool,
+    // 0: pending, 1: ready/unavailable, 2: ready/available.
+    startup_observation: AtomicU8,
+    retired: AtomicBool,
+    lifecycle: Mutex<()>,
     traffic: crate::core_services::traffic::Traffic,
     _lease: TcpStream,
+}
+struct Startup {
+    provider: Option<LoadedPlugin>,
+    dispatched: bool,
+    receipt: Option<Value>,
+    failure: Option<HostError>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupObservation {
+    Ready(bool),
+    Pending,
+}
+// A control observation budget, never an initialization or compatibility limit.
+const STARTUP_REFRESH_BUDGET: Duration = Duration::from_millis(250);
+const STARTUP_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const STARTUP_OPERATION: &str = "startup-ready";
+fn startup_uncertain(failure: &HostError) -> bool {
+    matches!(
+        failure.code,
+        "client_bridge_uncertain" | "client_bridge_disconnected"
+    )
+}
+fn provider_matches(observed: &Value, provider: Option<&LoadedPlugin>) -> bool {
+    match provider {
+        Some(provider) => {
+            observed["owner"] == provider.manifest.id
+                && observed["generation"] == provider.generation
+        }
+        None => observed["owner"].is_null() && observed["generation"].is_null(),
+    }
+}
+impl SourceOwner {
+    fn retire(&self) {
+        let _lifecycle = self.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        if self.retired.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.startup_observation.store(1, Ordering::Release);
+        let _ = self._lease.shutdown(std::net::Shutdown::Both);
+        self.traffic.set_source_activation(json!([]), json!([]));
+    }
+}
+impl Drop for SourceOwner {
+    fn drop(&mut self) {
+        self.retire();
+    }
 }
 struct State {
     epoch: u64,
     provider: Option<LoadedPlugin>,
+    startup_provider: Option<LoadedPlugin>,
     admission: Option<CoreAdmission>,
     core_pending: Option<(String, u64)>,
     #[cfg(all(windows, feature = "desktop-acceptance"))]
@@ -289,6 +342,104 @@ fn acquire_lease(endpoint: &Endpoint, deadline: Instant) -> Result<TcpStream, Ho
 }
 
 impl ClientSourceRuntime {
+    /// Read facts observed on the retained Native child's real stdio. Control
+    /// frames are paged; Native roots and individual paths have no plugin quota.
+    pub(crate) fn skill_roots_snapshot(
+        &self,
+        client_id: &str,
+        client_epoch: u64,
+        anchors: &Value,
+        authority_id: Option<&str>,
+    ) -> Result<Value, HostError> {
+        let mut cursor: Option<String> = None;
+        let mut visited = std::collections::BTreeSet::new();
+        let mut identity: Option<(String, Value, u64, String)> = None;
+        let mut roots = Vec::<String>::new();
+        let mut partial = String::new();
+        loop {
+            let requested_authority = identity
+                .as_ref()
+                .map(|fact| fact.0.as_str())
+                .or(authority_id);
+            let page = self.request(json!({"op":"skillRoots","clientId":client_id,"clientEpoch":client_epoch,"anchors":anchors,"authorityId":requested_authority,"cursor":cursor}))?;
+            match page["status"].as_str() {
+                Some("unobserved" | "retired" | "unknown") => return Ok(page),
+                Some("observed") => {}
+                _ => return Err(error("skill_roots_observation_invalid")),
+            }
+            let authority = page["authorityId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| error("skill_roots_observation_invalid"))?;
+            let revision = &page["revision"];
+            if !revision.is_string() && revision.as_u64().is_none() {
+                return Err(error("skill_roots_observation_invalid"));
+            }
+            let count = page["rootCount"]
+                .as_u64()
+                .ok_or_else(|| error("skill_roots_observation_invalid"))?;
+            let provenance = page["provenance"]
+                .as_str()
+                .filter(|value| matches!(*value, "fresh" | "confirmed"))
+                .ok_or_else(|| error("skill_roots_observation_invalid"))?;
+            let current = (
+                authority.to_owned(),
+                revision.clone(),
+                count,
+                provenance.to_owned(),
+            );
+            if authority_id.is_some_and(|expected| expected != authority)
+                || identity
+                    .as_ref()
+                    .is_some_and(|expected| expected != &current)
+            {
+                return Err(error("skill_roots_observation_changed"));
+            }
+            identity = Some(current);
+            let fragments = page["fragments"]
+                .as_array()
+                .ok_or_else(|| error("skill_roots_observation_invalid"))?;
+            for fragment in fragments {
+                if fragment["index"].as_u64() != Some(roots.len() as u64)
+                    || roots.len() as u64 >= count
+                {
+                    return Err(error("skill_roots_observation_invalid"));
+                }
+                let text = fragment["text"]
+                    .as_str()
+                    .ok_or_else(|| error("skill_roots_observation_invalid"))?;
+                let complete = fragment["complete"]
+                    .as_bool()
+                    .ok_or_else(|| error("skill_roots_observation_invalid"))?;
+                if text.is_empty() && !complete {
+                    return Err(error("skill_roots_observation_invalid"));
+                }
+                partial.push_str(text);
+                if complete {
+                    roots.push(std::mem::take(&mut partial));
+                }
+            }
+            cursor = match &page["cursor"] {
+                Value::Null => None,
+                Value::String(next) if !next.is_empty() && !fragments.is_empty() => {
+                    if !visited.insert(next.clone()) {
+                        return Err(error("skill_roots_observation_invalid"));
+                    }
+                    Some(next.clone())
+                }
+                _ => return Err(error("skill_roots_observation_invalid")),
+            };
+            if cursor.is_none() {
+                if !partial.is_empty() || roots.len() as u64 != count {
+                    return Err(error("skill_roots_observation_invalid"));
+                }
+                return Ok(
+                    json!({"status":"observed","authorityId":authority,"revision":revision,"roots":roots,"provenance":provenance}),
+                );
+            }
+        }
+    }
+
     #[cfg(windows)]
     pub(crate) fn official_update_target(&self) -> Result<Value, HostError> {
         self.request(json!({"op":"officialUpdateTarget"}))
@@ -366,6 +517,9 @@ impl ClientSourceRuntime {
     /// Hold the retained Native transport before renderer/Host snapshots. On
     /// uncertainty the ID remains reserved; callers query it instead of replay.
     pub(crate) fn begin_core_admission(&self, operation_id: &str) -> Result<Value, HostError> {
+        if self.0.startup_unsettled.load(Ordering::Acquire) {
+            return Err(error("client_bridge_uncertain"));
+        }
         if operation_id.is_empty()
             || operation_id.len() > 96
             || !operation_id
@@ -379,6 +533,9 @@ impl ClientSourceRuntime {
             .state
             .lock()
             .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        if self.0.startup_unsettled.load(Ordering::Acquire) {
+            return Err(error("client_bridge_uncertain"));
+        }
         let command = if let Some(held) = &state.admission {
             if held.id != operation_id {
                 return Err(error("core_admission_owner_busy"));
@@ -575,9 +732,7 @@ impl ClientSourceRuntime {
                 &self.0.configuration["source"],
             )
             .map_err(|_| error("client_bridge_uncertain"))?;
-            self.0
-                .traffic
-                .set_source_activation(activation.activated, activation.unsupported);
+            self.publish_activation(activation)?;
         }
         state.epoch = expected.expect("checked epoch");
         state.core_pending = None;
@@ -655,6 +810,9 @@ impl ClientSourceRuntime {
             .state
             .lock()
             .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        if self.0.startup_unsettled.load(Ordering::Acquire) {
+            return Err(error("client_bridge_uncertain"));
+        }
         if state.core_pending.is_some() {
             return Err(error("client_bridge_uncertain"));
         }
@@ -705,7 +863,7 @@ impl ClientSourceRuntime {
             .map_err(|_| error("client_bridge_directory"))?;
         crate::traffic_owner::secure_directory(directory.path())?;
         let lease = acquire_lease(&endpoint, deadline)?;
-        Ok(Self(Arc::new(SourceOwner {
+        let source = Self(Arc::new(SourceOwner {
             endpoint,
             runtime,
             registry,
@@ -714,51 +872,229 @@ impl ClientSourceRuntime {
             state: Mutex::new(State {
                 epoch: 0,
                 provider,
+                startup_provider: None,
                 admission: None,
                 core_pending: None,
                 #[cfg(all(windows, feature = "desktop-acceptance"))]
                 fixture_route: None,
             }),
+            startup: Mutex::new(None),
+            startup_unsettled: AtomicBool::new(false),
+            startup_observation: AtomicU8::new(0),
+            retired: AtomicBool::new(false),
+            lifecycle: Mutex::new(()),
             traffic,
             _lease: lease,
-        })))
+        }));
+        let weak = Arc::downgrade(&source.0);
+        std::thread::Builder::new()
+            .name("codlet-startup-observer".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(STARTUP_REFRESH_INTERVAL);
+                    let Some(owner) = weak.upgrade() else { break };
+                    if owner.retired.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let source = Self(owner);
+                    if let Err(failure) = source.refresh_startup() {
+                        if !source.0.retired.load(Ordering::Acquire)
+                            || failure.code != "client_bridge_retired"
+                        {
+                            crate::runtime_log::error(
+                                "client_startup_observation_failed",
+                                failure.code,
+                            );
+                        }
+                        break;
+                    }
+                    // Drop the strong reference before waiting again. The actual
+                    // Native owner, not this observer, controls the lease lifetime.
+                }
+            })
+            .map_err(|_| error("client_bridge_observer_unavailable"))?;
+        Ok(source)
     }
     pub(crate) fn complete_startup(
         &self,
         provider: Option<&LoadedPlugin>,
-    ) -> Result<bool, HostError> {
-        let until = Instant::now() + Duration::from_secs(45);
-        let mut observed = match self.request_until(
-            json!({"op":"ready","operationId":"startup-ready","expectedEpoch":0}),
+    ) -> Result<StartupObservation, HostError> {
+        self.complete_startup_until(provider, Instant::now() + Duration::from_secs(45))
+    }
+    fn complete_startup_until(
+        &self,
+        provider: Option<&LoadedPlugin>,
+        until: Instant,
+    ) -> Result<StartupObservation, HostError> {
+        let mut guard = match self.0.startup.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => return Ok(StartupObservation::Pending),
+            Err(TryLockError::Poisoned(_)) => return Err(error("client_bridge_owner_poisoned")),
+        };
+        let startup = guard.get_or_insert_with(|| Startup {
+            provider: provider.cloned(),
+            dispatched: false,
+            receipt: None,
+            failure: None,
+        });
+        if startup
+            .provider
+            .as_ref()
+            .map(|p| (&p.manifest.id, p.generation))
+            != provider.map(|p| (&p.manifest.id, p.generation))
+        {
+            return Err(error("client_bridge_identity_invalid"));
+        }
+        if startup.dispatched {
+            return self.observe_startup(startup, Instant::now() + STARTUP_REFRESH_BUDGET, None);
+        }
+        if self.0.retired.load(Ordering::Acquire) {
+            return Err(error("client_bridge_retired"));
+        }
+        // Reserve the operation before dispatch. Neither another complete call
+        // nor a timeout can replay runtime.ready on this owner.
+        {
+            let mut state = self
+                .0
+                .state
+                .lock()
+                .map_err(|_| error("client_bridge_owner_poisoned"))?;
+            if state.epoch != 0 {
+                return Err(error("client_bridge_stale_epoch"));
+            }
+            self.0.startup_unsettled.store(true, Ordering::Release);
+            state.startup_provider = provider.cloned();
+            startup.dispatched = true;
+        }
+        let mut observed = Some(self.request_until(
+            json!({"op":"ready","operationId":STARTUP_OPERATION,"expectedEpoch":0}),
             until,
-        ) {
-            Ok(result) => Some(result),
-            Err(error) if error.code == "client_bridge_uncertain" => None,
-            Err(error) => return Err(error),
+        ));
+        loop {
+            let observation = self.observe_startup(startup, until, observed.take())?;
+            if observation != StartupObservation::Pending || Instant::now() >= until {
+                return Ok(observation);
+            }
+            std::thread::sleep(
+                until
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(25)),
+            );
+        }
+    }
+    pub(crate) fn cached_startup_observation(&self) -> StartupObservation {
+        if self.0.retired.load(Ordering::Acquire) {
+            return StartupObservation::Ready(false);
+        }
+        match self.0.startup_observation.load(Ordering::Acquire) {
+            0 => StartupObservation::Pending,
+            2 => StartupObservation::Ready(true),
+            _ => StartupObservation::Ready(false),
+        }
+    }
+    fn mark_startup_pending(&self) {
+        let _lifecycle = self.0.lifecycle.lock().unwrap_or_else(|p| p.into_inner());
+        if !self.0.retired.load(Ordering::Acquire) {
+            self.0.startup_observation.store(0, Ordering::Release);
+        }
+    }
+    pub(crate) fn refresh_startup(&self) -> Result<StartupObservation, HostError> {
+        let mut guard = match self.0.startup.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => return Ok(StartupObservation::Pending),
+            Err(TryLockError::Poisoned(_)) => return Err(error("client_bridge_owner_poisoned")),
         };
-        let result = loop {
-            if let Some(result) = observed.take()
-                && result["pending"] != true
-                && result["unknown"] != true
-            {
-                break result;
+        let Some(startup) = guard.as_mut().filter(|startup| startup.dispatched) else {
+            return Ok(StartupObservation::Pending);
+        };
+        self.observe_startup(startup, Instant::now() + STARTUP_REFRESH_BUDGET, None)
+    }
+    fn observe_startup(
+        &self,
+        startup: &mut Startup,
+        until: Instant,
+        observed: Option<Result<Value, HostError>>,
+    ) -> Result<StartupObservation, HostError> {
+        if let Some(failure) = &startup.failure {
+            return Err(failure.clone());
+        }
+        if self.0.retired.load(Ordering::Acquire) {
+            return Err(error("client_bridge_retired"));
+        }
+        let result = (|| {
+            if startup.receipt.is_none() {
+                let receipt = match observed.unwrap_or_else(|| {
+                    self.request_until(
+                        json!({"op":"status","operationId":STARTUP_OPERATION}),
+                        until,
+                    )
+                }) {
+                    Ok(receipt) => receipt,
+                    Err(failure) if startup_uncertain(&failure) => {
+                        self.mark_startup_pending();
+                        return Ok(StartupObservation::Pending);
+                    }
+                    Err(failure) => return Err(failure),
+                };
+                if receipt["pending"] == true || receipt["unknown"] == true {
+                    self.mark_startup_pending();
+                    return Ok(StartupObservation::Pending);
+                }
+                if !self.settle_startup_receipt(startup, receipt)? {
+                    return Ok(StartupObservation::Pending);
+                }
             }
-            let remaining = until.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(error("client_bridge_uncertain"));
-            }
-            // Native can synchronously provision its first-run runtime after
-            // accepting readiness. Query that receipt through transient pauses;
-            // never replay the initializer or discard its still-owned lease.
-            std::thread::sleep(remaining.min(Duration::from_millis(25)));
-            observed = match self
-                .request_until(json!({"op":"status","operationId":"startup-ready"}), until)
-            {
-                Ok(result) => Some(result),
-                Err(error) if error.code == "client_bridge_uncertain" => None,
-                Err(error) => return Err(error),
+            // A terminal ready receipt confirms the original invocation. Actual
+            // capabilities can still change as the same Native owner initializes.
+            let state = match self.0.state.try_lock() {
+                Ok(state) => state,
+                Err(TryLockError::WouldBlock) => return Ok(StartupObservation::Pending),
+                Err(TryLockError::Poisoned(_)) => {
+                    return Err(error("client_bridge_owner_poisoned"));
+                }
             };
-        };
+            let observed = match self.request_until(json!({"op":"status"}), until) {
+                Ok(observed) => observed,
+                Err(failure) if startup_uncertain(&failure) => {
+                    self.mark_startup_pending();
+                    return Ok(StartupObservation::Pending);
+                }
+                Err(failure) => return Err(failure),
+            };
+            if observed["epoch"].as_u64() != Some(state.epoch)
+                || !provider_matches(&observed, state.provider.as_ref())
+            {
+                return Err(error("client_bridge_identity_invalid"));
+            }
+            let activation = crate::client_launch::validate_client_source_activation(
+                &observed["activation"],
+                &self.0.configuration["source"],
+            )?;
+            if state.provider.is_none() && (activation.installed || activation.pending) {
+                return Err(error("client_bridge_protocol"));
+            }
+            if let Some(provider) = &state.provider {
+                crate::client_launch::validate_source_authority(provider, &self.0.registry)?;
+            }
+            let observation = if activation.pending {
+                StartupObservation::Pending
+            } else {
+                StartupObservation::Ready(activation.installed)
+            };
+            self.publish_activation(activation)?;
+            Ok(observation)
+        })();
+        if let Err(failure) = &result {
+            startup.failure = Some(failure.clone());
+            self.invalidate();
+        }
+        result
+    }
+    fn settle_startup_receipt(
+        &self,
+        startup: &mut Startup,
+        result: Value,
+    ) -> Result<bool, HostError> {
         if result["outcome"] != "applied" || result["epoch"] != 0 {
             return Err(error("client_bridge_protocol"));
         }
@@ -766,7 +1102,9 @@ impl ClientSourceRuntime {
             None
         } else {
             Some(
-                provider
+                startup
+                    .provider
+                    .as_ref()
                     .filter(|provider| {
                         result["owner"] == provider.manifest.id
                             && result["generation"] == provider.generation
@@ -778,21 +1116,21 @@ impl ClientSourceRuntime {
             &result["activation"],
             &self.0.configuration["source"],
         )?;
-        let supported = result["activation"]["installed"] == true;
-        if supported != selected.is_some() {
+        if selected.is_none() && (activation.installed || activation.pending) {
             return Err(error("client_bridge_protocol"));
         }
-        self.0
-            .state
-            .lock()
-            .map_err(|_| error("client_bridge_owner_poisoned"))?
-            .provider = selected.cloned();
-        if let Some(provider) = selected
-            && let Err(authority) =
-                crate::client_launch::validate_source_authority(provider, &self.0.registry)
-        {
-            self.replace(None)?;
-            return Err(authority);
+        let mut state = match self.0.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::Poisoned(_)) => return Err(error("client_bridge_owner_poisoned")),
+        };
+        if state.epoch != 0 {
+            return Err(error("client_bridge_stale_epoch"));
+        }
+        state.provider = selected.cloned();
+        state.startup_provider = None;
+        if let Some(provider) = selected {
+            crate::client_launch::validate_source_authority(provider, &self.0.registry)?;
         }
         if let Some(code) = result["sourceError"].as_str().filter(|code| {
             !code.is_empty()
@@ -804,17 +1142,23 @@ impl ClientSourceRuntime {
             crate::runtime_log::error("client_source_not_ready", code);
             eprintln!("client-source-not-ready: reason={code}");
         }
-        self.0
-            .traffic
-            .set_source_activation(activation.activated, activation.unsupported);
-        Ok(supported)
+        self.publish_activation(activation)?;
+        startup.receipt = Some(result);
+        self.0.startup_unsettled.store(false, Ordering::Release);
+        Ok(true)
     }
     pub(crate) fn replace(&self, plugin: Option<&LoadedPlugin>) -> Result<Value, HostError> {
+        if self.0.startup_unsettled.load(Ordering::Acquire) {
+            return Err(error("client_bridge_uncertain"));
+        }
         let mut state = self
             .0
             .state
             .lock()
             .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        if self.0.startup_unsettled.load(Ordering::Acquire) {
+            return Err(error("client_bridge_uncertain"));
+        }
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let operation = crate::local_import::digest(&(
             self.0.endpoint.pid,
@@ -909,9 +1253,7 @@ impl ClientSourceRuntime {
         state.epoch = valid_epoch.expect("checked epoch");
         state.provider = observed_provider.expect("checked provider");
         let activation = activation.expect("checked activation");
-        self.0
-            .traffic
-            .set_source_activation(activation.activated, activation.unsupported);
+        self.publish_activation(activation)?;
         if let Some(provider) = state.provider.clone()
             && let Err(authority) =
                 crate::client_launch::validate_source_authority(&provider, &self.0.registry)
@@ -927,7 +1269,12 @@ impl ClientSourceRuntime {
                 self.invalidate();
             }
             state.provider = None;
-            self.0.traffic.set_source_activation(json!([]), json!([]));
+            self.publish_activation(crate::client_launch::SourceActivation {
+                installed: false,
+                pending: false,
+                activated: json!([]),
+                unsupported: json!([]),
+            })?;
             return Err(authority);
         }
         if outcome != "applied" {
@@ -958,15 +1305,45 @@ impl ClientSourceRuntime {
         Ok(activation)
     }
     fn invalidate(&self) {
-        let _ = self.0._lease.shutdown(std::net::Shutdown::Both);
-        self.0.traffic.set_source_activation(json!([]), json!([]));
+        self.0.retire();
+    }
+    pub(crate) fn retire(&self) {
+        self.invalidate();
+    }
+    fn publish_activation(
+        &self,
+        activation: crate::client_launch::SourceActivation,
+    ) -> Result<(), HostError> {
+        let _lifecycle = self
+            .0
+            .lifecycle
+            .lock()
+            .map_err(|_| error("client_bridge_owner_poisoned"))?;
+        if self.0.retired.load(Ordering::Acquire) {
+            return Err(error("client_bridge_retired"));
+        }
+        self.0
+            .traffic
+            .set_source_activation(activation.activated, activation.unsupported);
+        self.0.startup_observation.store(
+            if activation.pending {
+                0
+            } else if activation.installed {
+                2
+            } else {
+                1
+            },
+            Ordering::Release,
+        );
+        Ok(())
     }
     pub(crate) fn affects(&self, affected: &std::collections::BTreeSet<String>) -> bool {
         self.0.state.lock().is_ok_and(|state| {
             state
                 .provider
-                .as_ref()
-                .is_some_and(|plugin| affected.contains(&plugin.manifest.id))
+                .iter()
+                .chain(state.startup_provider.iter())
+                .any(|plugin| affected.contains(&plugin.manifest.id))
         })
     }
     pub(crate) fn retire_if_affected(
@@ -983,6 +1360,9 @@ impl ClientSourceRuntime {
         self.request_until(command, Instant::now() + Duration::from_secs(16))
     }
     fn request_until(&self, mut command: Value, deadline: Instant) -> Result<Value, HostError> {
+        if self.0.retired.load(Ordering::Acquire) {
+            return Err(error("client_bridge_retired"));
+        }
         let remaining = |limit: Duration| {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {

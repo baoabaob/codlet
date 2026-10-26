@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
 const require = createRequire(import.meta.url);
 const { planForImage } = require('../host/windows-bootstrap.cjs');
 const { sameExecutable } = require('../host/electron-bootstrap.cjs');
@@ -37,4 +40,33 @@ test('Windows 26.930.3930 accepts only its reviewed signed image and exact fuse 
   assert.throws(()=>planForImage(image,[{...current,offset:current.offset+1}]),{code:'client_bootstrap_version_unsupported'});
   assert.throws(()=>planForImage(image,[{...current,wire:'000011001'}]),{code:'client_bootstrap_version_unsupported'});
   assert.throws(()=>planForImage('0'.repeat(64),[current]),{code:'client_bootstrap_version_unsupported'});
+});
+
+test('fuse scans use the public byte-length header across chunk boundaries and stream large images', async () => {
+  const sentinel=Buffer.from('dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'),size=513*1024*1024,offset=256*1024-sentinel.length-1;
+  for (const adapter of [false,true]) {
+    const wire=Buffer.alloc(255,48);wire[3]=adapter?49:48;
+    const fuse=Buffer.concat([sentinel,Buffer.from([1,wire.length]),wire]);
+    let hashed=0,largest=0;
+    const virtualFs={realpathSync:value=>value,existsSync:()=>true,statSync:()=>({isFile:()=>true,size}),
+      async *createReadStream(_file,options) {
+        assert.equal(options.highWaterMark,256*1024);
+        const zero=Buffer.alloc(options.highWaterMark);
+        for(let position=0;position<size;position+=zero.length) {
+          let chunk=zero.subarray(0,Math.min(zero.length,size-position));
+          const start=Math.max(position,offset),end=Math.min(position+chunk.length,offset+fuse.length);
+          if(start<end){chunk=Buffer.from(chunk);fuse.copy(chunk,start-position,start-offset,end-offset);}
+          largest=Math.max(largest,chunk.length);yield chunk;
+        }
+      }};
+    const file=new URL(adapter?'../host/windows-bootstrap.cjs':'../../runtime/client-bridge-bootstrap.cjs',import.meta.url);
+    const module={exports:{}};
+    const localRequire=name=>name==='node:fs'?virtualFs:name==='node:crypto'?{...require(name),createHash:()=>({update(bytes){hashed+=bytes.length;},digest:()=>hash})}:require(name);
+    vm.runInNewContext(fs.readFileSync(file,'utf8'),{require:localRequire,module,exports:module.exports,process:{platform:'win32'},Buffer},{filename:file.pathname});
+    const executable=path.resolve('owned-fuse-fixture','native.exe');
+    const result=adapter?await module.exports.beforeClientResume({expectedPid:1,executable,features:{moduleDataBootstrap:1}}):await module.exports.plan(executable);
+    assert.equal(hashed,size);assert(largest<=256*1024);
+    if(adapter)assert.deepEqual(JSON.parse(JSON.stringify(result)),{moduleData:null});
+    else assert.equal(result.moduleData.patches[0].fileOffset,offset+sentinel.length+5);
+  }
 });

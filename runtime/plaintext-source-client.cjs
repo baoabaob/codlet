@@ -36,7 +36,7 @@ function connectPlaintextSource(source, { signal } = {}) {
     if (method !== 'http.forward' || record.forwarding) throw failure('invalid_method');
     record.forwarding = true;
     try {
-      const input = { ...params.request, body: record.streams.importBody(params.request.body) };
+      const input = { ...params.request, credentialMode:new URL(params.request.url).origin===new URL(record.initialUrl).origin?'original':'omit', body: record.streams.importBody(params.request.body) };
       const response = await record.forward(input, { signal: record.controller.signal });
       if (record.controller.signal.aborted) throw failure('stream_retired');
       if (!response || !Number.isInteger(response.status) || response.status < 200 || response.status > 599) throw failure('invalid_response');
@@ -51,21 +51,27 @@ function connectPlaintextSource(source, { signal } = {}) {
     routeRecords.clear();
     routes.clear(); controller.abort(); peer?.close();
   }
-  const ready = connectTrafficPeer(source.endpoint, { signal: controller.signal, handle,
+  const ready = connectTrafficPeer(source.endpoint, { signal: controller.signal, handle, queueRequests: true,
     event(event) { if (event.event === 'closed') close(); } }).then(value => { peer = value; return true; },
     error => { close(); throw error; });
   function certificateReference(record, value) {
     if (value === undefined) return undefined;
-    if (typeof value !== 'string' || Buffer.byteLength(value) > 128 * 1024) throw failure('invalid_ca_bundle');
+    if (typeof value !== 'string') throw failure('invalid_ca_bundle');
     return record.streams.exportBody(value);
   }
   function closeRouteRecord(record) {
     routeRecords.delete(record.token);
     record.controller.abort(); record.streams?.dispose();
   }
+  function retireRoute(record) {
+    record.closed = true; routes.delete(record); closeRouteRecord(record);
+    return record.retirement ??= ready.then(() => {
+      if (closed) return;
+      return peer.request('route.close', { token: record.token }, { timeoutMs: 2000 });
+    });
+  }
   function reserveRoute({ upstreamBaseUrl, additionalCaPem } = {}) {
     if (closed) throw failure('peer_closed');
-    if (routes.size >= 32) throw failure('resource_limit');
     const token = randomBytes(32).toString('base64url');
     if (!TOKEN.test(token)) throw failure('invalid_source');
     const baseUrl = `${source.routeBaseUrl}/${token}`;
@@ -73,22 +79,22 @@ function connectPlaintextSource(source, { signal } = {}) {
     routes.add(record);
     const reservationReady = ready.then(() => {
       if (record.closed) throw failure('route_closed');
-      record.streams = createTrafficStreams(peer, token, record.controller.signal);
+      record.streams = createTrafficStreams(peer, token, record.controller.signal, { native: true });
       routeRecords.set(token, record);
       return peer.request('route.register', { token, upstreamBaseUrl,
-        additionalCaPem: certificateReference(record, additionalCaPem) }, { timeoutMs: 5000 });
+        additionalCaPem: certificateReference(record, additionalCaPem) }, { timeoutMs: null, signal: record.controller.signal });
     }).then(result => {
       if (result?.baseUrl !== baseUrl) throw failure('invalid_source');
       record.registered = true;
-      if (record.closed) return peer.request('route.close', { token }, { timeoutMs: 2000 }).then(() => { record.registered = false; throw failure('route_closed'); });
+      if (record.closed) return retireRoute(record).then(() => { record.registered = false; throw failure('route_closed'); });
       return record;
-    }).catch(error => { routes.delete(record); closeRouteRecord(record); throw error; });
+    }).catch(async error => { await retireRoute(record); throw error; });
     record.pending = reservationReady;
     return Object.freeze({ baseUrl, ready: reservationReady, update({ upstreamBaseUrl, additionalCaPem } = {}) {
       if (record.closed || closed) return Promise.reject(failure('route_closed'));
       const update = record.pending.then(async () => {
         const reference = certificateReference(record, additionalCaPem);
-        try { return await peer.request('route.update', { token, upstreamBaseUrl, additionalCaPem: reference }, { timeoutMs: 5000 }); }
+        try { return await peer.request('route.update', { token, upstreamBaseUrl, additionalCaPem: reference }, { timeoutMs: null, signal: record.controller.signal }); }
         catch (error) {
           if (reference?.stream) await record.streams.handle('stream.cancel', { stream: reference.stream }).catch(() => {});
           throw error;
@@ -97,12 +103,7 @@ function connectPlaintextSource(source, { signal } = {}) {
       record.pending = update.catch(() => {});
       return update;
     }, async close() {
-      if (record.closed) return;
-      record.closed = true; routes.delete(record);
-      try {
-        await record.pending;
-        if (record.registered && !closed) await peer.request('route.close', { token }, { timeoutMs: 2000 });
-      } catch {} finally { closeRouteRecord(record); }
+      await retireRoute(record);
     } });
   }
   async function registerRoute(options) {
@@ -115,8 +116,8 @@ function connectPlaintextSource(source, { signal } = {}) {
     await ready;
     const id = randomBytes(32).toString('base64url'), requestController = new AbortController();
     const abort = () => retire(record, true);
-    const record = { id, forward, controller: requestController, signal: requestSignal, abort, forwarding: false,
-      streams: createTrafficStreams(peer, id, requestController.signal) };
+    const record = { id, forward, initialUrl:input.url, controller: requestController, signal: requestSignal, abort, forwarding: false,
+      streams: createTrafficStreams(peer, id, requestController.signal, { native: true }) };
     exchanges.set(id, record);
     requestSignal?.addEventListener('abort', abort, { once: true });
     if (requestSignal?.aborted) { abort(); throw failure('request_cancelled'); }
@@ -124,7 +125,7 @@ function connectPlaintextSource(source, { signal } = {}) {
     try {
       result = await peer.request('http.intercept', { exchange: id,
         request: { url: input.url, method: input.method ?? 'GET', headers: input.headers ?? [], body: record.streams.exportBody(input.body) } },
-      { signal: requestController.signal, timeoutMs: 300000 });
+      { signal: requestController.signal, timeoutMs: null });
       if (requestController.signal.aborted) throw failure('request_cancelled');
       const body = record.streams.importBody(result.body);
       if (!body) { await peer.request('http.release', { exchange: id }, { timeoutMs: 2000 }).catch(() => {}); retire(record); return { ...result, body: null }; }

@@ -4,15 +4,15 @@ import { inspectNativeInput, inspectNativeComposerScope } from './workspace-nati
 export const workspaceError = (code, message) => Object.assign(new Error(message), { code });
 export const OWNED = '[data-codlet-workspace-owned]';
 export function ancestry(node) {
-  const key = node && Object.keys(node).find(key => key.startsWith('__reactFiber$'));
-  return [...linkedNodes(key&&node[key],fiber=>fiber.return)];
+  return currentElementAncestry(node, node?.ownerDocument?.getElementById('root')) ?? [];
 }
 export function providersFor(node) {
   const result = [], seen = new Set();
   const current = currentElementAncestry(node, node?.ownerDocument?.getElementById('root'));
   // currentElementAncestry already returns the closest host first. Selecting
   // an outer value for a repeated Native context can discard its AppScope.
-  for (const fiber of current ?? ancestry(node)) {
+  if (!current) throw workspaceError('workspace_host_drift', 'Native providers are not owned by the current React tree');
+  for (const fiber of current) {
     for (const dep of linkedNodes(fiber.dependencies?.firstContext)) {
       if (!dep.context || seen.has(dep.context)) continue;
       seen.add(dep.context); result.push([dep.context, dep.memoizedValue]);
@@ -111,7 +111,7 @@ export function findActivity(document) {
 }
 export function activityPlacement(button) {
   if (!button?.isConnected) return null;
-  const chain = currentElementAncestry(button) ?? ancestry(button);
+  const chain = ancestry(button);
   const owner = chain.find(fiber => {
     const source = componentSource(fiber.type);
     return source.includes('sidebarElectron.priorityThreads.coachmark.description') && source.includes('onActivate') && source.includes('needsAttention');

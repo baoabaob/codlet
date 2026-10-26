@@ -9,11 +9,12 @@ async function plan(executable) {
   if(process.platform!=='win32')return {moduleData:null};
   const root=path.dirname(fs.realpathSync(executable)),dll=path.join(root,'chrome.dll');
   const image=fs.existsSync(dll)?dll:executable,info=fs.statSync(image);
-  if(!info.isFile()||info.size<64||info.size>512*1024*1024)throw fail('client_bridge_image_invalid');
+  if(!info.isFile()||info.size<SENTINEL.length+2+4)throw fail('client_bridge_image_invalid');
   let tail=Buffer.alloc(0),consumed=0;const hash=createHash('sha256'),matches=[];
   for await(const chunk of fs.createReadStream(image,{highWaterMark:256*1024})) {
     hash.update(chunk);const bytes=Buffer.concat([tail,chunk]);
     for(let at=bytes.indexOf(SENTINEL);at!==-1;at=bytes.indexOf(SENTINEL,at+1)) {
+      if(at+SENTINEL.length+2>bytes.length)continue;
       const count=bytes[at+SENTINEL.length+1],end=at+SENTINEL.length+2+count;
       if(end>bytes.length)continue;
       const offset=consumed-tail.length+at;
@@ -21,12 +22,12 @@ async function plan(executable) {
       matches.push({offset,version:bytes[at+SENTINEL.length],wire:bytes.toString('ascii',at+SENTINEL.length+2,end)});
       if(matches.length>1)throw fail('client_bridge_fuse_ambiguous');
     }
-    consumed+=chunk.length;tail=Buffer.from(bytes.subarray(-100));
+    consumed+=chunk.length;tail=Buffer.from(bytes.subarray(-(SENTINEL.length+2+255)));
   }
   if(consumed!==info.size)throw fail('client_bridge_image_changed');
   if(matches.length!==1)throw fail('client_bridge_fuse_unsupported');
   const fuse=matches[0];
-  if(fuse.version!==1||fuse.wire.length<4||fuse.wire.length>64||!/^[01r]+$/.test(fuse.wire)||fuse.wire[3]==='r')throw fail('client_bridge_fuse_unsupported');
+  if(fuse.version!==1||fuse.wire.length<4||!/^[01r]+$/.test(fuse.wire)||fuse.wire[3]==='r')throw fail('client_bridge_fuse_unsupported');
   return {moduleData:fuse.wire[3]==='1'?null:{module:path.basename(image),sha256:hash.digest('hex'),patches:[{fileOffset:fuse.offset+SENTINEL.length+5,expected:[48],replacement:[49]}]}};
 }
 function sameExecutable(expected,observed) {

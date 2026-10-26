@@ -112,6 +112,7 @@ export function createShortcuts({ document, load, surface, activity, check, repo
     const accelerator = native.eventAccelerator(event);
     if (!accelerator) return;
     const key = normalizeAccelerator(accelerator, native.platform);
+    if (!key) return;
     for (const record of records) if (normalizeAccelerator(record.options.accelerator, native.platform) === key) {
       try { if (!conflict(record.options.accelerator, record) && native.dispatchKeyboard(record.nativeId, event, {})) { event.preventDefault(); event.stopPropagation(); } }
       catch (error) { report(error); }

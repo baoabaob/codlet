@@ -95,21 +95,24 @@ function createHostedChannels({ coreRequest, rootSignal, getPeer, reportState = 
         check(); if (signal.aborted) throw fail('request_cancelled');
         if (!object(input)) throw fail('invalid_argument');
         if (exchange.pending) throw fail('forward_response_pending');
-        if (exchange.releasing) { await exchange.releasing; exchange.releasing = null; }
-        if (signal.aborted) throw fail('request_cancelled');
-        if (webSocket && exchange.forwarded) throw fail('forward_already_dispatched');
-        if (exchange.attempts >= params.payload.context.maxForwardAttempts) throw fail('forward_attempt_limit');
-        const output = { ...input };
-        if (webSocket) {
-          output.protocols = input.protocols ?? [];
-          for (const direction of ['clientToServer','serverToClient']) {
-            if (input[direction] != null && typeof input[direction] !== 'function') throw fail('invalid_handler');
-            exchange.transforms[direction] = input[direction]; delete output[direction];
-          }
-          output.transforms = { clientToServer: !!input.clientToServer, serverToClient: !!input.serverToClient };
-        } else if (Object.hasOwn(input,'body')) output.body = exchange.streams.exportBody(input.body);
-        exchange.attempts++; exchange.pending = true; exchange.forwarded ||= webSocket;
+        // Waiting for the prior body cancellation is part of this attempt's
+        // ownership. Another call must not pass the same release checkpoint.
+        exchange.pending = true;
         try {
+          if (exchange.releasing) { await exchange.releasing; exchange.releasing = null; }
+          if (signal.aborted) throw fail('request_cancelled');
+          if (webSocket && exchange.forwarded) throw fail('forward_already_dispatched');
+          if (exchange.attempts >= params.payload.context.maxForwardAttempts) throw fail('forward_attempt_limit');
+          const output = { ...input };
+          if (webSocket) {
+            output.protocols = input.protocols ?? [];
+            for (const direction of ['clientToServer','serverToClient']) {
+              if (input[direction] != null && typeof input[direction] !== 'function') throw fail('invalid_handler');
+              exchange.transforms[direction] = input[direction]; delete output[direction];
+            }
+            output.transforms = { clientToServer: !!input.clientToServer, serverToClient: !!input.serverToClient };
+          } else if (Object.hasOwn(input,'body')) output.body = exchange.streams.exportBody(input.body);
+          exchange.attempts++; exchange.forwarded ||= webSocket;
           const result = await peer.request('channel.forward', { lease: params.lease, webSocket, request: output }, { signal, timeoutMs: exchange.channel.timeout });
           if (webSocket) { exchange.pending = false; return Object.freeze({ protocol: result.protocol, closed: exchange.closed }); }
           return Object.freeze({ status: result.status, headers: Object.freeze(result.headers.map(pair => Object.freeze(pair))),
@@ -135,8 +138,10 @@ function createHostedChannels({ coreRequest, rootSignal, getPeer, reportState = 
       if (channel.closed) return Promise.resolve({ closed: true });
       channel.closed = true;
       for (const id of [...channel.active]) retireExchange(id);
-      channels.delete(channel.id); changed();
-      channel.closing = coreRequest('services.traffic.closeChannel', { channel: channel.id }, rootSignal);
+      changed();
+      channel.closing = Promise.resolve().then(() => coreRequest('services.traffic.closeChannel', { channel: channel.id }, rootSignal)).then(result => {
+        channels.delete(channel.id); changed(); return result;
+      });
       return channel.closing;
     };
     channel.api = Object.freeze({ id: value.id, endpoint: value.endpoint, protocols: Object.freeze(value.protocols), close,

@@ -1905,11 +1905,13 @@ fn validate_package_trust(
 struct Work {
     plugin: LoadedPlugin,
     start: bool,
+    stop_was_live: bool,
 }
 struct Running {
     id: String,
     generation: u64,
     start: bool,
+    stop_was_live: bool,
     operation: HostOperation,
 }
 struct HostBatch {
@@ -1949,6 +1951,7 @@ impl HostBatch {
                 .map(|plugin| Work {
                     plugin,
                     start: true,
+                    stop_was_live: false,
                 })
                 .collect(),
             stage,
@@ -1961,10 +1964,9 @@ impl HostBatch {
             queued: hosts
                 .observations()
                 .into_iter()
-                .filter(|observation| {
-                    affected.contains(&observation.plugin.manifest.id) && is_live(observation.state)
-                })
+                .filter(|observation| affected.contains(&observation.plugin.manifest.id))
                 .map(|observation| Work {
+                    stop_was_live: is_live(observation.state),
                     plugin: observation.plugin,
                     start: false,
                 })
@@ -1994,6 +1996,7 @@ impl HostBatch {
                     id,
                     generation,
                     start: work.start,
+                    stop_was_live: work.stop_was_live,
                     operation,
                 }),
                 Err(error) if matches!(error.code, "operation_queue_full" | "operation_limit") => {
@@ -2021,7 +2024,7 @@ impl HostBatch {
             let failure = match result {
                 Ok(HostOperationResult::Started { plugin_id, generation, .. }) if running.start && plugin_id == running.id && generation == running.generation => None,
                 Ok(HostOperationResult::Stopped { plugin_id, generation, report }) if !running.start && plugin_id == running.id && generation == running.generation && report.workers_reaped => {
-                    (report.forced || report.exit_code != 0).then(|| format!("host retired: process_id={}, exit_code={}, forced={}, workers_reaped={}", report.process_id, report.exit_code, report.forced, report.workers_reaped))
+                    (running.stop_was_live && (report.forced || report.exit_code != 0)).then(|| format!("host retired: process_id={}, exit_code={}, forced={}, workers_reaped={}", report.process_id, report.exit_code, report.forced, report.workers_reaped))
                 }
                 Ok(_) => { self.confirmed = false; Some("host executor returned an unrelated or unconfirmed lifecycle result".into()) }
                 Err(error) => { self.confirmed &= running.start && error.code != "cleanup_incomplete"; Some(error.to_string()) }
@@ -2102,5 +2105,97 @@ mod native_launch_tests {
                 .len(),
             1
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_batch_drains_a_terminal_node_generations_late_raw_attachment() {
+        use crate::capabilities::{CapabilityDescriptor, CapabilityScope};
+        use crate::host_runtime::{HostCapabilityCaller, HostCapabilityRequest};
+        use crate::plugins::Permission;
+        use serde_json::{Value, json};
+        use std::time::{Duration, Instant};
+
+        let directory = tempfile::tempdir().unwrap();
+        let id = "test.batch-attachment";
+        std::fs::write(directory.path().join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":{"entry":"host.js"},"permissions":["host.process","cdp.raw"],"provides":[{"name":id,"api":1,"scope":"runtime"}]}).to_string()).unwrap();
+        std::fs::write(directory.path().join("host.js"), format!("exports.activate=context=>{{const cap={{name:'{id}',api:1,scope:'runtime'}};context.rpc.provide(cap,'attach',()=>context.cdp.request('Target.attachToTarget',{{targetId:'window-a',flatten:true}}));context.rpc.provide(cap,'quit',()=>{{setTimeout(()=>process.exit(0),0);return {{exiting:true}}}})}};exports.deactivate=()=>{{}};")).unwrap();
+        let plugin = crate::local_plugins::load_local_plugin(
+            id,
+            directory.path(),
+            &[Permission::HostProcess, Permission::CdpRaw],
+            1,
+        )
+        .unwrap();
+        let (mut peer, events) = crate::cdp::VmPeer::start();
+        drop(events);
+        let mut hosts = HostRuntime::start_with_runtime(
+            vec![plugin],
+            peer.client.clone(),
+            Some(peer.runtime.clone()),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while hosts.is_starting() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let call = |method: &str| {
+            hosts
+                .capability_client()
+                .begin_request(HostCapabilityRequest {
+                    owner_plugin_id: id.into(),
+                    expected_generation: 1,
+                    capability: CapabilityDescriptor::new(id, 1, CapabilityScope::Runtime).unwrap(),
+                    method: method.into(),
+                    params: Value::Null,
+                    caller: HostCapabilityCaller {
+                        plugin_id: "test.caller".into(),
+                        generation: 1,
+                        target_id: String::new(),
+                        document_epoch: 0,
+                    },
+                    cleanup: false,
+                    deadline,
+                })
+                .unwrap()
+        };
+        peer.request("Fixture.holdNextAttach", json!({}));
+        let _attachment = call("attach");
+        while peer.request("Fixture.inspect", json!({}))["heldAttachments"] != 1 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _quit = call("quit");
+        while !matches!(
+            hosts.observations()[0].state,
+            ExecutionState::Exited | ExecutionState::Failed
+        ) {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut batch = HostBatch::stop(&hosts, &BTreeSet::from([id.to_owned()]), "deactivate");
+        assert_eq!(
+            batch.queued.len(),
+            1,
+            "a terminal Node observation still needs its resource receipt"
+        );
+        assert!(batch.poll(&hosts).is_none());
+        peer.request("Fixture.releaseAttaches", json!({}));
+        let (failures, confirmed) = loop {
+            if let Some(result) = batch.poll(&hosts) {
+                break result;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(confirmed && failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            peer.request("Fixture.inspect", json!({}))["sessions"],
+            json!([])
+        );
+        assert_eq!(peer.request("Fixture.ping", json!({}))["alive"], true);
+        hosts.stop().unwrap();
+        peer.close();
     }
 }

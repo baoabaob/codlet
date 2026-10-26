@@ -120,7 +120,13 @@ impl RuntimeUpdateOwner {
                     .insert(session.target_id().to_owned(), session.clone());
             }
             TargetChange::NavigatedAway(session) => {
-                self.sessions.remove(session.target_id());
+                if self
+                    .sessions
+                    .get(session.target_id())
+                    .is_some_and(|current| current.session_id() == session.session_id())
+                {
+                    self.sessions.remove(session.target_id());
+                }
             }
             TargetChange::SessionEnded {
                 target_id,

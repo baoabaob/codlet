@@ -27,7 +27,9 @@ test('Core source snapshots restore using the same owned backends and never reco
   assert.equal(old.suspend(),true);
   const next=installElectronTraffic(electron,configuration,context,dependencies);next.restore(saved);await next.ready();
   assert.equal(next.confirmTakeover(),true);await old.close();
-  assert.equal(recoveries,1);assert.equal(routeClosed,0);assert.equal(sourceClosed,0);
+  // Every recorded backend already belongs to the retained source. Suspending
+  // its initial observation cannot create a reconnect during takeover.
+  assert.equal(recoveries,0);assert.equal(routeClosed,0);assert.equal(sourceClosed,0);
   assert.equal(resources.get('backendState').records.values().next().value.child,child);
   await next.close();assert.equal(routeClosed,0);
 });

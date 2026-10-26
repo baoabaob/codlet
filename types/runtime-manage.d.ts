@@ -343,8 +343,8 @@ export interface RuntimeManageMethods {
   pluginUpdateReview: { params: {batchId: number; pluginId: string}; result: ManagedPreview };
   downloadRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
   installRuntimeUpdate: { params: null | Record<string, never>; result: RuntimeUpdateStatus };
-  /** One explicit combined transaction; a lost reply is resolved through versionStatus, never replayed. */
-  installCombinedUpdate: { params: {candidateId: string; targetId?: string}; result: OfficialUpdateStatus };
+  /** Binds the confirmed Core candidate and official target; resolve a lost reply through versionStatus without replay. */
+  installCombinedUpdate: { params: {candidateId: string; targetId: string}; result: OfficialUpdateStatus };
   folderSelection: { params: { selectionId: string }; result: FolderSelection };
   githubReleases: { params: { url: string }; result: GitHubJob };
   githubDiscover: { params: { query?: string; page?: number; refresh?: boolean }; result: GitHubJob };

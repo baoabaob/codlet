@@ -13,12 +13,14 @@ function method(Constructor, name) {
 }
 const parsedMethods = new WeakMap();
 function memberPath(node) {
-  if (node?.type === 'ThisExpression') return ['this'];
-  if (node?.type === 'Identifier') return [node.name];
-  if (node?.type !== 'MemberExpression') return null;
-  const parent = memberPath(node.object), key = !node.computed && node.property.type === 'Identifier' ? node.property.name
-    : node.property.type === 'Literal' && typeof node.property.value === 'string' ? node.property.value : null;
-  return parent && key !== null ? [...parent, key] : null;
+  const path=[],seen=new Set();
+  while(node?.type==='MemberExpression') {
+    if(seen.has(node))return null;seen.add(node);
+    const key=!node.computed&&node.property.type==='Identifier'?node.property.name:node.property.type==='Literal'&&typeof node.property.value==='string'?node.property.value:null;
+    if(key===null)return null;path.push(key);node=node.object;
+  }
+  if(node?.type==='ThisExpression')path.push('this');else if(node?.type==='Identifier')path.push(node.name);else return null;
+  return path.reverse();
 }
 function inspectMethod(Constructor, name) {
   const value = method(Constructor, name);
@@ -31,18 +33,19 @@ function inspectMethod(Constructor, name) {
     const fn = tree.body[0]?.expression?.properties?.[0]?.value;
     if (!fn?.body) throw Error('method_missing');
     const calls = [], members = [], strings = [], variables = new Map();
-    const walk = node => {
-      if (!node || typeof node !== 'object') return;
+    const pending=[fn.body],seen=new Set();
+    while(pending.length) {
+      const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;seen.add(node);
       if (node.type === 'CallExpression') calls.push({path:memberPath(node.callee)?.join('.'),args:node.arguments,start:node.start});
       if (node.type === 'MemberExpression') members.push(memberPath(node)?.join('.'));
       if (node.type === 'Literal' && typeof node.value === 'string') strings.push(node.value);
       if (node.type === 'TemplateLiteral' && !node.expressions.length) strings.push(node.quasis[0].value.cooked);
       if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier') variables.set(node.id.name,node.init);
       for (const [key, child] of Object.entries(node)) if (key !== 'start' && key !== 'end') {
-        if (Array.isArray(child)) child.forEach(walk); else if (child && typeof child === 'object') walk(child);
+        if (Array.isArray(child)) for(const item of child)pending.push(item); else if (child && typeof child === 'object') pending.push(child);
       }
-    };
-    walk(fn.body);result={calls,members,strings,variables,params:fn.params};
+    }
+    result={calls,members,strings,variables,params:fn.params};
   } catch { /* An opaque method cannot prove this private contract. */ }
   parsedMethods.set(value,result);return result;
 }

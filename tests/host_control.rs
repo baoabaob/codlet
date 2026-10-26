@@ -253,6 +253,7 @@ fn error_code(report: ControlReport) -> String {
     }
 }
 
+#[cfg(feature = "test-fixtures")]
 #[test]
 fn confirmed_adapter_disable_persists_the_gui_closure_without_reactivation() {
     let mut fixture = Fixture::new();
@@ -303,6 +304,7 @@ fn confirmed_adapter_disable_persists_the_gui_closure_without_reactivation() {
 #[test]
 fn newly_registered_host_hot_management_reuses_receipts_and_keeps_generation_high_water() {
     let mut fixture = Fixture::new();
+    let renderer_baseline = fixture.renderer.plugin_count();
     let id = "dev.host-control";
     let root = fixture.register(id, &source("first", ""));
     let reload_before_enable = fixture.submit(PluginControlAction::Reload, id);
@@ -314,7 +316,7 @@ fn newly_registered_host_hot_management_reuses_receipts_and_keeps_generation_hig
     assert_eq!(enabled.outcome, PluginControlOutcome::Applied);
     assert_eq!(enabled.generations[0].generation, 1);
     assert!(fixture.registry().is_enabled(id));
-    assert_eq!(fixture.renderer.plugin_count(), 0);
+    assert_eq!(fixture.renderer.plugin_count(), renderer_baseline);
     fixture.ping();
 
     std::fs::write(root.join("dist/host.js"), source("second", "")).unwrap();

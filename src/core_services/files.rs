@@ -24,7 +24,7 @@ impl FileAccess {
     }
 }
 #[derive(Clone, Default)]
-pub(super) struct Files(Arc<Mutex<State>>);
+pub(super) struct Files(Arc<Mutex<State>>, Arc<Mutex<()>>);
 #[derive(Default)]
 struct State {
     watches: BTreeMap<String, Watch>,
@@ -125,7 +125,9 @@ impl Files {
         }
         // Serialize our own compare-and-replace operations. External editors do
         // not participate in this lock; version checks are optimistic evidence.
-        let _state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        // Grant checks can retire this owner's watches/dialogs. Keep file I/O
+        // serialization separate from the resource registry they must acquire.
+        let _operation = self.1.lock().unwrap_or_else(|p| p.into_inner());
         check()?;
         match method {
             "read" => {
@@ -369,7 +371,14 @@ impl Files {
                     }
                 }
             })
-            .map_err(|_| error("worker_unavailable", "cannot start file watcher"))?;
+            .map_err(|_| {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .watches
+                    .remove(&id);
+                error("worker_unavailable", "cannot start file watcher")
+            })?;
         Ok(
             json!({"watch":id,"cursor":0,"snapshot":initial_snapshot,"recursive":false,"pollIntervalMs":1000,"idlePollIntervalMs":5000}),
         )
@@ -422,6 +431,7 @@ impl Files {
         let owner = owner_key(p);
         let name = name.to_owned();
         let directory = kind == "directory";
+        let cleanup_id = id.clone();
         std::thread::Builder::new().name("codlet-file-dialog".into()).spawn(move || {
             let outcome = native_dialog(save, directory, &name, cancelled.clone());
             let Some(shared) = weak.upgrade() else { return; };
@@ -437,7 +447,10 @@ impl Files {
                 Err(e) => json!({"dialog":id,"status":"failed","code":e.code,"message":e.message}),
             }};
             if let Some(dialog) = state.dialogs.get_mut(&id) { dialog.result = result; }
-        }).map_err(|_| error("worker_unavailable", "cannot start file dialog"))?;
+        }).map_err(|_| {
+            self.0.lock().unwrap_or_else(|p| p.into_inner()).dialogs.remove(&cleanup_id);
+            error("worker_unavailable", "cannot start file dialog")
+        })?;
         Ok(initial)
     }
     pub fn retire(&self, p: &Principal) {
@@ -831,6 +844,58 @@ fn native_dialog(
                 pin_exact_grant(&path, std::slice::from_ref(&path)).map_err(broker_error)?;
         }
         Ok(Some(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_operation_grant_recheck_can_retire_the_actual_service_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("plugin");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let id = "test.file-revocation";
+        fs::write(root.join("host.js"), "exports.activate=()=>{};").unwrap();
+        fs::write(root.join("note.txt"), "owned").unwrap();
+        fs::write(root.join("codlet.json"), json!({"schema":1,"id":id,"version":"1","host":{"entry":"host.js"},"permissions":["host.process","host.fs"]}).to_string()).unwrap();
+        let path = directory.path().join("registry.json");
+        let mut registry = PluginRegistry::load(&path).unwrap();
+        let registration = crate::plugins::LocalPluginRegistration {
+            path: root.clone(),
+            grants: vec![Permission::HostProcess, Permission::HostFs],
+            broker_policy: crate::plugin_permissions::BrokerPolicy {
+                read_roots: vec![root.clone()],
+                ..Default::default()
+            },
+        };
+        registry.register_local(id, registration.clone()).unwrap();
+        registry.set_enabled(id, true).unwrap();
+        registry.save().unwrap();
+        let plugin =
+            crate::local_plugins::load_local_plugin_with_registration(id, &registration, 1)
+                .unwrap();
+        let service = SharedCoreServices::new(&path).unwrap();
+        service.register(&[plugin]).unwrap();
+        let principal = service.0.owners.lock().unwrap()[id].clone();
+        let registry = std::cell::RefCell::new(registry);
+        let params = json!({"path":root.join("note.txt")});
+        let result = service
+            .0
+            .files
+            .invoke(&principal, "read", params.clone(), &|| {
+                // Fail promptly on a regressed lock order before the actual revoke
+                // path recursively retires this file-resource registry.
+                assert!(service.0.files.0.try_lock().is_ok());
+                let mut registry = registry.borrow_mut();
+                registry.revoke_permission(id, Permission::HostFs).unwrap();
+                registry.save().unwrap();
+                service.check(&principal, "files.read", true, &params)
+            });
+        assert_eq!(result.unwrap_err().code, "authorization_revoked");
+        assert!(!service.0.owners.lock().unwrap().contains_key(id));
     }
 }
 #[cfg(target_os = "macos")]

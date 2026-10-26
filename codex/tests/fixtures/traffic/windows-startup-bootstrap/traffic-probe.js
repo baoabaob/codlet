@@ -1,11 +1,13 @@
 (async()=>{
   const module=await import('app://-/assets/app-shared-c568b0b98683.js');
   const root=document.getElementById('root'),key=root&&Object.keys(root).find(k=>k.startsWith('__reactContainer$'));
-  const container=root?.[key],pending=[container?.stateNode?.current??container],seen=new Set();let scope;
-  while(pending.length&&seen.size<20000){const f=pending.pop();if(!f||seen.has(f))continue;seen.add(f);const chain=f.memoizedProps?.value;
-    if(chain instanceof Map&&chain.get(module.tSt?.id)?.token===module.tSt){scope={node:chain.get(module.tSt.id),chain};break;}
+  const container=root?.[key],pending=[container?.stateNode?.current??container],seen=new Set(),scopes=new Map();let scope;
+  while(pending.length){const f=pending.pop();if(!f||seen.has(f))continue;seen.add(f);const chain=f.memoizedProps?.value;
+    if(chain instanceof Map&&chain.get(module.tSt?.id)?.token===module.tSt){const node=chain.get(module.tSt.id);scopes.set(node,{node,chain});if(f.sibling)pending.push(f.sibling);continue;}
     if(f.sibling)pending.push(f.sibling);if(f.child)pending.push(f.child);
   }
+  if(scopes.size===1)[scope]=scopes.values();
+  else if(scopes.size>1)return JSON.stringify({report:{done:true,accepted:false,error:'fixture_scope_ambiguous'}});
   const consumer=globalThis.__codletCompatConsumer;
   if(consumer&&scope&&!globalThis.__codletTrafficResearch){
     const report=globalThis.__codletTrafficResearch={done:false};

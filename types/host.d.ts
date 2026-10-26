@@ -21,6 +21,8 @@ export type HttpHeader = readonly [name: string, value: string];
 export interface HttpBody extends AsyncIterable<Uint8Array> {
   /** Stops and releases an unread or partially-read stream. */
   cancel(): boolean;
+  /** Awaits the original cancellation receipt; a rejection leaves release unconfirmed. */
+  cancelAndWait(): Promise<void>;
 }
 export interface HttpChannelRequest {
   readonly id: string;
@@ -28,7 +30,8 @@ export interface HttpChannelRequest {
   /** Path and query below the private channel endpoint. */
   readonly path: string;
   readonly headers: readonly HttpHeader[];
-  readonly body: HttpBody;
+  /** Null means the request has no body; an empty stream is a distinct value. */
+  readonly body: HttpBody | null;
 }
 export interface HttpChannelResponse {
   status: number;
@@ -55,7 +58,7 @@ export interface HttpChannelExchange {
   readonly forwardAttempts: number;
   readonly maxForwardAttempts: number;
   /** Dispatches only on explicit calls. Consume or cancel each response body before the next attempt. Redirects are returned and are never followed. */
-  forward(request: HttpForwardRequest): Promise<Readonly<Required<Pick<HttpChannelResponse, 'status' | 'headers'>> & { body: HttpBody }>>;
+  forward(request: HttpForwardRequest): Promise<Readonly<Required<Pick<HttpChannelResponse, 'status' | 'headers'>> & { body: HttpBody | null }>>;
 }
 export interface TrafficChannelOptions {
   /** Active HTTP exchanges, default and maximum 4. */
@@ -234,20 +237,6 @@ export interface ClientUnsupportedSource {
   readonly id: string;
   readonly reason: 'unsupported_build' | 'hook_unavailable' | 'child_unavailable' | 'route_unavailable' | 'timeout';
 }
-/** Private to one authorized codlet.client.launch@1 provider; never log this DTO. */
-export interface ClientLaunchContext {
-  readonly signal: AbortSignal;
-  readonly originalEnvironment: Readonly<Record<string, string>>;
-  readonly traffic: Readonly<{
-    source: Readonly<ClientPlaintextSource>;
-    environmentPatch: Readonly<{ set: Readonly<Record<string, never>>; removeCaseInsensitive: readonly [] }>;
-  }>;
-}
-export interface ClientAttachContext extends ClientLaunchContext {
-  readonly inspectorUrl: string;
-  readonly expectedPid: number;
-  readonly executable: string;
-}
 export interface HostPlugin {
   activate(context: HostContext): void | Promise<void>;
   deactivate(cleanup: HostCleanupContext): void | Promise<void>;
@@ -262,10 +251,6 @@ export interface HostPlugin {
    * Application source fingerprints and private bindings remain plugin code.
    */
   clientSource?(context: Readonly<{signal:AbortSignal;features:Readonly<{clientBridge:1}>}>): {code:string} | Promise<{code:string}>;
-  /** Optional startup ABI. Requires Node mode, host.raw (legacy host.process), cdp.raw and the exact launch capability. */
-  prepareClientLaunch?(context: ClientLaunchContext): { arguments: readonly string[] } | Promise<{ arguments: readonly string[] }>;
-  /** Bounded, exact-child handshake. Success does not claim verified coverage of every request path. */
-  attachClientLaunch?(context: ClientAttachContext): Promise<{ installed: true; exactChildVerified: true; activatedSources: readonly ClientActivatedSource[]; unsupportedSources: readonly ClientUnsupportedSource[] }>;
 }
 export type HostStateJson = null | boolean | number | string | readonly HostStateJson[] | { readonly [key: string]: HostStateJson };
 export interface HostStateSnapshot { readonly schema: number; readonly value: HostStateJson; }

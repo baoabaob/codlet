@@ -249,3 +249,56 @@ test('renderer document lifetime aborts active callbacks and does not fabricate 
   assert.equal(calls.some(call => call.method === 'tasks.finish'), false);
   assert.equal(calls.some(call => call.method === 'tasks.unregister'), true);
 });
+
+test('late runner registration after close or document abort releases its original handle without starting callbacks', async () => {
+  for (const ending of ['close', 'abort']) {
+    const root = new AbortController(), calls = [];
+    let registered;
+    const services = createCoreServicesRuntime({
+      rootSignal: root.signal, detach: callback => callback(),
+      request(method, params) {
+        calls.push({ method, params });
+        if (method === 'tasks.register') return new Promise(resolve => { registered = resolve; });
+        if (method === 'tasks.unregister') return { unregistered: true };
+        throw new Error(`late ${method}`);
+      },
+    });
+    const registration = services.tasks.register('late', () => assert.fail('retired runner executed'));
+    await until(() => registered, 'registration did not dispatch');
+    if (ending === 'close') await services.close();
+    else root.abort(Object.assign(new Error('document retired'), { code: 'resource_closed' }));
+    registered({ runner: 'original_runner' });
+    await assert.rejects(registration, { code: 'resource_closed' });
+    assert.deepEqual(calls.map(({ method, params }) => [method, params]), [
+      ['tasks.register', { name: 'late' }], ['tasks.unregister', { runner: 'original_runner' }],
+    ]);
+  }
+});
+
+test('close reserves admission before a queued service dispatch and retains one closure completion', async () => {
+  const root = new AbortController(), calls = [];
+  const services = createCoreServicesRuntime({ rootSignal: root.signal, detach: callback => callback(), request: method => { calls.push(method); } });
+  const queued = services.storage.transaction({ expectedRevision: '0', operations: [] });
+  const closing = services.close();
+  assert.equal(services.close(), closing);
+  await assert.rejects(queued, { code: 'resource_closed' });
+  await closing;
+  assert.deepEqual(calls, []);
+});
+
+test('runner close preserves an unconfirmed unregister outcome and never retries or reports a later false success', async () => {
+  const root = new AbortController(); let unregisters = 0;
+  const services = createCoreServicesRuntime({ rootSignal: root.signal, detach: callback => callback(), request(method) {
+    if (method === 'tasks.register') return { runner: 'original' };
+    if (method === 'tasks.claim') return new Promise(() => {});
+    if (method === 'tasks.unregister') { unregisters++; throw Object.assign(new Error('lost receipt'), { code: 'outcome_unknown' }); }
+    throw new Error(method);
+  } });
+  const runner = await services.tasks.register('fixture', () => {});
+  const closing = runner.close(); assert.equal(runner.close(), closing);
+  assert.deepEqual(await closing, { unregistered: false });
+  assert.deepEqual(await runner.close(), { unregistered: false });
+  assert.equal(unregisters, 1);
+  await assert.rejects(runner.start({ input: null, operationKey: 'later' }), { code: 'resource_closed' });
+  await services.close();
+});

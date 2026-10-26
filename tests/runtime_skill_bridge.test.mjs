@@ -4,10 +4,14 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const source=readFileSync(new URL('../runtime/skill-bridge.js',import.meta.url),'utf8');
 const settle=async()=>{for(let i=0;i<15;i++)await new Promise(r=>setTimeout(r,0));};
-function fixture(t,{mounted=true,ambiguous=false,version='future-backend',origin='app://-'}={}){
-  const calls=[],coreCalls=[];let registered=false,ticket=0;
+function fixture(t,{mounted=true,ambiguous=false,version='future-backend',origin='app://-',knownRoots=[],baseline=()=>({observed:true,authorityId:'native-authority'}),request=async()=>({})}={}){
+  const calls=[],coreCalls=[];let registered=false,ticket=0,uncertain=false,leasePending=false,retainedRoots=knownRoots??[],proposed=retainedRoots;
   const connection=()=>{
-    const client={requestPromises:new Map(),getAppServerVersion:()=>version,setAppServerVersion(){},async sendRequest(method,params,options){calls.push({method,params,options});return {};}};
+    let sequence=0;
+    const client={hostId:'local',requestClientId:'native-client',requestPromises:new Map([['initialize',{method:'initialize'}]]),getAppServerVersion:()=>version,setAppServerVersion(){},async sendRequest(method,params,options){
+      const id=++sequence,pending={method};client.requestPromises.set(id,pending);calls.push({method,params,options});
+      try{return await request(method,params,options,client);}finally{if(client.requestPromises.get(id)===pending)client.requestPromises.delete(id);}
+    }};
     const manager={requestClient:client,getHostId:()=> 'local',getConversation(){}};
     const token={id:Symbol()},family={scope:token,read:()=>client},managerFamily={scope:token,read:()=>manager};
     const node={token,familyBindings:new Map([[family,new Map([['local',client]])],[managerFamily,new Map([['local',manager]])]])};
@@ -24,10 +28,17 @@ function fixture(t,{mounted=true,ambiguous=false,version='future-backend',origin
   const config={marker:'test.skill',binding:'skillBinding',root:'/runtime',skillPath:'/runtime/codlet/SKILL.md'};
   const state=()=>vm.runInContext('globalThis[Symbol.for("test.skill")]',context);
   context.skillBinding=text=>{const input=JSON.parse(text);coreCalls.push(input.action);let reply;
-    if(input.action==='complete'){registered=input.ok;reply={ready:registered};}
+    if(input.action==='baseline')reply=baseline(input,first.client);
+    else if(input.action==='dispatch')reply={admitted:true};
+    else if(input.action==='unknown'){uncertain=true;registered=false;reply={unknown:true};}
+    else if(input.action==='complete'){uncertain||=input.unknown===true;registered=input.ok&&!uncertain;if(registered)retainedRoots=proposed;if(!uncertain)leasePending=false;reply={ready:registered,unknown:uncertain};}
     else if(input.action==='invalidate'){registered=false;reply={ready:false};}
-    else reply=input.action==='ensure'&&registered?{ready:true}:{ticket:++ticket,roots:[...(input.roots??[]).filter(p=>p!==config.root),config.root]};
-    queueMicrotask(()=>state()?.receive(input.id,reply));
+    else if(input.action!=='failed'&&uncertain)reply={error:'Native skill root write outcome is unknown',unknown:true};
+    else if(['set','ensure'].includes(input.action)&&leasePending)reply={busy:true};
+    else if(input.action==='ensure'&&knownRoots===null)reply={error:'The current Native extra skill roots have not been observed',unobserved:true};
+    else if(input.action==='ensure'&&registered)reply={ready:true};
+    else {leasePending=true;proposed=(input.roots??retainedRoots).filter(p=>p!==config.root);reply={ticket:++ticket,roots:[...proposed,config.root]};}
+    Promise.resolve(reply).then(value=>queueMicrotask(()=>state()?.receive(input.id,value)));
   };
   vm.runInContext('('+source+')',context)(config);
   t.after(()=>state()?.dispose([]));
@@ -41,8 +52,8 @@ test('unlisted frontend and backend reuse the mounted local connection and prese
   await client.sendRequest('turn/start',{threadId:'one',input:[{type:'text',text:'/codlet 帮我创建一个插件：'}]});
   assert.equal(calls.at(-1).params.input.at(-1).type,'skill');assert.equal(calls.at(-1).params.input.at(-1).path,config.skillPath);
   await client.sendRequest('turn/start',{threadId:'two',input:[{type:'text',text:'regular message mentioning /codlet elsewhere'}]});assert.equal(calls.at(-1).params.input.length,1);
-  client.setAppServerVersion('another-version');await settle();await client.sendRequest('skills/list',{});assert.ok(coreCalls.includes('invalidate'));
-  await f.state().dispose(['/another-root']);assert.equal(client.sendRequest,f.original);assert.deepEqual([...calls.at(-1).params.extraRoots],['/another-root']);
+  client.setAppServerVersion('another-version');await settle();await client.sendRequest('skills/list',{});assert.equal(f.state().clientEpoch,1);
+  await settle();await f.state().dispose(['/another-root']);assert.equal(client.sendRequest,f.original);assert.deepEqual([...calls.at(-1).params.extraRoots],['/another-root']);
 });
 test('cold documents wait for mounted services; disposal cancels the pending wait',async t=>{
   const f=fixture(t,{mounted:false});await settle();assert.equal(f.state().status,'starting');assert.equal(f.calls.length,0);
@@ -103,4 +114,69 @@ test('root registration preserves Native request options without adding a guesse
   await f.client.sendRequest('skills/extraRoots/set',{extraRoots:['/another-root']},options);
   assert.equal(f.calls.at(-1).options,options);
   assert.deepEqual([...f.calls.at(-1).params.extraRoots],['/another-root','/runtime']);
+});
+
+test('an unobserved Native roots baseline remains explicit while ordinary Native calls continue',async t=>{
+  const f=fixture(t,{knownRoots:null});await settle();
+  await assert.rejects(f.state().ready,{code:'native_skill_roots_unobserved'});
+  assert.equal(f.calls.length,0);
+  for(const method of ['skills/list','thread/start','thread/resume','thread/fork','turn/start'])await f.client.sendRequest(method,{input:[]});
+  assert.equal(f.calls.length,5);assert(!f.calls.some(call=>call.method==='skills/extraRoots/set'));
+  await assert.rejects(f.client.sendRequest('turn/start',{input:[{type:'text',text:'/codlet create'}]}),{code:'native_skill_roots_unobserved'});
+  assert.equal(f.calls.length,5);
+});
+
+test('unknown dispatched root writes are never replayed and later independent Native sets still dispatch',async t=>{
+  let roots=0;const error=Error('Native outcome unknown'),f=fixture(t,{request:async method=>{
+    if(method==='skills/extraRoots/set'&&++roots===2)throw error;
+    return {native:roots};
+  }});await settle();
+  const options={timeoutMs:60000};
+  await assert.rejects(f.client.sendRequest('skills/extraRoots/set',{extraRoots:['/first']},options),value=>value===error);
+  assert.equal(roots,2);assert.equal(f.state().status,'unknown');
+  const params={extraRoots:['/later']};
+  assert.deepEqual(await f.client.sendRequest('skills/extraRoots/set',params,options),{native:3});
+  assert.equal(roots,3);assert.equal(f.calls.at(-1).params,params);assert.equal(f.calls.at(-1).options,options);
+  await f.client.sendRequest('thread/start',{});assert.equal(f.calls.at(-1).method,'thread/start');
+});
+
+test('retirement reports a pending Native root write without a blind restore or late Core completion',async t=>{
+  let resolve;const f=fixture(t,{request:method=>method==='skills/extraRoots/set'?new Promise(done=>{resolve=done;}):{}});await settle();
+  const previous=f.state(),ready=assert.rejects(previous.ready,{code:'runtime_skill_retired'});
+  assert.equal(previous.nativeWrites.size,1);
+  const result=await previous.dispose(['/retained']);await ready;
+  assert.equal(result.status,'unknown');assert.equal(result.reason,'native_skill_write_pending');assert.equal(f.calls.length,1);
+  resolve({});await settle();assert.equal(previous.nativeWrites.size,0);assert.equal(f.coreCalls.filter(action=>action==='complete').length,0);assert.equal(f.calls.length,1);
+});
+
+test('cleanup holds its actual write before a later Native root set and preserves the later parameters',async t=>{
+  let roots=0,finish;const f=fixture(t,{request:method=>method==='skills/extraRoots/set'&&++roots===2?new Promise(resolve=>{finish=resolve;}):{}});await settle();
+  const disposal=f.state().dispose(['/retained']),params={extraRoots:['/newer']},options={timeoutMs:90000};
+  const later=f.client.sendRequest('skills/extraRoots/set',params,options);
+  assert.equal(roots,2);finish({});assert.equal((await disposal).status,'restored');await later;
+  assert.equal(roots,3);assert.equal(f.calls.at(-1).params,params);assert.equal(f.calls.at(-1).options,options);
+});
+
+test('a caller can cancel an explicit skill dependency while ordinary Native requests remain live',async t=>{
+  let finish;const f=fixture(t,{request:method=>method==='skills/extraRoots/set'&&!finish?new Promise(resolve=>{finish=resolve;}):{}});await settle();
+  const controller=new AbortController(),reason=Error('caller cancelled');
+  const pending=f.client.sendRequest('turn/start',{input:[{type:'text',text:'/codlet create'}]},{signal:controller.signal});
+  const rejected=assert.rejects(pending,error=>error===reason);controller.abort(reason);await rejected;
+  await f.client.sendRequest('thread/resume',{});assert.equal(f.calls.at(-1).method,'thread/resume');finish({});await f.state().ready;
+});
+
+test('baseline replies cannot authorize a reused Native pending object',async t=>{
+  let finish;const f=fixture(t,{baseline:()=>new Promise(resolve=>{finish=resolve;})});await settle();
+  f.client.requestPromises.set('initialize',{method:'initialize'});
+  finish({observed:true,authorityId:'old-anchor'});
+  await assert.rejects(f.state().ready,{code:'native_skill_owner_changed'});assert.equal(f.calls.length,0);
+});
+
+test('a second independent Native root call dispatches once while a Core write is pending and prevents a guessed commit',async t=>{
+  let finish,rootCalls=0;const f=fixture(t,{request:method=>method==='skills/extraRoots/set'&&++rootCalls===1?new Promise(resolve=>{finish=resolve;}):{native:true}});await settle();
+  const options={timeoutMs:90000},params={extraRoots:['/new-user-selection']};
+  assert.deepEqual(await f.client.sendRequest('skills/extraRoots/set',params,options),{native:true});
+  assert.equal(rootCalls,2);assert.equal(f.calls.at(-1).params,params);assert.equal(f.calls.at(-1).options,options);
+  finish({});await assert.rejects(f.state().ready,{code:'native_skill_write_unknown'});
+  assert.equal(f.state().status,'unknown');assert.equal(rootCalls,2);
 });

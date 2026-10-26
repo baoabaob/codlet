@@ -1,5 +1,5 @@
 'use strict';
-const { connectPlaintextSource } = require('./vendor/plaintext-source-client.cjs');
+const { connectPlaintextSource } = require('../../runtime/plaintext-source-client.cjs');
 const { installDesktopPlaintext } = require('./electron-plaintext.cjs');
 const { installBackendSpawn } = require('./backend-spawn.cjs');
 const { recordSourceDiagnostic } = require('./source-diagnostics.cjs');
@@ -36,19 +36,15 @@ function localBackends(context, ownsProcess, dependencies = {}) {
   return connections;
 }
 async function recoverLocalBackends(context, ownsProcess, dependencies) {
-  // Probe without blocking Native, then revalidate every idle owner because
-  // a request or turn may have started while policy discovery was in flight.
-  const checkDeadline=()=>{if(Number.isSafeInteger(dependencies?.deadlineUnixMs)&&Date.now()>=dependencies.deadlineUnixMs-500)throw fail('backend_config_timeout');};
-  checkDeadline();
+  // Probe without blocking Native, then revalidate each captured transport.
+  const captured=new Map([...localBackends(context,ownsProcess,{...dependencies,canRecover:undefined})].map(connection=>[connection,connection.connection?.proc]));
   if (dependencies?.prepareConnection) {
     for (const connection of localBackends(context, ownsProcess, { ...dependencies, canRecover: undefined })) {
-      checkDeadline();
       await dependencies.prepareConnection(connection.connection);
     }
   }
   for (const connection of localBackends(context, ownsProcess, dependencies)) {
-    checkDeadline();
-    if (localBackends(context, ownsProcess, dependencies).has(connection)) {
+    if (connection.connection?.proc===captured.get(connection)&&localBackends(context, ownsProcess, dependencies).has(connection)) {
       await connection.restart({intent: 'restart', killCodexProcess: false});
       if(dependencies?.observation)dependencies.observation.reconnected=(dependencies.observation.reconnected??0)+1;
     }
@@ -71,8 +67,10 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   const recover = dependencies.recover ?? recoverLocalBackends;
   let recoveryReason = null;
   const recoveryObservation={attempted:false,calls:0,reconnected:0};
-  let readinessDeadlineUnixMs = null;
   let readinessStartedUnixMs = null;
+  let release;
+  const retirement=new Promise(resolve=>{release=resolve;});
+  const sleep=async(background=false)=>{let timer;try{await Promise.race([new Promise(resolve=>{timer=setTimeout(resolve,20);if(background)timer.unref?.();}),retirement]);}finally{clearTimeout(timer);}};
   const diagnose = (installed,error) => {
     try {
     const desktopState=desktop?.inspect(),backendState=backend?.inspect();
@@ -84,19 +82,58 @@ function installElectronTraffic(electron, configuration, context, dependencies =
   let sourceConnected = false, sourceReason = null;
   source.ready.then(() => { sourceConnected = true; }, error => { sourceReason = typeof error?.code === 'string' ? error.code : 'source_unavailable'; });
   let desktop, backend, suspended = false, closed = false, restored = false, lastActivation = null, expectedSources = [];
+  let readyPromise=null,recovery=null;
+  const pendingReason=reason=>reason==null||['initializing','child_unavailable','backend_config_pending'].includes(reason);
+  const activation=()=>{
+    const desktopState=desktop.inspect(),backendState=backend.inspect(),activatedSources=[],unsupportedSources=[],pendingSources=[];
+    const unavailable=(id,reason)=>{const pending=pendingReason(reason);(pending?pendingSources:unsupportedSources).push({id,reason:pending?(reason??'initializing'):['unsupported_build','hook_unavailable','route_unavailable','timeout','ambiguous_contract','binding_changed','contract_unavailable'].includes(reason)?reason:'route_unavailable'});};
+    if(desktopState.available)activatedSources.push({id:'desktop-main-http',operations:['http.intercept'],protocols:['http','sse'],coverage:['desktop-main-fetch','desktop-main-upload-progress']});
+    else unavailable('desktop-main-http',desktopState.reason);
+    if(backendState.available&&desktopState.taskConfigurationAvailable)activatedSources.push({id:'owned-backend-provider',operations:['route.register','route.update','route.close','http.intercept'],protocols:['http','sse','webSocket'],coverage:['owned-local-app-server-model-provider']});
+    else unavailable('owned-backend-provider',!desktopState.taskConfigurationAvailable?desktopState.taskConfigurationReason:backendState.reason);
+    return {installed:activatedSources.length>0,activatedSources,unsupportedSources,pending:pendingSources.length>0,pendingSources};
+  };
+  function startRecovery() {
+    if(recovery)return;
+    const attempted=new WeakSet();let genericAttempted=false;
+    recovery=(async()=>{
+      await Promise.race([source.ready,retirement]);
+      if(typeof electron.app.whenReady==='function')await Promise.race([electron.app.whenReady(),retirement]);
+      while(!closed&&!suspended) {
+        const ds=desktop.inspect(),bs=backend.inspect();
+        if(!restored&&ds.taskConfigurationAvailable) {
+          const constructors=desktop.connectionConstructors?.()??[];
+          const actual=typeof context?.modules?.instances==='function'&&constructors.length;
+          const connections=actual?constructors.flatMap(Constructor=>context.modules.instances(Constructor)).filter(connection=>!connection.disposed&&connection.connection?.proc):[];
+          const eligible=connections.filter(connection=>!backend.ownsProcess(connection.connection.proc)&&!attempted.has(connection.connection.proc));
+          const idle=eligible.length&&eligible.every(connection=>connection.initialized!==false&&connection.getPendingRequestCount()===0&&!connection.turnCwds?.pendingByStartId?.size&&!connection.turnCwds?.startedByTurnId?.size);
+          if(actual?idle:!genericAttempted&&(!bs.available||!installedBeforeReady)) {
+            genericAttempted=true;for(const connection of eligible)attempted.add(connection.connection.proc);
+            try {
+              recoveryObservation.attempted=true;
+              await recover(context,backend.ownsProcess,{connections:constructors,canRecover:backend.canRecover,prepareConnection:backend.prepareConnection,observation:recoveryObservation});
+              recoveryReason=null;
+            }catch(error){recoveryReason=error?.code??'backend_config_unavailable';}
+          }
+        }
+        await sleep(true);
+      }
+    })();
+    recovery.catch(error=>{if(!closed)recoveryReason=error?.code??'source_unavailable';});
+  }
   function attachHooks() {
     backend = installBackend({ source, runtimeExecutable: configuration.runtimeExecutable, deadlineUnixMs: configuration.deadlineUnixMs,
-      startupReadiness: installedBeforeReady && !restored }, {state:context?.resources.get('backendState'),trackBackend:context?.trackBackend});
+      startupReadiness: installedBeforeReady && !restored }, {state:context?.resources.get('backendState'),trackBackend:context?.trackBackend,observeBackend:context?.observeBackend});
     desktop = installDesktop(electron, { source, deadlineUnixMs: configuration.deadlineUnixMs,
       ownsBackendProcess: backend.ownsProcess, isProviderSupported: backend.isProviderSupported,
       providerTrustForProcess: backend.providerTrustForProcess,
       prepareBackendRestart: transport => backend.prepareConnection(transport, { forRestart: true }),
       pendingAccountUpdate: backend.pendingAccountUpdate, updateAccountMode: backend.updateAccountMode, moduleRegistry:context?.modules,
-      state:context?.resources.get('desktopState') });
+      state:context?.resources.get('desktopState'),observeBackendOwner:context?.observeBackendOwner,registerBackendOwners:context?.registerBackendOwners });
   }
   try { attachHooks();
   } catch (error) { desktop?.close(); backend?.close(); if(!shared)source.close(); throw error; }
-  const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason } });
+  const status = () => ({ installed: true, source: { connected: sourceConnected, reason: sourceReason }, desktop: desktop.inspect(), backend: backend.inspect(), recovery: { reason: recoveryReason },activation:activation() });
   const officialUpdates = createOfficialUpdates(electron, context?.modules);
   return Object.freeze({
     handoffVersion: 1,
@@ -122,93 +159,31 @@ function installElectronTraffic(electron, configuration, context, dependencies =
     },
     async resume(snapshot) {
       if(closed||!suspended)return false;
-      recoveryReason=snapshot.recoveryReason;expectedSources=snapshot.activatedSources??[];restored=true;readinessDeadlineUnixMs=Date.now()+8000;attachHooks();suspended=false;
+      recoveryReason=snapshot.recoveryReason;expectedSources=snapshot.activatedSources??[];restored=true;attachHooks();suspended=false;readyPromise=null;
       lastActivation=await this.ready();return lastActivation.installed===true;
     },
     confirmTakeover() {return !closed&&!suspended&&lastActivation?.installed===true;},
-    async ready() {
-      readinessStartedUnixMs??=Date.now();
-      try {
-      await source.ready;
-      if(readinessDeadlineUnixMs===null) {
-        if(installedBeforeReady) {
-          // The bridge connects before Electron has finished its bootstrap.
-          // Native loads its main modules after app readiness. Cold runtime
-          // provisioning can occupy that loop before those modules register.
-          // Stay within the bridge's forty-second initial readiness phase.
-          const startupDeadlineUnixMs=readinessStartedUnixMs+35000;
-          if(typeof electron.app.whenReady==='function') {
-            let timer;
-            try {await Promise.race([electron.app.whenReady(),new Promise((_,reject)=>{
-              timer=setTimeout(()=>reject(fail('client_source_startup_timeout')),Math.max(1,startupDeadlineUnixMs-Date.now()));
-            })]);}finally{clearTimeout(timer);}
-          }
-          readinessDeadlineUnixMs=Math.min(Date.now()+30000,startupDeadlineUnixMs);
-        } else readinessDeadlineUnixMs=configuration.deadlineUnixMs;
-      }
-      const readyOptions = { deadlineUnixMs: readinessDeadlineUnixMs };
-      const readBackend = () => recoveryReason ? backend.inspect() : backend.ready(readyOptions).catch(error => {
-        if (error?.code !== 'backend_route_timeout') throw error;
-        // Model-route readiness is independent of the Desktop source. Keep
-        // the verified Desktop hook, and report only the failed model path.
-        recoveryReason = error.code;
-        return { ...backend.inspect(), available: false, reason: 'route_unavailable' };
-      });
-      const [initialDesktopState, initialBackendState] = await Promise.all([desktop.ready(readyOptions), readBackend()]);
-      let desktopState=initialDesktopState;
-      let backendState = initialBackendState;
-      // Native may replace a starting backend or finish its policy while the
-      // Desktop modules load. Re-observe the current owner, not the earlier
-      // parallel readiness snapshot. Idle recovery can refresh an expired policy.
-      if(!recoveryReason&&!closed)backendState=await readBackend();
-      if(!closed)desktopState=desktop.inspect();
-      if(installedBeforeReady&&!restored&&!recoveryReason&&!backendState.available&&desktopState.taskConfigurationAvailable
-        &&typeof context?.modules?.instances==='function'&&desktop.connectionConstructors?.().length) {
-        // Native can load its connection class before creating the local owner.
-        // Wait within the original startup budget; never reconnect initialization
-        // requests or extend this wait into a user's active turn.
-        while(!closed&&Date.now()<readinessDeadlineUnixMs-500) {
-          backendState=backend.inspect();
-          if(backendState.available||backendState.reason&&!['child_unavailable','backend_config_pending'].includes(backendState.reason))break;
-          const connections=desktop.connectionConstructors().flatMap(Constructor=>context.modules.instances(Constructor))
-            .filter(connection=>!connection.disposed&&typeof connection.connection?.proc?.spawnfile==='string'
-              &&/^codex(?:\.exe)?$/i.test(require('node:path').basename(connection.connection.proc.spawnfile)));
-          const activeTurn=connections.some(connection=>connection.turnCwds?.pendingByStartId?.size||connection.turnCwds?.startedByTurnId?.size);
-          if(activeTurn||connections.length&&connections.every(connection=>connection.initialized!==false&&connection.getPendingRequestCount()===0))break;
-          await new Promise(resolve=>setTimeout(resolve,20));
+    ready() {
+      return readyPromise??=(async()=>{
+        readinessStartedUnixMs??=Date.now();
+        await Promise.race([source.ready,retirement]);
+        if(typeof electron.app.whenReady==='function')await Promise.race([electron.app.whenReady(),retirement]);
+        if(closed)return activation();
+        startRecovery();
+        // Observe optional setup independently. Its original operation can keep
+        // preparing while an already-ready Desktop source is published.
+        Promise.resolve(backend.ready()).catch(error=>{recoveryReason=error?.code??'backend_config_unavailable';});
+        Promise.resolve(desktop.ready()).catch(error=>{sourceReason=error?.code??'source_unavailable';});
+        for(;;){
+          const value=activation(),lost=expectedSources.filter(id=>!value.activatedSources.some(source=>source.id===id));
+          if(lost.some(id=>value.unsupportedSources.some(source=>source.id===id)))throw fail('core_update_source_capability_lost');
+          if(closed||!lost.length&&(value.installed||!value.pending)){diagnose(value.installed,null);return lastActivation=value;}
+          await sleep();
         }
-        if(!closed)backendState=await readBackend();
-      }
-      if (!closed && !restored && !recoveryReason && context?.modules && (!backendState.available || !installedBeforeReady) && desktopState.taskConfigurationAvailable) {
-        try {
-          recoveryObservation.attempted=true;
-          await recover(context, backend.ownsProcess, { connections: desktop.connectionConstructors?.(),
-            canRecover: backend.canRecover, prepareConnection: backend.prepareConnection,deadlineUnixMs:readinessDeadlineUnixMs,observation:recoveryObservation });
-          backendState = await backend.ready(readyOptions);
-        } catch (error) {
-          if (error?.code !== 'client_source_backend_busy' && !/^backend_[a-z_]+$/u.test(error?.code)) throw error;
-          recoveryReason = error.code;
-        }
-      }
-      if(!closed)desktopState=desktop.inspect();
-      if(!closed&&!recoveryReason)backendState=backend.inspect();
-      const activatedSources = [], unsupportedSources = [];
-      if (desktopState.available) activatedSources.push({ id: 'desktop-main-http', operations: ['http.intercept'], protocols: ['http', 'sse'],
-        coverage: ['desktop-main-fetch', 'desktop-main-upload-progress'] });
-      else unsupportedSources.push({ id: 'desktop-main-http', reason: ['unsupported_build', 'timeout'].includes(desktopState.reason) ? desktopState.reason : 'hook_unavailable' });
-      if (backendState.available && desktopState.taskConfigurationAvailable) activatedSources.push({ id: 'owned-backend-provider', operations: ['route.register', 'route.update', 'route.close', 'http.intercept'],
-        protocols: ['http', 'sse', 'webSocket'], coverage: ['owned-local-app-server-model-provider'] });
-      else unsupportedSources.push({ id: 'owned-backend-provider', reason: !desktopState.taskConfigurationAvailable
-        ? desktopState.taskConfigurationReason === 'unsupported_build' ? 'unsupported_build' : 'hook_unavailable'
-        : backendState.reason === 'child_unavailable' ? 'child_unavailable' : 'route_unavailable' });
-      const installed=activatedSources.length>0;
-      if(expectedSources.some(id=>!activatedSources.some(source=>source.id===id)))throw fail('core_update_source_capability_lost');
-      diagnose(installed,null);
-      return lastActivation={ installed, activatedSources, unsupportedSources };
-      }catch(error){diagnose(false,error);throw error;}
+      })();
     },
     inspect: status,
-    async close() { if(closed)return;closed=true;officialUpdates.close();desktop.close(); await backend.close(); if(!shared)source.close(); },
+    async close() { if(closed)return;closed=true;release();officialUpdates.close();desktop.close(); await backend.close(); if(!shared)source.close(); },
   });
 }
 function validateSnapshot(value) {return !!value&&value.schema===1&&(value.recoveryReason===null||typeof value.recoveryReason==='string')

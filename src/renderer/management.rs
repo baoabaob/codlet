@@ -105,6 +105,21 @@ impl RendererRuntime {
                 let affected =
                     plugin_lifecycle::disable_closure(&self.plugins, &self.catalog, &registry, id)
                         .map_err(control_error)?;
+                if let Some(host) = self
+                    .plugins
+                    .iter()
+                    .chain(&self.host_plugins)
+                    .chain(
+                        self.external_observations
+                            .iter()
+                            .map(|observation| &observation.plugin),
+                    )
+                    .find(|plugin| {
+                        affected.contains(&plugin.manifest.id) && requires_host_executor(plugin)
+                    })
+                {
+                    return Err(host_executor_required(&host.manifest.id));
+                }
                 let was_enabled = affected.iter().any(|id| registry.is_enabled(id));
                 let was_running = self
                     .plugins
@@ -188,11 +203,9 @@ impl RendererRuntime {
                 // A newly registered source or an edited entry can change its
                 // executor kind. Reject before retiring any current renderer
                 // instance or committing the candidate generation.
-                if let Some(plugin) = plan
-                    .next
-                    .iter()
-                    .find(|plugin| requires_host_executor(plugin))
-                {
+                if let Some(plugin) = plan.next.iter().find(|plugin| {
+                    plan.affected.contains(&plugin.manifest.id) && requires_host_executor(plugin)
+                }) {
                     return Err(if self.generations.contains_key(&plugin.manifest.id) {
                         PluginControlError::new(
                             "executor_kind_changed",
@@ -434,6 +447,19 @@ impl RendererRuntime {
                 }
             }
         }
+        for plugin in self
+            .logical_plugins()
+            .into_iter()
+            .filter(|plugin| affected.contains(&plugin.manifest.id))
+        {
+            if let Err(error) = self.retire_rpc_plugin(&plugin.manifest.id, plugin.generation) {
+                failures.push(global_failure(
+                    &plugin.manifest.id,
+                    stage,
+                    error.to_string(),
+                ));
+            }
+        }
         failures
     }
 
@@ -585,7 +611,7 @@ impl RendererRuntime {
     pub(super) fn remove_managed_providers(&mut self, affected: &BTreeSet<String>) {
         for id in affected {
             if let Some(generation) = self.capabilities.provider_generation(id) {
-                self.retire_rpc_plugin(id, generation);
+                let _ = self.retire_rpc_plugin(id, generation);
             }
             let _ = self.capabilities.unregister_provider(id);
         }
@@ -1017,6 +1043,145 @@ mod tests {
             );
             assert_eq!(std::fs::read(registry.path()).unwrap(), before);
         }
+    }
+
+    #[test]
+    fn unrelated_combined_core_entries_do_not_block_a_local_renderers_enable_or_reload() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("local");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("codlet.json"), json!({"schema":1,"id":"dev.local","version":"1","renderer":{"entry":"renderer.js","world":"isolated"}}).to_string()).unwrap();
+        std::fs::write(
+            root.join("renderer.js"),
+            "module.exports={activate(){},deactivate(){}};",
+        )
+        .unwrap();
+        let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        registry
+            .register_local(
+                "dev.local",
+                LocalPluginRegistration {
+                    path: root.canonicalize().unwrap(),
+                    grants: vec![],
+                    broker_policy: Default::default(),
+                },
+            )
+            .unwrap();
+        registry.set_enabled("dev.local", false).unwrap();
+        registry.save().unwrap();
+        let loaded = PluginCatalog::load(&registry).unwrap();
+        let mut catalog = PluginCatalog::from_bundled(vec![]);
+        for plugin in crate::codex::internal_plugins().unwrap() {
+            catalog.replace_entry(crate::catalog::PluginCatalogEntry {
+                id: plugin.manifest.id.clone(),
+                source: crate::catalog::PluginSource::Core,
+                plugin: Ok(plugin),
+            });
+        }
+        catalog.replace_entry(loaded.reload_entry("dev.local", &registry, 1).unwrap());
+        let mut runtime = RendererRuntime::from_catalog(catalog, registry).unwrap();
+        let core_generations = runtime.generations.clone();
+        for action in [PluginControlAction::Enable, PluginControlAction::Reload] {
+            let report = runtime
+                .manage_plugin(PluginControlRequest {
+                    action,
+                    plugin_id: "dev.local".into(),
+                    permission: None,
+                    cascade: false,
+                    remove_source: None,
+                    local_import: None,
+                })
+                .unwrap();
+            assert_eq!(report.outcome, PluginControlOutcome::Applied);
+            assert_eq!(report.affected_plugin_ids, ["dev.local"]);
+            for core in crate::codex::internal_plugins().unwrap() {
+                assert_eq!(
+                    runtime.generations.get(&core.manifest.id),
+                    core_generations.get(&core.manifest.id)
+                );
+                assert!(
+                    runtime
+                        .plugins
+                        .iter()
+                        .any(|plugin| plugin.manifest.id == core.manifest.id
+                            && plugin.source == core.source)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn renderer_only_cascading_disable_rejects_a_host_dependent_before_writing_preferences() {
+        let directory = tempdir().unwrap();
+        let mut registry = PluginRegistry::load(directory.path().join("config.json")).unwrap();
+        for bundled in ["codlet-gui", "codex.ui.adapter"] {
+            registry.set_enabled(bundled, false).unwrap();
+        }
+        let capability = json!({"name":"dev.local.surface","api":1,"scope":"target"});
+        for (id, host) in [("dev.renderer", false), ("dev.host-dependent", true)] {
+            let root = directory.path().join(id);
+            std::fs::create_dir(&root).unwrap();
+            let mut manifest = json!({"schema":1,"id":id,"version":"1"});
+            let grants = if host {
+                manifest["host"] = json!({"entry":"entry.js"});
+                manifest["requires"] = json!([capability]);
+                vec![Permission::HostProcess]
+            } else {
+                manifest["renderer"] = json!({"entry":"entry.js","world":"isolated"});
+                manifest["provides"] = json!([capability]);
+                vec![]
+            };
+            manifest["permissions"] = json!(grants);
+            std::fs::write(root.join("codlet.json"), manifest.to_string()).unwrap();
+            std::fs::write(
+                root.join("entry.js"),
+                "module.exports={activate(){},deactivate(){}};",
+            )
+            .unwrap();
+            registry
+                .register_local(
+                    id,
+                    LocalPluginRegistration {
+                        path: root.canonicalize().unwrap(),
+                        grants,
+                        broker_policy: Default::default(),
+                    },
+                )
+                .unwrap();
+        }
+        registry.save().unwrap();
+        let mut runtime = RendererRuntime::from_catalog(
+            PluginCatalog::load(&registry).unwrap(),
+            registry.clone(),
+        )
+        .unwrap();
+        let before = std::fs::read(registry.path()).unwrap();
+        let generations = runtime.generations.clone();
+        let host_snapshot = |runtime: &RendererRuntime| {
+            let host = runtime
+                .host_plugins
+                .iter()
+                .find(|plugin| plugin.manifest.id == "dev.host-dependent")
+                .unwrap();
+            (host.manifest.clone(), host.generation, host.source.clone())
+        };
+        let host_before = host_snapshot(&runtime);
+        let result = runtime
+            .manage_plugin(PluginControlRequest {
+                action: PluginControlAction::Disable,
+                plugin_id: "dev.renderer".into(),
+                cascade: true,
+                permission: None,
+                remove_source: None,
+                local_import: None,
+            })
+            .unwrap_err();
+        assert_eq!(result.code, "host_executor_required");
+        assert_eq!(std::fs::read(registry.path()).unwrap(), before);
+        assert_eq!(runtime.generations, generations);
+        assert_eq!(runtime.host_plugins.len(), 1);
+        assert_eq!(runtime.plugin_count(), 1);
+        assert_eq!(host_snapshot(&runtime), host_before);
     }
 
     #[test]

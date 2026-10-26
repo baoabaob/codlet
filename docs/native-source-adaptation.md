@@ -5,8 +5,11 @@ tests. File hashes identify the evidence; capability contracts decide whether an
 interface is usable. The [compatibility contract](spec/client-compatibility.md)
 remains the runtime boundary.
 
-The current build 21421/21477 mappings and exact package hashes are recorded in
-[the 2026-10-23 adaptation](native-adaptation-20261023.md).
+Current build 21828 mapping and package identity are recorded in
+[the 2026-10-24 adaptation](native-adaptation-20261024.md); [rc.19 validation](releases/1.0.0-rc.19/validation.md)
+records the later skill-registration and transcript-positioning fixes. The
+[2026-10-23 adaptation](native-adaptation-20261023.md) retains the earlier
+21421/21477 mappings. Findings and run status below retain their dated scope.
 
 ## Implementation plan for the 2026-10-21 update
 

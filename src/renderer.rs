@@ -929,7 +929,22 @@ impl RendererRuntime {
         if let Some(skill) = self.runtime_skills.as_ref() {
             let script = skill.shutdown_script();
             for owner in self.sessions.values().filter(|o| o.session.is_live()) {
-                let _ = owner.session.evaluate(&script);
+                let result = owner
+                    .session
+                    .evaluate(&script)
+                    .map_err(|error| format!("shutdown_transport_error: {error}"))
+                    .and_then(|value| runtime_skill_shutdown_status(&value));
+                let target = status_text(owner.session.target_id());
+                match result {
+                    Ok(receipt) => crate::runtime_log::info(
+                        "runtime_skill_shutdown",
+                        &format!("{target}: {receipt}"),
+                    ),
+                    Err(error) => crate::runtime_log::error(
+                        "runtime_skill_shutdown",
+                        &format!("{target}: {}", status_text(&error)),
+                    ),
+                }
             }
         }
         let targets: Vec<_> = self.sessions.keys().cloned().collect();
@@ -1180,6 +1195,10 @@ impl RendererRuntime {
             .get(target_id)
             .is_some_and(|session| session.session.session_id() == departed.session_id());
         let session = if matches_current {
+            self.cancel_host_capabilities_for(target_id, None);
+            if let Some(skill) = self.runtime_skills.as_mut() {
+                skill.retire(target_id);
+            }
             self.capabilities
                 .deactivate_scope(&CapabilityScopeInstance::Target(target_id.to_owned()));
             Some(
@@ -1217,6 +1236,7 @@ impl RendererRuntime {
                 skill.retire(target_id);
             }
             self.sessions.remove(target_id);
+            self.cancel_host_capabilities_for(target_id, None);
             self.record_status_event(
                 target_id,
                 "session_ended",
@@ -1414,8 +1434,61 @@ impl RendererRuntime {
             let Some(id) = input["id"].as_u64() else {
                 return Ok(false);
             };
+            let baseline = if input["action"] == "baseline" {
+                match (
+                    input["clientId"].as_str(),
+                    input["clientEpoch"].as_u64(),
+                    input["anchors"].as_array(),
+                ) {
+                    (Some(client), Some(epoch), Some(anchors))
+                        if !client.is_empty()
+                            && epoch <= 9_007_199_254_740_991
+                            && anchors.iter().all(|anchor| {
+                                (anchor["id"].is_string()
+                                    || anchor["id"].as_i64().is_some_and(|id| {
+                                        id.unsigned_abs() <= 9_007_199_254_740_991
+                                    }))
+                                    && anchor["method"]
+                                        .as_str()
+                                        .is_some_and(|method| !method.is_empty())
+                            }) =>
+                    {
+                        Some(match self.client_source() {
+                            Some(source) => source.skill_roots_snapshot(
+                                client,
+                                epoch,
+                                &input["anchors"],
+                                input["authorityId"].as_str(),
+                            ),
+                            None => Err(crate::plugin_host::HostError::new(
+                                "skill_roots_observation_unavailable",
+                                "The retained Native child observer is unavailable",
+                            )),
+                        })
+                    }
+                    _ => Some(Err(crate::plugin_host::HostError::new(
+                        "skill_roots_observation_invalid",
+                        "The current Native client observation identity is invalid",
+                    ))),
+                }
+            } else {
+                None
+            };
             if let Some(skill) = self.runtime_skills.as_mut() {
-                let reply = skill.invoke(target_id, call.execution_context_id, &input);
+                let reply = if let Some(baseline) = baseline {
+                    match baseline {
+                        Ok(fact) => skill.observe_baseline(
+                            target_id,
+                            call.execution_context_id,
+                            input["clientId"].as_str().expect("validated client"),
+                            input["clientEpoch"].as_u64().expect("validated epoch"),
+                            &fact,
+                        ),
+                        Err(error) => json!({"error":error.code,"unobserved":true}),
+                    }
+                } else {
+                    skill.invoke(target_id, call.execution_context_id, &input)
+                };
                 target_session.evaluate_in_context(
                     &format!(
                         "globalThis[Symbol.for({})]?.receive({id},{reply})",
@@ -1933,7 +2006,60 @@ impl RendererSession {
                 first_error.get_or_insert(error);
             }
         }
+        if let Some(identifier) = &self.skill_bootstrap {
+            if let Err(error) = remove_new_document_script(&self.session, identifier) {
+                first_error.get_or_insert(error);
+            }
+            if let Err(error) = self.session.request(
+                "Runtime.removeBinding",
+                Some(json!({"name":crate::runtime_skills::BINDING})),
+            ) {
+                first_error.get_or_insert(error.into());
+            }
+        }
         first_error.map_or(Ok(()), Err)
+    }
+}
+
+fn runtime_skill_shutdown_status(result: &Value) -> Result<String, String> {
+    if result.get("exceptionDetails").is_some() {
+        return Err("shutdown_exception: Runtime.evaluate reported exceptionDetails".into());
+    }
+    let Some(receipt) = result
+        .pointer("/result/value")
+        .filter(|value| !value.is_null())
+    else {
+        return Err("shutdown_unconfirmed: legacy bridge returned no completion receipt".into());
+    };
+    let status = receipt["status"].as_str().unwrap_or("");
+    let reason = match receipt.get("reason") {
+        Some(Value::Null) => "none",
+        Some(Value::String(reason))
+            if reason.len() <= 96
+                && reason
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte)) =>
+        {
+            reason
+        }
+        _ => return Err("shutdown_unconfirmed: invalid bridge completion reason".into()),
+    };
+    let pending = receipt["pendingNativeWrites"]
+        .as_u64()
+        .ok_or("shutdown_unconfirmed: invalid pending Native write count")?;
+    if receipt["api"] != 1
+        || !matches!(
+            status,
+            "absent" | "restored" | "retired" | "unknown" | "failed"
+        )
+    {
+        return Err("shutdown_unconfirmed: invalid bridge completion receipt".into());
+    }
+    let message = format!("status={status}; reason={reason}; pendingNativeWrites={pending}");
+    if pending != 0 || matches!(status, "unknown" | "failed") {
+        Err(message)
+    } else {
+        Ok(message)
     }
 }
 

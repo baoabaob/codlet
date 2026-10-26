@@ -169,20 +169,29 @@ test('invalid ingress upgrades and CONNECT never reach an upstream', {timeout:15
   assert.equal(seen,0);await route.close();await idle(f);
 });
 
-test('four simultaneous 64 MiB responses stream with bounded chunks', {timeout:60000},async t=>{
-  const bytes=Buffer.alloc(32*1024,0x5a),maximum=64*1024*1024;let entered=0,release;
+test('five simultaneous Native responses stream beyond 64 MiB with bounded chunks', {timeout:60000},async t=>{
+  const bytes=Buffer.alloc(32*1024,0x5a),maximum=65*1024*1024;let entered=0,release;
   const ready=new Promise(r=>release=r);t.after(()=>release());
-  const server=http.createServer(async(_req,res)=>{entered++;if(entered===4)release();await ready;
+  const server=http.createServer(async(_req,res)=>{entered++;if(entered===5)release();await ready;
     for(let sent=0;sent<maximum;sent+=bytes.length){if(!res.write(bytes))await once(res,'drain');}res.end();
   });
   const origin=await listen(server,t),f=await nativeTraffic(t),client=f.client();await client.ready;
   const route=client.reserveRoute({upstreamBaseUrl:origin});await route.ready;
-  await Promise.all(Array.from({length:4},async()=>{
+  await Promise.all(Array.from({length:5},async()=>{
     const response=await fetch(route.baseUrl);assert.equal(response.status,200);let count=0;
     for await(const chunk of response.body){count+=chunk.length;assert.equal(chunk[0],0x5a);assert(chunk.length<=128*1024);}
     assert.equal(count,maximum);
   }));
-  assert.equal(entered,4);await route.close();await idle(f);
+  assert.equal(entered,5);await route.close();await idle(f);
+});
+
+test('Native WebSocket content beyond plugin frame budgets remains on its original transport', {timeout:15000},async t=>{
+  const server=http.createServer(),ws=new WebSocketServer({server});t.after(()=>{for(const socket of ws.clients)socket.terminate();ws.close();});
+  ws.on('connection',socket=>socket.on('message',(data,binary)=>socket.send(data,{binary})));
+  const origin=await listen(server,t),f=await nativeTraffic(t),client=f.client();await client.ready;
+  const route=await client.registerRoute({upstreamBaseUrl:origin}),socket=new WebSocket(route.baseUrl.replace('http:','ws:'));t.after(()=>socket.terminate());await once(socket,'open');
+  const bytes=Buffer.alloc(9*1024*1024,0x5a),next=once(socket,'message');socket.send(bytes);assert.deepEqual((await next)[0],bytes);
+  const closed=once(socket,'close');socket.close();await closed;await route.close();await idle(f);
 });
 
 test('8 MiB WebSocket binary frames retain full traffic callback support', {timeout:60000},async t=>{

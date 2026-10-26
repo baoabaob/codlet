@@ -8,9 +8,10 @@ are replaced by an explicitly selected, newly owned test child and isolated
 registry listener. It does not attach to an existing desktop. It is excluded
 from release builds and must not be used as an installed launcher.
 
-Build `cargo build --locked --features desktop-acceptance --bin codlet-desktop-acceptance`
-and stage the pinned Node runtime beside the debug executable as for the existing
-Host tests. Do not combine this feature with `test-fixtures`: those fixtures
+Run `node scripts/check-dev-storage.mjs`, then build
+`cargo build --locked --features desktop-acceptance --bin codlet-desktop-acceptance`.
+Core prepares its verified Node runtime through the ordinary resolver; an explicitly
+staged pinned runtime remains available for controlled Host fixtures. Do not combine this feature with `test-fixtures`: those fixtures
 reserve the official plugin IDs and are not the real plugins.
 
 Prepare an absolute-path JSON configuration:
@@ -34,6 +35,7 @@ does not register separately installed Adapter bundles. Selected ordinary plugin
 receive their declared permissions only in this new registry. The example client
 version is historical; select and review the actual package being tested.
 
+Run `node scripts/check-dev-storage.mjs` before an independent acceptance run.
 Run `node scripts/desktop-acceptance.mjs <absolute-config.json>` from an ordinary
 unpackaged shell. The harness rejects a creator that already has package identity:
 pre-supplying a package context hides defects in the installed launch path. Keep
@@ -100,8 +102,10 @@ Additional opt-in controls support Core integration acceptance without changing 
   and elapsed time, including a failure before Core starts.
 - `startupTimeoutMs` allows 15,000–180,000 ms for the before-resume image checks
   and launch handshake in the acceptance build. Record an override with the run:
-  such a run does not establish production startup timing. The installed launcher
-  keeps its 15-second budget. Acceptance diagnostics record remaining time and
+  such a run does not establish production startup timing. The Windows owned-launch
+  transport and bridge lease share the production 60-second startup transaction budget;
+  that budget does not limit renderer Native scope or composer initialization.
+  Acceptance diagnostics record remaining time and
   debugger event progress without including private launch configuration.
 - `localApiKeyFixture: true` writes a synthetic file-only API key and runs a
   bounded loopback HTTP/SSE fixture. Desktop test requests and model replies use

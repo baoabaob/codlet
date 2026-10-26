@@ -147,10 +147,12 @@ export function createPermissions({manager, client, check, selection, load, emit
       if(client.requestPromises.has(requestId))client.onError(requestId,fail('permissions_busy','A permission update is pending; resume after it settles'));
       return;
     }
-    dispatches.add(requestId);
+    const pendingRequest = client.requestPromises.get(requestId), operation = {};
+    const ownsRequest = () => client.requestPromises.has(requestId) && client.requestPromises.get(requestId) === pendingRequest;
+    dispatches.add(operation);
     Promise.resolve().then(async () => {
       check(); await ensure(); await manager.waitForPendingThreadSettingsUpdate(id); check();
-      if (!alive || !client.requestPromises.has(requestId)) throw fail('permissions_request_retired', 'Native permission request retired before dispatch');
+      if (!alive || !ownsRequest()) throw fail('permissions_request_retired', 'Native permission request retired before dispatch');
       if (!identity.active || registered.get(id) !== identity) throw fail('permissions_owner_retired', 'Permission owner retired before dispatch');
       const settings = driver.canonical(id);
       if (!settings || !policyFields.some(key => settings[key] !== undefined)) throw fail('permissions_unconfirmed', 'Native canonical thread permissions are unavailable');
@@ -158,7 +160,7 @@ export function createPermissions({manager, client, check, selection, load, emit
       for (const key of policyFields) if (key !== 'runtimeWorkspaceRoots' || settings[key] !== undefined) delete params[key];
       for (const key of policyFields) if (settings[key] !== undefined) params[key] = clone(settings[key]);
       dispatch({...message, request: {...request, params}});
-    }).catch(error => { if (client.requestPromises.has(requestId)) client.onError(requestId, error); }).finally(() => dispatches.delete(requestId));
+    }).catch(error => { if (ownsRequest()) client.onError(requestId, error); }).finally(() => dispatches.delete(operation));
   }
   function captureState() {
     check(); if (!alive) throw fail('adapter_deactivated', 'Permission provider retired');

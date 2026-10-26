@@ -21,6 +21,7 @@ pub(super) struct Engine {
     pub environment: BTreeMap<String, String>,
     pub inherited_ca: Option<String>,
     pub routes: Mutex<BTreeMap<String, Arc<super::source::Route>>>,
+    pub registering_routes: Mutex<BTreeMap<String, Arc<super::source::RegisteringRoute>>>,
     pub source_peer: Mutex<Option<Arc<Rpc>>>,
     pub delegated: Mutex<BTreeMap<String, Arc<Exchange>>>,
     pub leases: Mutex<BTreeMap<String, Weak<Exchange>>>,
@@ -49,7 +50,7 @@ pub(super) struct Exchange {
     pub ws_ready: tokio::sync::Notify,
     pub finished: AtomicBool,
     pub notify: AtomicBool,
-    pub _permit: tokio::sync::OwnedSemaphorePermit,
+    pub _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Exchange {
     pub fn retire(&self, notify: bool) {
@@ -208,6 +209,7 @@ impl Engine {
                 })
                 .collect(),
             routes: Mutex::new(BTreeMap::new()),
+            registering_routes: Mutex::new(Default::default()),
             source_peer: Mutex::new(None),
             delegated: Mutex::new(BTreeMap::new()),
             leases: Mutex::new(BTreeMap::new()),
@@ -334,7 +336,7 @@ impl Engine {
     pub fn exchange(
         self: &Arc<Self>,
         parent: &CancellationToken,
-        permit: tokio::sync::OwnedSemaphorePermit,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
         delegate: Option<(Arc<Rpc>, String)>,
         channel: Option<Arc<super::channels::Channel>>,
         web_socket: bool,
@@ -343,7 +345,7 @@ impl Engine {
         let exchange = Arc::new(Exchange {
             id: files::token("native-exchange")?,
             engine: Arc::downgrade(self),
-            streams: Arc::new(Streams::new(stopped.child_token())),
+            streams: Arc::new(Streams::native(stopped.child_token())),
             stopped,
             leases: Mutex::new(BTreeMap::new()),
             delegate,
@@ -357,7 +359,14 @@ impl Engine {
         });
         let mut all = self.exchanges.lock().unwrap_or_else(|p| p.into_inner());
         all.retain(|_, v| v.strong_count() > 0);
-        if all.len() >= 4096 {
+        if exchange._permit.is_some()
+            && all
+                .values()
+                .filter_map(Weak::upgrade)
+                .filter(|e| e._permit.is_some())
+                .count()
+                >= 4096
+        {
             return Err(error("resource_limit", "exchange limit reached"));
         }
         all.insert(exchange.id.clone(), Arc::downgrade(&exchange));

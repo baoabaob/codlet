@@ -21,6 +21,7 @@ pub(super) struct Rpc {
     sequence: std::sync::atomic::AtomicU64,
     pub stopped: CancellationToken,
     limit: usize,
+    admission: Option<Arc<Semaphore>>,
 }
 impl Rpc {
     pub fn new(
@@ -35,6 +36,7 @@ impl Rpc {
             sequence: std::sync::atomic::AtomicU64::new(0),
             stopped,
             limit,
+            admission: None,
         })
     }
     pub fn send(&self, value: Value) -> Result<()> {
@@ -48,7 +50,7 @@ impl Rpc {
         method: &str,
         params: Value,
         stopped: &CancellationToken,
-        timeout: Duration,
+        timeout: impl Into<Option<Duration>>,
     ) -> Result<Value> {
         self.request_prepared(method, params, stopped, timeout, None)
             .await
@@ -58,15 +60,31 @@ impl Rpc {
         method: &str,
         params: Value,
         stopped: &CancellationToken,
-        timeout: Duration,
+        timeout: impl Into<Option<Duration>>,
         prepare: Option<Prepare>,
     ) -> Result<Value> {
+        let deadline = timeout
+            .into()
+            .map(|timeout| tokio::time::Instant::now() + timeout);
         if stopped.is_cancelled() || self.stopped.is_cancelled() {
             return Err(error(
                 "request_cancelled",
                 "request retired before dispatch",
             ));
         }
+        // The private Native source uses bounded control frames with queued
+        // admission. Its existing requests do not inherit a plugin call quota.
+        let _admission = if let Some(admission) = &self.admission {
+            Some(tokio::select! {
+                biased;
+                _ = stopped.cancelled() => return Err(error("request_cancelled", "request cancelled before dispatch")),
+                _ = self.stopped.cancelled() => return Err(error("peer_closed", "peer retired")),
+                _ = wait_deadline(deadline) => return Err(error("traffic_timeout", "request expired before dispatch")),
+                permit = admission.clone().acquire_owned() => permit.map_err(|_| error("peer_closed", "peer retired"))?,
+            })
+        } else {
+            None
+        };
         let id = format!("n{}", self.sequence.fetch_add(1, Ordering::Relaxed));
         let (sender, receiver) = oneshot::channel();
         {
@@ -109,11 +127,14 @@ impl Rpc {
             result = receiver => result.unwrap_or_else(|_| Err(error("peer_closed", "peer retired"))),
             _ = stopped.cancelled() => Err(error("request_cancelled", "request cancelled")),
             _ = self.stopped.cancelled() => Err(error("peer_closed", "peer retired")),
-            _ = tokio::time::sleep(timeout) => Err(error("traffic_timeout", "peer request expired")),
+            _ = wait_deadline(deadline) => Err(error("traffic_timeout", "peer request expired")),
         }
     }
     pub fn close(&self) {
         self.stopped.cancel();
+        if let Some(admission) = &self.admission {
+            admission.close();
+        }
         self.calls.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
     pub fn receive(
@@ -152,6 +173,9 @@ impl Rpc {
                     "duplicate in-flight request identity",
                 ));
             }
+            // Construct operations in wire order. In particular a source close
+            // can cancel the exact registration already admitted before it.
+            let operation = handler(method, value.get("params").cloned().unwrap_or(Value::Null));
             tokio::spawn(async move {
                 let _permit = permit;
                 struct Inbound(Arc<Rpc>, String);
@@ -168,7 +192,7 @@ impl Rpc {
                 let result = tokio::select! {
                     biased;
                     _ = peer.stopped.cancelled() => return,
-                    result = handler(method, value.get("params").cloned().unwrap_or(Value::Null)) => result,
+                    result = operation => result,
                 };
                 let frame = match result {
                     Ok(result) => json!({"id":id,"result":result}),
@@ -205,6 +229,12 @@ impl Rpc {
             }
         }
         Ok(())
+    }
+}
+async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 pub(super) fn remote_error(code: Option<&str>) -> ServiceError {
@@ -262,7 +292,7 @@ pub(super) struct Packet {
 pub(super) fn socket_peer(stopped: CancellationToken) -> (Arc<Rpc>, async_mpsc::Receiver<Packet>) {
     let (sender, receiver) = async_mpsc::channel(QUEUED_FRAMES);
     let bytes = Arc::new(Semaphore::new(QUEUED_BYTES));
-    let peer = Rpc::new(
+    let mut peer = Rpc::new(
         move |value| {
             let data =
                 serde_json::to_vec(&value).map_err(|_| error("invalid_frame", "invalid frame"))?;
@@ -283,6 +313,9 @@ pub(super) fn socket_peer(stopped: CancellationToken) -> (Arc<Rpc>, async_mpsc::
         stopped,
         64,
     );
+    Arc::get_mut(&mut peer)
+        .expect("new source peer has one owner")
+        .admission = Some(Arc::new(Semaphore::new(64)));
     (peer, receiver)
 }
 pub(super) async fn serve_socket(

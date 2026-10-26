@@ -483,10 +483,10 @@ fn plugin_info(entry: &PluginCatalogEntry, registry: Option<&PluginRegistry>) ->
         default_enabled: true,
         desired_enabled: registry.map(|registry| registry.is_enabled(&entry.id)),
         provides: plugin
-            .map(|plugin| plugin.manifest.provides.clone())
+            .map(|plugin| plugin.manifest.all_provides().cloned().collect())
             .unwrap_or_default(),
         requires: plugin
-            .map(|plugin| plugin.manifest.requires.clone())
+            .map(|plugin| plugin.manifest.all_requires().cloned().collect())
             .unwrap_or_default(),
     }
 }
@@ -695,4 +695,49 @@ fn dependency_issue(
         CapabilityRegistryError::ScopeAlreadyActive { .. } => {}
     }
     issue
+}
+
+#[cfg(test)]
+mod declaration_tests {
+    use super::*;
+
+    #[test]
+    fn combined_plugin_diagnostics_include_renderer_and_host_declarations() {
+        let capability = |name: &str, scope| json!({"name":name,"api":1,"scope":scope});
+        let manifest = crate::plugins::PluginManifest::parse(
+            &json!({
+                "schema":1,"id":"dev.combined-diagnostics","version":"1",
+                "renderer":{"entry":"renderer.js","world":"isolated"},
+                "provides":[capability("fixture.renderer", "target")],
+                "requires":[capability("fixture.renderer.required", "target")],
+                "host":{"entry":"host.cjs","mode":"sdk",
+                    "provides":[capability("fixture.host", "runtime")],
+                    "requires":[capability("fixture.host.required", "runtime")]}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let catalog = PluginCatalog::from_bundled(vec![LoadedPlugin {
+            authorization: None,
+            manifest,
+            source: Some("".into()),
+            host: None,
+            generation: 1,
+        }]);
+        let info = plugin_info(&catalog.entries()[0], None);
+        assert_eq!(
+            info.provides
+                .iter()
+                .map(|value| value.name.as_str())
+                .collect::<Vec<_>>(),
+            ["fixture.renderer", "fixture.host"]
+        );
+        assert_eq!(
+            info.requires
+                .iter()
+                .map(|value| value.name.as_str())
+                .collect::<Vec<_>>(),
+            ["fixture.renderer.required", "fixture.host.required"]
+        );
+    }
 }

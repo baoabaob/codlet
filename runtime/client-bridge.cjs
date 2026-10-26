@@ -7,6 +7,7 @@ const Module = require('node:module');
 const { createHash, timingSafeEqual, randomUUID } = require('node:crypto');
 const { connectPlaintextSource } = require('./plaintext-source-client.cjs');
 const { createWriteLedger, snapshotJson } = require('./online-update.cjs');
+const { createSkillRootFacts } = require('./skill-roots.cjs');
 const acorn = require('acorn');
 const MAX_FRAME = 2 * 1024 * 1024;
 const fail = code => Object.assign(new Error(code), { code });
@@ -34,17 +35,22 @@ function describeClasses(ast) {
       .filter(value => value !== null);
     if (methods.length) classes.set(name, { binding: name, methods });
   };
-  const walk = node => {
-    if (!node || typeof node !== 'object') return;
+  walkAst(ast, node => {
     if (node.type === 'ClassDeclaration' && node.id) add(node.id.name, node);
     if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && node.init?.type === 'ClassExpression') add(node.id.name, node.init);
     if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && node.right.type === 'ClassExpression') add(node.left.name, node.right);
-    for (const [name, child] of Object.entries(node)) if (name !== 'start' && name !== 'end') {
-      if (Array.isArray(child)) child.forEach(walk); else if (child && typeof child === 'object') walk(child);
-    }
-  };
-  walk(ast);
+  });
   return [...classes.values()];
+}
+function walkAst(root, visit) {
+  const pending=[root],seen=new Set();
+  while(pending.length) {
+    const node=pending.pop();if(!node||typeof node!=='object'||seen.has(node))continue;
+    seen.add(node);visit(node);
+    for(const [name,child] of Object.entries(node))if(name!=='start'&&name!=='end') {
+      if(Array.isArray(child))for(const item of child)pending.push(item);else if(child&&typeof child==='object')pending.push(child);
+    }
+  }
 }
 
 function observeModules(root, key, dependencies = {}) {
@@ -97,10 +103,7 @@ function observeModules(root, key, dependencies = {}) {
     try {
       const ast=acorn.parse(code,{ecmaVersion:'latest',sourceType:'script',allowReturnOutsideFunction:true});
       classes=describeClasses(ast);
-      const walk=node=>{if(!node||typeof node!=='object')return;
-        if(node.type==='MethodDefinition'&&node.kind==='constructor')edits.push({at:node.value.body.end-1,text:`;${reference}?.instance(this);`});
-        for(const [name,child]of Object.entries(node))if(name!=='start'&&name!=='end'){if(Array.isArray(child))child.forEach(walk);else if(child&&typeof child==='object')walk(child);}};
-      walk(ast);
+      walkAst(ast,node=>{if(node.type==='MethodDefinition'&&node.kind==='constructor')edits.push({at:node.value.body.end-1,text:`;${reference}?.instance(this);`});});
     } catch { /* Unsupported syntax still uses the scoped module resolver. */ }
     const registration = `\n;${reference}?.register(${JSON.stringify(filename)},${JSON.stringify(hash)},module.exports,(expression)=>eval(expression),${JSON.stringify(classes)});`;
     let instrumented=code;
@@ -129,6 +132,8 @@ function observeModules(root, key, dependencies = {}) {
 function startClientBridge(electron, configuration, dependencies = {}) {
   if (electron.app.isReady() || !/^[a-f0-9]{48}$/.test(configuration?.token)) throw fail('client_bridge_bootstrap_invalid');
   const token = Buffer.from(configuration.token), resources = new Map();
+  const skillRoots=createSkillRootFacts();
+  const backendOwners=new Set();
   if (configuration.source) {
     const source = connectPlaintextSource(configuration.source);
     source.ready.catch(() => {});
@@ -161,32 +166,30 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     }return {api:1,id:value.id,version:value.version,counts};
   };
   const context = Object.freeze({ modules, resources,
+    observeBackend(child, options) { return skillRoots.observe(child, options); },
+    observeBackendOwner(child, owner) { return skillRoots.observe(child,{owner}); },
+    registerBackendOwners(read) { backendOwners.add(read);return()=>backendOwners.delete(read); },
     trackBackend(record,rule) {
       const state=resources.get('backendState');state.records.add(record);
-      let pending='';
-      const data=bytes=>{
-        pending+=bytes.toString('utf8');
-        if(pending.length>128*1024){pending='';return;}
-        for(let at=pending.indexOf('\n');at>=0;at=pending.indexOf('\n')){
-          const line=pending.slice(0,at);pending=pending.slice(at+1);let payload;try{payload=JSON.parse(line);}catch{continue;}
-          if(payload?.[rule.methodKey]!==rule.method)continue;
-          const account=state.accounts.get(record.child);if(!account||account.explicit)continue;
+      const observed=skillRoots.observe(record.child);
+      const unsubscribe=observed?.subscribe(payload=>{
+          if(payload?.[rule.methodKey]!==rule.method)return;
+          const account=state.accounts.get(record.child);if(!account||account.explicit)return;
           const mode=payload?.[rule.paramsKey]?.[rule.modeKey],upstream=rule.targets?.[mode];
-          if(!upstream||account.current===upstream)continue;
+          if(!upstream||account.current===upstream)return;
           const operation=(account.pending??Promise.resolve()).then(()=>account.route.update({upstreamBaseUrl:upstream})).then(()=>{account.current=upstream;});
           account.pending=operation;operation.catch(()=>account.route.close().catch(()=>{}));operation.finally(()=>{if(account.pending===operation)account.pending=null;}).catch(()=>{});
-        }
-      };
+      });
       let released = false;
-      const release=()=>{if(released)return;released=true;record.child.stdout?.off('data',data);record.child.off('exit',release);record.child.off('error',release);for(const route of record.reservations)Promise.resolve(route.close()).catch(()=>{});state.records.delete(record);};
+      const release=()=>{if(released)return;released=true;unsubscribe?.();record.child.off('exit',release);record.child.off('error',release);for(const route of record.reservations)Promise.resolve(route.close()).catch(()=>{});state.records.delete(record);};
       record.release = release;
-      record.child.stdout?.on('data',data);record.child.once('exit',release);record.child.once('error',release);
+      record.child.once('exit',release);record.child.once('error',release);
     },
   });
 
   const status = () => ({ ...identity(), epoch, owner: active?.owner ?? null, generation: active?.generation ?? null,
     sourceSha256:active?createHash('sha256').update(active.code).digest('hex'):null,coreVersion:active?.coreVersion??null,
-    activation: active?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect(),
+    activation: active?.runtime.inspect?.().activation ?? active?.activation ?? lastActivation, sourceError, moduleObserver: modules.inspect(),
     ...(configuration.ownedFixtureRoutes===true?{fixtureFactoryEvidence:fixtureEvidence()}:{}),
     onlineUpdate: {protocol: 1, admissionVersion:1, fixtureExplicitSource:resources.has('ownedFixtureRoute')?{kind:'fixture-explicit-source',registered:true}:null, handoffVersion: active?.runtime.handoffVersion ?? null, writes: writes.inspect(), leaseEpoch,
       admission:admission?{operationId:admission.id,epoch:admission.epoch,phase:admission.phase,lastSourceOutcome:admission.lastSourceOutcome??null}:null,
@@ -221,7 +224,7 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     active = { ...selection, configuration, runtime, activation: null };
     try {
       if (options.snapshot !== undefined) await bounded(() => runtime.restore(options.snapshot), 'core_update_restore_timeout');
-      active.activation = await bounded(() => runtime.ready(), 'client_bridge_activation_timeout'); if(active.activation?.installed!==true)throw fail('client_bridge_source_unavailable');
+      active.activation = await runtime.ready(); if(active.activation?.installed!==true&&active.activation?.pending!==true)throw fail('client_bridge_source_unavailable');
       if (options.confirm) {
         const confirmed = await bounded(() => runtime.confirmTakeover(), 'core_update_takeover_timeout');
         if (confirmed !== true) throw fail('core_update_takeover_unconfirmed');
@@ -345,6 +348,10 @@ function startClientBridge(electron, configuration, dependencies = {}) {
     }
   }
   async function command(input) {
+    if(input.op==='skillRoots'){
+      for(const read of backendOwners)try{for(const owner of read())if(owner?.connection?.proc)skillRoots.observe(owner.connection.proc,{owner});}catch{/* An unavailable owner proof remains unobserved. */}
+      return skillRoots.query(input);
+    }
     if (input.op === 'status') return input.operationId ? receipts.get(input.operationId) ?? { pending: false, unknown: true } : status();
     if (input.op === 'officialUpdateTarget') {
       if (typeof active?.runtime.officialUpdateTarget !== 'function') throw fail('official_update_target_unavailable');
@@ -442,16 +449,17 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       // Install synchronously; readiness is awaited after the client is resumed.
       const exported = load(selection.code);
       if (typeof exported.installElectronTraffic !== 'function') throw fail('client_bridge_exports_invalid');
-      const configuration = { ...selection.configuration, deadlineUnixMs: Date.now() + 5000 };
+      const configuration = { ...selection.configuration };
       const runtime = exported.installElectronTraffic(electron, configuration, generationContext());
       if (!runtime || typeof runtime.ready !== 'function' || typeof runtime.close !== 'function') throw fail('client_bridge_exports_invalid');
       active = { ...selection, configuration, runtime, activation: null };
     },
     async ready() { await listening; if (active) {
-      // Initial Native module loading has its own bounded readiness phase.
-      // Hot replacement operations retain the ordinary ten-second budget.
-      let activation;try{activation=await bounded(() => active.runtime.ready(), 'client_bridge_activation_timeout', 40000);}catch(error){sourceError=codeOf(error);activation={installed:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:'hook_unavailable'}]};}
-      if(!activation?.installed){sourceError??='client_bridge_source_unavailable';await closeActive();lastActivation=activation;}else {active.activation=activation;sourceError=null;}
+      const selected=active;
+      selected.readyPromise??=Promise.resolve().then(()=>selected.runtime.ready());
+      let activation;try{activation=await selected.readyPromise;}catch(error){sourceError=codeOf(error);activation={installed:false,pending:false,activatedSources:[],unsupportedSources:[{id:'client-source',reason:sourceError}]};}
+      if(active!==selected)return status();
+      if(!activation?.installed&&activation?.pending!==true){sourceError??='client_bridge_source_unavailable';await closeActive();lastActivation=activation;}else {selected.activation=activation;sourceError=null;}
     } return status(); },
     inspect: status,
     closeInspector() { setTimeout(()=>require('node:inspector').close(),50);return true; },
@@ -462,6 +470,8 @@ function startClientBridge(electron, configuration, dependencies = {}) {
       try { await chain; await closeActive(); }
       finally {
         modules.close();
+        skillRoots.close();
+        backendOwners.clear();
         for (const socket of connections) socket.destroy();
         await listening.catch(() => {});
         await new Promise(resolve => server.close(resolve));

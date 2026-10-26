@@ -27,11 +27,11 @@ test('source updates pin active exchanges and atomically change future requests'
   release();assert.equal((await old).body.toString(),'first');await route.close();await idle(f);
 });
 
-test('source route CA is scoped, replaceable, bounded and fully validated', {timeout:15000}, async t=>{
+test('source route CA is scoped, replaceable and fully validated', {timeout:15000}, async t=>{
   const [cert,key,ca]=await Promise.all(['localhost-cert.pem','localhost-key.pem','localhost-ca.pem'].map(n=>readFile(new URL('./fixtures/traffic-tls/'+n,import.meta.url),'utf8')));
   const origin=(await listen(https.createServer({cert,key},(_req,res)=>res.end('trusted')),t)).replace('http:','https:');
   const f=await nativeTraffic(t);const client=f.client();await client.ready;
-  const route=client.reserveRoute({upstreamBaseUrl:origin,additionalCaPem:ca});await route.ready;
+  const route=client.reserveRoute({upstreamBaseUrl:origin,additionalCaPem:ca.repeat(130)});await route.ready;
   assert.equal((await read(route.baseUrl)).status,200);
   await route.update({upstreamBaseUrl:origin,additionalCaPem:''});assert.equal((await read(route.baseUrl)).status,502);
   await assert.rejects(route.update({upstreamBaseUrl:origin,additionalCaPem:'bad PEM'}));
@@ -52,12 +52,20 @@ test('private source rejects wrong credentials and enforces route collision and 
   await peer.request('route.close',{token});assert.equal((await read(f.descriptor.routeBaseUrl+'/'+token)).status,404);
 });
 
-test('concurrent source registrations have a hard 32-route budget and peer teardown releases it', {timeout:15000},async t=>{
+test('Native source registrations follow current provider objects and peer teardown releases them', {timeout:15000},async t=>{
   const f=await nativeTraffic(t);const peer=await connectTrafficPeer(f.descriptor.endpoint);t.after(()=>peer.close());
   const results=await Promise.allSettled(Array.from({length:40},(_,i)=>peer.request('route.register',{token:Buffer.alloc(32,i+1).toString('base64url'),upstreamBaseUrl:'https://example.invalid'})));
-  assert.equal(results.filter(r=>r.status==='fulfilled').length,32);assert(results.filter(r=>r.status==='rejected').every(r=>r.reason.code==='resource_limit'));
-  assert.equal((await f.call('resources')).routes,32);peer.close();
+  assert.equal(results.filter(r=>r.status==='fulfilled').length,40);
+  assert.equal((await f.call('resources')).routes,40);peer.close();
   for(let i=0;i<100&&(await f.call('resources')).routes;i++)await tick(10);
+  assert.equal((await f.call('resources')).routes,0);
+});
+
+test('private Native source queues control admission without capping existing provider objects', {timeout:15000},async t=>{
+  const f=await nativeTraffic(t),client=f.client();await client.ready;
+  const routes=await Promise.all(Array.from({length:100},()=>client.registerRoute({upstreamBaseUrl:'https://example.invalid/v1'})));
+  assert.equal((await f.call('resources')).routes,100);
+  await Promise.all(routes.map(route=>route.close()));
   assert.equal((await f.call('resources')).routes,0);
 });
 

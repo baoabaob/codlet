@@ -23,7 +23,7 @@ const reviewed = Object.freeze({
 function planForImage(sha256, matches) {
   if (matches.length !== 1) throw fail('client_bootstrap_fuse_ambiguous');
   const fuse = matches[0];
-  if (fuse.version !== 1 || !/^[01r]{4,64}$/.test(fuse.wire)) throw fail('client_bootstrap_fuse_unsupported');
+  if (fuse.version !== 1 || !/^[01r]{4,255}$/.test(fuse.wire)) throw fail('client_bootstrap_fuse_unsupported');
   // An already enabled inspector uses the existing attach handshake unchanged.
   if (fuse.wire[3] === '1') return { moduleData: null };
   const profile = reviewed[sha256];
@@ -42,8 +42,8 @@ async function beforeClientResume({ expectedPid, executable, features, signal })
   // Older Electron distributions can place the wire in the executable instead.
   // Their supported inspector path needs no module-data edits.
   const image = fs.existsSync(modulePath) ? modulePath : executable;
-  const size = fs.statSync(image).size;
-  if (size < 64 || size > 512 * 1024 * 1024) throw fail('client_bootstrap_image_invalid');
+  const info = fs.statSync(image), size = info.size;
+  if (!info.isFile() || size < sentinel.length + 2 + 4) throw fail('client_bootstrap_image_invalid');
   const hash = createHash('sha256'), matches = [];
   let tail = Buffer.alloc(0), consumed = 0;
   for await (const chunk of fs.createReadStream(image, { highWaterMark: 256 * 1024, signal })) {
@@ -57,11 +57,12 @@ async function beforeClientResume({ expectedPid, executable, features, signal })
       const offset = consumed - tail.length + at;
       if (matches.some(match => match.offset === offset)) continue;
       if (matches.length >= 2) throw fail('client_bootstrap_fuse_ambiguous');
-      matches.push({ offset, version: bytes[at + sentinel.length], wire: count >= 4 && count <= 64
+      matches.push({ offset, version: bytes[at + sentinel.length], wire: count >= 4
         ? bytes.toString('ascii', at + sentinel.length + 2, end) : '' });
     }
     consumed += chunk.length;
-    tail = Buffer.from(bytes.subarray(-100));
+    // The public fuse header stores its wire length in one byte.
+    tail = Buffer.from(bytes.subarray(-(sentinel.length + 2 + 255)));
   }
   if (consumed !== size) throw fail('client_bootstrap_image_changed');
   return planForImage(hash.digest('hex'), matches);

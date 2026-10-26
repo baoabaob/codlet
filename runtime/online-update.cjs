@@ -84,8 +84,8 @@ function createWriteLedger({getEpoch, capacity = 256}) {
       if (closed || signal?.aborted) return Promise.reject(fail('core_write_owner_closed'));
       if (accepting) return Promise.resolve();
       return new Promise((resolve, reject) => {
-        const item = {resolve: () => {signal?.removeEventListener('abort', abort); resolve();}, reject};
-        const abort = () => {waiters.delete(item); reject(fail('core_write_cancelled'));};
+        const item = {resolve: () => {signal?.removeEventListener('abort', abort); resolve();}, reject:error=>{signal?.removeEventListener('abort',abort);reject(error);}};
+        const abort = () => {waiters.delete(item); item.reject(fail('core_write_cancelled'));};
         signal?.addEventListener('abort', abort, {once:true}); waiters.add(item);
       });
     },

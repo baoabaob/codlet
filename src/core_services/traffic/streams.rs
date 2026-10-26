@@ -54,7 +54,7 @@ impl Body {
     pub fn finished(&self) -> bool {
         self.0.finished.load(Ordering::Acquire)
     }
-    pub fn reader(&self, limit: usize) -> Result<Reader> {
+    pub fn reader(&self, limit: impl Into<Option<usize>>) -> Result<Reader> {
         let stream = self
             .0
             .stream
@@ -67,11 +67,11 @@ impl Body {
             stream,
             tail: Bytes::new(),
             total: 0,
-            limit,
+            limit: limit.into(),
             ended: false,
         })
     }
-    pub fn stream(&self, limit: usize) -> Result<ByteStream> {
+    pub fn stream(&self, limit: impl Into<Option<usize>>) -> Result<ByteStream> {
         let reader = self.reader(limit)?;
         Ok(Box::pin(futures_util::stream::unfold(
             reader,
@@ -87,7 +87,7 @@ impl Body {
             },
         )))
     }
-    pub async fn collect(&self, limit: usize) -> Result<Bytes> {
+    pub async fn collect(&self, limit: impl Into<Option<usize>>) -> Result<Bytes> {
         let mut reader = self.reader(limit)?;
         let mut out = bytes::BytesMut::new();
         while let Some(bytes) = reader.next().await? {
@@ -101,7 +101,7 @@ pub(super) struct Reader {
     stream: ByteStream,
     tail: Bytes,
     total: usize,
-    limit: usize,
+    limit: Option<usize>,
     ended: bool,
 }
 impl Reader {
@@ -115,7 +115,8 @@ impl Reader {
         if !self.tail.is_empty() {
             return Ok(Some(self.tail.split_to(self.tail.len().min(CHUNK))));
         }
-        for _ in 0..128 {
+        let mut empty = 0;
+        loop {
             let next = tokio::select! {
                 biased;
                 _ = self.body.0.stopped.cancelled() => return Err(error("stream_retired", "body retired")),
@@ -127,18 +128,27 @@ impl Reader {
                 return Ok(None);
             };
             let bytes = bytes?;
-            self.total = self
-                .total
-                .checked_add(bytes.len())
-                .filter(|n| *n <= self.limit)
-                .ok_or_else(|| error("body_too_large", "body limit exceeded"))?;
+            if let Some(limit) = self.limit {
+                self.total = self
+                    .total
+                    .checked_add(bytes.len())
+                    .filter(|n| *n <= limit)
+                    .ok_or_else(|| error("body_too_large", "body limit exceeded"))?;
+            }
             if bytes.is_empty() {
+                empty += 1;
+                if empty == 128 {
+                    if self.limit.is_some() {
+                        return Err(error("invalid_body", "empty producer exceeded bound"));
+                    }
+                    tokio::task::yield_now().await;
+                    empty = 0;
+                }
                 continue;
             }
             self.tail = bytes;
             return Ok(Some(self.tail.split_to(self.tail.len().min(CHUNK))));
         }
-        Err(error("invalid_body", "empty producer exceeded bound"))
     }
 }
 impl Drop for Reader {
@@ -153,12 +163,20 @@ struct Exported {
 pub(super) struct Streams {
     bodies: Mutex<BTreeMap<String, Arc<Exported>>>,
     stopped: CancellationToken,
+    native: bool,
 }
 impl Streams {
     pub fn new(stopped: CancellationToken) -> Self {
         Self {
             bodies: Mutex::new(BTreeMap::new()),
             stopped,
+            native: false,
+        }
+    }
+    pub fn native(stopped: CancellationToken) -> Self {
+        Self {
+            native: true,
+            ..Self::new(stopped)
         }
     }
     pub fn export(&self, body: Body) -> Result<Value> {
@@ -172,7 +190,7 @@ impl Streams {
         // The existing JS wire validates 32 lower-case hexadecimal characters.
         let key = format!("{:x}", sha2::Sha256::digest(key.as_bytes()))[..32].to_owned();
         let mut bodies = self.bodies.lock().unwrap_or_else(|p| p.into_inner());
-        if bodies.len() >= 8 {
+        if !self.native && bodies.len() >= 8 {
             return Err(error("resource_limit", "stream limit reached"));
         }
         bodies.insert(
@@ -213,7 +231,7 @@ impl Streams {
             .try_lock()
             .map_err(|_| error("body_read_pending", "stream read already pending"))?;
         if reader.is_none() {
-            *reader = Some(entry.body.reader(BODY_LIMIT)?);
+            *reader = Some(entry.body.reader((!self.native).then_some(BODY_LIMIT))?);
         }
         let value = tokio::select! {
             biased;
@@ -240,7 +258,11 @@ impl Streams {
 }
 use sha2::Digest;
 
-pub(super) fn decode_inline(value: &Value, limit: usize) -> Result<Option<Bytes>> {
+pub(super) fn decode_inline(
+    value: &Value,
+    limit: impl Into<Option<usize>>,
+) -> Result<Option<Bytes>> {
+    let limit = limit.into();
     if value.is_null() {
         return Ok(Some(Bytes::new()));
     }
@@ -259,7 +281,7 @@ pub(super) fn decode_inline(value: &Value, limit: usize) -> Result<Option<Bytes>
         if BASE64.encode(&bytes) != encoded {
             return Err(error("invalid_body", "invalid inline body"));
         }
-        if bytes.len() > limit {
+        if limit.is_some_and(|limit| bytes.len() > limit) {
             return Err(error(
                 "body_too_large",
                 "inline body exceeds configured limit",
@@ -283,8 +305,9 @@ pub(super) fn remote_body(
     lease: String,
     reference: Value,
     stopped: CancellationToken,
-    limit: usize,
+    limit: impl Into<Option<usize>>,
 ) -> Result<Body> {
+    let limit = limit.into();
     if reference.is_null() {
         return Ok(Body::empty());
     }
@@ -327,7 +350,7 @@ pub(super) fn remote_body(
         ended: false,
         runtime: tokio::runtime::Handle::current(),
     };
-    let stream = futures_util::stream::unfold(state, |mut state| async move {
+    let stream = futures_util::stream::unfold(state, move |mut state| async move {
         if state.ended {
             return None;
         }
@@ -337,7 +360,7 @@ pub(super) fn remote_body(
                 "relay",
                 json!({"lease":state.lease,"operation":"stream.read","payload":state.reference}),
                 &state.stopped,
-                Duration::from_secs(300),
+                limit.map(|_| Duration::from_secs(300)),
             )
             .await;
         let next = (|| {
@@ -372,5 +395,6 @@ pub(super) fn remote_body(
             }
         }
     });
-    Ok(Body::new(Box::pin(stream), stopped))
+    let body = Body::new(Box::pin(stream), stopped.clone());
+    Ok(Body::new(body.stream(limit)?, stopped))
 }

@@ -104,7 +104,6 @@ struct Lease {
     registration: Arc<Registration>,
     opening_request: Value,
     url: String,
-    expires: Option<Instant>,
 }
 struct Pending {
     source: String,

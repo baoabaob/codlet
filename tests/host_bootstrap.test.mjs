@@ -351,6 +351,42 @@ test('shutdown aborts an initializing JS request and runs deactivate without lat
   assert.match(fixture.stderr(), /cancelled-cleanup/);
 });
 
+test('activation completing during shutdown cannot restore state after its owner retired', async t => {
+  for (const mode of [undefined, 'sdk']) {
+    const fixture = await host(t, `let release;module.exports={
+      activate(context){return new Promise(resolve=>{release=resolve;context.core.request('Fixture.started',{}).catch(()=>{});});},
+      restoreState(){console.log('retired-restore-executed');},
+      deactivate(cleanup){release();return cleanup.core.request('Fixture.cleanup',{});}
+    };`, undefined, mode);
+    fixture.initialize({ initialState: { schema: 1, value: {} } });
+    assert.equal((await fixture.next()).method, 'Fixture.started');
+    fixture.shutdown(800);
+    const cleanup = await fixture.next();
+    assert.equal(cleanup.method, 'cleanup.request');
+    fixture.send({ type: 'response', id: cleanup.id, ok: true, result: {} });
+    assert.equal((await fixture.next()).id, 2);
+    assert.equal((await fixture.exited)[0], 0);
+    assert.doesNotMatch(fixture.stderr(), /retired-restore-executed/);
+  }
+});
+
+test('snapshot drains a subscription end callback after its subscription record has retired', async t => {
+  for (const mode of [undefined, 'sdk']) {
+    const fixture = await host(t, `let count=0;module.exports={
+      async activate(context){await context.cdp.subscribe({scope:'all'},()=>{},async()=>{await new Promise(resolve=>setTimeout(resolve,40));count=1;});},
+      saveState(){return {schema:1,value:{count}};},restoreState(){},deactivate(){}
+    };`, undefined, mode);
+    fixture.initialize(); const subscribe = await fixture.next();
+    fixture.send({ type: 'response', id: subscribe.id, ok: true, result: { subscriptionId: 1 } });
+    assert.equal((await fixture.next()).result.ready, true);
+    fixture.send({ type: 'notification', method: 'cdp.subscriptionEnded', params: { subscriptionId: 1, reason: 'fixture-end' } },
+      { type: 'request', id: 2, method: 'host.snapshot', params: null });
+    assert.deepEqual((await fixture.next()).result, { schema: 1, value: { count: 1 } });
+    fixture.send({ type: 'request', id: 3, method: 'shutdown', params: null });
+    assert.equal((await fixture.next()).ok, true);
+  }
+});
+
 test('activation errors retain their code and cleanup still runs during shutdown', async t => {
   const fixture = await host(t, `module.exports = {
     activate() { throw Object.assign(new Error('fixture failure'), {code:'fixture_error'}); },

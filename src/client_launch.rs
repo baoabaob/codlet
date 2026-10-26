@@ -80,6 +80,8 @@ struct SourceLoader {
 
 #[derive(Debug)]
 pub(crate) struct SourceActivation {
+    pub(crate) installed: bool,
+    pub(crate) pending: bool,
     pub(crate) activated: Value,
     pub(crate) unsupported: Value,
 }
@@ -214,11 +216,16 @@ pub(crate) fn validate_client_source_activation(
 ) -> Result<SourceActivation, HostError> {
     let invalid = || error("client_launch_adapter_unconfirmed");
     let object = activation.as_object().ok_or_else(invalid)?;
-    if object.len() != 3
-        || object.keys().any(|key| {
-            !["installed", "activatedSources", "unsupportedSources"].contains(&key.as_str())
-        })
-    {
+    if object.keys().any(|key| {
+        ![
+            "installed",
+            "activatedSources",
+            "unsupportedSources",
+            "pending",
+            "pendingSources",
+        ]
+        .contains(&key.as_str())
+    }) {
         return Err(invalid());
     }
     let installed = activation["installed"].as_bool().ok_or_else(invalid)?;
@@ -241,6 +248,18 @@ fn validate_activation_metadata(
     let unsupported = match reply.get("unsupportedSources") {
         Some(value) => value.as_array().ok_or_else(invalid)?,
         None => return Err(invalid()),
+    };
+    let pending_sources = match (reply.get("pending"), reply.get("pendingSources")) {
+        (None, None) => &[][..],
+        (Some(pending), Some(sources)) => {
+            let pending = pending.as_bool().ok_or_else(invalid)?;
+            let sources = sources.as_array().ok_or_else(invalid)?;
+            if pending == sources.is_empty() {
+                return Err(invalid());
+            }
+            sources.as_slice()
+        }
+        _ => return Err(invalid()),
     };
     if (installed && activated.is_empty()) || activated.len() > 8 || unsupported.len() > 8 {
         return Err(invalid());
@@ -318,13 +337,36 @@ fn validate_activation_metadata(
                         | "child_unavailable"
                         | "route_unavailable"
                         | "timeout"
+                        | "ambiguous_contract"
+                        | "binding_changed"
+                        | "contract_unavailable"
                 )
             )
         {
             return Err(invalid());
         }
     }
+    for entry in pending_sources {
+        let record = entry.as_object().ok_or_else(invalid)?;
+        if record.len() != 2 || !record.contains_key("id") || !record.contains_key("reason") {
+            return Err(invalid());
+        }
+        let id = entry["id"]
+            .as_str()
+            .filter(|id| label(id))
+            .ok_or_else(invalid)?;
+        if !ids.insert(id)
+            || !matches!(
+                entry["reason"].as_str(),
+                Some("initializing" | "child_unavailable" | "backend_config_pending")
+            )
+        {
+            return Err(invalid());
+        }
+    }
     Ok(SourceActivation {
+        installed,
+        pending: !pending_sources.is_empty(),
         activated: Value::Array(activated.clone()),
         unsupported: Value::Array(unsupported.clone()),
     })
@@ -373,6 +415,41 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn pending_activation_is_explicit_and_never_relabels_a_contract_failure() {
+        let offer = json!({"operations":["http.intercept"],"protocols":["http"]});
+        let pending = json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pending":true,"pendingSources":[{"id":"native-main","reason":"initializing"}]});
+        let observed = validate_client_source_activation(&pending, &offer).unwrap();
+        assert!(!observed.installed);
+        assert!(observed.pending);
+        for reason in [
+            "ambiguous_contract",
+            "binding_changed",
+            "contract_unavailable",
+        ] {
+            let terminal = json!({"installed":false,"activatedSources":[],"unsupportedSources":[{"id":"native-main","reason":reason}],"pending":false,"pendingSources":[]});
+            assert!(
+                !validate_client_source_activation(&terminal, &offer)
+                    .unwrap()
+                    .pending
+            );
+        }
+        for invalid in [
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pending":true,"pendingSources":[]}),
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pending":false,"pendingSources":pending["pendingSources"]}),
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pending":true}),
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pendingSources":[]}),
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"pending":true,"pendingSources":[{"id":"native-main","reason":"ambiguous_contract"}]}),
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[{"id":"native-main","reason":"binding_changed"}],"pending":true,"pendingSources":pending["pendingSources"]}),
+            json!({"installed":false,"activatedSources":[],"unsupportedSources":[],"extra":true}),
+        ] {
+            assert!(
+                validate_client_source_activation(&invalid, &offer).is_err(),
+                "{invalid}"
+            );
+        }
     }
 
     const SOURCE: &str = "exports.clientSource=()=>({code:'module.exports={};'});";

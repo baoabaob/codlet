@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
-const {verifyBackend,prepareBackendLaunch}=createRequire(import.meta.url)('../host/backend-launch.cjs');
+const {verifyBackend,prepareBackendLaunch,providerSetting,providerName,supportsBackendContract}=createRequire(import.meta.url)('../host/backend-launch.cjs');
 const contract={api:1,initialize:true,configRead:true,accountRead:true,routing:'runtime',providerOverrides:['openai_base_url']};
 
 test('an unknown executable identity can use a proven contract, while a changed file requires a new probe',t=>{
@@ -26,4 +26,12 @@ test('an unknown executable identity can use a proven contract, while a changed 
   assert.throws(()=>prepareBackendLaunch(input),{code:'backend_identity_changed'});
   const updated=prepareBackendLaunch({...input,compatibility:{...verifyBackend(executable),contract}});
   assert.deepEqual(updated.arguments,launch.arguments);
+});
+
+test('provider overrides bind actual TOML keys without Native name-length or count assumptions',()=>{
+  const names=[...Array.from({length:40},(_,index)=>'provider'+index),'long'.repeat(40),'原生提供者','dot.and="quote"','__proto__'];
+  const settings=names.map(providerSetting);
+  assert.deepEqual(settings.map(providerName),names);
+  assert(supportsBackendContract({...contract,providerOverrides:['openai_base_url',...settings]},settings));
+  assert.equal(providerName('model_providers.other.base_url.extra'),null);
 });
