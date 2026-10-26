@@ -19,9 +19,9 @@ Direct official updates show a cancellable confirmation with a persistent “Don
 ## Checks
 
 - 140 focused JavaScript tests passed, including deep/cyclic ownership, large Native histories and inputs, source discovery, update guards, target identity, MSI handoff and page lifecycle.
-- 33 final GUI interaction tests passed; header and settings confirmation paths return focus correctly. The broader available GUI tests passed earlier; the separate functional-fixture suite cannot run in the working checkout because its consumer fixture files are absent.
+- 33 final GUI interaction tests passed; header and settings confirmation paths return focus correctly. Eight additional functional-fixture tests passed from the committed source checkout.
 - Rust: 16 compatibility tests, 4 settings tests, 1 official-update owner test and 32 runtime-update tests passed. Four isolated/opt-in entrypoints were not run by those filters.
 - 27 decoders passed against captured bytes from the exact Native build. Core SDK type checking passed.
 - The native installer compiled. Light/dark GUI rendering and both confirmation dialogs were inspected using the actual Core UI bundles with simulated update state.
 
-The joint-update handoff tests use owned process/file fixtures. No real official MSIX update or MSI upgrade was performed during this validation. Installer packaging and read-only installed-product preflight are recorded in the release receipts.
+The joint-update handoff tests use owned process/file fixtures. No real official MSIX update or MSI upgrade was performed during this validation. Installer packaging, payload verification and read-only installed-product preflight passed. [Validation receipts](validation-receipts.json) and [public release receipts](release-receipts.json) record their scope and exact file hashes.

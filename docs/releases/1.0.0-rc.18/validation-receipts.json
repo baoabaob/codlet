@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "kind": "codlet-rc18-validation",
+  "native": {
+    "packageVersion": "26.1021.3705.0",
+    "appVersion": "26.1021.31345",
+    "buildNumber": "21828"
+  },
+  "currentClientReadOnlyProbe": {
+    "nativeDownload": {
+      "viewBox": "0 0 20 20",
+      "paths": 1
+    },
+    "notificationBadge": true,
+    "mainInput": true,
+    "inputs": [
+      {
+        "rawDepth": 259,
+        "committedDepth": 259,
+        "input": true,
+        "draft": true,
+        "scope": true,
+        "placement": "main",
+        "samePath": true,
+        "sameSearch": true
+      }
+    ]
+  },
+  "temporaryProbeRemoved": true,
+  "tests": {
+    "coreJavaScript": 140,
+    "guiFinalInteractions": 33,
+    "guiFunctionalFixtureInCleanSource": 8,
+    "rustCompatibility": 16,
+    "rustSettings": 4,
+    "rustOfficialUpdateOwner": 1,
+    "rustRuntimeUpdate": 32,
+    "rustOptInEntrypointsSkipped": 4,
+    "nativeSourceDecoders": 27,
+    "typecheck": "passed"
+  },
+  "installerSelfTest": {
+    "passed": true,
+    "installationPerformed": false,
+    "nativeUi": true,
+    "payloadHashVerified": true,
+    "scopeAndFeatures": true,
+    "upgradeMaintenanceDowngrade": true,
+    "msiProgressAndCancellation": true,
+    "version": "1.0.0-rc.18"
+  },
+  "installedProductPreflight": {
+    "phase": "ready",
+    "scope": "user",
+    "version": "1.0.0-rc.18"
+  },
+  "built": {
+    "schema": 1,
+    "kind": "codlet-windows-release-build",
+    "version": "1.0.0-rc.18",
+    "sourceCommit": "e67eb48d9b629275f0adce02804460136fce1853",
+    "builtCore": true,
+    "coreSha256": "413df62e8455ac871aaad2a17810a9ab05bb903ac2eee95aa799718639311359"
+  },
+  "actualOfficialOrMsiUpdatePerformed": false
+}
